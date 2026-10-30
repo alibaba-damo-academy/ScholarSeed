@@ -6,7 +6,7 @@ import type { ForegroundMessage } from './contracts/feedback'
 // the conversation, project, task and status surfaces (single source here).
 
 import type { PreferenceLanguage, PreferenceTheme } from '../../preferences'
-import type { LiteratureDocumentSource } from './contracts/workbench'
+import type { LiteratureDocumentSource, SessionFileSource } from './contracts/workbench'
 import type { ActiveDocument, SubmissionMode, TurnInputItem } from './api'
 
 /**
@@ -21,13 +21,6 @@ export type EvidencePriority = 'supported' | 'mixed' | 'limited' | 'unverified'
 
 /** PRD 2.1.1: manually edited conversation titles accept at most 150 characters. */
 export const SESSION_TITLE_MAX_LENGTH = 150
-
-/** Codex-style provisional title: normalized, truncated first user prompt. */
-export function promptSessionTitle(text: string): string {
-  const normalized = text.trim().replace(/\s+/g, ' ')
-  if (normalized.length <= SESSION_TITLE_MAX_LENGTH) return normalized
-  return `${normalized.slice(0, SESSION_TITLE_MAX_LENGTH - 1).trimEnd()}…`
-}
 
 /** A server-verified exact response span linked to a durable research claim. */
 export interface EvidenceAnnotation {
@@ -182,7 +175,7 @@ export interface FilePreviewTarget {
   renderKind?: 'markdown' | 'html' | 'text' | 'json' | 'code' | 'image'
   size?: number
   content?: string
-  source?: LiteratureDocumentSource
+  source?: LiteratureDocumentSource | SessionFileSource
 }
 
 export interface RuntimeReadiness {
@@ -248,6 +241,83 @@ export interface SessionArtifact {
   vendor_turn_id?: string
   vendor_item_id?: string
   updated_at?: number
+}
+
+const DELIVERABLE_ARTIFACT_ROLES: ReadonlySet<SessionArtifact['role']> = new Set([
+  'final',
+  'intermediate',
+  'supporting',
+])
+
+export function artifactIsDeliverable(artifact: SessionArtifact): boolean {
+  return (
+    Boolean(artifact.publication_id) &&
+    DELIVERABLE_ARTIFACT_ROLES.has(artifact.role) &&
+    artifact.status !== 'deleted' &&
+    artifact.change !== 'delete'
+  )
+}
+
+export function artifactIsOutput(artifact: SessionArtifact): boolean {
+  return artifactIsDeliverable(artifact) && artifact.role !== 'intermediate'
+}
+
+export function overviewArtifacts(
+  artifacts: SessionArtifact[],
+  workdir?: string
+): {
+  outputs: SessionArtifact[]
+  process: Array<{ path: string; artifacts: SessionArtifact[] }>
+} {
+  const outputs: SessionArtifact[] = []
+  const directories = new Map<string, SessionArtifact[]>()
+  const current = new Map<string, SessionArtifact>()
+  for (const artifact of artifacts) {
+    if (artifact.status === 'deleted' || artifact.change === 'delete') continue
+    const key = artifact.absolute_path ?? artifact.path
+    const previous = current.get(key)
+    if (!previous || artifactIsDeliverable(artifact) || !artifactIsDeliverable(previous))
+      current.set(key, artifact)
+  }
+  for (const artifact of current.values()) {
+    if (artifactIsOutput(artifact)) {
+      outputs.push(artifact)
+      continue
+    }
+    const directoryPrefix = workdir?.replace(/\\/g, '/').replace(/\/$/, '')
+    const absolute = artifact.absolute_path?.replace(/\\/g, '/')
+    const displayPath =
+      directoryPrefix && absolute?.startsWith(`${directoryPrefix}/`)
+        ? absolute.slice(directoryPrefix.length + 1)
+        : artifact.path.replace(/\\/g, '/')
+    const segments = displayPath.split('/')
+    segments.pop()
+    const directory = segments.join('/')
+    const group = directories.get(directory) ?? []
+    group.push(artifact)
+    directories.set(directory, group)
+  }
+  return {
+    outputs,
+    process: [...directories].map(([path, items]) => ({ path, artifacts: items })),
+  }
+}
+
+export function submittedReferences(conversation: ConvItem[]): MessageReference[] {
+  const references = new Map<string, MessageReference>()
+  for (const item of conversation) {
+    if (item.kind !== 'user' || item.cancelled) continue
+    for (const reference of item.refs ?? []) {
+      if (reference.type === 'skill') continue
+      const identity = JSON.stringify([
+        reference.type,
+        reference.kind,
+        reference.sourceId ?? reference.path ?? reference.id,
+      ])
+      references.set(identity, reference)
+    }
+  }
+  return [...references.values()]
 }
 
 /**
@@ -394,6 +464,7 @@ export interface DisplayCardData {
   cardId: string
   type: string
   content: Record<string, unknown>
+  presentationSource?: 'live' | 'history'
 }
 
 export interface ReviewReadyCard {
@@ -517,6 +588,8 @@ export type ConvItem = TurnOwned &
         runtimeNotice?: { diagnostic?: string }
         displayMessage?: ForegroundMessage
         incidentId?: string
+        turnBoundary?: true
+        bindingSeq?: number
         runtimeAction?: 'retry_session_resume'
         actionSessionId?: string
         hideIcon?: boolean
@@ -546,6 +619,7 @@ export type ConvItem = TurnOwned &
             | 'content_policy'
             | 'unknown'
           fallback: 'frame' | 'runtime' | 'raw'
+          authentication?: 'account' | 'model'
           automaticRetryAttempts?: number
         }
         title: string
@@ -608,6 +682,36 @@ export type ConvItem = TurnOwned &
         kind: 'hil'
         requestId: string
         hilKind: string
+        browserApproval?: {
+          tabId: string
+          proofId: string
+          targetInstanceId: string
+          targetGeneration: number
+          tabTitle?: string
+          tabUrl?: string
+          origin: string
+          sourceOrigin?: string | null
+          destinationUrl?: string
+          destinationOrigin?: string
+          preparedId?: string
+          snapshotId?: string
+          elementRef?: string
+          browserAction?: 'click' | 'fill' | 'submit'
+          element?: { role: string; name: string }
+          action: string
+          intent: string
+          expiresAt: number
+        }
+        browserHistoryApproval?: {
+          proofId: string
+          queryDigest: string
+          historyRevision: number
+          search: string
+          offset: number
+          limit: number
+          intent: string
+          expiresAt: number
+        }
         toolName?: string
         title?: string
         body?: string
@@ -644,13 +748,31 @@ export type ConvItem = TurnOwned &
       }
   )
 
+export function isTurnBoundary(item: ConvItem): boolean {
+  return item.kind === 'user' || (item.kind === 'status' && item.turnBoundary === true)
+}
+
 /** Explicit application-owned display provenance; raw answers and diagnostics have no descriptor. */
 export type HilPermissionScope =
   | { kind: 'once' | 'commandPrefix' | 'directory' | 'site' | 'always' | 'session' | 'edits' }
   | { kind: 'raw'; label: string }
 
 export type HilResolvedMessage =
-  | { kind: 'stale' | 'cancelled' | 'handled' | 'answered' | 'allowedOnce' | 'denied' }
+  | {
+      kind:
+        | 'stale'
+        | 'cancelled'
+        | 'handled'
+        | 'answered'
+        | 'allowedOnce'
+        | 'denied'
+        | 'browserExpired'
+        | 'browserInactive'
+        | 'browserUnknown'
+        | 'historyExpired'
+        | 'historyInactive'
+        | 'historyUnknown'
+    }
   | { kind: 'allowedScope'; scope: HilPermissionScope }
 
 export type HilSubmissionMessage = 'outcomeUnknown' | 'cancelUnconfirmed' | 'answerUnconfirmed'
@@ -683,6 +805,7 @@ export interface BgTask {
 }
 
 export const RELEASED_PLAN_SOURCE = 'released'
+export const PLAN_EXECUTION_TIMING_POLICY = 'leaf-execution-v1'
 
 /** 显式计划树或原生平铺快照中的一步；每次快照整列替换。 */
 export interface PlanSnapshotUI {
@@ -690,12 +813,14 @@ export interface PlanSnapshotUI {
   turnId?: string
   timestamp: number
   planId?: string
+  timingPolicy?: string
   released: boolean
   items: TodoItemUI[]
 }
 
 export interface TodoItemUI {
   content: string
+  kind?: 'group' | 'step'
   /** 进行时描述: status=in_progress 时展示这个 (CC activeForm), 否则展示 content */
   activeForm?: string | null
   status:
@@ -768,10 +893,14 @@ export interface Thread {
   lastSeq: number
   /** UI-visible activation state while the native runtime and durable history resume. */
   resumeState?: 'pending' | 'ready' | 'failed'
+  resumeServiceInstanceId?: string
   recoveryBlocked?: boolean
+  recoveryIncidentId?: string | null
+  recoverySourceSeq?: number
   recoveryPending?: boolean
   resumeMessage?:
-    | { key: 'resume.codex' | 'resume.agent' | 'resume.reconnect' }
+    | { key: 'resume.codex' | 'resume.agent' | 'resume.reconnect' | 'resume.runtimeSwitchBlocked' }
+    | { key: 'resume.runtimeSwitch'; serviceInstanceId: string | null }
     | { key: 'resume.retry'; attempt: number; maximum: number }
   running?: boolean
   activeTurnId?: string | null
@@ -779,6 +908,7 @@ export interface Thread {
   interrupting?: boolean
   /** Native runtime session was explicitly closed; history remains read-only. */
   terminated?: boolean
+  readOnly?: boolean
   queuedMessages?: QueuedMessage[]
   /** 本会话的后台任务生命周期态 (background_task_event 帧; StatusStrip 读 activeThread) — 每会话独立 */
   backgroundTasks?: Record<string, BgTask>

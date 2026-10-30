@@ -127,7 +127,7 @@ def _service(request: Request) -> ResourceVersionService:
 
 
 def _payload(value) -> dict:
-    return _json_value(asdict(value))
+    return {key: _json_value(member) for key, member in asdict(value).items()}
 
 
 def _json_value(value):

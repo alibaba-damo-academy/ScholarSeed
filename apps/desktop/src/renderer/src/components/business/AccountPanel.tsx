@@ -1,3 +1,5 @@
+import { availabilityPolicy } from '../../app/policy'
+import { markAllAttentionRead } from '../../features/assistant/attention'
 import { Onboarding } from '../../contracts/onboarding'
 import { VersionScope } from './VersionScope'
 import {
@@ -9,11 +11,16 @@ import {
   PROBE_REASON_KEYS,
   PROBE_SUGGESTION_KEYS,
   PROBE_TITLE_KEYS,
+  SAVED_API_KEY_MASK,
+  editModelApiKeyDraft,
+  initialModelApiKeyDraft,
+  modelApiKeyNeedsReplacement,
+  modelApiKeyShowsSavedMask,
   probeFailureDetail,
   profileFailureText,
   providerPresetText,
 } from './profile'
-import type { ProbeFailureDetail, ProbeFailureTitle } from './profile'
+import type { ModelApiKeyDraft, ProbeFailureDetail, ProbeFailureTitle } from './profile'
 import { modelDefaultEffort, reasoningLabel } from '../../reasoning'
 import type {
   PersonalApiFailure,
@@ -40,15 +47,17 @@ import {
   Bell,
   BrainCircuit,
   CircleCheck,
+  Copy,
   CircleQuestionMark,
   Files,
+  Globe,
   HardDrive,
   // Keyboard,
   Mail,
-  Plug,
   RotateCw,
   TriangleAlert,
   UserShield,
+  X,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
@@ -109,7 +118,12 @@ import { CODE_LENGTH, RESET_PASSWORD_DIALOG, resetPasswordSubmitReady } from '..
 import type { IconName } from '../../icons'
 import { Icon } from '../../icons'
 import type { AccountSettingsPage } from '../../store'
+import type { BrowserSettingsSection } from '../../../../navigation'
 import { useApp } from '../../store'
+import { PREPARATION_SUPERSEDED_ERROR } from '../../preparation'
+import { UpdateAction } from './UpdateAction'
+import { PreviewUpdates } from '../../features/updates/Preview'
+import { isPreviewUpdateChannel } from '../../../../updates'
 import {
   FILE_VERSION_MAX_SIZE_MB,
   FILE_VERSION_MIN_SIZE_MB,
@@ -123,7 +137,6 @@ import {
 } from '../../features/resources/settings'
 import {
   formatInstallerSize,
-  runUpdateAction,
   updateActionOf,
   updateFailureOf,
   updateFailureText,
@@ -164,7 +177,6 @@ import {
   PageBody,
   PageHeader,
   PageSection,
-  PasswordInput,
   ProgressBar,
   Select,
   SelectContent,
@@ -185,8 +197,10 @@ import { cx } from '../ui/utils'
 import { writeClipboard } from '../primitive/clipboard'
 import { PreferenceControls } from './Preferences'
 import { Skills } from './Skills'
-// import { Shortcuts } from './Shortcuts'
+import { BrowserSettings } from '../../features/browser/Settings'
+import { Shortcuts } from './Shortcuts'
 import { SettingsPage } from './Settings'
+import { createArchiveReader, type ArchiveReader } from './archives'
 import type { ProjectRef } from '../../contracts/content'
 import {
   forgetProject,
@@ -256,12 +270,17 @@ type AccountPanelNavKey =
   | 'models'
   | 'skills'
   | 'developer'
+  | 'browser'
   | 'files'
   | 'storage'
   | 'archives'
   | 'about'
 
-function accountPanelNavLabel(key: AccountPanelNavKey, t: TFunction<'components'>): string {
+function accountPanelNavLabel(
+  key: AccountPanelNavKey,
+  t: TFunction<'components'>,
+  browserText: TFunction<'browser'>
+): string {
   switch (key) {
     case 'prompts':
       return t('accountPanel.nav.prompts')
@@ -277,6 +296,8 @@ function accountPanelNavLabel(key: AccountPanelNavKey, t: TFunction<'components'
       return t('accountPanel.nav.skills')
     case 'developer':
       return t('accountPanel.nav.developer')
+    case 'browser':
+      return browserText('settings.nav')
     case 'files':
       return t('accountPanel.nav.files')
     case 'storage':
@@ -300,8 +321,8 @@ const NAV_ITEMS: {
   { id: 'notifications', labelKey: 'notifications', lucideIcon: Bell },
   { id: 'prompts', labelKey: 'prompts', icon: 'sparkle' },
   { id: 'models', labelKey: 'models', lucideIcon: BrainCircuit },
-  { id: 'skills', labelKey: 'skills', lucideIcon: Plug },
   { id: 'developer', labelKey: 'developer', lucideIcon: UserShield },
+  { id: 'browser', labelKey: 'browser', lucideIcon: Globe },
   { id: 'files', labelKey: 'files', lucideIcon: Files },
   { id: 'storage', labelKey: 'storage', lucideIcon: HardDrive },
   // TODO: 暂时隐藏「键盘快捷键」页面，恢复时一并恢复 Keyboard / Shortcuts。
@@ -310,10 +331,14 @@ const NAV_ITEMS: {
   { id: 'about', labelKey: 'about', lucideIcon: CircleQuestionMark },
 ]
 
+const VISIBLE_NAV_ITEMS = NAV_ITEMS.filter((item) => availabilityPolicy.settingsAvailable(item.id))
+
 function visiblePage(page: AccountSettingsPage): AccountSettingsPage {
   if (page === 'model-settings') return 'models'
   // 隐藏页与未知页统一回落到第一个可见入口，保证侧栏选中项与右侧内容一致
-  return NAV_ITEMS.some((item) => item.id === page) ? page : (NAV_ITEMS[0]?.id ?? 'account')
+  return VISIBLE_NAV_ITEMS.some((item) => item.id === page)
+    ? page
+    : (VISIBLE_NAV_ITEMS[0]?.id ?? 'account')
 }
 
 function SettingsNavIcon({
@@ -481,40 +506,88 @@ function siteHostLabel(base: string): string {
   }
 }
 
-function DataStoragePage(): React.JSX.Element {
+export function DataStoragePage(): React.JSX.Element {
   const { t } = useTranslation('components')
+  const isWindows = window.scholarseed.platform === 'win32'
   const [storage, setStorage] = React.useState<StorageConfig | null>(null)
   const [workspace, setWorkspace] = React.useState<WorkspaceRootState | null>(null)
   const [rootBusy, setRootBusy] = React.useState(false)
   const [rootNotice, setRootNotice] = React.useState<'restart' | 'failed' | null>(null)
+  const [homePhase, setHomePhase] = React.useState<'loading' | 'ready' | 'error'>('loading')
+  const [workspacePhase, setWorkspacePhase] = React.useState<'loading' | 'ready' | 'error'>(
+    'loading'
+  )
+  const mounted = React.useRef(false)
+  const homeGeneration = React.useRef(0)
+  const workspaceGeneration = React.useRef(0)
+  const mutation = React.useRef(false)
 
-  React.useEffect(() => {
-    let cancelled = false
-    void window.scholarseed.storageConfig().then((value) => {
-      if (!cancelled) setStorage(value)
-    })
-    void loadWorkspaceRoot().then((value) => {
-      if (!cancelled) setWorkspace(value)
-    })
-    return () => {
-      cancelled = true
+  const readHome = React.useCallback(async (): Promise<void> => {
+    if (mutation.current) return
+    const generation = ++homeGeneration.current
+    setHomePhase('loading')
+    try {
+      const value = await window.scholarseed.storageConfig()
+      if (!mounted.current || generation !== homeGeneration.current) return
+      setStorage(value)
+      setHomePhase('ready')
+    } catch {
+      if (mounted.current && generation === homeGeneration.current) setHomePhase('error')
     }
   }, [])
 
+  const readWorkspace = React.useCallback(async (): Promise<void> => {
+    if (mutation.current) return
+    const generation = ++workspaceGeneration.current
+    setWorkspacePhase('loading')
+    try {
+      const value = await loadWorkspaceRoot()
+      if (!mounted.current || generation !== workspaceGeneration.current) return
+      if (value) setWorkspace(value)
+      setWorkspacePhase(value ? 'ready' : 'error')
+    } catch {
+      if (mounted.current && generation === workspaceGeneration.current) setWorkspacePhase('error')
+    }
+  }, [])
+
+  React.useEffect(() => {
+    mounted.current = true
+    void readHome()
+    void readWorkspace()
+    return () => {
+      mounted.current = false
+      homeGeneration.current += 1
+      workspaceGeneration.current += 1
+    }
+  }, [readHome, readWorkspace])
+
   // 容器根是运行期唯一可改的数据轴：走既有 PUT /api/serve/workspace-root，重启生效、
-  // 仅新项目跟随。home 运行期只读（Win 安装期选定；mac 仅首启一次性「高级」）。
+  // 仅新项目跟随。home 运行期只读；mac 仅首启一次性「高级」。
   const changeContainerRoot = async (): Promise<void> => {
-    const picked = await window.scholarseed.pickDir()
-    if (!picked) return
+    if (mutation.current || workspacePhase !== 'ready') return
+    mutation.current = true
+    const generation = ++workspaceGeneration.current
     setRootBusy(true)
-    setRootNotice(null)
-    const result = await saveWorkspaceRoot(picked)
-    setRootBusy(false)
-    if (result.ok && result.state) {
-      setWorkspace(result.state)
-      setRootNotice(result.state.restartRequired ? 'restart' : null)
-    } else {
-      setRootNotice('failed')
+    try {
+      const picked = await window.scholarseed.pickDir()
+      if (!mounted.current || generation !== workspaceGeneration.current || !picked) return
+      setRootNotice(null)
+      const result = await saveWorkspaceRoot(picked)
+      if (!mounted.current || generation !== workspaceGeneration.current) return
+      if (result.ok && result.state) {
+        setWorkspace(result.state)
+        setWorkspacePhase('ready')
+        setRootNotice(result.state.restartRequired ? 'restart' : null)
+      } else {
+        setRootNotice('failed')
+      }
+    } catch {
+      if (mounted.current && generation === workspaceGeneration.current) setRootNotice('failed')
+    } finally {
+      if (mounted.current && generation === workspaceGeneration.current) {
+        mutation.current = false
+        setRootBusy(false)
+      }
     }
   }
 
@@ -522,7 +595,11 @@ function DataStoragePage(): React.JSX.Element {
     <SettingsPage
       data-testid="account-settings-storage"
       title={t('accountPanel.storage.title')}
-      description={t('accountPanel.storage.description')}
+      description={
+        isWindows
+          ? t('accountPanel.storage.descriptionWindows')
+          : t('accountPanel.storage.description')
+      }
     >
       <div className={SECURITY_CARD_CLASS_NAME} data-testid="storage-card">
         <div className={SETTINGS_ROW_CLASS_NAME} data-testid="storage-data-home">
@@ -531,11 +608,37 @@ function DataStoragePage(): React.JSX.Element {
               {t('accountPanel.storage.dataHomeTitle')}
             </div>
             <div className={NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME}>
-              {t('accountPanel.storage.dataHomeDescription')}
+              {isWindows
+                ? t('accountPanel.storage.dataHomeDescriptionWindows')
+                : t('accountPanel.storage.dataHomeDescription')}
             </div>
-            <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-data-home-value">
-              {storage?.home ?? t('accountPanel.storage.dataHomeUnavailable')}
-            </div>
+            {storage && (
+              <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-data-home-value">
+                {storage.home}
+              </div>
+            )}
+            {homePhase === 'loading' && (
+              <div data-testid="storage-data-home-loading">
+                <Spinner size="sm" />
+              </div>
+            )}
+            {homePhase === 'error' && (
+              <Alert
+                tone="error"
+                data-testid="storage-data-home-error"
+                description={t('accountPanel.storage.dataHomeUnavailable')}
+                action={
+                  <Button
+                    variant="outline"
+                    disabled={rootBusy}
+                    data-testid="storage-data-home-retry"
+                    onClick={() => void readHome()}
+                  >
+                    {t('accountPanel.storage.retryRead')}
+                  </Button>
+                }
+              />
+            )}
           </div>
         </div>
         <div className={SETTINGS_ROW_CLASS_NAME} data-testid="storage-container-root">
@@ -546,16 +649,38 @@ function DataStoragePage(): React.JSX.Element {
             <div className={NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME}>
               {t('accountPanel.storage.containerRootDescription')}
             </div>
-            <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-container-root-value">
-              {workspace
-                ? workspace.configured || workspace.root
-                : t('accountPanel.storage.containerRootUnavailable')}
-            </div>
+            {workspace && (
+              <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-container-root-value">
+                {workspace.configured || workspace.root}
+              </div>
+            )}
+            {workspacePhase === 'loading' && (
+              <div data-testid="storage-container-root-loading">
+                <Spinner size="sm" />
+              </div>
+            )}
+            {workspacePhase === 'error' && (
+              <Alert
+                tone="error"
+                data-testid="storage-container-root-error"
+                description={t('accountPanel.storage.containerRootUnavailable')}
+                action={
+                  <Button
+                    variant="outline"
+                    disabled={rootBusy}
+                    data-testid="storage-container-root-retry"
+                    onClick={() => void readWorkspace()}
+                  >
+                    {t('accountPanel.storage.retryRead')}
+                  </Button>
+                }
+              />
+            )}
           </div>
           <Button
             type="button"
             variant="outline"
-            disabled={rootBusy}
+            disabled={rootBusy || workspacePhase !== 'ready'}
             data-testid="storage-container-root-change"
             onClick={() => void changeContainerRoot()}
           >
@@ -564,9 +689,11 @@ function DataStoragePage(): React.JSX.Element {
         </div>
         <div className={STORAGE_FOOTNOTE_CLASS_NAME}>
           <p data-testid="storage-install-time-note">
-            {storage?.canChangeDataHome
-              ? t('accountPanel.storage.installTimeNoteMac')
-              : t('accountPanel.storage.installTimeNoteWin')}
+            {isWindows
+              ? t('accountPanel.storage.dataHomeFixedNote')
+              : storage?.canChangeDataHome
+                ? t('accountPanel.storage.installTimeNoteMac')
+                : t('accountPanel.storage.installTimeNoteWin')}
           </p>
           {rootNotice === 'restart' ? (
             <p data-testid="storage-container-root-restart">
@@ -587,7 +714,7 @@ function DataStoragePage(): React.JSX.Element {
 function AboutPage(): React.JSX.Element {
   const { t: accountUpdateText } = useTranslation('account')
   const { t } = useTranslation('components')
-  const { set, act } = useApp()
+  const { state, set, act } = useApp()
   const update = useUpdateState()
   const [diagnosis, setDiagnosis] = React.useState<RendererUpdateDiagnosis | null>(null)
   const [mailCopied, setMailCopied] = React.useState(false)
@@ -834,7 +961,7 @@ function AboutPage(): React.JSX.Element {
             {t('update.upToDate')}
           </span>
         )}
-        <Button
+        <UpdateAction
           type="button"
           size="sm"
           variant={action === 'check' ? 'outline' : 'primary'}
@@ -845,7 +972,7 @@ function AboutPage(): React.JSX.Element {
                 ? 'version-download'
                 : 'version-check'
           }
-          onClick={() => runUpdateAction(update)}
+          state={update}
         >
           {action === 'install'
             ? t('update.restartInstall')
@@ -854,7 +981,7 @@ function AboutPage(): React.JSX.Element {
                 ? t('update.retryDownload')
                 : t('update.now')
               : t('update.check')}
-        </Button>
+        </UpdateAction>
       </>
     )
   }
@@ -872,15 +999,49 @@ function AboutPage(): React.JSX.Element {
               <VersionIcon size={15} strokeWidth={1.6} />
             </span>
             <div className={ABOUT_COPY_CLASS_NAME}>
-              <strong className={ABOUT_ROW_TITLE_CLASS_NAME} data-testid="version-current">
-                {t('accountPanel.about.currentVersion', {
-                  version: currentVersionLabel,
-                })}
-              </strong>
+              <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
+                <strong
+                  className={cx(ABOUT_ROW_TITLE_CLASS_NAME, 'select-text cursor-text')}
+                  data-testid="version-current"
+                >
+                  {t('accountPanel.about.currentVersion', {
+                    version: currentVersionLabel,
+                  })}
+                </strong>
+                {isPreviewUpdateChannel(window.scholarseed.channel) && (
+                  <Badge size="sm" tone="warning" data-testid="version-channel">
+                    {t('accountPanel.about.channelPreview')}
+                  </Badge>
+                )}
+                <CopyButton
+                  iconOnly
+                  icon={<Copy />}
+                  size="xs"
+                  variant="ghost"
+                  disabled={!window.scholarseed.systemVersion}
+                  value={`${t('accountPanel.about.currentVersion', { version: currentVersionLabel })}\n${window.scholarseed.systemVersion}`}
+                  writeText={writeClipboard}
+                  idleLabel={t('accountPanel.about.copyVersion')}
+                  data-testid="version-copy"
+                />
+              </div>
               {versionSub}
             </div>
             <div className={ABOUT_VERSION_CONTROL_CLASS_NAME}>{versionControl}</div>
           </div>
+          <SettingsRow
+            title={t('update.autoDownload')}
+            description={t('update.autoDownloadHelp')}
+            testid="update-auto-download-row"
+          >
+            <Switch
+              checked={state.autoDownloadUpdates}
+              onCheckedChange={act.setAutoDownloadUpdates}
+              label={t('update.autoDownload')}
+              data-testid="update-auto-download"
+            />
+          </SettingsRow>
+          <PreviewUpdates state={update} />
           {diagnosis ? (
             <pre
               className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
@@ -1231,7 +1392,10 @@ function FileVersionPage(): React.JSX.Element {
               onChange={(event) => setLimit(event.target.value)}
               onBlur={(event) => saveAutomatically(event.currentTarget.value, maxFileSize)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') event.currentTarget.blur()
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  event.currentTarget.blur()
+                }
               }}
             />
           </SettingsRow>
@@ -1257,7 +1421,10 @@ function FileVersionPage(): React.JSX.Element {
                 onChange={(event) => setMaxFileSize(event.target.value)}
                 onBlur={(event) => saveAutomatically(limit, event.currentTarget.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.currentTarget.blur()
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    event.currentTarget.blur()
+                  }
                 }}
               />
               <span className={DEVELOPER_ROW_DESCRIPTION_CLASS_NAME}>
@@ -1345,7 +1512,7 @@ const PERMISSIONS: {
   },
 ]
 
-const PERMISSION_TITLE_KEYS: Record<SystemPermissionId, string> = {
+const PERMISSION_TITLE_KEYS = {
   'full-disk': 'accountPanel.permissions.fullDisk',
   screen: 'accountPanel.permissions.screen',
   accessibility: 'accountPanel.permissions.accessibility',
@@ -1353,14 +1520,14 @@ const PERMISSION_TITLE_KEYS: Record<SystemPermissionId, string> = {
   automation: 'accountPanel.permissions.automation',
   notifications: 'accountPanel.permissions.notifications',
   location: 'accountPanel.permissions.location',
-}
+} as const satisfies Record<SystemPermissionId, string>
 const PERMISSION_DETAIL_KEYS = {
   'project-scoped': 'permissionDetails.projectScoped',
   'system-settings': 'permissionDetails.systemSettings',
   'notifications-unavailable': 'permissionDetails.notificationsUnavailable',
   'not-implemented': 'permissionDetails.notImplemented',
 } as const
-const PERMISSION_DESCRIPTION_KEYS: Record<SystemPermissionId, string> = {
+const PERMISSION_DESCRIPTION_KEYS = {
   'full-disk': 'accountPanel.permissions.fullDiskDesc',
   screen: 'accountPanel.permissions.screenDesc',
   accessibility: 'accountPanel.permissions.accessibilityDesc',
@@ -1368,17 +1535,17 @@ const PERMISSION_DESCRIPTION_KEYS: Record<SystemPermissionId, string> = {
   automation: 'accountPanel.permissions.automationDesc',
   notifications: 'accountPanel.permissions.notificationsDesc',
   location: 'accountPanel.permissions.locationDesc',
-}
-const PERMISSION_STATUS_KEYS: Record<SystemPermissionStatus, string> = {
-  granted: 'accountPanel.permissions.granted',
-  denied: 'accountPanel.permissions.denied',
-  restricted: 'accountPanel.permissions.restricted',
-  'not-determined': 'accountPanel.permissions.not-determined',
-  unavailable: 'accountPanel.permissions.unavailable',
-  'system-managed': 'accountPanel.permissions.system-managed',
-  'project-scoped': 'accountPanel.permissions.project-scoped',
-  'query-error': 'accountPanel.permissions.query-error',
-}
+} as const satisfies Record<SystemPermissionId, string>
+const PERMISSION_STATUS_KEYS = {
+  granted: 'permissions.granted',
+  denied: 'permissions.denied',
+  restricted: 'permissions.restricted',
+  'not-determined': 'permissions.not-determined',
+  unavailable: 'permissions.unavailable',
+  'system-managed': 'permissions.system-managed',
+  'project-scoped': 'permissions.project-scoped',
+  'query-error': 'permissions.query-error',
+} as const satisfies Record<SystemPermissionStatus, string>
 
 const STATUS_LABELS: Record<SystemPermissionStatus, string> = {
   granted: '已授权',
@@ -1402,12 +1569,12 @@ const SETTINGS_DIALOG_NAV_CLASS_NAME =
 const SETTINGS_DIALOG_TITLE_CLASS_NAME =
   'flex h-[56px] items-center px-[16px] text-[16px] font-[var(--vds-fw-medium)] leading-[22px] text-[var(--vds-text-primary)]'
 const SETTINGS_BACK_CLASS_NAME =
-  'no-drag mb-[14px] !flex !h-8 !w-full !justify-start !gap-[10px] !rounded-[7px] !border-0 !bg-transparent !px-[10px] !py-[var(--vds-space-0)] !text-left !text-[11.5px] !font-normal !text-[var(--text-3)] hover:!bg-transparent [&_svg]:rotate-180'
-const SETTINGS_NAV_LIST_CLASS_NAME = 'grid gap-[3px] px-2'
+  'no-drag mb-[14px] !flex !h-8 !w-full !justify-start !gap-[10px] !rounded-[7px] !border-0 !bg-transparent !px-[10px] !py-[var(--vds-space-0)] !text-left !text-[11.5px] !font-[var(--vds-fw-regular)] !text-[var(--text-3)] hover:!bg-transparent [&_svg]:rotate-180'
+const SETTINGS_NAV_LIST_CLASS_NAME = 'grid gap-[3px] px-[var(--vds-space-2)]'
 const SETTINGS_NAV_BUTTON_CLASS_NAME =
-  '!flex !min-h-[38px] !w-full !justify-start !gap-[10px] !rounded-lg !border-0 !bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-0)] !text-left !text-xs !font-normal !text-[var(--text-3)] hover:![background:color-mix(in_srgb,var(--active-bg)_55%,transparent)] data-[active=true]:![background:var(--active-bg)] data-[active=true]:!font-[650] data-[active=true]:!text-[var(--c-experience)]'
+  '!flex !min-h-[38px] !w-full !justify-start !gap-[10px] !rounded-lg !border-0 !bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-0)] !text-left !text-[length:var(--vds-font-body-lv1)] !font-[var(--vds-fw-regular)] !text-[var(--text-3)] hover:![background:color-mix(in_srgb,var(--active-bg)_55%,transparent)] data-[active=true]:![background:var(--active-bg)] data-[active=true]:!font-[650] data-[active=true]:!text-[var(--c-experience)]'
 const SETTINGS_DIALOG_NAV_BUTTON_CLASS_NAME =
-  '!min-h-9 !gap-[8px] !rounded-[8px] !px-[12px] !text-[14px] !font-[var(--vds-fw-normal)] !leading-5 !text-[var(--vds-text-secondary)] hover:![background:var(--vds-other-overlay-1)] hover:!text-[var(--vds-text-primary)] data-[active=true]:![background:var(--vds-other-overlay-1)] data-[active=true]:!font-[var(--vds-fw-medium)] data-[active=true]:!text-[var(--vds-text-primary)]'
+  '!min-h-9 !gap-[8px] !rounded-[8px] !px-[12px] !text-[14px] !font-[var(--vds-fw-regular)] !leading-5 !text-[var(--vds-text-secondary)] hover:![background:var(--vds-other-overlay-1)] hover:!text-[var(--vds-text-primary)] data-[active=true]:![background:var(--vds-other-overlay-1)] data-[active=true]:!font-[var(--vds-fw-medium)] data-[active=true]:!text-[var(--vds-text-primary)]'
 const SETTINGS_NAV_BUTTON_ACTIVE_CLASS_NAME = ''
 const SETTINGS_MAIN_CLASS_NAME =
   'no-drag min-w-0 flex-1 overflow-auto bg-[var(--paper)] ![padding:0_32px_56px] max-[760px]:![padding-right:18px] max-[760px]:![padding-left:18px]'
@@ -1458,7 +1625,8 @@ const NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME =
 const SECTION_HEADING_CLASS_NAME = `${SETTINGS_H2_CLASS_NAME} !mt-[30px]`
 const INLINE_FORM_CLASS_NAME =
   'mb-[var(--vds-space-2)] rounded-[9px] bg-[color-mix(in_srgb,var(--active-bg)_42%,transparent)] p-[14px]'
-const INLINE_FORM_HEAD_CLASS_NAME = 'mb-[10px] flex items-center justify-between text-xs'
+const INLINE_FORM_HEAD_CLASS_NAME =
+  'mb-[10px] flex items-center justify-between text-[length:var(--vds-font-body-lv1)]'
 const API_KEY_SECRET_CLASS_NAME =
   'select-all rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-3)] py-[10px] font-[var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)] text-[11.5px] leading-[1.5] text-[var(--text)] [overflow-wrap:anywhere]'
 const FORM_ERROR_CLASS_NAME = 'mt-[var(--vds-space-2)] text-[10.5px] text-[var(--c-tension)]'
@@ -1478,7 +1646,7 @@ const RESET_HEADER_CLASS_NAME =
 const RESET_TITLE_CLASS_NAME =
   'm-[var(--vds-space-0)] text-xl font-medium tracking-[0] text-[var(--text)]'
 const RESET_DESCRIPTION_CLASS_NAME =
-  'mb-[var(--vds-space-0)] ml-[var(--vds-space-0)] mr-[34px] mt-[var(--vds-space-1)] text-xs leading-[1.45] text-[var(--text-3)]'
+  'mb-[var(--vds-space-0)] ml-[var(--vds-space-0)] mr-[34px] mt-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[1.45] text-[var(--text-3)]'
 const RESET_BODY_CLASS_NAME =
   'grid gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[var(--vds-space-2)] pt-[14px]'
 const RESET_LABEL_CLASS_NAME = 'grid gap-[7px] text-[11px] font-[650] text-[var(--text)]'
@@ -1486,7 +1654,7 @@ const RESET_INPUT_CLASS_NAME =
   'h-11 w-full min-w-0 rounded-[9px] border border-[var(--border)] bg-[var(--bg)] px-[var(--vds-space-3)] text-[13px] text-[var(--text)] outline-0 focus:border-[var(--c-experience)] disabled:opacity-100 disabled:text-[var(--text)] disabled:[-webkit-text-fill-color:var(--text)]'
 const RESET_CODE_ROW_CLASS_NAME = 'grid grid-cols-[minmax(0,1fr)_104px] gap-[var(--vds-space-2)]'
 const RESET_BUTTON_CLASS_NAME =
-  '!h-11 !rounded-[9px] !border !border-[var(--border)] !bg-[var(--bg)] !px-[var(--vds-space-0)] !text-xs !text-[var(--text-2)]'
+  '!h-11 !rounded-[9px] !border !border-[var(--border)] !bg-[var(--bg)] !px-[var(--vds-space-0)] !text-[length:var(--vds-font-body-lv1)] !text-[var(--text-2)]'
 const RESET_ACTIONS_CLASS_NAME =
   'flex justify-end gap-[var(--vds-space-2)] px-[var(--vds-space-5)] pb-[var(--vds-space-5)] pt-[var(--vds-space-2)]'
 const NOTIFICATION_CARD_CLASS_NAME = SECURITY_CARD_CLASS_NAME
@@ -1502,7 +1670,8 @@ const PERMISSION_ROW_CLASS_NAME =
 const PERMISSION_ICON_CLASS_NAME =
   'grid size-[30px] flex-none place-items-center rounded-lg bg-[var(--active-bg)] text-[var(--c-experience)]'
 const PERMISSION_COPY_CLASS_NAME = 'grid min-w-0 flex-1 gap-[2px]'
-const STRONG_TEXT_CLASS_NAME = 'text-xs font-[650] text-[var(--text)]'
+const STRONG_TEXT_CLASS_NAME =
+  'text-[length:var(--vds-font-body-lv1)] font-[650] text-[var(--text)]'
 const SMALL_TEXT_CLASS_NAME = 'text-[10.5px] leading-[1.45] text-[var(--text-3)]'
 const PERMISSION_STATUS_BASE_CLASS_NAME =
   'flex-none rounded-full bg-[var(--bg-3)] px-[var(--vds-space-2)] py-[3px] text-[10px] text-[var(--text-3)] max-[760px]:hidden'
@@ -2080,6 +2249,36 @@ function AccountPage({
     )
   }
 
+  if (loadState !== 'ready' || !profile) {
+    const loading = loadState === 'loading'
+    return (
+      <div className={SETTINGS_CONTENT_CLASS_NAME} data-testid="account-settings-account">
+        <SettingsPageHeader
+          title={t('accountPanel.account.title')}
+          description={accountText(loading ? 'profile.loading' : 'profile.unconfirmed')}
+        />
+        {loading ? (
+          <p role="status">{accountText('profile.loading')}</p>
+        ) : (
+          <div role="alert" className={ACCOUNT_PAGE_ERROR_CLASS_NAME}>
+            <span>
+              {error ? accountFailureText(error, accountText) : accountText('profile.unconfirmed')}
+            </span>
+            <Button
+              size="sm"
+              type="button"
+              variant="outline"
+              data-testid="account-profile-retry"
+              onClick={loadProfile}
+            >
+              {t('accountPanel.common.retry')}
+            </Button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className={SETTINGS_CONTENT_CLASS_NAME} data-testid="account-settings-account">
       <SettingsPageHeader
@@ -2178,7 +2377,7 @@ function AccountPage({
               size="sm"
               type="button"
               variant="outline"
-              disabled={loadState === 'loading'}
+              disabled={busy}
               data-testid="account-reset-password-open"
               onClick={openResetPassword}
             >
@@ -2235,17 +2434,6 @@ function AccountPage({
         {error && (
           <div role="alert" className={ACCOUNT_PAGE_ERROR_CLASS_NAME}>
             <span>{accountFailureText(error, accountText)}</span>
-            {loadState === 'error' && (
-              <Button
-                size="sm"
-                type="button"
-                variant="outline"
-                data-testid="account-profile-retry"
-                onClick={() => loadProfile()}
-              >
-                {t('accountPanel.common.retry')}
-              </Button>
-            )}
           </div>
         )}
       </div>
@@ -2583,7 +2771,7 @@ const MODEL_SELECTION_ROW_CLASS_NAME = (checked: boolean): string =>
       : 'border-transparent hover:bg-[var(--bg-3)]',
   ].join(' ')
 const MODEL_SELECTION_NAME_CLASS_NAME =
-  'min-w-0 flex-1 break-all font-mono text-[14px] text-[var(--text)]'
+  'min-w-0 flex-1 break-all font-[var(--vds-font-code)] text-[length:var(--vds-font-body-lv2)] text-[var(--text)]'
 // 不给它 overflow: 右栏已经是滚动容器, 再套一层内滚会变成滚动套滚动 —— 指针停在
 // 列表上时外层滚不动, 看起来像卡住。
 const MODEL_SELECTION_LIST_CLASS_NAME = 'flex flex-col gap-[2px]'
@@ -2642,7 +2830,7 @@ interface ModelEndpointForm {
   previewName: string
   wireApi: PersonalApiWireApi
   baseUrl: string
-  apiKey: string
+  apiKey: ModelApiKeyDraft
   /** The user's checked models. Draft state until saved. */
   selectedModels: PersonalApiModel[]
   /** Model ids the endpoint advertised, plus anything already checked. */
@@ -2658,7 +2846,7 @@ const EMPTY_MODEL_ENDPOINT_FORM: ModelEndpointForm = {
   previewName: '',
   wireApi: 'responses',
   baseUrl: '',
-  apiKey: '',
+  apiKey: initialModelApiKeyDraft(false),
   selectedModels: [],
   candidates: [],
   smallModelName: '',
@@ -2674,8 +2862,7 @@ function formOf(profile: PersonalApiProfile): ModelEndpointForm {
     previewName: profile.preview_name,
     wireApi: profile.wire_api || 'responses',
     baseUrl: profile.base_url,
-    // 凭据只写不读: 后端从不回显它, 留空提交即保持原值。
-    apiKey: '',
+    apiKey: initialModelApiKeyDraft(profile.has_api_key),
     selectedModels: profile.selected_models,
     // 已勾选的模型先进候选表, 否则进编辑态要先刷新一次才看得见自己勾了什么。
     candidates: profile.selected_models.map((model) => model.id),
@@ -2693,7 +2880,7 @@ function inputOf(form: ModelEndpointForm): PersonalApiInput {
     provider: 'openai',
     wire_api: form.wireApi,
     base_url: form.baseUrl.trim(),
-    api_key: form.apiKey,
+    api_key: form.apiKey.value,
     selected_models: form.selectedModels,
     small_model_name: form.smallModelName.trim(),
     // headers 刻意不发: 本页没有自定义头编辑器, 发空对象会把已存的头删掉。
@@ -2740,6 +2927,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
   const [selectedId, setSelectedId] = React.useState('')
   const [query, setQuery] = React.useState('')
   const [form, setForm] = React.useState<ModelEndpointForm | null>(null)
+  const apiKeyInputRef = React.useRef<HTMLInputElement>(null)
   const [manualModel, setManualModel] = React.useState('')
   const [modelQuery, setModelQuery] = React.useState('')
   const [manualOpen, setManualOpen] = React.useState(false)
@@ -2864,7 +3052,9 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
       activePreset &&
       (form.baseUrl !== activePreset.base_url || form.wireApi !== activePreset.wire_api)
     )
-  const connectingPreset = Boolean(form && !customConnection && (!form.id || form.apiKey.trim()))
+  const connectingPreset = Boolean(
+    form && !customConnection && (!form.id || form.apiKey.value.trim())
+  )
 
   // 启停/删除会同时改变模型目录与当前选中项, 所以要把整份投影写回 store,
   // 否则模型选择器还停在旧的选中项上。
@@ -2882,11 +3072,12 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
 
   const save = async (): Promise<void> => {
     if (!form) return
+    if (modelApiKeyNeedsReplacement(form.apiKey)) return
     setError('')
     setProbe('')
     setProbeFailure(null)
     // 缺 Key 的新预置连接: 与测试路径一致, 直接给明确弹窗, 不发必然失败的请求。
-    if (connectingPreset && !form.id && !form.apiKey.trim()) {
+    if (connectingPreset && !form.id && !form.apiKey.value.trim()) {
       showConnectionFailure({ kind: 'missingKey' }, 'connection')
       return
     }
@@ -2943,10 +3134,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
 
   // 测试/保存/刷新共用的连接失败反馈: 按钮旁留短文案, 详细分类原因/建议进居中弹窗,
   // 底部不再堆原始英文/JSON。title 区分动作（测试连接 vs 保存/刷新连接）。
-  const showConnectionFailure = (
-    detail: ProbeFailureDetail,
-    title: ProbeFailureTitle
-  ): void => {
+  const showConnectionFailure = (detail: ProbeFailureDetail, title: ProbeFailureTitle): void => {
     setProbeOk(false)
     setProbe(t('accountPanel.modelsPage.probeFailed'))
     setProbeFailure({ vendor: form ? vendorLabelOf(form) : '', title, ...detail })
@@ -2961,11 +3149,12 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
 
   const test = async (): Promise<void> => {
     if (!form) return
+    if (modelApiKeyNeedsReplacement(form.apiKey)) return
     setError('')
     setProbe('')
     setProbeFailure(null)
     // 与保存路径同一条件: 缺 Key 的新预置连接不发必然失败的请求, 直接给明确弹窗。
-    if (connectingPreset && !form.id && !form.apiKey.trim()) {
+    if (connectingPreset && !form.id && !form.apiKey.value.trim()) {
       showConnectionFailure({ kind: 'missingKey' }, 'test')
       return
     }
@@ -2995,6 +3184,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
 
   const fetchModels = async (): Promise<void> => {
     if (!form) return
+    if (modelApiKeyNeedsReplacement(form.apiKey)) return
     setBusy(true)
     setError('')
     setProbe('')
@@ -3288,9 +3478,11 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                             ? ` · ${t('accountPanel.modelsPage.selected', { count: row.profile.selected_models.length })}`
                             : ''}
                           {row.kind === 'profile' && row.profile.authentication === 'oauth'
-                            ? row.profile.oauth?.state === 'connected'
-                              ? accountActions('models.chatgptConnected')
-                              : accountActions('models.chatgptLoginRequired')
+                            ? row.profile.oauth?.state === 'unavailable'
+                              ? accountActions('models.chatgptStorageUnavailable')
+                              : row.profile.oauth?.state === 'connected'
+                                ? accountActions('models.chatgptConnected')
+                                : accountActions('models.chatgptLoginRequired')
                             : row.kind === 'profile' && !row.profile.has_api_key
                               ? accountActions('models.noKey')
                               : ''}
@@ -3319,7 +3511,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
             className={MODEL_PANE_ADD_CLASS_NAME}
             disabled={busy || loadState !== 'ready'}
             data-testid="model-connection-add"
-            onClick={() => startNewConnection(presets[0]?.id || CUSTOM_PROVIDER_ID)}
+            onClick={() => startNewConnection(CUSTOM_PROVIDER_ID)}
           >
             <Icon name="plus" size={13} sw={1.8} />
             {t('accountPanel.modelsPage.customAdd')}
@@ -3458,19 +3650,59 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                       <ModelEndpointField
                         label={t('accountPanel.modelsPage.api')}
                         hint={
-                          form.id
-                            ? t('accountPanel.modelsPage.apiKeep')
-                            : providerPresetText(activePreset, accountActions).credentialHint ||
-                              t('accountPanel.modelsPage.apiSave')
+                          modelApiKeyNeedsReplacement(form.apiKey)
+                            ? accountActions('models.apiKeyReplacementRequired')
+                            : form.apiKey.saved
+                              ? t('accountPanel.modelsPage.apiKeep')
+                              : providerPresetText(activePreset, accountActions).credentialHint ||
+                                t('accountPanel.modelsPage.apiSave')
                         }
                       >
-                        <PasswordInput
-                          value={form.apiKey}
-                          placeholder={form.id ? t('accountPanel.modelsPage.apiNo') : 'sk-…'}
-                          data-testid="model-endpoint-api-key"
-                          disabled={busy}
-                          onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
-                        />
+                        <div className="relative min-w-0">
+                          <Input
+                            ref={apiKeyInputRef}
+                            type="password"
+                            autoComplete="new-password"
+                            aria-label={t('accountPanel.modelsPage.api')}
+                            value={form.apiKey.value}
+                            placeholder={
+                              modelApiKeyShowsSavedMask(form.apiKey)
+                                ? SAVED_API_KEY_MASK
+                                : form.id
+                                  ? accountActions('models.apiKeyReplacementPlaceholder')
+                                  : 'sk-…'
+                            }
+                            className={
+                              modelApiKeyShowsSavedMask(form.apiKey) || form.apiKey.value
+                                ? 'pr-[calc(var(--vds-space-8)+var(--vds-space-2))]'
+                                : undefined
+                            }
+                            data-testid="model-endpoint-api-key"
+                            disabled={busy}
+                            onChange={(event) =>
+                              setForm({
+                                ...form,
+                                apiKey: editModelApiKeyDraft(form.apiKey, event.target.value),
+                              })
+                            }
+                          />
+                          {(modelApiKeyShowsSavedMask(form.apiKey) || form.apiKey.value) && (
+                            <IconButton
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="absolute right-[var(--vds-space-2)] top-1/2 -translate-y-1/2"
+                              label={accountActions('models.apiKeyClear')}
+                              icon={<X size={16} />}
+                              disabled={busy}
+                              data-testid="model-endpoint-api-key-clear"
+                              onClick={() => {
+                                setForm({ ...form, apiKey: editModelApiKeyDraft(form.apiKey, '') })
+                                apiKeyInputRef.current?.focus()
+                              }}
+                            />
+                          )}
+                        </div>
                       </ModelEndpointField>
 
                       <div className={MODEL_STATUS_ROW_CLASS_NAME}>
@@ -3487,7 +3719,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                           type="button"
                           size="sm"
                           variant="secondary"
-                          disabled={busy}
+                          disabled={busy || modelApiKeyNeedsReplacement(form.apiKey)}
                           data-testid="model-endpoint-probe"
                           onClick={() => void test()}
                         >
@@ -3545,7 +3777,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                               type="button"
                               size="sm"
                               variant="secondary"
-                              disabled={busy}
+                              disabled={busy || modelApiKeyNeedsReplacement(form.apiKey)}
                               data-testid="model-endpoint-fetch-models"
                               onClick={() => void fetchModels()}
                             >
@@ -3783,7 +4015,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                     <Button
                       type="button"
                       size="sm"
-                      disabled={busy}
+                      disabled={busy || modelApiKeyNeedsReplacement(form.apiKey)}
                       data-testid="model-endpoint-save"
                       onClick={() => void save()}
                     >
@@ -3841,10 +4073,7 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                 {probeFailure ? t(PROBE_TITLE_KEYS[probeFailure.title]) : ''}
               </DialogTitle>
               <DialogDescription className="flex items-center gap-[var(--vds-space-2)]">
-                <span
-                  className={MODEL_STATUS_DOT_CLASS_NAME('fail')}
-                  aria-hidden={true}
-                />
+                <span className={MODEL_STATUS_DOT_CLASS_NAME('fail')} aria-hidden={true} />
                 {probeFailure?.vendor} · {t('accountPanel.modelsPage.probeFailed')}
               </DialogDescription>
             </DialogHeader>
@@ -3852,12 +4081,16 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
               {probeFailure &&
                 t(PROBE_REASON_KEYS[probeFailure.kind], {
                   status: probeFailure.params?.status ?? 0,
+                  model: probeFailure.params?.model ?? '',
+                  upstream: probeFailure.params?.upstream ?? '',
                 })}
             </DialogDescription>
             <DialogDescription>
               {probeFailure &&
                 t(PROBE_SUGGESTION_KEYS[probeFailure.kind], {
                   status: probeFailure.params?.status ?? 0,
+                  model: probeFailure.params?.model ?? '',
+                  upstream: probeFailure.params?.upstream ?? '',
                 })}
             </DialogDescription>
             <DialogFooter>
@@ -3887,7 +4120,7 @@ function contextTickLabel(tokens: number): string {
 }
 
 function ModelReasoningSetting({ model }: { model: ModelInfo }): React.JSX.Element {
-  const { state, set, act } = useApp()
+  const { state, act, rememberEffort, runModelSelection } = useApp()
   const { t } = useTranslation('account')
   const { t: conversation } = useTranslation('conversation')
   const { t: subscription } = useTranslation('subscription')
@@ -3951,7 +4184,7 @@ function ModelReasoningSetting({ model }: { model: ModelInfo }): React.JSX.Eleme
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-[var(--vds-space-2)]">
       {editing ? (
         <>
           <Input
@@ -3965,7 +4198,7 @@ function ModelReasoningSetting({ model }: { model: ModelInfo }): React.JSX.Eleme
             data-testid={`model-reasoning-levels-${model.key}`}
             onChange={(event) => setDraft(event.target.value)}
           />
-          <div className="flex gap-2">
+          <div className="flex gap-[var(--vds-space-2)]">
             <Button size="sm" disabled={busy} onClick={() => void save()}>
               {t('models.saveEfforts')}
             </Button>
@@ -3983,17 +4216,17 @@ function ModelReasoningSetting({ model }: { model: ModelInfo }): React.JSX.Eleme
           </div>
         </>
       ) : (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-[var(--vds-space-2)]">
           {efforts.length ? (
             <Select
               value={selected}
               onValueChange={(value) =>
-                set((current) => ({
-                  reasoningPreferences: {
-                    ...current.reasoningPreferences,
-                    [model.key]: value,
-                  },
-                }))
+                void runModelSelection(async (selectionCurrent) => {
+                  if (selectionCurrent()) await rememberEffort(model.key, value)
+                }).catch((error: unknown) => {
+                  if (!(error instanceof Error && error.message === PREPARATION_SUPERSEDED_ERROR))
+                    setError({ messageKey: 'models.loadFailed' })
+                })
               }
             >
               <SelectTrigger
@@ -4014,7 +4247,7 @@ function ModelReasoningSetting({ model }: { model: ModelInfo }): React.JSX.Eleme
               </SelectContent>
             </Select>
           ) : (
-            <span className="text-sm text-[var(--vds-text-secondary)]">
+            <span className="text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-secondary)]">
               {model.reasoning?.supported
                 ? conversation('reasoning.fixed')
                 : t('models.effortsUnconfirmed')}
@@ -4110,10 +4343,10 @@ function ModelSettingsPage({ embedded = false }: { embedded?: boolean } = {}): R
             return (
               <div key={model.key} className={MODEL_SETTINGS_TABLE_ROW_CLASS_NAME}>
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">
+                  <div className="truncate text-[length:var(--vds-font-body-lv2)] font-medium">
                     {model.model_label || model.label}
                   </div>
-                  <div className="truncate text-xs text-[var(--vds-text-tertiary)]">
+                  <div className="truncate text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
                     {builtin ? t('modelSettings.builtin') : model.provider_label || model.provider}
                   </div>
                 </div>
@@ -4205,18 +4438,14 @@ function NotificationsPage(): React.JSX.Element {
   const { t: accountText } = useTranslation('account')
   const { state, set } = useApp()
   const { t } = useTranslation('components')
+  const [clearing, setClearing] = React.useState(false)
+  const [failureCode, setFailureCode] = React.useState<'read' | 'settings' | null>(null)
   const markAllRead = (): void => {
-    set((current) => ({
-      sessionActivitySeen: {
-        ...current.sessionActivitySeen,
-        ...Object.fromEntries(
-          current.sessions.map((session) => [
-            session.id,
-            session.activityAt ?? session.createdAt ?? Date.now() / 1_000,
-          ])
-        ),
-      },
-    }))
+    setClearing(true)
+    setFailureCode(null)
+    void markAllAttentionRead()
+      .catch(() => setFailureCode('read'))
+      .finally(() => setClearing(false))
   }
   return (
     <SettingsPage
@@ -4231,12 +4460,21 @@ function NotificationsPage(): React.JSX.Element {
           titleClassName={NOTIFICATION_ROW_TITLE_CLASS_NAME}
           descriptionClassName={NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME}
         >
-          <Toggle
-            checked={state.desktopNotifications}
-            testid="notification-desktop"
-            label={t('accountPanel.notificationsPage.desktop')}
-            onChange={(desktopNotifications) => set({ desktopNotifications })}
-          />
+          <Button
+            variant="outline"
+            data-testid="notification-desktop"
+            onClick={() => {
+              setFailureCode(null)
+              void window.scholarseed
+                .openSystemPermission('notifications')
+                .then((opened) => {
+                  if (!opened) setFailureCode('settings')
+                })
+                .catch(() => setFailureCode('settings'))
+            }}
+          >
+            {t('accountPanel.notificationsPage.systemSettings')}
+          </Button>
         </SettingsRow>
         <SettingsRow
           title={t('accountPanel.notificationsPage.unread')}
@@ -4249,6 +4487,7 @@ function NotificationsPage(): React.JSX.Element {
             variant="outline"
             data-testid="notification-mark-read"
             onClick={markAllRead}
+            loading={clearing}
           >
             {accountText('actions.markAllRead')}
           </Button>
@@ -4267,6 +4506,13 @@ function NotificationsPage(): React.JSX.Element {
           />
         </SettingsRow>
       </div>
+      {failureCode ? (
+        <p role="alert">
+          {failureCode === 'read'
+            ? t('accountPanel.notificationsPage.readFailed')
+            : t('accountPanel.notificationsPage.settingsFailed')}
+        </p>
+      ) : null}
     </SettingsPage>
   )
 }
@@ -4276,22 +4522,45 @@ function ArchivedProjectsPage(): React.JSX.Element {
   const { t: projectText } = useTranslation('project')
   const { state, set } = useApp()
   const { toast } = useToast()
-  const [projects, setProjects] = React.useState<ProjectRef[]>([])
+  const [projects, setProjects] = React.useState<ProjectRef[] | null>(null)
   const [selectedIds, setSelectedIds] = React.useState<ReadonlySet<string>>(() => new Set<string>())
   // 删除确认对单个与批量共用一条通道: 单个存一项, 批量存选中项。
   const [deleteTargets, setDeleteTargets] = React.useState<ProjectRef[]>([])
   const [busy, setBusy] = React.useState(false)
+  const [loading, setLoading] = React.useState(true)
+  const [loadFailed, setLoadFailed] = React.useState(false)
+  const reader = React.useRef<ArchiveReader | null>(null)
+  const mounted = React.useRef(false)
+  const mutation = React.useRef(false)
 
   const reload = React.useCallback(async (): Promise<void> => {
-    const listing = await listProjectListings(true)
-    const archived = (listing?.projects ?? []).filter((entry) => entry.archived_at != null)
-    setProjects(archived)
-    // 项目恢复/移除后会离开列表, 顺手把不再存在的选中项剔除, 免得计数虚高。
-    setSelectedIds((prev) => {
-      const alive = new Set(archived.map((entry) => entry.id))
-      const next = new Set([...prev].filter((id) => alive.has(id)))
-      return next.size === prev.size ? prev : next
-    })
+    if (!mounted.current) return
+    reader.current?.dispose()
+    setLoading(true)
+    setLoadFailed(false)
+    const current = createArchiveReader(
+      () => listProjectListings(true),
+      (listing) => {
+        setLoading(false)
+        if (!listing) {
+          setLoadFailed(true)
+          return
+        }
+        const archived = listing.projects.filter((entry) => entry.archived_at != null)
+        setProjects(archived)
+        setSelectedIds((prev) => {
+          const alive = new Set(archived.map((entry) => entry.id))
+          const next = new Set([...prev].filter((id) => alive.has(id)))
+          return next.size === prev.size ? prev : next
+        })
+      },
+      () => {
+        setLoading(false)
+        setLoadFailed(true)
+      }
+    )
+    reader.current = current
+    await current.request()
   }, [])
 
   // 归档态变化会改变各处默认列表的内容, 必须回写全局项目列表:
@@ -4307,12 +4576,31 @@ function ArchivedProjectsPage(): React.JSX.Element {
   }, [set, state.defaultWorkspacePath])
 
   React.useEffect(() => {
+    mounted.current = true
     void reload()
+    return () => {
+      mounted.current = false
+      reader.current?.dispose()
+      reader.current = null
+    }
   }, [reload])
 
-  const selectedProjects = projects.filter((project) => selectedIds.has(project.id))
-  const allSelected = projects.length > 0 && selectedProjects.length === projects.length
+  const selectedProjects = (projects ?? []).filter((project) => selectedIds.has(project.id))
+  const allSelected = Boolean(projects?.length) && selectedProjects.length === projects?.length
   const someSelected = selectedProjects.length > 0 && !allSelected
+  const unavailable = busy || loading || loadFailed
+
+  const runMutation = async (operation: () => Promise<void>): Promise<void> => {
+    if (mutation.current || unavailable || !mounted.current) return
+    mutation.current = true
+    setBusy(true)
+    try {
+      await operation()
+    } finally {
+      mutation.current = false
+      if (mounted.current) setBusy(false)
+    }
+  }
 
   const toggleProject = (id: string, checked: boolean): void => {
     setSelectedIds((prev) => {
@@ -4324,7 +4612,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
   }
 
   const toggleAll = (checked: boolean): void => {
-    setSelectedIds(checked ? new Set(projects.map((project) => project.id)) : new Set())
+    setSelectedIds(checked ? new Set((projects ?? []).map((project) => project.id)) : new Set())
   }
 
   // 逐项串行执行, 汇总成功/失败计数; 归档项目数一般不大, 串行避免并发压本地后端。
@@ -4332,7 +4620,6 @@ function ArchivedProjectsPage(): React.JSX.Element {
     targets: ProjectRef[],
     op: (project: ProjectRef) => Promise<{ ok: boolean; error?: string }>
   ): Promise<{ ok: number; fail: number }> => {
-    setBusy(true)
     let ok = 0
     let fail = 0
     for (const target of targets) {
@@ -4340,62 +4627,64 @@ function ArchivedProjectsPage(): React.JSX.Element {
       if (result.ok) ok += 1
       else fail += 1
     }
-    setBusy(false)
     return { ok, fail }
   }
 
-  const unarchive = async (project: ProjectRef): Promise<void> => {
-    const result = await setProjectArchived(project.id, false)
-    if (!result.ok) {
-      toast({
-        title: projectText('notices.unknown', {
-          code: result.error ?? 'unknown_project',
-        }),
-        tone: 'error',
-      })
-      return
-    }
-    toast({ title: projectText('notices.unarchived'), tone: 'success' })
-    await Promise.all([reload(), refreshActiveProjects()])
-  }
-
-  const batchUnarchive = async (): Promise<void> => {
-    if (selectedProjects.length === 0) return
-    const { ok, fail } = await applyToProjects(selectedProjects, (project) =>
-      setProjectArchived(project.id, false)
-    )
-    toast({
-      title: t('accountPanel.archives.batchSummary', { ok, fail }),
-      tone: fail === 0 ? 'success' : 'error',
-    })
-    setSelectedIds(new Set())
-    await Promise.all([reload(), refreshActiveProjects()])
-  }
-
-  const confirmDelete = async (): Promise<void> => {
-    if (deleteTargets.length === 0) return
-    const targets = deleteTargets
-    const single = targets.length === 1
-    const { ok, fail } = await applyToProjects(targets, (project) => forgetProject(project.id))
-    setDeleteTargets([])
-    if (single) {
-      if (fail > 0) {
+  const unarchive = (project: ProjectRef): Promise<void> =>
+    runMutation(async () => {
+      const result = await setProjectArchived(project.id, false)
+      if (!result.ok) {
         toast({
-          title: projectText('notices.unknown', { code: 'unknown_project' }),
+          title: projectText('notices.unknown', {
+            code: result.error ?? 'unknown_project',
+          }),
           tone: 'error',
         })
         return
       }
-      toast({ title: t('accountPanel.archives.removed'), tone: 'success' })
-    } else {
+      toast({ title: projectText('notices.unarchived'), tone: 'success' })
+      await Promise.all([reload(), refreshActiveProjects()])
+    })
+
+  const batchUnarchive = (): Promise<void> =>
+    runMutation(async () => {
+      if (selectedProjects.length === 0) return
+      const { ok, fail } = await applyToProjects(selectedProjects, (project) =>
+        setProjectArchived(project.id, false)
+      )
       toast({
         title: t('accountPanel.archives.batchSummary', { ok, fail }),
         tone: fail === 0 ? 'success' : 'error',
       })
-    }
-    setSelectedIds(new Set())
-    await Promise.all([reload(), refreshActiveProjects()])
-  }
+      setSelectedIds(new Set())
+      await Promise.all([reload(), refreshActiveProjects()])
+    })
+
+  const confirmDelete = (): Promise<void> =>
+    runMutation(async () => {
+      if (deleteTargets.length === 0) return
+      const targets = deleteTargets
+      const single = targets.length === 1
+      const { ok, fail } = await applyToProjects(targets, (project) => forgetProject(project.id))
+      setDeleteTargets([])
+      if (single) {
+        if (fail > 0) {
+          toast({
+            title: projectText('notices.unknown', { code: 'unknown_project' }),
+            tone: 'error',
+          })
+          return
+        }
+        toast({ title: t('accountPanel.archives.removed'), tone: 'success' })
+      } else {
+        toast({
+          title: t('accountPanel.archives.batchSummary', { ok, fail }),
+          tone: fail === 0 ? 'success' : 'error',
+        })
+      }
+      setSelectedIds(new Set())
+      await Promise.all([reload(), refreshActiveProjects()])
+    })
 
   return (
     <SettingsPage
@@ -4403,28 +4692,40 @@ function ArchivedProjectsPage(): React.JSX.Element {
       title={t('accountPanel.archives.title')}
       description={t('accountPanel.archives.description')}
     >
-      {projects.length === 0 ? (
+      {loading && <Spinner aria-label={t('accountPanel.common.loading')} />}
+      {loadFailed && (
+        <Alert
+          tone="error"
+          description={projectText('notices.archivesReadFailed')}
+          action={
+            <Button variant="outline" disabled={busy || loading} onClick={() => void reload()}>
+              {t('accountPanel.common.retry')}
+            </Button>
+          }
+        />
+      )}
+      {projects?.length === 0 && !loading && !loadFailed ? (
         <div
           className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)]"
           data-testid="account-settings-archives-empty"
         >
           {t('accountPanel.archives.empty')}
         </div>
-      ) : (
+      ) : projects?.length ? (
         <div className="flex min-w-0 max-w-full flex-col gap-[var(--vds-space-2)]">
           <div
-            className="flex min-w-0 max-w-full items-center gap-[12px] px-[4px]"
+            className="flex min-w-0 max-w-full items-center gap-[var(--vds-space-3)] px-[var(--vds-space-1)]"
             data-testid="account-archived-batch-bar"
           >
             <Checkbox
               checked={allSelected ? true : someSelected ? 'mixed' : false}
               label={t('accountPanel.archives.selectAll')}
-              disabled={busy}
+              disabled={unavailable}
               data-testid="account-archived-select-all"
               onCheckedChange={(checked) => toggleAll(checked)}
             />
             <span
-              className="min-w-0 flex-1 text-[12px] leading-[18px] text-[var(--vds-text-tertiary)]"
+              className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
               data-testid="account-archived-selected-count"
             >
               {t('accountPanel.archives.selectedCount', {
@@ -4434,7 +4735,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
             <Button
               type="button"
               variant="outline"
-              disabled={busy || selectedProjects.length === 0}
+              disabled={unavailable || selectedProjects.length === 0}
               data-testid="account-archived-batch-unarchive"
               onClick={() => void batchUnarchive()}
             >
@@ -4443,7 +4744,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
             <Button
               type="button"
               variant="destructive"
-              disabled={busy || selectedProjects.length === 0}
+              disabled={unavailable || selectedProjects.length === 0}
               data-testid="account-archived-batch-delete"
               onClick={() => setDeleteTargets(selectedProjects)}
             >
@@ -4453,27 +4754,27 @@ function ArchivedProjectsPage(): React.JSX.Element {
           {projects.map((project) => (
             <div
               key={project.id}
-              className="flex min-w-0 max-w-full items-center gap-[12px] rounded-[var(--vds-settings-card-radius)] border border-[var(--vds-border-default)] px-[16px] py-[12px] bg-[var(--vds-bg-white-default)] shadow-none"
+              className="flex min-w-0 max-w-full items-center gap-[var(--vds-space-3)] rounded-[var(--vds-settings-card-radius)] border border-[var(--vds-border-default)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] bg-[var(--vds-bg-white-default)] shadow-none"
               data-testid={`account-archived-${project.id}`}
             >
               <Checkbox
                 checked={selectedIds.has(project.id)}
                 label={project.name}
-                disabled={busy}
+                disabled={unavailable}
                 data-testid={`account-archived-select-${project.id}`}
                 onCheckedChange={(checked) => toggleProject(project.id, checked)}
               />
               <span className="min-w-0 flex-1">
                 <EllipsisText
                   wrapperClassName="w-full"
-                  className="text-[14px] font-medium leading-[20px] text-[var(--vds-text-primary)]"
+                  className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]"
                   tooltipPortalled
                 >
                   {project.name}
                 </EllipsisText>
                 <EllipsisText
                   wrapperClassName="w-full"
-                  className="text-[12px] leading-[18px] text-[var(--vds-text-tertiary)]"
+                  className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
                   tooltipPortalled
                 >
                   {project.root}
@@ -4482,7 +4783,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
               <Button
                 type="button"
                 variant="outline"
-                disabled={busy}
+                disabled={unavailable}
                 data-testid={`account-archived-restore-${project.id}`}
                 onClick={() => void unarchive(project)}
               >
@@ -4491,7 +4792,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
               <Button
                 type="button"
                 variant="destructive"
-                disabled={busy}
+                disabled={unavailable}
                 data-testid={`account-archived-delete-${project.id}`}
                 onClick={() => setDeleteTargets([project])}
               >
@@ -4500,7 +4801,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
             </div>
           ))}
         </div>
-      )}
+      ) : null}
       <AlertDialog
         open={deleteTargets.length > 0}
         onOpenChange={(open) => {
@@ -4528,11 +4829,15 @@ function ArchivedProjectsPage(): React.JSX.Element {
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>{t('accountPanel.archives.cancel')}</AlertDialogCancel>
+              <AlertDialogCancel disabled={busy}>
+                {t('accountPanel.archives.cancel')}
+              </AlertDialogCancel>
               <AlertDialogAction
                 aria-disabled={busy}
+                disabled={busy}
                 data-testid="account-archived-delete-confirm"
-                onClick={() => {
+                onClick={(event) => {
+                  event.preventDefault()
                   if (!busy) void confirmDelete()
                 }}
               >
@@ -4556,9 +4861,7 @@ function PermissionsPage(): React.JSX.Element {
   const { t: permissionText } = useTranslation('account')
   const { t: accountText } = useTranslation('account')
   const { state } = useApp()
-  const { t } = useTranslation('components') as {
-    t: (key: string, options?: Record<string, unknown>) => string
-  }
+  const { t } = useTranslation('components')
   const [records, setRecords] = React.useState<Record<string, SystemPermissionRecord>>({})
   const [loading, setLoading] = React.useState(true)
   const [errorCode, setErrorCode] = React.useState('')
@@ -4615,8 +4918,8 @@ function PermissionsPage(): React.JSX.Element {
   return (
     <div className={SETTINGS_CONTENT_CLASS_NAME} data-testid="account-settings-permissions">
       <SettingsPageHeader
-        title={t('accountPanel.permissions.title')}
-        description={t('accountPanel.permissions.description')}
+        title={accountText('permissions.title')}
+        description={accountText('permissions.description')}
         action={
           <Button
             className={PANEL_BUTTON_CLASS_NAME}
@@ -4627,7 +4930,7 @@ function PermissionsPage(): React.JSX.Element {
             disabled={loading}
             onClick={refresh}
           >
-            {loading ? t('accountPanel.permissions.checking') : t('accountPanel.permissions.check')}
+            {loading ? accountText('permissions.checking') : accountText('permissions.check')}
           </Button>
         }
       />
@@ -4639,7 +4942,8 @@ function PermissionsPage(): React.JSX.Element {
       <div className={PERMISSION_CARD_CLASS_NAME}>
         {PERMISSIONS.map((permission) => {
           const record = records[permission.id]
-          const status = record?.status ?? (loading ? 'not-determined' : 'query-error')
+          const status: SystemPermissionStatus =
+            record?.status ?? (loading ? 'not-determined' : 'query-error')
           const actionable = record?.actionable === true
           return (
             <button
@@ -4667,7 +4971,7 @@ function PermissionsPage(): React.JSX.Element {
                 className={cx(PERMISSION_STATUS_BASE_CLASS_NAME, statusClass(status))}
                 data-status={status}
               >
-                {t(PERMISSION_STATUS_KEYS[status])}
+                {accountText(PERMISSION_STATUS_KEYS[status])}
               </span>
               {actionable && <Icon name="chevron-right" size={13} />}
             </button>
@@ -4711,23 +5015,28 @@ function PermissionsPage(): React.JSX.Element {
   )
 }
 
+export interface SettingsContentProps {
+  page: AccountSettingsPage
+  browserSettingsSection?: BrowserSettingsSection | null
+  isBrowserSettingsCurrent?: () => boolean
+  onPage: (page: AccountSettingsPage, browserSection?: BrowserSettingsSection) => void
+  onClose: () => void
+  onLogin: () => void
+  onLogout: () => Promise<AccountLogoutResult>
+}
+
 export function AccountPanel({
   embedded = false,
   page,
+  browserSettingsSection,
+  isBrowserSettingsCurrent,
   onPage,
   onClose,
   onLogin,
   onLogout,
-}: {
-  embedded?: boolean
-  page: AccountSettingsPage
-  onPage: (page: AccountSettingsPage) => void
-  onClose: () => void
-  /** 打开应用内登录层; 账号页在未登录时用它。 */
-  onLogin: () => void
-  onLogout: () => Promise<AccountLogoutResult>
-}): React.JSX.Element {
+}: SettingsContentProps & { embedded?: boolean }): React.JSX.Element {
   const { t } = useTranslation('components')
+  const { t: browserText } = useTranslation('browser')
   const { t: shortcutText } = useTranslation('shortcuts')
   const activePage = visiblePage(page)
   return (
@@ -4760,7 +5069,7 @@ export function AccountPanel({
           </Button>
         )}
         <nav className={SETTINGS_NAV_LIST_CLASS_NAME} aria-label={t('accountPanel.navLabel')}>
-          {NAV_ITEMS.map((item) => (
+          {VISIBLE_NAV_ITEMS.map((item) => (
             <Button
               type="button"
               variant="ghost"
@@ -4779,45 +5088,85 @@ export function AccountPanel({
                 lucideIcon={item.lucideIcon}
                 size={embedded ? 15 : 14}
               />
-              {item.labelKey ? accountPanelNavLabel(item.labelKey, t) : shortcutText('nav')}
+              {item.labelKey
+                ? accountPanelNavLabel(item.labelKey, t, browserText)
+                : shortcutText('nav')}
             </Button>
           ))}
         </nav>
       </aside>
-      <main
-        className={cx(
-          SETTINGS_MAIN_CLASS_NAME,
-          activePage === 'skills' ? '!overflow-hidden !pb-12' : 'min-h-0 !overflow-hidden !pb-0'
-        )}
-      >
-        {activePage === 'prompts' && <PromptsPage />}
-        {activePage === 'preferences' && <PreferencesPage />}
-        {activePage === 'account' && <AccountPage onLogin={onLogin} onLogout={onLogout} />}
-        {activePage === 'models' && <ModelConfigurationPage />}
-        {activePage === 'skills' && (
-          <Page
-            padding="none"
-            className={`${SETTINGS_CONTENT_CLASS_NAME} flex h-full min-h-0 flex-col py-[var(--vds-layout-page-padding)]`}
-            data-testid="account-settings-skills"
-          >
-            <PageHeader
-              title={t('accountPanel.skills.title')}
-              description={t('accountPanel.skills.description')}
-            />
-            <PageBody className="min-h-0 flex-1">
-              <Skills />
-            </PageBody>
-          </Page>
-        )}
-        {activePage === 'developer' && <DeveloperPage />}
-        {activePage === 'files' && <FileVersionPage />}
-        {activePage === 'storage' && <DataStoragePage />}
-        {/* {activePage === 'shortcuts' && <Shortcuts />} */}
-        {activePage === 'archives' && <ArchivedProjectsPage />}
-        {activePage === 'about' && <AboutPage />}
-        {activePage === 'notifications' && <NotificationsPage />}
-        {activePage === 'permissions' && <PermissionsPage />}
-      </main>
+      <SettingsContent
+        page={activePage}
+        browserSettingsSection={browserSettingsSection}
+        isBrowserSettingsCurrent={isBrowserSettingsCurrent}
+        onPage={onPage}
+        onClose={onClose}
+        onLogin={onLogin}
+        onLogout={onLogout}
+      />
     </div>
+  )
+}
+
+export function SettingsContent({
+  page,
+  browserSettingsSection,
+  isBrowserSettingsCurrent,
+  onPage,
+  onClose,
+  onLogin,
+  onLogout,
+}: SettingsContentProps): React.JSX.Element {
+  const { t } = useTranslation('components')
+  const { act } = useApp()
+  const activePage = page === 'model-settings' ? 'models' : page
+  return (
+    <main
+      className={cx(
+        SETTINGS_MAIN_CLASS_NAME,
+        activePage === 'skills'
+          ? '!overflow-hidden !pb-[calc(var(--vds-space-6)*2)]'
+          : 'min-h-0 !overflow-hidden !pb-0'
+      )}
+    >
+      {activePage === 'prompts' && <PromptsPage />}
+      {activePage === 'preferences' && <PreferencesPage />}
+      {activePage === 'account' && <AccountPage onLogin={onLogin} onLogout={onLogout} />}
+      {activePage === 'models' && <ModelConfigurationPage />}
+      {activePage === 'skills' && (
+        <Page
+          padding="none"
+          className={`${SETTINGS_CONTENT_CLASS_NAME} flex h-full min-h-0 flex-col py-[var(--vds-layout-page-padding)]`}
+          data-testid="account-settings-skills"
+        >
+          <PageHeader
+            title={t('accountPanel.skills.title')}
+            description={t('accountPanel.skills.description')}
+          />
+          <PageBody className="min-h-0 flex-1">
+            <Skills />
+          </PageBody>
+        </Page>
+      )}
+      {activePage === 'developer' && <DeveloperPage />}
+      {activePage === 'browser' && (
+        <BrowserSettings
+          section={browserSettingsSection ?? undefined}
+          isSurfaceCurrent={isBrowserSettingsCurrent}
+          onSection={(section) => onPage('browser', section)}
+          onHistoryReopened={() => {
+            onClose()
+            act.openWorkbenchView('browser', { preserveProject: true })
+          }}
+        />
+      )}
+      {activePage === 'files' && <FileVersionPage />}
+      {activePage === 'storage' && <DataStoragePage />}
+      {activePage === 'shortcuts' && <Shortcuts />}
+      {activePage === 'archives' && <ArchivedProjectsPage />}
+      {activePage === 'about' && <AboutPage />}
+      {activePage === 'notifications' && <NotificationsPage />}
+      {activePage === 'permissions' && <PermissionsPage />}
+    </main>
   )
 }

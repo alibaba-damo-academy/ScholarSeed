@@ -41,7 +41,7 @@ For a paused batch, execute the same command with `--resume`. Do not start a
 second adapter for the same run. Cancellation is authoritative: keep the batch
 attached to the workflow so cancellation reaches and reaps its child processes.
 
-Interactive access is the default. The adapter owns browser allocation,
+Interactive access is the default. In both modes, the adapter owns browser allocation,
 verified loopback CDP attachment, process cleanup and retries. Wait when all
 three browser slots are occupied; do not attach to another browser or remove
 locks to force capacity. A login/CAPTCHA pause retains its lease for resume.
@@ -50,7 +50,9 @@ Direct the user to the opened paper tabs in the dedicated Chrome or Edge; use th
 are sign-in starting points, not article evidence.
 
 Use `PAPER_DL_MODE=autodev` only for explicitly authorized unattended execution.
-It skips login/CAPTCHA/manual-solve items and continues. Zotero mode must stay
+It adds `--autodev` to the same verified CDP connection, skips
+login/CAPTCHA/manual-solve items, and releases the slot when the batch ends.
+It does not launch headless Chromium or pause for human intervention. Zotero mode must stay
 `off` in both modes. Browser/CDP startup failures are execution errors, not
 grounds for an alternate attachment or reconnection workaround.
 

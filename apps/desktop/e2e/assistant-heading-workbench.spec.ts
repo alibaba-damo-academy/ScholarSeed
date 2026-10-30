@@ -1,10 +1,15 @@
+import { createReadyProject } from './fixtures/projects'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { expect, test } from '@playwright/test'
 
 import { ONBOARDING_GROUPS } from '../src/onboarding'
-import { apiBase, DesktopSession } from './fixtures/electron'
+import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from '../src/window'
+import { DesktopSession } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const PROJECT_NAME = '审核标签验收20260922'
 const TRUNCATED_PROJECT_NAME = '审核标签验收2026...'
@@ -35,15 +40,11 @@ for (const { theme, language } of [
       `${theme}-${language}`
     )
     const conversationTitle = language === 'zh' ? '新对话' : 'New conversation'
-    const literatureTitle = language === 'zh' ? '文献全览' : 'Literature'
+    const literatureTitle = language === 'zh' ? '文献中心' : 'Literature'
     mkdirSync(evidence, { recursive: true })
     try {
       const page = await desktop.launch()
-      const base = await apiBase(page)
-      const projectResponse = await page.request.post(`${base}/api/content/projects`, {
-        data: { name: PROJECT_NAME },
-      })
-      expect(projectResponse.ok(), await projectResponse.text()).toBe(true)
+      await createReadyProject(page, PROJECT_NAME)
       await page.reload()
       await page.getByTestId('topbar-project').click()
       await page.getByTestId(`project-menu-option-${PROJECT_NAME}`).click()
@@ -98,6 +99,21 @@ for (const { theme, language } of [
 
       await page.getByTestId('topbar-project').click()
       await page.getByTestId('project-menu-literature').click()
+      const divider = page.locator('.vds-ai-panel-resizable > button')
+      const handle = (await divider.boundingBox())!
+      await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(
+        handle.x - (WORKSPACE_WINDOW_SIZE.width - WORKSPACE_WINDOW_MINIMUM.width),
+        handle.y + handle.height / 2
+      )
+      await page.mouse.up()
+      await expect.poll(() => page.getByTestId('ai-panel').evaluate(element => {
+        const panel = element.getBoundingClientRect()
+        const host = element.parentElement!.getBoundingClientRect()
+        return Math.abs(panel.left - host.left) + Math.abs(panel.right - host.right)
+      })).toBeLessThanOrEqual(1)
+      await page.screenshot({ path: join(evidence, 'docked-literature-resized.png') })
       await page.getByTestId('ai-toggle-cover').click()
       await expect(breadcrumb).toHaveCount(0)
       await page.getByTestId('topbar-panel-toggle').click()

@@ -29,6 +29,8 @@ import httpx
 REPO = Path(__file__).resolve().parents[2]  # <repo>/<pkg>/tests/
 #: 沙箱验收用的落地目录名 (必须在 $TMPDIR 之外, 见 a4 的 docstring)。
 SANDBOX_EVIDENCE_DIRNAME = ".scholarseed-acceptance"
+CONTENT_OPERATION_TIMEOUT_SECONDS = 90
+CONTENT_OPERATION_POLL_SECONDS = 0.1
 SCHOLARSEED = str(Path(sys.executable).parent / "scholarseed")
 RESULTS: list[dict] = []
 
@@ -36,6 +38,24 @@ RESULTS: list[dict] = []
 def record(name: str, ok: bool, evidence: str) -> None:
     RESULTS.append({"name": name, "ok": ok, "evidence": evidence[:500]})
     print(f"  {'✓' if ok else '✗'} {name}\n    {evidence[:300]}")
+
+
+def _content_operation(api: str, response: httpx.Response) -> dict:
+    if response.status_code != 202:
+        raise RuntimeError(f"content command not accepted: {response.status_code}")
+    operation = response.json()["operation"]
+    deadline = time.monotonic() + CONTENT_OPERATION_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        status = httpx.get(f"{api}/api/content/operations/{operation}", timeout=10)
+        if status.status_code == 503:
+            time.sleep(CONTENT_OPERATION_POLL_SECONDS)
+            continue
+        status.raise_for_status()
+        completed = status.json()
+        if completed["state"] in ("succeeded", "failed"):
+            return completed
+        time.sleep(CONTENT_OPERATION_POLL_SECONDS)
+    raise TimeoutError("content operation did not finish")
 
 
 def _fresh_home(tag: str) -> dict:
@@ -296,23 +316,30 @@ def a4_external_root_sandbox() -> None:
             return
 
         project = httpx.post(f"{api}/api/content/projects", json={"name": "沙箱实证"}, timeout=30)
-        project_id = str(project.json().get("id") or "")
+        record("a4.project_submitted", project.status_code == 202, project.text[:200])
+        if project.status_code != 202:
+            return
+        completed = _content_operation(api, project)
+        record("a4.project_ready", completed.get("state") == "succeeded", str(completed))
+        if completed.get("state") != "succeeded":
+            return
+        project_data = completed["result"]
+        project_id = str(project_data["id"])
         authorized = httpx.post(
             f"{api}/api/content/roots",
             json={"project": project_id, "source": str(granted), "mount": "外部资料"},
             timeout=30,
         )
-        record(
-            "a4.authorize",
-            authorized.status_code == 200,
-            authorized.text[:200],
-        )
-        root_id = str(authorized.json().get("root_id") or "")
+        completed = _content_operation(api, authorized)
+        record("a4.authorize", completed.get("state") == "succeeded", str(completed))
+        if completed.get("state") != "succeeded":
+            return
+        root_id = str(completed["result"]["root_id"])
 
         opened = httpx.post(
             f"{api}/api/serve/sessions/open",
             json={
-                "project_path": str(project.json().get("root") or ""),
+                "project_path": str(project_data["root"]),
                 "permission_mode": "safe_auto",
                 "model_id": model_key,
             },
@@ -354,11 +381,14 @@ def a4_external_root_sandbox() -> None:
         revoked = httpx.delete(
             f"{api}/api/content/roots/{root_id}?project={project_id}", timeout=30
         )
-        pushed = list(revoked.json().get("agentSessionsUpdated") or [])
+        completed = _content_operation(api, revoked)
+        record("a4.revoke_completed", completed.get("state") == "succeeded", str(completed))
+        if completed.get("state") != "succeeded":
+            return
         record(
-            "a4.revoke_reaches_live_session",
-            revoked.status_code == 200 and session_id in pushed,
-            revoked.text[:200],
+            "a4.revoke_removed_authority",
+            str(granted) not in completed["result"]["writableRoots"],
+            str(completed["result"]),
         )
 
         after = granted / "after-revoke.txt"

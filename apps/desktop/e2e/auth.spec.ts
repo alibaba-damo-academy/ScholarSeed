@@ -1,14 +1,20 @@
-import { readdirSync } from 'fs'
+import { readFileSync, readdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { ONBOARDING_GROUPS } from '../src/onboarding'
 import { DesktopSession, enterWorkbenchShell } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
 import {
   adoptSeededAuth,
+  authStatusPayload,
+  MOCK_ACCOUNT_BASE,
   mockAccountApi,
   seedAuthTokens,
   type MockAccountConfig
 } from './fixtures/builders/auth'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 // auth.spec.ts — 账号双态验收：未登录（登录是可选增强，外壳照常可用）与已登录
 // （身份 / 积分 / 登出回到未登录）。渲染层的账号取数用 page.route mock
@@ -35,6 +41,7 @@ const MENU_NAME_TEST_ID = 'account-menu-name'
 const MENU_CREDITS_TEST_ID = 'account-menu-credits'
 const MENU_CREDITS_VALUE_TEST_ID = 'account-menu-credits-value'
 const MENU_LOGOUT_TEST_ID = 'account-menu-logout'
+const PREFERENCES_FILE = 'renderer-preferences.json'
 
 // zh 界面文案（fixtures/runtime.ts 把隔离 userData 的语言固定为 zh）。
 const LANDING_ARIA_LABEL = '未登录首页'
@@ -54,7 +61,7 @@ const ACCOUNT_BASE_ENV = 'SCHOLARSEED_ACCOUNT_BASE_URL'
  * 外呼钉在本地 fail-closed（连接拒绝 → 一条 WARN），绝不触达 product.json 里
  * 的真实账号服务。渲染层取数走 page.route，不读这个地址。
  */
-const UNREACHABLE_ACCOUNT_BASE = 'http://127.0.0.1:9'
+const UNREACHABLE_ACCOUNT_BASE = MOCK_ACCOUNT_BASE
 
 /** 与 src/main/auth-refresh.ts 的 REFRESH_FILE_PREFIX/SUFFIX 对齐（不 import 主进程模块）。 */
 const REFRESH_FILE_PREFIX = 'auth-refresh'
@@ -168,10 +175,16 @@ test.describe('authenticated', () => {
    * launch 返回即还原），登出时的整族吊销等 best-effort 外呼不会触达真实服务。
    */
   async function launchAuthenticated(
-    testInfo: TestInfo
+    testInfo: TestInfo,
+    config: Partial<MockAccountConfig> = {}
   ): Promise<{ desktop: DesktopSession; page: Page; account: MockAccountConfig }> {
     const runtime = createRuntime(testInfo)
-    await seedAuthTokens(runtime)
+    const preferences = join(runtime.userData, PREFERENCES_FILE)
+    writeFileSync(preferences, JSON.stringify({
+      ...JSON.parse(readFileSync(preferences, 'utf8')),
+      onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+    }))
+    await seedAuthTokens(runtime, config)
     const previousAccountBase = process.env[ACCOUNT_BASE_ENV]
     process.env[ACCOUNT_BASE_ENV] = UNREACHABLE_ACCOUNT_BASE
     const desktop = new DesktopSession(runtime, testInfo)
@@ -182,7 +195,11 @@ test.describe('authenticated', () => {
       if (previousAccountBase === undefined) delete process.env[ACCOUNT_BASE_ENV]
       else process.env[ACCOUNT_BASE_ENV] = previousAccountBase
     }
-    const account = await mockAccountApi(page, 'authenticated')
+    const account = await mockAccountApi(page, 'authenticated', config)
+    const accountBase = new URL(page.url()).origin
+    await page.route('**/api/auth/status', route => route.fulfill({
+      json: { ...authStatusPayload('authenticated'), account_base_url: accountBase }
+    }))
     await adoptSeededAuth(page, runtime)
     return { desktop, page, account }
   }
@@ -232,6 +249,66 @@ test.describe('authenticated', () => {
       await desktop.attachArtifacts()
     }
   })
+
+  for (const scenario of [
+    { name: 'Chinese', language: 'zh', credits: 998730, displayName: '测试用户' },
+    { name: 'English', language: 'en', credits: 998730, displayName: 'Test user' },
+    { name: 'long English account', language: 'en', credits: 999999999999999, displayName: 'A long account name that must stay inside the account menu' }
+  ]) {
+    test(`account menu contains ${scenario.name} content within its width bounds`, async ({}, testInfo) => {
+      const { desktop, page } = await launchAuthenticated(testInfo, scenario)
+      try {
+        await openAccountMenu(page)
+        if (scenario.language === 'en') {
+          await page.getByTestId('account-menu-language').click()
+          await page.getByRole('menuitemradio', { name: 'English', exact: true }).click()
+          await expect(page.locator('html')).toHaveAttribute('lang', 'en-US')
+          if (!await page.getByTestId(ACCOUNT_MENU_TEST_ID).isVisible()) await openAccountMenu(page)
+        }
+        const menu = page.getByTestId(ACCOUNT_MENU_TEST_ID)
+        await expect(page.getByTestId(MENU_CREDITS_VALUE_TEST_ID)).toHaveText(
+          scenario.credits === 998730 ? '998,730' : '999,999,999,999,999'
+        )
+        for (const width of [1280, 480]) {
+          await page.setViewportSize({ width, height: 900 })
+          await expect.poll(() => menu.evaluate(element => {
+            const panel = element
+            const bounds = panel.getBoundingClientRect()
+            const style = getComputedStyle(panel)
+            const left = bounds.left + parseFloat(style.paddingLeft)
+            const right = bounds.right - parseFloat(style.paddingRight)
+            return {
+              bounded: bounds.width >= 220 && bounds.width <= 320,
+              insideViewport: bounds.left >= 0 && bounds.right <= window.innerWidth,
+              rowsContained: [...element.querySelectorAll('button')].every(row => {
+                const rect = row.getBoundingClientRect()
+                return rect.left >= left && rect.right <= right
+                  && row.scrollWidth <= row.clientWidth
+              }),
+              valuesReadable: [...element.querySelectorAll('[data-testid="account-menu-credits-value"], [data-testid="account-menu-language"] span')]
+                .every(value => value.scrollWidth <= value.clientWidth + 1)
+            }
+          })).toEqual({ bounded: true, insideViewport: true, rowsContained: true, valuesReadable: true })
+        }
+        if (scenario.name === 'English') {
+          await expect(menu.getByText('Remaining credits', { exact: true })).toBeVisible()
+          expect(await menu.getByText('Remaining credits', { exact: true }).evaluate(element =>
+            element.scrollWidth <= element.clientWidth
+          )).toBe(true)
+        }
+        await page.getByTestId('account-menu-language').click()
+        await expect(page.getByRole('menuitemradio', { name: '简体中文', exact: true })).toBeVisible()
+        await page.keyboard.press('Escape')
+        await expect(page.getByTestId('account-menu-language')).toBeFocused()
+        await expect(menu).toBeVisible()
+        await page.keyboard.press('Escape')
+        await expect(menu).toBeHidden()
+        await expect(page.getByTestId(ACTIVITY_ACCOUNT_TEST_ID)).toBeFocused()
+      } finally {
+        await desktop.attachArtifacts()
+      }
+    })
+  }
 
   test('logout returns to unauthenticated state', async ({}, testInfo) => {
     const { desktop, page } = await launchAuthenticated(testInfo)

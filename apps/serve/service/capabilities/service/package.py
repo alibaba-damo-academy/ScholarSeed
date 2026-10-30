@@ -14,10 +14,10 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from service.capabilities.domain import SKILL_MANIFEST_NAME
 from service.capabilities.service.install import (
     MAX_PACKAGE_BYTES,
     MAX_UNCOMPRESSED_BYTES,
-    SKILL_MANIFEST_NAME,
     SKILL_NAME_PATTERN,
     parse_skill_frontmatter,
 )

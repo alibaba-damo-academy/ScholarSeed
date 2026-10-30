@@ -10,7 +10,10 @@
 import type { ResourceCapability } from './resources.ts'
 
 /** Viewer 种类。与后端 `ViewerKind` 同名。 */
-export { resourceEditorHasChanges, reconcileResourceEditors } from '../features/workbench/workspace.ts'
+export {
+  resourceEditorHasChanges,
+  reconcileResourceEditors,
+} from '../features/workbench/workspace.ts'
 
 export interface ResourceHistoryTarget {
   project: string
@@ -18,10 +21,11 @@ export interface ResourceHistoryTarget {
   path: string
 }
 
-export type ViewerKind = 'markdown' | 'pdf' | 'table' | 'code' | 'image' | 'office' | 'spreadsheet' | 'unsupported'
+export type ViewerKind =
+  'markdown' | 'pdf' | 'table' | 'code' | 'image' | 'office' | 'spreadsheet' | 'unsupported'
 
 export const DOCUMENT_PROCESSOR_KINDS = ['csv', 'xls', 'xlsx'] as const
-export type DocumentProcessorKind = typeof DOCUMENT_PROCESSOR_KINDS[number]
+export type DocumentProcessorKind = (typeof DOCUMENT_PROCESSOR_KINDS)[number]
 
 export function isDocumentProcessorKind(value: unknown): value is DocumentProcessorKind {
   return typeof value === 'string' && DOCUMENT_PROCESSOR_KINDS.some((kind) => kind === value)
@@ -92,6 +96,33 @@ export interface LiteratureDocumentSource {
   revision?: string
   mediaType?: string
   renderKind?: string
+}
+
+export interface SavedCitationReference {
+  project_id: string
+  path: string
+  handle: string
+}
+
+export interface SessionFileSource {
+  artifactCitation?: ArtifactCitationReference
+  projectScope?: string
+  citation?: { answerId: string; answerRevision: string; handle: string }
+  savedCitation?: SavedCitationReference
+  recordTarget?: RecordTarget
+  kind: 'session-file'
+  sessionId: string
+  path: string
+  revision?: string
+  mediaType?: string
+  renderKind?: string
+}
+
+export interface ArtifactCitationReference {
+  session_id: string
+  artifact_id: string
+  revision: string
+  handle: string
 }
 
 export interface PdfMarkRecord {

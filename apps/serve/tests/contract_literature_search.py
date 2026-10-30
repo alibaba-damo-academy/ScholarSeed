@@ -17,6 +17,7 @@ from service.invocation.service.skills import InvocationSkillRuntimeError
 from service.literature.api.search import register_literature_search_routes
 from service.literature.persistence.search import LiteratureSearchError, LiteratureSearchService
 from service.paths import LITERATURE_SEARCH_DELETE_FLAG_FILENAME
+from service.platform.activity import Activities, MaintenanceActive
 
 OWNER_ID = "owner-1"
 USER_ID = "user-1"
@@ -126,14 +127,139 @@ class FailingInvocations(FakeInvocations):
 
 
 class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_model_without_artifact_projects_failed_event_and_survives_restart(
+        self,
+    ) -> None:
+        async def empty_stream(_prepared):
+            yield {
+                "schema_version": 1,
+                "invocation_id": "invocation-1",
+                "seq": 1,
+                "type": "result.completed",
+                "data": {},
+            }
+
+        self.invocations.stream = empty_stream
+        task = await self.service.create(
+            "https://publisher.example/article/123", owner_id=OWNER_ID, user_id=USER_ID
+        )
+        await self.service._live[task["id"]].task
+        events = [
+            event async for event in self.service.events(task["id"], owner_id=OWNER_ID, after_seq=0)
+        ]
+        self.assertEqual(events[-1]["type"], "invocation.failed")
+        self.assertEqual(events[-1]["data"]["error"], "literature_search_result_missing")
+        restarted = LiteratureSearchService(
+            self.invocations, root=self.root, activities=self.activities
+        )
+        self.assertEqual(restarted.list(owner_id=OWNER_ID)[0]["status"], "failed")
+
+    def test_untrusted_failure_detail_does_not_reach_user(self) -> None:
+        (self.root / "search_failure.json").write_text(
+            json.dumps(
+                {
+                    "schema": "fast_search.failure.v1",
+                    "error": "arbitrary upstream secret or content",
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = {"status": "completed", "error": "", "result_status": "pending", "result": None}
+        self.service._resolve_result(self.root, state)
+        self.assertEqual(state["error"], "literature_search_result_missing")
+
+    def test_missing_metadata_is_failure_not_successful_empty(self) -> None:
+        state = {"status": "completed", "error": "", "result_status": "pending", "result": None}
+        self.service._resolve_result(self.root, state)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["error"], "literature_search_result_missing")
+
+    def test_explicit_target_failure_is_preserved(self) -> None:
+        (self.root / "search_failure.json").write_text(
+            json.dumps(
+                {
+                    "schema": "fast_search.failure.v1",
+                    "error": "fast_search_target_not_found",
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = {"status": "completed", "error": "", "result_status": "pending", "result": None}
+        self.service._resolve_result(self.root, state)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["error"], "fast_search_target_not_found")
+        self.assertEqual(self.service._restored(state)["error"], "fast_search_target_not_found")
+
+    def test_valid_empty_metadata_is_not_a_runner_failure(self) -> None:
+        (self.root / "metadata.json").write_text(
+            json.dumps({"search_summary": {}, "papers": []}), encoding="utf-8"
+        )
+        state = {"status": "completed", "error": "", "result_status": "pending", "result": None}
+        self.service._resolve_result(self.root, state)
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["result_status"], "ready")
+
+    def test_invalid_result_never_counts_as_success(self) -> None:
+        (self.root / "metadata.json").write_text("{}", encoding="utf-8")
+        state = {"status": "completed", "error": "", "result_status": "pending", "result": None}
+        self.service._resolve_result(self.root, state)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["error"], "literature_search_result_invalid")
+
+    def test_multiple_results_are_failed_not_silently_selected(self) -> None:
+        for name in ("one", "two"):
+            directory = self.root / name
+            directory.mkdir()
+            (directory / "metadata.json").write_text(
+                json.dumps({"search_summary": {}, "papers": []}), encoding="utf-8"
+            )
+        state = {"status": "completed", "error": "", "result_status": "pending", "result": None}
+        self.service._resolve_result(self.root, state)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["error"], "literature_search_result_ambiguous")
+
+    def test_symlink_failure_file_is_not_trusted(self) -> None:
+        outside = self.root.parent / "outside.json"
+        outside.write_text(
+            json.dumps(
+                {"schema": "fast_search.failure.v1", "error": "fast_search_target_not_found"}
+            ),
+            encoding="utf-8",
+        )
+        (self.root / "search_failure.json").symlink_to(outside)
+        state = {"status": "completed", "error": "", "result_status": "pending", "result": None}
+        self.service._resolve_result(self.root, state)
+        self.assertEqual(state["error"], "literature_search_result_missing")
+
     async def asyncSetUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "aisearch"
+        self.activities = Activities()
         self.invocations = FakeInvocations()
-        self.service = LiteratureSearchService(self.invocations, root=self.root)
+        self.service = LiteratureSearchService(
+            self.invocations, root=self.root, activities=self.activities
+        )
 
     async def asyncTearDown(self) -> None:
         self.temporary.cleanup()
+
+    async def test_drain_rejects_creation_without_leaving_files(self) -> None:
+        generation = self.activities.begin()
+        with self.assertRaises(MaintenanceActive):
+            await self.service.create("new search", owner_id=OWNER_ID, user_id=USER_ID)
+        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertEqual(self.invocations.prepared, [])
+        self.assertTrue(self.activities.seal(generation))
+
+    async def test_returned_task_retains_lease_until_result_persisted(self) -> None:
+        task = await self.service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
+        generation = self.activities.begin()
+        self.assertEqual(self.activities.snapshot().counts, {"literature": 1})
+        self.assertFalse(self.activities.seal(generation))
+        await self.service._live[task["id"]].task
+        persisted = json.loads((self.root / task["id"] / "search.json").read_text())
+        self.assertEqual(persisted["status"], "completed")
+        self.assertTrue(self.activities.seal(generation))
 
     async def test_create_persists_stream_and_strict_result(self) -> None:
         task = await self.service.create(" agent systems ", owner_id=OWNER_ID, user_id=USER_ID)
@@ -169,7 +295,9 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(workspace.exists())
 
     async def test_output_keeps_only_user_visible_deltas(self) -> None:
-        service = LiteratureSearchService(TranscriptInvocations(), root=self.root)
+        service = LiteratureSearchService(
+            TranscriptInvocations(), root=self.root, activities=Activities()
+        )
         task = await service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
         await asyncio.wait_for(service._live[task["id"]].task, timeout=2)
 
@@ -193,13 +321,17 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
             self.service.get(task["id"], owner_id="other")
 
     async def test_runtime_unavailable_removes_unstarted_task(self) -> None:
-        service = LiteratureSearchService(UnavailableInvocations(), root=self.root)
+        service = LiteratureSearchService(
+            UnavailableInvocations(), root=self.root, activities=Activities()
+        )
         with self.assertRaises(InvocationSkillRuntimeError):
             await service.create("query", owner_id=OWNER_ID, user_id=USER_ID)
         self.assertEqual(list(self.root.iterdir()), [])
 
     async def test_failed_run_stays_in_memory_and_restarts_as_interrupted(self) -> None:
-        service = LiteratureSearchService(FailingInvocations(), root=self.root)
+        service = LiteratureSearchService(
+            FailingInvocations(), root=self.root, activities=Activities()
+        )
         task = await service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
         await asyncio.wait_for(service._live[task["id"]].task, timeout=2)
 
@@ -220,7 +352,9 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(persisted["completed_at"])
 
         # 重启后由新进程投影：状态是 search_interrupted，query 等已知信息仍可恢复。
-        restarted = LiteratureSearchService(FailingInvocations(), root=self.root)
+        restarted = LiteratureSearchService(
+            FailingInvocations(), root=self.root, activities=Activities()
+        )
         restored = restarted.list(owner_id=OWNER_ID)[0]
         self.assertEqual(restored["status"], "search_interrupted")
         self.assertEqual(restored["query"], "agent systems")
@@ -235,7 +369,9 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restarted.list(owner_id="other"), [])
 
     async def test_transient_state_write_failure_is_retried(self) -> None:
-        service = LiteratureSearchService(FakeInvocations(), root=self.root)
+        service = LiteratureSearchService(
+            FakeInvocations(), root=self.root, activities=Activities()
+        )
         original = service._write_state
         attempts = {"count": 0}
 
@@ -256,7 +392,9 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.list(owner_id=OWNER_ID)[0]["status"], "completed")
 
     async def test_unwritable_state_fails_create_without_leaving_workspace(self) -> None:
-        service = LiteratureSearchService(FakeInvocations(), root=self.root)
+        service = LiteratureSearchService(
+            FakeInvocations(), root=self.root, activities=Activities()
+        )
 
         def always_fail(workspace: Path, state: dict) -> None:
             raise PermissionError(13, "The process cannot access the file")
@@ -294,7 +432,9 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.service._live[kept["id"]].task, timeout=2)
         (self.root / doomed["id"] / LITERATURE_SEARCH_DELETE_FLAG_FILENAME).touch()
 
-        restarted = LiteratureSearchService(FakeInvocations(), root=self.root)
+        restarted = LiteratureSearchService(
+            FakeInvocations(), root=self.root, activities=Activities()
+        )
 
         self.assertFalse((self.root / doomed["id"]).exists())
         self.assertTrue((self.root / kept["id"]).is_dir())
@@ -313,7 +453,7 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
             raise PermissionError(13, "used by another process")
 
         with mock.patch("shutil.rmtree", side_effect=partially_delete):
-            LiteratureSearchService(FakeInvocations(), root=self.root)
+            LiteratureSearchService(FakeInvocations(), root=self.root, activities=Activities())
 
         self.assertTrue(workspace.is_dir())
         self.assertTrue(flag.is_file())
@@ -324,7 +464,9 @@ class LiteratureSearchRouteContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "aisearch"
             app = FastAPI()
-            app.state.literature_searches = LiteratureSearchService(FakeInvocations(), root=root)
+            app.state.literature_searches = LiteratureSearchService(
+                FakeInvocations(), root=root, activities=Activities()
+            )
             register_literature_search_routes(app)
             response = TestClient(app).post(
                 "/api/literature/searches", json={"query": "agent systems"}
@@ -338,7 +480,7 @@ class LiteratureSearchRouteContract(unittest.TestCase):
             root = Path(temporary) / "aisearch"
             app = FastAPI()
             app.state.literature_searches = LiteratureSearchService(
-                UnavailableInvocations(), root=root
+                UnavailableInvocations(), root=root, activities=Activities()
             )
             register_literature_search_routes(app)
 
@@ -359,7 +501,7 @@ class LiteratureSearchRouteContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "aisearch"
             app = FastAPI()
-            service = LiteratureSearchService(FakeInvocations(), root=root)
+            service = LiteratureSearchService(FakeInvocations(), root=root, activities=Activities())
             app.state.literature_searches = service
             register_literature_search_routes(app)
 

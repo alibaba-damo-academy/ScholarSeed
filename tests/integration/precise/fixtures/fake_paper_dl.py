@@ -35,7 +35,7 @@ def main() -> int:
     delay = float(os.getenv("PAPER_DL_TEST_DOWNLOADER_DELAY", "0"))
     if delay > 0:
         time.sleep(delay)
-    interactive = bool(args.connect_cdp)
+    interactive = bool(args.connect_cdp) and not args.autodev
     desktop_first_config = False
     if args.config:
         config_text = Path(args.config).read_text(encoding="utf-8")
@@ -52,7 +52,7 @@ def main() -> int:
         zotero_mode = "fallback"
     elif desktop_first_config:
         zotero_mode = "desktop-first"
-    unattended_flags = args.autodev and args.headless and zotero_mode == "off"
+    unattended_flags = args.autodev and zotero_mode == "off"
     interactive_flags = (
         interactive
         and args.no_headless
@@ -60,9 +60,11 @@ def main() -> int:
         and not args.autodev
         and not args.headless
     )
-    if not (unattended_flags or interactive_flags):
-        raise SystemExit("fake requires either safe autodev or interactive CDP flags")
-    if interactive:
+    if not (unattended_flags or interactive_flags) or not (
+        args.connect_cdp and args.no_headless and args.keep_open and not args.headless
+    ):
+        raise SystemExit("fake requires owned CDP in both modes; autodev must disable Zotero")
+    if args.connect_cdp:
         print(f"[FAKE CDP] attached to {args.connect_cdp}", flush=True)
     print(
         f"[FAKE OA] prefer={'oa' if args.prefer_oa else 'unspecified'}",

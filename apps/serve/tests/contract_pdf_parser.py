@@ -9,7 +9,7 @@ import unittest
 from dataclasses import asdict, replace
 from io import BytesIO, TextIOWrapper
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import reportlab
 from reportlab.pdfbase import pdfmetrics
@@ -18,7 +18,8 @@ from reportlab.pdfgen.canvas import Canvas
 
 from apps.serve.tests import contract_citations as fixtures
 from apps.serve.tests import pdf as pdf_fixture
-from service.workbench.service import extraction, indexing
+from service.platform.activity import Activities
+from service.workbench.service import extraction, indexing, parser
 from service.workbench.service.indexing import PdfIndexService
 
 PYTHONPATH_ENV = "PYTHONPATH"
@@ -56,14 +57,15 @@ class PdfParserContracts(unittest.TestCase):
             "project",
             fixtures.ContextRef("ref", fixtures.ContextRefKind.FILE, "paper.pdf", "Paper"),
         )
-        self.indexes = PdfIndexService(self.source)
+        self.indexes = PdfIndexService(self.source, activities=Activities())
 
     def tearDown(self) -> None:
         self.indexes.close()
         self.temp.cleanup()
 
     def test_parser_receives_product_pythonpath_without_private_environment(self) -> None:
-        process = Mock(returncode=0)
+        process = MagicMock(spec=indexing.subprocess.Popen, returncode=0)
+        process.poll.return_value = 0
         process.communicate.return_value = (None, b"")
         with (
             patch.dict(
@@ -73,9 +75,13 @@ class PdfParserContracts(unittest.TestCase):
             patch.object(indexing.subprocess, "Popen", return_value=process) as launch,
         ):
             self.indexes._run_parser(b"", (), PROCESS_TIMEOUT)
+        self.assertIn("-B", launch.call_args.args[0])
         environment = launch.call_args.kwargs["env"]
         self.assertEqual(environment[PYTHONPATH_ENV], "product-libraries")
         self.assertNotIn(PRIVATE_ENV, environment)
+        process.__enter__.assert_called_once_with()
+        process.__exit__.assert_called_once_with(None, None, None)
+        process.kill.assert_not_called()
 
     def test_parser_success_protocol_is_decoded(self) -> None:
         returncode, output = self.indexes._run_parser(self.document.payload, (), PROCESS_TIMEOUT)
@@ -92,12 +98,12 @@ class PdfParserContracts(unittest.TestCase):
                 output = BytesIO()
                 with (
                     TextIOWrapper(output, encoding=encoding) as stdout,
-                    patch.object(extraction.sys, "stdout", stdout),
-                    patch.object(extraction.sys, "stdin", Mock(buffer=BytesIO(b""))),
-                    patch.object(extraction.sys, "argv", [indexing.PARSER_MODULE]),
-                    patch.object(extraction, "extract", return_value=index),
+                    patch.object(parser.sys, "stdout", stdout),
+                    patch.object(parser.sys, "stdin", Mock(buffer=BytesIO(b""))),
+                    patch.object(parser.sys, "argv", [indexing.PARSER_MODULE]),
+                    patch.object(parser, "extract", return_value=index),
                 ):
-                    returncode = extraction.main()
+                    returncode = parser.main()
                     stdout.flush()
                     result = json.loads(output.getvalue().decode(TEST_ENCODING))
                     self.assertEqual(returncode, 0)
@@ -109,12 +115,12 @@ class PdfParserContracts(unittest.TestCase):
                 output = BytesIO()
                 with (
                     TextIOWrapper(output, encoding=encoding) as stdout,
-                    patch.object(extraction.sys, "stdout", stdout),
-                    patch.object(extraction.sys, "stdin", Mock(buffer=BytesIO(b""))),
-                    patch.object(extraction.sys, "argv", [indexing.PARSER_MODULE]),
-                    patch.object(extraction, "extract", side_effect=ValueError("invalid PDF")),
+                    patch.object(parser.sys, "stdout", stdout),
+                    patch.object(parser.sys, "stdin", Mock(buffer=BytesIO(b""))),
+                    patch.object(parser.sys, "argv", [indexing.PARSER_MODULE]),
+                    patch.object(parser, "extract", side_effect=ValueError("invalid PDF")),
                 ):
-                    returncode = extraction.main()
+                    returncode = parser.main()
                     stdout.flush()
                     self.assertEqual(returncode, 1)
                     self.assertEqual(
@@ -128,12 +134,12 @@ class PdfParserContracts(unittest.TestCase):
         output = BytesIO()
         with (
             TextIOWrapper(output, encoding=TEST_ENCODING) as stdout,
-            patch.object(extraction.sys, "stdout", stdout),
-            patch.object(extraction.sys, "stdin", Mock(buffer=BytesIO(b""))),
-            patch.object(extraction.sys, "argv", [indexing.PARSER_MODULE]),
-            patch.object(extraction, "extract", return_value=index),
+            patch.object(parser.sys, "stdout", stdout),
+            patch.object(parser.sys, "stdin", Mock(buffer=BytesIO(b""))),
+            patch.object(parser.sys, "argv", [indexing.PARSER_MODULE]),
+            patch.object(parser, "extract", return_value=index),
         ):
-            returncode = extraction.main()
+            returncode = parser.main()
             stdout.flush()
             self.assertEqual(returncode, 1)
             self.assertEqual(

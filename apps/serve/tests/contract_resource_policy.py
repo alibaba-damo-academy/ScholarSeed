@@ -3,6 +3,7 @@
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,6 +12,7 @@ from service.chat.service import settings as settings_module
 from service.chat.service.settings import SettingsService
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.resources import VERSION_MAX_BYTES, ManagementState
 from service.resources.api.settings import register_version_setting_routes
 from service.resources.domain.policy import AdmissionPolicy, VersionMode
@@ -19,6 +21,73 @@ from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.retention import ResourceRetentionService
 from service.workbench.domain.model import WorkbenchFormatPolicy
 from service.workbench.service.records import PdfRecordStore
+
+
+def check_projected_policy_snapshot() -> None:
+    defaults = ("*.md",)
+    cases = (
+        ({}, "notes.md", False, ManagementState.MANAGED),
+        (
+            {settings_module.VERSION_INCLUDE_PATTERNS_KEY: []},
+            "notes.md",
+            False,
+            ManagementState.MIGRATION_REQUIRED,
+        ),
+        (
+            {
+                settings_module.VERSION_MODE_KEY: "whitelist",
+                settings_module.VERSION_INCLUDE_PATTERNS_KEY: [],
+            },
+            "notes.md",
+            False,
+            ManagementState.UNSUPPORTED,
+        ),
+        (
+            {
+                settings_module.VERSION_MODE_KEY: "blacklist",
+                settings_module.VERSION_IGNORE_PATTERNS_KEY: [" *.log ", ""],
+            },
+            "debug.log",
+            False,
+            ManagementState.IGNORED,
+        ),
+        (
+            {
+                settings_module.VERSION_MODE_KEY: "blacklist",
+                settings_module.VERSION_IGNORE_PATTERNS_KEY: ["*.log"],
+            },
+            "debug.log",
+            True,
+            ManagementState.MANAGED,
+        ),
+        (
+            {settings_module.VERSION_POLICY_MIGRATION_KEY: True},
+            "notes.md",
+            False,
+            ManagementState.MIGRATION_REQUIRED,
+        ),
+        (
+            {settings_module.VERSION_POLICY_MIGRATION_KEY: True},
+            "notes.md",
+            True,
+            ManagementState.MANAGED,
+        ),
+    )
+    settings = SettingsService(environ={})
+    for values, path, manual, expected in cases:
+        original = json.dumps(values, sort_keys=True)
+        policy = SettingsService.version_policy_values(values)
+        with patch.object(SettingsService, "_read", return_value=values):
+            assert policy.mode == settings.version_mode()
+            assert policy.include_patterns == settings.version_include_patterns()
+            assert policy.ignore_patterns == settings.version_ignore_patterns()
+            assert policy.migration_required == settings.version_migration_required()
+        assert policy.classify(path, 1, manual=manual, default_patterns=defaults) is expected
+        assert (
+            policy.classify(path, policy.max_size_bytes + 1, manual=True, default_patterns=defaults)
+            is ManagementState.OVERSIZED
+        )
+        assert json.dumps(values, sort_keys=True) == original
 
 
 def check_legacy_default_migration() -> None:
@@ -35,7 +104,7 @@ def check_legacy_default_migration() -> None:
             workspace.mkdir()
             catalog = ContentCatalog(root / "content.sqlite3")
             registry = ProjectRegistry(str(workspace), catalog)
-            content = ContentService(registry, catalog)
+            content = ContentService(registry, catalog, activities=Activities())
             project = registry.create("legacy defaults")
             resources = Path(project.root) / "resources"
             (resources / "notes.md").write_text("old archived notes", encoding="utf-8")
@@ -53,11 +122,15 @@ def check_legacy_default_migration() -> None:
             (resources / "server.log").write_text("previously ignored log", encoding="utf-8")
             (resources / "gitignored.md").write_text("previously gitignored", encoding="utf-8")
             (resources / ".gitignore").write_text("gitignored.md", encoding="utf-8")
-            settings.initialize_version_policy(existing_projects=bool(content.projects()))
+            settings.initialize(existing_projects=bool(content.projects()))
             assert settings.version_migration_required()
             assert SettingsService(environ={}).version_migration_required()
             supervisor = ResourceVersionSupervisor(
-                content, versions, WorkbenchFormatPolicy(), settings
+                content,
+                versions,
+                WorkbenchFormatPolicy(),
+                settings,
+                activities=Activities(),
             )
             assert supervisor.version_include_patterns() == supervisor.common_version_patterns()
             assert supervisor.scan_project(project.id).created == 0
@@ -91,12 +164,16 @@ def check_legacy_default_migration() -> None:
             assert len(versions.history(project.id, "resources/notes.md")) == 1
             settings_module.SERVE_SETTINGS_FILE.unlink()
             fresh = SettingsService(environ={})
-            fresh.initialize_version_policy(existing_projects=False)
-            fresh.initialize_version_policy(existing_projects=True)
+            fresh.initialize(existing_projects=False)
+            fresh.initialize(existing_projects=True)
             assert not fresh.version_migration_required()
             assert fresh.version_mode() == "whitelist"
             fresh_supervisor = ResourceVersionSupervisor(
-                content, versions, WorkbenchFormatPolicy(), fresh
+                content,
+                versions,
+                WorkbenchFormatPolicy(),
+                fresh,
+                activities=Activities(),
             )
             assert (
                 fresh_supervisor.version_include_patterns()
@@ -157,7 +234,7 @@ def main() -> int:
             workspace.mkdir()
             catalog = ContentCatalog(root / "content.sqlite3")
             registry = ProjectRegistry(str(workspace), catalog)
-            content = ContentService(registry, catalog)
+            content = ContentService(registry, catalog, activities=Activities())
             project = registry.create("policy")
             resources = Path(project.root) / "resources"
             resources.mkdir(exist_ok=True)
@@ -170,7 +247,11 @@ def main() -> int:
                 content, retention, WorkbenchFormatPolicy(), PdfRecordStore(content)
             )
             supervisor = ResourceVersionSupervisor(
-                content, versions, WorkbenchFormatPolicy(), settings
+                content,
+                versions,
+                WorkbenchFormatPolicy(),
+                settings,
+                activities=Activities(),
             )
             assert (
                 supervisor.admission_state(project.id, "resources/git.md")
@@ -222,6 +303,7 @@ def main() -> int:
         finally:
             settings_module.SERVE_SETTINGS_FILE = original
     check_legacy_default_migration()
+    check_projected_policy_snapshot()
     print("single-mode admission and configuration-only migration contracts passed")
     return 0
 

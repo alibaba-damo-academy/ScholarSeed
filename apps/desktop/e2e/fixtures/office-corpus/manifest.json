@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "version": "selection-v1",
+  "files": {
+    "doc/selection-multipage.doc": "f55052fa2088d23ace7251f09f68f6f29196a2530a5dca5dc80ba5b4994e0729",
+    "docx/selection-large.docx": "b810f64cbfb18bc61936d489f38d9a344eb6128ef4a10a47df73eda9c01059cf",
+    "xls/selection-100-rows.xls": "9fa9ee7ef2d8382b566fdb05d6de479935b1a8d13bd5eec02f9b21fdda75ce5a"
+  }
+}

@@ -109,6 +109,27 @@ class ProductTaskType(str, Enum):
     LITERATURE_REVIEW = "literature_review"
 
 
+@dataclass(frozen=True)
+class FulltextBindingScope:
+    session_id: str
+    project_id: str
+    workspace: str
+    authorization_id: str = ""
+
+
+@dataclass(frozen=True)
+class FulltextTaskContext:
+    """Verified session/run identity; project_id is empty outside a project."""
+
+    owner_id: str
+    project_id: str
+    session_id: str
+    workdir: str
+    task_type: ProductTaskType
+    workspace: str
+    run_id: str
+
+
 class ContextResolutionState(str, Enum):
     """一条显式来源在快照时的解析结果；失败不能吞成空文本。"""
 
@@ -176,6 +197,7 @@ class ContextRef:
     origin: ContextOrigin = ContextOrigin.EXPLICIT
     label_fallback: ContextLabelFallback | None = None
     selection_source_label: str | None = None
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -342,6 +364,7 @@ class MessageReferencePayload(TypedDict, total=False):
     kind: str
     source_id: str
     source_revision: str | None
+    project_id: str | None
     label: str
     ref_id: str
     state: str
@@ -517,6 +540,7 @@ __all__ = [
     "HistoryScopeSource",
     "ProjectContextPolicy",
     "ProductTaskType",
+    "FulltextTaskContext",
     "SearchScope",
     "SHA256_REVISION_PREFIX",
     "SelectionAnchor",

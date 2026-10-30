@@ -2,27 +2,28 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
 
 from service.assistant.service.authorization import FulltextAuthorizer, task_authorization_policy
-from service.chat.api.bridge import bridge_caller
+from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.service.sessions import SessionService
+from service.chat.service.tasks import verified_authorization_context
 from service.literature.domain.cards import CARD_MAX_BYTES, LIBRARY_REF_PREFIX, normalize_bundle
 from service.literature.persistence.cards import PaperCards
 from service.literature.persistence.files import read_scoped_file
 from service.literature.persistence.store import LiteratureRepository
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
-    BRIDGE_MAX_REQUEST_BYTES,
     PAPERCARD_REGISTER_OPERATION,
     PDF_ROUTE_PREFIX,
     PaperCardRegister,
 )
+from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 CARD_REGISTERED_EVENT = "literature.card_registered"
 CARD_ORIGIN_SESSION = "session:"
@@ -39,9 +40,13 @@ def prepare_bundle(root: Path, relative: str) -> dict:
 
 
 def register_card_bridge(
-    app: FastAPI, sessions: SessionService, authorizer: FulltextAuthorizer | None = None
+    app: FastAPI,
+    sessions: SessionService,
+    authorizer: FulltextAuthorizer | None = None,
+    *,
+    activities: Activities,
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
     repository = LiteratureRepository()
     cards = PaperCards(repository.database)
 
@@ -75,8 +80,11 @@ def register_card_bridge(
                     authorization_type=policy.authorization_type,
                     ref_id=command.ref_id,
                     client_turn_id=getattr(live, "active_product_turn_id", ""),
+                    task_context=verified_authorization_context(live, policy.task_type),
                 )
-            bundle = await asyncio.to_thread(prepare_bundle, live.runtime_workdir, command.path)
+            bundle = await activities.to_thread(
+                ActivityDomain.BRIDGE, prepare_bundle, live.runtime_workdir, command.path
+            )
             title = " ".join(str(bundle["paper_card"].get("title", "")).split()).casefold()
             if not title or title != " ".join(item.title.split()).casefold():
                 raise ValueError("papercard_literature_identity_mismatch")

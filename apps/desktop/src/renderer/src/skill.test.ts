@@ -7,11 +7,20 @@ import {
   skillDocumentBody,
   skillIcon,
   skillDescription,
+  skillName,
   skillCallable,
   SKILL_GROUPS,
   skillMutationMessage,
-  SKILL_ICON_FALLBACK
+  SKILL_ICON_FALLBACK,
 } from './skill.ts'
+
+test('skill labels prefer display names and fall back without changing identity', () => {
+  const skill = { name: 'agentic-search', display_name: 'Tiered Academic Search' }
+  assert.equal(skillName(skill), 'Tiered Academic Search')
+  assert.equal(skillName({ ...skill, display_name: '' }), 'agentic-search')
+  assert.equal(skillName({ name: skill.name }), 'agentic-search')
+  assert.equal(skill.name, 'agentic-search')
+})
 
 test('callability separates local preference from current account and dependency availability', () => {
   const skill = { enabled: true, active: true, requires_login: true }
@@ -37,9 +46,9 @@ test('localizes product skill descriptions without changing their canonical name
     name: 'literature-review',
     description: 'Produce a complete systematic literature review from a precise research intent.',
     descriptions: {
-      zh: '根据明确研究意图，生成完整的系统性文献综述。'
+      zh: '根据明确研究意图，生成完整的系统性文献综述。',
     },
-    blurb: 'Build and verify a complete research survey'
+    blurb: 'Build and verify a complete research survey',
   }
   assert.equal(skillDescription(skill, 'zh-CN'), skill.descriptions.zh)
   assert.equal(skillDescription(skill, 'en-US'), skill.description)
@@ -48,24 +57,24 @@ test('localizes product skill descriptions without changing their canonical name
 })
 
 test('keeps ScholarSeed skills enabled and locks only their activation control', () => {
-  assert.deepEqual(
-    skillActivationControl({ enabled: true, toggleable: false }),
-    { checked: true, disabled: true }
-  )
-  assert.deepEqual(
-    skillActivationControl({ enabled: true, toggleable: true }),
-    { checked: true, disabled: false }
-  )
-  assert.deepEqual(
-    skillActivationControl({ enabled: false, toggleable: true }),
-    { checked: false, disabled: false }
-  )
+  assert.deepEqual(skillActivationControl({ enabled: true, toggleable: false }), {
+    checked: true,
+    disabled: true,
+  })
+  assert.deepEqual(skillActivationControl({ enabled: true, toggleable: true }), {
+    checked: true,
+    disabled: false,
+  })
+  assert.deepEqual(skillActivationControl({ enabled: false, toggleable: true }), {
+    checked: false,
+    disabled: false,
+  })
 })
 
 test('keeps the MVP skill catalog on the two product-owned groups', () => {
   assert.deepEqual(SKILL_GROUPS, [
     { id: 'scholarseed', labelKey: 'groups.scholarseed' },
-    { id: 'user', labelKey: 'groups.user' }
+    { id: 'user', labelKey: 'groups.user' },
   ])
   assert.equal(productSkillGroup('scholarseed'), 'scholarseed')
   assert.equal(productSkillGroup('user'), 'user')
@@ -74,18 +83,30 @@ test('keeps the MVP skill catalog on the two product-owned groups', () => {
 })
 
 test('skill details render the body without treating YAML frontmatter as headings', () => {
-  assert.equal(skillDocumentBody('---\nname: example\nversion: 1\n---\n\n# Example\nInstructions'), '# Example\nInstructions')
+  assert.equal(
+    skillDocumentBody('---\nname: example\nversion: 1\n---\n\n# Example\nInstructions'),
+    '# Example\nInstructions'
+  )
   assert.equal(skillDocumentBody('# Plain document'), '# Plain document')
   assert.equal(skillDocumentBody('---\nnot closed'), '---\nnot closed')
 })
 
-
 test('skill mutation errors use stable identities while preserving unknown diagnostics', () => {
-  assert.deepEqual(skillMutationMessage('duplicate_name', '原始重名提示', 'upload.failed'), { key: 'errors.duplicate' })
-  assert.deepEqual(skillMutationMessage('immutable_skill', '原始内置提示', 'deleteFailed'), { key: 'errors.immutable' })
-  assert.deepEqual(skillMutationMessage('invalid_package', 'SKILL.md: malformed metadata', 'upload.failed'), { key: 'errors.invalid', detail: 'SKILL.md: malformed metadata' })
+  assert.deepEqual(skillMutationMessage('duplicate_name', '原始重名提示', 'upload.failed'), {
+    key: 'errors.duplicate',
+  })
+  assert.deepEqual(skillMutationMessage('immutable_skill', '原始内置提示', 'deleteFailed'), {
+    key: 'errors.immutable',
+  })
+  assert.deepEqual(
+    skillMutationMessage('invalid_package', 'SKILL.md: malformed metadata', 'upload.failed'),
+    { key: 'errors.invalid', detail: 'SKILL.md: malformed metadata' }
+  )
   for (const code of ['vendor_error', '__proto__', 'toString', undefined]) {
-    assert.deepEqual(skillMutationMessage(code, '原始 diagnostic', 'upload.failed'), { key: 'upload.failed', detail: '原始 diagnostic' })
+    assert.deepEqual(skillMutationMessage(code, '原始 diagnostic', 'upload.failed'), {
+      key: 'upload.failed',
+      detail: '原始 diagnostic',
+    })
   }
   assert.deepEqual(skillMutationMessage(undefined, '', 'deleteFailed'), { key: 'deleteFailed' })
 })

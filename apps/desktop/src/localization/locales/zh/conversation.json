@@ -1,4 +1,8 @@
 {
+  "sandbox": {
+    "policyRejected": "Windows 安全运行环境未通过安全检查。请提交问题反馈以检查安装和权限；重复授权无法解决此问题。",
+    "setupCancelled": "Windows 安全运行环境的系统授权已取消。请重新发送，并在系统请求时完成授权。"
+  },
   "toolOutcome": {
     "noMatches": "未找到匹配内容",
     "noMatchesHelp": "搜索没有找到匹配内容，这不表示任务失败。AI 可以继续处理。",
@@ -21,8 +25,20 @@
     "duration": "本轮用时 {{duration}}"
   },
   "subagent": {
+    "running": "执行中",
+    "numbered": "子代理 {{number}}",
+    "named": "子代理 · {{name}}",
+    "call": {
+      "spawning": "启动调用进行中",
+      "waiting": "等待调用进行中",
+      "running": "调用进行中",
+      "spawned": "启动调用已完成",
+      "waited": "等待调用已结束",
+      "ended": "调用已结束",
+      "failed": "调用失败"
+    },
     "waiting": "等待回应",
-    "elapsed": "已等待 {{duration}}",
+    "elapsed": "已运行 {{duration}}",
     "lastObserved": "最近确认：{{activity}} · {{age}}前",
     "action": {
       "message": "生成回复",
@@ -42,13 +58,15 @@
     "session": "会话 {{id}}"
   },
   "resume": {
-    "title": "正在恢复对话",
+    "title": "正在恢复任务",
     "codex": "连接 Codex 会话并加载历史记录…",
     "agent": "连接 Agent 会话并加载历史记录…",
+    "runtimeSwitch": "等待后台切换运行环境；请先完成现有任务和待审批问题…",
+    "runtimeSwitchBlocked": "后台切换无法确认安全收尾，已暂停会话恢复。请等待现有任务结束后完整退出并重新启动应用。",
     "reconnect": "正在重新连接会话…",
     "retry": "连接未完成，正在重试（{{attempt}}/{{maximum}}）…",
     "reconnected": "会话已重新连接",
-    "stopped": "会话恢复已停止。请检查登录、版本或会话状态后重新连接。",
+    "stopped": "会话恢复未成功，这不表示任务已结束。请检查登录、版本或网络后重新连接。",
     "retrying": "会话暂时无法恢复，正在重试（{{attempt}}/{{maximum}}）"
   },
   "preflight": {
@@ -146,7 +164,7 @@
     "runtime": "请求未能到达 Codex Runtime。",
     "quota": {
       "message": "模型分配额度已用完。",
-      "action": "内置模型按积分计费，积分用完后将无法继续对话；请前往“剩余积分”查看余额并获取更多积分，或切换模型。"
+      "action": "内置模型按积分计费，积分用完后将无法继续任务；请前往“剩余积分”查看余额并获取更多积分，或切换模型。"
     },
     "credits": {
       "message": "积分余额已用尽，本次生成已停止。",
@@ -158,7 +176,9 @@
     },
     "auth": {
       "message": "模型服务认证失败。",
-      "action": "请检查登录或模型凭证。"
+      "action": "请在“设置 → 模型服务”中检查自定义模型的 API Key 是否有效、是否与服务地址匹配，并更新后重试。使用账号登录的模型请重新登录。本轮问题和上下文已保留。",
+      "login": "去登录",
+      "configure": "检查模型凭证"
     },
     "unavailable": {
       "message": "模型服务暂时不可用。",
@@ -178,6 +198,9 @@
       "message": "该模型不被当前端点支持。",
       "action": "请检查模型名是否正确，或在设置中切换到其他模型；本轮问题和上下文已保留。"
     },
+    "interrupted": {
+      "message": "本轮未能完成。"
+    },
     "unknown": {
       "message": "本次生成未完成。",
       "action": "生成过程中发生异常，已保留本轮问题和上下文。"
@@ -192,7 +215,7 @@
     "historyUnavailable": "历史记录未能加载",
     "timeout": "请求超时",
     "unavailable": "请求未能到达后端。",
-    "invalidRecovery": "会话恢复快照无效，已停止恢复以避免重复提交。",
+    "invalidRecovery": "会话恢复快照无效，执行状态尚未确认。恢复不会自动重放任务或回答。",
     "failed": "请求失败",
     "authentication": "请先登录",
     "resourceReviewRequired": "本轮产生了待审阅的文件改动。请先处理待审阅改动，再重新生成。",
@@ -220,14 +243,25 @@
     "handled": "已处理",
     "invalidRequest": "收到缺少 request_id 的请求，已安全拒绝。"
   },
+  "browserApproval": {
+    "expired": "浏览器请求已过期",
+    "inactive": "当前任务已结束，浏览器请求已取消",
+    "unknown": "浏览器审批结果未获确认"
+  },
+  "browserHistoryApproval": {
+    "expired": "浏览历史请求已过期",
+    "inactive": "当前任务已结束，浏览历史请求已取消",
+    "unknown": "浏览历史审批结果未获确认"
+  },
   "turnUnknown": {
     "title": "上次任务已中断",
-    "action": "确认后不会自动重发旧任务；恢复检查通过后，请自行输入新消息。",
+    "action": "任务记录已保留，点击继续接着处理；将先检查已有结果，避免重复执行。",
     "reason": {
       "timeout": "等待任务结果超时，部分操作可能已完成。",
       "transportLost": "任务执行期间连接中断，部分操作可能已完成。",
       "processExit": "应用在任务结束前中断，部分操作可能已完成。",
       "unconfirmed": "应用在任务结束前中断，部分操作可能已完成。"
     }
-  }
+  },
+  "queuePosition": "{{current}} / {{total}}"
 }

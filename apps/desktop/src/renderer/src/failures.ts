@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next'
+import type { ModelInfo } from './api'
 import type { ConvItem } from './model'
 
 export type ProviderFailureKind =
@@ -18,6 +19,11 @@ const UNAVAILABLE_FAILURE = /status=(?:408|429|500|502|503|504)\b|timeout|timed 
 const REQUEST_FAILURE = /status=400\b|badrequest|bad request|invalid.?request/i
 const PROVIDER_FRAME_EVENT = 'event:error'
 const PROVIDER_FRAME_DATA = 'data:'
+const ACCOUNT_AUTH_FAILURE_CODE = 'model_bridge_credential_required'
+const GATEWAY_CREDENTIAL_REQUIRED_CODE = 'gateway_credential_required'
+const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  'unavailable', 'overloaded', 'rate_limit', 'unknown'
+])
 const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>>> = {
   content_safety_blocked: 'content_policy',
   content_policy_violation: 'content_policy',
@@ -108,9 +114,9 @@ export function describeTurnFailure(data: {
     ? FAILURE_KIND_BY_CODE[code.toLowerCase()] : undefined
   const kind = classified || fallbackKind(frame ? frame.message : rawMessage) || 'unknown'
   const fallback = frame ? 'frame' : data.message ? 'raw' : 'runtime'
-  const retry = data.retryable === true && (
+  const retry = kind === 'auth' || (data.retryable === true && (
     kind === 'rate_limit' || kind === 'unavailable' || kind === 'overloaded' || kind === 'unknown'
-  )
+  ))
     ? { runtimeAction: 'continue_turn' as const, actionState: 'idle' as const }
     : {}
   const automaticRetryAttempts = Number.isInteger(data.automatic_retry_attempts) &&
@@ -120,9 +126,31 @@ export function describeTurnFailure(data: {
   return {
     kind: 'error', title: '', action: '',
     message: kind === 'unknown' && fallback === 'raw' ? rawMessage : '',
-    failure: { kind, fallback, ...(automaticRetryAttempts ? { automaticRetryAttempts } : {}) },
+    failure: {
+      kind,
+      fallback,
+      ...(kind === 'auth' ? { authentication: code.toLowerCase() === ACCOUNT_AUTH_FAILURE_CODE ? 'account' as const : 'model' as const } : {}),
+      ...(automaticRetryAttempts ? { automaticRetryAttempts } : {})
+    },
     ...retry
   }
+}
+
+export function isRecoverableTurnFailure(item: Extract<ConvItem, { kind: 'error' }>): boolean {
+  return item.runtimeAction === 'continue_turn' &&
+    !item.turnUnknown && !item.applicationFailure &&
+    Boolean(item.failure && RECOVERABLE_FAILURE_KINDS.has(item.failure.kind))
+}
+
+export function authenticationRecoveryAction(
+  failure: Extract<ConvItem, { kind: 'error' }>,
+  model: Pick<ModelInfo, 'source' | 'disabled' | 'disabled_reason_code'> | undefined,
+  authenticated: boolean
+): 'login' | 'configure' | 'continue_turn' {
+  if (model?.disabled_reason_code === GATEWAY_CREDENTIAL_REQUIRED_CODE
+    || (!model && !authenticated && failure.failure?.authentication === 'account')) return 'login'
+  if (!model || model.disabled) return 'configure'
+  return 'continue_turn'
 }
 
 export function formatTurnFailure(

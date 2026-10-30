@@ -4,7 +4,7 @@ import type {
   DownloadInfo,
   LatestVersionMeta,
   UpdateCheckResult,
-  UpdateIdentityField
+  UpdateIdentityField,
 } from '../updates.ts'
 
 export const UPDATE_PATH_PREFIX = '/api/v1/updates'
@@ -14,7 +14,7 @@ const SHA512_PATTERN = /^[a-f0-9]{128}$/i
 const TARGET_ARCH_TYPES: Readonly<Record<string, string>> = Object.freeze({
   'darwin-arm64': 'darwin-arm64',
   'darwin-x64': 'darwin-x86_64',
-  'win32-x64': 'windows-amd64'
+  'win32-x64': 'windows-amd64',
 })
 const MACOS_ARCH_TYPE_PREFIX = 'darwin-'
 const WINDOWS_ARCH_TYPE = 'windows-amd64'
@@ -36,7 +36,8 @@ export function desktopArchType(platform: NodeJS.Platform, arch: string): string
 
 function requiredString(source: Record<string, unknown>, field: string): string {
   const value = source[field]
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`update response requires ${field}`)
+  if (typeof value !== 'string' || !value.trim())
+    throw new Error(`update response requires ${field}`)
   return value.trim()
 }
 
@@ -88,8 +89,11 @@ function parseLatest(
     throw new Error('update response latest must be an object')
   }
   const source = value as Record<string, unknown>
-  if (expectedArchType === WINDOWS_ARCH_TYPE && config.releaseLane === 'distribution' &&
-      !config.expectedWindowsPublisher) {
+  if (
+    expectedArchType === WINDOWS_ARCH_TYPE &&
+    config.releaseLane === 'distribution' &&
+    !config.expectedWindowsPublisher
+  ) {
     throw new Error('packaged product policy has no Windows publisher')
   }
   const sha512 = requiredString(source, 'sha512')
@@ -114,7 +118,7 @@ function parseLatest(
     // non-blank string counts as a summary, anything else means "no notes yet".
     ...(typeof source.release_notes === 'string' && source.release_notes.trim()
       ? { release_notes: source.release_notes.trim() }
-      : {})
+      : {}),
   }
   if (identityMismatches(latest, config, expectedArchType).length) {
     throw new Error('update response identity differs from packaged product policy')
@@ -148,7 +152,8 @@ export function parseDownloadInfo(
   expectedId: string
 ): DownloadInfo {
   const latest = parseLatest(value, config, expectedArchType)
-  if (latest.id !== expectedId) throw new Error('download response id differs from the requested package')
+  if (latest.id !== expectedId)
+    throw new Error('download response id differs from the requested package')
   const source = value as Record<string, unknown>
   const downloadUrl = requiredString(source, 'download_url')
   const parsed = new URL(downloadUrl)
@@ -171,5 +176,8 @@ export function buildUpdateCheckUrl(
   if (config.buildNumber) url.searchParams.set('build_number', config.buildNumber)
   url.searchParams.set('arch_type', targetArchType)
   url.searchParams.set('channel', config.channel)
+  if (targetArchType === WINDOWS_ARCH_TYPE && config.releaseLane === 'distribution') {
+    url.searchParams.set('update_engine', 'velopack')
+  }
   return url.toString()
 }

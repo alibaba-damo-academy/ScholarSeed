@@ -1,12 +1,18 @@
 :root,
 :root[data-theme='light'] {
   color-scheme: light;
+  --brand-ink: #22453a;
+  --brand-ink-hover: #18382f;
+  --brand-spark: #f2c14e;
   /* 多选筛选里「没被选中」的降透明度：比 disabled 更淡，用于把选中项从密集色块里衬出来。 */
   --vds-opacity-deemphasized: 0.3;
   --vds-opacity-disabled: 0.5;
+  --vds-opacity-menu-disabled: 0.45;
+  --vds-opacity-navigation-disabled: 0.35;
   /* 悬停/聚焦才显现的行内控件：隐藏用 opacity-0，显现统一取这个 token，页面不写死数值。 */
   --vds-opacity-full: 1;
   --vds-control-height-xs: 24px;
+  --vds-control-height-mini: 26px;
   --vds-control-height-sm: 28px;
   --vds-control-height-md: 32px;
   --vds-control-height-standard: 36px;
@@ -25,6 +31,7 @@
   --vds-settings-shortcut-card-radius: var(--vds-settings-card-radius);
   --vds-toolbar-icon-gap: 2px;
   --vds-toolbar-divider-margin: 7px;
+  --vds-workspace-tab-count-font-size: 8px;
   --vds-surface-raised: var(--vds-bg-white-default);
   --vds-surface-muted: var(--vds-bg-gray-default);
   --vds-surface-hover: var(--vds-bg-gray-hover);
@@ -78,6 +85,8 @@
   --vds-progress-track: var(--vds-bg-gray-default);
   --vds-progress-value-color: var(--vds-brand-bg-default);
   --vds-progress-value-image: none;
+  --vds-carousel-indicator-track: var(--vds-fill-5);
+  --vds-carousel-indicator-value: var(--vds-brand-bg-default);
   --vds-progress-indeterminate-width: 40%;
   --vds-progress-indeterminate-start: -100%;
   --vds-progress-indeterminate-end: 250%;
@@ -150,10 +159,14 @@
   --vds-accordion-content-padding: var(--vds-space-3) var(--vds-space-4);
   --vds-accordion-chevron-size: var(--vds-space-2);
   --vds-scroll-area-radius: var(--vds-radius-4);
+  --vds-dialog-list-max-height: 40dvh;
   --vds-scroll-area-shadow-size: var(--vds-space-6);
   --vds-scrollbar-size: var(--vds-space-2);
+  --vds-scrollbar-thumb-min-size: var(--vds-space-6);
+  --vds-overlay-scrollbar-size: 4px;
+  --vds-native-scrollbar-size: 9px;
   --vds-scrollbar-radius: var(--vds-radius-pill);
-  --vds-scrollbar-thumb: var(--vds-line-5);
+  --vds-scrollbar-thumb: var(--vds-other-overlay-3);
   --vds-toggle-min-width: var(--vds-control-height-md);
   --vds-toggle-group-gap: var(--vds-space-1);
   --vds-toggle-group-padding: var(--vds-space-1);
@@ -164,7 +177,11 @@
   --vds-input-otp-slot-gap: var(--vds-space-2);
   --vds-input-otp-slot-size: var(--vds-control-height-lg);
   /* 浮层内容宽度档位：业务浮层需要固定宽度时取这里，页面不写死像素值。 */
+  --vds-popover-width-sm: 220px;
   --vds-popover-width-md: 320px;
+  --vds-popover-available-width: calc(100vw - var(--vds-space-6) * 2);
+  --vds-reference-list-max-width: 460px;
+  --vds-reference-list-max-height: 50vh;
   --vds-pdf-annotation-max-height: min(640px, calc(100dvh - var(--vds-space-6)));
   --vds-pdf-annotation-preview-max-height: min(320px, 40dvh);
   --vds-command-gap: var(--vds-space-2);
@@ -197,18 +214,28 @@
   --vds-resizable-handle-active-dot-outer-offset: 15px;
   --vds-resizable-handle-active-guide-color: var(--vds-divider-default);
   /* 引导线两端各 15% 做淡出 (合计 30%), 端点仍保留 30% 不透明度的引导色, 不全透明, 避免上下两头看起来断开 */
-  --vds-resizable-handle-active-guide-edge-color: color-mix(in srgb, var(--vds-resizable-handle-active-guide-color) 30%, transparent);
+  --vds-resizable-handle-active-guide-edge-color: color-mix(
+    in srgb,
+    var(--vds-resizable-handle-active-guide-color) 30%,
+    transparent
+  );
   --vds-resizable-handle-active-guide-fade-length: 15%;
   --vds-resizable-handle-drag-background: #e9eeeb;
   --vds-resizable-handle-drag-border: #a6beb3;
   --vds-resizable-handle-drag-dot-color: #2c5545;
   --vds-resizable-handle-drag-guide-color: #a6beb3;
-  --vds-resizable-handle-drag-guide-edge-color: color-mix(in srgb, var(--vds-resizable-handle-drag-guide-color) 30%, transparent);
+  --vds-resizable-handle-drag-guide-edge-color: color-mix(
+    in srgb,
+    var(--vds-resizable-handle-drag-guide-color) 30%,
+    transparent
+  );
   --vds-resizable-handle-current-background: var(--vds-resizable-handle-active-background);
   --vds-resizable-handle-current-border: var(--vds-resizable-handle-active-border);
   --vds-resizable-handle-current-dot-color: var(--vds-resizable-handle-active-dot-color);
   --vds-resizable-handle-current-guide-color: var(--vds-resizable-handle-active-guide-color);
-  --vds-resizable-handle-current-guide-edge-color: var(--vds-resizable-handle-active-guide-edge-color);
+  --vds-resizable-handle-current-guide-edge-color: var(
+    --vds-resizable-handle-active-guide-edge-color
+  );
   --vds-toast-z-index: var(--vds-z-toast);
   --vds-toast-width: 360px;
   --vds-toast-viewport-gap: var(--vds-space-4);
@@ -237,7 +264,11 @@
   --vds-drawer-radius: var(--vds-radius-5);
   --vds-drawer-side-width: 360px;
   --vds-model-menu-max-width: min(320px, calc(100vw - var(--vds-space-6)));
-  --vds-model-menu-width: min(320px, calc(100vw - var(--vds-space-6)));
+  --vds-model-menu-min-width: 200px;
+  --vds-model-menu-paired-max-width: min(
+    320px,
+    calc((100vw - var(--vds-space-6) - var(--vds-space-2)) / 2)
+  );
   --vds-model-controls-width: min(240px, calc(100vw - var(--vds-space-6)));
   --vds-tooltip-z-index: var(--vds-z-tooltip);
   --vds-tooltip-max-width: 240px;

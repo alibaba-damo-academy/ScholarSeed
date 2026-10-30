@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import re
+import sys
 import uuid
 import weakref
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from hashlib import sha256
@@ -15,25 +16,40 @@ from pathlib import Path
 from time import time
 
 from scholarseed_codex.activity import NativeActivity
-from scholarseed_codex.capacity import CapacityPolicy
+from scholarseed_codex.capacity import DEFAULT_ATTACHMENT_IDLE_SECONDS, CapacityPolicy, HostRole
+from scholarseed_codex.catalog import CatalogPreflightError
+from scholarseed_codex.command import _finish
+from scholarseed_codex.configuration import native_mcp_configuration
 from scholarseed_codex.control import CodexRuntimeControl
 from scholarseed_codex.environment import (
+    CODEX_CONFIG_FILENAME,
+    CODEX_DISCOVERY_HOME_DIRNAME,
     configured_codex_executable,
-    prepare_codex_runtime_home,
+    runtime_home,
+    runtime_storage_roots,
 )
-from scholarseed_codex.isolation import managed_codex_launch
-from scholarseed_codex.pool import CodexHostPool, PoolReservation
+from scholarseed_codex.isolation import ENVIRONMENT_NAME_PATTERN, managed_codex_launch
+from scholarseed_codex.launch import model_connection, validate_model_connection
+from scholarseed_codex.permission import WINDOWS_PLATFORM
+from scholarseed_codex.pool import CodexHostPool, HostLease, PoolReservation
 from scholarseed_codex.profile import (
     CODEX_DISPLAY_NAME,
     CODEX_PROTOCOL_SCHEMA_HASH,
     CODEX_PROTOCOL_VERSION,
+    CODEX_RUNTIME_ABI_VERSION,
     CODEX_RUNTIME_VERSION_RANGE,
     capabilities,
     resumed_capabilities,
 )
-from scholarseed_codex.protocol.control import CodexControlRequest
-from scholarseed_codex.protocol.session import CodexRuntimeIdentity
-from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError, CodexActivationStage
+from scholarseed_codex.projection import CodexConfigurationEditor
+from scholarseed_codex.protocol.session import CODEX_MANAGED_IDENTITY, CodexSessionOpenRequest
+from scholarseed_codex.protocol.state import (
+    CODEX_DEFAULT_SANDBOX_MODE,
+    CODEX_RUNTIME_ID,
+    AppServerError,
+    CodexActivationStage,
+)
+from scholarseed_codex.sandbox import windows_sandbox_arguments
 from scholarseed_codex.session import CodexRuntimeSession
 from scholarseed_codex.utils import json_value
 from scholarseed_runtime.contract import (
@@ -53,10 +69,29 @@ from scholarseed_runtime.contract import (
     RuntimeValue,
 )
 from scholarseed_runtime.contract.binding import RuntimeBinding
-from scholarseed_runtime.contract.command import SkillConfigurationRequest
-from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
+from scholarseed_runtime.contract.command import HostWarmupRequest, SkillConfigurationRequest
+from scholarseed_runtime.contract.inventory import SkillPolicy
+from scholarseed_runtime.contract.mcp import (
+    MCP_CONFIGURATION_UNSUPPORTED,
+    MCP_INITIAL_CONFIGURATION_REVISION,
+    McpConfigurationReceipt,
+    McpConfigurationRequest,
+)
+from scholarseed_runtime.contract.model import MODEL_CATALOG_UNAVAILABLE
+from scholarseed_runtime.contract.provider import (
+    RUNTIME_HOST_RECONFIGURATION_COMMAND,
+    RUNTIME_HOST_WARMUP_COMMAND,
+    RuntimeOpenNotAppliedError,
+)
 from scholarseed_runtime.contract.resource import (
+    RESOURCE_HOST_BUSY,
+    RESOURCE_HOST_CONFIGURATION_CONFLICT,
+    RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
+    RESOURCE_HOST_CONTEXT_REQUIRED,
+    RESOURCE_RELEASE_BUSY,
+    RESOURCE_RELEASE_FAILED,
     RESOURCE_RESERVATION_INVALID,
+    ResourceLease,
     ResourcePolicy,
     ResourcePurpose,
     ResourceReceipt,
@@ -64,15 +99,24 @@ from scholarseed_runtime.contract.resource import (
     ResourceState,
 )
 from scholarseed_runtime.contract.runtime import ProviderConfiguration
+from scholarseed_runtime.contract.sandbox import SandboxRecovery, SandboxResources
 from scholarseed_runtime.contract.session import RuntimeExecutionThread
+from scholarseed_runtime.contract.storage import (
+    RuntimeConfigurationStorage,
+    StorageInspection,
+    StorageRoot,
+)
 
 PROVIDER_CONFIGURE_COMMAND = "provider.configure"
 PROVIDER_CONFIGURATION_INVALID = "runtime_provider_configuration_invalid"
 PROVIDER_CONFIGURATION_CONFLICT = "runtime_provider_configuration_conflict"
 
-ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RESOURCE_TERMINAL_STATES = frozenset(
-    {ResourceState.REJECTED, ResourceState.CANCELLED, ResourceState.EXPIRED}
+    {
+        ResourceState.REJECTED,
+        ResourceState.CANCELLED,
+        ResourceState.EXPIRED,
+    }
 )
 
 
@@ -89,7 +133,7 @@ def _discard_prepared(
 
 
 async def _resolve_launch_secrets(
-    request: OpenSessionRequest | RuntimeInspectionRequest,
+    request: OpenSessionRequest | HostWarmupRequest,
 ) -> tuple[dict[str, str], dict[str, str]]:
     bindings = request.launch_secrets.bindings
     if any(
@@ -126,9 +170,21 @@ class CodexRuntimeProvider:
     def __init__(self) -> None:
         self._pool = CodexHostPool()
         self._configuration: CapacityPolicy | None = None
+        self._resource_lease: Callable[[], ResourceLease] | None = None
+        self._configuration_storage: RuntimeConfigurationStorage | None = None
+        self._sandbox_resources: SandboxResources | None = None
+        self._sandbox_recovery: SandboxRecovery | None = None
         self._prepared: dict[str, tuple[ResourceRequest, CodexRuntimeSession, PoolReservation]] = {}
         self._prepare_lock = asyncio.Lock()
         self._request_fingerprints: dict[str, str] = {}
+
+    def storage_roots(self, inspection: StorageInspection | None = None) -> tuple[StorageRoot, ...]:
+        return tuple(
+            StorageRoot(path, create=True) for path in runtime_storage_roots(inspection=inspection)
+        )
+
+    def configuration_files(self) -> tuple[Path, ...]:
+        return (runtime_home() / CODEX_CONFIG_FILENAME,)
 
     def configure(self, configuration: ProviderConfiguration) -> CommandReceipt:
         if configuration.runtime_id != CODEX_RUNTIME_ID:
@@ -145,38 +201,216 @@ class CodexRuntimeProvider:
                 CommandState.REJECTED,
                 safe_error=PROVIDER_CONFIGURATION_INVALID,
             )
-        if self._configuration is not None and self._configuration != policy:
+        if self._configuration is not None and (
+            self._configuration != policy
+            or self._resource_lease is not configuration.resource_lease
+            or self._configuration_storage is not configuration.configuration_storage
+            or self._sandbox_resources is not configuration.sandbox_resources
+            or self._sandbox_recovery is not configuration.sandbox_recovery
+        ):
             return CommandReceipt(
                 PROVIDER_CONFIGURE_COMMAND,
                 CommandState.REJECTED,
                 safe_error=PROVIDER_CONFIGURATION_CONFLICT,
             )
         if self._configuration is None:
-            if self._prepared or any(row.used for row in self._pool.snapshot()):
+            if (
+                self._prepared
+                or self._pool.execution_configured
+                or any(row.used for row in self._pool.snapshot())
+            ):
                 return CommandReceipt(
                     PROVIDER_CONFIGURE_COMMAND,
                     CommandState.REJECTED,
                     safe_error=PROVIDER_CONFIGURATION_CONFLICT,
                 )
-            self._pool = CodexHostPool(policy)
+            self._pool = CodexHostPool(
+                policy,
+                resource_lease=configuration.resource_lease,
+                sandbox_resources=configuration.sandbox_resources,
+                sandbox_recovery=configuration.sandbox_recovery,
+                mcp_editor=(
+                    CodexConfigurationEditor(configuration.configuration_storage, runtime_home())
+                    if configuration.configuration_storage is not None
+                    else None
+                ),
+            )
             self._configuration = policy
+            self._resource_lease = configuration.resource_lease
+            self._configuration_storage = configuration.configuration_storage
+            self._sandbox_resources = configuration.sandbox_resources
+            self._sandbox_recovery = configuration.sandbox_recovery
         return CommandReceipt(PROVIDER_CONFIGURE_COMMAND, CommandState.APPLIED)
+
+    async def configure_mcp(self, request: McpConfigurationRequest) -> McpConfigurationReceipt:
+        if not self._pool.mcp_configuration_enabled:
+            return McpConfigurationReceipt(
+                request.revision, safe_error=MCP_CONFIGURATION_UNSUPPORTED
+            )
+        return self._pool.configure_mcp(await native_mcp_configuration(request))
+
+    async def mcp_configuration(self) -> McpConfigurationReceipt:
+        if not self._pool.mcp_configuration_enabled:
+            return McpConfigurationReceipt(
+                MCP_INITIAL_CONFIGURATION_REVISION, safe_error=MCP_CONFIGURATION_UNSUPPORTED
+            )
+        return await self._pool.mcp_configuration()
 
     @property
     def resource_policy(self) -> ResourcePolicy:
-        return ResourcePolicy(self._pool.policy.wait_seconds, self._pool.policy.idle_seconds)
+        return ResourcePolicy(
+            self._pool.policy.wait_seconds,
+            DEFAULT_ATTACHMENT_IDLE_SECONDS,
+            refresh_before_turn=sys.platform == WINDOWS_PLATFORM,
+        )
+
+    @asynccontextmanager
+    async def _borrow_host(
+        self, request: HostWarmupRequest | None, *, reconfigure: bool = False
+    ) -> AsyncIterator[HostLease]:
+        if request is None:
+            raise AppServerError(
+                RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
+            )
+        if not request.request_id.strip() or not request.process_sharing_scope.strip():
+            raise ValueError("host warmup requires an identity and an explicit sharing scope")
+        reservation = None
+        lease = None
+        configuration_reset = False
+        borrow_id = uuid.uuid4().hex
+        async with AsyncExitStack() as preparation:
+            if self._resource_lease is not None:
+                preparation.callback(self._resource_lease().close)
+            try:
+                async with self._prepare_lock:
+                    self._pool.authorize_scope(request.process_sharing_scope)
+                    environment, tool_environment = await _resolve_launch_secrets(request)
+                    if tool_environment:
+                        raise ValueError("host warmup does not accept tool-scoped secrets")
+                    validate_model_connection(request.model)
+                    home = self._pool.prepare_home()
+                    environment, arguments = managed_codex_launch(
+                        home,
+                        environment,
+                        windows_sandbox_arguments(CODEX_DEFAULT_SANDBOX_MODE),
+                    )
+                    native = CodexSessionOpenRequest(
+                        request_id=borrow_id,
+                        runtime_id=CODEX_RUNTIME_ID,
+                        cwd=request.cwd,
+                        launch_cwd=home / CODEX_DISCOVERY_HOME_DIRNAME,
+                        process_sharing_scope=request.process_sharing_scope,
+                        executable=configured_codex_executable(),
+                        process_environment=environment,
+                        remove_environment=request.launch_secrets.remove_environment,
+                        launch_arguments=arguments,
+                        base_instructions=request.base_instructions,
+                        skill_roots=request.skill_roots,
+                        identity=CODEX_MANAGED_IDENTITY,
+                        timing=request.timing,
+                    )
+                    native = await model_connection(
+                        request.model, native, request.credential_port, timing=request.timing
+                    )
+                    with request.timing.measure(CodexActivationStage.MODEL_CATALOG):
+                        catalog = await self._pool.model_catalog_argument(request.model, native)
+                    native = replace(native, launch_arguments=(*native.launch_arguments, catalog))
+                    if reconfigure:
+                        if not await self._pool.release_idle():
+                            raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
+                        await self._pool.reset_execution_configuration(
+                            request.process_sharing_scope
+                        )
+                        configuration_reset = True
+                    reservation = await self._pool.reserve(
+                        native,
+                        role=HostRole.EXECUTION,
+                        request_id=borrow_id,
+                        deadline=time() + self.resource_policy.wait_seconds,
+                    )
+                    if reconfigure:
+                        lease = await self._pool.consume(reservation)
+                if lease is None:
+                    lease = await self._pool.consume(reservation)
+                self._pool.authorize_scope(request.process_sharing_scope)
+                yield lease
+            except BaseException:
+                if configuration_reset:
+                    self._pool.fence_reconfiguration()
+                raise
+            finally:
+                cleanup = (
+                    lease.close()
+                    if lease is not None
+                    else self._pool.cancel(reservation) if reservation is not None else None
+                )
+                if cleanup is not None:
+                    task = asyncio.create_task(cleanup)
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        await _finish(task)
+                        raise
+
+    async def reconfigure(self, request: HostWarmupRequest) -> CommandReceipt:
+        operation = asyncio.create_task(self._warm_host(request, reconfigure=True))
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            await _finish(operation)
+            raise
+
+    async def prewarm(self, request: HostWarmupRequest) -> CommandReceipt:
+        return await self._warm_host(request)
+
+    async def _warm_host(
+        self, request: HostWarmupRequest, *, reconfigure: bool = False
+    ) -> CommandReceipt:
+        command = (
+            RUNTIME_HOST_RECONFIGURATION_COMMAND if reconfigure else RUNTIME_HOST_WARMUP_COMMAND
+        )
+        try:
+            async with self._borrow_host(request, reconfigure=reconfigure) as lease:
+                return CommandReceipt(
+                    command,
+                    CommandState.APPLIED,
+                    correlation_id=f"{lease.host_id}:{lease.host.readiness.process_generation}",
+                )
+        except CatalogPreflightError:
+            return CommandReceipt(
+                command, CommandState.REJECTED, safe_error=MODEL_CATALOG_UNAVAILABLE
+            )
+        except AppServerError as error:
+            if reconfigure and error.safe_error == RESOURCE_HOST_BUSY:
+                return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
+            if error.safe_error not in {
+                RESOURCE_HOST_CONFIGURATION_CONFLICT,
+                RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
+            }:
+                raise
+            return CommandReceipt(
+                command,
+                CommandState.RESTART_REQUIRED,
+                safe_error=error.safe_error,
+            )
 
     @staticmethod
     def _open_request(request: OpenSessionRequest | ResumeSessionRequest) -> OpenSessionRequest:
+        if not isinstance(request.skill_policy, SkillPolicy):
+            raise ValueError("invalid runtime skill policy")
         if isinstance(request, OpenSessionRequest):
             return replace(request, reservation_id="")
         binding = request.binding
         if binding.runtime_id != CODEX_RUNTIME_ID:
             raise ValueError("runtime binding belongs to a different provider")
+        if not isinstance(binding.skill_policy, SkillPolicy):
+            raise ValueError("invalid runtime binding skill policy")
         return OpenSessionRequest(
             product_session_id=binding.product_session_id,
             cwd=request.cwd,
             execution_scope=request.execution_scope,
+            process_sharing_scope=request.process_sharing_scope,
+            execution_environment=request.execution_environment,
             model=request.model,
             credential_port=request.credential_port,
             launch_secrets=request.launch_secrets,
@@ -187,8 +421,14 @@ class CodexRuntimeProvider:
             service_tools=request.service_tools,
             skill_roots=request.skill_roots,
             skill_configurations=request.skill_configurations,
+            skill_policy=(
+                SkillPolicy.DENY
+                if SkillPolicy.DENY in (request.skill_policy, binding.skill_policy)
+                else SkillPolicy.INHERIT
+            ),
             artifact_directives=request.artifact_directives,
             required_capabilities=resumed_capabilities(binding),
+            optional_capabilities=binding.optional_capabilities,
             timing=request.timing,
         )
 
@@ -203,7 +443,9 @@ class CodexRuntimeProvider:
                 for key, value in self._request_fingerprints.items()
                 if self._pool.reservation(key) is not None
             }
-            fingerprint = sha256(repr(request).encode()).hexdigest()
+            fingerprint = sha256(
+                repr((request, request.session_request.process_sharing_scope)).encode()
+            ).hexdigest()
             previous = self._pool.reservation_for(request.request_id)
             if previous is not None:
                 if self._request_fingerprints.get(previous.reservation_id) != fingerprint:
@@ -219,6 +461,12 @@ class CodexRuntimeProvider:
                         )
                     return self._pool.receipt(reservation)
             open_request = self._open_request(request.session_request)
+            self._pool.authorize_scope(open_request.process_sharing_scope)
+            # Directory preparation and credential synchronization happen in the
+            # session constructor, before the pool acquires its physical lease.
+            # Retain host admission over this whole preparation transaction too.
+            if self._resource_lease is not None:
+                preparation.callback(self._resource_lease().close)
             with timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
                 launch_environment, tool_environment = await _resolve_launch_secrets(open_request)
             session = CodexRuntimeSession(
@@ -298,6 +546,30 @@ class CodexRuntimeProvider:
         self._prepared.pop(reservation_id)
         try:
             await session.consume_resource(reservation)
+        except BaseException as error:
+            cleanup_errors: list[BaseException] = []
+            try:
+                await self._pool.cancel(reservation)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            try:
+                await session.detach()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "Runtime opening and resource cleanup failed", [error, *cleanup_errors]
+                ) from error
+            if (
+                isinstance(request, OpenSessionRequest)
+                and isinstance(error, Exception)
+                and reservation.slot is None
+            ):
+                raise RuntimeOpenNotAppliedError(
+                    reservation_id, getattr(error, "safe_error", "")
+                ) from error
+            raise
+        try:
             await session.open()
             if (
                 isinstance(request, ResumeSessionRequest)
@@ -312,6 +584,7 @@ class CodexRuntimeProvider:
     @property
     def descriptor(self) -> RuntimeDescriptor:
         return RuntimeDescriptor(
+            abi_version=CODEX_RUNTIME_ABI_VERSION,
             runtime_id=CODEX_RUNTIME_ID,
             display_name=CODEX_DISPLAY_NAME,
             adapter_version=version("scholarseed-codex"),
@@ -340,123 +613,117 @@ class CodexRuntimeProvider:
             max_recovery_attempts=readiness.max_recovery_attempts,
         )
 
+    @asynccontextmanager
     async def _control(
-        self,
-        *,
-        cwd: Path,
-        roots: tuple[Path, ...],
-        environment: dict[str, str],
-        authentication_required: bool,
-        remove_environment: tuple[str, ...] = (),
-        timing: RuntimeTimingPort = NOOP_RUNTIME_TIMING,
-    ) -> CodexRuntimeControl:
-        executable = configured_codex_executable()
-        runtime_home = prepare_codex_runtime_home(native_authentication=authentication_required)
-        process_environment, launch_arguments = managed_codex_launch(
-            runtime_home,
-            environment,
-            (),
-        )
-        control = CodexRuntimeControl(
-            CodexControlRequest(
-                request_id=f"runtime-inspect-{uuid.uuid4().hex}",
-                runtime_id=CODEX_RUNTIME_ID,
-                cwd=cwd,
-                executable=executable,
-                identity=CodexRuntimeIdentity(
-                    client_name="scholarseed_desktop",
-                    client_title="书深",
-                    service_name="scholarseed",
-                ),
-                skill_roots=roots,
-                process_environment=process_environment,
-                remove_environment=remove_environment,
-                launch_arguments=launch_arguments,
-                authentication_required=authentication_required,
-                timing=timing,
-            ),
-            host_pool=self._pool,
-        )
-        await control.open()
-        return control
+        self, *, cwd: Path, roots: tuple[Path, ...], host: HostWarmupRequest | None
+    ) -> AsyncIterator[CodexRuntimeControl]:
+        if host is None:
+            raise AppServerError(
+                RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
+            )
+        if cwd.expanduser().resolve() != host.cwd.expanduser().resolve() or (
+            {path.expanduser().resolve() for path in roots}
+            != {path.expanduser().resolve() for path in host.skill_roots}
+        ):
+            raise AppServerError(
+                RESOURCE_HOST_CONFIGURATION_CONFLICT,
+                safe_error=RESOURCE_HOST_CONFIGURATION_CONFLICT,
+            )
+        async with self._borrow_host(host) as lease:
+            control = CodexRuntimeControl(cwd=cwd, lease=lease, host_pool=self._pool)
+            await control.open()
+            try:
+                yield control
+            finally:
+                await control.aclose()
 
     async def configure_skills(self, request: SkillConfigurationRequest) -> CommandReceipt:
-        control = await self._control(
-            cwd=request.cwd,
-            roots=request.roots,
-            environment={},
-            authentication_required=False,
-            timing=request.timing,
-        )
-        try:
-            for skill in request.skills:
-                await control.skill_control.configure(skill.path, skill.enabled)
-            await control.skill_control.list_skills(force_reload=True)
+        async with self._control(
+            cwd=request.cwd, roots=request.roots, host=request.host
+        ) as control:
+            async with control.mutation():
+                for skill in request.skills:
+                    await control.skill_control.configure(skill.path, skill.enabled)
+                inventory = await control.skill_control.list_skills(force_reload=True)
+                effective = {
+                    skill.path.expanduser().resolve(): skill.enabled for skill in inventory.skills
+                }
+                if inventory.errors or any(
+                    effective.get(skill.path.expanduser().resolve()) != skill.enabled
+                    for skill in request.skills
+                ):
+                    raise RuntimeError("skill configuration verification failed")
             return CommandReceipt("skills.configure", CommandState.APPLIED)
-        finally:
-            await control.aclose()
 
     async def inspect(self, request: RuntimeInspectionRequest) -> RuntimeInventory:
-        """Inspect App Server state without creating or resuming a Codex thread."""
-
-        with request.timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
-            environment, tool_environment = await _resolve_launch_secrets(request)
-        if tool_environment:
-            raise ValueError("runtime inspection does not support tool-scoped secrets")
-        control = await self._control(
-            cwd=request.cwd,
-            roots=request.roots,
-            environment=environment,
-            remove_environment=request.launch_secrets.remove_environment,
-            authentication_required=InventoryKind.MODELS in request.inventory.kinds,
-            timing=request.timing,
-        )
-        try:
+        if (
+            request.launch_secrets.bindings
+            or request.launch_secrets.remove_environment
+            or request.secret_port is not None
+        ):
+            raise AppServerError(
+                RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
+            )
+        async with self._control(
+            cwd=request.cwd, roots=request.roots, host=request.host
+        ) as control:
             values: dict[str, RuntimeValue] = {}
             revisions: list[str] = []
             for kind in request.inventory.kinds:
                 if kind is InventoryKind.MODELS:
-                    models = await control.model_control.list_models()
-                    values[kind.value] = json_value(models)
+                    values[kind.value] = json_value(await control.model_control.list_models())
                 elif kind is InventoryKind.SKILLS:
                     if request.inventory.refresh:
-                        await control.host.reassert_skill_roots(request.roots)
-                    skills = await control.skill_control.list_skills(
-                        cwd=request.cwd,
-                        force_reload=request.inventory.refresh,
-                    )
+                        async with control.mutation():
+                            skills = await control.skill_control.list_skills(
+                                cwd=request.cwd,
+                                force_reload=True,
+                            )
+                    else:
+                        skills = await control.skill_control.list_skills(cwd=request.cwd)
                     revisions.append(skills.revision)
                     values[kind.value] = json_value(skills)
+                elif kind is InventoryKind.MCP:
+                    values[kind.value] = json_value(await control.mcp_inventory())
                 else:
                     raise ValueError(f"pre-session inventory is unsupported: {kind.value}")
             return RuntimeInventory(
                 revision=":".join(part for part in revisions if part),
                 values=values,
+                host_identity=control.identity,
             )
-        finally:
-            await control.aclose()
 
     async def execution_threads(
-        self, binding: RuntimeBinding, cwd: Path
+        self, binding: RuntimeBinding, cwd: Path, *, host: HostWarmupRequest | None = None
     ) -> tuple[RuntimeExecutionThread, ...]:
         if binding.runtime_id != CODEX_RUNTIME_ID or not binding.opaque_session_ref:
             raise ValueError("runtime binding does not identify a Codex thread")
-        control = await self._control(
-            cwd=cwd,
-            roots=(),
-            environment={},
-            authentication_required=False,
-        )
-        try:
-            return await NativeActivity(control.host, binding.opaque_session_ref).descendants()
-        finally:
-            await control.aclose()
+        async with self._control(
+            cwd=cwd, roots=host.skill_roots if host else (), host=host
+        ) as control:
+            async with control.reading():
+                return await NativeActivity(control, binding.opaque_session_ref).descendants()
 
     async def open(self, request: OpenSessionRequest) -> RuntimeSession:
         return await self._materialize(request)
 
     async def resume(self, request: ResumeSessionRequest) -> RuntimeSession:
         return await self._materialize(request)
+
+    async def release_idle_resources(self) -> CommandReceipt:
+        try:
+            released = await self._pool.release_idle()
+        except Exception:
+            return CommandReceipt(
+                "resources.release_idle",
+                CommandState.REJECTED,
+                safe_error=RESOURCE_RELEASE_FAILED,
+            )
+        return CommandReceipt(
+            "resources.release_idle",
+            CommandState.APPLIED if released else CommandState.REJECTED,
+            safe_error="" if released else RESOURCE_RELEASE_BUSY,
+        )
 
     async def shutdown(self) -> CommandReceipt:
         await self._pool.aclose()

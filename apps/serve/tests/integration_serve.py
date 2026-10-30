@@ -198,9 +198,20 @@ def main() -> int:
             json={"name": "Integration Project", "path": str(project)},
             timeout=10,
         )
+        check("项目接管异步提交", registered.status_code == 202, registered.text[:200])
+        operation = registered.json()["operation"]
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            registered = httpx.get(f"{BASE}/api/content/operations/{operation}", timeout=10)
+            if registered.status_code == 200 and registered.json()["state"] in (
+                "succeeded",
+                "failed",
+            ):
+                break
+            time.sleep(0.1)
         check(
             "项目注册进入生产 workspace policy",
-            registered.status_code == 200,
+            registered.status_code == 200 and registered.json()["state"] == "succeeded",
             registered.text[:200],
         )
 

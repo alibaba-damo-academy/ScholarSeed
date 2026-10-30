@@ -17,6 +17,8 @@ from damoatrace.recording.content import (
     CONTENT_MARKER,
     DISK_LIMIT,
     EXPIRED,
+    UnsupportedContentVersion,
+    validate_content_version,
 )
 from damoatrace.recording.storage import budget_lock, evidence_lock, make_private, rewrite_content
 
@@ -44,6 +46,7 @@ def _fingerprint(path: Path) -> Fingerprint:
 
 
 def _bodies(record: dict[str, Any]) -> Iterator[Body]:
+    validate_content_version(record)
     if CONTENT_MARKER not in record:
         return
     for field in CONTENT_FIELDS:
@@ -84,6 +87,8 @@ class ContentBudget:
                     record = json.loads(line)
                     if isinstance(record, dict):
                         bodies.extend(_bodies(record))
+                except UnsupportedContentVersion:
+                    raise
                 except (ValueError, KeyError, TypeError):
                     # Unrecognized historical lines remain untouched, never reconstructed.
                     continue
@@ -117,7 +122,7 @@ class ContentBudget:
                 total -= body.size
         for path, removed in selected.items():
 
-            def project(record: dict) -> dict:
+            def project(record: dict, removed: dict[BlockKey, str] = removed) -> dict:
                 result = copy.deepcopy(record)
                 for field in CONTENT_FIELDS:
                     for index, block in enumerate((result.get(field) or {}).get("blocks", [])):

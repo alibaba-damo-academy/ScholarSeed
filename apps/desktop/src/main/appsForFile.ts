@@ -6,6 +6,7 @@
 // 纯 macOS 本机能力, 属产品层; 不进 Agent 层, 也不读任何文件内容, 只按路径问系统。
 
 import { spawn } from 'child_process'
+import { basename } from 'path'
 
 export interface AppCandidate {
   name: string
@@ -15,6 +16,7 @@ export interface AppCandidate {
 }
 
 const MAX_CANDIDATES = 10
+const HIDDEN_APPLICATION_PREFIX = '.'
 
 // JXA 脚本: 从 argv 读文件路径 (不拼接进脚本, 防注入), 输出 {default, apps} JSON。
 // URLsForApplicationsToOpenURL / URLForApplicationToOpenURL 需要真实存在的文件路径,
@@ -76,7 +78,11 @@ export async function appsForFile(filePath: string): Promise<AppCandidate[]> {
   const result = await runJxa(filePath)
   if (!result) return []
   // 默认项置顶, 其余按名称排序; 上限 MAX_CANDIDATES。
-  const list = result.apps
+  const list = result.apps.filter(
+    (application) =>
+      !application.name.startsWith(HIDDEN_APPLICATION_PREFIX) &&
+      !basename(application.path).startsWith(HIDDEN_APPLICATION_PREFIX)
+  )
   list.sort((a, b) => {
     if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1
     return a.name.localeCompare(b.name)

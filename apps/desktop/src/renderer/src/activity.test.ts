@@ -6,12 +6,15 @@ import type { ActivityRow } from './activity.ts'
 import {
   answerInteractionCapabilities,
   subagentActivityItem,
+  subagentIdentities,
+  collaborationStatusKey,
   visibleThinkingItem,
   activityDisclosureOpen,
   activityIdentity,
   activityRows,
   activityRunState,
   artifactCardVisible,
+  artifactVersionGroups,
   cardArtifactIds,
   hasVisibleTurnProgress,
   workingIndicatorVisible,
@@ -27,6 +30,50 @@ const childActivity: Extract<ConvItem, { kind: 'native_activity' }> = {
   details: {},
   turnId: 'parent-turn',
 }
+test('collaboration call labels never describe child completion', () => {
+  const call = { ...childActivity, activityType: 'agent_collaboration', status: 'done' as const }
+  assert.equal(
+    collaborationStatusKey({ ...call, details: { operation: 'spawn_agent' } }),
+    'subagent.call.spawned'
+  )
+  assert.equal(
+    collaborationStatusKey({ ...call, details: { operation: 'wait' } }),
+    'subagent.call.waited'
+  )
+  assert.equal(
+    collaborationStatusKey({ ...call, details: { operation: 'unknown' } }),
+    'subagent.call.ended'
+  )
+  assert.equal(collaborationStatusKey({ ...call, status: 'running' }), 'subagent.call.running')
+  assert.equal(collaborationStatusKey({ ...call, status: 'error' }), 'subagent.call.failed')
+  assert.equal(collaborationStatusKey(childActivity), undefined)
+  assert.equal(childActivity.status, 'running')
+})
+
+test('subagent identities remain distinct across groups, turns and replay', () => {
+  const second = { ...childActivity, activityId: 'second', details: { display_name: 'Subagent' } }
+  const named = { ...childActivity, activityId: 'named', details: { display_name: 'Boyle' } }
+  const items = [childActivity, second, named, { ...childActivity, turnId: 'another-turn' }]
+  const expected = [
+    ['child', 1],
+    ['second', 2],
+    ['named', 'Boyle'],
+  ]
+  assert.deepEqual([...subagentIdentities(items)], expected)
+  assert.deepEqual([...subagentIdentities(structuredClone(items))], expected)
+  assert.deepEqual([...subagentIdentities([...items, { ...second, status: 'done' }])], expected)
+  assert.equal(
+    subagentIdentities([
+      { ...childActivity, details: { display_name: 'Subagent', agent_path: 'worker' } },
+    ]).get('child'),
+    'worker'
+  )
+  assert.equal(
+    subagentIdentities([{ ...childActivity, details: { display_name: '  ' } }]).get('child'),
+    1
+  )
+})
+
 const childCommand = {
   itemId: 'command',
   activity: 'command',
@@ -246,23 +293,111 @@ function publishedArtifact(artifact: SessionArtifact): SessionArtifact {
   }
 }
 
-test('keeps answer selection available while limiting citations to settled turns', () => {
+test('post-delivery cards wait for completion and follow files regardless of event order', () => {
+  const turnId = 'ideas-turn'
+  const card: ConvItem = {
+    kind: 'display_card',
+    turnId,
+    card: { cardId: 'next', type: 'next-steps', content: {} },
+  }
+  const file: ConvItem = {
+    kind: 'artifact',
+    turnId,
+    artifact: publishedArtifact({ artifact_id: 'ideas', name: 'ideas.md', path: 'ideas.md' }),
+  }
+  const answer: ConvItem = { kind: 'agent', text: 'Ideas', turnId }
+  const placements = new Set(['next-steps'])
+  for (const items of [
+    [file, card, answer],
+    [card, answer, file],
+  ]) {
+    assert.deepEqual(
+      activityRows(items, { [turnId]: 'running' }, placements).map((row) => row.kind),
+      ['item']
+    )
+    const rows = activityRows(items, { [turnId]: 'completed' }, placements)
+    assert.deepEqual(
+      rows.map((row) => row.kind),
+      ['item', 'artifacts', 'item']
+    )
+    const last = rows.at(-1)
+    assert.equal(last?.kind === 'item' && last.item, card)
+    for (const outcome of ['failed', 'interrupted', 'unknown'] as const) {
+      assert.ok(
+        !activityRows(items, { [turnId]: outcome }, placements).some(
+          (row) => row.kind === 'item' && row.item.kind === 'display_card'
+        )
+      )
+    }
+  }
+  const nextUser: ConvItem = { kind: 'user', text: 'Deep', turnId: 'next-turn' }
+  const replay = activityRows([file, card, answer, nextUser], { [turnId]: 'completed' }, placements)
+  const final = replay.at(-1)
+  assert.equal(final?.kind === 'item' && final.item, nextUser)
+})
+
+test('next-step placement preserves the upstream file version groups', () => {
+  const turnId = 'ideas-turn'
+  const files: Extract<ConvItem, { kind: 'artifact' }>[] = [1, 2].map((version) => ({
+    kind: 'artifact',
+    turnId,
+    artifact: publishedArtifact({
+      artifact_id: `ideas-${version}`,
+      name: 'ideas.md',
+      path: 'ideas.md',
+      sha256: `revision-${version}`,
+      source_event_seq: version,
+    }),
+  }))
+  const card: ConvItem = {
+    kind: 'display_card',
+    turnId,
+    card: { cardId: 'next', type: 'next-steps', content: {} },
+  }
+  const answer: ConvItem = { kind: 'agent', text: 'Updated ideas', turnId }
+  const rows = activityRows(
+    [files[0], card, answer, files[1]],
+    { [turnId]: 'completed' },
+    new Set(['next-steps'])
+  )
+  assert.deepEqual(
+    rows.map((row) => row.kind),
+    ['item', 'artifacts', 'item']
+  )
+  const delivery = rows[1]
+  assert.equal(delivery.kind, 'artifacts')
+  if (delivery.kind !== 'artifacts') return
+  assert.deepEqual(
+    artifactVersionGroups(delivery.items).map((group) =>
+      group.map((file) => file.artifact.artifact_id)
+    ),
+    [['ideas-2', 'ideas-1']]
+  )
+  const last = rows.at(-1)
+  assert.equal(last?.kind === 'item' && last.item, card)
+})
+
+test('hides session forks while preserving answer selection and settled citations', () => {
   assert.deepEqual(answerInteractionCapabilities(undefined), {
     citationEnabled: true,
+    forkEnabled: false,
     selectionEnabled: true,
   })
   assert.deepEqual(answerInteractionCapabilities('completed'), {
     citationEnabled: true,
+    forkEnabled: false,
     selectionEnabled: true,
   })
   for (const outcome of ['failed', 'interrupted', 'unknown'] as const) {
     assert.deepEqual(answerInteractionCapabilities(outcome), {
       citationEnabled: true,
+      forkEnabled: false,
       selectionEnabled: true,
     })
   }
   assert.deepEqual(answerInteractionCapabilities('running'), {
     citationEnabled: false,
+    forkEnabled: false,
     selectionEnabled: true,
   })
 })
@@ -273,6 +408,7 @@ test('keeps the working indicator visible through admission and execution', () =
   assert.equal(workingIndicatorVisible(false, false, 0), false)
   assert.equal(workingIndicatorVisible(true, true, 1), false)
   assert.equal(workingIndicatorVisible(true, false, 0, true), false)
+  assert.equal(workingIndicatorVisible(true, true, 0, false, true), false)
 })
 
 test('an individual tool failure does not become a turn failure', () => {
@@ -511,7 +647,44 @@ test('shows only the latest card for duplicate normalized artifact paths', () =>
   }
 })
 
-test('shows generic Agent artifact cards only for published deliverables with configured suffixes', () => {
+test('keeps published BibTeX cards in live and restored conversations (88019783)', () => {
+  const turnId = 'bibtex-delivery'
+  for (const role of ['final', 'supporting'] as const) {
+    const artifact = publishedArtifact({
+      artifact_id: `bibtex-${role}`,
+      path: 'references.bib',
+      name: 'references.bib',
+      media_type: 'application/octet-stream',
+      size: 433,
+      status: 'available',
+      role,
+      source_event_seq: 95,
+    })
+    const items: ConvItem[] = [
+      { kind: 'user', text: 'Generate BibTeX references', turnId },
+      { kind: 'artifact', artifact, turnId },
+      { kind: 'agent', text: 'references.bib is ready', turnId },
+    ]
+
+    assert.equal(artifactCardVisible(artifact), true)
+    assert.equal(
+      activityRows(items, { [turnId]: 'running' }).filter((row) => row.kind === 'artifacts').length,
+      0
+    )
+    for (const source of [items, JSON.parse(JSON.stringify(items)) as ConvItem[]]) {
+      const rows = activityRows(source, { [turnId]: 'completed' })
+      const files = rows.filter((row) => row.kind === 'artifacts')
+      assert.equal(files.length, 1)
+      assert.equal(files[0].turnId, turnId)
+      assert.deepEqual(
+        files[0].items.map((item) => item.artifact),
+        [artifact]
+      )
+    }
+  }
+})
+
+test('shows output deliveries regardless of suffix but keeps stage deliveries out of messages', () => {
   assert.equal(
     artifactCardVisible(
       publishedArtifact({ artifact_id: 'markdown', path: 'REPORT.MD', name: 'REPORT.MD' })
@@ -540,25 +713,25 @@ test('shows generic Agent artifact cards only for published deliverables with co
     artifactCardVisible(
       publishedArtifact({ artifact_id: 'json', path: 'references.json', name: 'references.json' })
     ),
-    false
+    true
   )
   assert.equal(
     artifactCardVisible(
       publishedArtifact({ artifact_id: 'unknown', path: 'result.custom', name: 'result.custom' })
     ),
-    false
+    true
   )
   assert.equal(
     artifactCardVisible(
       publishedArtifact({ artifact_id: 'extensionless', path: 'RESULT', name: 'RESULT' })
     ),
-    false
+    true
   )
   assert.equal(
     artifactCardVisible(
       publishedArtifact({ artifact_id: 'empty', path: '01_err.txt', name: '01_err.txt', size: 0 })
     ),
-    false
+    true
   )
   assert.equal(
     artifactCardVisible(
@@ -578,6 +751,29 @@ test('shows generic Agent artifact cards only for published deliverables with co
     true
   )
 
+  assert.equal(
+    artifactCardVisible(
+      publishedArtifact({
+        artifact_id: 'stage',
+        path: 'draft.md',
+        name: 'draft.md',
+        role: 'intermediate',
+      })
+    ),
+    false
+  )
+  assert.equal(
+    artifactCardVisible(
+      publishedArtifact({
+        artifact_id: 'deleted',
+        path: 'report.md',
+        name: 'report.md',
+        status: 'deleted',
+      })
+    ),
+    false
+  )
+
   const rows = activityRows([
     { kind: 'agent', text: 'complete', turnId: 'turn-artifact-filter' },
     {
@@ -585,6 +781,7 @@ test('shows generic Agent artifact cards only for published deliverables with co
       turnId: 'turn-artifact-filter',
       artifact: {
         artifact_id: 'card-source',
+        publication_id: 'stage-publication',
         path: 'references.card1.json',
         name: 'references.card1.json',
         role: 'intermediate',
@@ -715,7 +912,7 @@ test('defers published files until their owning turn settles', () => {
   }
 })
 
-test('does not merge same-path versions or guess ownership for turnless files', () => {
+test('retains same-path publication snapshots for the version menu without guessing turnless ownership', () => {
   const rows = activityRows(
     [
       {
@@ -875,4 +1072,105 @@ test('keeps Markdown and non-Markdown publications from earlier turns', () => {
     assert.equal(artifactRows[0].items[0].artifact.artifact_id, 'old')
     assert.equal(artifactRows[1].items[0].artifact.artifact_id, 'csv')
   }
+})
+
+test('file versions select the newest publication and preserve old snapshots', () => {
+  const items = [3, 1, 2].map((seq) => ({
+    kind: 'artifact' as const,
+    turnId: 'turn',
+    artifact: publishedArtifact({
+      artifact_id: `p${seq}`,
+      path: 'report.pdf',
+      name: 'report.pdf',
+      sha256: `hash${seq}`,
+      source_event_seq: seq,
+    }),
+  }))
+  const groups = artifactVersionGroups(items)
+  assert.deepEqual(
+    groups.map((group) => group.map((item) => item.artifact.artifact_id)),
+    [['p3', 'p2', 'p1']]
+  )
+  assert.equal(items[0].artifact.artifact_id, 'p3')
+})
+
+test('file versions normalize separators without merging directories or turns', () => {
+  const items = ['report.pdf', './report.pdf', 'other/report.pdf', 'report.pdf'].map(
+    (path, index) => ({
+      kind: 'artifact' as const,
+      turnId: index === 3 ? 'other-turn' : 'turn',
+      artifact: publishedArtifact({
+        artifact_id: `p${index}`,
+        path,
+        name: 'report.pdf',
+        source_event_seq: index,
+      }),
+    })
+  )
+  assert.deepEqual(
+    artifactVersionGroups(items).map((group) => group.map((item) => item.artifact.artifact_id)),
+    [['p1', 'p0'], ['p2'], ['p3']]
+  )
+})
+
+test('file versions deduplicate identical content using the latest publication', () => {
+  const items = [1, 2].map((seq) => ({
+    kind: 'artifact' as const,
+    turnId: 'turn',
+    artifact: publishedArtifact({
+      artifact_id: `p${seq}`,
+      path: 'report.pdf',
+      name: 'report.pdf',
+      sha256: 'same',
+      source_event_seq: seq,
+    }),
+  }))
+  assert.deepEqual(
+    artifactVersionGroups(items)
+      .flat()
+      .map((item) => item.artifact.artifact_id),
+    ['p2']
+  )
+})
+
+test('file versions preserve unknown ownership and use timestamps when no sequence exists', () => {
+  const items = [1, 2].map((time) => ({
+    kind: 'artifact' as const,
+    turnId: 'turn',
+    artifact: publishedArtifact({
+      artifact_id: `p${time}`,
+      path: 'report.pdf',
+      name: 'report.pdf',
+      updated_at: time,
+    }),
+  }))
+  assert.equal(artifactVersionGroups(items)[0][0].artifact.artifact_id, 'p2')
+  assert.equal(
+    artifactVersionGroups(items.map((item) => ({ ...item, turnId: undefined }))).length,
+    2
+  )
+  assert.equal(
+    artifactVersionGroups(
+      items.map((item) => ({ ...item, artifact: { ...item.artifact, path: '' } }))
+    ).length,
+    2
+  )
+})
+
+test('file versions use the published path rather than a library copy destination', () => {
+  const items = [1, 2].map((seq) => ({
+    kind: 'artifact' as const,
+    turnId: 'turn',
+    artifact: publishedArtifact({
+      artifact_id: `p${seq}`,
+      path: seq === 1 ? 'folder\\report.pdf' : './folder/report.pdf',
+      name: 'report.pdf',
+      saved_to: `copy${seq}.pdf`,
+      source_event_seq: seq,
+    }),
+  }))
+  assert.deepEqual(
+    artifactVersionGroups(items).map((group) => group.map((item) => item.artifact.artifact_id)),
+    [['p2', 'p1']]
+  )
 })

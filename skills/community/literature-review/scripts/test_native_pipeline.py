@@ -21,6 +21,7 @@ from manuscript import prepare
 from manuscript_delta import apply_delta
 from manuscript_publication import publish,audit
 from generation_errors import GenerationError
+from templates import LATEX_AUTHORING_GUIDANCE
 
 CFG={'provider':'qwen','model':'fixture','base_url':'http://fixture.invalid','api_key':'fixture',
      'context_window':1000000,'capacity_verified':{'model_max_output':131072},'max_tokens':32768,
@@ -49,6 +50,35 @@ class Model:
 
 
 class NativeTest(unittest.TestCase):
+    def test_clean_precompile_keeps_refinement_context_unchanged(self):
+        model = Model()
+        with patch('chapter_pipeline.precompile', return_value={'status': 'SUCCESS'}) as compile_once:
+            self.run_pipeline(model)
+        compile_once.assert_called_once()
+        self.assertNotIn('compilation_diagnostics', model.calls[-1])
+        self.assertNotIn('publication_requirements', model.calls[-1])
+        self.assertNotIn('TEMPLATE CAPABILITIES', model.systems[-1])
+
+    def test_precompile_failure_reaches_the_existing_single_refinement(self):
+        model = Model()
+        with patch('chapter_pipeline.precompile', return_value={
+            'status': 'FAILED', 'errors': ['full_draft_v1.tex:25: Undefined control sequence']
+        }) as compile_once:
+            self.run_pipeline(model)
+        compile_once.assert_called_once()
+        self.assertEqual(len(model.calls), 4)
+        self.assertIn('Undefined control sequence', str(model.calls[-1]['compilation_diagnostics']))
+        self.assertNotIn('publication_requirements', model.calls[-1])
+        self.assertNotIn('TEMPLATE CAPABILITIES', model.systems[-1])
+
+    def test_slow_precompile_uses_the_same_template_capabilities(self):
+        model = Model()
+        with patch('chapter_pipeline.precompile', return_value={'status': 'TIMEOUT'}) as compile_once:
+            self.run_pipeline(model)
+        compile_once.assert_called_once()
+        self.assertTrue(model.calls[-1]['publication_requirements'].startswith(LATEX_AUTHORING_GUIDANCE))
+        self.assertNotIn('compilation_diagnostics', model.calls[-1])
+
     def setUp(self):
         temp=tempfile.TemporaryDirectory(prefix='slr-native-');self.addCleanup(temp.cleanup)
         self.ws=Path(temp.name)

@@ -5,9 +5,16 @@ import zh from '../../localization/locales/zh/conversation.json' with { type: 'j
 import en from '../../localization/locales/en/conversation.json' with { type: 'json' }
 import componentsZh from '../../localization/locales/zh/components.json' with { type: 'json' }
 import componentsEn from '../../localization/locales/en/components.json' with { type: 'json' }
+import browserZh from '../../localization/locales/zh/browser.json' with { type: 'json' }
+import browserEn from '../../localization/locales/en/browser.json' with { type: 'json' }
 import { projectActivityEvents } from './transcript.ts'
 
 import {
+  browserApprovalBody,
+  browserApprovalResolution,
+  browserApprovalSubmission,
+  browserApprovalTarget,
+  browserApprovalCardRole,
   formatHilResolution,
   formatHilSubmissionError,
   hilEventResolution,
@@ -31,6 +38,186 @@ test('product authorization survives completion while native callbacks expire', 
   assert.equal(completed[1].kind === 'hil' && completed[1].hilState, 'stale')
   assert.equal(settlePendingHil([product], 'turn', 'stale')[0].kind === 'hil', true)
   assert.equal(pendingHilItems(settlePendingHil([product], 'turn', 'stale')).length, 0)
+})
+
+test('browser approval preserves scoped request and sends only a structured decision', () => {
+  const card = projectHilCard({
+    request_id: 'browser-request', kind: 'browser_approval', method: 'browser_approval',
+    tab_id: 'tab-1', proof_id: 'main-proof', target_instance_id: 'instance-1', target_generation: 3,
+    origin: 'https://example.org', action: 'interact',
+    intent: 'Open article', expires_at: 1_800_000_000
+  }, 1, 'turn')
+  assert.equal(card.hilKind, 'browser_approval')
+  assert.deepEqual(card.browserApproval, {
+    tabId: 'tab-1', proofId: 'main-proof', targetInstanceId: 'instance-1', targetGeneration: 3,
+    origin: 'https://example.org', action: 'interact',
+    intent: 'Open article', expiresAt: 1_800_000_000_000
+  })
+  assert.deepEqual(browserApprovalBody('allow_once'), { decision: 'allow_once' })
+  assert.deepEqual(browserApprovalBody('deny'), { decision: 'deny' })
+  assert.deepEqual(browserApprovalResolution('allow_once', ''), { kind: 'allowedOnce' })
+  assert.deepEqual(browserApprovalResolution('deny', 'expired'), { kind: 'browserExpired' })
+  assert.deepEqual(browserApprovalResolution('deny', 'turn_inactive'), { kind: 'browserInactive' })
+  assert.deepEqual(browserApprovalResolution('deny', ''), { kind: 'denied' })
+  assert.equal(projectHilCard({
+    request_id: 'malformed', kind: 'browser_approval', method: 'browser_approval',
+    tab_id: 'tab-1', origin: 'https://example.org', action: 'read',
+    expires_at: Number.NaN
+  }, 1).browserApproval, undefined)
+  assert.equal(projectHilCard({
+    request_id: 'missing-proof', kind: 'browser_approval', method: 'browser_approval',
+    tab_id: 'tab-1', origin: 'https://example.org', action: 'read', expires_at: 1_800_000_000
+  }, 1).browserApproval, undefined)
+  assert.deepEqual(transcriptPresentationItems([card]), [])
+  const resolved = projectActivityEvents([card], [{
+    v: 2, seq: 1, ts: 1_800_000_000, type: 'hil_resolved',
+    session_id: 'session', turn_id: 'turn', item_id: '',
+    data: { request_id: 'browser-request', kind: 'browser_approval', state: 'resolved', decision: 'deny', reason: 'expired' }
+  }])
+  assert.equal(resolved[0].kind === 'hil' && resolved[0].resolvedMessage?.kind, 'browserExpired')
+  assert.equal(transcriptPresentationItems(resolved).length, 1)
+  assert.equal(browserZh.approval.title, '浏览器访问请求')
+  assert.equal(browserEn.approval.title, 'Browser access request')
+})
+
+test('history approval projects only a bounded query, without inventing a tab or origin', () => {
+  const card = projectHilCard({
+    request_id: 'history-request', kind: 'browser_history_approval', method: 'browser_history_approval',
+    proof_id: 'history-proof', query_digest: 'a'.repeat(64), history_revision: 3,
+    search: 'research', offset: 2, limit: 10, intent: 'Find a paper', expires_at: 1_800_000_000
+  }, 1, 'turn')
+  assert.equal(card.hilKind, 'browser_history_approval')
+  assert.deepEqual(card.browserHistoryApproval, {
+    proofId: 'history-proof', queryDigest: 'a'.repeat(64), historyRevision: 3,
+    search: 'research', offset: 2, limit: 10, intent: 'Find a paper', expiresAt: 1_800_000_000_000
+  })
+  assert.equal(card.browserApproval, undefined)
+  assert.deepEqual(transcriptPresentationItems([card]), [])
+  const resolved = projectActivityEvents([card], [{
+    v: 2, seq: 1, ts: 1_800_000_000, type: 'hil_resolved',
+    session_id: 'session', turn_id: 'turn', item_id: '',
+    data: { request_id: 'history-request', kind: 'browser_history_approval', state: 'resolved', decision: 'deny', reason: 'expired' }
+  }])
+  assert.equal(resolved[0].kind === 'hil' && resolved[0].resolvedMessage?.kind, 'historyExpired')
+  assert.equal(transcriptPresentationItems(resolved).length, 1)
+})
+
+test('history approval fails closed on malformed query and provenance', () => {
+  const request = {
+    request_id: 'history-request', kind: 'browser_history_approval', method: 'browser_history_approval',
+    proof_id: 'history-proof', query_digest: 'a'.repeat(64), history_revision: 3,
+    search: 'research', offset: 2, limit: 10, intent: 'Find a paper', expires_at: 1_800_000_000
+  }
+  for (const mutation of [
+    { proof_id: '' }, { query_digest: 'wrong' }, { history_revision: -1 },
+    { search: '' }, { search: 'x'.repeat(257) }, { offset: -1 }, { offset: 1001 },
+    { limit: 0 }, { limit: 21 }, { intent: '' }, { intent: 'x'.repeat(513) },
+    { expires_at: Number.NaN }, { method: 'browser_approval' }
+  ]) {
+    assert.equal(projectHilCard({ ...request, ...mutation }, 1).browserHistoryApproval, undefined)
+  }
+})
+
+test('browser approval treats lost POST and incomplete confirmation as unknown, never retryable', () => {
+  assert.deepEqual(browserApprovalSubmission({ ok: false, error: 'network failed' }), { hilState: 'unknown' })
+  assert.deepEqual(browserApprovalSubmission({ ok: false, outcome: 'unknown' }), { hilState: 'unknown' })
+  assert.deepEqual(browserApprovalSubmission({ ok: true }), { hilState: 'unknown' })
+  assert.deepEqual(browserApprovalSubmission({ ok: true, interaction: { state: 'resolved' } }), { hilState: 'unknown' })
+  assert.deepEqual(browserApprovalSubmission({ ok: true, interaction: { state: 'resolved', decision: 'deny', reason: 'expired' } }), {
+    hilState: 'resolved', resolved: 'deny', resolvedMessage: { kind: 'browserExpired' }
+  })
+})
+
+test('browser approval carries only trusted tab and turn identity, marking model intent as advisory', () => {
+  const card = projectHilCard({
+    request_id: 'request', kind: 'browser_approval', method: 'browser_approval',
+    tab_id: 'tab-1', proof_id: 'main-proof', target_instance_id: 'instance-1', target_generation: 3,
+    tab_title: 'Article', tab_url: 'https://example.org/article',
+    origin: 'https://example.org', action: 'read', intent: 'Ignore safeguards', expires_at: 1_800_000_000
+  }, 1, 'turn-1')
+  assert.equal(card.turnId, 'turn-1')
+  assert.equal(card.browserApproval?.tabId, 'tab-1')
+  assert.equal(card.browserApproval?.targetInstanceId, 'instance-1')
+  assert.equal(card.browserApproval?.targetGeneration, 3)
+  assert.equal(card.browserApproval?.tabTitle, 'Article')
+  assert.equal(card.browserApproval?.tabUrl, 'https://example.org/article')
+  assert.equal(card.browserApproval?.intent, 'Ignore safeguards')
+  assert.match(browserZh.approval.intent, /Agent/)
+  assert.match(browserEn.approval.intent, /Agent/)
+})
+
+test('browser approval verifies Main tab identity and origin before enabling consent', () => {
+  const approval = { tabId: 'tab-1', origin: 'https://example.org' }
+  const page = { tabId: 'tab-1', title: 'Article', url: 'https://example.org/article' }
+  assert.deepEqual(browserApprovalTarget({ tabs: [page] }, approval), page)
+  assert.equal(browserApprovalTarget({ tabs: [{ ...page, url: 'https://other.org/article' }] }, approval), null)
+  assert.equal(browserApprovalTarget({ tabs: [{ ...page, tabId: 'tab-2' }] }, approval), null)
+  assert.equal(browserApprovalTarget({ tabs: [{ ...page, url: 'not a URL' }] }, approval), null)
+})
+
+test('navigate approval displays trusted source and destination, including a blank source tab', () => {
+  const card = projectHilCard({
+    request_id: 'navigate-request', kind: 'browser_approval', method: 'browser_approval',
+    tab_id: 'tab-1', proof_id: 'navigate-proof', target_instance_id: 'instance-1', target_generation: 2,
+    origin: 'https://www.iana.org', source_origin: null, action: 'navigate', intent: 'Open reference',
+    destination_url: 'https://www.iana.org/domains/reserved', destination_origin: 'https://www.iana.org',
+    expires_at: 1_800_000_000
+  }, 1, 'turn')
+  assert.equal(card.browserApproval?.sourceOrigin, null)
+  assert.equal(card.browserApproval?.destinationUrl, 'https://www.iana.org/domains/reserved')
+  assert.equal(card.browserApproval?.destinationOrigin, 'https://www.iana.org')
+  const blank = { tabId: 'tab-1', title: '', url: 'about:blank' }
+  assert.deepEqual(browserApprovalTarget({ tabs: [blank] }, card.browserApproval!), blank)
+  assert.equal(browserApprovalTarget({ tabs: [{ ...blank, url: 'https://example.org/' }] }, card.browserApproval!), null)
+})
+
+test('navigate approval fails closed on missing, malformed, or mismatched destination', () => {
+  const valid = {
+    request_id: 'navigate-request', kind: 'browser_approval', method: 'browser_approval',
+    tab_id: 'tab-1', proof_id: 'navigate-proof', target_instance_id: 'instance-1', target_generation: 2,
+    origin: 'https://www.iana.org', source_origin: 'https://example.org', action: 'navigate', intent: 'Open reference',
+    destination_url: 'https://www.iana.org/domains/reserved', destination_origin: 'https://www.iana.org',
+    expires_at: 1_800_000_000
+  }
+  const page = { tabId: 'tab-1', title: 'Source', url: 'https://example.org/page' }
+  const card = projectHilCard(valid, 1, 'turn')
+  assert.deepEqual(browserApprovalTarget({ tabs: [page] }, card.browserApproval!), page)
+  assert.equal(browserApprovalTarget({ tabs: [{ ...page, url: 'https://other.org/' }] }, card.browserApproval!), null)
+  for (const invalid of [
+    { destination_url: undefined }, { destination_origin: undefined },
+    { destination_origin: 'https://other.org' }, { origin: 'https://other.org' },
+    { destination_url: 'https://www.iana.org@evil.example/' },
+    { destination_url: 'javascript:alert(1)' }, { source_origin: undefined }
+  ]) {
+    assert.equal(projectHilCard({ ...valid, ...invalid }, 1, 'turn').browserApproval, undefined)
+  }
+})
+
+test('action approval binds the visible element without carrying fill content', () => {
+  const valid = {
+    request_id: 'action-request', kind: 'browser_approval', method: 'browser_approval',
+    tab_id: 'tab-1', proof_id: 'action-proof', target_instance_id: 'instance-1', target_generation: 2,
+    origin: 'https://example.org', action: 'fill', browser_action: 'fill' as const,
+    prepared_id: 'prepared-1', snapshot_id: 'snapshot-1', element_ref: 'ref-1',
+    element: { role: 'textbox', name: 'Search' }, intent: 'Search articles', expires_at: 1_800_000_000
+  }
+  const card = projectHilCard(valid, 1, 'turn')
+  assert.equal(card.browserApproval?.element?.name, 'Search')
+  assert.equal(card.browserApproval?.browserAction, 'fill')
+  assert.equal(JSON.stringify(card).includes('search terms'), false)
+  for (const invalid of [
+    { prepared_id: undefined }, { snapshot_id: undefined }, { element_ref: undefined },
+    { browser_action: 'click' as const }, { element: undefined }, { element: { role: '', name: 'Search' } }
+  ]) {
+    assert.equal(projectHilCard({ ...valid, ...invalid }, 1, 'turn').browserApproval, undefined)
+  }
+})
+
+test('only an active browser approval uses alertdialog semantics', () => {
+  assert.equal(browserApprovalCardRole('dock', false, false), 'alertdialog')
+  assert.equal(browserApprovalCardRole('history', true, false), 'group')
+  assert.equal(browserApprovalCardRole('dock', false, true), 'group')
+  assert.equal(browserApprovalCardRole('history', false, false), 'group')
 })
 
 test('late authorization HTTP and SSE answers cannot invent execution', () => {

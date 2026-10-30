@@ -13,7 +13,7 @@ import { resolve } from 'path'
 import { defineConfig } from 'vite'
 import type { PluginOption } from 'vite'
 import react from '@vitejs/plugin-react'
-import { developmentLocalization } from './scripts/localization/dom.mjs'
+import { developmentLocalization } from './scripts/ci/localization/dom.mjs'
 import { DEFAULT_SERVE_URL, RENDERER_DEV_PORT } from './endpoints'
 import { RENDERER_OPTIMIZE_DEPS, supportedFontSources } from './renderer'
 

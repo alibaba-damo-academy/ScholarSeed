@@ -7,8 +7,9 @@ from typing import Awaitable, Callable, Mapping
 
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
-from scholarseed_runtime.contract.history import MessagePhase, TurnStatus
+from scholarseed_runtime.contract.history import TurnStatus
 from scholarseed_runtime.contract.incident import RuntimeIncident
+from scholarseed_runtime.contract.inventory import SkillPolicy
 
 CODEX_DEFAULT_TURN_TIMEOUT_SECONDS = 12 * 60 * 60
 CODEX_REASONING_SUMMARY_CONFIG = "model_reasoning_summary"
@@ -99,6 +100,13 @@ class CodexRuntimeIdentity:
     service_name: str = ""
 
 
+CODEX_MANAGED_IDENTITY = CodexRuntimeIdentity(
+    client_name="scholarseed_desktop",
+    client_title="书深",
+    service_name="scholarseed",
+)
+
+
 @dataclass(frozen=True)
 class CodexRuntimeLaunchArgument:
     """One optional process argument supplied by a surface consumer.
@@ -183,13 +191,15 @@ class CodexSessionOpenRequest:
     runtime_id: str
     cwd: Path
     resume_session_id: str = ""
+    fork_session_id: str = ""
+    fork_turn_id: str = ""
     model: str = ""
     model_provider: str = ""
     thread_config: Mapping[str, JsonValue] = field(default_factory=dict)
     process_environment: Mapping[str, str] = field(default_factory=dict)
     remove_environment: tuple[str, ...] = ()
     launch_arguments: tuple[CodexRuntimeLaunchArgument, ...] = ()
-    authentication_required: bool | None = None
+    provider_configuration: Mapping[str, JsonValue] = field(default_factory=dict, repr=False)
     sandbox: str = ""
     permissions_profile: str = ""
     approval_policy: str = ""
@@ -209,8 +219,11 @@ class CodexSessionOpenRequest:
     network_access: bool = False
     created_at: str | None = None
     ephemeral: bool = False
+    skill_policy: SkillPolicy = SkillPolicy.INHERIT
     execution_scope: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
+    process_sharing_scope: str = field(default="", repr=False)
+    launch_cwd: Path | None = None
 
 
 CodexSessionEventObserver = Callable[[CodexSessionEvent], Awaitable[None] | None]

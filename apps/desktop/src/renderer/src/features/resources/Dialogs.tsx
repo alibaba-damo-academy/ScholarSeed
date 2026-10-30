@@ -26,9 +26,10 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue
+  SelectValue,
 } from '../../components/ui'
 import { useApp } from '../../store'
+import { systemTrashKey } from '../../trash'
 import { hasDirtyProjectPath, useDocumentWorkspace } from '../workbench/workspace'
 import { validateResourceMove } from './lifecycle'
 import type { ResourceNode } from './state'
@@ -58,12 +59,19 @@ export function LinkedCreateConfirm(): React.JSX.Element | null {
         <AlertDialogHeader>
           <AlertDialogTitle>{t('linkedCreate.title')}</AlertDialogTitle>
           <AlertDialogDescription>
-            <Trans ns="resources" i18nKey="linkedCreate.description" values={{ name: pending.directoryName }} components={{ name: <strong /> }} />
+            <Trans
+              ns="resources"
+              i18nKey="linkedCreate.description"
+              values={{ name: pending.directoryName }}
+              components={{ name: <strong /> }}
+            />
           </AlertDialogDescription>
         </AlertDialogHeader>
         <Alert tone="warning">
           <AlertDescription truncate={false}>
-            {pending.mode === 'create_folder' ? t('linkedCreate.folderWarning') : t('linkedCreate.documentWarning')}
+            {pending.mode === 'create_folder'
+              ? t('linkedCreate.folderWarning')
+              : t('linkedCreate.documentWarning')}
           </AlertDescription>
         </Alert>
         <AlertDialogFooter>
@@ -93,6 +101,7 @@ export function LinkedCreateConfirm(): React.JSX.Element | null {
 export function DeleteConfirm(): React.JSX.Element | null {
   const { t } = useTranslation('resources')
   const { t: uiText } = useTranslation('ui')
+  const trash = uiText(systemTrashKey())
   const { state, act } = useApp()
   const documents = useDocumentWorkspace()
   const target = state.resource.deleteConfirm
@@ -104,21 +113,40 @@ export function DeleteConfirm(): React.JSX.Element | null {
   )
 
   return (
-    <AlertDialog open onOpenChange={(open) => {
-      if (!open) act.cancelResourceDelete()
-    }}>
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.cancelResourceDelete()
+      }}
+    >
       <AlertDialogContent data-testid="resource-delete-confirm">
         <AlertDialogHeader>
           <AlertDialogTitle>
             {target.kind === 'dir' ? t('delete.folderTitle') : t('delete.fileTitle')}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {target.kind === 'dir' ? <Trans ns="resources" i18nKey="delete.folderDescription" values={{ name: target.name }} components={{ name: <strong /> }} /> : <Trans ns="resources" i18nKey="delete.fileDescription" values={{ name: target.name }} components={{ name: <strong /> }} />}
+            {target.kind === 'dir' ? (
+              <Trans
+                ns="resources"
+                i18nKey="delete.folderDescription"
+                values={{ name: target.name }}
+                components={{ name: <strong /> }}
+              />
+            ) : (
+              <Trans
+                ns="resources"
+                i18nKey="delete.fileDescription"
+                values={{ name: target.name }}
+                components={{ name: <strong /> }}
+              />
+            )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <Alert tone="warning">
           <AlertDescription truncate={false}>
-            {hasUnsavedChanges ? t('delete.unsavedWarning') : t('delete.warning')}
+            {hasUnsavedChanges
+              ? t('delete.unsavedWarning', { trash })
+              : t('delete.warning', { trash })}
           </AlertDescription>
         </Alert>
         <AlertDialogFooter>
@@ -133,7 +161,7 @@ export function DeleteConfirm(): React.JSX.Element | null {
             data-testid="resource-delete-go"
             onClick={() => void act.deleteResourceNode()}
           >
-            {t('delete.action')}
+            {t('delete.action', { trash })}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -150,9 +178,12 @@ export function UnlinkConfirm(): React.JSX.Element | null {
   if (!target) return null
 
   return (
-    <AlertDialog open onOpenChange={(open) => {
-      if (!open) act.cancelResourceUnlink()
-    }}>
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.cancelResourceUnlink()
+      }}
+    >
       <AlertDialogContent data-testid="resource-unlink-confirm">
         <AlertDialogHeader>
           <AlertDialogTitle>{t('unlink.title', { name: target.name })}</AlertDialogTitle>
@@ -176,7 +207,9 @@ export function UnlinkConfirm(): React.JSX.Element | null {
           </AlertDescription>
         </Alert>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={act.cancelResourceUnlink}>{uiText('cancel')}</AlertDialogCancel>
+          <AlertDialogCancel onClick={act.cancelResourceUnlink}>
+            {uiText('cancel')}
+          </AlertDialogCancel>
           <Button
             variant="danger"
             data-testid="resource-unlink-go"
@@ -205,32 +238,35 @@ export function LinkSupersedeConfirm(): React.JSX.Element | null {
   if (!pending) return null
 
   return (
-    <AlertDialog open onOpenChange={(open) => {
-      if (!open) act.cancelLinkSupersede()
-    }}>
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.cancelLinkSupersede()
+      }}
+    >
       <AlertDialogContent
         aria-label={t('linkSupersede.label')}
         data-testid="resource-link-supersede-confirm"
       >
         <AlertDialogHeader>
           <AlertDialogTitle>{t('linkSupersede.title')}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {t('linkSupersede.description')}
-          </AlertDialogDescription>
+          <AlertDialogDescription>{t('linkSupersede.description')}</AlertDialogDescription>
         </AlertDialogHeader>
         <div
-          className="mt-4 rounded-[10px] border border-[var(--vds-border-default)] p-4"
+          className="mt-[var(--vds-resource-dialog-content-margin-top)] rounded-[var(--vds-resource-dialog-content-radius)] border border-[var(--vds-border-default)] p-[var(--vds-resource-dialog-content-padding)]"
           data-testid="resource-link-supersede-covered-box"
         >
-          <div className="text-[13px] font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
+          <div className="text-[length:var(--vds-resource-dialog-title-font-size)] font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
             {t('linkSupersede.coveredLabel', { count: pending.covered.length })}
           </div>
           <ul
-            className="mt-1 list-disc pl-5 text-[11.5px] text-[var(--vds-text-secondary)]"
+            className="mt-[var(--vds-resource-dialog-list-margin-top)] list-disc pl-[var(--vds-resource-dialog-list-padding-inline-start)] text-[length:var(--vds-resource-dialog-list-font-size)] text-[var(--vds-text-secondary)]"
             data-testid="resource-link-supersede-covered"
           >
             {pending.covered.map((child) => (
-              <li className="break-all" key={child.rootId}>{child.name}</li>
+              <li className="break-all" key={child.rootId}>
+                {child.name}
+              </li>
             ))}
           </ul>
         </div>
@@ -291,9 +327,9 @@ export function MoveDialog(): React.JSX.Element | null {
 
   const options = useMemo(() => {
     if (!dialog) return []
-    return flattenDirs(state.resource.tree).filter((row) => (
-      validateResourceMove(state.resource.tree, dialog.path, row.path).ok
-    ))
+    return flattenDirs(state.resource.tree).filter(
+      (row) => validateResourceMove(state.resource.tree, dialog.path, row.path).ok
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog?.path, state.resource.tree])
 
@@ -310,9 +346,12 @@ export function MoveDialog(): React.JSX.Element | null {
   const rootAllowed = validateResourceMove(state.resource.tree, dialog.path, '').ok
 
   return (
-    <Dialog open onOpenChange={(open) => {
-      if (!open) act.closeResourceMoveDialog()
-    }}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.closeResourceMoveDialog()
+      }}
+    >
       <DialogContent data-testid="resource-move-dialog">
         <DialogHeader>
           <DialogTitle>{t('move.title', { name: dialog.name })}</DialogTitle>

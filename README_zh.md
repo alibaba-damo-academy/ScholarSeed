@@ -118,57 +118,59 @@ ScholarSeed 采用桌面客户端、本地服务与 Agent 运行时分层架构�
 
 ### 从源码运行
 
-环境要求：Git、Node.js **24.16.0**、npm **11.13.0**、uv **≥ 0.12.11**，以及目标平台的原生构建工具。
+环境要求：Git、Node.js **24.16.0**、pnpm **12.14.0**（默认；同时支持 npm 和 Yarn）、uv **≥ 0.12.11**，以及目标平台的原生构建工具。
+
+Worktree 默认以 `pnpm install --frozen-lockfile` 初始化，共享 pnpm store 而不是整个 `node_modules`。pnpm 缺失或版本不符时，按[工具链与授权安装流程](docs/runbooks/development.md#worktree-初始化与-pnpm-前提)处理；AI 获得本次明确批准后才可安装。
 
 克隆本仓库后，在仓库根目录执行：
 
 ```bash
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm ops dev
 ```
 
-`npm run dev` 会准备清单固定版本的 Python 和开发环境，再启动 Electron。运行时二进制从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机；不需要 Git LFS 或 GitHub Release 访问权限。首次构建需要联网，可用 `SCHOLARSEED_ARTIFACT_CACHE` 指定独立缓存目录。
+`pnpm ops dev` 会准备清单固定版本的 Python 和开发环境，再启动 Electron。运行时二进制从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机；不需要 Git LFS 或 GitHub Release 访问权限。首次构建需要联网，可用 `SCHOLARSEED_ARTIFACT_CACHE` 指定独立缓存目录。需要使用其他包管理器时，可在根目录和 Desktop 目录分别使用 `npm ci` 或 `yarn install`；脚本会识别实际调用它的包管理器。
 
 启动后，在设置中配置模型连接，或登录书深账号。文献检索与全文获取需要对应服务和访问权限。
 
-需要分步安装时，依次执行 `npm run install:python`、`npm run config:template`、`npm run build`、`npm run desktop`。`npm run config` 提供交互式配置；调整已有配置前请先备份。
+需要分步安装时，依次执行 `pnpm ops pre install python`、`pnpm ops pre config template`、`pnpm ops cd build local --stage app`、`pnpm run desktop`。`pnpm ops pre config edit` 提供交互式配置；调整已有配置前请先备份。
 
 ## 本地开发
 
 ```bash
 # 检查开发环境
-npm run doctor
+pnpm ops pre doctor
 
 # 启动桌面开发环境
-npm run dev
+pnpm ops dev
 
 # 构建桌面端
-npm run build
+pnpm ops cd build local --stage app
 
 # 运行桌面测试与类型检查
-npm --prefix apps/desktop test
-npm --prefix apps/desktop run typecheck
+pnpm --dir apps/desktop test
+pnpm --dir apps/desktop run typecheck
 
 # 检查 Python 代码
-npm run check
+pnpm ops ci check --profile python
 ```
 
-科研技能源码位于 `skills/community/`。修改后可通过 `npm run skills:install` 构建技能包，通过 `npm run skills:verify` 检查与源码的一致性。
+科研技能源码位于 `skills/community/`。修改后可通过 `pnpm ops cd build local --target skills` 构建技能包，通过 `pnpm ops ci check skills product --mode source` 检查与源码的一致性。
 
 ## 打包
 
 ```bash
 # 构建开发版安装包
-npm run package
+pnpm ops cd build local
 
 # 只验证未签名应用，不生成安装器
-npm run package:check
+pnpm ops cd build release --stage dir --candidate
 
 # 正式签名安装包（需要通过安全环境注入发布凭据）
-npm run package:dist
+pnpm ops cd build release --workflow distribution
 
 # 查看平台、架构和发布选项
-node apps/desktop/scripts/build.cjs --help
+node apps/desktop/scripts/cd/build.cjs --help
 ```
 
 默认生成 `dev` 开发包。`preview` 和 `release` 发布构建需配置更新服务和平台签名；macOS 签名发布还需配置公证凭据。

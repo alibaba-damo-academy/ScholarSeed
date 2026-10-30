@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CitationResolution } from '../../contracts/citations.ts'
-import { documentLinkTarget, navigateDocumentLink } from './links.ts'
+import { savedCitationUrl } from '../../contracts/citations.ts'
+import {
+  citationFailureMessage,
+  documentLinkTarget,
+  navigateDocumentLink,
+  savedCitationError,
+} from './links.ts'
 
 const CITATION: CitationResolution = {
   handle: 'receipt',
@@ -44,6 +50,18 @@ test('document links distinguish browser, citation, and fragment targets', () =>
     handle: 'receipt-123',
   })
   assert.deepEqual(documentLinkTarget('#ref-paper'), { kind: 'fragment', href: '#ref-paper' })
+})
+
+test('saved citation byte and preview routes bind the exact resource receipt without answer identity', () => {
+  const receipt = { project_id: 'project/one', path: 'resources/a b.md', handle: 'receipt' }
+  assert.equal(
+    savedCitationUrl(receipt, 'raw'),
+    '/api/assistant/resources/citation/raw?project=project%2Fone&path=resources%2Fa+b.md&handle=receipt'
+  )
+  assert.equal(
+    savedCitationUrl(receipt, 'preview', 2),
+    '/api/assistant/resources/citation/preview?project=project%2Fone&path=resources%2Fa+b.md&handle=receipt&page=2'
+  )
 })
 
 test('unsupported and empty link targets cannot launch the browser', () => {
@@ -107,11 +125,11 @@ test('exact citations reveal the matching source without an intermediate dialog'
   assert.deepEqual(revealed, [source])
 })
 
-test('non-exact citations retain the explanatory preview instead of false positioning', async () => {
+test('failed citations show only an error while source-only citations retain the preview', async () => {
   for (const state of ['changed', 'source_only', 'unavailable'] as const) {
     const source = { ...CITATION, state, matches: [] }
     const previewed: CitationResolution[] = []
-    await navigateDocumentLink(documentLinkTarget('scholarseed-cite:receipt'), {
+    const navigation = navigateDocumentLink(documentLinkTarget('scholarseed-cite:receipt'), {
       openExternal: async () => {
         throw new Error('internal link')
       },
@@ -124,8 +142,28 @@ test('non-exact citations retain the explanatory preview instead of false positi
         previewed.push(value)
       },
     })
-    assert.deepEqual(previewed, [source])
+    if (state === 'source_only') await navigation
+    else
+      await assert.rejects(
+        navigation,
+        (error) =>
+          citationFailureMessage(error) ===
+          (state === 'changed'
+            ? 'markdown.citationSourceChanged'
+            : 'markdown.citationSourceUnavailable')
+      )
+    assert.deepEqual(previewed, state === 'source_only' ? [source] : [])
   }
+})
+
+test('saved citation failures explain known reasons without exposing unknown server details', () => {
+  assert.equal(
+    citationFailureMessage(savedCitationError('citation_evidence_unavailable')),
+    'markdown.citationRecordMissing'
+  )
+  assert.equal(citationFailureMessage(savedCitationError('private diagnostic')), undefined)
+  assert.equal(citationFailureMessage(savedCitationError(null)), undefined)
+  assert.equal(citationFailureMessage(new Error('browser failed')), undefined)
 })
 
 test('missing fragments and failed browser requests surface errors without fallthrough', async () => {

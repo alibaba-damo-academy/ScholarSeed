@@ -26,6 +26,31 @@ from service.workbench.service.sentences import SentenceBlock, assemble
 
 
 class PdfLayoutContracts(unittest.TestCase):
+    def test_client_geometry_is_the_crop_authority_and_malformed_bounds_are_rejected(self):
+        class IndexFixture:
+            def page_count(self, _document):
+                return 1
+
+            def pages(self, *_args):
+                raise AssertionError("Client geometry must not resolve an old index region")
+
+        with pdf_fixture.open() as pdf:
+            pdf.new_page(width=600, height=800)
+            payload = pdf.tobytes()
+        document = CitationDocument("project", "paper.pdf", "Paper", "revision", payload)
+        selected = region(IndexFixture(), document, 1, "pdfjs-1-0", [0.1, 0.2, 0.8, 0.6])
+        self.assertEqual(selected.quad, (0.1, 0.2, 0.8, 0.6))
+        with Image.open(BytesIO(crop(payload, selected))) as image:
+            self.assertEqual(image.size, (840, 640))
+        for invalid in ([0, 0, 1], [0, 0, float("nan"), 1], [-0.1, 0, 1, 1], [0.5, 0, 0.4, 1]):
+            with (
+                self.subTest(quad=invalid),
+                self.assertRaisesRegex(ValueError, "pdf_region_invalid"),
+            ):
+                region(IndexFixture(), document, 1, "pdfjs-1-0", invalid)
+        with self.assertRaisesRegex(ValueError, "pdf_region_invalid"):
+            region(IndexFixture(), document, 2, "pdfjs-2-0", [0, 0, 1, 1])
+
     def test_region_manifest_and_crop_share_the_index_identity(self):
         with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)

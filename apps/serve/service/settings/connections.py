@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 
 from scholarseed_runtime.contract.model import ModelWireProtocol
 from service.paths import CONFIG_PATH
+from service.platform.privacy import protect_path
 from service.settings.capabilities import (
     CAPABILITY_HINT_KEY,
     CONTEXT_WINDOW_KEY,
@@ -296,13 +297,15 @@ def selected_model_ids(profile: Mapping[str, Any]) -> list[str]:
 
 def _normalize_document(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
-        return _empty_document()
-    profiles = value.get(PROFILES_KEY)
+        raise ValueError("Model profiles must be a JSON object")
+    profiles = value.get(PROFILES_KEY, {})
+    if not isinstance(profiles, dict):
+        raise ValueError("Model profiles collection must be a JSON object")
     legacy_active_id = str(value.get(ACTIVE_PROFILE_KEY) or "").strip()
     normalized_profiles: dict[str, dict[str, Any]] = {}
-    for profile_id, profile in (profiles.items() if isinstance(profiles, dict) else ()):
+    for profile_id, profile in profiles.items():
         if not isinstance(profile, dict):
-            continue
+            raise ValueError("Model profile record must be a JSON object")
         normalized = {**profile, "id": str(profile_id)}
         normalized["preview_name"] = _profile_preview_name(normalized)
         normalized[WIRE_API_KEY] = profile_wire_api(normalized)
@@ -318,7 +321,7 @@ def _normalize_document(value: Any) -> dict[str, Any]:
             normalized[ENABLED_KEY] = str(profile_id) == legacy_active_id
         normalized_profiles[str(profile_id)] = normalized
     active_id = legacy_active_id if legacy_active_id in normalized_profiles else ""
-    return {ACTIVE_PROFILE_KEY: active_id, PROFILES_KEY: normalized_profiles}
+    return {**value, ACTIVE_PROFILE_KEY: active_id, PROFILES_KEY: normalized_profiles}
 
 
 class UnknownProfileError(ValueError):
@@ -340,31 +343,44 @@ class ModelProfileStore:
         self._shared_ownership = bool(shared_ownership)
 
     def _read(self) -> dict[str, Any]:
-        if not self.path.exists():
+        try:
+            payload = self.path.read_bytes()
+        except FileNotFoundError:
+            payload = None
+        return self.decode(payload)
+
+    @staticmethod
+    def decode(payload: bytes | None) -> dict[str, Any]:
+        """Decode an owner file or qualified snapshot without hiding unreadable data."""
+        if payload is None:
             return _empty_document()
         try:
-            return _normalize_document(json.loads(self.path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError):
-            return _empty_document()
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Model profiles are not valid UTF-8 JSON") from exc
+        return _normalize_document(value)
 
     def _write(self, document: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=self.path.parent,
-            prefix=f"{self.path.name}.",
-            delete=False,
-        ) as profile_file:
-            profile_file.write(payload)
-            staged = Path(profile_file.name)
+        staged: Path | None = None
         try:
-            staged.chmod(PROFILE_FILE_MODE)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=f"{self.path.name}.",
+                delete=False,
+            ) as profile_file:
+                staged = Path(profile_file.name)
+                protect_path(staged, PROFILE_FILE_MODE, profile_file.fileno())
+                profile_file.write(payload)
+                profile_file.flush()
+                os.fsync(profile_file.fileno())
             os.replace(staged, self.path)
         finally:
-            if staged.exists():
-                staged.unlink()
+            if staged is not None:
+                staged.unlink(missing_ok=True)
 
     @staticmethod
     def _public(profile: Mapping[str, Any]) -> dict[str, Any]:

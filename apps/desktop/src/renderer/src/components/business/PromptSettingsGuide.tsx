@@ -9,7 +9,7 @@ export function PromptSettingsGuide({
   linkLabel,
   linkPrefix,
   prefix,
-  suffix
+  suffix,
 }: {
   className?: string
   linkLabel: string
@@ -20,13 +20,15 @@ export function PromptSettingsGuide({
   const { act } = useApp()
 
   return (
-    <div className={`flex flex-wrap items-center gap-x-1 text-xs leading-5 text-[var(--vds-text-tertiary)]${className ? ` ${className}` : ''}`}>
+    <div
+      className={`flex flex-wrap items-center gap-x-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-tertiary)]${className ? ` ${className}` : ''}`}
+    >
       <span className="whitespace-nowrap">{prefix}</span>
-      <span className="inline-flex whitespace-nowrap items-center gap-x-1">
+      <span className="inline-flex whitespace-nowrap items-center gap-x-[var(--vds-space-1)]">
         {linkPrefix ? <span>{linkPrefix}</span> : null}
         <Button
           aria-label={linkLabel}
-          className="gap-1 text-xs leading-5"
+          className="gap-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-control-label-line-height)]"
           size="content"
           variant="link"
           onClick={() => act.openSettings('prompts')}

@@ -1,0 +1,4832 @@
+{
+  "$comment": "Initial CSS identities from the integrated release branch. Existing upstream CSS is historical debt; new or changed owned CSS must use Tailwind.",
+  "baseCommit": "9ae6aa50b",
+  "files": {
+    "src/renderer/src/components/primitive/Iconfont/download/demo.css": [
+      {
+        "context": "@font-face ",
+        "digest": "ec7d1819fbcf5a3f887621d7b8ef927723ef9946772c125e91eea0d5dcbe82eb"
+      },
+      {
+        "context": ".logo",
+        "digest": "2cc22cb3aba8f642f8020ff0dd8ea4289ee16ccf3c7c3c452ab3c1e912e663fc"
+      },
+      {
+        "context": ".nav-tabs",
+        "digest": "c406665ed1165eabc363e430c7c5964e476837d41896f5d022adc9b6e601bfd2"
+      },
+      {
+        "context": ".nav-tabs .nav-more",
+        "digest": "f022d600059fd4fd721a4c1dbde88b9c468a6cf2584a6fd35835a69a1a946eaa"
+      },
+      {
+        "context": "#tabs",
+        "digest": "012445833989474497061e800d6ad308f85af5d6d1f9f4f7d9c754ae75b084bb"
+      },
+      {
+        "context": "#tabs li",
+        "digest": "169afbcc463b1468cddffd608d4105d5b9edb67466784891ebb0017437cc47a1"
+      },
+      {
+        "context": "#tabs .active",
+        "digest": "b4ff1410842988d87904f4a35e28034ab348612f87be3a63e0356a2f0007d52a"
+      },
+      {
+        "context": ".tab-container .content",
+        "digest": "80a23c48d39afa5cb2495ec3670c8295eac410692583a05851a15202a87bba0c"
+      },
+      {
+        "context": ".main",
+        "digest": "18ee7870c7ce6dfefdb08763fba6cf2aa9da94207c0e26f53dcaa2b081dde4ee"
+      },
+      {
+        "context": ".main .logo",
+        "digest": "ef309d7f82c1e71733a7df5b7fcc3bfadadfe413dbaffcdddb37860ffd67c119"
+      },
+      {
+        "context": ".main .logo a",
+        "digest": "c8ebe744d6d07d37b7f454ba889cca91a9c130d5b55bdd15ab1d163537dda7c9"
+      },
+      {
+        "context": ".helps",
+        "digest": "991e182d58728d1a1b1ce51195d779a027ae4e6189105ce61ce549e85be3a550"
+      },
+      {
+        "context": ".helps pre",
+        "digest": "6f948e826d1b7ba20ecd7b05df7816681e672be0a80feeecaf84ed2673a53910"
+      },
+      {
+        "context": ".icon_lists",
+        "digest": "fa0a0aea3bf53aded2aad031193c794ea1642a6b248e86a2e7cde4a2ff7e4d8b"
+      },
+      {
+        "context": ".icon_lists li",
+        "digest": "1e8136bbe81ad9fd458f837724fb8612313859121cb508a0ba3b292dccbf9cc9"
+      },
+      {
+        "context": ".icon_lists li .code-name",
+        "digest": "4310817bd8dc4998c1e4c9131c5e423e15d491ff85b5b9f20b97514167b66d6f"
+      },
+      {
+        "context": ".icon_lists .icon",
+        "digest": "5064d1438c37ad304e91b4b255148ff5ab484e06d67528d014725d7b3ab73fab"
+      },
+      {
+        "context": ".icon_lists .icon:hover",
+        "digest": "0e7611b3d6628716bb0a725621290053c9f5984714ea03b565d580ef42c69cbb"
+      },
+      {
+        "context": ".icon_lists .svg-icon",
+        "digest": "a1c031e62ce72d01fb675f6d50b8c55ca7b062169ef540b48d97e993a4d872aa"
+      },
+      {
+        "context": ".icon_lists li .name,\n.icon_lists li .code-name",
+        "digest": "9f3cc21eaa1b0e693747e9bc30e299ba572ffd47d49ce6afbe7ad88708426f63"
+      },
+      {
+        "context": ".markdown",
+        "digest": "f879672e158e848047362024b8e084e42da08f46bbc4d1a0dd0d9e9288a50709"
+      },
+      {
+        "context": ".highlight",
+        "digest": "5927e61469cafee8c32cec8fe865a2bd9e43ba0741c716976d2d3231a6fc92b7"
+      },
+      {
+        "context": ".markdown img",
+        "digest": "4d266cfae28e8789b94248127b4eb8fe4b1e45f1b572ac3a00e0aa79f41979c2"
+      },
+      {
+        "context": ".markdown h1",
+        "digest": "78df4e9672886f625bcce395aea1c7b467043d0e845cdf89292f6512ca613bfc"
+      },
+      {
+        "context": ".markdown h2,\n.markdown h3,\n.markdown h4,\n.markdown h5,\n.markdown h6",
+        "digest": "0ae3f41c0512ec9f5675208b5740ec6fab957455920a988269f28c93812a1f0d"
+      },
+      {
+        "context": ".markdown h1",
+        "digest": "d03120101626ceff2ee9276e6300d2f4c96dd8139f28f95a231e349ebfd485c8"
+      },
+      {
+        "context": ".markdown h2",
+        "digest": "6970dd795ef2b9143044061ed06286e8be3171584e6e6c8d3dd250ee83ee81a4"
+      },
+      {
+        "context": ".markdown h3",
+        "digest": "e064b6ab326f3de2e16c25ac1e5d1b98d94b392c864dd130f366601e435dc8cd"
+      },
+      {
+        "context": ".markdown h4",
+        "digest": "1f00ae756451e8f95bebcd1179aa19b5d78b1c6a5422bf04d0cfac9ec006ffd2"
+      },
+      {
+        "context": ".markdown h5",
+        "digest": "ec659a1c0e97f5254389d295a67a756a85dcf8c747259b0d31082bed9fb89e85"
+      },
+      {
+        "context": ".markdown h6",
+        "digest": "05de6ccd3d43ae577e7b77bbb462cbb07bd5c99f3fa17c04efc06832f7e2f81c"
+      },
+      {
+        "context": ".markdown hr",
+        "digest": "833442ec39a5903025b177a6368c3e48040bd787122e5d44130b94c438e28953"
+      },
+      {
+        "context": ".markdown p",
+        "digest": "dc8fcff8bbe40ef9560f41279689136192cb7ee346d169c5f17b481bd8d5a3f5"
+      },
+      {
+        "context": ".markdown>p,\n.markdown>blockquote,\n.markdown>.highlight,\n.markdown>ol,\n.markdown>ul",
+        "digest": "e38eca99d3e0d3be23944d8dea8fe5e6d6c1028a983a15a99372d6b9c2c2d7ac"
+      },
+      {
+        "context": ".markdown ul>li",
+        "digest": "dc80a4750ddd595fcbebb77bfb04e6043b3c960e37075e5ab9ca00994af910b7"
+      },
+      {
+        "context": ".markdown>ul li,\n.markdown blockquote ul>li",
+        "digest": "c83af2bbd142eb3e587871344d5e83adf05cfbc48b62d110a6bab4206e987e8b"
+      },
+      {
+        "context": ".markdown>ul li p,\n.markdown>ol li p",
+        "digest": "a64db25bd58f4868588dbb7ccbe9575f700bec50e97bea584e9792115188e21a"
+      },
+      {
+        "context": ".markdown ol>li",
+        "digest": "9f91b2dacc6d9b7950b69fe7e2b4af4d3be0303781229e409a5e5a70dd7bc54c"
+      },
+      {
+        "context": ".markdown>ol li,\n.markdown blockquote ol>li",
+        "digest": "0be6762652f818fc7493b71632536e166759671330890233eb55f97a69051c40"
+      },
+      {
+        "context": ".markdown code",
+        "digest": "52582383152d8a2d63335baa9cb9ad5a7e976f5994b587f1ea6d21a25765aabd"
+      },
+      {
+        "context": ".markdown strong,\n.markdown b",
+        "digest": "718448ebf1053fc13d432b7085dc1a73305110c572d6aadb77e50c9f83668eaf"
+      },
+      {
+        "context": ".markdown>table",
+        "digest": "37fa88212c7ac7d219ca255e58f4cee1dfc595074394bdd68c771642f09a6577"
+      },
+      {
+        "context": ".markdown>table th",
+        "digest": "07e283d9daedf1c8fc60df77bd0effa91ee7d2e80d7a6b26a7af871021fadd09"
+      },
+      {
+        "context": ".markdown>table th,\n.markdown>table td",
+        "digest": "d059211c91cc5e2ab822def3416b1d85286b052005fe6a92f77dbfa177f750d5"
+      },
+      {
+        "context": ".markdown>table th",
+        "digest": "7bbbd870275702cb81694cc8ea45b62f786c6bcc26f872ddac588c8490767154"
+      },
+      {
+        "context": ".markdown blockquote",
+        "digest": "743ef3ffa46d202dd9df9b5305a5226078bf737a5ad4d60b9bc9acc0252d1316"
+      },
+      {
+        "context": ".markdown blockquote p",
+        "digest": "f5aa795b08fcfefd32a3214443d7398d51b45298d6d04aa4c691998ba65ae5c8"
+      },
+      {
+        "context": ".markdown .anchor",
+        "digest": "9efebddf7889e18793214c6718241faeaaf5f74dbe23e29bad824307166984e0"
+      },
+      {
+        "context": ".markdown .waiting",
+        "digest": "a64d74d835d0eda8231a706feed6c7729af190cd7460b0a63a154e02b66afcfa"
+      },
+      {
+        "context": ".markdown h1:hover .anchor,\n.markdown h2:hover .anchor,\n.markdown h3:hover .anchor,\n.markdown h4:hover .anchor,\n.markdown h5:hover .anchor,\n.markdown h6:hover .anchor",
+        "digest": "fb45132c9aec9eacd5672eb31f30a313d2086f01e84364bb26ad3d90c82c1293"
+      },
+      {
+        "context": ".markdown>br,\n.markdown>p>br",
+        "digest": "52d64a9df69a24d6035f9e039f4056224c6179b0f9e465d20758a041c61e1fe4"
+      },
+      {
+        "context": ".hljs",
+        "digest": "2c1fa708cd45474f32c930bd795338a6c8c7dab995600c30a59ea4f85ecd2b60"
+      },
+      {
+        "context": ".hljs-comment,\n.hljs-meta",
+        "digest": "dc393fe89c2ec649ebe958f4b2f2aaac96be2aaeac4bf88fccd71612b36fe9b6"
+      },
+      {
+        "context": ".hljs-string,\n.hljs-variable,\n.hljs-template-variable,\n.hljs-strong,\n.hljs-emphasis,\n.hljs-quote",
+        "digest": "67c8cd69b30e5e17fd35234a3e9f35da7582a37da1b71ea7a70937bcef3f3631"
+      },
+      {
+        "context": ".hljs-keyword,\n.hljs-selector-tag,\n.hljs-type",
+        "digest": "ad782ad88d4165a95b465fce8ce57ffa34b650f3d0e6e69295544057f0077029"
+      },
+      {
+        "context": ".hljs-literal,\n.hljs-symbol,\n.hljs-bullet,\n.hljs-attribute",
+        "digest": "cd87249512ccaff11eea0600fa344f93829a89c2e79157fc67ab257dcd9c017a"
+      },
+      {
+        "context": ".hljs-section,\n.hljs-name",
+        "digest": "083112f80259224e1c45b56d9b0a4750880b1fe73d63dca7209e03e6c1af99c7"
+      },
+      {
+        "context": ".hljs-tag",
+        "digest": "57300e5090f895253a18b2f8be4991db27168c037ec24c8574b9c5a2218b0bf1"
+      },
+      {
+        "context": ".hljs-title,\n.hljs-attr,\n.hljs-selector-id,\n.hljs-selector-class,\n.hljs-selector-attr,\n.hljs-selector-pseudo",
+        "digest": "796f13e412fbe5fe56ccc35cb5e1229ed1dcd68a2d0985882e8cfbce62bbe528"
+      },
+      {
+        "context": ".hljs-addition",
+        "digest": "09b1e69837a7369815ec631b8256512c79e526d591f6cc3300f5b668634996a6"
+      },
+      {
+        "context": ".hljs-deletion",
+        "digest": "de9e97905a2fa88b4f4c792b94afb0fdd941b340b46981cfd809ed5efe083a1a"
+      },
+      {
+        "context": ".hljs-link",
+        "digest": "8192a5c06f2aa6996fe9e74214e7d5460b41e76a7575e2d13a632c35c57a9cab"
+      },
+      {
+        "context": "code[class*=\"language-\"],\npre[class*=\"language-\"]",
+        "digest": "571f891961c61b466cd845d362f2816112dc97c1800784ea553c4d17e04822b5"
+      },
+      {
+        "context": "pre[class*=\"language-\"]::-moz-selection,\npre[class*=\"language-\"] ::-moz-selection,\ncode[class*=\"language-\"]::-moz-selection,\ncode[class*=\"language-\"] ::-moz-selection",
+        "digest": "eac183ed5a68bdc815923ef06ebca6200fa623845ea112bfc8ac89a5a9f9d972"
+      },
+      {
+        "context": "pre[class*=\"language-\"]::selection,\npre[class*=\"language-\"] ::selection,\ncode[class*=\"language-\"]::selection,\ncode[class*=\"language-\"] ::selection",
+        "digest": "c7cfabfa44f33b6b5739e90092f109e0d2fb9ee5b69847032ec77a337e321166"
+      },
+      {
+        "context": "@media print → code[class*=\"language-\"],\n  pre[class*=\"language-\"]",
+        "digest": "6dce81bcdd57ece50a07160bab675a92c790c126077d28e0a44e1069bff23549"
+      },
+      {
+        "context": "pre[class*=\"language-\"]",
+        "digest": "4101657b9b74bf82bba7bf216f3fc2a0cbe8ab42253f4c4723bac0c8fbd24223"
+      },
+      {
+        "context": ":not(pre)>code[class*=\"language-\"],\npre[class*=\"language-\"]",
+        "digest": "8ba9fa81e7ed254e06f9e1a9398f92fef6e4045c58db82a3b6faa924130c4f7a"
+      },
+      {
+        "context": ":not(pre)>code[class*=\"language-\"]",
+        "digest": "dbe52c1f99a5043576cbaf7ee910a1d8e24c60f4a02c1c91c0be5b356d8984f6"
+      },
+      {
+        "context": ".token.comment,\n.token.prolog,\n.token.doctype,\n.token.cdata",
+        "digest": "10f0b3107be0977ff77f05beba0e9f8e0f8357bd9a020423764b9eceab66cea7"
+      },
+      {
+        "context": ".token.punctuation",
+        "digest": "7d7aed4af19071d1a5a750177956cdbaf9baa3074d4e5d876de33e4cc1e43425"
+      },
+      {
+        "context": ".namespace",
+        "digest": "0993129950ac9357ae543d1236f3762786aae4b33fd077b0b9daf8ac318c6a01"
+      },
+      {
+        "context": ".token.property,\n.token.tag,\n.token.boolean,\n.token.number,\n.token.constant,\n.token.symbol,\n.token.deleted",
+        "digest": "f04dd271c114f4fc6925bbd0af9c6ee24cfb43e698a53fcd6b9367a4c0997b3f"
+      },
+      {
+        "context": ".token.selector,\n.token.attr-name,\n.token.string,\n.token.char,\n.token.builtin,\n.token.inserted",
+        "digest": "a55b83f5f1fc53e72be2ea80bc383755a49a41eb434dd12942cfc475db64a53c"
+      },
+      {
+        "context": ".token.operator,\n.token.entity,\n.token.url,\n.language-css .token.string,\n.style .token.string",
+        "digest": "f1967ccc2b7bf84725f1757d151fbf0af1509b2f869bbae3c38c90fe4c7a5696"
+      },
+      {
+        "context": ".token.atrule,\n.token.attr-value,\n.token.keyword",
+        "digest": "62367fb4de8c880548060184e392555ae4e6f3356aa8ce5768b7ac5eb883db0f"
+      },
+      {
+        "context": ".token.function,\n.token.class-name",
+        "digest": "cbc1848d88c4d9032915cd80d8a94829b18fbdc55df6b53533ce8bc5bf49022f"
+      },
+      {
+        "context": ".token.regex,\n.token.important,\n.token.variable",
+        "digest": "ed2fad6fe26fcdf2737ddc57353c2fd992492d4dc48cfa80aec5aa36db352e49"
+      },
+      {
+        "context": ".token.important,\n.token.bold",
+        "digest": "f2f3ce7d9c76b52ad5165f110489d326fe51f962791c117ef45a92f324bb6c2b"
+      },
+      {
+        "context": ".token.italic",
+        "digest": "9621d79ba36b298ef8707a26fba63f90d7c3a47f9086a6ec35b110de6351a332"
+      },
+      {
+        "context": ".token.entity",
+        "digest": "40f21849a4331378f3da869624d8f9555a61e60c458a8dff434f44d296fab1e4"
+      }
+    ],
+    "src/renderer/src/components/primitive/Iconfont/download/iconfont.css": [
+      {
+        "context": "@font-face ",
+        "digest": "937c582ed9f8651f3e2bc4c9f2152db1fadf92553a4ed46b1ad3c4174d69e79d"
+      },
+      {
+        "context": ".iconfont",
+        "digest": "c0e22aae5b8435c0afbce5eb45d582639ad5ce0e676b6fdb50252439f242d2f3"
+      },
+      {
+        "context": ".icon-rongqi:before",
+        "digest": "dbdde5e134f14918f3dfecf0b81967864820a4ccbf2d891e98626ed25839e383"
+      },
+      {
+        "context": ".icon-yingwen:before",
+        "digest": "2a998e69d10c4f3f72d7d8858aa2e3e1a4a1222882f2c23faad5d21b0c34c54f"
+      },
+      {
+        "context": ".icon-zhongwen:before",
+        "digest": "6a256854c5c92dfce3105b8d13101e44a7ec52893f5b19ef106b85afaf404f12"
+      },
+      {
+        "context": ".icon-rongqi-2:before",
+        "digest": "575e87f6b44bf82a8152e33c916c15bfbb76d19e8ef20d5e3528ebcfd237a97e"
+      },
+      {
+        "context": ".icon-wanquanfangwen:before",
+        "digest": "4a9a6d07a9cb2ac8860b7a16874470bf4e0f909a62eb342184c4673672179801"
+      },
+      {
+        "context": ".icon-qingqiupizhun:before",
+        "digest": "dc7f8d61d35f8a47914fbdcbe94f50d917f7ab9e00e14e925e7a183ab7333285"
+      },
+      {
+        "context": ".icon-zhuangtaiicon:before",
+        "digest": "f043d79cd0072e76851a176e3f7c97bedeaa37bbaa56a666475dbfbded00c222"
+      },
+      {
+        "context": ".icon-bangwopizhun:before",
+        "digest": "2677d43e6befd100b8f92b8195355f4255e57ff381b72abae6f93ae2865f07de"
+      },
+      {
+        "context": ".icon-panel-left-open:before",
+        "digest": "364d84851b6006019329f5e9ed7fa92b34dad0ee1f55e201182ba3b5a19781c4"
+      },
+      {
+        "context": ".icon-panel-left-close:before",
+        "digest": "8914f186bc73321428c556dcc666b4836e871f96f9cee1b5578fd8459ee436db"
+      },
+      {
+        "context": ".icon-a-line-switch-arrow-down-s:before",
+        "digest": "b384fdac4bf9acae499ca79aafd74917df6571278d10fe6c1fe08bbfe66d90f6"
+      },
+      {
+        "context": ".icon-a-line-switch-arrow-up-s:before",
+        "digest": "ffe1a60e096364d292a47e051a620b9cf3de76e1abf6fe07b9dd1f674e03868d"
+      },
+      {
+        "context": ".icon-a-line-switch-arrow-right-s:before",
+        "digest": "c7be5168ece7774888b7d0e1ed1f4b9bc34b5058e586f1a40d1327576a6b896a"
+      },
+      {
+        "context": ".icon-a-line-switch-arrow-left-s:before",
+        "digest": "ecb3450b77d86422bbc343f7aa37f3d13a93dd8015267607e4f4a3e2a99df16d"
+      },
+      {
+        "context": ".icon-a-line-status-error:before",
+        "digest": "ded46aa68a036b667e6bb32dcae3021af12ca3f60fa7610f204d8f7c4550e885"
+      },
+      {
+        "context": ".icon-a-line-status-help:before",
+        "digest": "41b342d2621d037f5cfa09dfcff3b2e7c75af374a6075131e23f65e3396c04d5"
+      },
+      {
+        "context": ".icon-line-status-warning2:before",
+        "digest": "4cd272ed147101ea84179ee4e618782823ea4735ec04c4606c26023be516b4a5"
+      },
+      {
+        "context": ".icon-a-line-status-notfull:before",
+        "digest": "ce501a0f6433be6c656d8f40725a267d80d897388f6a73133a2154d347109b86"
+      },
+      {
+        "context": ".icon-a-line-status-tips:before",
+        "digest": "cb89e52e3e73a48c594cc08858dc33fa0cc7abb1d055368c9135061dab52f0ae"
+      },
+      {
+        "context": ".icon-a-line-status-success:before",
+        "digest": "c3ca1f5974ec844ec6421e6442e1997e5b7d149f874c514a0db8bb2c17bab0de"
+      },
+      {
+        "context": ".icon-a-line-status-warning:before",
+        "digest": "fac9c3641f7235b5be3fae46781fe2a25ff7504b188285ed54af5839c0720023"
+      },
+      {
+        "context": ".icon-a-line-status-partypopper:before",
+        "digest": "d61df3432634572d2e61935f1b5c9109a1b643c63f94229c05bde09e6893e0d1"
+      },
+      {
+        "context": ".icon-fill-status-clock:before",
+        "digest": "b71de6040ca868bf6da87ff0a8918e9389134845fed009ffac58c52dc202fcb7"
+      },
+      {
+        "context": ".icon-fill-status-tips:before",
+        "digest": "9da1115476425faa8b6771aec9e85a85a9141cd1c18028baa7bc62f2345f7047"
+      },
+      {
+        "context": ".icon-fill-status-success:before",
+        "digest": "e98612d7dbade321c7ab7049b8ab75780e4a701a7b49304118d27a39ae2051d6"
+      },
+      {
+        "context": ".icon-fill-status-warning:before",
+        "digest": "8f76dd5fe9f29f4919dd908062733826069c57b2bf44ffc69b58ab461f6c06e3"
+      },
+      {
+        "context": ".icon-fill-status-warning2:before",
+        "digest": "aea182e627f68c6427c8c3da6f9ffbf7f54d0a9cbde177aed465582a4924cbf6"
+      },
+      {
+        "context": ".icon-fill-status-loading:before",
+        "digest": "f95ac27572c85794499022cb30cf2212f98afd17c1da417896c378a003cce5ab"
+      },
+      {
+        "context": ".icon-fill-status-help:before",
+        "digest": "f66760e79b1d41d1021c9c484edcde3b600808e5ca50171eda099c306bf08ff8"
+      },
+      {
+        "context": ".icon-fill-status-error:before",
+        "digest": "7101103100db654daa150cf79743cabf2ed149e54444eed28a89c68ff62dbe20"
+      },
+      {
+        "context": ".icon-fill-operation-like:before",
+        "digest": "d95e333c9b4b8fd10f365a003c6a178a0b4f16a1b2a8bb2a39fbdcc4475a2555"
+      },
+      {
+        "context": ".icon-fill-operation-dislike:before",
+        "digest": "fd3d1399f0847af2d7aab150dfb93a293227d22f6c41d43af43e01973be2615e"
+      },
+      {
+        "context": ".icon-fill-operation-love:before",
+        "digest": "4556978f47b05e2b6aba4d653d2bfd74e72591584605f665f6bb456b743d2667"
+      },
+      {
+        "context": ".icon-fill-operation-star:before",
+        "digest": "5bcacccd11183a086f74d4d7f01765f205ddc967957d5de26a7b52c16c66f350"
+      },
+      {
+        "context": ".icon-line-operation-exit1:before",
+        "digest": "b4c030f473d812704efc2de4518f416334c2620d195a2eba7491323a39acbf4d"
+      },
+      {
+        "context": ".icon-line-operation-dislike:before",
+        "digest": "d56e6062ebd9d15128f375bf32833cfe25c14d3f4055fc9ca76bad4282ef7b0a"
+      },
+      {
+        "context": ".icon-line-operation-like:before",
+        "digest": "ce23b8c3e6bc0e257879b812de732cded94087cabd6c2a5196dbb2d2747b6359"
+      },
+      {
+        "context": ".icon-line-operation-star:before",
+        "digest": "7a5e73b66355cf421b2100dd333a030159d2962c3b228278c2fdccca729fb17f"
+      },
+      {
+        "context": ".icon-line-operation-love:before",
+        "digest": "bab978612e95d42210221bf604397d7e06df2bcce5e39a0003a2b30d0758f561"
+      },
+      {
+        "context": ".icon-a-line-operation-descending:before",
+        "digest": "ff43d247f7f0775e69211ec18d07841b2e71e45ea87897a51d4a5957e9ae86bc"
+      },
+      {
+        "context": ".icon-line-operation-add:before",
+        "digest": "b908afa87137b0d686901f3b01cafdc11a83ce5ddf495bd7accecba4fb88227d"
+      },
+      {
+        "context": ".icon-a-line-operation-fliter-descending:before",
+        "digest": "99e92d436c6dcc1ae1a956f935ea56d59db2f3d3915e9bac804a83fa898d1ad2"
+      },
+      {
+        "context": ".icon-a-line-operation-ascending:before",
+        "digest": "79644cb1742f4df4577841f3813dc6b5fbc4d5a4f2bbf92313d7cdfb84bad7d7"
+      },
+      {
+        "context": ".icon-line-operation-minus:before",
+        "digest": "8a0e6a690ce0f7b32f2b146dff459ff3c71c4c4e130a59ded67108867dc3a046"
+      },
+      {
+        "context": ".icon-a-line-operation-filter-on:before",
+        "digest": "611bcadaf8575529307c6359875b04325605a4947809eab7537d607332fb0ba8"
+      },
+      {
+        "context": ".icon-line-operation-relevance:before",
+        "digest": "adff7c5ba91359286df381c3feffabdc553dcd63c992cf1e270bc38250f9c796"
+      },
+      {
+        "context": ".icon-line-operation-close:before",
+        "digest": "576522442136ecbdee7471bc34e2cd3e4b3db0ac248eb5520243a9d167f1ab97"
+      },
+      {
+        "context": ".icon-line-operation-select:before",
+        "digest": "e449eb90c738e146e431d3da4c52e270d897d529b5b91660abb79f7653a6fcde"
+      },
+      {
+        "context": ".icon-line-operation-download:before",
+        "digest": "eed1370578dc3a74f92df31cf545de3b5ab7dbee11485077854d051e6596e08b"
+      },
+      {
+        "context": ".icon-line-tool-appendix:before",
+        "digest": "aee27f550895110d2f14ca49c25a45095404ac9f29ab1af64f6ea69a42130d8c"
+      },
+      {
+        "context": ".icon-line-operation-ellipsis:before",
+        "digest": "f345738deb7df4ca4d881186242fe4a7f72f765c72a72ad75bdd2a347ff33bbf"
+      },
+      {
+        "context": ".icon-line-operation-refresh:before",
+        "digest": "658e42f0cdb8c73bf8e41d99e6318ec088d29909d5ac8058743d428fd0cb9ee8"
+      },
+      {
+        "context": ".icon-a-line-operation-filter-ascending:before",
+        "digest": "5eae1eda36b6b83d56c065bae01968f484ca31341697bd9753938423c4ea1936"
+      },
+      {
+        "context": ".icon-line-yinbo:before",
+        "digest": "8bf170175d5b66693ecfb9a2d3d1b61c6e77c38364776cc36cf498699b311789"
+      },
+      {
+        "context": ".icon-line-luyin:before",
+        "digest": "fa81920b702270a594d05c4755ebe0fb53cef08af933a817155f11ec0e051439"
+      },
+      {
+        "context": ".icon-line-operation-delete:before",
+        "digest": "dbd6122d060e23de27a8136ef19fb41cdb4353650c8566ad145cb8e9ec407496"
+      },
+      {
+        "context": ".icon-line-operation-search:before",
+        "digest": "fab4edafb3ca85c18297e26d3d918266ee93fecd73e3dd18f99526334727d8e5"
+      },
+      {
+        "context": ".icon-line-tool-bell:before",
+        "digest": "d1ab46010b0acc644a43bd1a7dec7e4fd45746160d25b9358a466fafa3414570"
+      },
+      {
+        "context": "@font-face ",
+        "digest": "0357dec24e182936cbc771a5e4c89589eae64f9a0babfd0482fe293dfec166af"
+      },
+      {
+        "context": ".icon-line-tool-batch-follow-up:before",
+        "digest": "3a4c5325cf9126d763828696331d849146ef136395ab67dd50e95c7a73b840f5"
+      },
+      {
+        "context": ".icon-h1:before",
+        "digest": "06c634aa8931758a90de5265b23ebdfc9a75464e9b7b23393a0c820276cc5500"
+      },
+      {
+        "context": ".icon-h3:before",
+        "digest": "b0be46e159abbb2e920a415df924f36fc9995a21685561632ccce48fd300b700"
+      },
+      {
+        "context": ".icon-h2:before",
+        "digest": "b9d20a2fc2d1fa815442fd1c7ed7c636b09a086b0a60e5d1fe379008e27e3cec"
+      },
+      {
+        "context": ".icon-chart-up-circle:before",
+        "digest": "6b74f32dd5945deece095b57bd5ab69797a850d89b3dc6ea770769fbf7273ddc"
+      },
+      {
+        "context": ".icon-fill-tool-pin:before",
+        "digest": "48017760d7cb2c77d7a8f639c680178763f6472784b1efc5b9d6464799b3dcd1"
+      },
+      {
+        "context": ".icon-line-tool-pin:before",
+        "digest": "a601ec9b063e2488bcc16a7fcd15c1f34249313b3a92ea87b1f1c597f48888d3"
+      },
+      {
+        "context": ".icon-zotero:before",
+        "digest": "51f623b6e79dcb55bfbe7f8086232245613c93fb165d28180552b2f799e10a9d"
+      }
+    ],
+    "src/renderer/src/design/index.css": [
+      {
+        "context": "@import './tokens.css'",
+        "digest": "b2fa79937e806b3bd99da9667816e9193932132d21d8445812014310c1c7874c"
+      },
+      {
+        "context": "@import './theme.css'",
+        "digest": "d13d15763ed5fe7c9ddb77ec53126b4aa2680512f79167b8421df20bc751c5bd"
+      },
+      {
+        "context": "@import './reset.css'",
+        "digest": "459618e2fc6b552007cdaa2c7f18ebebbd02c22cbd34e4a4a43ca42746bb8bf7"
+      },
+      {
+        "context": "@import './typography.css'",
+        "digest": "7632c1efc598b15640befeb530bee822ab47a8bdcb3dd034d2e4be52e4ce39c0"
+      },
+      {
+        "context": "@import './motion.css'",
+        "digest": "adc34d57d145cc31ed0bf88c0a0de228b33abfb8a42dea8d237f4bb83e4e62bb"
+      },
+      {
+        "context": "@import './zindex.css'",
+        "digest": "e479a8b7dbfef615874513811d4b2846ec5dd4c39824f0da6b242a9da026846f"
+      },
+      {
+        "context": "@import './legacy.css'",
+        "digest": "c69b600f7728ab0471c4b3efc5e3113e3062f8b52899be7ae2078fb78ca1cd27"
+      }
+    ],
+    "src/renderer/src/design/legacy.css": [
+      {
+        "context": ":root",
+        "digest": "604817b21fdc13a5d596ca74c828dc4ad370ace42c341d939c61bad169ba8f7f"
+      }
+    ],
+    "src/renderer/src/design/motion.css": [
+      {
+        "context": ":root",
+        "digest": "52a5ccc7b1ca5c07f4cd0cc1e3916441bd90e99ad3325eadfce74fa1e4cff5a0"
+      },
+      {
+        "context": "@keyframes vds-spin → from",
+        "digest": "8c990174a1e70a17f6ac102cf9612c8bac37ba6c378a90735b7dea5898b1b6fd"
+      },
+      {
+        "context": "@keyframes vds-spin → to",
+        "digest": "0d186c3eb45eb54c58a0b524f0b0da037313408b2156287d7926901a89d8f464"
+      },
+      {
+        "context": "@keyframes vds-skeleton-shimmer → from",
+        "digest": "cb70f49567b53eeebf7caa8c87be31ff8e42745bbc57349a45387e4dc712e4f7"
+      },
+      {
+        "context": "@keyframes vds-skeleton-shimmer → to",
+        "digest": "356d12840afce893828e5c468500b5933ad0c9dc7a4dda8bdb1e9744ea8ab661"
+      },
+      {
+        "context": "@keyframes vds-progress-indeterminate → to",
+        "digest": "24cc66be641fb91afb3889702776951e1047f16b28b9a4c3976f0d20d9c57cf1"
+      },
+      {
+        "context": "@keyframes vds-collapsible-down → from",
+        "digest": "bd381511d8ab12c875220e45a72a969684b6cc571b95214f29eaef3004b451f7"
+      },
+      {
+        "context": "@keyframes vds-collapsible-down → to",
+        "digest": "0f76faeee25922c167cd0279a0ca6900615a9af6020e07e9e979dde9e7baff09"
+      },
+      {
+        "context": "@keyframes vds-hover-card-in → from",
+        "digest": "7a7701774718e5344f613ecd09cfa9d6ee3d49d9226ee9c8d263dcc2bf16e385"
+      },
+      {
+        "context": "@keyframes vds-hover-card-in → to",
+        "digest": "f800a42e2aa64ab51d0c1184e47613077953c916c24c39113aa7279744a06590"
+      },
+      {
+        "context": "@keyframes vds-hover-card-out → from",
+        "digest": "f147c8e15f5521aa9e20881c4e1f69255929d80d950b8bd9825e43ad8828a87f"
+      },
+      {
+        "context": "@keyframes vds-hover-card-out → to",
+        "digest": "7964c21f212ceb9918d835ab438d90bd15d6863687e2a6f71bafdef10aa2d03f"
+      },
+      {
+        "context": "@keyframes vds-tooltip-in → from",
+        "digest": "e9969576b52ecea48a2c89f157479825cf882c696c2487c118dbcd3877a6a882"
+      },
+      {
+        "context": "@keyframes vds-tooltip-in → to",
+        "digest": "f76a1addf6a113e194735b1075d322e2888a15354086f66c969500c8d8b82673"
+      },
+      {
+        "context": "@keyframes vds-navigation-menu-in → from",
+        "digest": "b7339a81fa0ade8f1c8bcfc939e5635bf2fa0d5f6f8f3ea5a73cfc18ff1dd86d"
+      },
+      {
+        "context": "@keyframes vds-navigation-menu-in → to",
+        "digest": "3a1955c179e7c83763330b57be610610bbadf4d6a97e2d0718333e9d28e7178c"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-next → from",
+        "digest": "ca0ad622e8a9a1291f4779136844ee8be4ab505910dc196d408aea79d0565f7c"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-next → to",
+        "digest": "0f5fabeb9c0f511ba17e82fc0b4eb43f1199b1eedf44628a6b678dab9549f342"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-prev → from",
+        "digest": "23ebb44dd35a3e1239c34a99545aa3a7f6c2d5c2b1395b5033aa0f681340e730"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-prev → to",
+        "digest": "f93b9fc3223c0dd62662f4f5bab0ecda850e3f01637f4b9b0dfa8259a7a8e9b1"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-down → from",
+        "digest": "ede89be77365f5cc5ff7d6a74081c29ef22493894886cdeaf508cbfc02a6f45d"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-down → to",
+        "digest": "60465526a481eb5b2dc72f81381bb415ab9bcb69e469e475fb2f0466d5359622"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-up → from",
+        "digest": "6e7aa1a5b3ee559ceb3f6d187e30f1d7b85cfe17147025cd4acdb2e9f38f6e79"
+      },
+      {
+        "context": "@keyframes vds-carousel-slide-up → to",
+        "digest": "45366e8c63576619d66ddad99669aedc2f098ffdfa1cb793465999b45ddafaa2"
+      }
+    ],
+    "src/renderer/src/design/reset.css": [
+      {
+        "context": ".vds-focus-ring:focus-visible",
+        "digest": "9a9295f75f54b4579c0a6edf9cb8d15581ca23ab9b000182cb59dfd72e9ace31"
+      },
+      {
+        "context": ".vds-disabled,\n.vds-disabled:disabled",
+        "digest": "279ce26519d43f407c0f2ef1214bee890f7763c94180afc04853293384614b83"
+      }
+    ],
+    "src/renderer/src/design/theme.css": [
+      {
+        "context": ":root,\n:root[data-theme='light']",
+        "digest": "f5b1c7e8d54127690df05e51b196c3fdc56bc4c96e59ea8de96c23d378e40645"
+      },
+      {
+        "context": ":root[data-theme='dark']",
+        "digest": "545ff26fc14170b0736545412fe8294aa852f078f37d40b114c10edcff134430"
+      }
+    ],
+    "src/renderer/src/design/tokens.css": [
+      {
+        "context": "@layer base → :root",
+        "digest": "135a221ad0f29026b1fc0123e0137ea676355fb2387472301d273b59e21d3179"
+      },
+      {
+        "context": "@layer base → :root[data-theme='dark']",
+        "digest": "7e8c50f0dd1efbd5d33dade85b48112b9afebbb23f4197c19088696a5fad20b5"
+      },
+      {
+        "context": "@layer base → @media (prefers-color-scheme: dark) → :root:not([data-theme]):not(.light)",
+        "digest": "8294cf76daaa0235fde216096fbd201b8c52976edbec12bc9009d3e3e9825f55"
+      }
+    ],
+    "src/renderer/src/design/typography.css": [
+      {
+        "context": ":root",
+        "digest": "36c86bb85709a652d1d0c178940e9cdf96b9c28506d3fa2004b18c82eb0da373"
+      },
+      {
+        "context": ".vds-text-caption",
+        "digest": "c0659f87fe2c7e5e1fc4664fe64f33125275d26125f521308727a4e5c4c905ce"
+      },
+      {
+        "context": ".vds-text-body",
+        "digest": "f26e06737224aca804fce5bcc42848be792c22c1a310ad009878009cf8411bb5"
+      },
+      {
+        "context": ".vds-text-title",
+        "digest": "af90728bdb3d03f88d5ef6cd9b792298a71abc487f8f453321b2ad54aba71e85"
+      }
+    ],
+    "src/renderer/src/design/zindex.css": [
+      {
+        "context": ":root",
+        "digest": "73b088912edcae4e38b0bbd3679856ab464640f0c9f29f80defaf8daee30bc3d"
+      }
+    ],
+    "src/renderer/src/features/literature/literature.css": [
+      {
+        "context": ".lit-page,.lit-side",
+        "digest": "181f89133e0e4512343bdaf3595e744d5cab6064edee387105ff8821a9ae0d77"
+      },
+      {
+        "context": ".lit-page",
+        "digest": "735c63efcd83702ecb689c39490f39fbf08031d353c1e49e1e0d835e5fc5a030"
+      },
+      {
+        "context": ".lit-toolbar",
+        "digest": "e5dbd34d4802acbf7f7806060404e2ccc98235ee82e9d69ebb4122f3f86c09af"
+      },
+      {
+        "context": ".lit-actions,.lit-batch,.lit-search,.lit-task,.lit-error",
+        "digest": "d03cb6e269383fe42633fd4caef26649d897cd881d2b66bd3a2a2b3b0adb2d1a"
+      },
+      {
+        "context": ".lit-actions",
+        "digest": "8acdad644d74bde77bbfa87acec7d5326800b76508f92f6941a300d47cb27b8c"
+      },
+      {
+        "context": ".lit-actions .vds-icon-button",
+        "digest": "342d13147111bd0f9975f4f53b2c067995f90a1eebbc2329602def5f4622c4a5"
+      },
+      {
+        "context": ".lit-import-trigger",
+        "digest": "bd54ec9269e4198865456e3d00158bf8d1e92d71f4472791f84820cdaab0b888"
+      },
+      {
+        "context": ".lit-search",
+        "digest": "736d6121855ab23103e0547651c9e6fa694072379f615b89e60c20595c49c9eb"
+      },
+      {
+        "context": ".lit-search .vds-field",
+        "digest": "bd01cbf75833fe66565473f7f30fe8384ca7a6a1b81c95df85f28c0a1deda1f2"
+      },
+      {
+        "context": ".lit-search input",
+        "digest": "18fdaca796a0a6c3c440e584fb9bfe5c0734d978d52e01e6028fe05a9ba77fb2"
+      },
+      {
+        "context": ".lit-batch",
+        "digest": "b38b0d5a212a49ab3488369b8cc5d26fe1e0b8ac20ee391a8b0fa607b6f87745"
+      },
+      {
+        "context": ".lit-batch>strong",
+        "digest": "511b89e696969da54ad4dddb3aa23be4aa6fdbda5b2430cda48b19ed5e25a4f6"
+      },
+      {
+        "context": ".lit-batch .vds-button",
+        "digest": "5bc7c1ab3790d921ac9ce4e6651aff747971edded2df2b317228e4a4abb1ef48"
+      },
+      {
+        "context": ".lit-error",
+        "digest": "a5e2a4e6a4cc84ffaf19ab2eb7c5571ad348104ca2e7e6b5b355b946c635bbb1"
+      },
+      {
+        "context": ".lit-task",
+        "digest": "e0cf71d64a5d0438897eb0a7643572731bcf980cbdf4af4f2867320f1bf8b6dd"
+      },
+      {
+        "context": ".lit-task .vds-progress",
+        "digest": "a83ef3d7e7d337bf849eaca21c97f4cb511beed17820edb46ed82afbc53227b9"
+      },
+      {
+        "context": ".lit-body",
+        "digest": "53ebdce8c3093da46c7da7f08c27a6a41d4a6d5ba83ac3d2560a225f2b07aa90"
+      },
+      {
+        "context": ".lit-table",
+        "digest": "ae0f97fa6baf33a37e8a1debf695e9a8b1f8edd29456de964de02e2657f0db4f"
+      },
+      {
+        "context": ".lit-table-head,.lit-row",
+        "digest": "982c249743d440c22cb4711b244e4b04379fcae00cfb2bc324df8cfe9595b55b"
+      },
+      {
+        "context": ".lit-table-head",
+        "digest": "c4eef1877ce56c7731d755e69ce6179cffcb85b10ab4bb4c1d0a0dc8edbc4c47"
+      },
+      {
+        "context": ".lit-column-head",
+        "digest": "305c64e11fa366531024d50817971b9ed4d8f368057f561ea416410e77e2f3bd"
+      },
+      {
+        "context": ".lit-column-head>.vds-button",
+        "digest": "31746c5af1bea3e84ec2d13d1b88531b175026acc7854bc3aecce52059d26bf4"
+      },
+      {
+        "context": ".lit-column-resizer",
+        "digest": "9b16f758c0f359d11f44a86d2d9ecd6e733c41a39485d724c8b5aa575af7792a"
+      },
+      {
+        "context": ".lit-column-resizer:hover",
+        "digest": "b4b684a55c18c8d86a713420b3b2cb8f750ef26c51ba58da0edb347404dd3bf8"
+      },
+      {
+        "context": ".lit-table-head>span,.lit-row>span",
+        "digest": "c4332ade2e0f7ee3aec538fb99e3c614c5811fbdb9fc1e401af5b12106ac7e8a"
+      },
+      {
+        "context": ".lit-sticky-cells",
+        "digest": "61029c2621aa895c69fcfb12a29aad7eff3e6c5f617b96532bed8920ec3ee442"
+      },
+      {
+        "context": ".lit-table-head .lit-sticky-cells",
+        "digest": "dd60a5d4f4cb98557dcccb1a829fcd484d67f293f735cfbe5614c65c117291bd"
+      },
+      {
+        "context": ".lit-sticky-cells .vds-checkbox__label",
+        "digest": "d164f27d49543033fae092e8195b0a6815141d95452e1e00e6110077bcc94ef6"
+      },
+      {
+        "context": ".lit-sticky-cells .vds-checkbox",
+        "digest": "a3ded8c4e615857ef1e330392a2b02a52b26858b419164560a7a979da625fe1c"
+      },
+      {
+        "context": ".lit-row",
+        "digest": "a3c8ecfd0bbf8e89d9f6a0f5b75f90cb7ec6c36deccbc9226574aa806f04fc1d"
+      },
+      {
+        "context": ".lit-row:hover",
+        "digest": "34bddfd37a193f67cdba192961cf3577828bf2c546870bb86f6229f7ebaf532b"
+      },
+      {
+        "context": ".lit-row.is-selected",
+        "digest": "fa00b8267cc66bab2e1e7fddf00db42eda26beda33f3249e76b4647ea7ea931d"
+      },
+      {
+        "context": ".lit-title-cell strong",
+        "digest": "dc39e382aab0f493e2d8b99a3e3d4977c2883e41f90e57ecde8fd200a2c80166"
+      },
+      {
+        "context": ".lit-unread",
+        "digest": "2be7b38be6fefe8737558bc433f246bad3d27028759fb43c81ba74a6ceb45a54"
+      },
+      {
+        "context": ".lit-unread.is-on",
+        "digest": "a2cfb07edde142b9307b8d63580cbbddf0468e5edeaca9831a8d451d9a2f5d3d"
+      },
+      {
+        "context": ".lit-pdf-cell",
+        "digest": "21bdabcb1dce5f8a7b3feaad35786d6f2f4f53c235b0fda7a54cd8c2391751a9"
+      },
+      {
+        "context": ".lit-attachment-row",
+        "digest": "e7d7d0d62dacff0a4bba7246eb346925ddcb0a4c0604993dae83c44e0e4b7708"
+      },
+      {
+        "context": ".lit-attachment-row:hover",
+        "digest": "cc19ead3d8d2fc32f3ce353c10e7c1708c0e685052c8e387d67d78309131ddfc"
+      },
+      {
+        "context": ".lit-attachment-row span",
+        "digest": "457c2ea836bb22aaa5287b2934691c84d33eb2a498a7648feded12cd65d3cc68"
+      },
+      {
+        "context": ".lit-row-projects",
+        "digest": "e8f225bfe3bf22efc0515f6b6e3efed4cdb46707f669815fdc0de29775652b01"
+      },
+      {
+        "context": ".lit-row-projects span",
+        "digest": "4efc8a771bc6650b7da7e319143a170b80a54dab1d33ffe37815dcc5a222916a"
+      },
+      {
+        "context": ".lit-loading",
+        "digest": "e81f8c3438ee91f550d9714b0036b1228abc73f3e2e181a84a32064e0c9f0bba"
+      },
+      {
+        "context": ".lit-pagination",
+        "digest": "8fa63fde8e5ae5a7d5d084245406d10cb61ed48df42a51f1899322f92e9544b5"
+      },
+      {
+        "context": ".lit-table>.vds-empty-state",
+        "digest": "ab98c7938d6ba191ace85489b5ba0351be1ca85d8875d9f89e39f027a78cb8ab"
+      },
+      {
+        "context": ".lit-side",
+        "digest": "282083788d72910ef3693b90ffd99d75be06182b937164848ab733fcfec38dab"
+      },
+      {
+        "context": ".lit-discover-title",
+        "digest": "78b1994896bef7699cb2c0592c7e47254c9e4a9248d648eae28036e1ff970737"
+      },
+      {
+        "context": ".lit-discover",
+        "digest": "5bc90ce06d31475cd4ae024271d9f6eb99204a5368739933d7e6ce58ee0479eb"
+      },
+      {
+        "context": ".lit-discover .vds-field",
+        "digest": "d85df12d988597e852bd5ed07597e6cd8910cc7cf578f82c6c2d6e18e0f44061"
+      },
+      {
+        "context": ".lit-discover textarea",
+        "digest": "055fb1857123ff87b2a8fb31651ba178a3373a09923dd572fad8b1a36cb3bcac"
+      },
+      {
+        "context": ".lit-discover .vds-icon-button",
+        "digest": "f0bffd01fc00e02dcef7c4b84356122aeb5d21e36c6196bef787d5e4bd61a621"
+      },
+      {
+        "context": ".lit-side-title",
+        "digest": "d1d786398fc953dca5028025cd891801e6ca3db88c4094b94c41fa6743d4a4dc"
+      },
+      {
+        "context": ".lit-side-title>strong",
+        "digest": "d53b70d9bd82a799d4f7efc307a37eb844c6ed58f47839e70681dcfd460361ab"
+      },
+      {
+        "context": ".lit-side-title .vds-icon-button",
+        "digest": "23ca37d150b255e2c9d62d9252d24014116052419c31f3bfbafee6b72eb85d30"
+      },
+      {
+        "context": ".lit-side-loading",
+        "digest": "4fba96ca05b559c7757ea19ab370cf3e65aabd2a56cb0689381c1e3a84111621"
+      },
+      {
+        "context": ".lit-nav",
+        "digest": "eb1c0aadb9c83f32ac685e599aef63dffd8621d50a1c529072d9fc8b6685f409"
+      },
+      {
+        "context": ".lit-nav-row",
+        "digest": "a4cfc3010dd188cf8a190b9665637c007ea80899f6698f3afe96eee4520eae9d"
+      },
+      {
+        "context": ".lit-nav-row .lit-nav-name",
+        "digest": "3dacf71d5636562c613ef51abf360e6d2d4cfe4b201816615251e3e434e00b23"
+      },
+      {
+        "context": ".lit-nav-row.is-active",
+        "digest": "6c565f678f104d1ef5dc8bc38bb381786c039d8c9ea147580d33c0814a3118ea"
+      },
+      {
+        "context": ".lit-count",
+        "digest": "9824614066b1aee599df4e3a41049740c8ef78e4143c1e25ac7205cf03c737cb"
+      },
+      {
+        "context": ".lit-project-row",
+        "digest": "24293aa8454e4bbdc152da35cfe35a466066041b6001eb242d62acf344f3a9d9"
+      },
+      {
+        "context": ".lit-project-row>.vds-icon-button",
+        "digest": "81c993102fce08bb6b806bbc6df89c33585c0b8b9c70a736015796fae7bb9670"
+      },
+      {
+        "context": ".lit-project-row>.lit-nav-row,.lit-collection-row>.lit-nav-row",
+        "digest": "d3d910c27a4d535ba70163382713f770ae75d458c745f15117016c091c08a92f"
+      },
+      {
+        "context": ".lit-tree-node",
+        "digest": "5ff7f9f8b237b3ba29e2759b7ca96739c0f5775edc17ca8f150cb75ec2d64dc6"
+      },
+      {
+        "context": ".lit-side-section",
+        "digest": "4b60acbc092ce3bde38991d8b5fdf9d3276856d650603dfccf741725ccc69a09"
+      },
+      {
+        "context": ".lit-section-head",
+        "digest": "be86d1ee3e3c2189721f457a63951beedfb03a6d9955e797dafe8c6a7d593078"
+      },
+      {
+        "context": ".lit-section-head>.vds-button",
+        "digest": "7bc122fdcc85b91759aad1cd29516a2ecc38d48c9058c27aac78d754918f4c77"
+      },
+      {
+        "context": ".lit-section-head>.vds-icon-button",
+        "digest": "692a8ebcfc69f25733a9a46ab64ede015433dd94eca657d09e928ec85d6f8aaf"
+      },
+      {
+        "context": ".lit-side-empty",
+        "digest": "f12e3fdef29f8b03ce9bd518525fef704f28ff69da76125d4c5e9aa65311ed80"
+      },
+      {
+        "context": ".lit-tags",
+        "digest": "c8920ec14ff69debe39b82a845e0a0509b2b3da9b35e900f9abad596fcea9419"
+      },
+      {
+        "context": ".lit-tag-search",
+        "digest": "d518e5d7acdc1fcb17be7d4e29f56362495733680f5cc588c48656214a974e7b"
+      },
+      {
+        "context": ".lit-tag-search .vds-field",
+        "digest": "3f59682cb5619e843fccc5d4ebe49139f649de632db80fb04453d33c9e02ceab"
+      },
+      {
+        "context": ".lit-tag-search input",
+        "digest": "62ec0d5ed2b9dab31652aa601f23da44bc31c11bbebe4001a52ac882206e1626"
+      },
+      {
+        "context": ".lit-tag-cloud",
+        "digest": "98af21785bbe52c8746b2d2ba46639d0af8860db36691b944ca6504844b59631"
+      },
+      {
+        "context": ".lit-tag-cloud .vds-button",
+        "digest": "6da63c5faee9cf91698ca04da3de7e55a43fa785c0c1e5a6ba95f0f6dec1ac11"
+      },
+      {
+        "context": ".lit-tag-cloud .vds-button span",
+        "digest": "6db8f631106eab8445319bee6049e5da99471b25fdd5cdf730957e88129c1260"
+      },
+      {
+        "context": ".lit-detail",
+        "digest": "b0e490145bbbfbe46a41d45912e84b2fd2140ca1a0de45a91da4a0d0e714798d"
+      },
+      {
+        "context": ".lit-detail-head",
+        "digest": "b807216257d6fc52f96aa5bac7682f1d97844bab9c3c288f772331f76251b677"
+      },
+      {
+        "context": ".lit-detail-head>div",
+        "digest": "d646b3b0ce26408c0b5c199375bae6a275f8fa63ebed6af4d5b2aa615bad4bc8"
+      },
+      {
+        "context": ".lit-detail-head strong",
+        "digest": "0e10ba0534b37ec16aa28cd3edba60e8eb5172e0f19895dc05af67346d71a1a7"
+      },
+      {
+        "context": ".lit-detail-head span,.lit-detail-section small",
+        "digest": "ae7fd5c14f8a0fb5b9f68ef00935af2659cdfe54a2dbc50aa682cd274db03e90"
+      },
+      {
+        "context": ".lit-detail-tabs",
+        "digest": "70a431872379ef1364dbde45ace49ffa008a99841861d4d2af1835e8a4075ca4"
+      },
+      {
+        "context": ".lit-detail-tabs .vds-button",
+        "digest": "dd41ef1021f7480326fa40976a075d1f276785127428af014d7fc5ef0fcb037d"
+      },
+      {
+        "context": ".lit-detail-tabs .is-active",
+        "digest": "5fcc6ebdf77086da7467c238dc40311a0d3c0cc7d49cbe723870b786992919d1"
+      },
+      {
+        "context": ".lit-detail-loading",
+        "digest": "752474c145b63762359f0db574ac51f43b14b0ffaa0be04ca2161f59b82c9321"
+      },
+      {
+        "context": ".lit-detail-body",
+        "digest": "a00d465b2dbf1a54d34e60e1ffe5f4b7eacec5468cc026c38f11d7e5d28a9cf7"
+      },
+      {
+        "context": ".lit-fulltext-card",
+        "digest": "7869ac147ff476527b575165e4dba2ac033c269ca2923f5752f6c48541ecb1d9"
+      },
+      {
+        "context": ".lit-fulltext-card>div",
+        "digest": "8592562500d3a7beb210f1eb58ba8242fa8fe7cad3246d88956c219d0b937711"
+      },
+      {
+        "context": ".lit-fulltext-card span",
+        "digest": "87d522f8a7dfc4726744e024887104742b5238cb228f094287f677eef8c533d5"
+      },
+      {
+        "context": ".lit-fulltext-card strong",
+        "digest": "451e36ab5348363c7e1cf1e0a2f8b78ea76f0c6f7d3c85e819a7d75ffb99b150"
+      },
+      {
+        "context": ".lit-fulltext-card small",
+        "digest": "14de7964d40197a6c6b4fd02e8f52c902d21c85e942a8f4a2c16e2df3226576f"
+      },
+      {
+        "context": ".lit-detail-value",
+        "digest": "b9a33812bcc29f6c61a6d4bd4f02e91667c9f90ca02be7292514cd0f73cb1b4d"
+      },
+      {
+        "context": ".lit-detail-value>span",
+        "digest": "2093c7099bafec550f3cd1b7c8388a689dbc7f13011b847b2b2c4f0e6be24490"
+      },
+      {
+        "context": ".lit-detail-value>strong",
+        "digest": "b391770bb3c1da120e730c763cbc3b51cd893cb9ac9d09e9728ad7d7788d924b"
+      },
+      {
+        "context": ".lit-detail-section",
+        "digest": "599e3c255fcd2411652a88c7d7af21c2b0cf6e6abe08a891e9c12f38b27139c1"
+      },
+      {
+        "context": ".lit-detail-section h3",
+        "digest": "9ad48007d3e23d08fdbfdf12bbe989869e45c3978fe11bfc70456eab640eb34e"
+      },
+      {
+        "context": ".lit-detail-section div",
+        "digest": "c5217b7aee5f752d0c48d0dda0b106ff5bfd5086c21ed7e7ca18dd6d234c18ff"
+      },
+      {
+        "context": ".lit-detail-section div>span",
+        "digest": "7605b9e0bcea7b76edb3d9772f73588c2d1742a615d5dbef4fadbebab86b67bb"
+      },
+      {
+        "context": ".lit-detail-value>.vds-field,.lit-detail-value>.vds-button",
+        "digest": "1ea90b408ee461f5f15443b2c6276d11dba6aa499a55306d13879ffb016001b9"
+      },
+      {
+        "context": ".lit-detail-value.is-wide",
+        "digest": "f06642eff34b0b76825c321579a5fac24f4631aae632d40d378b5a9b4d5a364f"
+      },
+      {
+        "context": ".lit-detail-inline",
+        "digest": "96d699964412b89a76e41af3e57d55c434c2a028534d12435ae696108b2b30e8"
+      },
+      {
+        "context": ".lit-detail-inline>.lit-detail-edit",
+        "digest": "40b426d332a9c60696c305768877d43a122a7bb1c672c0d0658b842092558676"
+      },
+      {
+        "context": ".lit-detail-edit",
+        "digest": "7a0d02c76a0d46f1091e843c9a696c7c38beda6ebf937ee9a1cf21a0d6cbef7b"
+      },
+      {
+        "context": ".lit-detail-edit strong",
+        "digest": "ab20230ead35303b9c34c9745fcbffa176f84476186ca73cba67793aa3dcdfeb"
+      },
+      {
+        "context": ".lit-detail-edit svg",
+        "digest": "a4bed972c00b508bada3c2fe9ca387041a0fc81e8bb99de540997917c6b00773"
+      },
+      {
+        "context": ".lit-detail-edit:hover svg,.lit-detail-edit:focus-visible svg",
+        "digest": "64d534e7b8c9ef7926f981600fa279330e0ac753d19d17e41247bd0c2fdf1f0c"
+      },
+      {
+        "context": ".lit-relation-trigger",
+        "digest": "b1d2cca64097ed7efb34ebe2dfddb53ab6b1b58068691609c6d4403b66cc16e4"
+      },
+      {
+        "context": ".lit-relation-trigger>div",
+        "digest": "f97688e7a986a054003d352ac60a58bd4be159a0e7a96e3c83b23e883d969057"
+      },
+      {
+        "context": ".lit-relation-dialog",
+        "digest": "7c0e2e1f6e27e81732b408edfc8c6d6af957963a9c59cef8eb557b91a4183275"
+      },
+      {
+        "context": ".lit-relation-options",
+        "digest": "610e22b75f7265ae5e6f8542c1dc4e0f2b1353b0ab3e9a4562d7e100b4e5c0e1"
+      },
+      {
+        "context": ".lit-create-dialog",
+        "digest": "e8e46a1cfb40b6dd08bb1ee74889b6eb7e1d60c3dfd1048cb373ecdd63677041"
+      },
+      {
+        "context": ".lit-create-dialog .vds-dialog__footer",
+        "digest": "64d9b373cca43b030bd8f262923a5286a8a0541b330dd3ba7019351c381d7010"
+      },
+      {
+        "context": "@media (max-width:1050px) → .lit-detail",
+        "digest": "87e196438270975c4e149bea060cd4ab85eca2ad4906c246a91347c69f6161cb"
+      },
+      {
+        "context": "@media (max-width:1050px) → .lit-table-head,.lit-row",
+        "digest": "b31d065759ab79e0f6d3861807433967610a8a7cfbc3395f4390063a3cc11ae4"
+      }
+    ],
+    "src/renderer/src/features/workbench/image.css": [
+      {
+        "context": ".vds-image-document",
+        "digest": "eab551c3fd945441037095a1d219825edf5c358f22b20ff497f3d1257c7d5af4"
+      },
+      {
+        "context": ".vds-image-toolbar",
+        "digest": "35cdcc407332742e03e33b5c45d7d9846cbdcc943c6aafb6ffe6cc0de809caaf"
+      },
+      {
+        "context": ".vds-image-viewport",
+        "digest": "23d7d2d7faf7b1485d1826debd42539dfc2b5d92807767e7ddc0ab59fb063a3f"
+      },
+      {
+        "context": ".vds-image-viewport[data-dragging='true']",
+        "digest": "1e35cd33d7235139cd9513b755eea2a6d2f89bce6ad6b7ebe2dfa54c816dbb69"
+      },
+      {
+        "context": ".vds-image-viewport > img",
+        "digest": "e316202794548cfba00050bec974006a2f32c8db32a459bdc2306822afd33929"
+      }
+    ],
+    "src/renderer/src/features/workbench/pdf/pdf.css": [
+      {
+        "context": ".vds-pdf-document",
+        "digest": "69eceda3e4900621dfeb60c3bec61f4f81c397c84ecda5711f75832955a74635"
+      },
+      {
+        "context": ".vds-pdf-tools",
+        "digest": "d63138dd6a89dc76a2ef1dc04bab86cd0dab89f0945803576dc4b9406db74b33"
+      },
+      {
+        "context": ".vds-pdf-tools .vds-field:has([data-testid='pdf-page-input'])",
+        "digest": "801111a2ebd217efb7a68ee960e1f8e2d7e9aab12f5eb280bcbdb03b1f2a62b7"
+      },
+      {
+        "context": ".vds-pdf-tools .vds-field:has([data-testid='pdf-search'])",
+        "digest": "a254d1c8a1012fc0b11bba48b1e5f8cb3c46990a4b92bc3330e31e2f7ef47aab"
+      },
+      {
+        "context": ".vds-pdf-reader",
+        "digest": "ebebc2b2a02dedc5839cd3d4f5797842298e6b3b669914662b6b54eeca8c1974"
+      },
+      {
+        "context": ".vds-pdf-reader.has-sidebar",
+        "digest": "0fceb5c6519617e325ecaaeb38103accb38c8b6528d7d307c4fb7719b166bd5c"
+      },
+      {
+        "context": ".vds-pdf-reader.has-records",
+        "digest": "b6ccde97cda31d0239739bded3123ac7975d19e3ee2bc374402df1e5b710b5d1"
+      },
+      {
+        "context": ".vds-pdf-reader.has-sidebar.has-records",
+        "digest": "71ba6745bee2f59ba41ae08d9d169c0a766ad1408907cfbca05e5e23eac67cc8"
+      },
+      {
+        "context": ".vds-pdf-sidebar",
+        "digest": "4d5faec1f3744225459fc082b7e76f87b10c6ad273296825fc35bb56a5ad116c"
+      },
+      {
+        "context": ".vds-pdf-sidebar nav",
+        "digest": "73a4023a4f2b126041cbb6473333cc4bf551c31db777dbc3287d8fa85f9d1b7f"
+      },
+      {
+        "context": ".vds-pdf-thumbnail",
+        "digest": "2cf0e4f6d214080b7667380b4de27cf0d10286854cc0572cf203efa66068451a"
+      },
+      {
+        "context": ".vds-pdf-thumbnail-page",
+        "digest": "0e9137b0fa6c49787632ffcc9a2c8ebe6bbc47cda7a23dca15c8538f0a083196"
+      },
+      {
+        "context": ".vds-pdf-pages",
+        "digest": "d0ec7f4e1fd5e4135fd8c987cb26e4a2ed1ce73a5897daa218158a2c3e879736"
+      },
+      {
+        "context": ".vds-pdf-page",
+        "digest": "83a339f8c569c58e76aa9dbc53242df123913a4621dbc5ed23e172633e88896d"
+      },
+      {
+        "context": ".vds-pdf-page canvas, .vds-pdf-thumbnail-page canvas",
+        "digest": "d35d7962cc90126539b0d72428df9cac18a2073a0fc2061b679da297b9e00611"
+      },
+      {
+        "context": ".vds-pdf-page-placeholder",
+        "digest": "7aa0927f1615d0140e76888a4ab585e876c694f4c7578c702f4bcdb89fc13161"
+      },
+      {
+        "context": ".vds-pdf-page .textLayer",
+        "digest": "ab3ed8039348cb049d8aae6d727e4fdd7d28c2cb95b7bba99318d3234d232174"
+      },
+      {
+        "context": ".vds-pdf-page .textLayer :is(span, br)",
+        "digest": "c45c5171265fb95ef456ee7aa1ab2fd0721a8194015d7e17a302a6187ec11ad7"
+      },
+      {
+        "context": ".vds-pdf-page .textLayer > :not(.markedContent), .vds-pdf-page .textLayer .markedContent span:not(.markedContent)",
+        "digest": "44ce3cbff27399d60bed6b395c3ac55acf2aaba5f7f4af1293a017a97520a4f8"
+      },
+      {
+        "context": ".vds-pdf-page .textLayer .markedContent",
+        "digest": "b60fee0880e5d8175ef2fc3d9ff474ddda0b9aefc850f2bc0b3f8e6a9e7e8344"
+      },
+      {
+        "context": ".vds-pdf-page .textLayer ::selection",
+        "digest": "cb57afe994309c0756ba90e0d2291761792100156eb44b2032c12daa7bca2e0e"
+      },
+      {
+        "context": ".vds-pdf-annotation-layer",
+        "digest": "fb3d514657a792519e4922acda6d06690bb7c8497f3873298461163b0e260ad9"
+      },
+      {
+        "context": ".vds-pdf-annotation-layer span",
+        "digest": "f37058d2de8d3a5f81b75b75cd3459c99487953f92dc2ec5dddfc3eb5a436108"
+      },
+      {
+        "context": ".vds-pdf-annotation-layer .is-selected",
+        "digest": "28c042648ddbb4382400ff042d3dfbc4dafe0d8f5262f566f11ebee20d632fb1"
+      },
+      {
+        "context": ".vds-pdf-annotation-layer .has-comment::after",
+        "digest": "5dad207b9bf51e8843c73ae4986f9a2e52ee90bf3c4a3d45c47be72066f5f8e3"
+      },
+      {
+        "context": ".vds-pdf-note-card",
+        "digest": "dd5d3798fad87e581ab2175f645fdbed7beea16fd4140a7cc05c576778e3d6fc"
+      },
+      {
+        "context": ".vds-pdf-note-card blockquote",
+        "digest": "b4dc739d00d4836aa07b6b0dde7443ca418e609d5877ee6a2e39f340698b5bd4"
+      },
+      {
+        "context": ".vds-pdf-note-card p",
+        "digest": "36611836555b4fdc488552f4c7122277d7639c5888d63b7a417338def34c5c3a"
+      },
+      {
+        "context": ".vds-pdf-note-form",
+        "digest": "40b36921f731ac5c77588c35d79f154029689be5c2babf9f56c869a82ac97a81"
+      },
+      {
+        "context": ".vds-pdf-note-form textarea",
+        "digest": "4ab8f4078d12d2a553954c5b732f7e5b24010263209ee4706f18e66a1b978b23"
+      },
+      {
+        "context": ".vds-pdf-status, .vds-pdf-loading",
+        "digest": "ba0665b155ea9eeae87cf9a9b2a2fe7e7e142dd00c88df16783d6122dcd4ad13"
+      },
+      {
+        "context": ".vds-pdf-records",
+        "digest": "8b290f4ea5ebbff0793c6791d14440e11c8625e0a48b49be37ebf245c18c4f65"
+      },
+      {
+        "context": ".vds-pdf-records-head",
+        "digest": "89370218648b7ebb9c1261f79d2eff15553e328a6c7719f34d5f73c7a04ef0e9"
+      },
+      {
+        "context": ".vds-pdf-records-empty",
+        "digest": "989ddc5ec1de1df4151c360645a69e8fcacb08d059fcae3cc63f43955093073d"
+      },
+      {
+        "context": ".vds-pdf-note-card .vds-button",
+        "digest": "466b11255aa8592178056c2ef533b83070d9ef0b3e5c69cac8f62bcbc79d7abe"
+      }
+    ],
+    "src/renderer/src/shell/workbench.css": [
+      {
+        "context": ".vds-workbench",
+        "digest": "4ede2d31ca1e2d533691956814f9e82702238b1d9a11460777da60d5e5665a74"
+      },
+      {
+        "context": ":root[data-theme='dark'] .vds-workbench",
+        "digest": "7976678c131384b07ec50a7a6e8dd3eb96be130445df4d8907afe2ab38fce091"
+      },
+      {
+        "context": ".vds-top-bar",
+        "digest": "50898a9aea9d9191d49d4580839d4507cb2fccb73781d5d4b21d693d45cfeb34"
+      },
+      {
+        "context": ".vds-top-bar button",
+        "digest": "3268fecc4dd16438238ddf024ad9806fa3ba108869326d359b73105a7c833206"
+      },
+      {
+        "context": ".vds-top-bar-root,\n.vds-top-bar-right",
+        "digest": "6e4f42f370289f052c65fc204823f5e6d2e27567444a5487e9073cb195670ad6"
+      },
+      {
+        "context": ".vds-top-bar-root",
+        "digest": "1d12cbf4be60de2625990824ea4b56038e6b49f97a674600791f882d0f718058"
+      },
+      {
+        "context": ".vds-top-bar-right",
+        "digest": "f74b46263dd1856708ae152803d5cc45d329ebe4af48422b8f69ad6aacdc5999"
+      },
+      {
+        "context": ".vds-top-bar-root > .vds-top-bar-right",
+        "digest": "bad9722c8766c33ac078ae57f57ff9538abb19fad1c96ee30a32152d030dd040"
+      },
+      {
+        "context": ".vds-top-bar-collapsed-left",
+        "digest": "b8272c9dd22ba56e5d9abc6a9d0156c0ff5e9d60838af06049f670bb1fd611c1"
+      },
+      {
+        "context": ".vds-top-bar-collapsed-left:has(.vds-tooltip--open)",
+        "digest": "48bd0141324d1691332a3ac330f7031c83a71b8c1763e33d8fcc54787078dea9"
+      },
+      {
+        "context": ".vds-top-bar-actions",
+        "digest": "10fedfe1b2f79f46f8510794c7b4d22a21d057d595a5983e5bce81937980c823"
+      },
+      {
+        "context": ".vds-brand",
+        "digest": "217561749a6066523f0fe653d8f7c68e54a9774ae5f9247a856e766dc3eec409"
+      },
+      {
+        "context": ".vds-project-switch",
+        "digest": "9241be83edfe27b1c34016535d5b2addaa9f3f7c72d3d5cfcb51729ac843bc85"
+      },
+      {
+        "context": ".vds-project-pill",
+        "digest": "387be18d1e8bc68c83db9cd68adaee1737ef7367e124bb804eb3f0c9b5c2a1e4"
+      },
+      {
+        "context": ".vds-project-pill:hover",
+        "digest": "aaa8522588193da6e0b686abf47e710e952d38062e805b04cee7da1ab9445e9a"
+      },
+      {
+        "context": ".vds-project-name",
+        "digest": "36023f9eb23890cb240dff885f2f3b21302822cc64c48a47bb0500b489470713"
+      },
+      {
+        "context": ".vds-global-search",
+        "digest": "39a7009bdb4df173202c09e56ba4d585399f5e5efe5d00951cde2f6d68f6c054"
+      },
+      {
+        "context": ".vds-global-search-hint",
+        "digest": "8f78b94a007d9d320178d5a5cb84bec5190d10e7ee078fe172dc27bc056b6f20"
+      },
+      {
+        "context": ".vds-kbd",
+        "digest": "6f7aae9b32deed2acc558d1cfcdcb9fe74df698c0702ed850ae5d1976075e10b"
+      },
+      {
+        "context": ".vds-workbench-body",
+        "digest": "eec7ed9992adda710648c74a7c94c93891c8132676fa336d0434308dee0d6573"
+      },
+      {
+        "context": ".vds-workbench-body > .vds-resizable-split",
+        "digest": "1adb1ea711897e497fc813df385d10a5dfdf38aea3c5c7daaa8d55c836f3e4fb"
+      },
+      {
+        "context": ".vds-workbench > .vds-resizable-split",
+        "digest": "e0deebf44fcc0d2d1fc50f7d0e76abab53ef974503a2630cdf809bbc528dcefc"
+      },
+      {
+        "context": ".vds-workbench > .vds-resizable-split > .vds-resizable-split__handle",
+        "digest": "fddf4e818fc44d88a3918a783d5647ca4f18e7aef17a9fc2223debd53de2c257"
+      },
+      {
+        "context": ".vds-workbench-column",
+        "digest": "408659b101c447303dc60b4b78bf783698a8a45171c1d4e9ec10787d30ce77b4"
+      },
+      {
+        "context": ".vds-workbench-surface",
+        "digest": "b7fd79b694a7767d20f80d3b585a838e6a5375c2d9d86a1b45d8ddfa13d99fdd"
+      },
+      {
+        "context": ".vds-workbench-surface > .vds-resizable-split",
+        "digest": "4ba012785a91f8e51e5fa225ca70bc3a2f28392c1455a6c53068cfb27444be05"
+      },
+      {
+        "context": ".vds-workbench-surface > .vds-resizable-split > .vds-resizable-split__panel",
+        "digest": "58631abc8f16bf561f81d9fb63f8dcc698202f182d8e9cba08164d524f11734e"
+      },
+      {
+        "context": ".vds-ai-panel-resizable > .vds-resizable-split__handle",
+        "digest": "92fcafb50c3f66ac1a342fafbb380cc7d600cbbb3652550fd726713e7773fd5e"
+      },
+      {
+        "context": ".vds-workbench-main-column",
+        "digest": "f6e6f8d4d784909ca777ad8c7a7097ac8e51c69c42de5dbe5a6d5d765c949beb"
+      },
+      {
+        "context": ".vds-workbench-side",
+        "digest": "46ff0d8169f8d0aaacce91ea58d233dff8d6f41f093b1631661f74b72db3360e"
+      },
+      {
+        "context": ".vds-activity-account",
+        "digest": "a4b722db05c818aadf8967242d677778b3b7826f8ceb3e6184cb783a25b9fa34"
+      },
+      {
+        "context": ".vds-activity-account-scrim",
+        "digest": "649b3ed175d86934b31310e71ac57f5da0dd5750bef70b9803fbb262d1029f63"
+      },
+      {
+        "context": ".vds-activity-account-menu",
+        "digest": "b30386e80875b5fd53367423d7ecee318df3534559530904e076c5d4eeb6553d"
+      },
+      {
+        "context": ".vds-module-panel",
+        "digest": "474ec460ae04f0610d02e2ac9178f10e45e63723be5b128a4612cac4f670bffc"
+      },
+      {
+        "context": ".vds-module-panel-body",
+        "digest": "993416c764c4a87ed711aac5c176904f363976697adefc90e4b1495225eb352c"
+      },
+      {
+        "context": ".vds-resource-panel",
+        "digest": "ac6e1015e56003b0a8e7518495b31dd72bc59d235cadc4dc46c351a630397748"
+      },
+      {
+        "context": ".vds-panel-head",
+        "digest": "941010346ab67a81846b89f9c6bd3a59d74337538dee1a79820818e6fc5c3719"
+      },
+      {
+        "context": ".vds-panel-title",
+        "digest": "e4e05529757cf07ed919b9a7ea78d3dd5c12393a8fccdd6051ab88c1513e75c9"
+      },
+      {
+        "context": ".vds-panel-fold,\n.vds-panel-reopen",
+        "digest": "493669aaefc886eee2fdc0e7ce3ebbb334a5c9db2b945c8ea1252700dcdc5d40"
+      },
+      {
+        "context": ".vds-panel-reopen",
+        "digest": "ecc074e978a0a736140c2a8e6386b615863e2eea719c6bf259bd528234d0a9e8"
+      },
+      {
+        "context": ".vds-ai-search-card",
+        "digest": "2dc010ba0de377da7cd2346608e7c529b26b9dd10ac9636596c3202c5c237e90"
+      },
+      {
+        "context": ".vds-ai-search-label",
+        "digest": "37ad844c95ff33997be3428bc06f30e0d81a6c76914f1df6161e494946424b3c"
+      },
+      {
+        "context": ".vds-ai-search-input",
+        "digest": "e5c0772c5e55ee4356e9c1d3291ff44a81daa5e0ffc771b4c7eb3e225f54bc0a"
+      },
+      {
+        "context": ".vds-ai-search-input:focus",
+        "digest": "db8324be0c5da284447a50d86d787d41b43e5ef199d1fbb87d9acb787aa3e506"
+      },
+      {
+        "context": ".vds-ai-search-foot",
+        "digest": "71695f198b93f7635905605ce40beca16eebc4560c0979d3b8ec4422f64790c5"
+      },
+      {
+        "context": ".vds-ai-search-go,\n.vds-ai-send",
+        "digest": "39296b9083ebd16b700d015611b182ac8b6231f5b732457d86c3914da1b44034"
+      },
+      {
+        "context": ".vds-ai-search-go:hover,\n.vds-ai-send:hover",
+        "digest": "4d8fdab233e3ca5c4a0a50e4ee802c4bd4751394d8a564c34bca722775af830c"
+      },
+      {
+        "context": ".vds-import-wrap",
+        "digest": "329adc71ab4259d877454253433a2871e5faf5add3f725b91bfbd3fc670cbe65"
+      },
+      {
+        "context": ".vds-import-btn",
+        "digest": "56cba9bc927dd007072681f0dc7a9681a6d0ee71bbba9b01cb23ae9ec847a2c9"
+      },
+      {
+        "context": ".vds-import-btn:hover",
+        "digest": "f217f19ca38a3b5e0e9ab6635a9355d66280ade6ce47a557bef81edb8e33efdd"
+      },
+      {
+        "context": ".vds-import-menu",
+        "digest": "1a9c03d6682406365b7c9700acc407b2b5a312b987ff3bf70ee51b3b446feda4"
+      },
+      {
+        "context": ".vds-import-menu-head",
+        "digest": "c576d77db7a977268a7a9b879896fb81493bd58e4b51aa66b9114fbe944df7b9"
+      },
+      {
+        "context": ".vds-import-menu-item",
+        "digest": "80c1d58800b5a1f4c53595fea7e2cd57b0a617ed7850760286b39b6da4bc3390"
+      },
+      {
+        "context": ".vds-import-menu-item:hover",
+        "digest": "736fafce520bef56b7487be39e2021199f23500810ba63d62972524dbb234bc2"
+      },
+      {
+        "context": ".vds-tree-head",
+        "digest": "533b53fa4781f919b620541f6aecfe43f9b6c955b67b88d5378980fbc754c410"
+      },
+      {
+        "context": ".vds-tree-actions",
+        "digest": "b29bfd4c0e2545017db0ab43fadc67eedc4934e1e66b03bba2ce99505aec83b8"
+      },
+      {
+        "context": ".vds-tree",
+        "digest": "28873f5e4dddb2217a31b20e37d1c0dc5bebcaac90e4cd70b2768b520d227f44"
+      },
+      {
+        "context": ".vds-tree-row",
+        "digest": "7ecc46f39263af35cd0443e731328137c5a80699cba7aa01fd795927b823f672"
+      },
+      {
+        "context": ".vds-tree-row:hover",
+        "digest": "62ba3dd6202e4c751467d359e794f55fb944100d7f72296f3385c73580676c9d"
+      },
+      {
+        "context": ".vds-tree-row.is-selected",
+        "digest": "628d4250d0d3af6809f1141f6d8f48b6aea40b466b023c4a520c6b804315dda7"
+      },
+      {
+        "context": ".vds-tree-spacer",
+        "digest": "376c44333d844beb9f333957087af49c463b0019a4b0145a3723922bf42ed8fb"
+      },
+      {
+        "context": ".vds-tree-icon",
+        "digest": "ebb6dc67ce58daaf49b7702c64954fa980fae2ca0d6cf4ea41ba16885c4592cb"
+      },
+      {
+        "context": ".vds-tree-row > svg,\n.vds-tree-icon > svg",
+        "digest": "c45d55501f552100fb9515a21391b440e518c36d48b656fe4a3382cab4378f5a"
+      },
+      {
+        "context": ".vds-tree-row.is-linked .vds-tree-icon",
+        "digest": "a35e86474b56587cffa1724c467133f368620ad3c7b21cf3edff9adfadf48395"
+      },
+      {
+        "context": ".vds-tree-row.is-linked .vds-tree-name",
+        "digest": "3f7274c816f5232a0bb59c2aa789eccca1713877e67c8f0198c8438c602a4cb4"
+      },
+      {
+        "context": ".vds-tree-name",
+        "digest": "edfa5aab705e19722989e12cd6321100f7801e2dea957a997c06ae2e32e8b792"
+      },
+      {
+        "context": ".vds-tree-row.is-load-more .vds-tree-name",
+        "digest": "af5ba26c0a66bf794a07749e27a19f711d158126e5ac34316683d600aa1ace92"
+      },
+      {
+        "context": ".vds-tree-row.is-load-more:hover .vds-tree-name",
+        "digest": "68c3016493a11b6ef4c89b6456a49467a6d2b03cc0f87a975b2257c0b1c56dda"
+      },
+      {
+        "context": ".vds-tree-count",
+        "digest": "882fc3af2123c046d88a102dcaf65685d89bfe8e3ebbda46762c2002a3ccfa54"
+      },
+      {
+        "context": ".vds-tree-row.is-selected .vds-tree-count",
+        "digest": "22185c76ab59f30613225f75279fc32913d40ad7708f740e29e0c6f428b28b2b"
+      },
+      {
+        "context": ".vds-tree-row:hover .vds-tree-count,\n.vds-tree-row:focus-within .vds-tree-count,\n.vds-tree-row:has(.vds-tree-more[aria-pressed='true']) .vds-tree-count",
+        "digest": "bb8713c2788e8409a72d270057c7bb3edd1768741d9194d7bd6939138d196b4a"
+      },
+      {
+        "context": ".vds-tree-version",
+        "digest": "bf68197d247821f43e0c9026c9cf97391381d669327a02c465d19d39bf72f9ea"
+      },
+      {
+        "context": ".vds-tree-empty,\n.vds-lit-empty,\n.vds-ai-context-empty,\n.vds-ai-stream-empty,\n.vds-search-results",
+        "digest": "d32057cfccda4a45abb7e5d308e2f932d62423fccb307df7ed7b8559118b5079"
+      },
+      {
+        "context": ".vds-lit-nav,\n.vds-lit-group",
+        "digest": "392f700e02fb1614bb87adc4f0c3f234e41e911fd9a93dd9bfcd6044a73d4344"
+      },
+      {
+        "context": ".vds-lit-group-head",
+        "digest": "69215c207dcffb836fbe5385c273b735185b1fd547b6b0c71d6e0791fb438e41"
+      },
+      {
+        "context": ".vds-lit-group-head button",
+        "digest": "20e3bf846d4d2063257554f34801a60add463e74cb40b99a2fd65a7b0862b22f"
+      },
+      {
+        "context": ".vds-lit-nav-row",
+        "digest": "22bed2df1557ab78bd008d4ba2f82a4de91794fc9c74f6b2301b9cfb3f526e20"
+      },
+      {
+        "context": ".vds-lit-nav-row:hover",
+        "digest": "85c848b7a1a01e8646bd118167ba74a046e050f20760a41934a5ef2b93ff7e73"
+      },
+      {
+        "context": ".vds-lit-nav-row.is-active",
+        "digest": "8f7cda43e1a8fca5e06ef5c292fa2e6fe69244525c873c23956ecfad514b4805"
+      },
+      {
+        "context": ".vds-lit-nav-label",
+        "digest": "25166fba12862dfb9b65b3b771f7c4f2843da9e0f652e7fbe5748ff65f364900"
+      },
+      {
+        "context": ".vds-lit-nav-count",
+        "digest": "19cdda73ffb0c4dc249f9325ed534f84270e53501136d047de495367ce2d59fa"
+      },
+      {
+        "context": ".vds-lit-tag-dot",
+        "digest": "38e5efa7dbefe2b2fba9396fd4bcee609a8129fd5a98f6df0ff2422ec9fcc148"
+      },
+      {
+        "context": ".vds-workbench-main",
+        "digest": "f9939156aa09dd749b81f7a09f1514b85e09ebdb147e35ea5da628930e681a33"
+      },
+      {
+        "context": ".vds-tab-bar",
+        "digest": "600fc26f19bedd34bc006e0943e1f1e7ebe2e8ce14b95f84d5e0ed797789cf24"
+      },
+      {
+        "context": ".vds-tab",
+        "digest": "4eff39f40ac6af3eb7ca2f2c9d1f9eb87a89f969b9aa5ede9d53ef13484cc886"
+      },
+      {
+        "context": ".vds-tab:hover",
+        "digest": "b91e49f4f715a94e666a8bd8a37faac0da62aa4341b9c8c635ba584610df15db"
+      },
+      {
+        "context": ".vds-tab.is-active",
+        "digest": "a8ab6c455e8038c9b55721a11d2199837d1d1abde56c8eb46e847ad024147650"
+      },
+      {
+        "context": ".vds-tab-title",
+        "digest": "bd2e5bdde269baa38a0b62c65291f196ed4e20132ec9f1273f9881567e7c5a76"
+      },
+      {
+        "context": ".vds-tab-close",
+        "digest": "9cf104c94f5a2e9ae3d4fef48a21c603792f782ac124f7b06ec3b2cc0e0b818d"
+      },
+      {
+        "context": ".vds-workbench-pane",
+        "digest": "a024c0b6b356e58d31b047e85fff8ffc8a7dbb2367eee07a007fca8d1ef92937"
+      },
+      {
+        "context": ".vds-web-search",
+        "digest": "f3202244fad3634a34cf88bfae49ee0d64ea8cc447fa7da5617bf7766a04b859"
+      },
+      {
+        "context": ".vds-web-search-results",
+        "digest": "1721ffa0ccc34d6d85d2e67789704e0cad0252a511a3f5b6848c2a023935b820"
+      },
+      {
+        "context": ".vds-web-search-waiting",
+        "digest": "b0a3ff5880468e59120ead0cd2450e47cfa6e50a39882544b8c2f4b8ede27b19"
+      },
+      {
+        "context": ".vds-web-search-empty",
+        "digest": "60d8c14918d8611bec4af0e6339f98b532d6a00d58775834dd1dd56e4daa4ac5"
+      },
+      {
+        "context": "@media (max-width: 760px) → .vds-web-search",
+        "digest": "15d33cf707bb89fd0afc992a3643cc9fdfb1457bce1ac0cba404fb05ec08143c"
+      },
+      {
+        "context": ".vds-overview",
+        "digest": "30e848660f7bd79cfa69abbb8bf20a9202301b26c0f5fdab230adcdab54b7611"
+      },
+      {
+        "context": ".vds-overview-inner",
+        "digest": "f450912fbf8696ed8db7e2e27a7e2c2787ffffdd2b8426ef714c0b9f1675da89"
+      },
+      {
+        "context": ".vds-overview-kicker",
+        "digest": "698f4e1ec7a51bf0aaef85c54afc681b4be0d2eb433a948ecd88de877d4644b8"
+      },
+      {
+        "context": ".vds-overview-title",
+        "digest": "3b5ba4f9273ba0598dfc1bdd5d0b64377a8b9540ee343835ae9524c1f22fea80"
+      },
+      {
+        "context": ".vds-overview-desc",
+        "digest": "3fdd26af57201da437ae93b94bef3759aa81d5c39421045667c5efc6e04ed63b"
+      },
+      {
+        "context": ".vds-overview-empty",
+        "digest": "0db275b22db0db9049b217d0c53aba068acea743f65744a6043b7b781ddbe8bf"
+      },
+      {
+        "context": ".vds-overview-acts",
+        "digest": "592fb846678befc87a362a44982b9b3ca9f638fb6cefda6346abed0072ec8294"
+      },
+      {
+        "context": ".vds-blank",
+        "digest": "ec60316542daf93476334c002134c67d3aa8a49cde8978726886b6973323aafe"
+      },
+      {
+        "context": ".vds-blank-sheet",
+        "digest": "e7d47f118f2197cfc3909cb4887217a31fa0dedf0a55c3f670a3837d1122b22e"
+      },
+      {
+        "context": ".vds-blank-brand",
+        "digest": "0ea179742ea0466378308a6306377f8904528176c9f3ef83e44250fc9b02ba86"
+      },
+      {
+        "context": ".vds-blank-lead",
+        "digest": "04e7f9e35d4f49da5cc25c81dd3d4030120ce2c75da391591a147412dd40b2fb"
+      },
+      {
+        "context": ".vds-blank-acts",
+        "digest": "15e1347530e76fea80d7d2f8ef8fb8ae957177af6eb20246a30c8a2655b3b441"
+      },
+      {
+        "context": ".vds-blank-action",
+        "digest": "cfef767b3989c3801f90e53d6ad41239e5dd0f95a27ccba1776341b8466c6b3c"
+      },
+      {
+        "context": ".vds-blank-action.vds-button--primary",
+        "digest": "badfd5afea1985502ecf5cedfb64e2a0947b77716de0b4909486f9315b7e9db8"
+      },
+      {
+        "context": ".vds-blank-action.vds-button--primary:hover",
+        "digest": "20680c8216ef104c5614d2993a675fd806cf3a54128e38335cf77f1fbb4153d1"
+      },
+      {
+        "context": ".vds-blank-action.vds-button--outline",
+        "digest": "1fe0d94fdc4e630c020ad50e5ae8ff276ea2617e388e74b0a490a5b87b71d132"
+      },
+      {
+        "context": ".vds-blank-action.vds-button--outline:hover",
+        "digest": "5381e87d82afa8007561913c2e59267f2c05bf0146084b8e33d4728a428314fc"
+      },
+      {
+        "context": ".vds-blank-open",
+        "digest": "ac6a024061062bd88cedbf75c3f644551e659720a15df2903c2473877802b51d"
+      },
+      {
+        "context": ".vds-blank-open > .vds-blank-action",
+        "digest": "43ef44999e9c519943228e3b761fd77f0cdee21db41d94e80d76f790a97160df"
+      },
+      {
+        "context": ".vds-ask-card",
+        "digest": "60847f8f472456fcca3c2adee89c0f1645c8a09c5b18be6f76161a90431ecf95"
+      },
+      {
+        "context": ".vds-ask-head",
+        "digest": "022018397d94291c8c648f9ff286a37b82d23da9f2ab0b109d14f338bd44594e"
+      },
+      {
+        "context": ".vds-ask-head button",
+        "digest": "f9580736b097227e2c1da3897b9da7e3f22fb335c58623f44bf5ff868fc70536"
+      },
+      {
+        "context": ".vds-ask-row",
+        "digest": "0fcc85843bd5ba389430edc3a8099d57c18ae2d3bd77bc73746ab73b444204b8"
+      },
+      {
+        "context": ".vds-ask-row:hover",
+        "digest": "c858a1d396b873e893f35d9e188a059a9c7e62c7905586aec9b21658ed049039"
+      },
+      {
+        "context": ".vds-lit-view",
+        "digest": "f51d9912578c9f0bbfd4962fcd27d100b8b9f3a228951126ffc0f2743b67a8a1"
+      },
+      {
+        "context": ".vds-lit-toolbar",
+        "digest": "e01b838cdaf7d3e74dbba346c137cb25b8becf40b4dec689fc64a0f20252591e"
+      },
+      {
+        "context": ".vds-lit-crumb",
+        "digest": "27f5335867bf963e1a625fc4f67bba1a9e0ed4898342a6f91e1e499514971336"
+      },
+      {
+        "context": ".vds-lit-crumb strong",
+        "digest": "479da86397da76d01ec8436fafce95ab65217f2f6e738c474976cc399303b593"
+      },
+      {
+        "context": ".vds-lit-crumb-count",
+        "digest": "f1cbd6ff317f8c1d4a20be3149e980512132c469a1a46e30f61db9e33bafcbb0"
+      },
+      {
+        "context": ".vds-lit-toolbar-right",
+        "digest": "ee74df99a916ee49c7186e34a3d1130520e333c2dfb587bd2358889a51a7a7ab"
+      },
+      {
+        "context": ".vds-lit-filter",
+        "digest": "1553aed76a8dcf5e6f29c2b6f34b1cbf24782a7c5bf9a7c1554d6fa0d1447bcb"
+      },
+      {
+        "context": ".vds-lit-find",
+        "digest": "c135142f44ba179821fd630629ed1ec7524f263bec3d4802f71ea71c556c4ec0"
+      },
+      {
+        "context": ".vds-lit-find input",
+        "digest": "426d63395266d9271d24b22405fcbd6169b8feff84655be6a2f31f23397dc2ec"
+      },
+      {
+        "context": ".vds-lit-find input:focus",
+        "digest": "6fe73f7f1772940e58b30f9cede0e4e718705f62d8eb948b8d766da9f8e6f934"
+      },
+      {
+        "context": ".vds-lit-batch",
+        "digest": "d7637c718b6316a0d677c145293891bb675c3bb6d3b5e8bdd2791990a58ef39f"
+      },
+      {
+        "context": ".vds-lit-batch button",
+        "digest": "a56ea30a40e0c809d0afe35c9314bbe4acc650561ba7c595f95da32f7f700feb"
+      },
+      {
+        "context": ".vds-lit-batch button.is-danger",
+        "digest": "482c8c31daa01925106c3cc0f3a2b30e028363424ad77b7a3f1560850a40b3e8"
+      },
+      {
+        "context": ".vds-lit-batch button.is-ghost",
+        "digest": "b969d145ef4b08b31f01d578983d8b2e63ba78a2ef7fae4468a84681e48accbe"
+      },
+      {
+        "context": ".vds-lit-batch-count",
+        "digest": "e65876e562bf34e48f27dbd263b55efd2158b436acfeac4503c1b94ba1f9a33c"
+      },
+      {
+        "context": ".vds-lit-table",
+        "digest": "eb84468801da280f1e0ccc3b6accc0f58c1a6a4fb4a14562a0387df46a257b99"
+      },
+      {
+        "context": ".vds-lit-head,\n.vds-lit-row",
+        "digest": "587bb4c8eb89468d31c389cf3aab1bef5fda216c97c550be475ea686108ffe22"
+      },
+      {
+        "context": ".vds-lit-head",
+        "digest": "93629a8671fbce96735daf041fd58ac07c166baa65f53446c653eb7d2296d56b"
+      },
+      {
+        "context": ".vds-lit-row",
+        "digest": "86da31ecfe40817243c86db3a8b2fd8efc2aabd46d99e9467093c9d177626a88"
+      },
+      {
+        "context": ".vds-lit-row:hover",
+        "digest": "22468f9e680e08d5ffc4973b0032f0c0457b614683abe334f75cb79418052ad8"
+      },
+      {
+        "context": ".vds-lit-row.is-active",
+        "digest": "a6cbeeafc2a1c534a46d1a32ae6a94bf4919a912f017efdcdcf70209119dfd46"
+      },
+      {
+        "context": ".vds-lit-col-title",
+        "digest": "ce930c39feab3d31c09c12591bd43722fdeaac482365fa4bf08f3a4c6f60c3e6"
+      },
+      {
+        "context": ".vds-lit-title-text",
+        "digest": "4527ddc4b9822d3a3d93b9d044dc296865a10677f3f73c2921162c364ea0a084"
+      },
+      {
+        "context": ".vds-lit-col-author,\n.vds-lit-col-journal,\n.vds-lit-col-year",
+        "digest": "3cc9ed8a280806cd27d11e262d78fa0655beb4a77e52ebf7baf83696be2085ad"
+      },
+      {
+        "context": ".vds-lit-ft",
+        "digest": "fbad096c95ba5cfa92a3ce05f682b122237ddf6c0285aab469f5ec31793e2265"
+      },
+      {
+        "context": ".vds-lit-ft-oa,\n.vds-lit-ft-ready",
+        "digest": "b34520021918c5c1ace7565a0d60833f1541d98f75d5252066d6bb641fd12aa1"
+      },
+      {
+        "context": ".vds-lit-ft-restricted",
+        "digest": "0309fdf01403b43a9d41eb21c4e310afa8a4e09454655771d732b4f9b609d6b6"
+      },
+      {
+        "context": ".vds-lit-ft-fetching",
+        "digest": "a1eac37572083277ea80a7b698c38bb46eca395c5b432c1958a737e44d54cf5e"
+      },
+      {
+        "context": ".vds-lit-col-tags",
+        "digest": "3483b7714be8c33ff4753db5ba01c47ad981d3a051d697ed023f71e9d6eecea2"
+      },
+      {
+        "context": ".vds-lit-tag",
+        "digest": "60dd49e685e495e24a753edf2c3517f750d894d828a7d40817706cdf61708ea6"
+      },
+      {
+        "context": ".vds-viewer-bar",
+        "digest": "203505d9a428e65677f6f09b4e5a314fc9f5b053d23579e0cd8ab7709fd302c4"
+      },
+      {
+        "context": ".vds-viewer-path",
+        "digest": "ba0cb8bb1c21fb71c188c3a69a2e730d7f4500859ab2a97315d99ef5b2140b1c"
+      },
+      {
+        "context": ".vds-viewer-tools",
+        "digest": "5c9e532ab450dfa4749b91db7debc6dfdbeb59c8c83748ab5a1f952a2f160df6"
+      },
+      {
+        "context": ".vds-pdf-page",
+        "digest": "eb19bbbd56ca9c245d48185216c1d585f427979dcb26011493fe6af0fa1b047a"
+      },
+      {
+        "context": ".vds-seg",
+        "digest": "8d18622761a16c65d1988abf3a0f207977f978bd955bb914076293e09d47f196"
+      },
+      {
+        "context": ".vds-seg button",
+        "digest": "285afb24682bf4847b19f373cac79f37fc526ff462146e4543a64315c63864df"
+      },
+      {
+        "context": ".vds-seg button.is-active",
+        "digest": "1d3f3602743a4fcfbb06fba11795a91f8172bed75b8e9f61047b942584059610"
+      },
+      {
+        "context": ".vds-seg-sm button",
+        "digest": "aa0990a9150dff2182636f9194f6f1b6c979ac3eb3f9d4083c94de0187fa9510"
+      },
+      {
+        "context": ".vds-md-view",
+        "digest": "de9b45040c8e25ab83e0d63e5e77cff6e87ff73aee817a5dbf8c6258905b085e"
+      },
+      {
+        "context": ".vds-md-source",
+        "digest": "e66bb062544407f2674384be933e656030f89cb9c6f606f8638efbdb2bd72bc3"
+      },
+      {
+        "context": ".vds-md-source:focus",
+        "digest": "e87e14c5134fef3c916ea3dc7577829e69fa140ff3e1d7a65fdd5e2b67b0805b"
+      },
+      {
+        "context": ".vds-md-render",
+        "digest": "e50a8b259d5be213024e54b30bc2b3b360afb0acf5f37d948bf07baea35c22cf"
+      },
+      {
+        "context": ".vds-md-render h1,\n.vds-md-render h2,\n.vds-md-render h3",
+        "digest": "d78130c4a0b8944fac7972bf7e43f8d860f5aa398b0008ba78a1f5d5aad46691"
+      },
+      {
+        "context": ".vds-md-render code",
+        "digest": "d7412bc61ed1a3659ae3ecee94d616058d44ff7e0554c830b96f99c05fe8d071"
+      },
+      {
+        "context": ".vds-pdf-view",
+        "digest": "021fff0e1b68e6d39d5e03c3cd37c1f24e0565f2f140b9ecf890fd4f5b361e09"
+      },
+      {
+        "context": ".vds-pdf-body",
+        "digest": "0ec76a2dcd95d18999dbf9acb0b2954c6dd451f2a76d08c607dce102a4aa018b"
+      },
+      {
+        "context": ".vds-pdf-canvas",
+        "digest": "a502d7e4ce59f3ee49873ac477bd9191983e0d86eccdd269c136d0fbc115755d"
+      },
+      {
+        "context": ".vds-pdf-placeholder",
+        "digest": "ad65e9d6d479423d1dbb581198d35d432720169f77b8f6cb05548adfd6c046ff"
+      },
+      {
+        "context": ".vds-pdf-placeholder-sub",
+        "digest": "dbf7515613061398f5745ce6e7f46cc789c1250e6eaaa9c9f61211c48a281f5e"
+      },
+      {
+        "context": ".vds-pdf-rail",
+        "digest": "3bdfab787f61165cf2ae7fa87cce1b1f0f50eaf6b607f6ef87629646747a3105"
+      },
+      {
+        "context": ".vds-pdf-rail-tabs",
+        "digest": "f6434918ba25aee68780662b0ab24a2264546b797fd771479721de52e4d6dec4"
+      },
+      {
+        "context": ".vds-pdf-rail-tabs button",
+        "digest": "993d6995d4979dcb57239073a3aca68955f0a240493f1174547124c828877f33"
+      },
+      {
+        "context": ".vds-pdf-rail-tabs button.is-active",
+        "digest": "b3b1ce69130ad2547d4036ff84f41a1900f2d98ab37acf206fabcfc88d804396"
+      },
+      {
+        "context": ".vds-pdf-rail-body",
+        "digest": "449b5bedd4da01d9f0ba94adf9584a19c2f1521be8214e1a6e34ac176eb4c4b4"
+      },
+      {
+        "context": ".vds-ai-panel",
+        "digest": "65e0b1a3f35cb8cac0c10ea76d25ce12ef39b70e2c0fb9f8c696c93cb6feb505"
+      },
+      {
+        "context": ".vds-ai-panel.is-floating",
+        "digest": "ad07573b6a8830043d64bcd6e6b991c9a817ae8018d95102c1c7afc67b289d72"
+      },
+      {
+        "context": ".vds-ai-panel.is-floating .vds-ai-head",
+        "digest": "086131223ce1acdae7521847df3b8258a1b21bc36ba54e7767572c6a8dddbf02"
+      },
+      {
+        "context": ".vds-ai-panel.is-floating .vds-ai-head:active",
+        "digest": "e6838c168a9b06c0be7108a50a74a66962b1cb2c668e46b85c65b236a0382834"
+      },
+      {
+        "context": ".vds-workbench-surface:has(.vds-ai-panel.is-cover) .vds-workbench-main-column",
+        "digest": "4fdebd030263068a5c3345a410fc84c7dd41ba4df1dc03f3f7f8d3ab1654498a"
+      },
+      {
+        "context": ".vds-ai-panel.is-cover",
+        "digest": "e8a7371d609cff2bc86489ee742c5f43f7d99d4d035521b7f85d18a05338fa76"
+      },
+      {
+        "context": ".vds-ai-panel.is-docked .vds-ai-head",
+        "digest": "8e1e83729d8358fda35c2bb38f85a4cf20b2e87670348ed1cdbf648de35dcd24"
+      },
+      {
+        "context": ".vds-ai-panel.is-docked",
+        "digest": "3dce26ac2697b719359a086c35a7637dc82a5c34d530f00725026d453bfc545a"
+      },
+      {
+        "context": ".vds-ai-head",
+        "digest": "10d31a164b33654427d07245a429f991283f03d48854ca239eda343c7600467f"
+      },
+      {
+        "context": ".vds-ai-session",
+        "digest": "d4f707c73686dc7e2f45d03c970eb1ceca4105194c7fc3cfc83b207b4b7b26aa"
+      },
+      {
+        "context": ".vds-ai-session span",
+        "digest": "f7356c7b5501da53a604dee75d06d1ea18b91825e72fd001d40fe50bcc743a1e"
+      },
+      {
+        "context": ".vds-ai-head-actions",
+        "digest": "d4edb6b8a1b33b0b075cc8f706445194d9ee2daab8eeb10b1a2a6fc02a1accef"
+      },
+      {
+        "context": ".vds-ai-session-menu",
+        "digest": "dce3134a0aa1afe60c345620b9b7783837c02a582792317ce8a2c3d52fed026a"
+      },
+      {
+        "context": ".vds-ai-session-menu-head",
+        "digest": "21b4f5c275c1bb0d41bcfb4f8b7a52f25341ffbdf7fbdeb1ab1411774cb4788e"
+      },
+      {
+        "context": ".vds-ai-session-menu button",
+        "digest": "7817422fcde578f15f6bbabdc9c5f4f0f287e50ff3aa3ec702450c4229326558"
+      },
+      {
+        "context": ".vds-ai-session-menu button:hover",
+        "digest": "5267d050b2040a368525aa9fc481561a6f2c6d722d89011a1d5341254ade015d"
+      },
+      {
+        "context": ".vds-ai-session-menu button.is-danger",
+        "digest": "86eaf6d177d409c35ee7b36fdff5742738759b26273fdad0348b26dc63c98312"
+      },
+      {
+        "context": ".vds-ai-session-menu .vds-ai-session-new",
+        "digest": "d4c31a050595c74bbe3ff67258ceefae2049b5455ad79b4e7106d73701b11c51"
+      },
+      {
+        "context": ".vds-ai-context,\n.vds-ai-clips",
+        "digest": "9720e49686d2adb5060d72505a2515fda8288dd2774eaee4d09f0eaccddfe1ee"
+      },
+      {
+        "context": ".vds-ai-context-workspace:empty",
+        "digest": "5cde6b48a5eec6d1f5557dedb158fc71010b7d9b2df73f0116965c4106e3b928"
+      },
+      {
+        "context": ".vds-ai-context-workspace",
+        "digest": "682d32ea963c91f359b04434c746ab9cd6b563de5a7ef03baac6d519f4670114"
+      },
+      {
+        "context": ".vds-ai-context-summary",
+        "digest": "fd7b981d39f1afc21461c7dc42b69a6e5ca46e021b94adc46f7bd1b3722f52d1"
+      },
+      {
+        "context": ".vds-ai-context-head",
+        "digest": "d699f0ea1f378f05c652d7b97d0ad82cde66f2cfbfa9f21d66cdb5a139619281"
+      },
+      {
+        "context": ".vds-ai-context-head button",
+        "digest": "84a1062680c3638c9846a965083e3e396326e2c00f8ba381f1d619ca5d9b7054"
+      },
+      {
+        "context": ".vds-ai-context-chips",
+        "digest": "08d30749cc49ba96d7b9016e76a861e72df91434a7092284aebe18b08b76778d"
+      },
+      {
+        "context": ".vds-ai-context-picker",
+        "digest": "4ca0a17a4b22969a754bbb79b88c8278f835bacee67209fe18f8b3b4fa971dc0"
+      },
+      {
+        "context": ".vds-ai-context-picker-head",
+        "digest": "53abb0aaa4eb3f0fe4c95bf8580e8793b53669fe62880540519f260ff168b9ea"
+      },
+      {
+        "context": ".vds-ai-context-picker-head strong",
+        "digest": "d8655700602204ac5a5177964da1a8b396b8be1f7b5bf1e7653614fd833c34eb"
+      },
+      {
+        "context": ".vds-ai-context-picker-head span",
+        "digest": "77369c42f75aec9ad5c5f3795b210b75b0351801b823b1c2821c013be10d4bba"
+      },
+      {
+        "context": ".vds-ai-context-picker-list",
+        "digest": "12ce6f1ab39f927cd5143afed0bc7a1ef8545cfb9467b83580a165e0207850fc"
+      },
+      {
+        "context": ".vds-ai-context-picker-list .vds-button",
+        "digest": "b1b0971053b06e6a7c091650d3a51413c7f52db0eab0661074e85296e7011a13"
+      },
+      {
+        "context": ".vds-ai-context-picker-foot",
+        "digest": "896c05cac8a92bca395fc125ea216a3d5670431c357089add58ebf713ea1713f"
+      },
+      {
+        "context": ".vds-ai-chip",
+        "digest": "ffdddd843627461b84849a867b5e974f186db92f67d3461e3e2502af4eefaa88"
+      },
+      {
+        "context": ".vds-ai-chip.is-dir,\n.vds-ai-chip.is-literature",
+        "digest": "1cb95fb86146b4ea5b82df50777be40bdff3ed961968602e686d3f6b6c1d6d25"
+      },
+      {
+        "context": ".vds-ai-chip-label",
+        "digest": "31354dfc122345d9bd3de4be504bad3c85b909946fa2f8cf86748c0be5a2b9b1"
+      },
+      {
+        "context": ".vds-ai-chip .vds-icon-button",
+        "digest": "24a30ef2ae1b709002fb51a02990d2e38ebe9d2669796f5b631cf62cf4301cf1"
+      },
+      {
+        "context": ".vds-ai-context-empty.is-error",
+        "digest": "4ee623d4acc666c8cc6c17fdc934f90499728f6a9fcb517e29d510027d2db7ee"
+      },
+      {
+        "context": ".vds-ai-clip",
+        "digest": "f538363544e02414030c51c38c9b724f921e27ba02715f2d4d871264e9f1f0d9"
+      },
+      {
+        "context": ".vds-ai-clip-text",
+        "digest": "1abf8aeea5a17fe0ff1014704367e699be820cda295b74ce7f69d0153592695f"
+      },
+      {
+        "context": ".vds-ai-clip-src",
+        "digest": "a5a69f3afdef365a142d1733078bb411b1b5cc5264f75cf2bcd7235235ce6c41"
+      },
+      {
+        "context": ".vds-ai-stream",
+        "digest": "de54b7c9ffe8479efb83655c835107aa75ee9dc9e3f988340d6b55be2855e5ec"
+      },
+      {
+        "context": ".vds-ai-stream > .conversation-stream",
+        "digest": "4f417b40cae687725a1aacb7475e4a7ff1f872b841819e10c081e37a156081c6"
+      },
+      {
+        "context": ".vds-ai-stream-empty",
+        "digest": "d1a2f19ea2b7c11f35ef70d07d7761489a7b2b81e807cafb8ba5e4422e4524ff"
+      },
+      {
+        "context": ".vds-ai-stream-empty h3",
+        "digest": "959663b097d79359645782e75e86f83d3e4d5509d589123edab26fdd88833b40"
+      },
+      {
+        "context": ".vds-ai-stream-empty p",
+        "digest": "4967a33460123683d98741344ade32533e22979978c6af66e33c3f85695dc677"
+      },
+      {
+        "context": ".vds-ai-task-starters",
+        "digest": "dd5f2c1762a227d26ba416f74d294b108d5cde1762d1de05af1792cfaacdefe7"
+      },
+      {
+        "context": ".vds-ai-task-starter.vds-button",
+        "digest": "da46e55e98238d0f84c3095b1eb708386f981d5dfe80ec0ad11b1d2063795f73"
+      },
+      {
+        "context": ".vds-ai-task-starter.vds-button:hover",
+        "digest": "0049fc91d679f55e4a35e71bf15f4063de08317f00ac24367ac9ee38258677d5"
+      },
+      {
+        "context": ".vds-ai-task-starter strong",
+        "digest": "e8e0c45f441fd86a42b777dde0dde67fe0498665e0e16688a24d216b55c46397"
+      },
+      {
+        "context": ".vds-ai-task-starter span",
+        "digest": "e903460e5bf86fc5f9cb7dfea80fae3a6b42ee0d8954479258bed2e25ab2457a"
+      },
+      {
+        "context": ".vds-ai-composer",
+        "digest": "a043b450c176c864255eebc8192d2d8776841e31fbeec4c6b5d12e38e19b5b09"
+      },
+      {
+        "context": ".vds-ai-input",
+        "digest": "164d740c4533d6e9222d4ba45520d14e1c2d963f53a17d69c77a2e7ebe5ae8d2"
+      },
+      {
+        "context": ".vds-ai-input:focus",
+        "digest": "71f88c05fc471bfb6840cee65009e21926bf8b0d23ab3206f31c780342fd7a77"
+      },
+      {
+        "context": ".vds-ai-composer-foot",
+        "digest": "5c35b026101c9ebbbc4634581de00848d2bffeb9e1bb173ee20210ff36d0e8f8"
+      },
+      {
+        "context": ".vds-modal-scrim",
+        "digest": "118f3bdc28a057ac2fed8fc8348dded2910632bb443a72fc7c0ebdbe432519da"
+      },
+      {
+        "context": ".vds-modal-backdrop",
+        "digest": "99dee1f6de0453c714ba0c404ac1e241d85ea521be7157c85c0d99af08f1a52e"
+      },
+      {
+        "context": ".vds-modal",
+        "digest": "f31dfce0849751cc873248c2afcd5df40dddea9a4faa9646f3672da0b0b4a89d"
+      },
+      {
+        "context": ".vds-modal-head",
+        "digest": "6918b234b32d467b319b3f43942c879122aa00ffd92901a2a661c39eeceeec32"
+      },
+      {
+        "context": ".vds-modal-title",
+        "digest": "c377fdb70b9054ef20aeedc3b176f82d4573777b91ec3f24928d487e870b09b5"
+      },
+      {
+        "context": ".vds-modal-close",
+        "digest": "43534587a419eeeb884039cf258a8af7e4cc2cd877b1532612f7ced9620fb17d"
+      },
+      {
+        "context": ".vds-modal-desc",
+        "digest": "4e983c887209b7144cd1b771800f9e7d00b875883f51b2bfe38ea6c8778836db"
+      },
+      {
+        "context": ".vds-search-modal",
+        "digest": "c1d7d10061d4f0a07a600e30a8711d4b33ee1260e191abb95be3b94b27cf0512"
+      },
+      {
+        "context": ".vds-search-field",
+        "digest": "e31866edf8c50c5c8d193511f708af3da340a31e1034215e2859389a9fa8e14c"
+      },
+      {
+        "context": ".vds-search-field input",
+        "digest": "7c5077b54bde79d5d02f4d76bb4b044188a331b505c470b13038958218dd61d4"
+      },
+      {
+        "context": ".vds-search-field input:focus",
+        "digest": "ed4b99b98333f5f7d848dbc75cd59ff56ff7ef53b0fcf6aa80b7ea19b5d2ecfc"
+      },
+      {
+        "context": ".vds-search-domains",
+        "digest": "27d00ca0d98e1140272afb14db0a84e0e795106ef1347776def06a809803c1fe"
+      },
+      {
+        "context": ".vds-search-domain",
+        "digest": "4802a22584ac78ed141bdc18603d7009cdb56df4c50248cbcd574578fbe0a208"
+      },
+      {
+        "context": ".vds-btn",
+        "digest": "4fb62ce3ff2541b9a50bd981ed5e3a95458726a4ae813415fb43376abcda1826"
+      },
+      {
+        "context": ".vds-btn:hover:not(:disabled)",
+        "digest": "3c4afc513aa77ed7e9c83b3058c719406faa05c26bf2a1e9cdb22619086ef7fa"
+      },
+      {
+        "context": ".vds-btn:disabled",
+        "digest": "21dbef56e639b18147e2a6727cc0501235fae7fe0e6b45b215145cab08acdf14"
+      },
+      {
+        "context": ".vds-btn.is-primary",
+        "digest": "fbd892429fa038f45decc3cce7e6f8005fa6abb13e9ab28c913564e37d3bf4a4"
+      },
+      {
+        "context": ".vds-btn.is-danger",
+        "digest": "2a3c240910cc6b7f39fdc28a5ee0172ebc227784be14fbd3c05467f5e007c0d8"
+      },
+      {
+        "context": ".vds-select",
+        "digest": "fad62d9aaae3e79d07cdf35284b7adf698ea5358ce2ff16187204efb89f9dac8"
+      },
+      {
+        "context": ".vds-field-label",
+        "digest": "7f2ce3f826336174d81f4bb80e714877493833fd8dbec8aad77f86a6b7f9266e"
+      },
+      {
+        "context": ".vds-panel-notice",
+        "digest": "22ce871f714be899fc7ca75686f59c782fc4249f34aa63488f3bfc300d254aed"
+      },
+      {
+        "context": ".vds-panel-notice.is-ok",
+        "digest": "b2c5db873da8a65f0012b20c1c88075da2c21300afd1fd57d6568140d71d0140"
+      },
+      {
+        "context": ".vds-panel-notice.is-error",
+        "digest": "03b3fd0bf0c60c4d60f91ed4b77f1ba22fbad34607ea5377d77901c80db073d0"
+      },
+      {
+        "context": ".vds-modal-warn",
+        "digest": "7ad7f7bd90eb5b6499150aeb9fd950b9de357bbef64550e23293f221361531a4"
+      },
+      {
+        "context": ".vds-modal-foot",
+        "digest": "c0f4eb7c785edd86d775351b70b48ad61c51c80c2454f880c3457809b9768825"
+      },
+      {
+        "context": ".vds-confirm-modal",
+        "digest": "46bb32edf49560cf7f1f322e955d11153f3f7da8f5269e222563c2104b18a121"
+      },
+      {
+        "context": ".vds-tree-input",
+        "digest": "40267b75df834bbcbcbaf87a78ac21613f3225093f1afdc11ae05400632c2ecd"
+      },
+      {
+        "context": ".vds-tree-input:focus",
+        "digest": "f238bab316bb60cd45402b3af880cec31067e34666f0ed908816c3623f077c4e"
+      },
+      {
+        "context": ".vds-tree-more",
+        "digest": "703871c0ed741d872012e0ad7d3c36f0fc2ebeb16472ba745e9482c9026768ea"
+      },
+      {
+        "context": ".vds-tree-row:hover .vds-tree-more,\n.vds-tree-row:focus-within .vds-tree-more,\n.vds-tree-more[aria-pressed='true']",
+        "digest": "2c54a5041bb4bb537811d1001dc007bb292c24543fc43be0e82f58c3394ae674"
+      },
+      {
+        "context": ".vds-tree-search",
+        "digest": "1813960624b0bf570e6c9f995cce5e10e7b4080d0cc6d16e066f5ae3891f5ef8"
+      },
+      {
+        "context": ".vds-tree-search input",
+        "digest": "bcddba1b9d57e88b77b305f6cc50b0091b23e6860a35f60027b567862356bf10"
+      },
+      {
+        "context": ".vds-tree-search input:focus",
+        "digest": "58ad695318f5405a549477c7edf4b3708f90a4a1d3975c389f956db0c52b93a6"
+      },
+      {
+        "context": ".vds-search-hit",
+        "digest": "bb868885db0b6b387e5e0801b10f048470158e27f867d3988be6d1bf38cdda8c"
+      },
+      {
+        "context": ".vds-search-hit:hover",
+        "digest": "a18dacd7a03acd12800820ce2b313d2f3095cc6dfb610a608f150ff35a349e96"
+      },
+      {
+        "context": ".vds-search-hit-head",
+        "digest": "0be317ae69fc99a1c7a17dbe113fcfdff4ca7a32e28bef19e234b8f813d35a0c"
+      },
+      {
+        "context": ".vds-search-hit-name",
+        "digest": "684d3f3102150868e6dbf29a17e9323044ab68e5b674c06244278a7de5d79f53"
+      },
+      {
+        "context": ".vds-search-hit-kind",
+        "digest": "1cc42167cc9df8e4366bd6bbff25595c520833f0f5ae05547ad506a04576571f"
+      },
+      {
+        "context": ".vds-search-hit-sub",
+        "digest": "06536fd045d5dc0452a5a8ab35b0c59492015d8ee9025864af32b95549144a82"
+      },
+      {
+        "context": ".vds-node-menu",
+        "digest": "efb8b5e526d34117315ce04ff173965f860bf553d7415049bdc9c8ab9bfeeadc"
+      },
+      {
+        "context": ".vds-node-menu button",
+        "digest": "3a3a5037ac30ee1e79dd1451acb976415b75902de9565ad302df201635fc5337"
+      },
+      {
+        "context": ".vds-node-menu button svg",
+        "digest": "ba01fe56b60a799ffa810e68a2706557e176fdf51ed1dd02dd4b97257296d2fe"
+      },
+      {
+        "context": ".vds-node-menu button span",
+        "digest": "2b34ae8d371533557cedb0db1ca969ab9233488c6700758fcc524114cd32f97a"
+      },
+      {
+        "context": ".vds-node-menu button:hover",
+        "digest": "8c3cda94d789b22c1a97204f12040b994115b95d4d878a1e02208f307cd6887e"
+      },
+      {
+        "context": ".vds-node-menu button.is-danger",
+        "digest": "97f04cfd89d950f82f1d32b08a88f52721ff7aae1ca63621cbc03343dc13beb3"
+      },
+      {
+        "context": ".vds-node-menu button.is-danger svg",
+        "digest": "d5258ff7f3d324b40cc0b0669acb3aaf4470230ff82d726e9413eada46435ce6"
+      },
+      {
+        "context": ".vds-node-menu button.is-danger:hover",
+        "digest": "694c158d51ec2dbdeb71105d37085e0b18a59901e8bb235f4974fa6cd8f36d47"
+      },
+      {
+        "context": ".vds-lit-import",
+        "digest": "b025a6f28f13695bbd64c66c70abebe1491a892b9f55777d1bf47fd6e5330e13"
+      },
+      {
+        "context": ".vds-lit-import-menu",
+        "digest": "1f37d248a5f5b39f877752b7c3cc478c6e8b5ba21ee2d394860a4fb3f3eee00b"
+      },
+      {
+        "context": ".vds-lit-import-menu button",
+        "digest": "3feefe7e7a376013020359aef372bacd23a0c318ce1c7798472cb0c6f8f97b9a"
+      },
+      {
+        "context": ".vds-lit-import-menu button:hover",
+        "digest": "c7de6fba5e8c7bb2857cca6044ecbb0cf988815f416356f7d616aeffc3e47964"
+      },
+      {
+        "context": ".vds-lit-import-menu button.is-pending",
+        "digest": "4736d50aef050eeaac097364f4aa42307caf4f5c2695f6cedbc7a78a6de4700d"
+      },
+      {
+        "context": ".vds-lit-import-label",
+        "digest": "6ac85205d449616a2299117c2aa3c440432247eb95f685eb33f6f2e9c6a7a9c3"
+      },
+      {
+        "context": ".vds-lit-import-hint",
+        "digest": "c3595521e6439bc0822e1f205fdd5069a4d37bd1f76c41dbe1d510f438d9ca02"
+      },
+      {
+        "context": ".vds-lit-nav",
+        "digest": "93236a3f2d2696d6c2aabc0f5fa9ff9f7032ed5be76509b6ab6d38cfc0335606"
+      },
+      {
+        "context": ".vds-lit-nav button",
+        "digest": "069eacf0031af3a538beb51845c30be1768bc57cc82d6fc9e8f7a102444c6ed0"
+      },
+      {
+        "context": ".vds-lit-nav button:hover",
+        "digest": "a1709153d82cbc94920b6ff8de0aefca868a7bf2ab7d0e508e330d88e56f2735"
+      },
+      {
+        "context": ".vds-lit-nav button.is-active",
+        "digest": "7707fe446028d33741f85c32433880fab64a7089eeeac4e1f5f20a93cd8ff455"
+      },
+      {
+        "context": ".vds-lit-nav button span:nth-child(2)",
+        "digest": "41908cc5f1e2c8e4ba04dfc2c197a1fa07300982bbda089847bf8b8ab9196a03"
+      },
+      {
+        "context": ".vds-ft-dot",
+        "digest": "21749e39e1cb1c8b5a8ae6e89ee8ed2aeecc443b84bb8573882e938bf70109d7"
+      },
+      {
+        "context": ".vds-ft-dot.is-ready",
+        "digest": "fee1ef10709676bba0f9b345695dbe806fcf1c6d7cfb16dac597c31a4a22b6ef"
+      },
+      {
+        "context": ".vds-ft-dot.is-oa",
+        "digest": "41261db594c724f804a59a503a2c244a78fbb71b9b2c08190d9dd27326784ca5"
+      },
+      {
+        "context": ".vds-ft-dot.is-restricted",
+        "digest": "8a87acd163570e15c09d91ff8d0ab3f6b50f37b5adb396534273c2e786560300"
+      },
+      {
+        "context": ".vds-ft-dot.is-none",
+        "digest": "bc84865e0acafea043bcf22fa0cfcfd7abc01d52fb41b050d8b3e03e0234517d"
+      },
+      {
+        "context": ".vds-ft-dot.is-fetching",
+        "digest": "68a1dd3cc168f88563e364bb4ab704ae8c65c5bad3e071b247ff42ba4849f1ab"
+      },
+      {
+        "context": ".vds-lit-main",
+        "digest": "035167483d5b76043f4ba8232924015b452a4e9de0e3f067095a694ce4f8a635"
+      },
+      {
+        "context": ".vds-lit-toolbar",
+        "digest": "58f827602c529dc1c980c0fb6f0ef0b2f2431a2e12e5c6076aef991be73e2778"
+      },
+      {
+        "context": ".vds-lit-search",
+        "digest": "e6dd94a6e3b899f191898db62f2dea6fb40ef9f466d53e3d0e78d1ee18aebabe"
+      },
+      {
+        "context": ".vds-lit-search input",
+        "digest": "9454f6cdbad5478b6298221b6d6d9c0e7d203f4c5652eaa2cc61224ce5482531"
+      },
+      {
+        "context": ".vds-lit-search input:focus",
+        "digest": "691fdc793e787e4c625a548307c93e90d7ffc4ff1f42286bf03e7d44f2a14401"
+      },
+      {
+        "context": ".vds-lit-filter",
+        "digest": "7bbba2b586b5a448f0ad44d304a287f5a54394376e64b8c5213436799c8444ff"
+      },
+      {
+        "context": ".vds-lit-count",
+        "digest": "4c6923e5126caa32e71fece7f4ed2149099dfbb12aa9e620414f5a578f399c3b"
+      },
+      {
+        "context": ".vds-lit-batch",
+        "digest": "c52c7ac826526a95da62c58b9e46ba8c9e07564d33923aff6a4748870fcbc6ad"
+      },
+      {
+        "context": ".vds-lit-tag-input",
+        "digest": "9f9c2d63e5fdda994873d10b8a50e7d3e18f668dd0197f0c69d9876397142aaa"
+      },
+      {
+        "context": ".vds-lit-table",
+        "digest": "c6f04418a3e82f3864baacf5b6be3f9a69c2d3bbd89286c539e72f21121d00d4"
+      },
+      {
+        "context": ".vds-lit-row",
+        "digest": "d9563b5fc65454554e9a033ba62282b5d0629811a1fe0f45c849e010988bcdf7"
+      },
+      {
+        "context": ".vds-lit-row:hover:not(.is-head)",
+        "digest": "d02c602583c50ab4cec2ba8e127cf41525beae7ba52efdff136a46c11069bdf1"
+      },
+      {
+        "context": ".vds-lit-row.is-open",
+        "digest": "903e0e56986e9fd0e49ca498b429d881b7141fc69c477ec8e840a61c0c2f88ca"
+      },
+      {
+        "context": ".vds-lit-row.is-head",
+        "digest": "53a4dccf78123742e3d842aa247573383009d51ea2ea6aac352e5c474ca19e17"
+      },
+      {
+        "context": ".vds-lit-row.is-head button.vds-lit-cell",
+        "digest": "30c60107126e41c920e6c793e20ea2d1968225839dcc9deb11b9a61f90dd08dc"
+      },
+      {
+        "context": ".vds-lit-row.is-head button.vds-lit-cell.is-sorted",
+        "digest": "29931d808c7aaaccc2f6f935d0ed51480eed6c608c2adad7bc652b8332bb2313"
+      },
+      {
+        "context": ".vds-lit-check",
+        "digest": "4d667e4bb7062f07e7cfe3d47b658b96f025b95dd86482f8ae606b80b310ceb5"
+      },
+      {
+        "context": ".vds-lit-cell",
+        "digest": "2aad579a42e7a9faac07c8bd56b1ca2f3378e26176c4b7ead16639719514a69e"
+      },
+      {
+        "context": ".vds-lit-cell.is-title",
+        "digest": "804cc44507334fc47882f47ff2cbb27ca7f4beae0d88a4f5696043b23add71bd"
+      },
+      {
+        "context": ".vds-lit-cell.is-ft",
+        "digest": "49914cb3854ba29604a7f6252d45d628119ea14cfda13bc89f63f9a941fa01cb"
+      },
+      {
+        "context": ".vds-lit-cell.is-tags",
+        "digest": "ff1491ae70379f81b60bc78bb659b2f3b9c5ea459a4847515b242e7a9f48c405"
+      },
+      {
+        "context": ".vds-lit-tag",
+        "digest": "04cbddc699949967bf751f86a8f35849179cfc3be63f0eb34437e18d1cccdd23"
+      },
+      {
+        "context": ".vds-lit-detail",
+        "digest": "a78959bb20bc943c644cef9e8d3b614f19a0e1d1f87aeb30df778c12b31d9e36"
+      },
+      {
+        "context": ".vds-lit-detail-head",
+        "digest": "3507a51a2e59d9d1ea043b1645ab1ad6f8854bfe5e55611c42946e42162b28de"
+      },
+      {
+        "context": ".vds-lit-detail-head h3",
+        "digest": "c1c4295e4627c8c3776ff373def38502cac04b7c3387bbd120956eace177c3cb"
+      },
+      {
+        "context": ".vds-lit-detail-head button",
+        "digest": "b074891630b21a06393ce647992215245ede1b8807973cc4254a13ef6c6b98b8"
+      },
+      {
+        "context": ".vds-lit-detail-meta",
+        "digest": "ccfbf0be4de811b45f766361599bd4d7130a55c55a839c967875640c6b55e490"
+      },
+      {
+        "context": ".vds-lit-detail-meta dt",
+        "digest": "617c63891011604f6552c225fca570fc902c8fe8d2880c57d04d9ebb43e8b542"
+      },
+      {
+        "context": ".vds-lit-detail-meta dd",
+        "digest": "ef02a06ba658acb93121119c8e1ed3130abdd6a0d1282de79c91fd3685623550"
+      },
+      {
+        "context": ".vds-lit-detail-abs",
+        "digest": "a871f10f29aaf44995b293f3a3c7d3a8ae152b64d92d9cff84e0e53432cecc30"
+      },
+      {
+        "context": ".vds-lit-detail-abs strong",
+        "digest": "12e4e86459de7fd013d71c4479b5ec795946cadb90d26fa9fcf713278aa61ecc"
+      },
+      {
+        "context": ".vds-lit-detail-abs p",
+        "digest": "adf873e3f4f18df3af1ec85d6341a2c73fb92d94a768b981363be2cfe7c27e63"
+      },
+      {
+        "context": ".vds-lit-detail-actions",
+        "digest": "622fc5c70141b4b6eb605f9d038368fb5d9131d877fe3026e758f5ad11fceaa7"
+      },
+      {
+        "context": ".vds-lit-detail-actions label",
+        "digest": "42f8d2b6cddb6a2e2dede628ff158851b0f304461ebb6be4aba8d92afd4973c5"
+      },
+      {
+        "context": ".vds-ai-session-list",
+        "digest": "b5a01ed837b2afb3894e4ec6b2d1bc382ce32c698a3f3e999651265cb6d3a33f"
+      },
+      {
+        "context": ".vds-ai-session-row",
+        "digest": "b0d567631b99d8b57c7c2a39fee187a938a985c1d68c9b8fd1fc85c3950f9343"
+      },
+      {
+        "context": ".vds-ai-session-row.is-active",
+        "digest": "000507197b5343001e21d01e16f28c2610b77444b97172d372484655ef32078b"
+      },
+      {
+        "context": ".vds-ai-session-list .vds-ai-session-main",
+        "digest": "58536a603c34496d02f92daf758870572af65ebe21d8546ac7719739116836d2"
+      },
+      {
+        "context": ".vds-ai-session-main span",
+        "digest": "c159e9f23fc823e311bee2327b0914dae1576fdeeb2501354b859cd70ca7a762"
+      },
+      {
+        "context": ".vds-ai-session-list .vds-ai-session-more",
+        "digest": "82c5ff4d456bf932d1ce0a967d18c78d97365f30c751cbf0d247a9c0ab36705b"
+      },
+      {
+        "context": ".vds-ai-session-row:hover .vds-ai-session-more,\n.vds-ai-session-more:focus-visible,\n.vds-ai-session-row.is-active .vds-ai-session-more",
+        "digest": "25f64d46aba4e3a676bac2c0f6e28ab77dad16309ff13fa02096fc6a3b643246"
+      },
+      {
+        "context": ".vds-ai-session-row input",
+        "digest": "2061c3825305ac44fa2fbeef29b895cafbde33c345de471019b4d8fef634dac6"
+      },
+      {
+        "context": ".vds-ai-session-actions",
+        "digest": "edd9c81fe93b8efc3b59a43549ba24448a9b50eb812886a08c62c35f2fad19a5"
+      },
+      {
+        "context": ".vds-ai-session-actions button",
+        "digest": "54231badfea81c04e4fff4eae2c1e7f73691ed002e017f3da144801090cd0db9"
+      },
+      {
+        "context": ".vds-ai-session-actions button:hover",
+        "digest": "6ed24fd09fa9eab77f0699b6e75c9d8b6167be97b41fd328aa3966f52904d88d"
+      },
+      {
+        "context": ".vds-ai-session-actions button.is-danger",
+        "digest": "f3359f26f57e9b426d0b04c4c2b66255590884dfedd89d08e108f1cd4892d527"
+      },
+      {
+        "context": ".vds-ai-session-error",
+        "digest": "9816886e96d63d06dfdda45313548b667561db503892d6cd7598bb70e6b812e1"
+      },
+      {
+        "context": ".vds-ai-panel.is-history .vds-ai-session-menu",
+        "digest": "8b8b49077a0e497edce0f707ef6cb0d1ea83ad29eff116b30e429890cf09d3da"
+      },
+      {
+        "context": ".vds-ai-panel.is-history .vds-ai-session-list",
+        "digest": "a1cebd1fef67c8f57ed16a144d85bfedf27d0fe43befc0e1069caaf52c690559"
+      },
+      {
+        "context": ".vds-ai-panel.is-history .vds-ai-translation,\n.vds-ai-panel.is-history .vds-ai-stream,\n.vds-ai-panel.is-history .vds-ai-composer-host",
+        "digest": "802d81320153aa000955fb78825935ea347d6db30df001b5a6da342ef44f6fe1"
+      },
+      {
+        "context": ".vds-ai-chip button",
+        "digest": "ec63a9ba254aa51e697df3279807cad27f908376823f2bb0fa2b87b4468bf79d"
+      },
+      {
+        "context": ".vds-ai-clip-actions",
+        "digest": "abbd08c7ff38e7def00eb79bb3f01c47cb2d06b17baaa58611260eb3aa4df692"
+      },
+      {
+        "context": ".vds-ai-clip-actions button",
+        "digest": "eb59c69178484dc1252129e209a5ab4785c318c3d71d5f4590fbdd61a173fb55"
+      },
+      {
+        "context": ".vds-ai-save-row",
+        "digest": "27f6c46d87e5dc12bf59d082917d026ea8616d156e4d5f17cd469e17139fcf89"
+      },
+      {
+        "context": ".vds-ai-save",
+        "digest": "157c5e0b6a5a738475a0d271863ed80b55b65a005e7aa7792698208b89a62036"
+      },
+      {
+        "context": ".vds-ai-save:hover",
+        "digest": "231135254e780f029e51908b91cb9e4c17d4cddd443ba4c77321ec2100992bd1"
+      },
+      {
+        "context": ".vds-ai-stream",
+        "digest": "541e93cac19dfd59416b0cf351ad66d6e0965ae4593aae381ad882b8226ad733"
+      },
+      {
+        "context": ".vds-ai-composer-host",
+        "digest": "6f13638b8792604918862e6f490c1e60381204acdae941f9e0df113d8d5850c3"
+      },
+      {
+        "context": ".vds-viewer-empty",
+        "digest": "0b86e3bcde1ff7a1d096a7b278efebb23c677d7892cb72d7ffbb760cbf12ed0c"
+      },
+      {
+        "context": ".vds-viewer-meta",
+        "digest": "d38bc83a4708d1cd41b3e9367928ba24baf509e5668ba2c45a9b325e72739b79"
+      },
+      {
+        "context": ".vds-viewer-tools",
+        "digest": "5c9e532ab450dfa4749b91db7debc6dfdbeb59c8c83748ab5a1f952a2f160df6"
+      },
+      {
+        "context": ".vds-save-state",
+        "digest": "edd0211960366e38b4319f9e4068bc719319d17af4c5e839e7216dfaca82db7a"
+      },
+      {
+        "context": ".vds-save-state.is-dirty",
+        "digest": "20fdc316011389ffcbf32909999ed3c762418090f4bf1d43e676b586355e19b6"
+      },
+      {
+        "context": ".vds-save-state.is-saved",
+        "digest": "fff74abff211781e01ea9db2281b25e1f72728e3bdc1edd3a4d3f513ba2f7cc2"
+      },
+      {
+        "context": ".vds-save-state.is-error",
+        "digest": "435d5c9d2060857d0f9f5211fb3530e5b3e83f127b3f09cd558f7fd4387ef8a7"
+      },
+      {
+        "context": ".vds-md-view,\n.vds-pdf-view,\n.vds-table-view,\n.vds-code-view,\n.vds-image-view",
+        "digest": "22e190a7740c21f652823b37bd105df934df093f1fff5f2fdc71eb219649812a"
+      },
+      {
+        "context": ".vds-md-source",
+        "digest": "05a0c7fe98c62df357945bf5cf5e14832b24c8fe63ed3ecf71caaf279b64d412"
+      },
+      {
+        "context": ".vds-md-source:focus",
+        "digest": "e87e14c5134fef3c916ea3dc7577829e69fa140ff3e1d7a65fdd5e2b67b0805b"
+      },
+      {
+        "context": ".vds-md-render",
+        "digest": "918f0509287e1c9520aee1bddbfeb5b3d0b785fe36809f912ad57d070e829f99"
+      },
+      {
+        "context": ".vds-md-render:focus",
+        "digest": "da251fd3d9f89b35320cfd7f9ddec7c692dc4b46c7afdeeb80f44c789a867ae5"
+      },
+      {
+        "context": ".vds-md-render h1,\n.vds-md-render h2,\n.vds-md-render h3,\n.vds-md-render h4,\n.vds-md-render h5,\n.vds-md-render h6",
+        "digest": "5595df7eec0323f6b762823c76971aba70520aff8da507ed4d8f64800d704aae"
+      },
+      {
+        "context": ".vds-md-render h1",
+        "digest": "0856a5d23949e654b46f1c6afe03b258657c0db16187396a6ab2b18d6bb8ca82"
+      },
+      {
+        "context": ".vds-md-render h2",
+        "digest": "af9e02391ec645625a1064234efe31a03af6a1a611b08aa655e90255b18fea35"
+      },
+      {
+        "context": ".vds-md-render h3",
+        "digest": "a672668bf98d9ae2d414589cff78c79877023573559ab63a6b0de676d9e1dae6"
+      },
+      {
+        "context": ".vds-md-render p",
+        "digest": "254ef3e6a85adff62a9445ea441ac191f01430dd77304d15b21e9e6feeb1542b"
+      },
+      {
+        "context": ".vds-md-render ul,\n.vds-md-render ol",
+        "digest": "fb94671d9df28977d5b87986c85dd903cb422cadad4d57d5962b9adcaf96cca1"
+      },
+      {
+        "context": ".vds-md-render blockquote",
+        "digest": "5ea0debd832ff0f3fcf85aa89faf44dc628a5969718e5eb8d8e5c82c9e97942c"
+      },
+      {
+        "context": ".vds-md-render code",
+        "digest": "a4cf12ea34576195d353b51879dfa0be6f1aaca1bf74cefdfba87237824aa4b4"
+      },
+      {
+        "context": ".vds-md-render pre",
+        "digest": "dabb186dab3d6352322f590f5d8b3be230f5a37b3516c0e63d1e2eaa5038e97d"
+      },
+      {
+        "context": ".vds-md-render pre code",
+        "digest": "f0599e69f461965c8576549dd2605926eb23fca0a09df3fc1879025b3016f14e"
+      },
+      {
+        "context": ".vds-md-render table",
+        "digest": "b57ffc007633e4e202f22d110e5d64d6d6f5ff8564555dfc80c2275b38407cde"
+      },
+      {
+        "context": ".vds-md-render th,\n.vds-md-render td",
+        "digest": "04e5d15aa842bfa40882e565776628a4c48a183a5223b8b62f144d20ed5aa297"
+      },
+      {
+        "context": ".vds-md-render th",
+        "digest": "fdcf1c2204c240a3b738d109096539a5a4ba29210e4c2eee85f6da03f9a7e1bc"
+      },
+      {
+        "context": ".vds-md-render a",
+        "digest": "9817c40d2dffd597b9bf582dc57d99c4f38cbeb168e7a285f8c073495df41fac"
+      },
+      {
+        "context": ".vds-md-render hr",
+        "digest": "8f8ad7d35d505afeacc67a59c7b98f95ead9ceeb046cbd637adf57106d629735"
+      },
+      {
+        "context": ".vds-pdf-body",
+        "digest": "d3403846f2ba96c78da9e5c4aa55eb9029114b7b6d94e5c01b8b5588b2021636"
+      },
+      {
+        "context": ".vds-pdf-frame",
+        "digest": "227a4194d642b73a92426f56832463545053de17c0b7a857cca6108d16933f34"
+      },
+      {
+        "context": ".vds-pdf-foot",
+        "digest": "9f65a2fb24b4942aa73aa5df0b6a35a1db0af1b8c75cbd0cf1bc356423457dce"
+      },
+      {
+        "context": ".vds-document-dock",
+        "digest": "d77537c4f5946948f844eb097d0d46a424c3d32940ddf45d53d366e03587901a"
+      },
+      {
+        "context": ".vds-document-areas,\n.vds-dock-split",
+        "digest": "87d1a201235c3ea134e3fca2e01f7b94998ae24ff8479979baf3000541894e10"
+      },
+      {
+        "context": ".vds-dock-split.is-horizontal",
+        "digest": "d99ef6f7909d88996b79f43fd25d8e1b9f738c33e1653836d9468cb50967008e"
+      },
+      {
+        "context": ".vds-dock-split.is-vertical",
+        "digest": "c53f0f3455a825866f86d41d5ac5012944a92f5d292aa0ff67e360bc038e38e5"
+      },
+      {
+        "context": ".vds-area-divider,\n.vds-dock-divider",
+        "digest": "03998c4dbaad184c8bb319936af0a8714a5c597e1b4cbed706960cfb396782de"
+      },
+      {
+        "context": ".vds-area-divider,\n.vds-dock-split.is-horizontal > .vds-dock-divider",
+        "digest": "8ac7175493ca8ee30d46eeaa269e198f94e6658128274ae3965d4c5f24e5db1a"
+      },
+      {
+        "context": ".vds-dock-split.is-vertical > .vds-dock-divider",
+        "digest": "33714447f691e93f68b2263f612299c1c3940f3681f3c4630e7b7c6ea804cf8c"
+      },
+      {
+        "context": ".vds-area-divider:hover,\n.vds-dock-divider:hover",
+        "digest": "6cf9532fa5328f6dd3fbf7f7ee610d57acd1b080b55ccc8681d682ae1565667a"
+      },
+      {
+        "context": ".vds-dock-leaf",
+        "digest": "b9b43ff369c216b90b5eeb204ec50af13f2916a732965aaa1584273b7e08aaab"
+      },
+      {
+        "context": ".vds-dock-leaf.is-tabless",
+        "digest": "a8508a34866ca79f467acf3799450de56857d2d3218905dce6d572f9d68c0a4c"
+      },
+      {
+        "context": ".vds-dock-leaf::after",
+        "digest": "bb26fda4d9bd3fff9fd93ad94cb4d0104f1bc6c537906df7469ce2ef3896e926"
+      },
+      {
+        "context": ".vds-dock-leaf[data-drop-edge='center']::after",
+        "digest": "c11feefb3c495ea8fcd6eac2445839fff7370d6aee14ace69d3eaccf78439e4a"
+      },
+      {
+        "context": ".vds-dock-leaf[data-drop-edge='left']::after",
+        "digest": "33de8249f681f51981db5d4110a613a2920a49e358b9aa952470b325fe8ce558"
+      },
+      {
+        "context": ".vds-dock-leaf[data-drop-edge='right']::after",
+        "digest": "9e7a28687ad1ff1056e853067052f867863f47d6993036b3bd00e42e76c10b2c"
+      },
+      {
+        "context": ".vds-dock-leaf[data-drop-edge='top']::after",
+        "digest": "ba48513b209d453036fbd553c50e1f5ffb9ddd945c1dc1b1ca258d810c27d5da"
+      },
+      {
+        "context": ".vds-dock-leaf[data-drop-edge='bottom']::after",
+        "digest": "202ed5635815aadb647dfc8dd43deef1f719dc8ba28fd5db3da17cd02e687e2f"
+      },
+      {
+        "context": ".vds-document-tabs",
+        "digest": "318f5c3cb94949b9444061fad45d1c26de0b707a5a24c7dc5c40409f634f22fa"
+      },
+      {
+        "context": ".vds-document-tab",
+        "digest": "ab367469ade64ee97d2fbf76a7dcc0e9fef699a72175cdae8b7433746f954cf5"
+      },
+      {
+        "context": ".vds-document-tab.is-drop-before::before,\n.vds-document-tab.is-drop-after::after",
+        "digest": "b0bd6bf5454443575d0fe1a8583a8a7c7ea05a19b664d0130ee445fdb22ccf41"
+      },
+      {
+        "context": ".vds-document-tab.is-drop-before::before",
+        "digest": "888539882b37799b99361c4c861233025e4211c243fe8c2dd3b6bdfd0e1eafae"
+      },
+      {
+        "context": ".vds-document-tab.is-drop-after::after",
+        "digest": "0bde6cb59b82aa38ad92a7486367607c7d4b779e862477e0d7322f49dfc972da"
+      },
+      {
+        "context": ".vds-document-tab.is-active",
+        "digest": "165064384abba03a84f8b535a8e811ea6962689be152f6c9a0f255ec39b2a68a"
+      },
+      {
+        "context": ".vds-document-tab > span",
+        "digest": "e8b6ca4a3c86d5f115684863b416630e9d176c43075245c5fe4f2e65e52ad6e2"
+      },
+      {
+        "context": ".vds-document-tab > small",
+        "digest": "c4ed4e3bd5b605918861d2433f8ba230272ecc920648b7d45efd3ae6f6a4c6e5"
+      },
+      {
+        "context": ".vds-document-tab > i",
+        "digest": "2da54989393663a8cf7d6ddd15062926c40cb05efdae032917967298b449435c"
+      },
+      {
+        "context": ".vds-document-tab > button",
+        "digest": "cad2094d542e3a6d08cfcc19abed3892ba0a050e268e90eaf131dbe8700d4425"
+      },
+      {
+        "context": ".vds-tab-menu-veil",
+        "digest": "d2722a97bfd934cccfb51fbfa773acd7b845c41ffff49c892f90d3f71f1ebfcb"
+      },
+      {
+        "context": ".vds-tab-menu",
+        "digest": "e9d494f9c186535fda27c2b050022d57064aeb47957cffc2b04b66ea4c3cbcde"
+      },
+      {
+        "context": ".vds-tab-menu button",
+        "digest": "29bea18b948105221d43c4e58123983b7b294fe42ce94b63481dccef9d74e8f7"
+      },
+      {
+        "context": ".vds-tab-menu button:hover",
+        "digest": "d6969ddfb7a0e6b9908f2258394ed735ccb9a77f9313b5658ff470f3c02ecb2e"
+      },
+      {
+        "context": ".vds-tab-menu-divider",
+        "digest": "56ffaa7920918ddb3df0e770b29a06865559e587e2fc0e17c7bb4c5b0e344317"
+      },
+      {
+        "context": ".vds-dock-drop-preview",
+        "digest": "722473142613dc5ef3e5ff4b8819842b79e1491f56848a238514e4bb33f8c151"
+      },
+      {
+        "context": ".vds-document-view",
+        "digest": "f0a476e673dd6af31af9986bbb778a8f629ce741cf3a3fab729d38b462b166b4"
+      },
+      {
+        "context": ".vds-document-view.is-viewer-toolbar",
+        "digest": "40763cb59996ca6a5e69bd502eec6531c88f5ab5eb83bc8b707ffca76ed7285a"
+      },
+      {
+        "context": ".vds-document-view-slot",
+        "digest": "3f269f44c23ee46e9a826ae165d085b1fdc506e04df7fd831b3164c49cf9e4a8"
+      },
+      {
+        "context": ".vds-document-view-slot > .vds-document-view",
+        "digest": "e5cd389fc272829f1c97467f344ccfcb8dce6c889565b79c88de5b1de736eade"
+      },
+      {
+        "context": ".vds-document-view-slot[hidden]",
+        "digest": "29dcc4163c3697325133c03bf25a9ba0c6fe4ec963a784fd8a12b4b07e51630b"
+      },
+      {
+        "context": ".vds-document-toolbar",
+        "digest": "ca925b741439bacc7f864b1216257cc8518ced73e4eefcac4379f7327049034d"
+      },
+      {
+        "context": ".vds-document-toolbar > span.is-conflict,\n.vds-document-toolbar > span.is-error",
+        "digest": "c9d6378d95bb8f04b5b9da4226a54244c99cc16db8459df89d9154982e988890"
+      },
+      {
+        "context": ".vds-document-toolbar > div",
+        "digest": "b337240e66828c3f236fa21651bfc8368f01dcae8952fcdc5b7a8987488d49ab"
+      },
+      {
+        "context": ".vds-ai-translation",
+        "digest": "2ceb9f55eb690c3d38078689c14abc397173fb850336da31e38954403436e90a"
+      },
+      {
+        "context": ".vds-ai-translation__head,\n.vds-ai-translation__head > span,\n.vds-ai-translation__controls,\n.vds-ai-translation__loading,\n.vds-ai-translation__result",
+        "digest": "4ee888e1745fbb5876925e9bf847d983ec194c2c5323ab38d8cfb52f27d85a49"
+      },
+      {
+        "context": ".vds-ai-translation__head",
+        "digest": "6bf97260bdc11f947cffb30ba4676b76ca1b20cd66a261b8275e9d771897fa3f"
+      },
+      {
+        "context": ".vds-ai-translation__head > span",
+        "digest": "739561880181ea2cf272141b506bbe3457241a65dc44c9980ccd44e001968e9c"
+      },
+      {
+        "context": ".vds-ai-translation__controls",
+        "digest": "d81d8cc2b870f977bf677ce577400ff0aa5d2461522223c05816b176ccb836ed"
+      },
+      {
+        "context": ".vds-ai-translation__controls .vds-field",
+        "digest": "6a12ad405f73208aceac9e5bd798fa8a5ad46d8115cff18ce60ba3b12a46936b"
+      },
+      {
+        "context": ".vds-ai-translation__source",
+        "digest": "b4c796e14360b21d97b42b77da8dbcffae3426ba96f6bbc0c2ea759236d614db"
+      },
+      {
+        "context": ".vds-ai-translation__loading",
+        "digest": "98e1cc9a689eb93c3852b0181b067c0f647fb13d778623bf2299e41977f26f2e"
+      },
+      {
+        "context": ".vds-ai-translation__loading > span",
+        "digest": "6cb9db9116d2b1597e55b6839170abe09bbeabcc87e4cd636b0140c99fe9de8b"
+      },
+      {
+        "context": ".vds-ai-translation__result",
+        "digest": "a9eb77e46b616a2aee3cadb12e0ea531dcfe345c682921f3784d88d0652356a9"
+      },
+      {
+        "context": ".vds-ai-translation__result p",
+        "digest": "94322ea2173c2476ebd3ed1892bfde7574f4d19081deafe6d592c70f657f219c"
+      },
+      {
+        "context": ".vds-document-view-body,\n.vds-monaco",
+        "digest": "ea2bf2c4a879c68d7b43006ba3a501581e463353ed4be52de77599886a1988a6"
+      },
+      {
+        "context": ".vds-markdown-workbench",
+        "digest": "a8789c3d185512e7bf89c1035fd1ced2d4a35b3291789fa19f1084f6a549997e"
+      },
+      {
+        "context": ".vds-markdown-header",
+        "digest": "37d0c6f3edc9912dc7dc61201443078bfb107a44f9f3b8f10ab1bbaeb8ef9684"
+      },
+      {
+        "context": ".vds-markdown-header button",
+        "digest": "04ef7192ce8c0e7e4f7fda10449f03eb794c8261813b78604f747f96d549fcfe"
+      },
+      {
+        "context": ".vds-markdown-header button:disabled",
+        "digest": "bcd51232206a50b21fe6688716659732313bb4ccb7f9f45eb4c363c6135494d7"
+      },
+      {
+        "context": ".vds-markdown-save-state",
+        "digest": "3e496a3142af812c96ae971f797d125e5c53cb8340adc618daae52fe0b07064d"
+      },
+      {
+        "context": ".vds-markdown-save-state.is-dirty,\n.vds-markdown-save-state.is-saving",
+        "digest": "60271ea160554474110ace8d71801284ab999233d7093a9571dc19543e2af7df"
+      },
+      {
+        "context": ".vds-markdown-view-switch",
+        "digest": "28ebff1ecc19272a3eff2e7137a92ab91f5260001a88b8cb80f66ce286ee9ac5"
+      },
+      {
+        "context": ".vds-markdown-view-switch button",
+        "digest": "80871f8c41a73b5da0dd2f871f4939b5d45d1bff1032ede16ee5490adafa61a7"
+      },
+      {
+        "context": ".vds-markdown-view-switch button[aria-pressed='true']",
+        "digest": "776a3fc773c11ff386768205457dc1291ec9e06cf524fb19b6451af9d922a55c"
+      },
+      {
+        "context": ".vds-markdown-visual",
+        "digest": "32f5ac20572c6e30a8660f2cb1130f45816c90427cc978b027ac0fc32f6fc9c8"
+      },
+      {
+        "context": ".vds-markdown-ai-hint",
+        "digest": "52d7238fd933be2d39bcc435c0eee342b8e4e9d0ee38093b96be73853230ce22"
+      },
+      {
+        "context": ".vds-markdown-crepe,\n.vds-markdown-crepe > .milkdown",
+        "digest": "da6db637606e7fdcb64f28b1942f96cf2b078616fefb3e7bd9365df2c6d73bf9"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown",
+        "digest": "0aeb362438f358412c56417342f5b4df42320f719df80b80de20e2f790bf3a47"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown::-webkit-scrollbar",
+        "digest": "eac2561aca7571ec4b6d71f517aa2229804e5021fbefb38c65d3ac6bf84df254"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown::-webkit-scrollbar-thumb",
+        "digest": "11e4cc9242672a2c850a13285984ae06eca401a66036aa692ead79fd615e0dba"
+      },
+      {
+        "context": ":root[data-theme='dark'] .vds-markdown-crepe .milkdown",
+        "digest": "4318876bd26fb4df8ca737418cfc15f8fe2b70216ced383acdd7c40753b7414f"
+      },
+      {
+        "context": ".vds-markdown-workbench.is-format-hidden\n  .vds-markdown-crepe\n  > .milkdown\n  .milkdown-top-bar",
+        "digest": "56709137bfb7bcaf7f855361bbc8c7190d00ee5b2f6a768b287bc6ecd16ba408"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar",
+        "digest": "b6b96131bf7189eaab9c5bbe04ff8204681524886d97eb6beccb972e8c7449ba"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-inner",
+        "digest": "8a367e04b07bb8394e6a314dad636d25e7abb22b59768c841086eb6572c1bbc2"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-divider",
+        "digest": "f7d48ead401d35c0b55909ff284c7999becdac5bcb1b8f4336ab16df80799141"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item",
+        "digest": "f2f7ee3be21ee5c249c06282d5c439c6e21f26c97e7ad1ba09f4ed1c9009c0a2"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item span",
+        "digest": "741c13ad1b50a8ecdf07a7036ace0427707226e850903ea1b3101eabf1f4645f"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item svg",
+        "digest": "5fffb0a3a5731e493e6d9561f096bcd2f304463ab70af2e889aa61693dced67e"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item:hover,\n.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item.active",
+        "digest": "5897105e36204a1c101c02b38f9c3980085df23baacf504dc5f8f0f368eda461"
+      },
+      {
+        "context": ".vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item:focus-visible",
+        "digest": "537bf20e7bcfe6b0e6ca61a390b58dfcce6a3de56c9ddcae7fae0c10ecfefe9d"
+      },
+      {
+        "context": ".vds-markdown-crepe .ProseMirror",
+        "digest": "7006d798a7580ba7085dfe64d898c67c9a24a8ae3d5a92b6143b3d5132d98806"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-table-block .handle[data-show='false']",
+        "digest": "ef3996fe12118371508e6677580f937527e4e6e0118630e2dac6127eb2547648"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-table-block .table-wrapper",
+        "digest": "713e40594de4cbad2df4d050094611151f53ca730ff12e0e3c423b9c88cfe6ca"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-table-block table.children",
+        "digest": "95d7758a5f66f24cc4b65e5b63a18f333870519c085259fb7854d5945deb7401"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-table-block table.children th,\n.vds-markdown-crepe .milkdown-table-block table.children td",
+        "digest": "6ac6d4226df6005d46ac4d065cef9a1157e1d6b95103e62b44c39daa5eb7b1e2"
+      },
+      {
+        "context": ".vds-markdown-crepe\n  .milkdown-code-block[data-math-block='true'][data-math-expanded='false']\n  .tools",
+        "digest": "aa452b0ee13946f9eb2d97ef451f4c5255136a2fbfa400791e82c032f1f76da1"
+      },
+      {
+        "context": ".vds-markdown-crepe .ProseMirror > :first-child",
+        "digest": "3e78c2d3dcdeeaec94bbf32750fdb7c909597ab18bf5e3156178bdee45362700"
+      },
+      {
+        "context": ".vds-markdown-crepe .ProseMirror pre",
+        "digest": "666d587a2dfee2df38f8d2ebc41189520956e5a79084c44b3e644e7e8ec0b254"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-slash-menu",
+        "digest": "24372296a69d18d1f006f875c109d16d8f1383983abbb96ae14d3750f3f1d0a9"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-slash-menu .tab-group",
+        "digest": "aad4fb3b4110d3005aff003b65563721127cf8140a049f3155fca9ec7ba7a6c6"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-slash-menu .menu-groups",
+        "digest": "bc064c035fe2da07436183eae67b8549ea6ebb9601767c3cd6b7cd8f9465922f"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-slash-menu .menu-group + .menu-group",
+        "digest": "faeceab153a9340d0b7100c67443f7d91877d4aee9ee67c7fdcd9b3b7522dadc"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-slash-menu .menu-groups .menu-group h6",
+        "digest": "d3b005d1fff6e0092c68bdb7dae0d02e0ae90a741127540cf79fc4372290b73b"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-slash-menu li",
+        "digest": "dfe3441f0249f6c9df463c9389a0bccfb9f8824b75b83eb791d7ceb3813b6dcc"
+      },
+      {
+        "context": ".vds-markdown-crepe .milkdown-slash-menu li:hover,\n.vds-markdown-crepe .milkdown-slash-menu li.hover",
+        "digest": "891c86e0b07bef95198b325b4bbc3c6eeb1e6701c30d03985aec4f32d78963c5"
+      },
+      {
+        "context": "@media (max-width: 960px) → .vds-markdown-ai-hint",
+        "digest": "1e58f156dd16957211a9fda227163df2ff309f823c37579b170ec6db43c85fcd"
+      },
+      {
+        "context": "@container (max-width: 760px) → .vds-markdown-crepe .milkdown-top-bar",
+        "digest": "a25c3e7133c783640a17f25b91e182d4aea0d8539ebc98bc38ec24abc1374e7c"
+      },
+      {
+        "context": "@container (max-width: 760px) → .vds-markdown-crepe .ProseMirror",
+        "digest": "ed8ed5479b5a569486bf0c7c0930132ab2ed9f956d5af0ec2277d973c1d12d12"
+      },
+      {
+        "context": ".vds-dock-empty",
+        "digest": "976cceebe23388585f60f64039773503a0cf416f4f1cda3ea099b05cd4515967"
+      },
+      {
+        "context": ".vds-table-body",
+        "digest": "9cbf24ab2542bee5f5bbf76be838830fcf17b835aaba73cfd4c924793fce3b84"
+      },
+      {
+        "context": ".vds-table-body table",
+        "digest": "3bd34367ae8cad55b3899ac707ea5319a0285f9aa4846e1aa0dc5ee4732bb5e1"
+      },
+      {
+        "context": ".vds-table-body th,\n.vds-table-body td",
+        "digest": "199a19c4ba7defba7058243bcb06c30a1c3762efa429e722655aab8728bdc7a5"
+      },
+      {
+        "context": ".vds-table-body th",
+        "digest": "842f2e23763c63893f87d8f041064f689c7ee3d56a574c82a9cb835a6f9af7e3"
+      },
+      {
+        "context": ".vds-code-body",
+        "digest": "5d0e4fa6887689523adce3b1a2022056e46d6579d8659c79f94e1e7ef6b5f390"
+      },
+      {
+        "context": ".vds-code-body pre",
+        "digest": "1a9df1c1a7495b630d441b52a9fd568669be026363eebca824ae57df68cf1fa9"
+      },
+      {
+        "context": ".vds-code-line",
+        "digest": "a69c428d1a2a6bab7078ec2b90861a1c82d88c782019875ec92c37b93a616cf3"
+      },
+      {
+        "context": ".vds-code-line:hover",
+        "digest": "9719812fa1fb5d50a8bb7f0140623aa46a6ce279069866f3b5479879b97e6870"
+      },
+      {
+        "context": ".vds-code-no",
+        "digest": "4c4b3398cf07b8f08da3df7dc3b2a7fc37119f973dfb9de7e833ae74eff20b53"
+      },
+      {
+        "context": ".vds-code-text",
+        "digest": "46f782dd6a52cff08bf8879aba1264bdf05d3ca1acc7f31bca28391e60bd1ef6"
+      },
+      {
+        "context": ".vds-search-results",
+        "digest": "6b297e98a14d0cf8076464122ef9fe92ae5c1ad7fb4e0ae9eeba35af4689f00b"
+      },
+      {
+        "context": ".vds-search-hint",
+        "digest": "919bb0e7b32d72fd2e8d1925f133c127eef39e716120fb9721bfd2cd5f560454"
+      },
+      {
+        "context": ".vds-search-group",
+        "digest": "2e752084ddec8f609b41c20144f50019a0790d0b281a238e7e996e129ab7b300"
+      },
+      {
+        "context": ".vds-search-group-head",
+        "digest": "b95dd0ad3c69ec089fb954d4e4317e2e64ed783cc654c6d7edd356db85b542b0"
+      },
+      {
+        "context": ".vds-search-row",
+        "digest": "9b138f83e3049c5e70477e79ee183a5e94e43b1413be87213178d32edf3431d7"
+      },
+      {
+        "context": ".vds-search-row:hover",
+        "digest": "0cc90e5db0acc469afcc57add003975b4069def3c3c16406a837c4230a669aa6"
+      },
+      {
+        "context": ".vds-search-row-title",
+        "digest": "d23331c4e616ca2a89ee4a2d571c79942eba0c1c87394674647684ef2784a6aa"
+      },
+      {
+        "context": ".vds-search-row-sub",
+        "digest": "44ca0b29db3df1b7a4e90fe07e6b48825e5486151bb74a3a84f9df53255880c2"
+      },
+      {
+        "context": ".vds-search-mark",
+        "digest": "508fd34ae7b797c0e672081ea7d2e29b03c9cb96537d404aeb800543770dcad5"
+      },
+      {
+        "context": ".vds-search-more",
+        "digest": "85e5fa6a78a5c5bf57a7be89c4dec12628df086c16402689da4257068634e7cc"
+      },
+      {
+        "context": ".vds-ai-search-go .vds-icon,\n.vds-ai-send .vds-icon",
+        "digest": "05875a818f9a2b23bc9be3998c2aa06689c0b8f46605550506265e42a7a35dff"
+      },
+      {
+        "context": ".vds-overview-path",
+        "digest": "70b7505eafa7d1ee17a18900a6e93de32f1cc136b838576995cab7bca05525e5"
+      },
+      {
+        "context": ".vds-lit-batch .vds-btn",
+        "digest": "32bf6e60d1e94d5bf90d00386a8cdac3ff8cf6432595b8af117045948de704bc"
+      },
+      {
+        "context": ".vds-lit-batch .vds-btn.is-danger",
+        "digest": "7044393f1b13c3de26df73aae3e0a412fbca2d9ef8d0173cbbf045a54b657a00"
+      },
+      {
+        "context": ".vds-lit-cell.is-tags",
+        "digest": "0546dde6d39d2bf661d748e802482bbe624c54d782d2f5d263402c1f7a94240b"
+      },
+      {
+        "context": ".vds-lit-tag",
+        "digest": "02d9ddc1a9cb6d28cac8aa74481b377a396d013cc367d0eb6c15f90b427fff1d"
+      },
+      {
+        "context": ".vds-viewer-bar",
+        "digest": "99bdf72d4d82f8d52bc9d4d2b772af3f925a66aa2c6241179b9b3877c3a4afa3"
+      },
+      {
+        "context": ".vds-viewer-path",
+        "digest": "8ad692aa544bca22ae53fe63162f79d2ccf24137617f5aac252bf7c986b4143c"
+      },
+      {
+        "context": ".vds-viewer-tools",
+        "digest": "7753e856e0944962dd2dbe5d3fe6b332f507dc367c6bf3c9ab04528f738706fe"
+      },
+      {
+        "context": ".vds-viewer-tools .vds-btn",
+        "digest": "348006f6f31748584905963048075e270c0287fea657827c41b77a842b14da73"
+      },
+      {
+        "context": ".vds-lit-ai",
+        "digest": "f7dd1c04183b9e40acc77e2fee84c28009355de64a92f39be5d1abc89a6bb5a6"
+      },
+      {
+        "context": ".vds-lit-ai-head",
+        "digest": "c09048ca9a168c84d527f2706a8054f144f0b35a5f23e93dfac53325dc4dfdc5"
+      },
+      {
+        "context": ".vds-lit-ai-input",
+        "digest": "9a39beed0fb8f81d89619c4f5034a1f76c5a7ef9121e5998c074408ec42a43af"
+      },
+      {
+        "context": ".vds-lit-ai-input:focus",
+        "digest": "93d42f38af3e47fd36120e394de85bf7f5e384a1dbb89f1f24a1ef9848c1986b"
+      },
+      {
+        "context": ".vds-lit-ai-foot",
+        "digest": "08a5115fcd2c7812ccde5f5330ad6e3c0967e1182f2017f415bb5740c2f6def2"
+      },
+      {
+        "context": ".vds-lit-ai-scope",
+        "digest": "c202a5634c14abd4e3b9a32c6559ef730ea3f8b31a7c341962ea755c78073ff6"
+      },
+      {
+        "context": ".vds-lit-ai-go",
+        "digest": "987b4c3fe3fb87cba0c38446f2d642303ebd163a63dd2bec8732e3f39453d7cf"
+      },
+      {
+        "context": ".vds-lit-ai-go:hover",
+        "digest": "d816aed53ed163cfef53b88a2a678384a0ca78e0cfee6942d5752a3200dc4fe8"
+      },
+      {
+        "context": ".vds-tree-head.vds-lit-group",
+        "digest": "c8e129b89a2088e73b6d9928a8d3376c4430165ee399a05719e4f40d8ff206a6"
+      },
+      {
+        "context": ".vds-lit-group-toggle,\n.vds-lit-group-add",
+        "digest": "b85996fc7742a5fe4811ee8f7a74c711e92ccac1d79b8c0fa65c4d55c5b9cdc1"
+      },
+      {
+        "context": ".vds-lit-group-add",
+        "digest": "3ad609437165982431c0fe76df4c237c52b442dc96531ba6438f996294407fc8"
+      },
+      {
+        "context": ".vds-lit-group-add:hover",
+        "digest": "34c4846828c8fd3f6f6c0f11386d8affb3849fcbd02bb4825ef7902bcedaf96b"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row",
+        "digest": "55bdbc23f065b742b771b43703c57e9ea4eafbfaaf369f4724bd4e3abf94c55a"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row .vds-lit-col-btn",
+        "digest": "588c637c568a3d885651aab7bdda7ebb82e9ebd5d2e2528ceb752e2a471e7431"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row .vds-lit-col-btn:hover",
+        "digest": "be3d2cc93b5d2f033b718d08c9aa90a89f465e5251509f7fe108bc010e9e673a"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row .vds-lit-col-btn.is-active",
+        "digest": "d58d08cc9ae42d0025224e70a79278af74e837efbbd842307487907997b07a03"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row .vds-lit-col-btn.is-child",
+        "digest": "f8ebf928768069b9406dc1ff4ba96eb960fe1d5af1396f8e0c1d270e5d8b1e86"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row .vds-lit-col-sub",
+        "digest": "95c5db35ea1f71e4d460317d65c789985e467fc417990dae66fe46c8e900a00f"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row:hover .vds-lit-col-sub",
+        "digest": "62be39b189d25b45463a1c1164148b6f3589fbf18ab579711f3b076c82406c69"
+      },
+      {
+        "context": ".vds-lit-nav .vds-lit-col-row .vds-lit-col-sub:hover",
+        "digest": "f4e508fba9b7193b776edfc3e726911602ca0d60e0c33d247fc32f54cf302294"
+      },
+      {
+        "context": ".vds-lit-col-input",
+        "digest": "d163e1d5a006c363290273ef2587e8c15186334aba87c29de4d174d06bffb59a"
+      },
+      {
+        "context": ".vds-lit-col-input.is-nested",
+        "digest": "9f78404cd1ac74a56707ab7b2773b265d47e5e78497889180147f9e72cbcde37"
+      },
+      {
+        "context": ".vds-lit-col-input:focus",
+        "digest": "67e30e49d7fae8a91aeb3f1d6fa64f85fd92990bcb6d3570a679f83f764a117a"
+      },
+      {
+        "context": ".vds-lit-tag-dot",
+        "digest": "650e8ee8f63e54d7b89830bf4cb428cfaf54138b95698a4331d21b1a54be7b91"
+      },
+      {
+        "context": ".vds-lit-crumb",
+        "digest": "f0e508ba09e6d48d81bbf11d0ffe52872c67d41f531932a83cc703de9062b468"
+      },
+      {
+        "context": ".vds-lit-crumb-root",
+        "digest": "ec6de2c627baa783d752d0b59b14416c4197bf5fe278badd2be3de108032efab"
+      },
+      {
+        "context": ".vds-lit-crumb-sep",
+        "digest": "27c74b6f56a6feb76d6757b21cc1caa1e76cecbd6f5548dc040d2b3f55d7879f"
+      },
+      {
+        "context": ".vds-lit-crumb-now",
+        "digest": "a6da80a3b485bcbda43fd8627f2e52b209492d279189782bd8d38002e133e435"
+      },
+      {
+        "context": ".vds-lit-crumb-count",
+        "digest": "f1cbd6ff317f8c1d4a20be3149e980512132c469a1a46e30f61db9e33bafcbb0"
+      },
+      {
+        "context": ".vds-lit-toolbar-right",
+        "digest": "9f6ae35142f061e31fbabe3d767b32e008d1508054fc5635468e6e5d208841ae"
+      },
+      {
+        "context": ".vds-lit-filter-wrap,\n.vds-lit-picker-wrap",
+        "digest": "a180d29de0be354cd65aea1bb697c642aab5b4fbeb3e38d7cdbe4fa2a4288e70"
+      },
+      {
+        "context": ".vds-lit-filter-pane",
+        "digest": "17e50139df1ac903be41ea09a32af891d343c63299847cfc6ef5671336332df5"
+      },
+      {
+        "context": ".vds-lit-filter-group + .vds-lit-filter-group",
+        "digest": "7a81723eb30cc17b8dd83a6ac329e95638f81d583dc00fae125da2f4eea36594"
+      },
+      {
+        "context": ".vds-lit-filter-label",
+        "digest": "5bc55c1892ee20f88ded48e16127f0e5f8dd348c581f63004cf115911f00689d"
+      },
+      {
+        "context": ".vds-lit-filter-radio",
+        "digest": "a95de94f3e8e620558c1799bbb11260ffd8607b7d68049ad5bf70de54ded7205"
+      },
+      {
+        "context": ".vds-lit-filter-sort",
+        "digest": "a1a60ef701fad7935e943cc5fe6cd8da6d754038c65744d9c38ebfab0e710305"
+      },
+      {
+        "context": ".vds-lit-filter-sort.is-on",
+        "digest": "8ca73c9ce3ac3a640bda7ad90e51fe6d3d0de13b9c6a8ff597237fe35aa39a1f"
+      },
+      {
+        "context": ".vds-btn.is-on",
+        "digest": "960d1c2488dcb24d5047a844296f26d4eaf843d3f847b825c0bab2d627be63fa"
+      },
+      {
+        "context": ".vds-lit-picker",
+        "digest": "5011a84fc7735fe2d2c0bc8d40546bc1a4381e3ad560551cb3e2b93104643144"
+      },
+      {
+        "context": ".vds-lit-picker button",
+        "digest": "93a70c7fde84deb2e65226d5500e20136fd4f28af1dc033bb73549f1dadbd883"
+      },
+      {
+        "context": ".vds-lit-picker button:hover",
+        "digest": "57fef74f28cf3e1892b2a2e22f822d316a2c63238b82f5d66bb57a45f805bb7a"
+      },
+      {
+        "context": ".vds-lit-batch-n",
+        "digest": "b1ed7d898dc263b590cf881e8a2924bdc7ee02de37b792a9f2c29ddbacb31de9"
+      },
+      {
+        "context": ".vds-lit-menu",
+        "digest": "611975f38cfa0fab2dc412a3698f492f279a6f61e33cc8a3455f212fe34a86e2"
+      },
+      {
+        "context": ".vds-lit-menu button",
+        "digest": "c314268beed309709c7d6cfaa33ba9d252ef716aa781f7a0b9789bf3c8c00858"
+      },
+      {
+        "context": ".vds-lit-menu button:hover",
+        "digest": "335b8006414f8cb155a2243fe74893f4a8595cae9edd3a4c670b820bfeec0a52"
+      },
+      {
+        "context": ".vds-lit-menu button.is-danger",
+        "digest": "36febea4b8ee78508d736a084c13cfe0874004a330a222b31ec1a35c37ab96fa"
+      },
+      {
+        "context": ".vds-lit-menu-sep",
+        "digest": "c0e30b49ef91e5ad9e2af189cab94b807966b4e678be8cec001ef1515d4dcb11"
+      },
+      {
+        "context": ".vds-lit-cell.is-title",
+        "digest": "b2eeaed4b9e7d2b5d8248e7b1553495799e65e3bc7ece3712adeb7182db2b4cb"
+      },
+      {
+        "context": ".vds-lit-title-text",
+        "digest": "7c3ed0d3d0c30f1b531e16f2e59e68d38c2a3622c2aca19a312487f9fb96c84f"
+      },
+      {
+        "context": ".vds-lit-detail-tabs",
+        "digest": "20db6b8e9d68b6ba8026973952d6094beafe95c0826a8fd397840a31aff126d2"
+      },
+      {
+        "context": ".vds-lit-detail-tabs button",
+        "digest": "144acf392f652304f5952e3e00ad027a1097e871b6c109455df95794230a23ed"
+      },
+      {
+        "context": ".vds-lit-detail-tabs button.is-active",
+        "digest": "64de056de8ed1464b4f6fd6227f7581974bcc65e927e0ef2404a428a8db9589a"
+      },
+      {
+        "context": ".vds-lit-detail-notes,\n.vds-lit-detail-marks",
+        "digest": "08426c9a413649c1e2cfcd96caa1d3c5b920afec7b60bd7d2be04b9619803538"
+      },
+      {
+        "context": ".vds-lit-note-new textarea",
+        "digest": "df603db0ef41c2cca81ef96b155cffcc53cd74833ebadaef31cbb4024169446a"
+      },
+      {
+        "context": ".vds-lit-note-new textarea:focus",
+        "digest": "f9b975909662603d9a4529e87e37040260e51c4285c1da95ec97d5e5c9ab26ec"
+      },
+      {
+        "context": ".vds-lit-note-new .vds-btn",
+        "digest": "aa7a7f85d6cf238773799ee851837c77ef5d8e1020e720a29b1f518df837e8f9"
+      },
+      {
+        "context": ".vds-lit-note",
+        "digest": "4eee0e46a0d39e4d3c59cd149b4019e495939c234ffa64ca82a38d4a2baa1b28"
+      },
+      {
+        "context": ".vds-lit-note p",
+        "digest": "d8fece3bcf4f76085457612f49f2caddf632fbe37020fe420af3b219dae9ade9"
+      },
+      {
+        "context": ".vds-lit-note button",
+        "digest": "edd9de3534cf244f245e7ff1bcd981017ab6ca0437adad41837952b22bdedc8a"
+      },
+      {
+        "context": ".vds-lit-note button:hover",
+        "digest": "1d244ccbe089719ae1ca1fa9c84cbbe64cfa7c48c7eef775a32a7a2b68d17c09"
+      },
+      {
+        "context": ".vds-lit-mark",
+        "digest": "119796c738a53f95d6e91d543ea853f4739ddddd539e19423c39bf220c267657"
+      },
+      {
+        "context": ".vds-lit-mark p",
+        "digest": "a4ba180c83e26b3fc675a7c742996da06c5776db9e1ac76ec9d5b97345559fe9"
+      },
+      {
+        "context": ".vds-lit-mark span",
+        "digest": "a9bdbc5dab71358399904f1e5e376e4ed95ba0f29fd2c3f612b800181a1f6a0b"
+      },
+      {
+        "context": ".vds-office-document",
+        "digest": "6913953b17b2c79cbe659a8b55e0d1a5a742eca04377d937f1467e5b2ce3905f"
+      },
+      {
+        "context": ".vds-office-search",
+        "digest": "2884a3f58becf160edace92321bc6881a10e8a5747e910f6215ee3afe01fa8e5"
+      },
+      {
+        "context": ".vds-office-anchor",
+        "digest": "88e94d237b8903043cd192ce22069faa7b2fdb4b92f6de41dbf1e7ff214996da"
+      },
+      {
+        "context": ".vds-office-runtime-layer",
+        "digest": "576a7748aa5a1c3a7c517cd60b5534743edc99253b85ec2b055b586579a7eb18"
+      },
+      {
+        "context": ".vds-office-runtime-frame",
+        "digest": "8127bb95212196fbac76f9e1d0d58d8fe7b4ae7febf04f886e178f609e4155c9"
+      },
+      {
+        "context": ".project-create,\n.project-rename",
+        "digest": "df61b2449561ee040b7d39ab003acc31e9c8de31f5f2d759932c4cb77a04819b"
+      },
+      {
+        "context": ".project-list",
+        "digest": "59bf72f931252a7edbd3627682cbbbc9f3d49672f88beb231409027c12ddfd49"
+      },
+      {
+        "context": ".project-item-name",
+        "digest": "cce17c3577eb27fb7ba1bb853d62d7066b9d9d451a6fcde692c3285fd079800c"
+      },
+      {
+        "context": ".project-item-name:hover",
+        "digest": "6e9de00603957de1e521748570fbcd7aed26795ef867798869f0419e456d9d37"
+      },
+      {
+        "context": ".project-item.is-current .project-item-name",
+        "digest": "1e5d9b289a537cfd8f2bf94e3e42ba7e5d90a5b92401ecc4cbff6ef4f202b891"
+      },
+      {
+        "context": ".project-item-label",
+        "digest": "9db6dad672e1c72e839dbf2b451d2b46df1065f88d5834a7c6252a3427e1c782"
+      },
+      {
+        "context": ".project-item-badge",
+        "digest": "b632f66782f860b89df10eb6befb96b845f66f0e8dca8f47525d8de74dececad"
+      },
+      {
+        "context": ".project-item-badge.is-warning",
+        "digest": "769681bbecfa7185a2d98e19f7a2ced40aad36580990653326838e8702829c29"
+      },
+      {
+        "context": ".project-root",
+        "digest": "d3c3b6b6e025e7fcb3f46acab54048c71dffdbe55787db7e0248c0805c18ec8c"
+      },
+      {
+        "context": ".project-root-label,\n.project-root-hint,\n.project-notice",
+        "digest": "c062d2060781890e4902ffc4096aea044b0610341d70832ee9911a729576a1e4"
+      },
+      {
+        "context": ".project-links",
+        "digest": "4c71b3b8d61f46a2731e0820e06a0c34dd6eb20fc649a408ca9061d9b51551de"
+      },
+      {
+        "context": ".project-links-head",
+        "digest": "52ee522a35aa467845eb668147412429a3c9bc977ddd08ce55b136f45fa8185e"
+      },
+      {
+        "context": ".project-links .project-item",
+        "digest": "dffc7d8975b0f5b4b816dedf170d7f772cc74aad7e07cd85b0be001e2dc8a27f"
+      },
+      {
+        "context": ".project-link-revoke",
+        "digest": "27fe8c7bcb6ec2fabb4b0eda047ed86dcc6e7214aefac09a06648edba743d809"
+      },
+      {
+        "context": ".project-link-revoke:hover",
+        "digest": "7b3d6ba527aa417ea40159739c14ba7d87abf360e0188a69484f79307eae302f"
+      },
+      {
+        "context": ".project-migration",
+        "digest": "8b27a80de0205fb56225a78d6d6e4ce0a63ad97aaa1ea9744c9dd2324ba7d100"
+      },
+      {
+        "context": ".project-migration .project-item-label",
+        "digest": "1bb753c1e7083ec2b649adfe5f7c1e0a9fe94f012ccb95e5cadbca1b673d05bc"
+      },
+      {
+        "context": ".vds-home-shell",
+        "digest": "cae65aa902bc41c1038fd36423f506b34787ff7275430ff61bcab697855178bc"
+      },
+      {
+        "context": ".vds-home-header",
+        "digest": "3be4fc593dcdbdc352f69fae575df12218fa650f9b80c6d01dc25290ae7c6ca7"
+      },
+      {
+        "context": ".vds-home-header-drag",
+        "digest": "d4261038b8f38fd8e0b85b85ca94ab4fde8759f5751c781cc154d60b6798bd01"
+      },
+      {
+        "context": ".vds-home-project-trigger",
+        "digest": "04fe994b85e2a7f372ede7ca9c87e1767bfda03d86ed17b2ec4554851e32b4bf"
+      },
+      {
+        "context": ".vds-home-project-trigger:hover",
+        "digest": "40ad445f69a08b2468e77a55ced4768d608c6fee1a64abda4e65bbe59dd5490c"
+      },
+      {
+        "context": ".vds-home-body",
+        "digest": "a0ba4207a1172b71f4dfc9300f58ad9d3880ffe7f74a686c0cbc105725e94f63"
+      },
+      {
+        "context": ".vds-home-body > .vds-activity-rail",
+        "digest": "8e37f64e38d6979daedcabaaedeed5a8814700af96946d00ae40bd642fd2266e"
+      },
+      {
+        "context": ".vds-home-body > .vds-activity-rail::after",
+        "digest": "7ea20b5d2a30bef34cace8110334b8647f9388590f74f547200a41d78214560b"
+      },
+      {
+        "context": ".vds-home-main",
+        "digest": "39000a93cda13d050a8a3b95c478723306fb1f55d3f89f159ce216a48027beff"
+      },
+      {
+        "context": ".vds-home-in",
+        "digest": "96d7e43fa4e301e4903f66fa10a76ff6edcb1f58f61961ee0e6ef3ed22b3cf88"
+      },
+      {
+        "context": ".vds-home-welcome",
+        "digest": "ca286347c2478b080e06252e123f62d3d9efef3b7531ed7219fee9e280223899"
+      },
+      {
+        "context": ".vds-home-welcome img",
+        "digest": "6ce5a7817185f0d5310fe31e3119735293403054a82b0d70716672271045b0c6"
+      },
+      {
+        "context": ".vds-home-title",
+        "digest": "3de5dd7978da9b64ea032bbb9af6ce4093b56508fd2a2c4597d8ab65ec9035d0"
+      },
+      {
+        "context": ".vds-home-sec",
+        "digest": "4fd7364e93c6f93136396a2ad73fe237ba1d9d3cbdc02186e3bb4555a0eed798"
+      },
+      {
+        "context": ".vds-home-literature",
+        "digest": "7f7e9183eb386c4d2c2d0f15e54433562e290e1362e7db8f6b1d813d72dac1b3"
+      },
+      {
+        "context": ".vds-home-literature-head",
+        "digest": "c1e24dafc96da3009ff8ee829f4f8ada934925a464a37b999238cb23944a6e4c"
+      },
+      {
+        "context": ".vds-home-literature-head .vds-home-sec",
+        "digest": "ee16d3cf5ca258659d3b3a12f8611d5c04236aabe4ac7b398659acfd6f67a7b1"
+      },
+      {
+        "context": ".vds-home-literature-empty-banner",
+        "digest": "87390fa3b7abbb07c35f36fae6676c0e4bd64fc9820d529d11548c7977232635"
+      },
+      {
+        "context": ".vds-home-literature-empty-message",
+        "digest": "322cd46cf60e8cd09d6433f264f1d5f2068d6fd1462d2dc165dc295a6d5970c9"
+      },
+      {
+        "context": ".vds-home-literature-empty-message svg",
+        "digest": "de207e57b0238a236f15569b670f5b74ca6d0728cc84a554ec466e2b5d665b37"
+      },
+      {
+        "context": ".vds-home-literature-empty-message span",
+        "digest": "7d61de7c65a0b046c1fb6d9a0c1af911a97c393e7de8b1b8bd1d5c0a24a9727b"
+      },
+      {
+        "context": ".vds-home-literature-import-trigger",
+        "digest": "1093fdd227eda31578e3d5837e33bd0ccaebefc04a2de37d8fac2c940c791575"
+      },
+      {
+        "context": ".vds-home-literature-import-menu",
+        "digest": "127df92722058619e9c6ec6c1ee354d2a2bad7fb79c30415222bd358ab0f2ce7"
+      },
+      {
+        "context": ".vds-home-stats",
+        "digest": "0918fdc027cb5c9b77037825ff0882e4dfb912de2569c34fbfb1cd800a653d42"
+      },
+      {
+        "context": ".vds-home-stats::before",
+        "digest": "c52df18f74b0a9ba1aec2176165fbefe6cd8962a7f347ff86087ecb77df9f7a2"
+      },
+      {
+        "context": ".vds-home-stats > div",
+        "digest": "6e16feaaba0e89f7c656841513f9d2b0119824e86b67245cae710c9d2cbc39c7"
+      },
+      {
+        "context": ".vds-home-stats > div:nth-child(1)",
+        "digest": "c0b9d64aa7d11ad6e9c136f5ca30e804e1b667ad60f6be99a103c5565e8e6b20"
+      },
+      {
+        "context": ".vds-home-stats > div:nth-child(2)",
+        "digest": "708e93382ed9e4769e916de86cd09a9e7a127e97bd756a559b8378fe95159bb7"
+      },
+      {
+        "context": ".vds-home-stats span",
+        "digest": "d179dedb9b14a2df0214368b4706a4ce5ddbfe7fb9f7d5ffc85a361b760a7d4d"
+      },
+      {
+        "context": ".vds-home-stats strong",
+        "digest": "8d53e3a567f96bc1746b8c1350dfc10b4770179b0353b5d43026861af7f045f8"
+      },
+      {
+        "context": ".vds-home-divider",
+        "digest": "328a8bb133c47693368b86db00821485272c6e2e3dda4e206bf60ee9644b15c7"
+      },
+      {
+        "context": ".vds-home-project-head",
+        "digest": "e8a4c95cb70676600d357fb70a900a2ede98a70835c0c6d6d23e04b045903a68"
+      },
+      {
+        "context": ".vds-home-project-head .vds-home-sec",
+        "digest": "f068fff1ef8e60ac285591154ce6e4aaa2f72a475a9ae85b6c0ad33201b67a28"
+      },
+      {
+        "context": ".vds-home-grid",
+        "digest": "27f828df2483184f7c2f989730fdeebb95c0a2dd8d577770a51078408c8bc416"
+      },
+      {
+        "context": ".vds-home-card",
+        "digest": "94e2b4248e984123e57c6e289ebe5e7d3cb122c17f4fc85c613beeea85c1a3f2"
+      },
+      {
+        "context": ".vds-home-card:hover",
+        "digest": "15b80d3c87aab432d860e370d767366335ffb1c0a23ff49df4409567b037f68a"
+      },
+      {
+        "context": ".vds-home-card-head",
+        "digest": "ccbf834a5a103bf3f575937ed4102a7428707ee7235786fb4fd6982252ad7840"
+      },
+      {
+        "context": ".vds-home-card-icon",
+        "digest": "130d68cfb571e07153d66052455dcdcc8968409149917b53417dadfa9f2d68c8"
+      },
+      {
+        "context": ".vds-home-card-icon .iconfont",
+        "digest": "611408c08f7feb0d404c016122624f6340077968a8df5809798ae4e32519e1af"
+      },
+      {
+        "context": ".vds-home-card-title-group",
+        "digest": "a07301aaa55299b0f7eef75ade272768093a2c214b24bc706c209ee385ec048b"
+      },
+      {
+        "context": ".vds-home-card-t",
+        "digest": "0981430e66f46cb0877c2703602cd03bce2f6d6f8bb2ee3f9d66919e3dec7e7d"
+      },
+      {
+        "context": ".vds-home-card-m",
+        "digest": "6e943a592737357afb630b8cc3c7a50cad0780cafc6dd610f2b84be208f3f0ab"
+      },
+      {
+        "context": ".vds-home-card-m span:first-child",
+        "digest": "e613377c66a0bc164a100c6d2fff91abd2d78ed500c114ca529390e4a5bb2f2a"
+      },
+      {
+        "context": ".vds-home-card-m span:last-child",
+        "digest": "4d68e1429a098718ba6073b602c96482ac254ab1012945e19b8414d47dc77a60"
+      },
+      {
+        "context": ".vds-home-card-desc",
+        "digest": "0e7fdcd6db424ee19ec9c790fa8a0a9964310f6d616d5389debabebc92d4dafd"
+      },
+      {
+        "context": ".vds-home-card-counts",
+        "digest": "8839bcd35a59e50a657fd48baed92ff022e895295e7edd14e98696eec3c60891"
+      },
+      {
+        "context": ".vds-home-card-count",
+        "digest": "efb8a3df0c3320db463dede0a992e8cbdd97fc25138492e8e6b450cb1802f8cc"
+      },
+      {
+        "context": ".vds-home-empty",
+        "digest": "f21727d3ef0296cf9b90cefa332c2ab5f9da0e0472ed4112be33fbb89f46b43b"
+      },
+      {
+        "context": ".vds-home-empty-illustration",
+        "digest": "39ef6b3be453123031114748a773844b8d6cada7465634730a3da3a3634d0bde"
+      },
+      {
+        "context": ".vds-rail-div",
+        "digest": "98c82426c7710eddccd0170b01a67996ae21000f8c66b916da983df3ad00c8cb"
+      }
+    ],
+    "src/renderer/src/styles.css": [
+      {
+        "context": "@import './design/index.css'",
+        "digest": "539ff498e8a46c527306992c77d79527c28bd598e672e3461244b090c1025e40"
+      },
+      {
+        "context": "@import 'tailwindcss'",
+        "digest": "8cfef2262c9ef45528bcf4530a81e0518cfa4cb405a70abb4c1deff26d32e204"
+      },
+      {
+        "context": ":root",
+        "digest": "1d3f5423f0cc91d5f9a8a1a28a7e349e7c2c19d044b9d723169f3270a659fbff"
+      },
+      {
+        "context": ":root[data-theme='dark']",
+        "digest": "9286f0202cae1bf0d95d7a83056ee8695b2ee79acd604a6e074081ce5a997518"
+      },
+      {
+        "context": ":root[data-theme='light']",
+        "digest": "09f9eac9cc1e346a4ce59a88c68b5fdf38d8fbc496bdf34a958a1c7a18bb191f"
+      },
+      {
+        "context": "*",
+        "digest": "a87971011d87c2667da8ecf2977abafeae569c841c395115ff2bec820b556c50"
+      },
+      {
+        "context": "html,\nbody,\n#root",
+        "digest": "bd83c22e35cb1222302a8a8b9133cb65d494f4442d49ae5be10d605a017caebb"
+      },
+      {
+        "context": "html",
+        "digest": "917e66375ba2602cd2eef5c5728a34c6af87669511c5b3e57097f3589f2e4192"
+      },
+      {
+        "context": "body",
+        "digest": "a10f8043b95811022a5c0489f445699ae1fa4c8c74dcddac7e3e949e5ab33e5c"
+      },
+      {
+        "context": ".drag",
+        "digest": "1aaae0e7b2a0d7356051d84a8af05ddafacc94310ea9b93e54fffa50b89b56f5"
+      },
+      {
+        "context": ".no-drag",
+        "digest": "d1260b3559d31e5bac5424aea3ed17f296f98c39067a5b92af2a812d398d2c6b"
+      },
+      {
+        "context": "::-webkit-scrollbar",
+        "digest": "fbe9a51d8b101bd7f227144ae015b3f7cffea39e64b81e285d150d503d5be844"
+      },
+      {
+        "context": "::-webkit-scrollbar-thumb",
+        "digest": "3cd2988030c6d4ce576b5290d02af6c7eac18e1a0abe4ee7fe45c82a27c28194"
+      },
+      {
+        "context": "::-webkit-scrollbar-track",
+        "digest": "80e7f467e4fab41d72fd02598c77a3bf5f6725122711df494a2607456c9c2c43"
+      },
+      {
+        "context": "button",
+        "digest": "0ddefc335adfd160124746fd178ed7820a333d5bfb66b4d3e9581afd1610061d"
+      },
+      {
+        "context": "button:disabled",
+        "digest": "98503b82bff0c376002ed49e4e8d5d913c5c3add69ad6b8fc963e0af3b4ce7c9"
+      },
+      {
+        "context": ".vds-outlined-control",
+        "digest": "ad2bac848c47cd1addc0da54608dc47036efeb7e73925b59ed8bbeacfa0e6de1"
+      },
+      {
+        "context": ".vds-outlined-control:hover",
+        "digest": "ab65dabac6b28737e0b86e2b75242e3746f57ff0af21cc75ff9de168daa9bb22"
+      },
+      {
+        "context": "input,\ntextarea",
+        "digest": "4c3491f0c9d368e95fccc1bf143fc7be16694810ef7a4e6e1561d4f41e1326e2"
+      },
+      {
+        "context": "a,\na:visited,\na:hover,\na:active",
+        "digest": "6c9de1addc8abf2a9b9c3efe4c3d6a388592465db64b1164a8f7a4e6b0e17d44"
+      },
+      {
+        "context": "h1,\nh2,\nh3,\nh4,\nh5,\nh6,\n[role='heading']",
+        "digest": "1e53564a7c7b31ffe11af038d58ecbcc2492c32bbcc432730293a0eb36df89b0"
+      },
+      {
+        "context": ".vds-mode-control:focus",
+        "digest": "70411a1e1995f97954b3332ac49ba47d6923a75c9d8f526f0933aa7785c1ccf9"
+      },
+      {
+        "context": ".vds-mode-control:focus-visible",
+        "digest": "42ff5e2a0fb0162559cec5ee4f7205f1adb79bf8885b9c8906b43bc924ac5395"
+      },
+      {
+        "context": ".pop",
+        "digest": "30483132ed71c5feb628296fbccda69f013e837db060611bb088f8d97716dc2b"
+      },
+      {
+        "context": ".hov",
+        "digest": "c2390e780c74ada0462e8e29a334747ae0e2d9e787e664225e3c21539ceec901"
+      },
+      {
+        "context": ".hov:hover",
+        "digest": "1e2e4572f123d242eba3af197ea28e735b67ef10603799907b93912f70320324"
+      },
+      {
+        "context": "@keyframes update-activity-spin → to",
+        "digest": "1a35b3bea9b0aeabe811f41584738c95b227b557f61a8ceaf02b0fa4699d17a1"
+      },
+      {
+        "context": "@keyframes update-activity-pulse → 50%",
+        "digest": "fe6c9c0b000c5177e5ce9f77a505d8d207a87b049ada6d7c3800b0736afb8c11"
+      },
+      {
+        "context": ".answer-annotation-root",
+        "digest": "d0049fda43aef7ba1c862a38f2c8a8d64e2810862f221410a1f350d765005aab"
+      },
+      {
+        "context": ".answer-selection-anchor",
+        "digest": "ff6183cb939d34b194eee021b0da05d0de8517b0bee34bc0ea445886ed4b81f3"
+      },
+      {
+        "context": ".answer-selection-popover",
+        "digest": "9f624bd9367af68479c6205b6004b71a6d1d2e2d24e43c4920b716978305bba3"
+      },
+      {
+        "context": ".answer-selection-popover > .vds-button",
+        "digest": "b9898bdb174621c8abc00eaa19d0db6df308cd322369664526faabb650c38fc4"
+      },
+      {
+        "context": ".answer-selection-preview",
+        "digest": "f71742cb2801866943580224d228e10e11edd8f9ca8b0ea1ccb5c9f09db2b750"
+      },
+      {
+        "context": ".answer-selection-actions",
+        "digest": "f49e1ceb71de25ce6f0fc71e7e3e581c332ddc6f4714742821152b7de93b4bfd"
+      },
+      {
+        "context": ".answer-selection-notice",
+        "digest": "c4894423194a8d298482f39b5d80539c5cb5c832aa0a8c3ff3d7157e049609df"
+      },
+      {
+        "context": ".answer-annotation-marker.vds-button",
+        "digest": "9670a59b98421481b155ea6a8a531d057a9e763206e599f10b3191604935d879"
+      },
+      {
+        "context": ".message-rewind-button",
+        "digest": "1930a690f1f55e90e5102ed046e79f32c149dec490e4bafb3b1d5ca7d25c2add"
+      },
+      {
+        "context": "@keyframes tool-run-enter → from",
+        "digest": "02abf7528221a775912bbbca3dce686b9c0affa89d526d9e27eecf7879ce8065"
+      },
+      {
+        "context": "@keyframes tool-run-enter → to",
+        "digest": "0134b963332fd12b919c163cafe63549d79003662db31b9c4a86c4a04e58f734"
+      },
+      {
+        "context": "@keyframes tool-run-pulse → 0%,\n  100%",
+        "digest": "9885401cc412c2574cb753f3c3a0056cd95026d271a1e37b6799edcda096130d"
+      },
+      {
+        "context": "@keyframes tool-run-pulse → 50%",
+        "digest": "f2f17f6027a93b4668a230edfe0ead7225e9ab395e8fa1afd135ef58a4db32ff"
+      },
+      {
+        "context": ".turn-artifacts",
+        "digest": "b4855640f8d76f56ce72ce1b1e6689e70793cca8edf48a2c521d78a93e875c6f"
+      },
+      {
+        "context": ".turn-artifacts-label",
+        "digest": "998873eda55d5a2a80a839100ffb881b6c286a63dd924c2ff8222a468746d91c"
+      },
+      {
+        "context": ".turn-artifacts-grid",
+        "digest": "210605acf554eed31c7391c701ffd64d0c97e66a058b925e29355799eb34b012"
+      },
+      {
+        "context": ".turn-artifact-card",
+        "digest": "cf12793db67768b894f966d1110181df96565a6cb47da931ef0cb48142f66041"
+      },
+      {
+        "context": ".turn-artifact-card:hover",
+        "digest": "abdfe7e041ef58b22a8a569dccf8c2d009e2fbddaa4cdde0901ec24b65ace487"
+      },
+      {
+        "context": ".turn-artifact-card:focus-visible",
+        "digest": "cf5ccba545405d555cc042d6e60aafc4cb68a433001da1c3acb2ae34f9b08cb5"
+      },
+      {
+        "context": ".turn-artifact-icon",
+        "digest": "c57301559e767736600b28a2093ed43e1b8097279f8ed8bc037b009e5fddb938"
+      },
+      {
+        "context": ".turn-artifact-copy",
+        "digest": "366a99b7d979930fce901e754948ec674f230434de4fd82a4fd2d6804969e693"
+      },
+      {
+        "context": ".turn-artifact-name,\n.turn-artifact-meta",
+        "digest": "97e859e4b989ba1734d730bbc6d97e00a5b3eba85540e388113d78ed19c6b788"
+      },
+      {
+        "context": ".turn-artifact-name",
+        "digest": "ca135784920e0c5484de7ce9ece6c8fbdaae8fb302853d8e8ceab6076968b6c7"
+      },
+      {
+        "context": ".turn-artifact-meta",
+        "digest": "3b141ab9651594d05ea335508fc56500b4874362a8e1be9ff43c9c466ba5595d"
+      },
+      {
+        "context": ".turn-artifact-open",
+        "digest": "56b7bd76fbc099d934eb9bbb48ed84b393445244cb91eca9608d35adb615fda2"
+      },
+      {
+        "context": "@container conversation-stream (max-width: 44rem) → .turn-artifacts",
+        "digest": "009aa840858a890bfa373235b6e70305d9b3695b1f05c46a0567d33bc48bf82d"
+      },
+      {
+        "context": "@container conversation-stream (max-width: 44rem) → .turn-artifacts-grid",
+        "digest": "78ed1e47d7a049f0a7c7f527525330c765f4509ae9bda40000b13fec8a16117d"
+      },
+      {
+        "context": ".conversation-stream",
+        "digest": "7b666d71ffda9dd1496ffac435a82fa0476183265a38c954befbb34dc493b67b"
+      },
+      {
+        "context": ".sidebar-sessions",
+        "digest": "7e60f1f8897f20f98115f2220ad14835a5ebba69d176d82dbc94f2ad1b95ea3c"
+      },
+      {
+        "context": ".sidebar-session-list",
+        "digest": "cffff35dccb3e8381317cf90923d9ce19355175beb34b0f2e14012b53e9255a1"
+      },
+      {
+        "context": ".sidebar-nav-section",
+        "digest": "660052a1f7c4aeae3bdbaa33739ae2ed5e682ec0867a05481cbcdc9bf6be7830"
+      },
+      {
+        "context": ".sidebar-product-nav",
+        "digest": "ea1f32c70f4f6d8285500bb22cb2c34c11409bbbf3bfdfcf67fa990664aaead2"
+      },
+      {
+        "context": ".sidebar-product-nav .sidebar-nav-section + .sidebar-nav-section",
+        "digest": "aa14d34b14bb906615d89442f3c69b9c0edc4955ef2f891044de165387c1352d"
+      },
+      {
+        "context": ".sidebar-section-toggle",
+        "digest": "3112e79461e18e273620f1e104b06be496e72ebaed9e6379f91e8889afd75da5"
+      },
+      {
+        "context": ".sidebar-section-toggle:hover",
+        "digest": "c782a0a9cd6109dc462258adaa634758838309e528f8f65ba8576b27e328e966"
+      },
+      {
+        "context": ".sidebar-section-toggle:active",
+        "digest": "fda2ad8276f5ddfc87cb09fc05937d1255e69a77e0d130198d9b9b8235715e29"
+      },
+      {
+        "context": ".sidebar-section-toggle:focus-visible",
+        "digest": "b02171f50d3ec47f30b46c6e3ddecc98cf7d159279e5c48574351d6ab2f68688"
+      },
+      {
+        "context": ".sidebar-section-label",
+        "digest": "7661f40fbe355041d1f283706375cf83c17f4c3cdbf6821c90676b016c41a151"
+      },
+      {
+        "context": ".sidebar-section-toggle:hover .sidebar-section-label",
+        "digest": "f485e21f0abd6fd31680b6d4be4260247c793dcc6ac3d4a845b2511658b40ea3"
+      },
+      {
+        "context": ".sidebar-refresh-action",
+        "digest": "2ef4fdc9d2c271d24ddf2c1b8e9ad47f1b50d2f0348c6e403951ba72efe6bd09"
+      },
+      {
+        "context": ".sidebar-refresh-action:hover,\n.sidebar-refresh-action:focus-visible,\n.sidebar-refresh-action[aria-busy='true']",
+        "digest": "ff5075d9d7ef4d1b2963c4d1066d4945016c173592d6ff3fffc459c90f3bdb0f"
+      },
+      {
+        "context": ".sidebar-refresh-action:hover",
+        "digest": "1cd2545754b990b80107fdd9e76f64fe6ab6c5efc0329e887fb4735666618b54"
+      },
+      {
+        "context": ".sidebar-refresh-action:active",
+        "digest": "b7ee7c57945381ac448b2bb0a99ec60d9df888066340915bde9cc7852ae903fe"
+      },
+      {
+        "context": ".sidebar-refresh-action:focus-visible",
+        "digest": "b6c30d16721adff0317c3e510660df0ce9de6c608a45987f50163286453512ea"
+      },
+      {
+        "context": ".sidebar-refresh-action:disabled",
+        "digest": "29b58a996e1c8423783b404ce1123faa53341ebca1fb8c53885a6290f56fe4f0"
+      },
+      {
+        "context": ".sidebar-refresh-icon",
+        "digest": "c17ee77dc3300424de82c25594b2f01593e76b9ff60594893b546027f1c2a37c"
+      },
+      {
+        "context": ".sidebar-refresh-icon.is-refreshing",
+        "digest": "224082b57d75b710d15e5779be531b8ac8de60214b3fe319421f45612e3a20a4"
+      },
+      {
+        "context": "@keyframes sidebar-refresh-spin → to",
+        "digest": "b5a449215bcf9009f519e7a5799a44bfe3bcec0b2e239b5aabeb7c82fba33470"
+      },
+      {
+        "context": ".reveal .acts",
+        "digest": "c6fc87c42d7540f2e35ccea342e81d0dc01fe40c8ba8f6d8964fb73c93fc9164"
+      },
+      {
+        "context": ".reveal:hover .acts",
+        "digest": "da077f203ab9ad2993406e6e41cad323bdef1a17a87b8eb50fdde67c371842d7"
+      },
+      {
+        "context": ".chip",
+        "digest": "ea2a7450da39c9f7d9a463ced8571bf43c1cab09ad505a9bf8504e41be0593de"
+      },
+      {
+        "context": ".chip:hover",
+        "digest": "81ee4e1feaa3f46e6cfa88e2d70f14d6d22a4e605c651a93a89f008af1276fdb"
+      },
+      {
+        "context": "@keyframes cardIn → from",
+        "digest": "590d0c9f055b4ebcf0804e40d5ea0dcdd0719fca5c2e83da1204ed9dfd11b76b"
+      },
+      {
+        "context": "@keyframes cardIn → to",
+        "digest": "f1b5173e29973632fc0e3d8c8afd336edd63225a84d0fb7bbdcf5d10aec36c32"
+      },
+      {
+        "context": "@keyframes softPulse → 0%,\n  100%",
+        "digest": "34d6aabaa0b18f9b86b0cd297628c604453ee28d57e22d7e9ffc71d4e2848605"
+      },
+      {
+        "context": "@keyframes softPulse → 50%",
+        "digest": "00678cc8ba2f0f8872498aa28dd5623adcbe7e3341f4daeb5b97e023eb603b6c"
+      },
+      {
+        "context": "@keyframes assistantThinkingText → 0%",
+        "digest": "14a468d06adcf5b07442810ca98e602cab193f0bce53e3d067ba96436d6a0635"
+      },
+      {
+        "context": "@keyframes assistantThinkingText → 45%",
+        "digest": "64335258185ce20b0ec7fdf0ee1cd1333fafb8fd88b09f2878a5015b4a64c54d"
+      },
+      {
+        "context": "@keyframes assistantThinkingText → 100%",
+        "digest": "9fff8eedbf6aec83851e38653704cb08699fa9b5b7710f18ef0dbd105e928a94"
+      },
+      {
+        "context": "@keyframes slideIn → from",
+        "digest": "7b1bce147a781eaa98b856865adec6d3f8ce3d1162d9158276e42f5e8739f8fd"
+      },
+      {
+        "context": "@keyframes slideIn → to",
+        "digest": "e3451d2c422a6aa5eedc85d55883adf147e8d5af31a0f9ec9ea14a73b0d0140d"
+      },
+      {
+        "context": "@keyframes overlayIn → from",
+        "digest": "1c1a243210eb5551e1c74162f54adf045594419327039a21a95fec2869f7aa22"
+      },
+      {
+        "context": "@keyframes overlayIn → to",
+        "digest": "68bd5037dc1fcf2639b27ff7ea38466fd1d14ac10da93aea744b211e0cafbf70"
+      },
+      {
+        "context": "@keyframes overlayFade → from",
+        "digest": "1f6156303030d5ea1a60afdbccda9020cf1527c0dfec64c8dcebaa6c1f88406f"
+      },
+      {
+        "context": "@keyframes overlayFade → to",
+        "digest": "e2d97f3b41469f8ad1d41272ec7c93a6ba557bc2eba4553dba3d0d6fb0dcd563"
+      },
+      {
+        "context": "@keyframes buttonBusy → 0%,\n  100%",
+        "digest": "0bc0239c33062c0c236bda938198e35562f39d767d89f75ae8cf342bf6632c5a"
+      },
+      {
+        "context": "@keyframes buttonBusy → 50%",
+        "digest": "a17a4b65108f11ffd5095ebd9e6685b5564a1de72776e33a03519e614e1c9232"
+      },
+      {
+        "context": "@keyframes workspacePreviewIn → from",
+        "digest": "900b739451153014a4d4cbb42784f61fa979eb122b28cb530a1d43a61d1f2fc7"
+      },
+      {
+        "context": "@keyframes workspacePreviewIn → to",
+        "digest": "f483851faab010c73c0b49e895214e904715dde1c055db37878f154f4db5127a"
+      },
+      {
+        "context": "@keyframes workspaceContentIn → from",
+        "digest": "8a336fa7a41680dfbaed0dfaec83c2977cd97dfadc9b1bd949f1449b6600cc7e"
+      },
+      {
+        "context": "@keyframes workspaceContentIn → to",
+        "digest": "327d543e54ed9512e5c4b320cbb2a2468279ad39652ad660b572dc3b07e0b89e"
+      },
+      {
+        "context": "@keyframes workspaceTreeIn → from",
+        "digest": "7a05998434a6fa560e7a2b88517cb6536ccb260620a473563732c8f4fbe139b4"
+      },
+      {
+        "context": "@keyframes workspaceTreeIn → to",
+        "digest": "b32fac35aea3273436e4cb404b890d3126b4c6fd2be7c51eb0dc0c2e3eb69006"
+      },
+      {
+        "context": "@keyframes petBusy → 0%",
+        "digest": "af7f975574df7c69a085907ab4a9339d694bc1a2e9a6df3e0e56281bfe220b6c"
+      },
+      {
+        "context": "@keyframes petBusy → 20%",
+        "digest": "5420c2054d9a7597794207646dc5dffdc39143a6e88862a7d14fdb387e3a9008"
+      },
+      {
+        "context": "@keyframes petBusy → 45%",
+        "digest": "b8498da6e1f4272c326778dca6702a978875a636390913ced2f1c154224bbf07"
+      },
+      {
+        "context": "@keyframes petBusy → 70%",
+        "digest": "be3704e76be17f62c6083ad8993d7988ea59ef7e9a2e314bffcba2b47d723621"
+      },
+      {
+        "context": "@keyframes petBusy → 100%",
+        "digest": "369a74fcfa790bfbc2d32b8e8b8a8946f4d17fda8aea854e60f46e32e867f88b"
+      },
+      {
+        "context": "@keyframes petGlow → 0%,\n  100%",
+        "digest": "130c989b5bd132eddb310fc8c27279b4c8bae540191dcd8f71548a34d8bbd6d6"
+      },
+      {
+        "context": "@keyframes petGlow → 50%",
+        "digest": "ce64b029be236f7cb709123f4fb948ffc5bfb5e702780cae8318949c3f03958b"
+      },
+      {
+        "context": "@keyframes petSpark → 0%",
+        "digest": "f427a2bf8ffa91c50ac672eb00dec0a8c08c666027e9707edb8629cdc62de1d2"
+      },
+      {
+        "context": "@keyframes petSpark → 40%",
+        "digest": "e9ee6af30c37b7f421c461bba3a8047ca4883bf61c4a7f7c3b5b99e10141b2e4"
+      },
+      {
+        "context": "@keyframes petSpark → 100%",
+        "digest": "c8f7cfca6ec34075318a3919613410d0df816f9f532fc10b31de18e5d24757a3"
+      },
+      {
+        "context": ".vds-app-shell",
+        "digest": "4221a2442df056a1ffd8b28adfe1022eef8612ef3c80698faaaa9db910c56e34"
+      },
+      {
+        "context": ".vds-app-shell::before",
+        "digest": "d57d25fdcb233810a503d7eb511b718574eee667f899a840366fba8f79773eab"
+      },
+      {
+        "context": ".vds-workspace-body",
+        "digest": "bcc94fad6b612959273ec396c335335719757c2309437d3e9f4bfabe26592d3b"
+      },
+      {
+        "context": ".vds-topbar",
+        "digest": "0b7ca039ccdf6d8a96ddcdfcd707d74dcfdfb80d87fae69cd55116b94461ce01"
+      },
+      {
+        "context": ".vds-sidebar",
+        "digest": "876ccd3eea8a596822138438956cf5e697d6be823424c9ce3d8bf8ce9e36e0a3"
+      },
+      {
+        "context": ".vds-sidebar::after",
+        "digest": "7da381f2dd8d6d8f6ecfe6acad582d330153c47176364c7f53fda772be9c1f31"
+      },
+      {
+        "context": ".vds-sidebar-inner",
+        "digest": "044c33c3b4a3f16b4a48a9f297a83bfd3a759c350fe55324a803a2d33e43c47c"
+      },
+      {
+        "context": ".vds-sidebar button,\n.vds-sidebar span,\n.vds-sidebar div",
+        "digest": "8b28f4e9d08540783b9c5707d6cab3ecdc022c74dff29ed91cda07bccb50d4c3"
+      },
+      {
+        "context": ".vds-sidebar button",
+        "digest": "8d5f99d13da07030586a3e4c58781f70d62ccde61cf8136c3f2cf12d71af27cc"
+      },
+      {
+        "context": ".vds-control",
+        "digest": "18e20d9ef1e1238b15042deb1e0a76e418c49d4feb29184a2e7ca16d0a774f08"
+      },
+      {
+        "context": ".vds-icon-btn",
+        "digest": "ec1a4420ab4f239320b31366e0ea016421d62d58948acb645790d416ae4b86ac"
+      },
+      {
+        "context": ".vds-panel",
+        "digest": "6772aaea253107b4b4557ca673dadcb9f37d9d7a4a1d99fa8c92ff8cd5a5d3c0"
+      },
+      {
+        "context": ".vds-main",
+        "digest": "c3a95a9900d954fef72255a1d4e28a7114e2dc897ccf5668c45d7d9e76398acd"
+      },
+      {
+        "context": ".conversation-content.is-material-focus",
+        "digest": "7f1390ee7fc8d437d24d21a1341ac4b63435f344d43a855bc966d9260fd4d667"
+      },
+      {
+        "context": ".conversation-header-actions",
+        "digest": "3b36cfed1fa6c2498407f619c4b44b869aba9bf2bcd97d5f2253aa15d457c755"
+      },
+      {
+        "context": ".conversation-header-badge",
+        "digest": "48680ad177e2a7ff7a5607821fc82909cb7f2ab222c58ebc11e22df7af067909"
+      },
+      {
+        "context": ":root",
+        "digest": "5d9fc2d2f79b8cc080a2c547e74e8da7bccd8e33c3cf083ee90370ae25e43f2c"
+      },
+      {
+        "context": ".sidebar-nav-divider",
+        "digest": "a637449b83695ce1199ef76b4259d767dbd81d294d101473bdbec986a31cb035"
+      },
+      {
+        "context": ".sidebar-project-current",
+        "digest": "1459d55eb1c7a61daf780e98bd1dcfdee6171186bc82223717ee716611dfcef0"
+      },
+      {
+        "context": ".sidebar-project-name",
+        "digest": "55f7a3dc12c3cbca8e0b32a132e9e0ce49975510b2d8fabf422bb20bbb55cf24"
+      },
+      {
+        "context": ".sidebar-project-menu",
+        "digest": "1d051a8052167ea240dac2970829ac8405a96bfa666263b9788a0105298695e1"
+      },
+      {
+        "context": ".sidebar-project-option",
+        "digest": "a4f26e0b63ef00f781485b3aa820624a70f885b8ff77319c2d62bf6f77de73b7"
+      },
+      {
+        "context": ".sidebar-project-option-name",
+        "digest": "722e37f1b83f7694df73b79eb78e187a464ca9b30c291706e48cd3e9374fc64e"
+      },
+      {
+        "context": ".sidebar-project-add",
+        "digest": "076f27b7b4bbb477f0855ce6de85c0aafb95e1d9bdcfc9997320238f7bd5150e"
+      },
+      {
+        "context": ".sidebar-footer-nav",
+        "digest": "fed09adb3be4f3e9889f9c9d514dceb4cc8424c6e57d2a0e535f88d5da5540e5"
+      },
+      {
+        "context": ".projects-page",
+        "digest": "ec4ab2cf32f71409128663b6f91cb66a3923eea7e8a0bfae093bafe25eaaabec"
+      },
+      {
+        "context": ".projects-header",
+        "digest": "34800ea788edfe9f9f9926c7da42a100eedfc6429704f9a130814806fa274a0c"
+      },
+      {
+        "context": ".projects-heading",
+        "digest": "68c24af3bdc409c7cca67fc6771192a89008405003b709d807a579775806318a"
+      },
+      {
+        "context": ".projects-heading h1",
+        "digest": "b7fae37c2ebda6e0700db9773f8bb641534a7ed811b1f3857a5875049a227ed3"
+      },
+      {
+        "context": ".projects-heading > span",
+        "digest": "77acc9066e05c5f70844227cd2df343f6f353e3ecd6713afa8efc48da29d7ca5"
+      },
+      {
+        "context": ".projects-scope",
+        "digest": "8123e26fa9ab16a884521ddb5925e6d2e167f3dec5eb8fc192a7cb4c729f128f"
+      },
+      {
+        "context": ".projects-search",
+        "digest": "8cf6f77e25d516d04fd3cfb242923e2db0b2a1827b3ed710960005388d93a1dc"
+      },
+      {
+        "context": ".projects-search input",
+        "digest": "8c5df213b5a07671733a8a383d90ac6c17a4cf2b5ec7c4a865246075e094a8bd"
+      },
+      {
+        "context": ".projects-search input::placeholder",
+        "digest": "cd2ff12c832e561410576fb957e813a399ed2094f6461c009bac50970f02d65e"
+      },
+      {
+        "context": ".projects-create",
+        "digest": "8944208e47e91a85036cc1d23c10257d6409e20301036b5b22bb0c41ccf41ea8"
+      },
+      {
+        "context": ".projects-create:hover",
+        "digest": "28c79a10cfc632c43896d403201a235866d5ca53be4652cc7093b031ef455788"
+      },
+      {
+        "context": ".projects-body",
+        "digest": "6109f37a734b9f1b3f216c7b264f02355d0abf7e1a576b6de6f11074c77b7a2e"
+      },
+      {
+        "context": ".project-card",
+        "digest": "3f7e61f01ba511740a7f2dba7287ee842a833ede413759c7f8a43c818de1e3a7"
+      },
+      {
+        "context": ".project-card:hover",
+        "digest": "6090a96ab066538b03899cff471a7ab054ffb98be277c34210b65c08f263663f"
+      },
+      {
+        "context": ".project-card-main",
+        "digest": "8abef1f4971f5001cf9ebff4b69f428ede9211b7bd4fe2550fb0c37fe1ac5bd7"
+      },
+      {
+        "context": ".project-card-head",
+        "digest": "d6138c19916dcab6790cb7022dd914f872e109abfffad4b85ff4d004dbe64547"
+      },
+      {
+        "context": ".project-card-head strong",
+        "digest": "7670d9a070a48f334ff6416b39476ab488fa1c745c6cbd9a0b24bed02c55aadf"
+      },
+      {
+        "context": ".project-card-icon",
+        "digest": "bc00985686f42bd8e5e053261f5c0321b27d03542234072a5b8f253c32ef595b"
+      },
+      {
+        "context": ".project-card-description",
+        "digest": "c670e918e89136f496bbc26120bed30c74eb6ba5a86db12c487509519241014c"
+      },
+      {
+        "context": ".project-card-path",
+        "digest": "97c3212f92a98f633dd79335032c82249560ef13ba9d4bb9517cdaaa994ef69f"
+      },
+      {
+        "context": ".project-card-footer",
+        "digest": "113977d041e7484d0cc104d0ec5e48c3e701944d28776ed5e314ed3228095ef6"
+      },
+      {
+        "context": ".project-card-edit",
+        "digest": "023b6c56d3bf31c573e3184a81601a5e1371f52f85fc071e2eed35c6329f3601"
+      },
+      {
+        "context": ".project-card-add",
+        "digest": "369c374fa0eb5a11b3bf62356b0d0486e1cc95fbb82a5e0f2f0f47dd1c67de22"
+      },
+      {
+        "context": ".project-card-add strong",
+        "digest": "74453cfa341a4c3ce5d46e29cafd0f9735a073cdb3a89b98c5cf847c78684460"
+      },
+      {
+        "context": ".project-card-add span",
+        "digest": "dd07094227c43fdf8e6f2e1faa117988f01ed6f377880b7fe1042489f529f3cd"
+      },
+      {
+        "context": ".projects-empty",
+        "digest": "d86ccd97777bb5cfb8664a3435309a41a6b7a7a98dc74190ea642d1c522c8bb3"
+      },
+      {
+        "context": "@media (max-width: 860px) → .projects-header",
+        "digest": "919376ef91f17281eb402aff7b5a67a0447e4fd82056c858eae9c214d07e8d49"
+      },
+      {
+        "context": "@media (max-width: 860px) → .projects-heading",
+        "digest": "dfcf46f5510187e492b6730c43f6c41b0484d741663fb25a3b187d0ce61d5f36"
+      },
+      {
+        "context": "@media (max-width: 860px) → .projects-search",
+        "digest": "7e5c5aacd263956ca0ae8556ba26a7f382b5729342cfde3b26a74597dde48e0b"
+      },
+      {
+        "context": "@media (max-width: 860px) → .projects-scope",
+        "digest": "3abf0773d2026547a9556664277434069e80f792664df27be8f09bb6d6867051"
+      },
+      {
+        "context": ".sidebar-project-more",
+        "digest": "1bd499e3b9b6a99aec26479d1055b89cfaec7b53e8c09e43c685f89803430cb1"
+      },
+      {
+        "context": ".file-preview",
+        "digest": "9031f13746f4d2211cef579c68687c0d9d55f70d154be1332b9f599fdfa3cb6a"
+      },
+      {
+        "context": ".file-preview-tabbar",
+        "digest": "c9a673d0d8df5ecd6b197baf3f2fcf6f2f9437c80cce084252b7d74f7008d579"
+      },
+      {
+        "context": ".file-preview-tab",
+        "digest": "b87f51ee65e4427fffa2855a4deb2fecfa913baac4264416149c2caa4f9048dd"
+      },
+      {
+        "context": ".file-preview-tab.is-active",
+        "digest": "f8e09e54a71b2a8eb18c76c2fa0d6d83bd7b6ae07e70ccd2deea523fd8adc1e8"
+      },
+      {
+        "context": ".file-preview-tab-main",
+        "digest": "40292e21615b21a7a3a3d119aec77c086f893b2a65f7b4909a506975dff11e8b"
+      },
+      {
+        "context": ".file-preview-tab-icon,\n.file-preview-header-icon",
+        "digest": "a83ca9070c0895b89a732ded93beb16ef045bae78a8bcbd2fc5daeb3fea0602c"
+      },
+      {
+        "context": ".file-preview-tab-name",
+        "digest": "e1fe6773ac5a33a438f28ff6372370e2a9bee4fb5774658879d5b9a6c00a32a7"
+      },
+      {
+        "context": ".file-preview-tab-close",
+        "digest": "b60e8341558cb1625373c4afcb1ae57e17ebe7f83ab75e98f59e2efcf9ffb40d"
+      },
+      {
+        "context": ".file-preview-tab-close:hover,\n.file-preview-tab-close:focus-visible",
+        "digest": "c018ca8b8be4fcb8e975fd23a9a0a7563686761346bee9d39a2ef377f347d974"
+      },
+      {
+        "context": ".file-preview-tabbar-spacer",
+        "digest": "64360953d4b41e5abe5a65d9ae0bf39137a859dc2b3bafebcae2a8192820d990"
+      },
+      {
+        "context": ".file-preview-tabbar-close",
+        "digest": "187e87a6dc8972ac1761216821b2fe9e229152201e9b60c6342ae2e41ef049e6"
+      },
+      {
+        "context": ".file-preview-header",
+        "digest": "c0d4c0a5521386dc15a0c84612a143bf70132dd993cf19e45391f7f1774b9017"
+      },
+      {
+        "context": ".file-preview-header-copy",
+        "digest": "b79b48a7c9b07a13f313be7f545f2ed0c899d5bea6af1a1c7abe1f7b875ac820"
+      },
+      {
+        "context": ".file-preview-title",
+        "digest": "1c34eb323b4e05be55ec6d2865cfa359ddf3e0991b17001dbd92702a8b33e8ce"
+      },
+      {
+        "context": ".file-preview-meta",
+        "digest": "f358ad18e4f29d7898299efbbff0a20cd2aaa46a9dec326c846474259dd278e3"
+      },
+      {
+        "context": ".file-preview-icon-button",
+        "digest": "7f7c82bcaa37da223db9ba31260446a0e37318dc1225b955eeda107544752750"
+      },
+      {
+        "context": ".file-preview-body",
+        "digest": "c7602dfed8a5dfe04c09375a6b39d5f69546392f5e603d7464550b1157023c85"
+      },
+      {
+        "context": ".file-preview.is-split",
+        "digest": "b4b41168a2505745c93a781cc9b63bf592c76f5363c57b60d43fddbaf033cb11"
+      },
+      {
+        "context": ".file-preview.is-overlay",
+        "digest": "ba35404bd6461dca37426599153d8d0487921f842fbd16521d3f0ab00cf45c5f"
+      },
+      {
+        "context": ".file-preview.is-fullscreen",
+        "digest": "117ce986c0c9ee338a3392e2c74a9c307060eb50e9cb54eab4b6cfe07857af6e"
+      },
+      {
+        "context": "@keyframes statusSpin → to",
+        "digest": "21d15115452b81d335b9f5c807f94ad1863a6919f8d630416f2d2ea3abdaa3e2"
+      },
+      {
+        "context": "@keyframes progress-surface-in → from",
+        "digest": "2b69cb7384d8b45ca668da286f0e0d9b16a29fa66da22da4fdd0b6e67146021c"
+      },
+      {
+        "context": "@keyframes progress-surface-in → to",
+        "digest": "d650eb8d61e554c2b41aa0bfaa023d040a933b7b4c30064cc3bdb895b09f53bd"
+      },
+      {
+        "context": "@keyframes progress-card-in → from",
+        "digest": "5238abbac06d92d025a0058e373334e1ee95aca0ac1749008f6deaab07d53ce9"
+      },
+      {
+        "context": "@keyframes progress-card-in → to",
+        "digest": "500a9a739da4b21c461b11cd2fd850514d10918b8b29da13ed1efdf913c706a2"
+      },
+      {
+        "context": "@keyframes progress-workspace-in → from",
+        "digest": "3880324052359fcec18a85b8c60d4a62badb38b38aeeb32e9a1eee82c48990a1"
+      },
+      {
+        "context": "@keyframes progress-workspace-in → to",
+        "digest": "c35d7b35b42de87a5087111ba9a29c78d53102f0af88e60838a8c4c71d7f45b2"
+      },
+      {
+        "context": "@keyframes progress-orbit → to",
+        "digest": "295041ac8d60f028e335aa0c05cf921417ba83c341e6694c450c1e2b895a8283"
+      },
+      {
+        "context": "@keyframes progress-spark → from",
+        "digest": "1ac84626dc11d406e6072801d09c7471458db9c177304046eb9b8c891e3bc50f"
+      },
+      {
+        "context": "@keyframes progress-spark → to",
+        "digest": "f4c9eded18132b24500a91f145632ff4a6bec440250cc93728b0192040b32f08"
+      },
+      {
+        "context": "@keyframes progress-core-breathe → 0%,\n  100%",
+        "digest": "98c67ea863585ee98db06d886921307387f31a2bd7e7bd1d8d1f6d768eb561f9"
+      },
+      {
+        "context": "@keyframes progress-core-breathe → 50%",
+        "digest": "fe11b6f8326a083a8d89477f67263693d38d9c7b0fd234dba20f7442ccf8ae5f"
+      },
+      {
+        "context": "@keyframes progress-track → from",
+        "digest": "04adaa549254c842c53634e7f8ac18fba5a2a0411f05d6b3c228a1e2605d5d7f"
+      },
+      {
+        "context": "@keyframes progress-track → to",
+        "digest": "888eef9124a5a2d24713611eac018b307a41ab8526ef4f0d3c838db627928d4c"
+      },
+      {
+        "context": "@keyframes progress-shimmer → to",
+        "digest": "12769d3fe0128c5375a163ca4ce090b3c21bb5d4de4e6008167b1cd40b4dd3ae"
+      },
+      {
+        "context": "@keyframes progress-dot → 0%,\n  100%",
+        "digest": "71e40d0561df4fd029f917b4cbfbd7b11ab98cdf28e4fac7303fefe80b9d01d3"
+      },
+      {
+        "context": "@keyframes progress-dot → 50%",
+        "digest": "a1a8d14a7e0aa837a5bcbc81fd7248285dc069493ace689fce61b177fe9219bc"
+      },
+      {
+        "context": "@keyframes progress-beacon → 0%",
+        "digest": "bebae05bdb6ed2e9e3f98b5bb1bbf86e37449f4c32ff71523335c5be967571cf"
+      },
+      {
+        "context": "@keyframes progress-beacon → 72%,\n  100%",
+        "digest": "72dc837f0d0c76186e52d5414d9df2231a79c7ec528cb00a095d61d68ee88d02"
+      },
+      {
+        "context": "@media (prefers-reduced-motion: reduce) → .vds-workspace-body,\n  [class*='progress-beacon']",
+        "digest": "413280c43d7c90c963bdf6655cba4ec12c72101ce3edacd63b442ce675e055bd"
+      },
+      {
+        "context": ".vds-icon",
+        "digest": "4ed4fe37486a0fdaa441761a88ca36d9baaf76f62c31e8da1767aa2061570cd0"
+      },
+      {
+        "context": ".vds-selection-actions",
+        "digest": "3ac418ee9ad61553425900a8b674d103c879d0bf73172469d41e90f39786fc62"
+      },
+      {
+        "context": ".vds-selection-action-result",
+        "digest": "3ca20a754738210ec235790c05925c07d8ec54ca924dc831d6f993eca752f893"
+      },
+      {
+        "context": ".vds-selection-action-loading,\n.vds-selection-action-result-head",
+        "digest": "67c466a19f98c63b4dd7f12640f464f8c6df5152194a1fc76c98296659f5d9db"
+      }
+    ]
+  }
+}

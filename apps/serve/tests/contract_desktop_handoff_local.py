@@ -54,6 +54,7 @@ from service.persistence.project import (  # noqa: E402
     connect,
     transaction,
 )
+from service.platform.activity import Activities  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -267,7 +268,7 @@ def validation_contract() -> None:
 def _client(store: HandoffClaimStore) -> TestClient:
     os.environ[HOST_PROCESS_KEY_ENV] = HOST_KEY
     app = FastAPI()
-    app.include_router(build_handoff_router(store))
+    app.include_router(build_handoff_router(store, activities=Activities()))
     return TestClient(app)
 
 
@@ -376,7 +377,7 @@ def wiring_contract() -> None:
     print("[7] 装配: register_auth 真的把四条路由挂上了")
     os.environ[HOST_PROCESS_KEY_ENV] = HOST_KEY
     app = FastAPI()
-    register_auth(app, enabled=False)
+    register_auth(app, enabled=False, activities=Activities())
     client = TestClient(app)
     # 不读 app.routes 的表: include_router 的结果被包成 _IncludedRouter, 且「表里有」
     # 也不等于「打得通」。直接打, 404 就是没挂上。store 用默认的 DESKTOP_HANDOFF_DB,

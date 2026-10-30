@@ -159,6 +159,11 @@ def validate_search_card(value: Any) -> dict[str, Any]:
     return SearchResult.model_validate(value).model_dump(mode="json")
 
 
+def search_card_slot(value: Mapping[str, Any]) -> str:
+    card = SearchResult.model_validate(value)
+    return json.dumps([card.session_id, card.origin, card.run_id, card.round])
+
+
 def _count(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 

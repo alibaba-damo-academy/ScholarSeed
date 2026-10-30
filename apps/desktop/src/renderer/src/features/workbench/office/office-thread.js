@@ -2,6 +2,11 @@
 
 'use strict'
 
+const FAILURE_CODES = {
+  officeDocumentUnavailable: 'office_document_unavailable',
+  processorMismatch: processor => `office_processor_mismatch:${processor}`,
+}
+
 let zetajs
 let css
 let desktop
@@ -553,7 +558,7 @@ function observeLayout(bindingId) {
   layoutBroadcaster.addDocumentEventListener(layoutListener)
 }
 
-function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOptions, bindingId, readonlyReason = '') {
+function loadFile(filename, processor, expectedDocumentKind, readOnly, bindingId, readonlyReason = '') {
   closeDocument()
   observeLayout(bindingId)
   // Native locks cover direct native entry points as well as UNO dispatch.
@@ -562,14 +567,10 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOption
     new css.beans.PropertyValue({ Name, Value: true })
   ))
   if (readOnly) properties.push(new css.beans.PropertyValue({ Name: 'ReadOnly', Value: true }))
-  if (csvOptions) {
-    properties.push(new css.beans.PropertyValue({ Name: 'FilterName', Value: 'Text - txt - csv (StarCalc)' }))
-    properties.push(new css.beans.PropertyValue({ Name: 'FilterOptions', Value: csvOptions }))
-  }
   xModel = desktop.loadComponentFromURL(`file:///tmp/office/${filename}`, '_default', 0, properties)
   if (!xModel) {
     removeLayoutListener()
-    post({ cmd: 'policy_failed', message: 'office_document_unavailable' })
+    post({ cmd: 'policy_failed', message: FAILURE_CODES.officeDocumentUnavailable })
     return
   }
   const controller = xModel.getCurrentController()
@@ -578,12 +579,12 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOption
   ))
   if (expectedDocumentKind && documentKind !== expectedDocumentKind) {
     closeDocument()
-    post({ cmd: 'policy_failed', message: `office_processor_mismatch:${processor}` })
+    post({ cmd: 'policy_failed', message: FAILURE_CODES.processorMismatch(processor) })
     return
   }
   const policy = ScholarSeedOfficePolicy.select(documentKind, !readOnly)
   if (!readOnly && !policy.editable) {
-    loadFile(filename, processor, expectedDocumentKind, true, csvOptions, bindingId)
+    loadFile(filename, processor, expectedDocumentKind, true, bindingId)
     return
   }
   const writerFormat = documentKind === 'writer'
@@ -604,7 +605,7 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOption
     } catch (error) {
       const detail = error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error) : error
       console.error('[office-protection] installation failed', detail?.Message || String(detail))
-      loadFile(filename, processor, expectedDocumentKind, true, csvOptions, bindingId, 'office_editing_unavailable')
+      loadFile(filename, processor, expectedDocumentKind, true, bindingId, 'office_editing_unavailable')
       return
     }
   }
@@ -674,7 +675,7 @@ function start() {
     switch (event.data.cmd) {
       case 'upload':
         try {
-          loadFile(event.data.filename, event.data.processor, event.data.expectedDocumentKind, event.data.readOnly, event.data.csvOptions, event.data.bindingId)
+          loadFile(event.data.filename, event.data.processor, event.data.expectedDocumentKind, event.data.readOnly, event.data.bindingId)
         } catch (error) {
           post({ cmd: 'document_failed', bindingId: event.data.bindingId, message: OFFICE_DOCUMENT_UNAVAILABLE, detail: String(error) })
         }
@@ -716,7 +717,7 @@ function start() {
       case SELECTION_AUTOSCROLL_COMMIT_COMMAND:
         commitWriterAutoscroll(event.data)
         break
-      case SELECTION_COMMIT_COMMAND: scheduleSelectionReport(); break
+      case SELECTION_COMMIT_COMMAND: cancelSelectionReport(); reportSelection(); break
       case 'host_saved':
         protection?.saved()
         if (xModel && typeof xModel.setModified === 'function') xModel.setModified(false)

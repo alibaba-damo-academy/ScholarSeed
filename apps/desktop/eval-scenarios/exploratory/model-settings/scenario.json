@@ -1,0 +1,7 @@
+{
+  "id": "model-settings",
+  "config": { "language": "zh" },
+  "auth": "none",
+  "drive": "cmd.jsonl",
+  "expected": { "minTurns": 0, "maxTurns": 0 }
+}

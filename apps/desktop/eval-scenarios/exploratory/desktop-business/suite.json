@@ -1,0 +1,224 @@
+{
+  "title": "ScholarSeed Desktop 六业务域探索用例",
+  "source_category": "exploratory",
+  "case_count": 105,
+  "draft": true,
+  "snapshot_id": "20261024T131248Z-105872aa",
+  "author": "评测维护",
+  "source_references": [
+    {
+      "kind": "business_point_catalog",
+      "locator": "apps/desktop/docs/scenarios/catalog.json",
+      "git_commit": "df4b72b6353eb4e051c262214c32e9c7b64d1208",
+      "sha256": "876cece4a5b237ed72e65f6790db3aa1299c43a58e91baed2702583b31d5a82b",
+      "note": "首轮四域维护前的已提交目录身份，保留历史而非当前目录摘要；本轮六域维护基于下方 versioned_ui_observation 的 authoring_git_commit，工作区资产仍为草稿。"
+    },
+    {
+      "kind": "direction_baseline",
+      "locator": "apps/desktop/eval-scenarios/README.md",
+      "note": "首轮明确授权形成的 SKILL-01@2 默认第五方向已保留；本轮六域扩展不改变默认 P0，不由单次成功自动晋升。"
+    },
+    {
+      "kind": "authoring_rules",
+      "locator": ".agents/skills/testcase-xlsx/references/generation-rules.md"
+    },
+    {
+      "kind": "authoring_schema",
+      "locator": ".agents/skills/testcase-xlsx/references/schema.md"
+    },
+    {
+      "kind": "versioned_ui_observation",
+      "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md",
+      "snapshot_id": "20261023T003940133157Z-43ef6e720a58",
+      "authoring_git_commit": "33f97a70837c7351eb0a851b133822273702774b",
+      "note": "本轮六域真实观察摘要；旧60行保留各自历史证据，未观察分支不追认为已执行。"
+    },
+    {
+      "kind": "versioned_ui_observation",
+      "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md",
+      "snapshot_id": "20261024T112333061Z-105872aa",
+      "authoring_git_commit": "98b4f4096e8c19b3582c26274e76cb23a11133bf",
+      "inventory_sha256": "d57ee93b6c148bb17130ca6aef0c76ea1f7f27f3ba1125e646e165a0694017f2",
+      "note": "用户确认15新增及4局部修订入库；不是正式评测、批准需求或默认方向更新。原始冻结清单仍在本地忽略目录。"
+    },
+    {
+      "kind": "versioned_ui_observation",
+      "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md",
+      "snapshot_id": "20261024T131248Z-105872aa",
+      "authoring_git_commit": "bc6cbddafcc66b31f170c08970fdd86c4a4d0f6e",
+      "inventory_sha256": "dd4abd53f3ba023f4761c26bc9eff7aa11cb66425625120fdd1a43eb64e9472f",
+      "note": "用户授权20候选及9局部补证入库并重审全套优先级；保持稳定ID、P0核心范围和产品规则，缺证据/资产记partial。"
+    },
+    {
+      "kind": "manual_scope_change",
+      "locator": "work-records/2026-10-28/pdf.md",
+      "note": "用户明确授权PDF解释/翻译P0功能与P1语义拆分；仅未来冻结运行，非产品改动或评测结果。"
+    }
+  ],
+  "scope": {
+    "domain_case_counts": {
+      "资料库": 23,
+      "文献": 25,
+      "AI对话": 23,
+      "技能中心": 13,
+      "项目": 10,
+      "模型与账户设置": 11
+    },
+    "case_rows": 105,
+    "bound_case_rows": 105,
+    "unique_business_points": 88,
+    "source_commit_reused_points": 66,
+    "new_business_points": 22,
+    "unbound_candidates": 0,
+    "p0_main_cases": 10,
+    "p0_variant_cases": 0,
+    "priority_case_counts": {
+      "P0": 10,
+      "P1": 45,
+      "P2": 44,
+      "P3": 6
+    },
+    "execution_state": "catalog_maintenance_not_evaluation",
+    "runtime_ui_evidence": "per-case historical partial observations; new PDF quality points prepared only, not newly executed",
+    "platform_scope": "macos arm64 observed; windows declared not executed",
+    "constraints": [
+      "保留原83条稳定ID与分片内顺序，追加20条，补9条原用例证据/缺口。",
+      "重审全部P0-P3；16条既有用例调级，20条新增中置顶和列偏好调整P3；不因资产或当前成败升降级。",
+      "默认P0仍五方向10点18必需Check，无新P0；不删原Check或可选/共享边界。",
+      "新增20点与9项补证均partial，候选期望不等于批准要求，真实来源不等于评测通过。",
+      "表外SKILL-MGMT-01、CONNECTOR-01、APP-SET-01只登记方向候选；另经baseline确认，不自动扩默认。",
+      "资产在正式执行前独立准备、校验冻结；执行中不补资产、改判据或产品规则。",
+      "2026-10-28用户授权：PDF选区P0仅功能，新增2个P1质量点并保留强证据审计；复用调用，不回写旧报告。"
+    ]
+  },
+  "sourceBuild": "202610241139",
+  "targetBuild": "202610241139",
+  "suiteRevision": 6,
+  "executionNote": "目标构建字段是本次探索参考身份，不授权后续自动复用旧构建。后续运行重新确认目标版本、平台、账号和预算；本资产是用例，不是执行器或通过报告。",
+  "priorityPolicy": "P0=构建包最小可用主路径；P1=核心输入/输出/来源/数据安全/执行意愿；P2=基本管理、可恢复异常与高级参数；P3=展示便利和低风险搜索变体。按业务影响分级，资产缺失、时间与运行成败不参与升降；变体不得高于所属点核心风险。",
+  "observationPolicy": "来源与期望分离；当前快照只提供20新增候选及9局部补证，不是103条执行记录。历史按observationSources及各行证据保留；已交互但结果未知以resultEvidenceStatus=insufficient及observationScope明示，不记observed通过。",
+  "observation_history": [
+    {
+      "snapshot_id": "20261022T071604Z-43ef6e72",
+      "scope": {
+        "domain_case_counts": {
+          "资料库": 18,
+          "文献": 20,
+          "AI对话": 14,
+          "技能中心": 8
+        },
+        "case_rows": 60,
+        "reused_unique_business_points": 45,
+        "existing_point_main_cases": 45,
+        "existing_point_variant_cases": 13,
+        "unbound_skill_candidates": 1,
+        "p0_main_cases": 10,
+        "p0_variant_cases": 0,
+        "execution_state": "exploration_only_not_evaluation",
+        "runtime_ui_evidence": "versioned_snapshot_partial_observations",
+        "platform_scope": "macos arm64 observed; windows declared not executed",
+        "constraints": [
+          "60条是清单，不表示执行60条；预期均为候选待确认，不计正式发布覆盖。",
+          "复用45既有点、新增1技能调用点；变体不重复建点，停用技能候选不入库。",
+          "本次用户明确授权默认P0维护为10点；不因导入受阻或预算降级删点。",
+          "仅探索macOS arm64，Windows另跑；确定性观察不等于语义通过。",
+          "未来副作用及模型预算逐次获准，不修改产品业务逻辑或规则。"
+        ],
+        "new_business_points": 1
+      },
+      "sourceBuild": "202610221402",
+      "suiteRevision": 1
+    },
+    {
+      "snapshot_id": "20261023T003940133157Z-43ef6e720a58",
+      "scope": {
+        "domain_case_counts": {
+          "资料库": 18,
+          "文献": 20,
+          "AI对话": 14,
+          "技能中心": 8,
+          "项目": 4,
+          "模型与账户设置": 4
+        },
+        "case_rows": 68,
+        "bound_case_rows": 67,
+        "unique_business_points": 53,
+        "source_commit_reused_points": 51,
+        "new_business_points": 2,
+        "unbound_candidates": 1,
+        "p0_main_cases": 10,
+        "p0_variant_cases": 0,
+        "priority_case_counts": {
+          "P0": 10,
+          "P1": 21,
+          "P2": 28,
+          "P3": 9
+        },
+        "execution_state": "exploration_only_not_evaluation",
+        "runtime_ui_evidence": "per-case versioned observation references; not all case branches executed",
+        "platform_scope": "macos arm64 observed; windows declared not executed",
+        "constraints": [
+          "六域分类不等于14条方向或54个稳定点，也不等于所有用例已执行。",
+          "保留旧60行和其历史来源，新增8行及2只读稳定点；全局搜索为跨域缺口，不在本轮主域选中范围。",
+          "默认P0仍10点18必需Check，无新P0；不因新增域或赶时间调整原优先级。",
+          "完整新密钥配置与真实登录恢复仍partial，不能用只读目录和已有状态代替。",
+          "所有预期仍候选，只有明确获批PRD/Check才可计正式覆盖；本轮不是评测通过报告。",
+          "源快照不可覆盖；未来副作用、凭据、模型预算及生命周期权限每次重新核对。"
+        ]
+      },
+      "sourceBuild": "202610221402",
+      "suiteRevision": 2
+    },
+    {
+      "snapshot_id": "20261024T112333061Z-105872aa",
+      "scope": {
+        "domain_case_counts": {
+          "资料库": 18,
+          "文献": 21,
+          "AI对话": 18,
+          "技能中心": 12,
+          "项目": 8,
+          "模型与账户设置": 6
+        },
+        "case_rows": 83,
+        "bound_case_rows": 83,
+        "unique_business_points": 66,
+        "source_commit_reused_points": 54,
+        "new_business_points": 12,
+        "unbound_candidates": 0,
+        "p0_main_cases": 10,
+        "p0_variant_cases": 0,
+        "priority_case_counts": {
+          "P0": 10,
+          "P1": 31,
+          "P2": 33,
+          "P3": 9
+        },
+        "execution_state": "exploration_only_not_evaluation",
+        "runtime_ui_evidence": "per-case versioned partial observations, not all 83 cases executed",
+        "platform_scope": "macos arm64 observed; windows declared not executed",
+        "constraints": [
+          "保留原68行稳定ID和顺序，追加15行；4原用例局部补证，2原行仅同步关联点修订。",
+          "15新增用例中4行复用既有点，11新业务点；原未绑定D4-SKILL-007另分配状态管理点，合计新增12点。",
+          "默认P0五方向、10点及18必需Check保持不变；本地技能变体不替代内置P0。",
+          "SKILL-MGMT-01和CONNECTOR-01仅为待审表外方向身份，未改方向表，不隐式参加默认扩展档预检。",
+          "新增及补证点待审、exploratory；新增15行全部partial，未生成新Check分母或整套Driver/Judge。",
+          "正式执行前按需准备、校验并冻结必要资产；执行时缺资产记录阻塞，其他独立就绪点继续。"
+        ]
+      },
+      "sourceBuild": "202610241139",
+      "suiteRevision": 3
+    }
+  ],
+  "assetPreparation": {
+    "id": "p1-assets-20261025",
+    "preparedPoints": 29,
+    "selectedP0Points": 10,
+    "selectedP1Points": 31,
+    "requiredChecks": 51,
+    "optionalChecks": 1,
+    "evaluationExecuted": false,
+    "defaultP0Changed": false,
+    "notes": "input assets only; candidate expectations and prior observations preserved; dedicated runtime prerequisites remain mandatory"
+  }
+}

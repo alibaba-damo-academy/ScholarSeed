@@ -130,9 +130,9 @@ def cdp_json(endpoint, path):
 
 
 def validate_config():
-    for name in ("PAPER_DL_CDP_ENDPOINT", "PAPER_DL_CDP_PROFILE"):
+    for name in ("PAPER_DL_CDP_ENDPOINT", "PAPER_DL_CDP_PROFILE", "PAPER_DL_PROFILE"):
         if os.getenv(name):
-            raise PoolError(f"Unset {name}: interactive downloads now use the shared three-slot browser pool")
+            raise PoolError(f"Unset {name}: both download modes use the shared three-slot browser pool; use PAPER_DL_PROFILE_TEMPLATE for login templates")
     if os.getenv("PAPER_DL_ZOTERO_MODE", "off") != "off":
         raise PoolError("The browser-pool requires PAPER_DL_ZOTERO_MODE=off; Zotero concurrency is not supported")
     if os.getenv("PAPER_DL_AUTO_LAUNCH_CHROME", "yes").lower() in {"0", "no", "false"}:

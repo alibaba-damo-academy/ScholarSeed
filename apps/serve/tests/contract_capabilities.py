@@ -14,8 +14,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-TEST_HOME = Path(tempfile.mkdtemp(prefix="scholarseed-skill-home-"))
+TEST_HOME = Path(tempfile.mkdtemp(prefix="scholarseed-skill-home-")).resolve()
 os.environ["SCHOLARSEED_HOME"] = str(TEST_HOME)
+os.environ["SCHOLARSEED_CODEX_HOME"] = str(TEST_HOME / "codex")
 
 from tests._isolate import isolate_research_db  # noqa: E402
 
@@ -42,7 +43,9 @@ from service.paths import SERVICE_BUNDLED_SKILLS_DIR  # noqa: E402
 
 REDACTION_SENTINEL = "codex-secret-from-runtime"
 CONVERSATION_SKILLS = {
+    "find-skill",
     "research-idea-partner",
+    "design-research-validation",
     "literature-review",
     "precise-literature-search",
     "agentic-search",
@@ -83,6 +86,12 @@ def main() -> int:
             conversation_skills
         )
         assert conversation_skills["research-idea-partner"]["descriptions"]["zh"]
+        assert conversation_skills["design-research-validation"]["descriptions"]["zh"]
+        for name in ("research-idea-partner", "design-research-validation"):
+            assert conversation_skills[name]["requires_login"] is True
+            assert conversation_skills[name]["unavailable_reason"] == "login_required"
+            assert conversation_skills[name]["active"] is False
+            assert conversation_skills[name]["toggleable"] is True
         assert conversation_skills["agentic-search"]["descriptions"]["zh"]
         assert conversation_skills["agentic-search"]["description"].startswith(
             "Tiered academic paper discovery"
@@ -91,6 +100,11 @@ def main() -> int:
         settings = client.get("/api/capabilities/skills?surface=settings")
         assert settings.status_code == 200, settings.text
         settings_skills = {item["name"]: item for item in settings.json()["skills"]}
+        assert settings_skills["find-skill"]["builtin"] is True
+        assert settings_skills["find-skill"]["group"] == "scholarseed"
+        assert settings_skills["find-skill"]["requires_login"] is False
+        assert settings_skills["find-skill"]["active"] is True
+        assert settings_skills["find-skill"]["toggleable"] is True
         assert set(settings_skills) == CONVERSATION_SKILLS | {"demo-skill"}, set(settings_skills)
         assert settings_skills["demo-skill"]["active"] is True
         assert client.get("/api/capabilities/skills?surface=unknown").status_code == 422
@@ -110,10 +124,11 @@ def main() -> int:
         assert fast_search["active"] is False
         assert fast_search["requires_login"] is True
         assert fast_search["unavailable_reason"] == "login_required"
-        assert fast_search["toggleable"] is False
+        assert fast_search["toggleable"] is True
         immutable_toggle = client.delete("/api/capabilities/skills/fast-search/activate")
-        assert immutable_toggle.status_code == 409, immutable_toggle.text
-        assert "fast-search" not in load_skill_state().disabled_skills
+        assert immutable_toggle.status_code == 200, immutable_toggle.text
+        assert "fast-search" in load_skill_state().disabled_skills
+        assert client.post("/api/capabilities/skills/fast-search/activate").status_code == 200
 
         builtin = skills["agentic-search"]
         state = load_skill_state()

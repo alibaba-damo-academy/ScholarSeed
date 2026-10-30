@@ -29,7 +29,8 @@ test('precise search and authorization share one display slot with the current d
   const shown = visible(selected)
   assert.equal(shown.length, 2)
   assert.deepEqual(shown[0], { ...searched[0], card: {
-    cardId: 'selection-card', type: 'literature-search', content: selection.data.content
+    cardId: 'selection-card', type: 'literature-search', content: selection.data.content,
+    presentationSource: 'history'
   } })
   assert.equal(shown[1], message)
   assert.deepEqual(selected, before)

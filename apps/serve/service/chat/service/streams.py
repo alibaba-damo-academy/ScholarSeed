@@ -159,6 +159,7 @@ class TextDeltaBatcher:
                 self.unsafe_events += 1
                 self.unsafe_events_by_kind[kind] = self.unsafe_events_by_kind.get(kind, 0) + 1
             return self.flush() + (self._serialize(header, payload, event),)
+        assert isinstance(kind, str)
         self.batchable_events += 1
         self.batchable_events_by_kind[kind] = self.batchable_events_by_kind.get(kind, 0) + 1
         if self.pending is not None and (
@@ -297,7 +298,7 @@ async def coalesce_text_delta_stream(
     source: AsyncGenerator[bytes, None], batcher: TextDeltaBatcher
 ) -> AsyncIterator[bytes]:
     iterator = aiter(source)
-    next_event = asyncio.create_task(anext(iterator))
+    next_event = asyncio.ensure_future(anext(iterator))
     try:
         while True:
             timeout = (
@@ -308,6 +309,7 @@ async def coalesce_text_delta_stream(
             ready, _pending = await asyncio.wait((next_event,), timeout=timeout)
             if not ready:
                 batcher.timeout_flushes += 1
+                assert batcher.pending is not None
                 kind = batcher.pending["type"]
                 batcher.timeout_flushes_by_kind[kind] = (
                     batcher.timeout_flushes_by_kind.get(kind, 0) + 1
@@ -326,7 +328,7 @@ async def coalesce_text_delta_stream(
                 for remaining in batcher.flush():
                     yield remaining
                 raise
-            next_event = asyncio.create_task(anext(iterator))
+            next_event = asyncio.ensure_future(anext(iterator))
             for output in batcher.feed(event):
                 yield output
     finally:
@@ -553,6 +555,7 @@ class CompletionDiagnostic:
     routed_model: str = ""
     wire_protocol: str = ""
     status_code: int | None = None
+    http_error_code: str = ""
     content_type: str = ""
     upstream_request_id: str = ""
     attempt: int = 1
@@ -698,6 +701,7 @@ class CompletionDiagnostic:
             "wire_protocol": self.wire_protocol,
             "phase": phase,
             "status_code": self.status_code,
+            "http_error_code": self.http_error_code,
             "content_type": self.content_type,
             "upstream_request_id": self.upstream_request_id,
             "attempt": self.attempt,

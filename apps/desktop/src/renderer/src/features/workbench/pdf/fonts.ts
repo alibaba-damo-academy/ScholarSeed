@@ -15,12 +15,16 @@ export class PdfFonts {
   private disposed = false
 
   /** PDF.js viewer owns selection handling; supply its text stream with prepared fonts. */
-  textPage(page: PDFPageProxy): PDFPageProxy {
+  textPage(page: PDFPageProxy, fallbackLanguage: string): PDFPageProxy {
     return new Proxy(page, {
       get: (target, property, receiver) => property === 'streamTextContent'
         ? () => new ReadableStream<TextContent>({
           start: async controller => {
-            try { controller.enqueue(await this.prepare(page)); controller.close() }
+            try {
+              const content = await this.prepare(page)
+              controller.enqueue(content.lang ? content : { ...content, lang: fallbackLanguage })
+              controller.close()
+            }
             catch (error) { controller.error(error) }
           }
         })

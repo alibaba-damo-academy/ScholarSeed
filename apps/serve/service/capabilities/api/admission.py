@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
@@ -15,14 +15,15 @@ from starlette.status import (
     HTTP_503_SERVICE_UNAVAILABLE,
 )
 
-from service.chat.api.bridge import scoped_bridge_caller
-from service.chat.runtime.composition import LiveSessionService
-from service.platform.bridge import (
-    BRIDGE_MAX_REQUEST_BYTES,
+from service.capabilities.domain import (
     SKILL_ADMISSION_ROUTE,
     SkillAdmission,
-    SkillCaller,
 )
+from service.chat.api.bridge import scoped_bridge_admission, scoped_bridge_caller
+from service.chat.runtime.composition import LiveSessionService
+from service.platform.activity import Activities, ActivityDomain
+from service.platform.bridge import SkillCaller
+from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 SKILL_ACCESS_DENIED = "skill_access_denied"
 SKILL_UNAVAILABLE = "skill_unavailable"
@@ -33,14 +34,17 @@ def register_skill_admission(
     app: FastAPI,
     resolve_caller: Callable[[str], SkillCaller | None],
     runtime: LiveSessionService,
+    *,
+    activities: Activities,
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(scoped_bridge_admission(resolve_caller, activities))])
 
     @router.post(SKILL_ADMISSION_ROUTE)
     async def admit(request: Request) -> JSONResponse:
         caller = scoped_bridge_caller(request, resolve_caller)
         if caller is None:
             return JSONResponse({"ok": False, "error": SKILL_ACCESS_DENIED}, HTTP_403_FORBIDDEN)
+        activity = caller.bridge_activity
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
@@ -58,15 +62,27 @@ def register_skill_admission(
             return JSONResponse(
                 {"ok": False, "error": "bridge_invalid_parameters"}, HTTP_400_BAD_REQUEST
             )
+        if (
+            scoped_bridge_caller(request, resolve_caller) is not caller
+            or caller.bridge_activity is not activity
+        ):
+            return JSONResponse({"ok": False, "error": SKILL_ACCESS_DENIED}, HTTP_403_FORBIDDEN)
         try:
-            skill = await runtime.skill_admission(
-                path=script, cwd=caller.runtime_workdir, user_id=caller.user_id
+            skill = await activities.finish(
+                ActivityDomain.BRIDGE,
+                lambda: runtime.skill_admission(
+                    path=script,
+                    caller=caller,
+                ),
             )
         except (RuntimeError, ValueError, OSError):
             return JSONResponse(
                 {"ok": False, "error": SKILL_ADMISSION_UNAVAILABLE}, HTTP_503_SERVICE_UNAVAILABLE
             )
-        if scoped_bridge_caller(request, resolve_caller) is not caller:
+        if (
+            scoped_bridge_caller(request, resolve_caller) is not caller
+            or caller.bridge_activity is not activity
+        ):
             return JSONResponse({"ok": False, "error": SKILL_ACCESS_DENIED}, HTTP_403_FORBIDDEN)
         if skill is None or not skill.get("active"):
             reason = (
@@ -75,7 +91,9 @@ def register_skill_admission(
                 else SKILL_UNAVAILABLE
             )
             return JSONResponse({"ok": False, "error": reason}, HTTP_403_FORBIDDEN)
-        return JSONResponse({"ok": True, "skill": skill["name"]})
+        return JSONResponse(
+            {"ok": True, "skill": skill["name"], "builtin": skill.get("builtin") is True}
+        )
 
     app.include_router(router)
     return router

@@ -15,12 +15,15 @@ from fastapi.testclient import TestClient
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
+from service.platform.activity import Activities
 from service.platform.resources import (
     FileState,
     PendingOrigin,
     ReviewDecision,
     ReviewOutcome,
+    SnapshotIdentity,
     TurnOutcome,
+    VersionOrigin,
 )
 from service.resources.api.versions import register_version_routes
 from service.resources.persistence.version import VersionStore
@@ -64,7 +67,7 @@ class PendingCaptureTests(unittest.IsolatedAsyncioTestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("pending capture")
         self.path = "resources/notes.md"
         self.file = Path(self.project.root) / self.path
@@ -80,8 +83,12 @@ class PendingCaptureTests(unittest.IsolatedAsyncioTestCase):
         self.store = VersionStore(
             self.content.resolve(self.project.id, PROJECT_DB_RELATIVE), self.project.root
         )
-        self.supervisor = ResourceVersionSupervisor(self.content, self.versions, policy, settings)
-        self.capture = ResourceDeliveryService(self.content, self.versions, self.supervisor)
+        self.supervisor = ResourceVersionSupervisor(
+            self.content, self.versions, policy, settings, activities=Activities()
+        )
+        self.capture = ResourceDeliveryService(
+            self.content, self.versions, self.supervisor, activities=self.supervisor._activities
+        )
         retention = ResourceRetentionService(self.content, settings)
         self.supervisor.bind_preparation(
             ResourceActivation(
@@ -182,6 +189,44 @@ class PendingCaptureTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(current.review.base.object_id, self.initial.object_id)
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
 
+    async def test_followup_and_new_session_leave_existing_review_undecided(self) -> None:
+        await self._change("original", b"unreviewed candidate")
+        original = await self.capture.finish_turn("session", "original", TurnOutcome.COMPLETED)
+        before = self.store.pending(self.initial.file_id)
+        history = self.versions.history(self.project.id, self.path)
+
+        for session_id in ("session", "new-session"):
+            await self.capture.begin_turn(session_id, "chat-only", self.project.root)
+            result = await self.capture.finish_turn(session_id, "chat-only", TurnOutcome.COMPLETED)
+            self.assertEqual(result.file_ids, ())
+            self.assertEqual(self.store.pending(self.initial.file_id), before)
+            self.assertEqual(self.versions.history(self.project.id, self.path), history)
+            self.assertEqual(self.file.read_bytes(), b"unreviewed candidate")
+            self.assertEqual(self.store.review_result("session", "original"), original)
+
+        self._reject(self.initial.file_id)
+        self.assertEqual(self.file.read_bytes(), b"initial")
+
+    async def test_followup_edits_keep_original_base_and_require_explicit_decision(self) -> None:
+        await self._change("first-edit", b"first candidate")
+        first = await self.capture.finish_turn("session", "first-edit", TurnOutcome.COMPLETED)
+        before = self.store.pending(self.initial.file_id)
+        await self._change("second-edit", b"second candidate")
+        second = await self.capture.finish_turn("session", "second-edit", TurnOutcome.COMPLETED)
+        after = self.store.pending(self.initial.file_id)
+
+        self.assertTrue(after.needs_review)
+        self.assertEqual(after.review.id, before.review.id)
+        self.assertEqual(after.review.base, before.review.base)
+        self.assertEqual(after.review.base.object_id, self.initial.object_id)
+        self.assertEqual(after.review.candidate, self.store.working_snapshot(self.initial.file_id))
+        self.assertNotEqual(after.review.candidate, before.review.candidate)
+        self.assertEqual(second.review_ids, first.review_ids)
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
+
+        self._reject(self.initial.file_id)
+        self.assertEqual(self.file.read_bytes(), b"initial")
+
     async def test_unknown_does_not_close_admission_or_discard_baseline(self) -> None:
         await self._change("unknown", b"still possibly writing")
         await self.capture.finish_turn("session", "unknown", TurnOutcome.UNKNOWN)
@@ -208,11 +253,26 @@ class PendingCaptureTests(unittest.IsolatedAsyncioTestCase):
         restored = self.store.pending(self.initial.file_id)
         self.assertEqual(restored.origin, PendingOrigin.USER)
         self.assertFalse(restored.needs_review)
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        restored_version, original = self.store.history_for_file(self.initial.file_id)
+        self.assertEqual(original, self.initial)
+        self.assertEqual(restored_version.sequence, original.sequence + 1)
+        self.assertEqual(restored_version.origin, VersionOrigin.RESTORE)
+        self.assertEqual(restored_version.source_review_id, review.id)
+        self.assertFalse(restored_version.review_backup)
+        self.assertEqual(
+            SnapshotIdentity(
+                restored_version.object_id,
+                restored_version.state,
+                restored_version.path,
+                restored_version.mode_bits,
+                restored_version.annotation_object_id,
+            ),
+            baseline,
+        )
 
     async def test_one_file_conflict_does_not_block_another_review(self) -> None:
         other = self.file.with_name("independent.md")
-        other_path = str(other.relative_to(self.project.root))
+        other_path = other.relative_to(self.project.root).as_posix()
         other.write_bytes(b"other baseline")
         initial_other = self.versions.ensure_initial(self.project.id, other_path).version
         await self._change("two-files", b"first candidate")
@@ -259,15 +319,15 @@ class PendingCaptureTests(unittest.IsolatedAsyncioTestCase):
             ResourceRetentionService(self.content, Settings()),
             PdfRecordStore(self.content),
         )
-        recovery.reject_review(
-            self.project.id,
-            file_id,
-            ReviewDecision(pending.review.id, pending.revision, ReviewOutcome.REJECTED),
-            self.store.head(file_id)[1],
-            "reject-" + file_id,
-        )
+        decision = ReviewDecision(pending.review.id, pending.revision, ReviewOutcome.REJECTED)
+        revision = self.store.head(file_id)[1]
+        operation = "reject-" + file_id
+        recovery.reject_review(self.project.id, file_id, decision, revision, operation)
+        versions = self.store.history_for_file(file_id)
+        recovery.reject_review(self.project.id, file_id, decision, revision, operation)
+        self.assertEqual(self.store.history_for_file(file_id), versions)
 
-    async def test_created_candidate_can_be_rejected_without_any_version(self) -> None:
+    async def test_created_candidate_rejection_records_only_absent_baseline(self) -> None:
         await self.capture.begin_turn("session", "create", self.project.root)
         await self.capture.bind_turn("session", "create", "create", "generation")
         target = self.file.with_name("created.md")
@@ -282,10 +342,20 @@ class PendingCaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.history_for_file(file_id), ())
         self.supervisor.scan_project(self.project.id)
         self.assertEqual(self.store.history_for_file(file_id), ())
-        self.assertTrue(self.store.pending(file_id).needs_review)
+        pending = self.store.pending(file_id)
+        self.assertTrue(pending.needs_review)
         self._reject(file_id)
         self.assertFalse(target.exists())
-        self.assertEqual(self.store.history_for_file(file_id), ())
+        (restored,) = self.store.history_for_file(file_id)
+        self.assertEqual(restored.sequence, 1)
+        self.assertEqual(restored.origin, VersionOrigin.RESTORE)
+        self.assertEqual(restored.source_review_id, pending.review.id)
+        self.assertEqual(restored.state, FileState.TOMBSTONE)
+        self.assertIsNone(restored.object_id)
+        self.assertEqual(restored.path, pending.review.base.path)
+        self.assertIsNone(restored.mode_bits)
+        self.assertIsNone(restored.annotation_object_id)
+        self.assertFalse(restored.review_backup)
 
     async def test_deleted_candidate_restores_original_without_version(self) -> None:
         await self.capture.begin_turn("session", "delete", self.project.root)

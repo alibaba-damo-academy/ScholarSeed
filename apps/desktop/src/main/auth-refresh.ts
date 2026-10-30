@@ -11,8 +11,9 @@
 
 import { safeStorage } from 'electron'
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
-import { join } from 'path'
-import { desktopHome } from './backend'
+import { dirname, join } from 'path'
+import { desktopDirectoryWriter } from './writer'
+import { desktopHome } from './storage'
 
 const REFRESH_FILE_PREFIX = 'auth-refresh'
 const REFRESH_FILE_SUFFIX = 'enc'
@@ -32,27 +33,33 @@ function refreshFilePath(namespace: string): string {
 /** 存 refresh token；空串 = 删除。加密不可用时不落盘（见文件头）。 */
 export function saveRefreshToken(token: string, namespace: string, log?: LogFn): void {
   const path = refreshFilePath(namespace)
-  if (!token) {
-    try {
-      rmSync(path)
-    } catch {
-      // 文件不在即已清空，登出/失败清理都不该因此报错
-    }
-    return
-  }
-  if (!safeStorage.isEncryptionAvailable()) {
-    // 不落盘是有意的，但必须留痕: 否则这台机器表现成「每 7 天要重登一次」而无从排查。
+  if (token && !safeStorage.isEncryptionAvailable()) {
     log?.('[shell] WARN safeStorage unavailable; refresh token not persisted (renewal disabled)\n')
     return
   }
-  const tmp = `${path}.tmp`
-  writeFileSync(tmp, safeStorage.encryptString(token), { mode: 0o600 })
+  const writer = desktopDirectoryWriter(dirname(path))
   try {
-    chmodSync(tmp, 0o600)
-  } catch {
-    // 个别文件系统 write 时 mode 已生效，chmod 失败不拦原子换写
+    if (!token) {
+      try {
+        rmSync(path)
+      } catch (error) {
+        // Only absence proves local logout is complete. A denied write must
+        // not be reported as successful credential removal.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      return
+    }
+    const tmp = `${path}.tmp`
+    writeFileSync(tmp, safeStorage.encryptString(token), { mode: 0o600 })
+    try {
+      chmodSync(tmp, 0o600)
+    } catch {
+      // writeFile's owner-only creation mode remains the fallback.
+    }
+    renameSync(tmp, path)
+  } finally {
+    writer.close()
   }
-  renameSync(tmp, path)
 }
 
 export function loadRefreshToken(namespace: string): string {
@@ -86,8 +93,7 @@ export interface RefreshedTokens {
 }
 
 export type RefreshOutcome =
-  | { ok: true; data: RefreshedTokens }
-  | { ok: false; rejected: boolean; error: string }
+  { ok: true; data: RefreshedTokens } | { ok: false; rejected: boolean; error: string }
 
 /**
  * POST /api/token/refresh（轮转）。rejected 只在服务端明确拒绝（401 invalid_refresh，
@@ -105,12 +111,16 @@ export async function refreshTokens(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
-      signal: ctl.signal
+      signal: ctl.signal,
     })
     clearTimeout(timer)
     const payload = (await resp.json().catch(() => ({}))) as Partial<RefreshedTokens>
     if (!resp.ok || !payload.token || !payload.refresh_token) {
-      return { ok: false, rejected: resp.status === 401, error: `refresh rejected (${resp.status})` }
+      return {
+        ok: false,
+        rejected: resp.status === 401,
+        error: `refresh rejected (${resp.status})`,
+      }
     }
     return { ok: true, data: { token: payload.token, refresh_token: payload.refresh_token } }
   } catch (e) {
@@ -130,7 +140,7 @@ export async function revokeRefreshFamily(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
-      signal: ctl.signal
+      signal: ctl.signal,
     })
     clearTimeout(timer)
   } catch {

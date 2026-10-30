@@ -27,7 +27,9 @@ from apps.serve.tests import pdf as pdf_fixture
 from service.content.domain.model import PREPARED_CONFLICT, ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import MAX_BYTES, ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.citations import PDF_INDEX_STATE
+from service.platform.files import guess_media_type
 from service.platform.web import register_cross_origin_isolation
 from service.resources.api.versions import register_version_routes
 from service.resources.service.history import ResourceVersionService
@@ -43,6 +45,37 @@ PASS = 0
 FAIL = 0
 MEBIBYTE = 1024 * 1024
 LEGACY_EDITOR_MAX_BYTES = 64 * MEBIBYTE
+
+
+def test_product_mime_registry_precedes_host() -> None:
+    office = {
+        ".doc": "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xls": "application/vnd.ms-excel",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".ppt": "application/vnd.ms-powerpoint",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    for host_type in (None, "application/octet-stream"):
+        with patch(
+            "service.platform.files.mimetypes.guess_type", return_value=(host_type, None)
+        ) as host:
+            for suffix, media_type in office.items():
+                for spelling in (suffix, suffix.upper()):
+                    check(
+                        f"product Office MIME {spelling} ignores host {host_type}",
+                        guess_media_type("document" + spelling) == media_type,
+                    )
+            check("registered Office types do not query the host", host.call_count == 0)
+    for host_type in (None, "application/x-custom-document"):
+        with patch(
+            "service.platform.files.mimetypes.guess_type", return_value=(host_type, None)
+        ) as host:
+            check(
+                "unregistered suffix keeps host MIME fallback",
+                guess_media_type("document.custom-format") == host_type,
+            )
+            host.assert_called_once_with("document.custom-format")
 
 
 class WorkbenchSettings:
@@ -81,7 +114,7 @@ def _client(project: Path) -> TestClient:
     catalog = ContentCatalog(project.parent / f"{project.name}-content.sqlite3")
     registry = ProjectRegistry(str(project), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     settings = WorkbenchSettings()
     records = PdfRecordStore(content, PdfRecordCatalog(content))
     app.state.content = content
@@ -93,7 +126,11 @@ def _client(project: Path) -> TestClient:
         records,
     )
     app.state.resource_version_supervisor = ResourceVersionSupervisor(
-        content, app.state.resource_versions, WorkbenchFormatPolicy(), settings
+        content,
+        app.state.resource_versions,
+        WorkbenchFormatPolicy(),
+        settings,
+        activities=Activities(),
     )
     app.state.resource_versions.bind_admission_policy(app.state.resource_version_supervisor)
     register_version_routes(app)
@@ -137,6 +174,62 @@ def test_manual_raw_versioning_does_not_invent_preview_capabilities() -> None:
             )
             check("manual initial version raw bytes match", content == payload)
     finally:
+        shutil.rmtree(project, ignore_errors=True)
+
+
+def test_readonly_file_capabilities_and_save() -> None:
+    project = Path(tempfile.mkdtemp(prefix="file-workbench-readonly-"))
+    target = project / "readonly.md"
+    original = b"# Readonly document\n"
+    try:
+        target.write_bytes(original)
+        client = _client(project)
+        params = {"path": target.name}
+        before = client.get("/api/workbench/open", params=params).json()
+        check("writable Markdown supports editing", before["capabilities"]["can_edit"])
+        target.chmod(stat.S_IREAD)
+        readonly_state = target.stat()
+        opened = client.get("/api/workbench/open", params=params)
+        payload = opened.json()
+        check("readonly Markdown remains readable", opened.status_code == 200)
+        check("readonly Markdown cannot edit", not payload["capabilities"]["can_edit"])
+        check("readonly Markdown cannot save", not payload["capabilities"]["can_save"])
+        check("readonly Markdown retains preview", payload["capabilities"]["can_preview"])
+        check(
+            "permission probe preserves bytes, modification time and mode",
+            target.read_bytes() == original
+            and target.stat().st_mtime_ns == readonly_state.st_mtime_ns
+            and target.stat().st_mode == readonly_state.st_mode,
+        )
+        denied = client.put(
+            "/api/workbench/content",
+            params=params,
+            content=b"changed",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "If-Match": before["revision"],
+            },
+        )
+        check(
+            "readonly Markdown public save is rejected",
+            denied.status_code == 500 and denied.json().get("detail") == "write_failed",
+            denied.text,
+        )
+        content = client.app.state.content
+        try:
+            content.commit_bytes(payload["project_id"], target.name, b"changed", before["revision"])
+        except ContentError as error:
+            check("readonly Markdown rejects a stale writable save", error.code == "write_failed")
+        else:
+            check("readonly Markdown rejects a stale writable save", False)
+        check("readonly Markdown original bytes preserved", target.read_bytes() == original)
+        target.chmod(stat.S_IREAD | stat.S_IWRITE)
+        restored = client.get("/api/workbench/open", params=params).json()
+        check("restored write permission enables editing", restored["capabilities"]["can_edit"])
+        check("restored write permission enables saving", restored["capabilities"]["can_save"])
+    finally:
+        if target.exists():
+            target.chmod(stat.S_IREAD | stat.S_IWRITE)
         shutil.rmtree(project, ignore_errors=True)
 
 
@@ -297,7 +390,7 @@ def test_pdf_visual_region_manifest_and_crop_use_the_live_revision() -> None:
             (project / "paper.pdf").write_bytes(pdf.tobytes())
         client = _client(project)
         opened = client.get("/api/workbench/open", params={"path": "paper.pdf"}).json()
-        indexes = PdfIndexService(client.app.state.content)
+        indexes = PdfIndexService(client.app.state.content, activities=Activities())
         setattr(client.app.state, PDF_INDEX_STATE, indexes)
         params = {
             "path": "paper.pdf",
@@ -572,7 +665,7 @@ def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> No
         )
 
         check(
-            "CSV 与 XLSX 统一进入 ZetaOffice spreadsheet viewer",
+            "CSV 与 XLSX 进入 spreadsheet viewer",
             csv_open.get("viewer") == "spreadsheet" and simple_open.get("viewer") == "spreadsheet",
             f"csv={csv_open} simple={simple_open}",
         )
@@ -582,10 +675,10 @@ def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> No
             f"csv={csv_open} simple={simple_open}",
         )
         check(
-            "CSV 与 XLSX 统一只读",
-            csv_open.get("capabilities", {}).get("can_edit") is False
-            and single_open.get("capabilities", {}).get("can_edit") is False
-            and csv_open.get("capabilities", {}).get("can_save") is False
+            "安全 CSV 可编辑保存，XLSX 保持只读",
+            csv_open.get("capabilities", {}).get("can_edit") is True
+            and single_open.get("capabilities", {}).get("can_edit") is True
+            and csv_open.get("capabilities", {}).get("can_save") is True
             and csv_open.get("capabilities", {}).get("can_version") is True
             and simple_open.get("capabilities", {}).get("can_edit") is False
             and simple_open.get("capabilities", {}).get("can_save") is False
@@ -723,6 +816,9 @@ def test_commit_requires_current_revision() -> None:
         target = project / "draft.md"
         target.write_bytes(b"before\n")
         os.chmod(target, 0o640)
+        original_stat = target.stat()
+        original_mode = stat.S_IMODE(original_stat.st_mode)
+        original_attributes = getattr(original_stat, "st_file_attributes", None)
         client = _client(project)
 
         head = client.head("/api/workbench/content", params={"path": "draft.md"})
@@ -772,10 +868,12 @@ def test_commit_requires_current_revision() -> None:
             == "saved",
             repr(versions),
         )
+        saved_stat = target.stat()
         check(
             "保存保留原文件 mode",
-            stat.S_IMODE(target.stat().st_mode) == 0o640,
-            oct(stat.S_IMODE(target.stat().st_mode)),
+            stat.S_IMODE(saved_stat.st_mode) == original_mode
+            and getattr(saved_stat, "st_file_attributes", None) == original_attributes,
+            f"before={original_stat} after={saved_stat}",
         )
         retried = client.put(
             "/api/workbench/content",
@@ -1368,6 +1466,7 @@ def test_office_image_leases() -> None:
 
 
 if __name__ == "__main__":
+    test_product_mime_registry_precedes_host()
     test_manual_raw_versioning_does_not_invent_preview_capabilities()
     test_office_image_leases()
     test_markdown_images_persist()
@@ -1377,6 +1476,7 @@ if __name__ == "__main__":
     test_office_documents_are_preview_only()
     test_editor_formats_open_save_and_reopen()
     test_open_binds_existing_snapshot()
+    test_readonly_file_capabilities_and_save()
     test_open_projects_versioning_without_a_resource_tree_scan()
     test_recreated_pdf_opens_with_an_isolated_identity()
     test_pdf_identity_conflict_is_a_structured_response()

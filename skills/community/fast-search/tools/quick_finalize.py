@@ -16,6 +16,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ranking  # noqa: E402
+import publication_window  # noqa: E402
+import paper_identity  # noqa: E402
 import search_policy  # noqa: E402
 import state as search_state  # noqa: E402
 
@@ -29,14 +31,8 @@ STOPWORDS = {
 }
 
 
-def _exclusive_cutoff_year(query):
-    """Return the exclusive year in a natural-language ``before YEAR`` query."""
-    match = re.search(
-        r"\bbefore\s+(?:(?:jan(?:uary)?)\s+(?:1(?:st)?\s*,?\s*)?)?"
-        r"((?:19|20|21)\d{2})\b",
-        str(query), re.I,
-    )
-    return int(match.group(1)) if match else None
+class DirectTargetNotFound(ValueError):
+    """Bounded retrieval did not verify the target; not proof of non-indexing."""
 
 
 def _identity(paper):
@@ -128,6 +124,8 @@ def _covered_concepts(paper, concepts):
 
 
 def _reason(paper):
+    if str(paper.get("paper_id", "")).startswith("external:"):
+        return "Scholarly metadata verified at %s; no PaperHub record was required." % paper.get("verification_url", paper.get("url", ""))
     title_hit = paper.get("_title_hit")
     sources = _sources(paper)
     reference = any(source.startswith("references:") for source in sources)
@@ -147,7 +145,7 @@ def _public_paper(paper, tier, concepts):
         "paper_id", "title", "authors", "year", "venue", "journal_name",
         "journal_pages", "journal_volume", "citation_count", "doi", "arxiv_id",
         "is_open_access", "url", "publication_date", "reference_count",
-        "influential_citation_count", "publication_types", "source", "found_by",
+        "influential_citation_count", "publication_types", "source", "found_by", "verification_url",
     )
     output = {field: paper.get(field) for field in fields if field in paper}
     output["access"] = (
@@ -176,32 +174,8 @@ def _compact_text(value):
 def _direct_query_match(paper, query):
     """Return a strong match class for identifiers or a title named by the user."""
     query_text = str(query or "")
-    arxiv_pattern = r"(?<!\d)(\d{4}\.\d{4,5})(?:v\d+)?(?!\d)"
-    query_arxiv_ids = {
-        match.group(1).lower()
-        for match in re.finditer(arxiv_pattern, query_text, re.I)
-    }
-    paper_arxiv_ids = {
-        match.group(1).lower()
-        for match in re.finditer(
-            arxiv_pattern,
-            "%s %s %s" % (
-                paper.get("arxiv_id") or "",
-                paper.get("doi") or "",
-                paper.get("url") or "",
-            ),
-            re.I,
-        )
-    }
-    if query_arxiv_ids & paper_arxiv_ids:
+    if paper_identity.identifier_match(paper, query_text) or paper_identity.url_match(paper, query_text):
         return 2
-
-    doi_match = re.search(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", query_text, re.I)
-    if doi_match and doi_match.group(0).rstrip(".,)").casefold() == str(
-        paper.get("doi") or ""
-    ).strip().casefold():
-        return 2
-
     normalized_query = _compact_text(query_text)
     normalized_title = _compact_text(paper.get("title") or "")
     if len(normalized_title) >= 8 and normalized_title in normalized_query:
@@ -213,20 +187,22 @@ def _best_title_match(paper, best_title):
     """Return a match only for the agent-declared canonical full title."""
     if not str(best_title or "").strip():
         return 0
-    if ranking.title_key(best_title) == ranking.title_key(paper.get("title")):
+    key = ranking.title_key(best_title)
+    if key and key == ranking.title_key(paper.get("title")):
+        return 2
+    # Non-Latin titles must not match merely because both ASCII keys are empty.
+    full_key = _compact_text(best_title)
+    if full_key and full_key == _compact_text(paper.get("title") or ""):
         return 2
     return 0
 
 
 def _declared_target_match(paper, query, best_title):
+    if paper_identity.identifier_conflict(paper, query):
+        return 0
     direct = _direct_query_match(paper, query)
-    query_text = str(query or "")
-    has_direct_identifier = bool(
-        re.search(r"(?<!\d)\d{4}\.\d{4,5}(?:v\d+)?(?!\d)", query_text, re.I)
-        or re.search(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", query_text, re.I)
-    )
-    if has_direct_identifier:
-        return 2 if direct == 2 else 0
+    # Missing identifiers are not a contradiction. The canonical full title
+    # must already have been verified against the input in the same web batch.
     return max(2 if direct == 2 else 0, _best_title_match(paper, best_title))
 
 
@@ -251,7 +227,7 @@ def _promote_tier1_best(selected, tier1_count, query="", best_title=""):
 def finalize_quick(
     session_dir, output_dir, concepts_text=None, count=None,
     diversity_weight=0.2, best_title="", require_best_target=False,
-    papers_override=None,
+    papers_override=None, external_audit=None,
 ):
     """Finalize one Veryfast session and return a compact result summary."""
     state = search_state.read_state(session_dir)
@@ -271,52 +247,44 @@ def finalize_quick(
         papers = list(pool.values()) if isinstance(pool, dict) else list(pool)
     else:
         papers = list(papers_override)
-    if not papers:
+    window = publication_window.resolve(state.get("publication_window"))
+    if not papers and not window and not require_best_target:
         raise ValueError("search pool is empty")
-    cutoff = _exclusive_cutoff_year(state.get("query", ""))
-    cutoff_filtered = 0
-    if cutoff:
-        before = len(papers)
-        papers = [
-            paper for paper in papers
-            if not isinstance(paper.get("year"), int) or paper["year"] < cutoff
-        ]
-        cutoff_filtered = before - len(papers)
-        if not papers:
-            raise ValueError("all search results violate the publication cutoff")
+    retrieved_pool_size = len(papers)
+    papers, date_exclusions = publication_window.filter_papers(papers, window)
+    # Retain the legacy audit key without reinterpreting the user's prose.
+    end = window.get('date_end', '')
+    cutoff = int(end[:4]) + 1 if end.endswith('-12-31') else None
+    cutoff_filtered = sum(date_exclusions.values())
     concepts = _concepts(state.get("query", ""), concepts_text)
     query = state.get("query", "")
     best_title = str(best_title or "").strip()
     target_pool_matches = [
         paper for paper in papers
         if _declared_target_match(paper, query, best_title)
-    ] if best_title else []
+    ] if best_title or require_best_target else []
     if require_best_target and not target_pool_matches:
-        raise ValueError(
-            "required direct target is absent from the PaperHub candidate pool: %s"
-            % best_title
+        raise DirectTargetNotFound(
+            "required direct target could not be verified in the eligible candidate pool: %s"
+            % (best_title or query)
         )
     selected = _select(papers, concepts, count, diversity_weight)
+    if require_best_target:
+        # An explicit single-paper request has an unambiguous relevance anchor.
+        # Reserve it without changing the topic ranker or other candidates' order.
+        target = max(target_pool_matches, key=lambda paper: (
+            _direct_query_match(paper, query), _best_title_match(paper, best_title),
+            float(paper.get("_quick_score", 0) or 0),
+        ))
+        selected = [target] + [paper for paper in selected if _identity(paper) != _identity(target)]
+        selected = selected[:count]
     configured_budget = list(policy["tier_budget"])
     if count != sum(configured_budget):
         tier1 = min(4, max(1, round(count * 0.2)))
         tier2 = min(count - tier1, max(1, round(count * 0.45)))
         configured_budget = [tier1, tier2, count - tier1 - tier2]
-    target_selected_indices = [
-        index for index, paper in enumerate(selected)
-        if _declared_target_match(paper, query, best_title)
-    ] if best_title else []
-    if require_best_target and (
-        not target_selected_indices
-        or min(target_selected_indices) >= configured_budget[0]
-    ):
-        raise ValueError(
-            "required direct target was retrieved but did not enter Tier 1: %s"
-            % best_title
-        )
-    _promote_tier1_best(
-        selected, configured_budget[0], query, best_title=best_title,
-    )
+    if not require_best_target:
+        _promote_tier1_best(selected, configured_budget[0], query, best_title=best_title)
     output_papers = [
         _public_paper(paper, _tier(index, configured_budget), concepts)
         for index, paper in enumerate(selected)
@@ -332,15 +300,30 @@ def finalize_quick(
             "tier_budget": configured_budget,
             "selection_strategy": policy["selection_strategy"],
             "tier1_top1_strategy": (
+                "verified_required_target_first" if require_best_target else
                 "explicit_query_alignment_then_agent_best_target_then_relevance_within_tier1"
             ),
-            "tier1_top1_paper_id": output_papers[0].get("paper_id", ""),
+            "tier1_top1_paper_id": output_papers[0].get("paper_id", "") if output_papers else "",
             "agent_best_target_title": best_title,
             "agent_best_target_required": bool(require_best_target),
             "agent_best_target_pool_match_count": len(target_pool_matches),
             "concepts": concepts,
             "exclusive_cutoff_year": cutoff,
             "cutoff_filtered_count": cutoff_filtered,
+            **({"external_verification": external_audit} if external_audit and external_audit.get("checks") else {}),
+            **({
+                "publication_window": window,
+                "publication_date_policy": "verified_record_date_or_fully_contained_year",
+                "retrieved_pool_size": retrieved_pool_size,
+                "date_exclusions": date_exclusions,
+                "retrieval_date_filter": state.get("retrieval_date_filter", {}),
+                "requested_count": count,
+                "result_status": "completed" if output_papers else "empty",
+                "shortfall_reason": (
+                    "insufficient_eligible_candidates"
+                    if len(output_papers) < count else None
+                ),
+            } if window else {}),
         },
         "papers": output_papers,
     }
@@ -353,6 +336,11 @@ def finalize_quick(
         "pool_size": len(papers),
         "selected_count": len(output_papers),
         "tiers": {str(key): value for key, value in sorted(tiers.items())},
+        **({
+            "publication_window": window,
+            "result_status": metadata["search_summary"]["result_status"],
+            "shortfall_reason": metadata["search_summary"]["shortfall_reason"],
+        } if window else {}),
     }
 
 

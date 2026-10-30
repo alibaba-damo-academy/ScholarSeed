@@ -25,7 +25,7 @@
   "selected": "Selected models: {{models}}",
   "connect": "Connect ChatGPT",
   "unavailable": "Subscription connections are unavailable in this environment",
-  "login": "Sign in to ChatGPT",
+  "login": "Continue with ChatGPT",
   "cancel": "Cancel",
   "operationFailed": "Operation failed. Try again.",
   "errors": {
@@ -39,7 +39,7 @@
     "oauth_transaction_unavailable": "Sign-in has ended. Sign in to ChatGPT again.",
     "oauth_network_unavailable": "Unable to connect. Check your network and try again.",
     "oauth_exchange_failed": "Unable to complete ChatGPT sign-in. Authorize again.",
-    "oauth_account_changed": "The ChatGPT account changed. Disconnect and sign in again.",
+    "oauth_account_changed": "This connection belongs to another ChatGPT identity. Sign in with the original identity or create a new connection.",
     "oauth_connection_changed": "The connection state changed. Sign in again.",
     "oauth_storage_unavailable": "Unable to save authorization. Check local storage and try again.",
     "oauth_refresh_busy": "Authorization is refreshing. Try again later.",
@@ -47,7 +47,12 @@
     "oauth_reauth_required": "Authorization expired. Sign in again.",
     "oauth_models_rejected": "Unable to load models. Check your account subscription.",
     "oauth_models_unavailable": "Unable to read models. Check your network and try again.",
-    "oauth_disconnect_before_login": "Disconnect the current account first."
+    "oauth_disconnect_before_login": "Disconnect the current account first.",
+    "oauth_plan_permission_required": "Authorize this connection again and allow ChatGPT plan usage.",
+    "oauth_identity_invalid": "Could not verify the OpenAI identity. Please authorize again.",
+    "oauth_discovery_unavailable": "OpenAI authentication configuration is temporarily unavailable.",
+    "oauth_revocation_unconfirmed": "Disconnected locally, but remote revocation was not confirmed. Disconnect this app in ChatGPT settings.",
+    "oauth_capability_unsupported": "This capability is not supported by ChatGPT plan usage. Select another model source."
   },
   "ipc": {
     "localServiceRequired": "Sign in to ChatGPT using the local desktop service. Remote connections do not support this sign-in method.",
@@ -61,5 +66,11 @@
     "http": "Model connection request failed (HTTP {{status}}).",
     "network": "Could not reach the model configuration service. Try again later."
   },
-  "listSeparator": ", "
+  "listSeparator": ", ",
+  "storageUnavailable": "Credentials unavailable",
+  "storageRecovery": "Local credentials cannot be read. Check data folder permissions or storage availability, then retry. You do not need to delete the connection or sign in again.",
+  "retry": "Retry",
+  "permissionRequired": "ChatGPT plan permission required",
+  "manageUsage": "Manage ChatGPT usage",
+  "sourceNotice": "This connection uses your ChatGPT plan, separately from ScholarSeed sign-in and model allowance."
 }

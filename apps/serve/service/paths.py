@@ -13,6 +13,7 @@ from pathlib import Path
 
 from service.brand import HOME_ENV, default_home
 from service.content.domain.model import PROJECT_STATE_DIRNAME
+from service.platform.storage import account_directory
 
 
 def global_home() -> Path:
@@ -22,12 +23,28 @@ def global_home() -> Path:
     return Path(configured).expanduser() if configured else default_home()
 
 
+# Permanent OS-account namespace, never derived from relocatable product data.
+COORDINATION_DIRNAME = ".scholarseed-coordination"
+
+
+def coordination_root() -> Path:
+    """Select the shared coordinator without creating it or authorizing IO."""
+    return Path(account_directory()) / COORDINATION_DIRNAME
+
+
 SCHOLARSEED_HOME = global_home()
 CONFIG_FILENAME = "config.json"
 LOGS_DIRNAME = "logs"
 SYSTEM_LOG_FILENAME = "scholarseed.log"
 STARTUP_LOG_DIRNAME = "startup"
 CONFIG_PATH = SCHOLARSEED_HOME / CONFIG_FILENAME
+MCP_CONFIG_FILENAME = "mcp.json"
+MCP_CONFIG_LOCK_FILENAME = "mcp.lock"
+MCP_CONFIG_PATH = SCHOLARSEED_HOME / MCP_CONFIG_FILENAME
+MCP_PLANS_DIRNAME = "mcp-plans"
+MCP_PLANS_PATH = SCHOLARSEED_HOME / MCP_PLANS_DIRNAME
+CONNECTOR_DIRECTORY = "connectors"
+CONNECTOR_STATE_ROOT = SCHOLARSEED_HOME / CONNECTOR_DIRECTORY
 LOGS_DIR = SCHOLARSEED_HOME / LOGS_DIRNAME
 SYSTEM_LOG = LOGS_DIR / SYSTEM_LOG_FILENAME
 STARTUP_LOG_DIR = LOGS_DIR / STARTUP_LOG_DIRNAME
@@ -43,6 +60,19 @@ DEFAULT_WORKSPACE_ENV = "SCHOLARSEED_DEFAULT_WORKSPACE"
 
 # proposal 35: service action event spine (产品操作 envelope, 非 trace)
 SERVICE_DIR: Path = SCHOLARSEED_HOME / "service"
+RESOURCE_SEARCH_PROFILES_DIR: Path = SERVICE_DIR / "resource-search-profiles"
+RESOURCE_SEARCH_PROFILE_ENV = "SCHOLARSEED_RESOURCE_SEARCH_PROFILE"
+BROWSER_DIRNAME = "browser"
+BROWSER_STAGES_DIRNAME = "stages"
+BROWSER_RECEIPTS_DIRNAME = "receipts"
+BROWSER_LOCK_FILENAME = "store.lock"
+BROWSER_VAULT_FILENAME = "vault.bin"
+BROWSER_DOWNLOADS_FILENAME = "downloads.json"
+BROWSER_DIR: Path = SERVICE_DIR / BROWSER_DIRNAME
+BROWSER_STAGES_DIR: Path = BROWSER_DIR / BROWSER_STAGES_DIRNAME
+BROWSER_RECEIPTS_DIR: Path = BROWSER_DIR / BROWSER_RECEIPTS_DIRNAME
+BROWSER_VAULT_FILE: Path = BROWSER_DIR / BROWSER_VAULT_FILENAME
+BROWSER_DOWNLOADS_FILE: Path = BROWSER_DIR / BROWSER_DOWNLOADS_FILENAME
 MODEL_CREDENTIALS_DB: Path = SERVICE_DIR / "model_credentials.sqlite3"
 MODEL_CREDENTIAL_LOCKS: Path = SERVICE_DIR / "model-credential-locks"
 SERVICE_BRIDGE_DIR: Path = SERVICE_DIR / "bridge"
@@ -61,6 +91,10 @@ LITERATURE_SEARCH_STATE_FILENAME = "search.json"
 # 目录对用户立即消失, 真正的删除由下次启动清扫完成。
 LITERATURE_SEARCH_DELETE_FLAG_FILENAME = "deleted.flag"
 SESSION_CATALOG_DB: Path = SERVICE_DIR / "sessions.sqlite3"
+SESSION_BODY_SUFFIX = ".bodies"
+SESSION_BODIES_DIR: Path = SESSION_CATALOG_DB.with_suffix(SESSION_BODY_SUFFIX)
+SESSION_BLOCK_SUFFIX = ".blocks"
+SESSION_BLOCKS_DIR: Path = SESSION_CATALOG_DB.with_suffix(SESSION_BLOCK_SUFFIX)
 # proposal 47: content 域的项目身份、关联授权根、事件游标与审计。
 # Project identities have a separate lifecycle from session execution records.
 # Both catalogs preserve user rows through additive migrations.
@@ -85,6 +119,8 @@ USER_MEMORY_DIR: Path = SCHOLARSEED_HOME / "memory"
 SERVICE_SKILLS_DIR: Path = SCHOLARSEED_HOME / "skills"
 SERVICE_BUNDLED_SKILLS_DIR: Path = Path(__file__).resolve().parent / "capabilities" / "skills"
 SERVICE_SKILL_ROOTS: tuple[Path, ...] = (SERVICE_BUNDLED_SKILLS_DIR, SERVICE_SKILLS_DIR)
+TASK_PYTHON_PARTS = (PROJECT_STATE_DIRNAME, "python", "venv")
+TASK_PYTHON_COMMAND_PARTS = (*TASK_PYTHON_PARTS[:-1], "commands")
 SERVICE_SKILL_STATE_FILE: Path = SERVICE_DIR / "skills.json"
 SERVICE_PROJECTS_FILE: Path = SERVICE_DIR / "projects.json"
 SERVICE_CASES_DIR: Path = SCHOLARSEED_HOME / "test_sessions"
@@ -102,6 +138,16 @@ SERVICE_DATABASES: tuple[Path, ...] = (
 )
 
 
+def task_python_root(cwd: Path) -> Path:
+    """Resolve a task environment from its execution directory, not project identity."""
+    return cwd.expanduser().resolve().joinpath(*TASK_PYTHON_PARTS)
+
+
+def task_python_commands(cwd: Path) -> Path:
+    """Locate per-cwd command aliases without using project registration."""
+    return cwd.expanduser().resolve().joinpath(*TASK_PYTHON_COMMAND_PARTS)
+
+
 def service_deny_read_roots() -> tuple[Path, ...]:
     """serve 自有、Agent 沙箱不得读取的落盘面（proposal 116 P4）。
 
@@ -113,7 +159,14 @@ def service_deny_read_roots() -> tuple[Path, ...]:
     databases = set(SERVICE_DATABASES)
     if SERVICE_DIR.is_dir():
         databases.update(SERVICE_DIR.glob("*.sqlite3"))
-    roots = [SERVICE_LITERATURE_FILES_DIR]
+    roots = [
+        CONNECTOR_STATE_ROOT,
+        SERVICE_LITERATURE_FILES_DIR,
+        BROWSER_DIR,
+        RESOURCE_SEARCH_PROFILES_DIR,
+        SESSION_BODIES_DIR,
+        SESSION_BLOCKS_DIR,
+    ]
     for database in sorted(databases):
         roots.append(database)
         roots.extend(
@@ -133,6 +186,7 @@ def service_deny_read_roots() -> tuple[Path, ...]:
 # 一个在项目内。`.scholarseed` 不在这里重写字面量, 它的真源是 content 域。
 PROJECT_SERVICE_DIRNAME = "service"
 PROJECT_DB_FILENAME = "project.sqlite3"
+PROJECT_CREATION_RECEIPT_FILENAME = "creation.json"
 #: 项目级业务库。单库多表: 各域在同一个文件里建自己的表 (表名带域前缀), 不是每域一个库。
 #: 惰性创建 —— 没有域真正写入时, 项目目录下不会凭空出现这个文件。
 PROJECT_DB_RELATIVE = f"{PROJECT_STATE_DIRNAME}/{PROJECT_SERVICE_DIRNAME}/{PROJECT_DB_FILENAME}"
@@ -168,11 +222,14 @@ def storage_instance_id(root: Path = SCHOLARSEED_HOME) -> str:
 # 本模块是路径契约唯一 owner, Desktop 的 runtime/components.cjs 镜像同一相对形状,
 # 两侧契约测试互相钉死 (desktop: runtime/components.test.cjs 读本文件常量比对)。
 RUNTIME_DIRNAME = "runtime"
+RUNTIME_CACHE_DIRNAME = "cache"
+TEXLIVE_CACHE_DIRNAME = "texlive"
 RUNTIME_STAGING_DIRNAME = "staging"
 RUNTIME_MANIFESTS_DIRNAME = "manifests"
 RUNTIME_LOCKS_DIRNAME = "locks"
 RUNTIME_COMPONENT_KINDS = ("python", "texlive", "powershell")
 RUNTIME_DIR: Path = SCHOLARSEED_HOME / RUNTIME_DIRNAME
+TEXLIVE_CACHE_DIR: Path = RUNTIME_DIR / RUNTIME_CACHE_DIRNAME / TEXLIVE_CACHE_DIRNAME
 RUNTIME_STAGING_DIR: Path = RUNTIME_DIR / RUNTIME_STAGING_DIRNAME
 RUNTIME_MANIFESTS_DIR: Path = RUNTIME_DIR / RUNTIME_MANIFESTS_DIRNAME
 RUNTIME_LOCKS_DIR: Path = RUNTIME_DIR / RUNTIME_LOCKS_DIRNAME
@@ -199,6 +256,9 @@ def runtime_component_dir(kind: str, target: str, content_id: str) -> Path:
 __all__ = [
     "SCHOLARSEED_HOME",
     "RUNTIME_DIRNAME",
+    "RUNTIME_CACHE_DIRNAME",
+    "TEXLIVE_CACHE_DIRNAME",
+    "TEXLIVE_CACHE_DIR",
     "RUNTIME_STAGING_DIRNAME",
     "RUNTIME_MANIFESTS_DIRNAME",
     "RUNTIME_LOCKS_DIRNAME",
@@ -224,6 +284,8 @@ __all__ = [
     "LITERATURE_SEARCH_STATE_FILENAME",
     "LITERATURE_SEARCH_DELETE_FLAG_FILENAME",
     "SESSION_CATALOG_DB",
+    "SESSION_BODIES_DIR",
+    "SESSION_BLOCKS_DIR",
     "CONTENT_DB",
     "RESOURCE_IMPORTS_DB",
     "DESKTOP_HANDOFF_DB",

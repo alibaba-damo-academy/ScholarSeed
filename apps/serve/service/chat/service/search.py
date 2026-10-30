@@ -7,10 +7,12 @@ import json
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
 from scholarseed_runtime.contract import PermissionIntent
 from service.chat.service.receipts import SEARCH_RECEIPT_SCHEMA
 from service.chat.service.sources import canonical_url
+from service.invocation.service.artifacts import InvocationArtifactError
 from service.invocation.service.model import InvocationCommand, InvocationExecution, InvocationSkill
 from service.invocation.service.runtime import InvocationService
 from service.platform.bridge import SEARCH_RESULT_LIMIT, WebSearchRequest
@@ -29,6 +31,31 @@ SEARCH_SUCCESS = frozenset({"completed", "empty"})
 SEARCH_FAILURE = frozenset({"unavailable", "failed", "action_required"})
 
 
+class SearchErrorCode(StrEnum):
+    PROFILE_INVALID = "search_profile_invalid"
+    QUERY_REQUIRED = "search_query_required"
+    RESULT_INVALID = "search_result_invalid"
+    RESULT_TOO_LARGE = "search_result_too_large"
+    RESULT_ENCODING_INVALID = "search_result_encoding_invalid"
+    MARKER_INVALID = "search_marker_invalid"
+    CANDIDATE_INVALID = "search_candidate_invalid"
+    TERMINAL_MISSING = "search_terminal_missing"
+    NATIVE_EXECUTION_MISSING = "search_native_execution_missing"
+    ARTIFACT_INVALID = "search_artifact_invalid"
+    QUERY_MISMATCH = "search_query_mismatch"
+    EXECUTION_TIMEOUT = "search_execution_timeout"
+
+
+SEARCH_REQUEST_ERRORS = frozenset({SearchErrorCode.PROFILE_INVALID, SearchErrorCode.QUERY_REQUIRED})
+
+
+class SearchError(ValueError):
+    def __init__(self, code: SearchErrorCode) -> None:
+        self.code = code
+        self.invocation_id = ""
+        super().__init__(code.value)
+
+
 class SearchInterrupted(RuntimeError):
     pass
 
@@ -38,6 +65,16 @@ class SearchProfile:
     provider: str
     artifact: str = ""
     native: bool = False
+
+
+@dataclass
+class SearchExecution:
+    invocation_id: str = ""
+
+    def bind(self, result: dict) -> dict:
+        if not self.invocation_id:
+            return result
+        return {**result, "search_id": self.invocation_id, "invocation_id": self.invocation_id}
 
 
 SEARCH_PROFILES = {
@@ -68,17 +105,21 @@ def search_prompt(command: WebSearchRequest, profile: SearchProfile) -> str:
 
 def search_result(text: str, profile: SearchProfile, limit: int) -> dict:
     if not isinstance(text, str):
-        raise ValueError("search_result_invalid")
-    if len(text.encode()) > SEARCH_MAX_BYTES:
-        raise ValueError("search_result_too_large")
+        raise SearchError(SearchErrorCode.RESULT_INVALID)
+    try:
+        result_bytes = len(text.encode())
+    except UnicodeEncodeError as error:
+        raise SearchError(SearchErrorCode.RESULT_ENCODING_INVALID) from error
+    if result_bytes > SEARCH_MAX_BYTES:
+        raise SearchError(SearchErrorCode.RESULT_TOO_LARGE)
     if profile.native:
         if text.count(SEARCH_BEGIN) != 1 or text.count(SEARCH_END) != 1:
-            raise ValueError("search_marker_invalid")
+            raise SearchError(SearchErrorCode.MARKER_INVALID)
         text = text.split(SEARCH_BEGIN, 1)[1].split(SEARCH_END, 1)[0]
     try:
         value = json.loads(text)
-    except RecursionError as error:
-        raise ValueError("search_result_invalid") from error
+    except (json.JSONDecodeError, RecursionError) as error:
+        raise SearchError(SearchErrorCode.RESULT_INVALID) from error
     if (
         not isinstance(value, dict)
         or value.get("schema") != SEARCH_RECEIPT_SCHEMA
@@ -86,7 +127,7 @@ def search_result(text: str, profile: SearchProfile, limit: int) -> dict:
         or not isinstance(value.get("query"), str)
         or not isinstance(value.get("status"), str)
     ):
-        raise ValueError("search_result_invalid")
+        raise SearchError(SearchErrorCode.RESULT_INVALID)
     if value["status"] in SEARCH_FAILURE:
         return {"ok": False, "status": value["status"], "error": "search_provider_failed"}
     candidates = value.get("candidates")
@@ -97,17 +138,17 @@ def search_result(text: str, profile: SearchProfile, limit: int) -> dict:
         or (value["status"] == "empty" and candidates)
         or value.get("error") is not None
     ):
-        raise ValueError("search_result_invalid")
+        raise SearchError(SearchErrorCode.RESULT_INVALID)
     rows = []
     seen = set()
     for candidate in candidates:
         if not isinstance(candidate, dict) or any(
             not isinstance(candidate.get(key), str) for key in ("url", "title", "description")
         ):
-            raise ValueError("search_candidate_invalid")
+            raise SearchError(SearchErrorCode.CANDIDATE_INVALID)
         identity = canonical_url(candidate["url"])
         if identity is None:
-            raise ValueError("search_candidate_invalid")
+            raise SearchError(SearchErrorCode.CANDIDATE_INVALID)
         if identity not in seen:
             seen.add(identity)
             rows.append({key: candidate[key] for key in ("url", "title", "description")})
@@ -137,24 +178,36 @@ class SearchService:
     ) -> dict:
         profile = SEARCH_PROFILES.get(command.profile)
         if profile is None:
-            raise ValueError("search_profile_invalid")
+            raise SearchError(SearchErrorCode.PROFILE_INVALID)
         if not command.query.strip():
-            raise ValueError("search_query_required")
-        task = asyncio.create_task(self._execute(command, profile, owner_id, user_id, permission))
+            raise SearchError(SearchErrorCode.QUERY_REQUIRED)
+        execution = SearchExecution()
+        task = asyncio.create_task(
+            self._execute(command, profile, owner_id, user_id, permission, execution)
+        )
+        deadline = asyncio.timeout(SEARCH_TIMEOUT_SECONDS)
         try:
-            async with asyncio.timeout(SEARCH_TIMEOUT_SECONDS):
+            async with deadline:
                 while not task.done():
                     if not current():
-                        return {"ok": False, "status": "interrupted", "error": "search_interrupted"}
+                        return execution.bind(
+                            {"ok": False, "status": "interrupted", "error": "search_interrupted"}
+                        )
                     await asyncio.wait({task}, timeout=SEARCH_POLL_SECONDS)
                 result = task.result()
                 if not current():
-                    return {"ok": False, "status": "interrupted", "error": "search_interrupted"}
+                    return execution.bind(
+                        {"ok": False, "status": "interrupted", "error": "search_interrupted"}
+                    )
                 if result["ok"]:
                     await publish(result)
-                return result
+                return execution.bind(result)
         except TimeoutError:
-            return {"ok": False, "status": "failed", "error": "search_timeout"}
+            if not deadline.expired():
+                return execution.bind(
+                    {"ok": False, "status": "failed", "error": SearchErrorCode.EXECUTION_TIMEOUT}
+                )
+            return execution.bind({"ok": False, "status": "failed", "error": "search_timeout"})
         finally:
             if not task.done():
                 task.cancel()
@@ -167,6 +220,7 @@ class SearchService:
         owner_id: str,
         user_id: str,
         permission: PermissionIntent,
+        execution: SearchExecution,
     ) -> dict:
         prepared = await self._invocations.prepare(
             InvocationCommand(
@@ -181,6 +235,7 @@ class SearchService:
             permission=replace(permission, writable_roots=()),
         )
         invocation_id = prepared.record.invocation_id
+        execution.invocation_id = invocation_id
         native_seen = False
         terminal = None
         drained = False
@@ -204,13 +259,19 @@ class SearchService:
                         terminal = event
             drained = True
             if terminal is None:
-                raise ValueError("search_terminal_missing")
+                raise SearchError(SearchErrorCode.TERMINAL_MISSING)
             if terminal["type"] != SEARCH_COMPLETED_EVENT:
-                return {"ok": False, "status": "failed", "error": terminal["type"]}
+                reason = terminal["data"].get("error")
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "error": reason if isinstance(reason, str) and reason else terminal["type"],
+                    "terminal": terminal["type"],
+                }
             data = terminal["data"]
             if profile.native:
                 if not native_seen:
-                    raise ValueError("search_native_execution_missing")
+                    raise SearchError(SearchErrorCode.NATIVE_EXECUTION_MISSING)
                 text = data.get("text", "")
             else:
                 artifacts = [
@@ -223,16 +284,24 @@ class SearchService:
                     len(artifacts) != 1
                     or artifacts[0].get("size_bytes", SEARCH_MAX_BYTES + 1) > SEARCH_MAX_BYTES
                 ):
-                    raise ValueError("search_artifact_invalid")
+                    raise SearchError(SearchErrorCode.ARTIFACT_INVALID)
                 _, handle = await self._invocations.artifact(
                     invocation_id, artifacts[0]["artifact_id"], owner_id=owner_id
                 )
                 with handle:
-                    text = handle.read(SEARCH_MAX_BYTES + 1).decode("utf-8")
+                    try:
+                        text = handle.read(SEARCH_MAX_BYTES + 1).decode("utf-8")
+                    except UnicodeDecodeError as error:
+                        raise SearchError(SearchErrorCode.RESULT_ENCODING_INVALID) from error
             result = search_result(text, profile, command.limit)
             if result["ok"] and result["query"].strip() != command.query.strip():
-                raise ValueError("search_query_mismatch")
+                raise SearchError(SearchErrorCode.QUERY_MISMATCH)
             return {**result, "search_id": invocation_id, "invocation_id": invocation_id}
+        except SearchError as error:
+            error.invocation_id = invocation_id
+            raise
+        except InvocationArtifactError as error:
+            return {"ok": False, "status": "failed", "error": error.code}
         finally:
             if not drained:
                 await self._invocations.interrupt(invocation_id, owner_id=owner_id)

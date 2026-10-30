@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from publication import publication_options
 from citation_styles import style_ids
+from publication import publication_options
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,12 +53,8 @@ class ReviewOptionCopyTest(unittest.TestCase):
                     )
                 )
                 self.assertEqual(
-                    next(row['label'] for row in options['citation_styles'] if row['id'] == 'ieee'),
-                    (
-                        "IEEE 编号条目（含卷期页），条目信息可能存在不完整。"
-                        if language == "CHINESE"
-                        else "IEEE numbered references (including volume, issue, and pages); some entry details may be incomplete."
-                    ),
+                    next(row["label"] for row in options["citation_styles"] if row["id"] == "ieee"),
+                    ("IEEE 编号条目" if language == "CHINESE" else "IEEE numbered references"),
                 )
                 self.assertNotIn("metadata_risk", options["citation_styles"][2]["metadata"])
 

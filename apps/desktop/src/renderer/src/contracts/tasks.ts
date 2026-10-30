@@ -1,13 +1,7 @@
 import type { TFunction } from 'i18next'
 
 export type ProductTaskStatus =
-  | 'queued'
-  | 'running'
-  | 'settling'
-  | 'completed'
-  | 'partial'
-  | 'failed'
-  | 'cancelled'
+  'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
 
 export type ProductTaskResultStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled'
 
@@ -28,18 +22,21 @@ export interface ProductTaskOutcome {
   results: ProductTaskResult[]
 }
 
-export type TaskTitle = string | {
-  key: 'title.copy' | 'title.link'
-  names: string[]
-}
+export type TaskTitle =
+  | string
+  | {
+      key: 'title.copy' | 'title.link'
+      names: string[]
+    }
 
 export function taskTitleText(title: TaskTitle, t: TFunction<'tasks'>): string {
   if (typeof title === 'string') return title
   const operation = t(title.key)
   if (title.names.length === 0) return operation
-  const source = title.names.length === 1
-    ? title.names[0]
-    : t('title.sources', { name: title.names[0], count: title.names.length })
+  const source =
+    title.names.length === 1
+      ? title.names[0]
+      : t('title.sources', { name: title.names[0], count: title.names.length })
   return t('title.withSource', { operation, source })
 }
 
@@ -75,6 +72,11 @@ export interface ProductTaskPresentation {
   error: string
   failures: Array<{ name: string; reason: string }>
 }
+
+export function isActiveProductTask(task: ProductTask): boolean {
+  return task.status === 'queued' || task.status === 'running'
+}
+
 const PERCENT_MAX = 100
 
 export interface TaskProgressPresentation {
@@ -85,7 +87,7 @@ export interface TaskProgressPresentation {
 
 /**
  * Product progress is phase-local: only facts measurable inside the current stage
- * become a percentage. Completion is separately gated by the resource-tree readback.
+ * become a percentage. Terminal outcomes come from the task source.
  */
 export function taskProgressPresentation(
   task: ProductTask,
@@ -107,7 +109,7 @@ export function taskProgressPresentation(
     return {
       determinate: false,
       label: t('progress.scanning', { count: task.discoveredItems }),
-      value: 0
+      value: 0,
     }
   }
   if (task.phase === 'linking') {
@@ -117,30 +119,31 @@ export function taskProgressPresentation(
         task.totalItems > 0
           ? t('progress.linkingCount', { count: task.totalItems })
           : t('progress.linking'),
-      value: 0
+      value: 0,
     }
-  }
-  if (task.phase === 'refreshing') {
-    return { determinate: false, label: t('progress.refreshing'), value: 0 }
   }
   if (task.phase === 'versioning') {
     if (task.versionTotalItems <= 0) {
       return {
         determinate: false,
         label: t('progress.discoveringVersions', { count: task.versionDiscoveredItems }),
-        value: 0
+        value: 0,
       }
     }
     return {
       determinate: true,
-      label: t('progress.versioning', { completed: task.versionCompletedItems, total: task.versionTotalItems }),
+      label: t('progress.versioning', {
+        completed: task.versionCompletedItems,
+        total: task.versionTotalItems,
+      }),
       value: Math.min(
         PERCENT_MAX,
         Math.max(0, (task.versionCompletedItems / task.versionTotalItems) * PERCENT_MAX)
-      )
+      ),
     }
   }
-  if (task.phase !== 'copying') return { determinate: false, label: t('progress.preparing'), value: 0 }
+  if (task.phase !== 'copying')
+    return { determinate: false, label: t('progress.preparing'), value: 0 }
   const completed = task.totalBytes > 0 ? task.completedBytes : task.completedItems
   const total = task.totalBytes > 0 ? task.totalBytes : task.totalItems
   if (total <= 0) return { determinate: false, label: t('progress.copying'), value: 0 }
@@ -148,6 +151,6 @@ export function taskProgressPresentation(
   return {
     determinate: true,
     label: t('progress.copyingPercent', { percentage: Math.round(percentage) }),
-    value: percentage
+    value: percentage,
   }
 }

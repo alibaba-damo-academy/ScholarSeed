@@ -1,4 +1,18 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
+
+/** Observe OS creation before handing off a detached helper. This acknowledges
+ * spawn only, not helper readiness, successful installation or process-family exit.
+ */
+export async function startDetachedProcess(
+  executable: string,
+  args: readonly string[]
+): Promise<ChildProcess> {
+  const child = spawn(executable, args, { detached: true, stdio: 'ignore' })
+  await once(child, 'spawn')
+  child.unref()
+  return child
+}
 
 // subprocess.ts — 更新链全部外部命令的唯一异步收口点。
 //
@@ -7,6 +21,70 @@ import { spawn } from 'node:child_process'
 // 调用方只需声明上限，不能各自散落 spawn。
 
 const WINDOWS_PLATFORM = 'win32'
+const CHILD_KILL_WAIT_MS = 5_000
+const childStops = new WeakMap<ChildProcess, Promise<void>>()
+
+/** Wait for this owned child to exit; sending a signal is not an exit acknowledgement.
+ * This does not certify that descendants have stopped. Activation owns that boundary.
+ */
+export function stopChildProcess(
+  child: ChildProcess,
+  graceMs: number,
+  requestStop: () => void = () => {
+    child.kill('SIGTERM')
+  }
+): Promise<void> {
+  const pending = childStops.get(child)
+  if (pending) return pending
+  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) {
+    return Promise.resolve()
+  }
+  const stopped = new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      child.removeListener('exit', onExit)
+      child.removeListener('error', onError)
+    }
+    const onExit = (): void => {
+      cleanup()
+      resolve()
+    }
+    const onError = (error: Error): void => {
+      cleanup()
+      reject(error)
+    }
+    const kill = (): void => {
+      timer = setTimeout(() => {
+        onError(new Error(`child did not exit after SIGKILL: pid=${child.pid}`))
+      }, CHILD_KILL_WAIT_MS)
+      try {
+        child.kill('SIGKILL')
+      } catch (error) {
+        onError(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+    child.once('exit', onExit)
+    child.once('error', onError)
+    if (graceMs <= 0) {
+      kill()
+    } else {
+      timer = setTimeout(kill, graceMs)
+      try {
+        requestStop()
+      } catch (error) {
+        onError(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+  })
+  childStops.set(child, stopped)
+  // A failed attempt must remain retryable without creating an unhandled rejection.
+  void stopped.then(
+    () => childStops.delete(child),
+    () => childStops.delete(child)
+  )
+  return stopped
+}
 
 // chcp.com 报的活动控制台代码页 → TextDecoder 标签。中文 Windows 是 936(GBK)；不在表里或探测
 // 失败都退回 UTF-8。**这只影响日志/stderr 的可读性**：签名校验的判定输入走 `Set-Content -Encoding
@@ -128,8 +206,11 @@ export function runCommandAsync(
       if (settled) return
       settled = true
       cleanup()
-      child.kill('SIGKILL')
-      reject(error)
+      void stopChildProcess(child, 0).then(
+        () => reject(error),
+        (stopError: unknown) =>
+          reject(new Error(`${error.message}; child termination failed: ${String(stopError)}`))
+      )
     }
     if (timeoutMs !== undefined) {
       timer = setTimeout(
@@ -176,7 +257,14 @@ export async function requireCommandAsync(
   try {
     result = await runCommandAsync(executable, args, options)
   } catch (error) {
-    throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}`)
+    const wrapped = new Error(
+      `${label} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
+    // 透传 spawn 的 errno code（如 ENOENT）：调用方据此区分「校验工具缺失＝本机无法执行校验」与
+    // 「校验执行了但结果不可信」，不从错误文本反推（见 updates.ts 的 errorFallback 纪律，bug 87435837）。
+    const code = (error as NodeJS.ErrnoException | undefined)?.code
+    if (typeof code === 'string') (wrapped as NodeJS.ErrnoException).code = code
+    throw wrapped
   }
   const output = `${result.stdout}\n${result.stderr}`.trim()
   if (result.status !== 0) throw new Error(`${label} failed: ${output}`)

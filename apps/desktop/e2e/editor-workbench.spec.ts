@@ -2,6 +2,11 @@ import { resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { expect, test } from '@playwright/test'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.use({ channel: process.env.PLAYWRIGHT_CHANNEL })
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const FIXTURE_CONFIG = resolve('e2e/fixtures/editor.config.mjs')
 const FIXTURE_OUTPUT = resolve('../../tmp/editor-fixture/editor.js')
@@ -24,14 +29,14 @@ test('composer editor skips unrelated parent commits and keeps its input node', 
   await input.fill('中文草稿')
   await input.press('ArrowLeft')
   await input.press('Shift+ArrowLeft')
-  const selection = await input.evaluate(element => ({ start: element.selectionStart, end: element.selectionEnd }))
+  const selection = await input.evaluate((element: HTMLTextAreaElement) => ({ start: element.selectionStart, end: element.selectionEnd }))
   const node = await input.elementHandle()
   await input.evaluate(element => {
     const key = Object.keys(element).find(key => key.startsWith('__reactProps$'))!
     Object.assign(window, { previousEditorProps: (element as unknown as Record<string, unknown>)[key] })
   })
   for (let index = 0; index < UPDATE_COUNT; index += 1) {
-    await page.getByRole('button', { name: 'unrelated update' }).evaluate(element => element.click())
+    await page.getByRole('button', { name: 'unrelated update' }).evaluate((element: HTMLButtonElement) => element.click())
   }
   expect(await input.evaluate(element => {
     const key = Object.keys(element).find(key => key.startsWith('__reactProps$'))!
@@ -40,7 +45,7 @@ test('composer editor skips unrelated parent commits and keeps its input node', 
   })).toBe(true)
   expect(await node!.evaluate(element => element.isConnected)).toBe(true)
   await expect(input).toBeFocused()
-  expect(await input.evaluate(element => ({ start: element.selectionStart, end: element.selectionEnd }))).toEqual(selection)
+  expect(await input.evaluate((element: HTMLTextAreaElement) => ({ start: element.selectionStart, end: element.selectionEnd }))).toEqual(selection)
   await expect(input).toHaveValue('中文草稿')
   await expect(page.getByTestId('updates')).toHaveText(String(UPDATE_COUNT))
 })
@@ -90,4 +95,14 @@ test('composer editor grows for multiline drafts and shrinks after clearing', as
   expect(expanded.overflow).toBe('auto')
   await page.getByRole('button', { name: 'clear draft' }).click()
   await expect.poll(() => input.evaluate(element => element.getBoundingClientRect().height)).toBe(initial)
+})
+
+test('composer editor recalculates wrapped draft height when its width changes', async ({ page }) => {
+  const input = page.getByTestId('composer-input')
+  await input.fill('A draft that wraps when the conversation panel becomes narrow')
+  const originalHeight = await input.evaluate(element => element.getBoundingClientRect().height)
+  await page.getByRole('button', { name: 'toggle width' }).click()
+  await expect.poll(() => input.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(originalHeight)
+  await page.getByRole('button', { name: 'toggle width' }).click()
+  await expect.poll(() => input.evaluate(element => element.getBoundingClientRect().height)).toBe(originalHeight)
 })

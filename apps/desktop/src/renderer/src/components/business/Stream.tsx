@@ -1,15 +1,25 @@
+import { availabilityPolicy } from '../../app/policy'
+import { attentionRequest, matchingAttentionAnchors } from '../../attention'
 import { referenceBaseLabel } from '../../features/assistant/text'
+import { markInteractionAttentionRead } from '../../features/assistant/attention'
 import { deliveryLabel } from '../../delivery'
-import { formatTurnFailure } from '../../failures'
+import {
+  authenticationRecoveryAction,
+  formatTurnFailure,
+  isRecoverableTurnFailure,
+} from '../../failures'
 import { feedback, renderFeedback } from '../../contracts/feedback'
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { BrowserApprovalResponseReply } from '../../../../approval'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy, GitBranch } from 'lucide-react'
 import { streamingTextClassName } from '../../design/motion'
 import aiThinking from '../../assets/ai-thinking.gif'
-import { createFollowScroll } from './scroll'
+import { conversationInlinePadding, createFollowScroll, createScrollbarVisibility } from './scroll'
+import { useAccountAccess } from './access'
+import { LoginPrompt } from './LoginPrompt'
 import { commandOutcome } from './command'
 import { activeThread, useApp, type ComposerReference } from '../../store'
 import type {
@@ -17,6 +27,7 @@ import type {
   ConvItem,
   DeliveryCardMember,
   MessageReference,
+  Thread,
   TurnOutcome,
   TurnTiming,
 } from '../../model'
@@ -25,6 +36,10 @@ import { Icon, type IconName } from '../../icons'
 import { TONE } from '../../tone'
 import { openByDefault } from '../../fileOpen'
 import {
+  browserApprovalCardRole,
+  browserApprovalSubmission,
+  browserHistoryApprovalSubmission,
+  browserApprovalTarget,
   formatHilPermissionScope,
   formatHilResolution,
   formatHilSubmissionError,
@@ -42,18 +57,28 @@ import { sourceOffsetRect } from '../markdown/source'
 import { IconFont } from '../primitive/Iconfont'
 import {
   checkSessionRecovery,
-  confirmUnknownTurn,
+  getAuthMe,
   getHistoryWithTodos,
+  getModels,
   interruptSession,
+  openSession,
   postTurn,
   respondHil,
   rewindToPrompt,
 } from '../../api'
-import { projectHistory, projectHistorySnapshot, resolveHilItem } from '../../transcript'
+import {
+  appendOptimisticUserMessage,
+  projectHistory,
+  projectHistorySnapshot,
+  removeOptimisticUserMessage,
+  resolveHilItem,
+} from '../../transcript'
 import { projectPlanSnapshots } from '../../todo'
 import {
   answerInteractionCapabilities,
   subagentActivityItem,
+  subagentIdentities,
+  collaborationStatusKey,
   visibleThinkingItem,
   activityDisclosureOpen,
   activityIdentity,
@@ -77,7 +102,12 @@ import { AnnotatedAnswer } from '../../features/assistant/Annotations'
 import { ArtifactCard } from '../../features/assistant/Artifacts'
 import { AnnotationSummary, annotationDisplay } from '../../features/assistant/Notes'
 import { SessionReference } from '../../features/assistant/SessionReference'
-import { DisplayCardView, useCardArtifacts, useLatestDisplayCards } from './Cards'
+import {
+  DisplayCardView,
+  useCardArtifacts,
+  useLatestDisplayCards,
+  usePostDeliveryCardTypes,
+} from './Cards'
 import { useInteractionPolicies } from './Interactions'
 import {
   activityDurationLabel,
@@ -87,8 +117,6 @@ import {
 } from './duration'
 import { Finalizations } from '../../features/resources/Finalizations'
 import { ReviewCard } from '../../features/resources/ReviewCard'
-import { hasDirtyReviewEditor } from '../../contracts/resources'
-import { resourceEditorHasChanges } from '../../contracts/workbench'
 import {
   buildTurnInput,
   composerSubmissionOutcome,
@@ -121,6 +149,7 @@ import {
   IconButton,
   Radio,
   ScrollArea,
+  Skeleton,
   Spinner,
   Textarea,
   Tooltip,
@@ -129,14 +158,14 @@ import {
 const HIL_WAIT_TICK_MS = 1000
 const ACTIVITY_ELAPSED_TICK_MS = 1000
 const SUBAGENT_ACTION_KEYS = {
-  message: 'subagent.action.message',
-  reasoning: 'subagent.action.reasoning',
-  search: 'subagent.action.search',
-  command: 'subagent.action.command',
-  tool: 'subagent.action.tool',
-  edit: 'subagent.action.edit',
-  plan: 'subagent.action.plan',
-  work: 'subagent.action.work',
+  message: { key: 'subagent.action.message' },
+  reasoning: { key: 'subagent.action.reasoning' },
+  search: { key: 'subagent.action.search' },
+  command: { key: 'subagent.action.command' },
+  tool: { key: 'subagent.action.tool' },
+  edit: { key: 'subagent.action.edit' },
+  plan: { key: 'subagent.action.plan' },
+  work: { key: 'subagent.action.work' },
 } as const
 const EXTERNAL_RESULT_PROTOCOLS = new Set(['http:', 'https:'])
 const HIL_OUTCOME_UNKNOWN_MESSAGE = 'stream.hil.outcomeUnknown'
@@ -213,7 +242,7 @@ const TOOL_RUN_STEP_CLASS = 'group/step min-w-0 !gap-0 !border-0 !bg-transparent
 const TOOL_RUN_STEP_TRIGGER_CLASS =
   'group/trigger !flex min-h-[var(--vds-control-height-md)] w-full cursor-pointer items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-2)] !border-0 !bg-transparent px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-left text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] transition-colors duration-[var(--vds-duration-fast)] hover:!bg-[var(--vds-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vds-brand-text-primary)]'
 const TOOL_RUN_STEP_NAME_CLASS =
-  'shrink-0 font-normal text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]'
+  'shrink-0 font-[var(--vds-fw-regular)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]'
 const TOOL_RUN_STEP_CARET_CLASS =
   'inline-flex items-center text-[var(--text-3)] transition-[transform,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-aria-expanded/trigger:rotate-90 group-aria-expanded/trigger:text-[var(--text-2)]'
 const TOOL_RUN_STEP_CONTENT_CLASS =
@@ -221,13 +250,13 @@ const TOOL_RUN_STEP_CONTENT_CLASS =
 const TOOL_RUN_IO_STACK_CLASS =
   'ml-[calc(var(--vds-space-4)*2)] mr-[var(--vds-space-2)] mb-[var(--vds-space-3)] flex flex-col gap-[var(--vds-space-3)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)]'
 const TOOL_RUN_MARKDOWN_CLASS =
-  '!font-mono !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-secondary)] [&_code]:!text-[length:var(--vds-font-body-lv1)] [&_code]:!leading-[var(--vds-lh-body-lv1)] [&_table]:!text-[length:var(--vds-font-body-lv1)] [&_.md-p]:!my-[var(--vds-space-2)] [&_.md-p:first-child]:!mt-0 [&_.md-p:last-child]:!mb-0'
+  '!font-[var(--vds-font-code)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-secondary)] [&_code]:!text-[length:var(--vds-font-body-lv1)] [&_code]:!leading-[var(--vds-lh-body-lv1)] [&_table]:!text-[length:var(--vds-font-body-lv1)] [&_.md-p]:!my-[var(--vds-space-2)] [&_.md-p:first-child]:!mt-0 [&_.md-p:last-child]:!mb-0'
 const TOOL_RUN_IO_LABEL_CLASS =
   'mb-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] font-medium text-[var(--vds-text-secondary)]'
 const TOOL_RUN_IO_CLASS =
   'm-[var(--vds-space-0)] max-h-[240px] overflow-auto rounded-[var(--vds-radius-3)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] font-mono text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
 const ACTIVITY_LINE_CLASS =
-  'group/activity m-0 !flex !min-h-[28px] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-0 text-left text-[12.5px] !font-normal leading-[1.45] !text-[var(--vds-text-tertiary)] shadow-none transition-colors duration-150 hover:!bg-transparent hover:!text-[var(--vds-text-primary)]'
+  'group/activity m-0 !flex !min-h-[var(--vds-control-height-sm)] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-0 text-left text-[12.5px] !font-[var(--vds-fw-regular)] leading-[1.45] !text-[var(--vds-text-tertiary)] shadow-none transition-colors duration-150 hover:!bg-transparent hover:!text-[var(--vds-text-primary)]'
 const LEGACY_USER_STOPPED_STATUS = '已停止'
 
 type ToolItem = Extract<ConvItem, { kind: 'tool' }>
@@ -365,6 +394,7 @@ export function Stream({
       ? [state.turnLaunch.optimisticUserMessage]
       : thread.conversation
   const currentConv = useLatestDisplayCards(conv)
+  const postDeliveryCardTypes = usePostDeliveryCardTypes()
   const pendingHil = pendingHilItems(conv)
   const streamRef = useRef<HTMLDivElement>(null)
   const columnRef = useRef<HTMLDivElement>(null)
@@ -387,15 +417,18 @@ export function Stream({
   const activeTurnId = Object.entries(thread.turnOutcomes ?? {})
     .filter(([, outcome]) => outcome === 'running')
     .at(-1)?.[0]
-  const rows = activityRows(presented, thread.turnOutcomes)
+  const rows = activityRows(presented, thread.turnOutcomes, postDeliveryCardTypes)
+  const agentIdentities = subagentIdentities(conv)
   const hasVisibleProgress = hasVisibleTurnProgress(rows, activeTurnId)
   const showWorking = workingIndicatorVisible(
     busy,
     admitting,
     pendingHil.length,
-    hasVisibleProgress
+    hasVisibleProgress,
+    thread.recoveryBlocked
   )
   // Track the latest terminal turn outcome for screen reader announcements.
+  const [scrollbarVisible, setScrollbarVisible] = useState(false)
   const lastAnnouncedRef = useRef<string | null>(null)
   const [turnAnnouncement, setTurnAnnouncement] = useState<string | null>(null)
   useEffect(() => {
@@ -492,7 +525,7 @@ export function Stream({
       patchThread(thread.id, (current) => ({
         conversation: current.conversation.map((item) =>
           item.kind === 'error' &&
-          item.runtimeAction === 'continue_turn' &&
+          item.runtimeAction === failure.runtimeAction &&
           item.turnId === failure.turnId
             ? { ...item, ...patch }
             : item
@@ -506,21 +539,9 @@ export function Stream({
       })
       return
     }
-    const reviewProject = thread.projectPath ?? thread.workdir ?? state.resource.root
-    if (
-      resourceProject &&
-      reviewProject &&
-      (await hasDirtyReviewEditor(resourceProject.id, reviewProject, resourceEditorHasChanges))
-    ) {
-      patchFailure({
-        actionState: 'failed',
-        actionError: feedback('shell', 'foreground.reviewUnsaved'),
-      })
-      return
-    }
     let input
     try {
-      input = buildTurnInput(t('stream.continueInterrupted'), [])
+      input = buildTurnInput(t('stream.continueTaskPrompt'), [])
     } catch (error) {
       patchFailure({
         actionState: 'failed',
@@ -534,11 +555,17 @@ export function Stream({
       clientUserMessageId,
       input,
       [],
-      state.aiPanel.revision
+      state.aiPanel.revision,
+      'direct'
     )
     retainQueuedOutbox(sessionId, optimistic)
     patchThread(thread.id, (current) => ({
       queuedMessages: upsertQueuedMessage(current.queuedMessages ?? [], optimistic),
+      conversation: appendOptimisticUserMessage(current.conversation, {
+        kind: 'user',
+        text: optimistic.text,
+        itemId: clientUserMessageId,
+      }),
     }))
     const delivered = await postTurn(sessionId, input, state.collaborationMode, {
       clientUserMessageId,
@@ -549,6 +576,7 @@ export function Stream({
     if (submissionOutcome === 'rejected') {
       releaseQueuedOutbox(sessionId, clientUserMessageId)
       patchThread(thread.id, (current) => ({
+        conversation: removeOptimisticUserMessage(current.conversation, clientUserMessageId),
         queuedMessages: rejectOptimisticQueuedMessage(
           current.queuedMessages ?? [],
           clientUserMessageId
@@ -581,7 +609,7 @@ export function Stream({
         (item) =>
           !(
             item.kind === 'error' &&
-            item.runtimeAction === 'continue_turn' &&
+            item.runtimeAction === failure.runtimeAction &&
             item.turnId === failure.turnId
           )
       ),
@@ -614,18 +642,35 @@ export function Stream({
       return
     if (thread.resumeState === 'pending') return
     const candidates = Array.from(
-      columnRef.current.querySelectorAll<HTMLElement>(
-        '[data-message-item-id], [data-message-turn-id]'
+      (focus.requestId ? document : columnRef.current).querySelectorAll<HTMLElement>(
+        '[data-message-item-id], [data-message-turn-id], [data-interaction-request-id], [data-recovery-session-id]'
       )
     )
-    const target =
-      candidates.find(
-        (element) => Boolean(focus.itemId) && element.dataset.messageItemId === focus.itemId
-      ) ??
-      candidates.find(
-        (element) => Boolean(focus.turnId) && element.dataset.messageTurnId === focus.turnId
-      )
+    const target = matchingAttentionAnchors(
+      candidates.map((element) => ({
+        element,
+        recoverySessionId: element.dataset.recoverySessionId,
+        recoveryIncidentId: element.dataset.recoveryIncidentId,
+        interactionRequestId: element.dataset.interactionRequestId,
+        messageItemId: element.dataset.messageItemId,
+        messageTurnId: element.dataset.messageTurnId,
+        messageKind: element.dataset.messageKind,
+      })),
+      focus
+    ).find((anchor) => {
+      const element =
+        getComputedStyle(anchor.element).display === 'contents'
+          ? anchor.element.firstElementChild
+          : anchor.element
+      return element instanceof HTMLElement && element.checkVisibility()
+    })?.element
     if (!target) return
+    if (focus.requestId) {
+      target.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+      target.focus({ preventScroll: true })
+      set((current) => ({ aiPanel: { ...current.aiPanel, messageFocus: null } }))
+      return
+    }
     const scrollTarget =
       target.firstElementChild instanceof HTMLElement ? target.firstElementChild : target
     const stream = streamRef.current
@@ -661,6 +706,18 @@ export function Stream({
     updateScrollToBottomVisibility,
   ])
 
+  useLayoutEffect(() => {
+    const stream = streamRef.current
+    if (!stream) return
+    const updatePadding = (): void => {
+      stream.style.paddingInline = conversationInlinePadding(stream)
+    }
+    updatePadding()
+    const observer = new ResizeObserver(updatePadding)
+    observer.observe(stream)
+    return () => observer.disconnect()
+  }, [home])
+
   useEffect(() => {
     if (home || !columnRef.current) return () => undefined
     const observer = new ResizeObserver(() => {
@@ -673,8 +730,14 @@ export function Stream({
   useEffect(() => {
     const stream = streamRef.current
     if (!stream || home) return () => undefined
+    const scrollbar = createScrollbarVisibility(
+      setScrollbarVisible,
+      (callback, delay) => window.setTimeout(callback, delay),
+      (timer) => window.clearTimeout(timer)
+    )
     updateScrollToBottomVisibility()
     const onScroll = (): void => {
+      scrollbar.scroll()
       updateScrollToBottomVisibility()
       if (resumeFollowOnScroll.current && !showScrollToBottomRef.current) followScroll.resume()
     }
@@ -682,7 +745,10 @@ export function Stream({
       passive: true,
     })
     window.addEventListener('resize', updateScrollToBottomVisibility)
+    stream.addEventListener('pointerleave', scrollbar.hide)
     return () => {
+      scrollbar.hide()
+      stream.removeEventListener('pointerleave', scrollbar.hide)
       stream.removeEventListener('scroll', onScroll)
       window.removeEventListener('resize', updateScrollToBottomVisibility)
     }
@@ -714,7 +780,7 @@ export function Stream({
 
   const rewindPrompt = async (anchor: number): Promise<string | null> => {
     const sessionId = thread.sessionId
-    if (!sessionId || busy) return t('stream.running')
+    if (thread.readOnly || !sessionId || busy) return t('stream.running')
     const response = await rewindToPrompt(sessionId, anchor)
     if (sessionRef.current !== sessionId) return null
     if (!response?.ok) {
@@ -747,7 +813,7 @@ export function Stream({
   // 切到新会话 (如创建资源开的新 session) → 整列以 key 重挂 + 入场动效, 平滑滑入而非生硬切换。
   const threadKey = thread.id
   const checkRecovery = async (): Promise<void> => {
-    if (!thread.sessionId || recoveryChecking) return
+    if (thread.readOnly || !thread.sessionId || recoveryChecking) return
     setRecoveryChecking(true)
     const result = await checkSessionRecovery(thread.sessionId)
     setRecoveryChecking(false)
@@ -781,13 +847,16 @@ export function Stream({
       }}
       className={cx(
         'conversation-stream [--vds-card-radius:var(--vds-radius-6)] [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)] [&_.vds-card]:!shadow-none',
-        home ? 'pt-0' : 'pt-[var(--vds-space-4)]'
+        home ? 'pt-0' : 'pt-[var(--vds-space-4)]',
+        scrollbarVisible
+          ? '[scrollbar-color:var(--vds-scrollbar-thumb)_transparent] [&::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)]'
+          : '[scrollbar-color:transparent_transparent] [&::-webkit-scrollbar-thumb]:bg-transparent'
       )}
       style={{
         flex: home ? 'none' : 1,
         minHeight: 0,
         overflowY: home ? 'visible' : 'auto',
-        paddingInline: 'var(--vds-conversation-inline-gutter)',
+        paddingInline: 'var(--vds-space-4)',
         paddingBottom: home ? '8px' : '10px',
         userSelect: 'text',
         WebkitUserSelect: 'text',
@@ -810,6 +879,8 @@ export function Stream({
           <Alert
             layout="stacked"
             data-testid="session-recovery-blocked"
+            data-recovery-session-id={thread.sessionId}
+            data-recovery-incident-id={thread.recoveryIncidentId ?? undefined}
             tone="warning"
             className="mb-[var(--vds-space-4)]"
             title={t('stream.recoveryBlocked')}
@@ -821,7 +892,7 @@ export function Stream({
                 data-testid="session-recovery-check"
                 size="sm"
                 variant="outline"
-                disabled={recoveryChecking}
+                disabled={thread.readOnly || recoveryChecking}
                 loading={recoveryChecking}
                 onClick={() => void checkRecovery()}
               >
@@ -830,7 +901,8 @@ export function Stream({
             }
           />
         )}
-        {conv.length === 0 && <Empty home={home} />}
+        {conv.length === 0 &&
+          (thread.resumeState === 'pending' ? <Loading /> : <Empty home={home} />)}
         {rows.map((row, index) => {
           const previous = rows[index - 1]
           const next = rows[index + 1]
@@ -852,6 +924,7 @@ export function Stream({
             return (
               <ActivityRun
                 key={row.key}
+                agentIdentities={agentIdentities}
                 items={row.items}
                 turnId={row.turnId}
                 tail={row.tail}
@@ -867,6 +940,7 @@ export function Stream({
               className="contents"
               data-message-turn-id={row.item.turnId || undefined}
               data-message-item-id={row.item.itemId || undefined}
+              data-message-kind={row.item.kind}
             >
               <Item
                 item={row.item}
@@ -901,7 +975,12 @@ export function Stream({
             revision={thread.lastSeq}
           />
         )}
-        {showWorking && <Working waiting={thread.status === 'waiting'} />}
+        {showWorking && (
+          <Working
+            waiting={thread.status === 'waiting'}
+            recovering={thread.readiness?.process_state === 'recovering'}
+          />
+        )}
         <div ref={endRef} />
         <div ref={focusSpacerRef} aria-hidden="true" />
       </div>
@@ -930,8 +1009,22 @@ export function Stream({
 /** Active interactions are blocking turn controls and stay adjacent to the composer. */
 export function PendingHilDock(): React.JSX.Element | null {
   const { state } = useApp()
-  const interactions = pendingHilItems(activeThread(state).conversation)
-  if (interactions.length === 0) return null
+  const thread = activeThread(state)
+  const interactions = pendingHilItems(thread.conversation)
+  const focus = state.aiPanel.messageFocus
+  const requestedId = focus?.sessionId === thread.sessionId ? focus.requestId : null
+  const [selected, setSelected] = useState<{ sessionId: string | null; requestId: string } | null>(
+    null
+  )
+  useEffect(() => {
+    if (requestedId) setSelected({ sessionId: thread.sessionId, requestId: requestedId })
+    else setSelected((current) => (current?.sessionId === thread.sessionId ? current : null))
+  }, [requestedId, thread.sessionId])
+  const interaction = attentionRequest(
+    interactions,
+    requestedId ?? (selected?.sessionId === thread.sessionId ? selected.requestId : null)
+  )
+  if (thread.readOnly || !interaction) return null
   return (
     // 底部 pb-4：HIL 卡与下方执行计划/输入框容器的间距统一为 4px（卡自身 dock 态 mb-0）。
     <div
@@ -939,9 +1032,9 @@ export function PendingHilDock(): React.JSX.Element | null {
       data-testid="hil-dock"
     >
       <div className={cx(READING_COLUMN_CLASS, '@container flex min-h-0 flex-1 flex-col')}>
-        <HilCard
-          key={interactions[0].requestId}
-          item={interactions[0]}
+        <BrowserAwareHilCard
+          key={interaction.requestId}
+          item={interaction}
           presentation="dock"
           queueCount={interactions.length}
         />
@@ -965,12 +1058,22 @@ export function ConversationControls({
 }
 
 /** 「书深正在思考」脉冲指示（后台运行但前台尚无消息时的状态动态）。 */
-function Working({ waiting }: { waiting: boolean }): React.JSX.Element {
+function Working({
+  waiting,
+  recovering,
+}: {
+  waiting: boolean
+  recovering: boolean
+}): React.JSX.Element {
   const { t } = useTranslation('components')
-  const label = waiting ? t('stream.waiting') : t('stream.thinking')
+  const label = recovering
+    ? t('stream.recovering')
+    : waiting
+      ? t('stream.waiting')
+      : t('stream.thinking')
   return (
     <div
-      className="mb-[var(--vds-space-5)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]"
+      className="mb-[var(--vds-space-5)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-stream-content-line-height)] text-[var(--vds-text-secondary)]"
       role="status"
       data-testid="assistant-working"
     >
@@ -980,6 +1083,27 @@ function Working({ waiting }: { waiting: boolean }): React.JSX.Element {
         <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
       )}
       <span>{label}</span>
+    </div>
+  )
+}
+
+function Loading(): React.JSX.Element {
+  return (
+    <div
+      data-testid="conversation-loading"
+      aria-hidden="true"
+      className="grid gap-[var(--vds-space-6)] py-[var(--vds-space-4)]"
+    >
+      <div className="ml-auto grid w-3/5 gap-[var(--vds-space-2)]">
+        <Skeleton height="var(--vds-space-6)" />
+        <Skeleton width="70%" />
+      </div>
+      <div className="grid gap-[var(--vds-space-3)]">
+        <Skeleton width="30%" />
+        <Skeleton />
+        <Skeleton width="90%" />
+        <Skeleton width="75%" />
+      </div>
     </div>
   )
 }
@@ -1049,6 +1173,8 @@ function Item({
   onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
   onOpenDelivery?: (member: DeliveryCardMember) => void
 }): React.JSX.Element | null {
+  const { state } = useApp()
+  const readOnly = activeThread(state).readOnly
   const interactions = answerInteractionCapabilities(turnOutcome)
   switch (item.kind) {
     case 'day':
@@ -1066,9 +1192,10 @@ function Item({
         <AgentMsg
           citationEnabled={interactions.citationEnabled}
           copyEnabled={turnOutcome !== 'running'}
+          forkEnabled={interactions.forkEnabled && !readOnly && turnOutcome === 'completed'}
           item={item}
           trailingContent={trailingContent}
-          selectionEnabled={interactions.selectionEnabled}
+          selectionEnabled={!readOnly && interactions.selectionEnabled}
           timing={turnTiming}
         />
       )
@@ -1079,13 +1206,13 @@ function Item({
     case 'review':
       return <ReviewCard review={item.review} />
     case 'display_card':
-      return <DisplayCardView card={item.card} />
+      return <DisplayCardView card={item.card} turnId={item.turnId} />
     case 'thinking':
       return (
         <Thinking
           text={item.text}
           itemId={item.itemId}
-          selectionEnabled={interactions.selectionEnabled}
+          selectionEnabled={!readOnly && interactions.selectionEnabled}
         />
       )
     case 'status':
@@ -1109,7 +1236,7 @@ function Item({
     case 'native_activity':
       return <ActivityRun items={[item]} turnId={item.turnId} />
     case 'hil':
-      return <HilCard item={item} />
+      return <BrowserAwareHilCard item={item} />
     default:
       return <></>
   }
@@ -1494,12 +1621,14 @@ function externalResultUrl(value: string | undefined): string | null {
 // disclosure for users who need the exact call evidence.
 function ActivityRun({
   items,
+  agentIdentities = subagentIdentities(items),
   turnId,
   tail = true,
   outcome,
   timing,
 }: {
   items: ActivityItem[]
+  agentIdentities?: ReadonlyMap<string, string | number>
   turnId?: string
   tail?: boolean
   outcome?: TurnOutcome
@@ -1661,6 +1790,7 @@ function ActivityRun({
               return (
                 <NativeActivityStep
                   key={item.activityId}
+                  agentIdentity={agentIdentities.get(item.activityId)}
                   item={item}
                   groupOpen={expanded}
                   now={now}
@@ -1812,10 +1942,12 @@ function SkillActivityStep({
 
 function NativeActivityStep({
   item,
+  agentIdentity,
   groupOpen,
   now,
 }: {
   item: NativeActivityItem
+  agentIdentity?: string | number
   groupOpen: boolean
   now: number
 }): React.JSX.Element {
@@ -1824,6 +1956,13 @@ function NativeActivityStep({
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
   const details = Object.keys(item.details).length ? toolValue(item.details) : ''
   const subagentRunning = item.activityType === 'subagent_activity' && item.status === 'running'
+  const callStatusKey = collaborationStatusKey(item)
+  const label =
+    item.activityType === 'subagent_activity' && agentIdentity !== undefined
+      ? typeof agentIdentity === 'number'
+        ? conversation('subagent.numbered', { number: agentIdentity })
+        : conversation('subagent.named', { name: agentIdentity })
+      : nativeActivityLabel(item, t)
   const progress = item.activityType === 'subagent_activity' ? (item.progress ?? []) : []
   const hasDetails = Boolean(details || progress.length)
   const open = activityDisclosureOpen(userExpanded, subagentRunning && groupOpen)
@@ -1835,7 +1974,7 @@ function NativeActivityStep({
     typeof item.details.recent_activity === 'string' ? item.details.recent_activity : ''
   const activityKey =
     activity in SUBAGENT_ACTION_KEYS ? (activity as keyof typeof SUBAGENT_ACTION_KEYS) : 'work'
-  const recentActivityLabel = conversation(SUBAGENT_ACTION_KEYS[activityKey])
+  const recentActivityLabel = conversation(SUBAGENT_ACTION_KEYS[activityKey].key)
   const stateTone =
     item.status === 'error' ? 'is-error' : item.status === 'done' ? 'is-done' : 'is-running'
   return (
@@ -1853,12 +1992,19 @@ function NativeActivityStep({
       >
         <span className="flex w-full min-w-0 items-center gap-[var(--vds-space-2)]">
           <ActivityStatusIcon status={item.status} />
-          <span className={TOOL_RUN_STEP_NAME_CLASS}>{nativeActivityLabel(item, t)}</span>
-          <span className={cx(TOOL_RUN_STEP_STATUS_CLASS, TOOL_RUN_STATUS_TONE_CLASS[stateTone])}>
+          <span className={TOOL_RUN_STEP_NAME_CLASS} data-testid="native-activity-name">
+            {label}
+          </span>
+          <span
+            className={cx(TOOL_RUN_STEP_STATUS_CLASS, TOOL_RUN_STATUS_TONE_CLASS[stateTone])}
+            data-testid="native-activity-status"
+          >
             {item.status === 'running' && <span className={TOOL_RUN_PULSE_CLASS} />}
-            {subagentRunning
-              ? conversation('subagent.waiting')
-              : t(TOOL_STATUS_KEYS[item.status].messageKey)}
+            {callStatusKey
+              ? conversation(callStatusKey)
+              : subagentRunning
+                ? conversation('subagent.running')
+                : t(TOOL_STATUS_KEYS[item.status].messageKey)}
           </span>
           {hasDetails && (
             <span className={TOOL_RUN_STEP_CARET_CLASS}>
@@ -1921,14 +2067,14 @@ function NativeActivityStep({
                   if (!step.summary) {
                     return (
                       <div key={step.itemId} className={TOOL_RUN_IO_LABEL_CLASS}>
-                        {conversation(SUBAGENT_ACTION_KEYS[key])}
+                        {conversation(SUBAGENT_ACTION_KEYS[key].key)}
                       </div>
                     )
                   }
                   return (
                     <IoBlock
                       key={step.itemId}
-                      label={conversation(SUBAGENT_ACTION_KEYS[key])}
+                      label={conversation(SUBAGENT_ACTION_KEYS[key].key)}
                       text={step.summary}
                     />
                   )
@@ -2018,17 +2164,22 @@ function WebSearchStep({
               {url && url !== query && <IoBlock label={t('stream.search.page')} text={url} />}
               {pattern && <IoBlock label={t('stream.search.pattern')} text={pattern} />}
               {results.length > 0 && (
-                <div className="grid gap-[var(--vds-space-2)]" data-testid="web-search-results">
+                <div
+                  className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-2)]"
+                  data-testid="web-search-results"
+                >
                   {results.map((result, index) => (
                     <div
-                      className="grid min-w-0 gap-[2px] rounded-md border border-[var(--border-soft)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
+                      className="grid min-w-0 grid-cols-1 gap-[2px] rounded-md border border-[var(--border-soft)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
                       key={`${result.url || result.title || 'result'}-${index}`}
                     >
-                      <span className="break-words text-[var(--text)]">
+                      <span className="min-w-0 whitespace-pre-wrap break-all text-[var(--text)]">
                         {result.title || result.url}
                       </span>
                       {result.url && (
-                        <span className="break-all text-[var(--text-3)]">{result.url}</span>
+                        <span className="min-w-0 whitespace-pre-wrap break-all text-[var(--text-3)]">
+                          {result.url}
+                        </span>
                       )}
                       {result.externalUrl && (
                         <Button
@@ -2167,7 +2318,8 @@ function ToolStep({
   const outcome = commandOutcome(item)
   const neutralSearch = outcome === 'noMatches'
   const displayStatus = neutralSearch ? 'done' : item.status
-  const hasBody = item.status === 'error' || item.input != null || (item.result != null && item.result !== '')
+  const hasBody =
+    item.status === 'error' || item.input != null || (item.result != null && item.result !== '')
   const outcomeKey = {
     commandNotFound: 'toolOutcome.commandNotFound',
     permissionDenied: 'toolOutcome.permissionDenied',
@@ -2177,9 +2329,8 @@ function ToolStep({
     none: 'toolOutcome.toolFailed',
     noMatches: 'toolOutcome.noMatches',
   } as const
-  const outcomeText = item.status === 'error'
-    ? conversation(outcomeKey[outcome], { code: item.exitCode ?? 0 })
-    : ''
+  const outcomeText =
+    item.status === 'error' ? conversation(outcomeKey[outcome], { code: item.exitCode ?? 0 }) : ''
   const stateTone =
     displayStatus === 'error'
       ? 'is-error'
@@ -2217,9 +2368,12 @@ function ToolStep({
                 : t(TOOL_STATUS_KEYS[item.status].messageKey)}
           </span>
           {item.status === 'error' && !neutralSearch && (
-            <span className="min-w-0 truncate" title={outcomeText}>· {outcomeText}</span>
+            <span className="min-w-0 truncate" title={outcomeText}>
+              · {outcomeText}
+            </span>
           )}
-          {item.status !== 'error' && toolInputSummary(item) &&
+          {item.status !== 'error' &&
+            toolInputSummary(item) &&
             (activityAction(item) === 'read' || activityAction(item) === 'edit' ? (
               <Badge
                 size="sm"
@@ -2265,13 +2419,19 @@ function ToolStep({
           <div className={TOOL_RUN_CONTENT_INNER_CLASS}>
             <div className={TOOL_RUN_IO_STACK_CLASS}>
               {item.status === 'error' && (
-                <div>{neutralSearch
-                  ? conversation('toolOutcome.noMatchesHelp')
-                  : conversation('toolOutcome.failedHelp')}</div>
+                <div>
+                  {neutralSearch
+                    ? conversation('toolOutcome.noMatchesHelp')
+                    : conversation('toolOutcome.failedHelp')}
+                </div>
               )}
               {item.status === 'error' && (
-                <Button unstyled type="button" onClick={() => setTechnicalOpen((value) => !value)}
-                  aria-expanded={technicalOpen}>
+                <Button
+                  unstyled
+                  type="button"
+                  onClick={() => setTechnicalOpen((value) => !value)}
+                  aria-expanded={technicalOpen}
+                >
                   {conversation('toolOutcome.technicalDetails')}
                 </Button>
               )}
@@ -2511,6 +2671,704 @@ function permissionSummary(item: HilItem, t: TFunction<'components'>): string {
   return body || t('stream.hil.summary.default')
 }
 
+function BrowserAwareHilCard(props: {
+  item: HilItem
+  presentation?: 'history' | 'dock'
+  queueCount?: number
+}): React.JSX.Element {
+  const { state } = useApp()
+  const content =
+    props.item.hilKind === 'browser_approval' &&
+    availabilityPolicy.hilAvailable(props.item.hilKind) ? (
+      <BrowserApprovalCard {...props} />
+    ) : props.item.hilKind === 'browser_history_approval' &&
+      availabilityPolicy.hilAvailable(props.item.hilKind) ? (
+      <BrowserHistoryApprovalCard {...props} />
+    ) : !availabilityPolicy.hilAvailable(props.item.hilKind ?? '') ? (
+      <UnavailableHilCard />
+    ) : (
+      <HilCard {...props} />
+    )
+  return activeThread(state).readOnly ? (
+    <fieldset disabled className="min-w-0 border-0 p-0">
+      {content}
+    </fieldset>
+  ) : (
+    content
+  )
+}
+
+function UnavailableHilCard(): React.JSX.Element {
+  const { t } = useTranslation('browser')
+  return (
+    <Card data-testid="browser-unavailable-record">
+      <CardContent>{t('disabledRecord')}</CardContent>
+    </Card>
+  )
+}
+
+function BrowserHistoryApprovalCard({
+  item,
+  presentation = 'history',
+  queueCount = 1,
+}: {
+  item: HilItem
+  presentation?: 'history' | 'dock'
+  queueCount?: number
+}): React.JSX.Element {
+  const { t, i18n } = useTranslation('browser')
+  const { t: conversationT } = useTranslation('conversation')
+  const { t: componentsT } = useTranslation('components')
+  const { state, patchThread } = useApp()
+  const thread = activeThread(state)
+  const sessionId = thread.sessionId
+  const threadId = state.activeSession
+  const approval = item.browserHistoryApproval
+  const [now, setNow] = useState(Date.now())
+  const [submitting, setSubmitting] = useState(false)
+  const inFlight = useRef(false)
+  const cardRef = useRef<HTMLDivElement>(null)
+  const expired = !approval || now >= approval.expiresAt
+  const done =
+    item.resolved != null ||
+    item.hilState === 'resolved' ||
+    item.hilState === 'stale' ||
+    item.hilState === 'cancelled' ||
+    item.hilState === 'unknown'
+
+  useLayoutEffect(() => {
+    if (presentation !== 'dock' || done || expired) return
+    const card = cardRef.current
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    card?.focus()
+    return () => {
+      if (card?.contains(document.activeElement) && previousFocus?.isConnected)
+        previousFocus.focus()
+    }
+  }, [presentation, done, expired, item.requestId])
+
+  useEffect(() => {
+    if (done || expired) return () => undefined
+    const timer = window.setInterval(() => setNow(Date.now()), HIL_WAIT_TICK_MS)
+    return () => window.clearInterval(timer)
+  }, [done, expired])
+
+  const decide = async (decision: 'deny' | 'allow_once'): Promise<void> => {
+    if (thread.readOnly) return
+    if (!availabilityPolicy.hilAvailable(item.hilKind ?? '')) return
+    if (
+      !sessionId ||
+      !approval ||
+      !item.turnId ||
+      done ||
+      expired ||
+      submitting ||
+      inFlight.current
+    )
+      return
+    inFlight.current = true
+    setSubmitting(true)
+    patchThread(threadId, (thread) => ({
+      conversation: thread.conversation.map((entry) =>
+        entry.kind === 'hil' && entry.requestId === item.requestId
+          ? { ...entry, hilState: 'submitting', submissionError: undefined }
+          : entry
+      ),
+    }))
+    let result: BrowserApprovalResponseReply = { ok: false, outcome: 'unknown' }
+    try {
+      result =
+        (await window.scholarseed.respondBrowserHistoryApproval?.({
+          sessionId,
+          requestId: item.requestId,
+          proofId: approval.proofId,
+          turnId: item.turnId,
+          search: approval.search,
+          offset: approval.offset,
+          limit: approval.limit,
+          intent: approval.intent,
+          queryDigest: approval.queryDigest,
+          historyRevision: approval.historyRevision,
+          expiresAt: approval.expiresAt,
+          decision,
+        })) ?? result
+    } catch {
+      result = { ok: false, outcome: 'unknown' }
+    }
+    inFlight.current = false
+    setSubmitting(false)
+    patchThread(threadId, (thread) => ({
+      conversation: thread.conversation.map((entry) => {
+        if (
+          entry.kind !== 'hil' ||
+          entry.requestId !== item.requestId ||
+          entry.hilState === 'resolved' ||
+          entry.hilState === 'stale' ||
+          entry.hilState === 'cancelled'
+        )
+          return entry
+        return { ...entry, ...browserHistoryApprovalSubmission(result), submissionError: undefined }
+      }),
+    }))
+  }
+
+  const status = done
+    ? item.hilState === 'unknown'
+      ? t('historyApproval.unknownOutcome')
+      : (formatHilResolution(item, componentsT, conversationT) ?? t('historyApproval.inactive'))
+    : expired
+      ? t('historyApproval.expired')
+      : submitting
+        ? t('historyApproval.submitting')
+        : t('historyApproval.waiting')
+  const blockModifiedDecisionKey = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) return
+    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
+    if (event.target instanceof Element && event.target.closest('button')) event.preventDefault()
+  }
+
+  return (
+    <Card
+      ref={cardRef}
+      role={browserApprovalCardRole(presentation, done, expired)}
+      aria-label={t('historyApproval.title')}
+      tabIndex={presentation === 'dock' && !done && !expired ? -1 : undefined}
+      data-testid="hil-card"
+      data-hil-kind="browser_history_approval"
+      data-interaction-request-id={item.requestId}
+      data-hil-state={item.hilState ?? 'pending'}
+      data-hil-resolved={done ? 'true' : 'false'}
+      className={
+        presentation === 'dock'
+          ? 'min-w-0 outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
+          : 'mb-[var(--vds-space-4)] min-w-0'
+      }
+      onKeyDownCapture={blockModifiedDecisionKey}
+      onKeyUpCapture={blockModifiedDecisionKey}
+      onKeyDown={(event) => {
+        if (
+          presentation !== 'dock' ||
+          done ||
+          expired ||
+          submitting ||
+          event.repeat ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.altKey ||
+          event.shiftKey
+        )
+          return
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          void decide('deny')
+        } else if (event.key === 'Enter' && event.target === event.currentTarget) {
+          event.preventDefault()
+          void decide('allow_once')
+        }
+      }}
+    >
+      <CardContent className="grid min-w-0 gap-[var(--vds-space-3)]">
+        <div className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
+          <strong className="text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]">
+            {t('historyApproval.title')}
+          </strong>
+          {queueCount > 1 && (
+            <span className="text-[var(--vds-text-secondary)]">
+              {conversationT('queuePosition', { current: 1, total: queueCount })}
+            </span>
+          )}
+        </div>
+        <dl className="grid min-w-0 gap-[var(--vds-space-2)] break-words text-[length:var(--vds-font-body-lv1)]">
+          <div>
+            <dt>
+              <strong>{t('historyApproval.task')}</strong>
+            </dt>
+            <dd className="m-0">
+              {thread.title} · {sessionId} · {item.turnId}
+            </dd>
+          </div>
+          <div>
+            <dt>
+              <strong>{t('historyApproval.search')}</strong>
+            </dt>
+            <dd className="m-0">{approval?.search}</dd>
+          </div>
+          <div>
+            <dt>
+              <strong>{t('historyApproval.range')}</strong>
+            </dt>
+            <dd className="m-0">
+              {approval
+                ? t('historyApproval.rangeValue', {
+                    start: approval.offset + 1,
+                    limit: approval.limit,
+                  })
+                : null}
+            </dd>
+          </div>
+          <div>
+            <dt>
+              <strong>{t('historyApproval.intent')}</strong>
+            </dt>
+            <dd className="m-0">{approval?.intent || t('historyApproval.unspecified')}</dd>
+          </div>
+          <div>
+            <dt>
+              <strong>{t('historyApproval.expiry')}</strong>
+            </dt>
+            <dd className="m-0">
+              {approval ? new Date(approval.expiresAt).toLocaleTimeString(i18n.language) : null}
+            </dd>
+          </div>
+        </dl>
+        <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+          {t('historyApproval.risk')}
+        </p>
+        <p
+          role="status"
+          className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+        >
+          {status}
+        </p>
+        {!done && !expired && (
+          <div className="flex flex-wrap justify-end gap-[var(--vds-space-2)]">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={submitting}
+              data-testid="hil-history-deny"
+              onClick={() => {
+                void decide('deny')
+              }}
+            >
+              {t('historyApproval.deny')}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={submitting}
+              data-testid="hil-history-allow-once"
+              onClick={() => {
+                void decide('allow_once')
+              }}
+            >
+              {t('historyApproval.allowOnce')}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function BrowserApprovalCard({
+  item,
+  presentation = 'history',
+  queueCount = 1,
+}: {
+  item: HilItem
+  presentation?: 'history' | 'dock'
+  queueCount?: number
+}): React.JSX.Element {
+  const { t, i18n } = useTranslation('browser')
+  const { t: conversationT } = useTranslation('conversation')
+  const { t: componentsT } = useTranslation('components')
+  const { state, patchThread } = useApp()
+  const thread = activeThread(state)
+  const sessionId = thread.sessionId
+  const threadId = state.activeSession
+  const [now, setNow] = useState(Date.now())
+  const [submitting, setSubmitting] = useState(false)
+  const [mainTab, setMainTab] = useState<{ tabId: string; title: string; url: string } | null>(null)
+  const inFlight = useRef(false)
+  const cardRef = useRef<HTMLDivElement>(null)
+  const approval = item.browserApproval
+  const expired = !approval || now >= approval.expiresAt
+  const done =
+    item.resolved != null ||
+    item.hilState === 'resolved' ||
+    item.hilState === 'stale' ||
+    item.hilState === 'cancelled' ||
+    item.hilState === 'unknown'
+
+  useLayoutEffect(() => {
+    if (presentation !== 'dock' || done || expired) return
+    const card = cardRef.current
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    card?.focus()
+    return () => {
+      if (card?.contains(document.activeElement) && previousFocus?.isConnected)
+        previousFocus.focus()
+    }
+  }, [presentation, done, expired, item.requestId])
+
+  useEffect(() => {
+    if (done || expired) return () => undefined
+    const timer = window.setInterval(() => setNow(Date.now()), HIL_WAIT_TICK_MS)
+    return () => window.clearInterval(timer)
+  }, [done, expired])
+
+  useEffect(() => {
+    if (done || !approval) return () => undefined
+    let mounted = true
+    let observedUpdate = false
+    const unsubscribe = window.scholarseed.browser.subscribe((snapshot) => {
+      observedUpdate = true
+      if (mounted) setMainTab(browserApprovalTarget(snapshot, approval))
+    })
+    const refresh = async (): Promise<void> => {
+      try {
+        const reply = await window.scholarseed.browser.snapshot()
+        if (mounted && !observedUpdate)
+          setMainTab(reply.ok ? browserApprovalTarget(reply.snapshot, approval) : null)
+      } catch {
+        if (mounted && !observedUpdate) setMainTab(null)
+      }
+    }
+    void refresh()
+    return () => {
+      mounted = false
+      unsubscribe()
+    }
+  }, [approval?.tabId, approval?.origin, approval?.sourceOrigin, done])
+
+  const decide = async (decision: 'deny' | 'allow_once'): Promise<void> => {
+    if (thread.readOnly) return
+    if (!availabilityPolicy.hilAvailable(item.hilKind ?? '')) return
+    if (
+      !sessionId ||
+      done ||
+      expired ||
+      submitting ||
+      inFlight.current ||
+      (decision === 'allow_once' && !mainTab)
+    )
+      return
+    inFlight.current = true
+    setSubmitting(true)
+    patchThread(threadId, (thread) => ({
+      conversation: thread.conversation.map((entry) =>
+        entry.kind === 'hil' && entry.requestId === item.requestId
+          ? { ...entry, hilState: 'submitting', submissionError: undefined }
+          : entry
+      ),
+    }))
+    let result: BrowserApprovalResponseReply = { ok: false, outcome: 'unknown' }
+    try {
+      result =
+        (await window.scholarseed.respondBrowserApproval?.({
+          sessionId,
+          requestId: item.requestId,
+          proofId: approval?.proofId ?? '',
+          turnId: item.turnId ?? '',
+          tabId: approval?.tabId ?? '',
+          targetInstanceId: approval?.targetInstanceId ?? '',
+          targetGeneration: approval?.targetGeneration ?? -1,
+          origin: approval?.origin ?? '',
+          ...(approval?.action === 'navigate'
+            ? {
+                sourceOrigin: approval.sourceOrigin,
+                destinationUrl: approval.destinationUrl,
+                destinationOrigin: approval.destinationOrigin,
+              }
+            : {}),
+          ...(['click', 'fill', 'submit'].includes(approval?.action ?? '')
+            ? {
+                preparedId: approval?.preparedId,
+                snapshotId: approval?.snapshotId,
+                elementRef: approval?.elementRef,
+                browserAction: approval?.browserAction,
+                element: approval?.element,
+              }
+            : {}),
+          action: approval?.action ?? '',
+          intent: approval?.intent ?? '',
+          expiresAt: approval?.expiresAt ?? 0,
+          decision,
+        })) ?? result
+    } catch {
+      result = { ok: false, outcome: 'unknown' }
+    }
+    inFlight.current = false
+    setSubmitting(false)
+    patchThread(threadId, (thread) => ({
+      conversation: thread.conversation.map((entry) => {
+        if (
+          entry.kind !== 'hil' ||
+          entry.requestId !== item.requestId ||
+          entry.hilState === 'resolved' ||
+          entry.hilState === 'stale' ||
+          entry.hilState === 'cancelled'
+        )
+          return entry
+        const outcome = browserApprovalSubmission(result)
+        return {
+          ...entry,
+          ...outcome,
+          submissionError: undefined,
+        }
+      }),
+    }))
+  }
+
+  const status = done
+    ? item.hilState === 'unknown'
+      ? t('approval.unknownOutcome')
+      : (formatHilResolution(item, componentsT, conversationT) ?? t('approval.inactive'))
+    : expired
+      ? t('approval.expired')
+      : submitting
+        ? t('approval.submitting')
+        : !mainTab
+          ? t('approval.targetUnavailable')
+          : t('approval.waiting')
+  const actionLabel = (() => {
+    switch (approval?.action) {
+      case 'navigate':
+        return t('approval.navigate')
+      case 'snapshot':
+        return t('approval.snapshot')
+      case 'read':
+        return t('approval.read')
+      case 'interact':
+        return t('approval.interact')
+      case 'click':
+        return t('approval.click')
+      case 'fill':
+        return t('approval.fill')
+      case 'submit':
+        return t('approval.submit')
+      default:
+        return approval?.action ?? t('approval.unknown')
+    }
+  })()
+  const blockModifiedDecisionKey = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) return
+    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
+    if (event.target instanceof Element && event.target.closest('button')) event.preventDefault()
+  }
+
+  return (
+    <Card
+      ref={cardRef}
+      role={browserApprovalCardRole(presentation, done, expired)}
+      aria-label={t('approval.title')}
+      tabIndex={presentation === 'dock' && !done && !expired ? -1 : undefined}
+      data-testid="hil-card"
+      data-hil-kind="browser_approval"
+      data-interaction-request-id={item.requestId}
+      data-hil-state={item.hilState ?? 'pending'}
+      data-hil-resolved={done ? 'true' : 'false'}
+      className={
+        presentation === 'dock'
+          ? 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
+          : 'mb-[var(--vds-space-4)] min-w-0'
+      }
+      onKeyDownCapture={blockModifiedDecisionKey}
+      onKeyUpCapture={blockModifiedDecisionKey}
+      onKeyDown={(event) => {
+        if (
+          presentation !== 'dock' ||
+          done ||
+          expired ||
+          submitting ||
+          event.repeat ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.altKey ||
+          event.shiftKey
+        )
+          return
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          void decide('deny')
+        } else if (event.key === 'Enter' && event.target === event.currentTarget && mainTab) {
+          event.preventDefault()
+          void decide('allow_once')
+        }
+      }}
+    >
+      <CardContent
+        className={
+          presentation === 'dock'
+            ? 'flex min-h-0 min-w-0 flex-1 flex-col gap-[var(--vds-space-3)] [&>div]:shrink-0 [&>p]:shrink-0'
+            : 'grid min-w-0 gap-[var(--vds-space-3)]'
+        }
+      >
+        <div className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
+          <strong className="text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]">
+            {t('approval.title')}
+          </strong>
+          {queueCount > 1 && (
+            <span className="text-[var(--vds-text-secondary)]">
+              {conversationT('queuePosition', { current: 1, total: queueCount })}
+            </span>
+          )}
+        </div>
+        <dl
+          className={cx(
+            'grid min-w-0 gap-[var(--vds-space-2)] break-words text-[length:var(--vds-font-body-lv1)]',
+            presentation === 'dock' && 'min-h-0 flex-1 overflow-y-auto overscroll-contain'
+          )}
+        >
+          <div>
+            <dt>
+              <strong>{t('approval.tab')}</strong>
+            </dt>
+            <dd className="m-0">{approval?.tabId ?? t('approval.unknown')}</dd>
+          </div>
+          {(mainTab?.title || approval?.tabTitle) && (
+            <div>
+              <dt>
+                <strong>{t('approval.tabTitle')}</strong>
+              </dt>
+              <dd className="m-0">{mainTab?.title || approval?.tabTitle}</dd>
+            </div>
+          )}
+          {(mainTab?.url || approval?.tabUrl) && (
+            <div>
+              <dt>
+                <strong>{t('approval.tabUrl')}</strong>
+              </dt>
+              <dd className="m-0">{mainTab?.url || approval?.tabUrl}</dd>
+            </div>
+          )}
+          <div>
+            <dt>
+              <strong>{t('approval.task')}</strong>
+            </dt>
+            <dd className="m-0">
+              {thread.title} · {sessionId ?? t('approval.unknown')} ·{' '}
+              {item.turnId ?? t('approval.unknown')}
+            </dd>
+          </div>
+          {approval?.action === 'navigate' && (
+            <div>
+              <dt>
+                <strong>{t('approval.sourceOrigin')}</strong>
+              </dt>
+              <dd className="m-0">
+                {approval.sourceOrigin === null
+                  ? t('approval.blankSource')
+                  : (approval.sourceOrigin ?? t('approval.unknown'))}
+              </dd>
+            </div>
+          )}
+          {approval?.action === 'navigate' && (
+            <div>
+              <dt>
+                <strong>{t('approval.destinationUrl')}</strong>
+              </dt>
+              <dd className="m-0">{approval.destinationUrl ?? t('approval.unknown')}</dd>
+            </div>
+          )}
+          <div>
+            <dt>
+              <strong>
+                {approval?.action === 'navigate'
+                  ? t('approval.destinationOrigin')
+                  : t('approval.origin')}
+              </strong>
+            </dt>
+            <dd className="m-0">{approval?.origin ?? t('approval.unknown')}</dd>
+          </div>
+          <div>
+            <dt>
+              <strong>{t('approval.action')}</strong>
+            </dt>
+            <dd className="m-0">{actionLabel}</dd>
+          </div>
+          {approval?.element && (
+            <div>
+              <dt>
+                <strong>{t('approval.element')}</strong>
+              </dt>
+              <dd className="m-0">
+                {approval.element.role} · {approval.element.name || t('approval.unknown')}
+              </dd>
+            </div>
+          )}
+          {approval?.elementRef && (
+            <div>
+              <dt>
+                <strong>{t('approval.elementRef')}</strong>
+              </dt>
+              <dd className="m-0">{approval.elementRef}</dd>
+            </div>
+          )}
+          <div>
+            <dt>
+              <strong>{t('approval.intent')}</strong>
+            </dt>
+            <dd className="m-0">{approval?.intent || t('approval.unspecified')}</dd>
+          </div>
+          <div>
+            <dt>
+              <strong>{t('approval.expiry')}</strong>
+            </dt>
+            <dd className="m-0">
+              {approval
+                ? new Date(approval.expiresAt).toLocaleTimeString(i18n.language)
+                : t('approval.unknown')}
+            </dd>
+          </div>
+        </dl>
+        {(approval?.action === 'snapshot' || approval?.action === 'read') && (
+          <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+            {t('approval.readRisk')}
+          </p>
+        )}
+        {['click', 'fill', 'submit'].includes(approval?.action ?? '') && (
+          <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+            {t('approval.actionRisk')}
+          </p>
+        )}
+        <p
+          role="status"
+          className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+        >
+          {status}
+        </p>
+        {item.hilState === 'failed' && (
+          <p role="alert" className="m-0 text-[var(--vds-error-text-primary)]">
+            {item.submissionError || t('approval.failed')}
+          </p>
+        )}
+        {!done && !expired && (
+          <div className="flex flex-wrap justify-end gap-[var(--vds-space-2)]">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={submitting}
+              data-testid="hil-browser-deny"
+              data-hil-decision="deny"
+              onClick={() => {
+                void decide('deny')
+              }}
+            >
+              {t('approval.deny')}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={submitting || !mainTab}
+              data-testid="hil-browser-allow-once"
+              data-hil-decision="allow-once"
+              onClick={() => {
+                void decide('allow_once')
+              }}
+            >
+              {t('approval.allowOnce')}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function HilCard({
   item,
   presentation = 'history',
@@ -2641,8 +3499,12 @@ function HilCard({
   }
 
   const submitAction = async (action: HilAction): Promise<void> => {
-    if (!sid || submitting || done || submissionInFlight.current) return
+    if (activeThread(state).readOnly || !sid || submitting || done || submissionInFlight.current)
+      return
     submissionInFlight.current = true
+    void markInteractionAttentionRead(sid, item.requestId).catch((error) =>
+      console.warn('[attention] interaction read unavailable', error)
+    )
     setLastAction(action)
     patchHil({
       hilState: 'submitting',
@@ -2975,9 +3837,10 @@ function HilCard({
         aria-label={t('stream.hil.requestPermission')}
         data-testid="hil-card"
         data-hil-kind="permission"
+        data-interaction-request-id={item.requestId}
         data-hil-resolved="false"
         data-hil-state={item.hilState ?? 'pending'}
-        className="grid min-h-[64px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] outline-none [animation:cardIn_0.24s_ease_both] focus-visible:shadow-[var(--vds-focus-brand)] @max-[340px]:grid-cols-[auto_minmax(0,1fr)]"
+        className="grid min-h-[var(--vds-stream-status-card-min-height)] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] outline-none [animation:cardIn_0.24s_ease_both] focus-visible:shadow-[var(--vds-focus-brand)] @max-[340px]:grid-cols-[auto_minmax(0,1fr)]"
         onKeyDown={(event) => {
           if (event.repeat || submitting) return
           if (event.key === 'Escape') {
@@ -2992,7 +3855,7 @@ function HilCard({
         }}
       >
         <span
-          className="grid size-[42px] flex-none place-items-center rounded-[var(--vds-radius-5)] bg-[var(--vds-warning-2)] text-[var(--vds-warning-bg-default)]"
+          className="grid size-[var(--vds-stream-status-card-icon-size)] flex-none place-items-center rounded-[var(--vds-radius-5)] bg-[var(--vds-warning-2)] text-[var(--vds-warning-bg-default)]"
           aria-hidden
         >
           <IconFont
@@ -3095,6 +3958,7 @@ function HilCard({
       onOpenChange={setQuestionOpen}
       data-testid="hil-card"
       data-hil-kind={isQuestion ? 'question' : 'permission'}
+      data-interaction-request-id={item.requestId}
       data-hil-resolved={done ? 'true' : 'false'}
       data-hil-state={item.hilState ?? 'pending'}
       className={cx(
@@ -3116,13 +3980,12 @@ function HilCard({
             className="group flex w-full min-w-0 items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] text-left !shadow-none"
             data-testid="hil-question-toggle"
           >
-            <ChevronDown
-              aria-hidden="true"
-              className="size-[var(--vds-icon-7)] shrink-0 text-[var(--vds-text-tertiary)] transition-transform duration-[var(--vds-duration-fast)] group-data-[state=closed]:-rotate-90"
-            />
+            <span className="shrink-0 transition-transform [[data-state=open]>&]:rotate-90">
+              <ChevronRight size={13} strokeWidth={1.8} aria-hidden="true" />
+            </span>
             <span className="min-w-0 flex-1">
               {questionPolicy ? (
-                <span className="block min-w-0 font-serif text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-subhead)] text-[var(--text)] [overflow-wrap:anywhere]">
+                <span className="block min-w-0 font-[var(--vds-font-serif)] text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-subhead)] text-[var(--text)] [overflow-wrap:anywhere]">
                   {questionPolicy.title}
                 </span>
               ) : null}
@@ -3714,7 +4577,7 @@ function Thinking({
 }): React.JSX.Element {
   const messageId = itemId ? `item:${itemId}` : undefined
   const markdownClassName =
-    '!text-[length:var(--vds-font-body-lv2)] leading-[1.65] text-[var(--text-2)] [&>*:last-child]:mb-0'
+    '!text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-stream-content-line-height)] text-[var(--text-2)] [&>*:last-child]:mb-0'
   return (
     <div className="min-w-0" data-testid="turn-commentary">
       {messageId ? (
@@ -3879,7 +4742,8 @@ function UserBubble({
   const [restoring, setRestoring] = useState(false)
   const [error, setError] = useState('')
   const [expandedReferenceId, setExpandedReferenceId] = useState<string | null>(null)
-  const canRewind = !steer && !running && item.rewindAnchor !== undefined
+  const canRewind =
+    !activeThread(state).readOnly && !steer && !running && item.rewindAnchor !== undefined
   const annotationRefs =
     item.refs?.filter(
       (reference) => reference.type === 'assistant_context' && reference.kind === 'note'
@@ -4106,7 +4970,7 @@ function UserBubble({
                   ))}
               </div>
             )}
-            <div className="whitespace-pre-wrap font-serif font-normal text-[length:var(--vds-font-body-lv2)] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
+            <div className="whitespace-pre-wrap font-[var(--vds-font-serif)] font-[var(--vds-fw-regular)] text-[length:var(--vds-font-body-lv2)] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
               {item.text}
             </div>
             <AnnotationSummary
@@ -4227,14 +5091,14 @@ function InteractionReply({
         data-interaction-request-id={item.requestId}
       >
         <div className="box-border w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
-          <div className="mb-[var(--vds-space-3)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-normal text-[var(--vds-text-secondary)]">
+          <div className="mb-[var(--vds-space-3)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
             <IconFont
               type="line-tool-batch-follow-up"
               className="shrink-0 text-[length:var(--vds-icon-6)]"
             />
             <span>{title}</span>
           </div>
-          <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
+          <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
             {replyText}
           </div>
         </div>
@@ -4259,7 +5123,7 @@ function InteractionReply({
       data-interaction-request-id={item.requestId}
     >
       <div className="grid w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] gap-[var(--vds-space-3)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
-        <div className="flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-normal text-[var(--vds-text-secondary)]">
+        <div className="flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
           <IconFont
             type="line-tool-batch-follow-up"
             className="shrink-0 text-[length:var(--vds-icon-6)]"
@@ -4272,10 +5136,10 @@ function InteractionReply({
             className="grid min-w-0 gap-[var(--vds-space-1)]"
             aria-label={conversation('reply.answerLabel', row)}
           >
-            <span className="text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+            <span className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
               {index + 1}. {row.question}
             </span>
-            <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
+            <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
               {row.answer}
             </span>
           </div>
@@ -4398,6 +5262,7 @@ async function writeDesktopClipboard(text: string): Promise<void> {
 function AgentMsg({
   citationEnabled,
   copyEnabled,
+  forkEnabled,
   item,
   trailingContent,
   selectionEnabled,
@@ -4405,6 +5270,7 @@ function AgentMsg({
 }: {
   citationEnabled: boolean
   copyEnabled: boolean
+  forkEnabled: boolean
   item: Extract<ConvItem, { kind: 'agent' }>
   trailingContent?: React.ReactNode
   selectionEnabled: boolean
@@ -4412,6 +5278,44 @@ function AgentMsg({
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
+  const { state, set, act } = useApp()
+  const [forking, setForking] = useState(false)
+  const [forkError, setForkError] = useState<string | null>(null)
+  const forkPending = useRef(false)
+  const fork = async (): Promise<void> => {
+    const sourceSessionId = activeThread(state).sessionId
+    if (activeThread(state).readOnly || !sourceSessionId || !item.turnId || forkPending.current)
+      return
+    forkPending.current = true
+    setForking(true)
+    setForkError(null)
+    try {
+      const opened = await openSession({ forkSessionId: sourceSessionId, forkTurnId: item.turnId })
+      if (!opened?.session_id) {
+        setForkError(t('stream.forkFailed'))
+        return
+      }
+      set((current) => ({
+        ...current,
+        sessions: [
+          {
+            id: opened.session_id,
+            title: opened.title ?? '',
+            title_fallback: opened.title_fallback,
+            status: 'dormant',
+            projectPath: opened.project_path,
+            workdir: opened.runtime_workdir ?? opened.workdir,
+            runtimeId: opened.runtime_id,
+          },
+          ...current.sessions,
+        ],
+      }))
+      act.openSession(opened.session_id)
+    } finally {
+      forkPending.current = false
+      setForking(false)
+    }
+  }
   const duration =
     timing?.completedAt === undefined
       ? null
@@ -4456,6 +5360,21 @@ function AgentMsg({
             >
               <Copy size={14} />
             </CopyButton>
+            {forkEnabled && item.turnId ? (
+              <Tooltip content={t('stream.forkTask')} portalled>
+                <IconButton
+                  type="button"
+                  size="xs"
+                  variant="ghostIcon"
+                  label={t('stream.forkTask')}
+                  icon={<GitBranch size={14} />}
+                  disabled={forking}
+                  loading={forking}
+                  data-testid="message-fork-task"
+                  onClick={() => void fork()}
+                />
+              </Tooltip>
+            ) : null}
             {duration ? (
               <Tooltip content={conversation('turn.duration', { duration })} portalled>
                 <span
@@ -4470,6 +5389,11 @@ function AgentMsg({
             ) : null}
           </div>
         )}
+        {forkError ? (
+          <p role="alert" className="text-[var(--vds-error-text-primary)]">
+            {forkError}
+          </p>
+        ) : null}
         {item.evidence?.length ? (
           <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 10.5 }}>
             {t('stream.evidence', { count: item.evidence.length })}
@@ -4495,10 +5419,11 @@ function StatusLine({
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
+  const { state } = useApp()
   const userStopped = item.hideIcon || item.text === LEGACY_USER_STOPPED_STATUS
   return (
     <div
-      className="mb-[var(--vds-space-5)] flex flex-wrap items-start gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]"
+      className="mb-[var(--vds-space-5)] flex flex-wrap items-start gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-stream-content-line-height)] text-[var(--vds-text-secondary)]"
       role="status"
     >
       {showIcon && !userStopped ? (
@@ -4527,6 +5452,7 @@ function StatusLine({
           size="sm"
           variant="secondary"
           data-testid="session-resume-retry"
+          disabled={activeThread(state).readOnly}
           className="shrink-0"
           onClick={() => requestSessionResume(item.actionSessionId ?? '')}
         >
@@ -4549,7 +5475,7 @@ function NoticeLine({
   // 真实通知文本 (checkout 历史化 / 后端错误 等), 不再写死任何示例内容。
   return (
     <div
-      className="mb-[var(--vds-space-5)] flex items-start gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]"
+      className="mb-[var(--vds-space-5)] flex items-start gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-stream-content-line-height)] text-[var(--vds-text-secondary)]"
       role="status"
     >
       <IconFont type="fill-status-tips" className="shrink-0" />
@@ -4568,13 +5494,74 @@ function ErrorCard({
   onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
-  const { state, patchThread } = useApp()
+  const { state, act } = useApp()
   const recoveryThread = activeThread(state)
+  const authenticationFailed = item.failure?.kind === 'auth'
+  const { authenticated } = useAccountAccess(state.backendReady && authenticationFailed)
+  const [loginPromptOpen, setLoginPromptOpen] = useState(false)
+  const [authenticationChecking, setAuthenticationChecking] = useState(false)
+  const [authenticationCheckFailed, setAuthenticationCheckFailed] = useState(false)
+  const authenticationCheckingRef = useRef(false)
+  const recoveryModelKey = recoveryThread.runtime?.model_id || state.model
+  const recoveryModel = state.catalog.models.find((model) => model.key === recoveryModelKey)
+  const recoveryContext = useRef<{
+    thread: Thread
+    item: typeof item
+    modelKey: string
+    onContinue: typeof onContinue
+  } | null>(null)
+  useLayoutEffect(() => {
+    recoveryContext.current = {
+      thread: recoveryThread,
+      item,
+      modelKey: recoveryModelKey,
+      onContinue,
+    }
+    return () => {
+      recoveryContext.current = null
+    }
+  }, [recoveryThread, item, recoveryModelKey, onContinue])
+  const authenticationAction = authenticationRecoveryAction(item, recoveryModel, authenticated)
   const recoveryAvailable =
-    item.runtimeAction === 'continue_turn'
+    item.runtimeAction === 'continue_turn' || item.runtimeAction === 'confirm_turn_unknown'
       ? canContinueFailedTurn(recoveryThread, { ...item, actionState: 'idle' })
       : canOfferTurnRecovery(recoveryThread)
   const { t: conversation } = useTranslation('conversation')
+  const recoverAuthentication = async (continueRequested: boolean): Promise<void> => {
+    if (
+      recoveryThread.readOnly ||
+      authenticationCheckingRef.current ||
+      (continueRequested && !recoveryAvailable)
+    )
+      return
+    authenticationCheckingRef.current = true
+    setAuthenticationChecking(true)
+    setAuthenticationCheckFailed(false)
+    try {
+      const [identity, catalog] = await Promise.all([getAuthMe(), getModels(true)])
+      const latest = recoveryContext.current
+      if (
+        !latest ||
+        latest.thread.id !== recoveryThread.id ||
+        latest.item.turnId !== item.turnId ||
+        latest.modelKey !== recoveryModelKey ||
+        (continueRequested && !canContinueFailedTurn(latest.thread, latest.item))
+      )
+        return
+      if (!identity || !catalog) {
+        setAuthenticationCheckFailed(true)
+        return
+      }
+      const model = catalog.available_models.find((candidate) => candidate.key === latest.modelKey)
+      const action = authenticationRecoveryAction(latest.item, model, identity.auth)
+      if (action === 'login') setLoginPromptOpen(true)
+      else if (action === 'configure' || !continueRequested) act.openSettings('models')
+      else await latest.onContinue(latest.item)
+    } finally {
+      authenticationCheckingRef.current = false
+      setAuthenticationChecking(false)
+    }
+  }
   const failureText = item.applicationFailure
     ? {
         title: conversation('failure.title'),
@@ -4585,57 +5572,11 @@ function ErrorCard({
       ? formatTurnUnknown(item, conversation)
       : formatTurnFailure(item, conversation)
   const confirming = item.actionState === 'submitting'
-  const continueInterruptedTurn = async (): Promise<void> => {
-    const sessionId = item.actionSessionId
-    const turnId = item.actionTurnId
-    const threadId = Object.entries(state.threads).find(
-      ([, thread]) => thread.sessionId === sessionId
-    )?.[0]
-    if (!sessionId || !turnId || !threadId || confirming || !recoveryAvailable) return
-    const patchAction = (patch: Partial<Extract<ConvItem, { kind: 'error' }>>): void => {
-      patchThread(threadId, (thread) => ({
-        conversation: thread.conversation.map((candidate) =>
-          candidate.kind === 'error' &&
-          candidate.runtimeAction === 'confirm_turn_unknown' &&
-          candidate.actionTurnId === turnId
-            ? { ...candidate, ...patch }
-            : candidate
-        ),
-      }))
-    }
-    patchAction({
-      actionState: 'submitting',
-      actionError: undefined,
-      actionErrorMessage: undefined,
-    })
-    const result = await confirmUnknownTurn(sessionId, turnId)
-    if (!result.ok) {
-      patchAction({
-        actionState: 'failed',
-        actionError: result.error || feedback('conversation', 'retry.continueUnconfirmed'),
-        actionErrorMessage: result.applicationFailure,
-      })
-      return
-    }
-    patchThread(threadId, (thread) => ({
-      conversation: thread.conversation.filter(
-        (candidate) =>
-          !(
-            candidate.kind === 'error' &&
-            candidate.runtimeAction === 'confirm_turn_unknown' &&
-            candidate.actionTurnId === turnId
-          )
-      ),
-    }))
-  }
   const continuing = item.runtimeAction === 'continue_turn' && item.actionState === 'submitting'
   const continueUnknown =
     item.runtimeAction === 'continue_turn' && item.actionState === 'outcome_unknown'
   const turnUnknown = item.runtimeAction === 'confirm_turn_unknown'
-  const retryExhausted =
-    item.runtimeAction === 'continue_turn' &&
-    item.failure?.kind === 'unavailable' &&
-    Boolean(item.failure.automaticRetryAttempts)
+  const recoverableFailure = isRecoverableTurnFailure(item)
   const failureDescription =
     item.failure?.kind === 'unknown'
       ? failureText.action
@@ -4649,14 +5590,16 @@ function ErrorCard({
           recoveryAvailable ? (
             <Button
               data-testid="turn-unknown-continue"
-              disabled={confirming}
+              disabled={confirming || item.actionState === 'outcome_unknown'}
               loading={confirming}
               loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-              onClick={() => void continueInterruptedTurn()}
+              onClick={() => void onContinue(item)}
               size="sm"
               variant="outline"
             >
-              {t('stream.confirmUnknown')}
+              {item.actionState === 'outcome_unknown'
+                ? t('stream.continuePending')
+                : t('stream.continueInterrupted')}
             </Button>
           ) : null
         }
@@ -4677,15 +5620,21 @@ function ErrorCard({
       </Alert>
     )
   }
-  if (retryExhausted) {
+  if (recoverableFailure) {
     return (
       <div
-        className="mb-[var(--vds-space-5)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
-        data-testid="turn-retry-exhausted-notice"
+        className="mb-[var(--vds-space-5)] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+        data-testid="turn-recoverable-notice"
         role="status"
       >
-        <IconFont type="fill-status-tips" className="shrink-0" />
-        <span>{failureText.message}</span>
+        <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
+          <IconFont type="fill-status-tips" className="shrink-0" />
+          <span className="min-w-0 break-words">
+            {item.failure?.kind === 'unknown'
+              ? conversation('failure.interrupted.message')
+              : failureText.message}
+          </span>
+        </div>
         {recoveryAvailable ? (
           <Button
             data-testid="turn-continue"
@@ -4700,7 +5649,10 @@ function ErrorCard({
           </Button>
         ) : null}
         {item.actionError ? (
-          <span className="text-[var(--vds-error-text-primary)]" data-testid="turn-continue-error">
+          <span
+            className="col-span-full break-words text-[var(--vds-error-text-primary)]"
+            data-testid="turn-continue-error"
+          >
             {item.actionErrorMessage
               ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
               : renderFeedback(i18n, item.actionError)}
@@ -4727,17 +5679,24 @@ function ErrorCard({
           {failureText.title}
         </h5>
       </div>
-      {item.runtimeAction === 'continue_turn' && recoveryAvailable ? (
+      {item.runtimeAction === 'continue_turn' && (authenticationFailed || recoveryAvailable) ? (
         <Button
           data-testid="turn-continue"
-          disabled={continuing || continueUnknown}
-          loading={continuing}
+          disabled={!recoveryAvailable || continuing || continueUnknown || authenticationChecking}
+          loading={continuing || authenticationChecking}
           loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-          onClick={() => void onContinue(item)}
+          onClick={() => {
+            if (authenticationFailed) void recoverAuthentication(true)
+            else void onContinue(item)
+          }}
           size="sm"
           variant="outline"
         >
-          {continueUnknown ? t('stream.continuePending') : t('stream.retry')}
+          {continueUnknown
+            ? t('stream.continuePending')
+            : authenticationFailed
+              ? t('stream.continueInterrupted')
+              : t('stream.retry')}
         </Button>
       ) : null}
       {failureDescription ? (
@@ -4746,6 +5705,25 @@ function ErrorCard({
           className="col-span-2 m-0 min-w-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-secondary)]"
         >
           {failureDescription}
+        </p>
+      ) : null}
+      {authenticationFailed ? (
+        <Button
+          className="col-span-2 justify-self-start"
+          data-testid="turn-authentication-repair"
+          disabled={authenticationChecking}
+          onClick={() => void recoverAuthentication(false)}
+          size="sm"
+          variant="ghost"
+        >
+          {authenticationAction === 'login'
+            ? conversation('failure.auth.login')
+            : conversation('failure.auth.configure')}
+        </Button>
+      ) : null}
+      {authenticationCheckFailed ? (
+        <p className="col-span-2 m-0 text-[var(--vds-error-text-primary)]" role="status">
+          {t('composer.checkFailed')}
         </p>
       ) : null}
       {item.actionError ? (
@@ -4762,6 +5740,7 @@ function ErrorCard({
             : renderFeedback(i18n, item.actionError)}
         </div>
       ) : null}
+      <LoginPrompt open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
     </Card>
   )
 }

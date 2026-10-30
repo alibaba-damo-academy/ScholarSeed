@@ -1,5 +1,6 @@
 {
   "schema": 1,
+  "features": { "browser": true },
   "product_id": "scholarseed",
   "product_name": "ScholarSeed",
   "bundle_id": "com.scholarseed.desktop",

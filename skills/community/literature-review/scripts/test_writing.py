@@ -261,10 +261,14 @@ class WritingTest(unittest.TestCase):
         self.assertEqual(self.generate(FakeModel())["status"], "SUCCESS")
         merge = self.cli("run", "generation_merge")
         self.assertEqual(merge.returncode, 0, merge.stdout + merge.stderr)
+        (self.ws / "05_generation/citations.bib").write_text(
+            "@article{First2024, author={A. Researcher}, title={First method}, year={2024}, journal={Methods}}\n"
+        )
         text = writing.draft_path(self.ws, 1).read_text()
         writing.apply_review(self.ws, {"base_sha256": digest(text), "edits": []})
         result = self.cli("run", "generation_publish")
         pdf = self.ws / "06_output/Methods.pdf"
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(pdf.exists(), result.stdout + result.stderr)
         self.assertGreater(pdf.stat().st_size, 1000)
         status = writing.read(self.ws / "05_generation/_status/phase07_compile_latex.json")

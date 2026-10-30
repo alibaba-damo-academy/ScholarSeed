@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from hashlib import sha256
+from pathlib import Path
 from typing import Mapping
 
 from scholarseed_runtime.contract import (
@@ -14,7 +16,9 @@ from scholarseed_runtime.contract import (
     RuntimeSecretPort,
 )
 from service.identity.service.skill_credentials import PLATFORM_ENVIRONMENT_KEYS
-from service.platform.bridge import (
+from service.identity.utils import HOST_PROCESS_KEY_ENV
+from service.platform.python import task_environment
+from service.platform.vocabulary import (
     BRIDGE_SESSION_ENV,
     BRIDGE_SOCKET_ENV,
     BRIDGE_TOKEN_ENV,
@@ -26,6 +30,7 @@ BRIDGE_ENVIRONMENT_KEYS = (
     BRIDGE_SOCKET_ENV,
     BRIDGE_TOKEN_ENV,
     INTERNAL_BASE_URL_ENV,
+    HOST_PROCESS_KEY_ENV,
 )
 
 
@@ -46,7 +51,27 @@ def _launch_secret_contract(
     environment: Mapping[str, str] | None,
     *,
     tool_environment: Mapping[str, str] | None = None,
+    execution_environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> tuple[LaunchSecretIntent, RuntimeSecretPort | None]:
+    if cwd is not None:
+        removed = {name.upper() for name in (*PLATFORM_ENVIRONMENT_KEYS, *BRIDGE_ENVIRONMENT_KEYS)}
+        tool_environment = task_environment(
+            cwd,
+            {
+                **{
+                    name: value for name, value in os.environ.items() if name.upper() not in removed
+                },
+                **dict(environment or {}),
+                **dict(tool_environment or {}),
+            },
+        )
+    execution_names = {os.path.normcase(name) for name in execution_environment or ()}
+    tool_environment = {
+        name: value
+        for name, value in (tool_environment or {}).items()
+        if os.path.normcase(name) not in execution_names
+    }
     bindings: list[LaunchSecret] = []
     values: dict[str, RuntimeSecret] = {}
     for scope, source in (

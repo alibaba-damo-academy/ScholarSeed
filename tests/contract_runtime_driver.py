@@ -5,16 +5,28 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from unittest.mock import patch
 
 from scholarseed_runtime.contract import (
     CapabilitySet,
+    CapabilityState,
     CommandReceipt,
     CommandState,
     DeliveryClass,
     RuntimeBinding,
+    RuntimeCapability,
+    RuntimeCapabilityName,
     RuntimeEvent,
     RuntimeEventKind,
     TurnRequest,
+)
+from scholarseed_runtime.contract.session import (
+    RUNTIME_CONFIRMATION_UNSUPPORTED,
+    RuntimeActivitySnapshot,
+    RuntimeTurnConfirmation,
+    TurnConfirmationReceipt,
+    TurnConfirmationTarget,
+    TurnConfirmationTicket,
 )
 from scholarseed_runtime.gateway.driver import RuntimeDriver, RuntimeDriverError, RuntimeTurnOutcome
 
@@ -104,6 +116,44 @@ class ContractSession:
 
     async def detach(self) -> None:
         self.detached = True
+
+
+class ConfirmationSession(ContractSession):
+    def __init__(self, *, watermark: int = 0) -> None:
+        super().__init__(auto_complete=False)
+        self.capabilities = CapabilitySet(
+            (
+                RuntimeCapability(
+                    RuntimeCapabilityName.TURN_CONFIRMATION.value, CapabilityState.SUPPORTED
+                ),
+            )
+        )
+        self.binding = replace(self.binding, capabilities=self.capabilities)
+        self.target = TurnConfirmationTarget("product-1", "native-1", "client-1", "incident-1", 1)
+        self.ticket = TurnConfirmationTicket("ticket-1", self.target, "host-1:2", 3, watermark)
+        self.receipt = TurnConfirmationReceipt(self.ticket, CommandState.APPLIED)
+        self.prepared = asyncio.Event()
+        self.commits: list[tuple[TurnConfirmationTicket, int]] = []
+
+    async def activity(self) -> RuntimeActivitySnapshot:
+        return RuntimeActivitySnapshot("host-1:2", 3, self.ticket.watermark, True)
+
+    async def prepare_turn_confirmation(
+        self, target: TurnConfirmationTarget
+    ) -> TurnConfirmationTicket:
+        if target != self.target:
+            raise AssertionError("confirmation target was changed before preparation")
+        self.prepared.set()
+        return self.ticket
+
+    async def commit_turn_confirmation(
+        self, ticket: TurnConfirmationTicket, persisted_watermark: int
+    ) -> TurnConfirmationReceipt:
+        self.commits.append((ticket, persisted_watermark))
+        return self.receipt
+
+    async def submit(self, request: TurnRequest) -> CommandReceipt:
+        raise AssertionError("confirmation must not replay a turn")
 
 
 async def successful_turn() -> tuple:
@@ -212,6 +262,192 @@ async def batched_projection() -> bool:
     )
 
 
+async def failed_projection_is_visible_and_closed() -> bool:
+    session = ContractSession(auto_complete=False)
+    observed_error = RuntimeError("secret-projection-payload")
+
+    async def observe(_event):
+        raise observed_error
+
+    driver = RuntimeDriver(session, observe)
+    session.queue.put_nowait(session.event(1, RuntimeEventKind.TURN_UNKNOWN, "command-1"))
+    with patch("scholarseed_runtime.gateway.driver.logger") as logger:
+        driver.start()
+        try:
+            await driver._consumer
+        except RuntimeError as error:
+            if error is not observed_error:
+                return False
+        else:
+            return False
+        rejected = False
+        try:
+            await driver.submit(TurnRequest("command-2", ("hello",)))
+        except RuntimeDriverError:
+            rejected = True
+        logged = logger.error.call_args
+        result = (
+            driver._consumer_error is observed_error
+            and driver._projected_sequence == 0
+            and rejected
+            and logger.error.call_count == 1
+            and logged.args[-1] == "RuntimeError"
+            and "secret-projection-payload" not in str(logged)
+        )
+    driver._consumer = None
+    await driver.close()
+    return result
+
+
+async def confirmation_waits_for_durable_projection() -> bool:
+    session = ConfirmationSession(watermark=1)
+    durable = asyncio.Event()
+    projecting = asyncio.Event()
+    observed = []
+
+    async def observe(event):
+        projecting.set()
+        await durable.wait()
+        observed.append(event)
+
+    driver = RuntimeDriver(session, observe)
+    driver.start()
+    confirmation = asyncio.create_task(driver.confirm_turn(session.target))
+    drain = asyncio.create_task(driver.drain_observations())
+    try:
+        await session.prepared.wait()
+        unknown = session.event(1, RuntimeEventKind.TURN_UNKNOWN, "client-1")
+        await session.queue.put(unknown)
+        await projecting.wait()
+        await asyncio.sleep(0)
+        held = (
+            not confirmation.done()
+            and not drain.done()
+            and not session.commits
+            and driver._projected_sequence == 0
+        )
+        durable.set()
+        receipt, watermark = await asyncio.gather(confirmation, drain)
+        return (
+            held
+            and isinstance(session, RuntimeTurnConfirmation)
+            and receipt.state is CommandState.APPLIED
+            and session.commits == [(session.ticket, 1)]
+            and watermark == 1
+            and observed == [unknown]
+            and not driver._terminals
+            and not driver._final_text
+            and session.queue.empty()
+        )
+    finally:
+        durable.set()
+        await driver.close()
+        await asyncio.gather(confirmation, drain, return_exceptions=True)
+
+
+async def confirmation_rejects_failed_consumer() -> bool:
+    session = ConfirmationSession(watermark=1)
+    projecting = asyncio.Event()
+    failed = asyncio.Event()
+    projection_error = RuntimeError("private confirmation projection failure")
+
+    async def observe(_event):
+        projecting.set()
+        await failed.wait()
+        raise projection_error
+
+    driver = RuntimeDriver(session, observe)
+    driver.start()
+    confirmation = asyncio.create_task(driver.confirm_turn(session.target))
+    drain = asyncio.create_task(driver.drain_observations())
+    await session.prepared.wait()
+    await session.queue.put(session.event(1, RuntimeEventKind.TURN_UNKNOWN, "client-1"))
+    await projecting.wait()
+    with patch("scholarseed_runtime.gateway.driver.logger"):
+        failed.set()
+        results = await asyncio.gather(
+            confirmation, drain, driver._consumer, return_exceptions=True
+        )
+    rejected = (
+        all(isinstance(result, RuntimeDriverError) for result in results[:2])
+        and results[2] is projection_error
+        and not session.commits
+        and driver._projected_sequence == 0
+    )
+    for operation in (driver.confirm_turn(session.target), driver.drain_observations()):
+        try:
+            await operation
+        except RuntimeDriverError:
+            pass
+        else:
+            rejected = False
+    driver._consumer = None
+    await driver.close()
+    return rejected and not session.commits
+
+
+async def confirmation_requires_capability_and_protocol() -> bool:
+    unsupported = ConfirmationSession()
+    unsupported.capabilities = CapabilitySet()
+    degraded = ConfirmationSession()
+    degraded.capabilities = CapabilitySet(
+        (
+            RuntimeCapability(
+                RuntimeCapabilityName.TURN_CONFIRMATION.value, CapabilityState.DEGRADED
+            ),
+        )
+    )
+    missing_protocol = ContractSession(auto_complete=False)
+    missing_protocol.capabilities = ConfirmationSession().capabilities
+    for session in (unsupported, degraded, missing_protocol):
+
+        async def observe(_event):
+            raise AssertionError("unsupported confirmation must not emit an event")
+
+        driver = RuntimeDriver(session, observe)
+        try:
+            await driver.confirm_turn(unsupported.target)
+        except RuntimeDriverError as error:
+            if str(error) != RUNTIME_CONFIRMATION_UNSUPPORTED:
+                return False
+        else:
+            return False
+        finally:
+            await driver.close()
+    return not unsupported.prepared.is_set() and not degraded.prepared.is_set()
+
+
+async def confirmation_rejects_mismatched_target_and_receipt() -> bool:
+    for mismatch in ("target", "watermark", "receipt"):
+        session = ConfirmationSession()
+        if mismatch == "target":
+            session.ticket = replace(
+                session.ticket, target=replace(session.target, incident_id="another-incident")
+            )
+        elif mismatch == "watermark":
+            session.ticket = replace(session.ticket, watermark=-1)
+        else:
+            session.receipt = replace(
+                session.receipt, ticket=replace(session.ticket, ticket_id="another-ticket")
+            )
+
+        async def observe(_event):
+            raise AssertionError("mismatched confirmation must not emit an event")
+
+        driver = RuntimeDriver(session, observe)
+        driver.start()
+        try:
+            await driver.confirm_turn(session.target)
+        except RuntimeDriverError:
+            if len(session.commits) != int(mismatch == "receipt"):
+                return False
+        else:
+            return False
+        finally:
+            await driver.close()
+    return True
+
+
 def main() -> int:
     result, observed, detached = asyncio.run(successful_turn())
     check("receipt and terminal remain separate", len(observed) == 4)
@@ -229,6 +465,26 @@ def main() -> int:
     check(
         "bounded batches keep FIFO and defer terminal until durable",
         asyncio.run(batched_projection()),
+    )
+    check(
+        "projection failure logs safe metadata and rejects later submission",
+        asyncio.run(failed_projection_is_visible_and_closed()),
+    )
+    check(
+        "confirmation and drain wait for durable projection without replay or terminal fabrication",
+        asyncio.run(confirmation_waits_for_durable_projection()),
+    )
+    check(
+        "consumer failure rejects waiting and later confirmation without committing",
+        asyncio.run(confirmation_rejects_failed_consumer()),
+    )
+    check(
+        "confirmation requires supported capability and typed protocol",
+        asyncio.run(confirmation_requires_capability_and_protocol()),
+    )
+    check(
+        "confirmation rejects mismatched target, negative watermark and mismatched receipt",
+        asyncio.run(confirmation_rejects_mismatched_target_and_receipt()),
     )
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0

@@ -1,0 +1,60 @@
+import { randomUUID } from 'node:crypto'
+import { expect, test, previewSurface } from './testing'
+import { capturePreview } from './capture'
+import { PREVIEW_CATALOG } from './catalog'
+
+test('expanded features explain their declared Mock capability points while navigation preserves the running product', async ({ page }, testInfo) => {
+  await page.goto(`/?previewInstance=${randomUUID()}&page=page-conversation&scene=conversation-stream`)
+  const capabilities = page.getByTestId('preview-capabilities-page-conversation')
+  await expect(capabilities.getByText('Mock 能力点', { exact: true })).toBeVisible()
+  const entry = PREVIEW_CATALOG.find(page => page.id === 'page-conversation')!
+  for (const scene of entry.scenarios) await expect(page.getByTestId(`preview-hint-${entry.id}-${scene.id}`)).not.toBeEmpty()
+  await expect(page.getByTestId('preview-hint-page-conversation-conversation-stream')).toContainText('流式输出')
+  const address = page.url()
+  const composer = previewSurface(page).getByTestId('composer-input')
+  await composer.fill('展开与浏览不会切换运行场景')
+  await page.getByTestId('preview-page-page-home').click()
+  await expect(capabilities).not.toBeVisible()
+  await expect(page.getByTestId('preview-capabilities-page-home')).toBeVisible()
+  await expect(page.getByTestId('preview-current-scene')).toContainText('模拟对话与流式回复')
+  expect(page.url()).toBe(address)
+  await expect(composer).toHaveValue('展开与浏览不会切换运行场景')
+  await page.getByTestId('preview-group-development').scrollIntoViewIfNeeded()
+  await expect(page.getByTestId('preview-components')).toBeInViewport()
+  await capturePreview(page, testInfo.outputPath('pdfe-mock-capabilities.png'))
+})
+
+test('workbench exposes shared functional navigation and keeps instructions in a separate dialog', async ({ page }, testInfo) => {
+  await page.goto(`/?previewInstance=${randomUUID()}&page=page-conversation&scene=conversation-stream&previewSize=standard`)
+  const controls = page.getByRole('dialog', { name: 'PDFE 工作台', exact: true })
+  await expect(controls.getByRole('navigation', { name: '功能导航', exact: true })).toBeVisible()
+  await expect(page.locator('#preview-viewport-size')).toHaveCount(0)
+  await expect(page.locator('#pdfe-role')).toHaveCount(0)
+  await expect(controls.getByText('预期效果', { exact: true })).not.toBeVisible()
+  const composer = previewSurface(page).getByTestId('composer-input')
+  await composer.fill('说明弹窗不重置产品草稿')
+  const original = await composer.elementHandle()
+  await controls.getByRole('button', { name: '使用说明', exact: true }).click()
+  const guide = page.getByRole('dialog', { name: '使用说明', exact: true })
+  await expect(guide.getByText('预期效果', { exact: true })).toBeVisible()
+  await capturePreview(page, testInfo.outputPath('pdfe-guide-dialog.png'))
+  await page.keyboard.press('Escape')
+  await expect(guide).not.toBeVisible()
+  await expect(controls).toBeVisible()
+  await expect(composer).toHaveValue('说明弹窗不重置产品草稿')
+  expect(await composer.evaluate((node, prior) => node === prior, original)).toBe(true)
+  await capturePreview(page, testInfo.outputPath('pdfe-functional-navigation.png'))
+  await original!.dispose()
+})
+
+test('a scene button and the pinned component entry launch real shared surfaces', async ({ page }, testInfo) => {
+  await page.goto(`/?previewInstance=${randomUUID()}&page=page-home&scene=home-browse`)
+  await page.getByTestId('preview-page-page-conversation').click()
+  await page.getByTestId('preview-scene-page-conversation-conversation-stream').click()
+  await expect(page).toHaveURL(url => url.searchParams.get('scene') === 'conversation-stream')
+  await expect(previewSurface(page).getByTestId('composer-input')).toBeVisible()
+  await page.getByTestId('preview-components').click()
+  await expect(page).toHaveURL(url => url.searchParams.get('dev') === 'components')
+  await expect(previewSurface(page).getByRole('heading', { name: 'Veda Design System', exact: true })).toBeVisible()
+  await capturePreview(page, testInfo.outputPath('pdfe-component-entry.png'))
+})

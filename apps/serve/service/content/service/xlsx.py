@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, time
 from io import BytesIO
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable, cast
 from zipfile import BadZipFile, ZipFile
 
 from openpyxl import load_workbook
@@ -20,6 +20,9 @@ from service.content.service.sheet import (
     SpreadsheetRangeError,
     SpreadsheetRangeTooLarge,
 )
+
+if TYPE_CHECKING:
+    from openpyxl.worksheet._read_only import ReadOnlyWorksheet
 
 XLSX_SUFFIX = ".xlsx"
 SHEET_HEADING = "[Sheet: {name}]"
@@ -211,12 +214,13 @@ def read_range(
         if sheet_name not in workbook.sheetnames:
             raise SpreadsheetRangeError("spreadsheet_sheet_missing")
         sheet = workbook[sheet_name]
-        maximum_row = sheet.max_row
-        maximum_column = sheet.max_column
+        maximum_row: int | None = sheet.max_row
+        maximum_column: int | None = sheet.max_column
         if maximum_row is None or maximum_column is None:
             _, _, maximum_column, maximum_row = range_boundaries(
-                sheet.calculate_dimension(force=True)
+                cast("ReadOnlyWorksheet", sheet).calculate_dimension(force=True)
             )
+        assert maximum_row is not None and maximum_column is not None
         minimum_column, minimum_row, maximum_column, maximum_row = _range_bounds(
             selected_range,
             maximum_row=maximum_row,

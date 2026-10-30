@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
 
 from service.assistant.service.authorization import (
     LITERATURE_REVIEW_FULLTEXT,
 )
-from service.chat.api.bridge import bridge_caller
+from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.service.cards import DisplayCardError
 from service.chat.service.sessions import SessionService
-from service.chat.service.tasks import TASK_ACTIVATION_REQUIRED_ACTION
+from service.chat.service.tasks import (
+    TASK_ACTIVATION_REQUIRED_ACTION,
+    verified_authorization_context,
+)
 from service.literature.api.gate import FulltextGate
 from service.literature.persistence.files import scoped_workspace, scoped_workspace_path
 from service.literature.service.confirmation import (
@@ -38,14 +40,15 @@ from service.literature.service.review import (
     review_retrieval_run,
     validate_review_checkpoint,
 )
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
-    BRIDGE_MAX_REQUEST_BYTES,
     LITERATURE_REVIEW_ROUTE,
     ArtifactPublishFailure,
     DisplayCardContent,
     LiteratureReviewPublish,
 )
 from service.platform.context import ProductTaskType
+from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 RETRIEVAL_REFERENCE_ROLE = "supporting"
 REVIEW_WORKSPACE_MISMATCH = "review_workspace_mismatch"
@@ -74,8 +77,10 @@ def register_literature_review_routes(
     app: FastAPI,
     sessions: SessionService,
     fulltext_gate: FulltextGate | None = None,
+    *,
+    activities: Activities,
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
 
     @router.post(LITERATURE_REVIEW_ROUTE)
     async def publish_review(request: Request) -> JSONResponse:
@@ -102,6 +107,7 @@ def register_literature_review_routes(
             workspace = scoped_workspace(command.workspace)
             prepared: PreparedReview | PreparedReviewSearch
             retrieval_prepared: PreparedReviewSearch | None = None
+            run_id: str | None = None
             if command.checkpoint == "retrieval":
                 lease = getattr(live, "active_task_lease", None)
                 if lease is None:
@@ -115,7 +121,8 @@ def register_literature_review_routes(
                     # A launcher manifest pins the exact artifacts it announced.
                     if not command.run_id or not command.manifest or not command.manifest_sha256:
                         raise ValueError("review_checkpoint_manifest_required")
-                    expected_hashes = await asyncio.to_thread(
+                    expected_hashes = await activities.to_thread(
+                        ActivityDomain.BRIDGE,
                         validate_review_checkpoint,
                         live.runtime_workdir,
                         workspace,
@@ -125,8 +132,8 @@ def register_literature_review_routes(
                     )
                     run_id = command.run_id
                 else:
-                    run_id = await asyncio.to_thread(
-                        review_retrieval_run, live.runtime_workdir, workspace
+                    run_id = await activities.to_thread(
+                        ActivityDomain.BRIDGE, review_retrieval_run, live.runtime_workdir, workspace
                     )
                 if not lease.matches_run(
                     task_type=ProductTaskType.LITERATURE_REVIEW,
@@ -134,7 +141,8 @@ def register_literature_review_routes(
                     run_id=run_id,
                 ):
                     raise ValueError("task_context_mismatch")
-                prepared = await asyncio.to_thread(
+                prepared = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
                     prepare_review_search,
                     live.runtime_workdir,
                     workspace,
@@ -148,7 +156,8 @@ def register_literature_review_routes(
                 ):
                     raise ValueError("review_checkpoint_artifact_changed")
             else:
-                prepared = await asyncio.to_thread(
+                prepared = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
                     prepare_review,
                     live.runtime_workdir,
                     workspace,
@@ -201,8 +210,13 @@ def register_literature_review_routes(
                 card_type = REVIEW_CARD
             require_turn()
             outline_confirmation = (
-                await asyncio.to_thread(
-                    prepare_confirmation, live.runtime_workdir, workspace, live.id, turn_id
+                await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    prepare_confirmation,
+                    live.runtime_workdir,
+                    workspace,
+                    live.id,
+                    turn_id,
                 )
                 if checkpoint == OUTLINE_CHECKPOINT
                 else None
@@ -214,14 +228,21 @@ def register_literature_review_routes(
             authorization = None
             confirmation = None
             if outline_confirmation is not None and outline_confirmation.question is not None:
-                decision = await live.interactions.request_product_input(
-                    outline_confirmation.question,
-                    turn_id=turn_id,
-                    timeout_seconds=outline_confirmation.timeout_seconds,
-                )
+                with activities.enter(ActivityDomain.BRIDGE) as activity:
+                    decision = await live.interactions.request_product_input(
+                        outline_confirmation.question,
+                        turn_id=turn_id,
+                        timeout_seconds=outline_confirmation.timeout_seconds,
+                        activity=activity,
+                    )
                 require_turn()
-                current = await asyncio.to_thread(
-                    prepare_confirmation, live.runtime_workdir, workspace, live.id, turn_id
+                current = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    prepare_confirmation,
+                    live.runtime_workdir,
+                    workspace,
+                    live.id,
+                    turn_id,
                 )
                 if current.digest != outline_confirmation.digest:
                     raise ValueError("review_packet_changed")
@@ -240,6 +261,7 @@ def register_literature_review_routes(
                     "decision": decision,
                 }
             if retrieval_prepared is not None and retrieval_prepared.authorization_refs:
+                assert run_id is not None
                 if fulltext_gate is None:
                     raise ValueError("fulltext_authorization_unavailable")
                 challenge, disposition, _decision = await fulltext_gate.authorize_sources(
@@ -248,6 +270,9 @@ def register_literature_review_routes(
                     snapshot_id=live.active_assistant_snapshot_id,
                     authorization_type=LITERATURE_REVIEW_FULLTEXT,
                     refs=retrieval_prepared.authorization_refs,
+                    task_context=verified_authorization_context(
+                        live, ProductTaskType.LITERATURE_REVIEW, workspace=workspace, run_id=run_id
+                    ),
                     source_count=len(retrieval_prepared.authorization_sources),
                 )
                 authorization = {

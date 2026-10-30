@@ -5,7 +5,6 @@ from __future__ import annotations
 import errno
 import hashlib
 import logging
-import mimetypes
 import os
 import re
 import stat
@@ -24,6 +23,7 @@ from service.platform.content import (
     ArtifactStorageLocation,
     VerifiedArtifactContent,
 )
+from service.platform.files import CONTENT_SNIFF_BYTES, guess_media_type
 from service.platform.storage import NOFOLLOW, NONBLOCK, DirectoryHandle, preserve_mode
 
 CHUNK_BYTES = 1024 * 1024
@@ -78,10 +78,10 @@ def _read_object(directory: DirectoryHandle, digest: str, marker: str = "") -> b
     descriptor = directory.open(digest, os.O_RDONLY | NOFOLLOW | NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or (
-            marker and creation_marker(stream.fileno()) != marker
-        ):
+        if not stat.S_ISREG(before.st_mode):
             raise ContentError(PATH_INVALID)
+        if marker and creation_marker(stream.fileno()) != marker:
+            raise ContentError(INTEGRITY_MISMATCH)
         if before.st_size > MAX_ARTIFACT_BYTES:
             raise ContentError(TOO_LARGE)
         payload = stream.read(MAX_ARTIFACT_BYTES + 1)
@@ -217,8 +217,11 @@ def _capture_once(
                     try:
                         digest = hashlib.sha256()
                         size = 0
+                        prefix = b""
                         with os.fdopen(os.dup(output), "wb") as target:
                             while chunk := source_stream.read(CHUNK_BYTES):
+                                if not prefix:
+                                    prefix = chunk[:CONTENT_SNIFF_BYTES]
                                 size += len(chunk)
                                 if size > MAX_ARTIFACT_BYTES:
                                     raise ContentError(TOO_LARGE)
@@ -246,7 +249,7 @@ def _capture_once(
             scope=scope,
             source_path=relative.as_posix(),
             name=relative.name,
-            media_type=mimetypes.guess_type(relative.name)[0] or DEFAULT_MEDIA_TYPE,
+            media_type=guess_media_type(relative.name, prefix) or DEFAULT_MEDIA_TYPE,
             size=size,
             sha256=value,
         )
@@ -257,6 +260,36 @@ def _capture_once(
             getattr(exc, "winerror", None),
         )
         raise ContentError(_failure_code(exc)) from exc
+
+
+def remove(location: ArtifactStorageLocation, content: VerifiedArtifactContent) -> None:
+    """Release a caller-proven unreferenced immutable snapshot, retaining unknown bytes."""
+    if not DIGEST_PATTERN.fullmatch(content.sha256):
+        raise ContentError(PATH_INVALID)
+    with _copy_lock(location, content.scope, content.sha256):
+        claim = snapshots.get(location.database, content.scope, content.sha256)
+        if claim is None:
+            try:
+                with directory(
+                    Path(location.storage_root), Path(location.objects_relative).parts
+                ) as objects:
+                    objects.stat(content.sha256)
+            except FileNotFoundError:
+                return
+            raise ContentError(INTEGRITY_MISMATCH)
+        try:
+            with directory(
+                Path(location.storage_root), Path(location.objects_relative).parts
+            ) as objects:
+                try:
+                    _read_object(objects, content.sha256, claim.marker)
+                except FileNotFoundError:
+                    pass
+                else:
+                    objects.unlink(content.sha256, expected=objects.stat(content.sha256))
+        except FileNotFoundError:
+            pass
+        snapshots.remove(location.database, content.scope, content.sha256, claim.marker)
 
 
 def read(location: ArtifactStorageLocation, content: VerifiedArtifactContent) -> bytes:

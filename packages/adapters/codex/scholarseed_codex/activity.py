@@ -1,5 +1,6 @@
-"""Codex native activity projections and read-only quiescence inspection."""
+"""Codex native execution tree ownership, interruption and quiescence."""
 
+import asyncio
 import json
 from dataclasses import dataclass
 from enum import Enum
@@ -21,6 +22,17 @@ NATIVE_BACKGROUND_TERMINALS_LIST_METHOD = "thread/backgroundTerminals/list"
 NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD = "thread/backgroundTerminals/terminate"
 NATIVE_GOAL_GET_METHOD = "thread/goal/get"
 NATIVE_QUEUE_LIST_METHOD = "thread/queue/list"
+NATIVE_TURNS_LIST_METHOD = "thread/turns/list"
+NATIVE_TURN_INTERRUPT_METHOD = "turn/interrupt"
+NATIVE_TURN_ID_FIELD = "turnId"
+NATIVE_ITEMS_VIEW_FIELD = "itemsView"
+NATIVE_ITEMS_NOT_LOADED = "notLoaded"
+NATIVE_TURN_ACTIVE_STATUS = "inProgress"
+NATIVE_TURN_TERMINAL_STATUSES = frozenset({"completed", "interrupted", "failed"})
+NATIVE_INTERRUPT_SECONDS = 10.0
+NATIVE_INTERRUPT_POLL_SECONDS = 0.2
+NATIVE_INTERRUPT_EMPTY_CONFIRMATIONS = 2
+NATIVE_INTERRUPT_ERROR = "codex_execution_tree_interrupt_failed"
 NATIVE_THREAD_ID_FIELD = "threadId"
 NATIVE_INCLUDE_TURNS_FIELD = "includeTurns"
 NATIVE_CURSOR_FIELD = "cursor"
@@ -30,6 +42,7 @@ NATIVE_NEXT_CURSOR_FIELD = "nextCursor"
 NATIVE_THREAD_FIELD = "thread"
 NATIVE_ID_FIELD = "id"
 NATIVE_PARENT_THREAD_ID_FIELD = "parentThreadId"
+NATIVE_EPHEMERAL_FIELD = "ephemeral"
 NATIVE_ANCESTOR_THREAD_ID_FIELD = "ancestorThreadId"
 NATIVE_SOURCE_KINDS_FIELD = "sourceKinds"
 NATIVE_ARCHIVED_FIELD = "archived"
@@ -109,7 +122,7 @@ class _NativeActivityError(ValueError):
 
 
 class NativeActivity:
-    """Inspect one loaded native tree without interrupting or unloading work.
+    """Resolve one loaded native tree for inspection or explicit interruption.
 
     The caller owns command admission and an event-driven activity revision.
     This inspector checks every loaded descendant, but does not freeze Codex.
@@ -182,8 +195,9 @@ class NativeActivity:
             for thread_id in owned_ids:
                 blockers.update(self._thread_blockers(threads[thread_id]))
                 await self._background(thread_id, generation, blockers)
-                await self._goal(thread_id, generation, blockers)
-                await self._queue(thread_id, generation, blockers)
+                if threads[thread_id].get(NATIVE_EPHEMERAL_FIELD) is not True:
+                    await self._goal(thread_id, generation, blockers)
+                    await self._queue(thread_id, generation, blockers)
             if await self._loaded(generation) != loaded_ids:
                 raise _NativeActivityError(NativeActivityBlocker.LOADED_THREADS_CHANGED)
             # A second native status read closes an obvious polling race. Event
@@ -200,6 +214,89 @@ class NativeActivity:
             blockers.add(NativeActivityBlocker.UNAVAILABLE)
             return self._state(False, blockers, loaded_ids, generation)
         return self._state(True, blockers, loaded_ids, generation)
+
+    async def interrupt(self, *, cleanup_background_processes: bool = False) -> None:
+        """Stop owned execution, including children surviving a completed root turn.
+
+        Native spawns can race the first inventory. Re-enumerate until two empty
+        observations; the caller still needs the revision-checked suspend/drain
+        protocol. Goals and queued user input are preserved and remain blockers.
+        """
+        if not self._root_thread_id:
+            raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+        generation = self._host.process_generation
+        deadline = asyncio.get_running_loop().time() + NATIVE_INTERRUPT_SECONDS
+        empty = 0
+        while True:
+            loaded = await self._loaded(generation)
+            if self._root_thread_id not in loaded:
+                raise _NativeActivityError(NativeActivityBlocker.THREAD_NOT_LOADED)
+            threads = {key: await self._thread(key, generation) for key in loaded}
+            owned = self._owned_threads(threads)
+            # Resolve and validate the entire ownership snapshot before any write.
+            turns: list[tuple[str, str]] = []
+            terminals: list[tuple[str, str]] = []
+            for thread_id in owned:
+                if self._thread_blockers(threads[thread_id]):
+                    rows = await self._pages(
+                        NATIVE_TURNS_LIST_METHOD,
+                        {
+                            NATIVE_THREAD_ID_FIELD: thread_id,
+                            NATIVE_ITEMS_VIEW_FIELD: NATIVE_ITEMS_NOT_LOADED,
+                        },
+                        generation,
+                    )
+                    for row in rows:
+                        if (
+                            not isinstance(row, dict)
+                            or not isinstance(row.get(NATIVE_ID_FIELD), str)
+                            or not row[NATIVE_ID_FIELD]
+                            or row.get(NATIVE_STATUS_FIELD)
+                            not in NATIVE_TURN_TERMINAL_STATUSES | {NATIVE_TURN_ACTIVE_STATUS}
+                        ):
+                            raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
+                        if row[NATIVE_STATUS_FIELD] == NATIVE_TURN_ACTIVE_STATUS:
+                            turns.append((thread_id, row[NATIVE_ID_FIELD]))
+                if cleanup_background_processes:
+                    rows = await self._pages(
+                        NATIVE_BACKGROUND_TERMINALS_LIST_METHOD,
+                        {NATIVE_THREAD_ID_FIELD: thread_id},
+                        generation,
+                    )
+                    for row in rows:
+                        if not isinstance(row, dict) or any(
+                            not isinstance(row.get(key), str) or not row[key]
+                            for key in (NATIVE_PROCESS_ID_FIELD, NATIVE_ITEM_ID_FIELD)
+                        ):
+                            raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
+                        terminals.append((thread_id, row[NATIVE_PROCESS_ID_FIELD]))
+            for thread_id, turn_id in turns:
+                await self._request(
+                    NATIVE_TURN_INTERRUPT_METHOD,
+                    {NATIVE_THREAD_ID_FIELD: thread_id, NATIVE_TURN_ID_FIELD: turn_id},
+                    generation,
+                )
+            for thread_id, process_id in terminals:
+                result = await self._request(
+                    NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD,
+                    {NATIVE_THREAD_ID_FIELD: thread_id, NATIVE_PROCESS_ID_FIELD: process_id},
+                    generation,
+                )
+                if not isinstance(result.get("terminated"), bool):
+                    raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
+            active = any(self._thread_blockers(threads[key]) for key in owned)
+            empty = (
+                empty + 1
+                if not active and not terminals and await self._loaded(generation) == loaded
+                else 0
+            )
+            if empty >= NATIVE_INTERRUPT_EMPTY_CONFIRMATIONS:
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AppServerError(
+                    "Codex execution tree did not stop", safe_error=NATIVE_INTERRUPT_ERROR
+                )
+            await asyncio.sleep(NATIVE_INTERRUPT_POLL_SECONDS)
 
     @staticmethod
     def _state(
@@ -801,7 +898,7 @@ def tool_item_result(item: Mapping[str, Any], fallback_output: str = "") -> Mapp
         "dynamicToolCall": ("contentItems", "error"),
     }
     if item_type in output_fields:
-        value = next(
+        value: object = next(
             (item[field] for field in output_fields[item_type] if item.get(field)),
             {} if item_type == "mcpToolCall" else [],
         )

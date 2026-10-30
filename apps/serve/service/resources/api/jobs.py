@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -13,6 +14,7 @@ from service.chat.service.events import SSE_HEARTBEAT_FRAME, sse_encode
 from service.content.domain.model import ContentError
 from service.identity.utils import request_owner_id
 from service.platform.content import ImportMode, RootKind
+from service.platform.passive_events import passive_events
 from service.resources.service.jobs import (
     ResourceImportError,
     ResourceImportService,
@@ -106,10 +108,17 @@ def register_resource_import_routes(app: FastAPI) -> None:
             raise _error(error) from error
 
         async def body():
-            async for event in service.events(job_id, owner_id=owner_id, after_seq=after_seq):
-                yield SSE_HEARTBEAT_FRAME if event is None else sse_encode(event)
+            async with aclosing(
+                service.events(job_id, owner_id=owner_id, after_seq=after_seq)
+            ) as source:
+                async for event in source:
+                    yield SSE_HEARTBEAT_FRAME if event is None else sse_encode(event)
 
-        return StreamingResponse(body(), media_type=SSE_MEDIA_TYPE, headers=SSE_HEADERS)
+        return StreamingResponse(
+            passive_events(body(), request.app.state.activities),
+            media_type=SSE_MEDIA_TYPE,
+            headers=SSE_HEADERS,
+        )
 
     @app.post(RESOURCE_IMPORT_JOBS_PREFIX + "/{job_id}/cancel")
     async def cancel_import_job(job_id: str, request: Request) -> dict:

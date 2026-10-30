@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import mimetypes
 import secrets
@@ -27,7 +28,6 @@ from scholarseed_runtime.contract import (
     RuntimeBinding,
     RuntimeCallbackRequest,
     RuntimeCallbackResponse,
-    RuntimeConfigurationIntent,
     RuntimeEvent,
     RuntimeEventKind,
     RuntimePermissionMode,
@@ -38,7 +38,11 @@ from scholarseed_runtime.contract import (
     TurnRequest,
 )
 from scholarseed_runtime.contract.artifact import ArtifactRole
-from scholarseed_runtime.contract.command import SkillConfiguration
+from scholarseed_runtime.contract.command import (
+    EmptyThreadReplacementProof,
+    SkillConfiguration,
+    SubmissionRetryProof,
+)
 from scholarseed_runtime.contract.content import (
     PUBLIC_REASONING_SUMMARY,
     REASONING_SOURCE,
@@ -51,7 +55,14 @@ from scholarseed_runtime.contract.evidence import (
     RuntimeTimingPort,
 )
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
-from scholarseed_runtime.contract.input import InputKind, TurnInput
+from scholarseed_runtime.contract.incident import (
+    RuntimeIncidentKind,
+    RuntimeIncidentScope,
+    RuntimeIncidentState,
+)
+from scholarseed_runtime.contract.input import InputKind
+from scholarseed_runtime.contract.input import TurnAdmission as RuntimeTurnAdmission
+from scholarseed_runtime.contract.input import TurnInput
 from scholarseed_runtime.contract.inventory import SkillInventory
 from scholarseed_runtime.contract.permission import PERMISSION_MODE_KEY
 from scholarseed_runtime.contract.resource import ResourceReceipt
@@ -59,6 +70,7 @@ from scholarseed_runtime.contract.session import SuspendState
 from scholarseed_runtime.gateway.driver import RuntimeDriver, RuntimeObservation, RuntimeTurnResult
 from service.capabilities.service.skills import SkillCatalog, load_skill_state
 from service.chat.constants import (
+    AUTOMATIC_RECOVERY_MESSAGE,
     GENERIC_PROVIDER_FAILURE_CODE,
     HIL_STATE_CANCELLED,
     HIL_STATE_RESOLVED,
@@ -82,7 +94,6 @@ from service.chat.constants import (
     PRODUCT_EVENT_PAPER_SEARCH_COMPLETED,
     PRODUCT_EVENT_REASONING_COMPLETED,
     PRODUCT_EVENT_REASONING_DELTA,
-    PRODUCT_EVENT_RUNTIME_ERROR,
     PRODUCT_EVENT_RUNTIME_INCIDENT,
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_EVENT_SESSION_TITLE_UPDATED,
@@ -100,29 +111,33 @@ from service.chat.constants import (
     PRODUCT_EVENT_USAGE_UPDATED,
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
+    PRODUCT_RECOVERY_BLOCKED_KEY_PREFIX,
+    PRODUCT_REFERENCE_DIRECTORY,
+    PRODUCT_REFERENCE_FILE,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
     PRODUCT_REFERENCE_SKILL,
     PRODUCT_SESSION_STATE_CLOSED,
+    PRODUCT_SESSION_STATE_FAILED,
     PRODUCT_SESSION_STATE_IDLE,
     PRODUCT_SESSION_STATE_RUNNING,
     PRODUCT_SESSION_STATE_WAITING,
     QUEUED_DISPLAY_TEXT,
     QUEUED_REFERENCES,
-    RUNTIME_LEGACY_ERROR,
     SESSION_RENAME_MAX_LENGTH,
     SESSION_TITLE_DEFAULT,
-    SESSION_TITLE_ELLIPSIS,
     SSE_BACKPRESSURE_EVENT,
     USER_MESSAGE_BINDING_ADMITTED,
     USER_MESSAGE_BINDING_BOUND,
     USER_MESSAGE_BINDING_CANCELLED,
+    USER_MESSAGE_ORIGIN_RECOVERY,
     USER_MESSAGE_ORIGIN_TURN,
     USER_MESSAGE_ORIGINS,
 )
 from service.chat.persistence.artifacts import ArtifactSource, ArtifactStatus, SessionArtifactStore
 from service.chat.persistence.catalog import (
     INITIAL_PRODUCT_SEQUENCE,
+    QUEUE_PURPOSE_RECOVERY,
     HilStatus,
     QueuedMessageRecord,
     SessionCatalogStore,
@@ -177,12 +192,12 @@ from service.chat.runtime.projection import (
     artifact_payload,
     artifact_snapshot_payload,
 )
-from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL_NAME, execute_service_tool
+from service.chat.runtime.tools import SERVICE_TOOL_CAPABILITIES, execute_service_tool
 from service.chat.runtime.utils import integer, optional_integer
 from service.chat.service.cards import (
     DISPLAY_CARD_IDEMPOTENCY_PREFIX,
     DISPLAY_CARD_MAX_BYTES_PER_TURN,
-    DISPLAY_CARD_MAX_PER_TURN,
+    DISPLAY_CARD_TURN_BYTES,
     CardRegistry,
     DisplayCardError,
     card_identity,
@@ -199,8 +214,16 @@ from service.chat.service.rejections import terminal_provider_failure
 from service.chat.service.sources import answer_sources
 from service.chat.service.tasks import ProductTaskLease, restore_task_binding
 from service.content.domain.model import ContentError
-from service.platform.bridge import BRIDGE_TOKEN_BYTES, PLAN_SOURCE, DisplayCardContent, PlanWrite
+from service.inference.source import ContentSource, SourceReference
+from service.platform.activity import Activities, ActivityDomain, ActivityLease
+from service.platform.bridge import (
+    BRIDGE_TOKEN_BYTES,
+    PLAN_SOURCE,
+    DisplayCardContent,
+    PlanCommand,
+)
 from service.platform.citations import CitationAnswerFilter
+from service.platform.context import ContextOrigin, ContextRefKind, ContextResolutionState
 from service.platform.files import FILE_ACCESS_DENIED, file_access_code
 from service.platform.resources import AgentResourceChangeSink
 
@@ -209,9 +232,10 @@ PENDING_HIL_BLOCKER = "pending_hil"
 RUNTIME_ACTIVITY_UNAVAILABLE_BLOCKER = "runtime_activity_unavailable"
 STRUCTURED_PLAN_TURN_CONTEXT = (
     "ScholarSeed has an existing structured conversation plan. Before substantive work in "
-    "this turn, call `scholarseed-bridge plan get --json '{}'`. If the user is continuing "
-    "that task, write an `update` for the same plan_id with the returned turn_id before "
-    "continuing; preserve item statuses until evidence changes. If the request is unrelated, "
+    "this turn, call update_plan with operation=get using its declared tool contract. "
+    "If the user is continuing that task, record execution state for the same plan_id "
+    "with the returned turn_id before continuing its work; preserve unrelated step states. "
+    "If the request is unrelated, "
     "do not claim the old plan belongs to it. This is product context, not user text."
 )
 
@@ -257,9 +281,27 @@ class LiveSession:
         citation_coverage: CitationCoverage | None = None,
         answer_guard: Callable[[str, bool], str] | None = None,
         skill_inventory_provider: Callable[[Path], Awaitable[SkillInventory]] | None = None,
+        recover_empty: (
+            Callable[[EmptyThreadReplacementProof], Awaitable[RuntimeTurnAdmission]] | None
+        ) = None,
     ) -> None:
+        self.turn_activity: ActivityLease | None = None
+        self.attachment_activity: ActivityLease | None = None
         self.id = session_id
+        self.recover_empty = recover_empty
+        self.replacement_proof: EmptyThreadReplacementProof | None = None
+        self.replacement_revision: tuple[object, ...] | None = None
+        self.submission_retry_authorizer: (
+            Callable[[SubmissionRetryProof], Awaitable[Callable[[], bool]]] | None
+        ) = None
         self.bridge_token = secrets.token_urlsafe(BRIDGE_TOKEN_BYTES)
+        self.browser_scope_instance = secrets.token_hex(16)
+        self._browser_scope: (
+            tuple[dict[str, object], dict[str, Callable[[], Awaitable[dict[str, object]]]]] | None
+        ) = None
+        self._browser_scope_lock = asyncio.Lock()
+        self._browser_delivery_lock = asyncio.Lock()
+        self._browser_scope_end_pending = False
         self.local_socket = local_socket
         self.network_domains = network_domains
         if not runtime_id.strip():
@@ -311,6 +353,7 @@ class LiveSession:
         self.activation_lock = asyncio.Lock()
         self.attachment_generation = 0
         self.resource_task: asyncio.Task[Any] | None = None
+        self.submission_tasks: set[asyncio.Task[Any]] = set()
         self.waiting_request_id = ""
         self.waiting_resources = False
         self.turn_lock = asyncio.Lock()
@@ -323,6 +366,7 @@ class LiveSession:
         self.last_interrupt_succeeded: bool | None = None
         self.current_task: asyncio.Task[Any] | None = None
         self.last_submission_id = ""
+        self.recovery_observer: Callable[[LiveSession, RuntimeEvent], Awaitable[None]] | None = None
         # 当前已准入的**产品轮** id（= ``client_user_message_id``），出站计量的轮粒度真值：
         # bridge 每次模型调用按 session_id 反查它去填 ``X-Deeprd-Conv-Turn-id``。它与
         # ``ledger.active_turn_id`` 不是一回事 —— 后者是 vendor 轮 id，要等 Codex 的 turnStarted
@@ -334,6 +378,7 @@ class LiveSession:
         self.active_task_type = ""
         self.product_turn_generation = 0
         self.active_task_lease: ProductTaskLease | None = None
+        self.task_lease_revision = 0
         self.active_turn_started_at = 0.0
         self._activity_observer = activity_observer
         self._answer_filter = answer_filter
@@ -343,10 +388,17 @@ class LiveSession:
         self._citation_review_closed = False
         self._answer_guard = answer_guard
         self._catalog = catalog
-        self.interactions = SessionInteractions(self.id, catalog, self.publish)
+        self.interactions = SessionInteractions(
+            self.id,
+            catalog,
+            self.publish,
+            events=events,
+            broadcast=self._broadcast_product_event,
+        )
         self.plans = SessionPlans(self.id, events, catalog)
         self._events = events
-        self._persistence = PersistenceWorker()
+        self._persistence = PersistenceWorker(session_id=self.id)
+        self._close_task: asyncio.Task[None] | None = None
         self._publication_lock = asyncio.Lock()
         catalog_record = catalog.get(self.id)
         self._broadcast_sequence = (
@@ -388,8 +440,18 @@ class LiveSession:
         self._local_input_path_ids: dict[Path, str] = {}
         self._restore_local_input_paths()
         self.ledger = SessionLedger(
-            self.id, catalog, self.publish, self._trace, logger, self._projection_lock
+            self.id,
+            catalog,
+            self.publish,
+            self._trace,
+            logger,
+            self._projection_lock,
+            self._persistence,
         )
+
+    @property
+    def persistence(self) -> PersistenceWorker:
+        return self._persistence
 
     @property
     def catalog(self) -> SessionCatalogStore:
@@ -411,6 +473,15 @@ class LiveSession:
             bool(self.ledger.active_turn_id)
             or self.turn_lock.locked()
             or (self.current_task is not None and not self.current_task.done())
+        )
+
+    @property
+    def closing(self) -> bool:
+        return (
+            self._close_task is not None
+            or self.termination_task is not None
+            or self.terminating
+            or self.terminated
         )
 
     @property
@@ -475,12 +546,18 @@ class LiveSession:
             for event in self._events.replay(self.id)
         )
 
-    def attach_gateway(self, session: RuntimeSession, *, resumed: bool) -> RuntimeDriver:
+    def attach_gateway(
+        self, session: RuntimeSession, *, resumed: bool, activities: Activities
+    ) -> RuntimeDriver:
         binding = session.binding
         if binding.product_session_id != self.id:
             raise ValueError("runtime binding product session mismatch")
         if binding.runtime_id != self.runtime_id:
             raise ValueError("runtime binding provider mismatch")
+        if self.runtime_session is not None or self.attachment_activity is not None:
+            raise RuntimeError("runtime attachment is already owned")
+        activity = activities.enter(ActivityDomain.RESOURCE, allow_startup_probe=False)
+        self.attachment_activity = activity
         self.runtime_session = session
         self.runtime_binding = binding
         self.vendor_thread_id = binding.opaque_session_ref
@@ -490,15 +567,23 @@ class LiveSession:
         async def observe(observation: RuntimeObservation) -> None:
             if self.attachment_generation != generation or self.runtime_session is not session:
                 return
-            await self.on_runtime_observation(observation)
+            with activities.continue_from(activity, ActivityDomain.RUNTIME):
+                await self.on_runtime_observation(observation)
 
         async def observe_batch(observations: tuple[RuntimeObservation, ...]) -> None:
             if self.attachment_generation != generation or self.runtime_session is not session:
                 return
-            await self.on_runtime_observations(observations)
+            with activities.continue_from(activity, ActivityDomain.RUNTIME):
+                await self.on_runtime_observations(observations)
 
         self.runtime_driver = RuntimeDriver(session, observe, on_observations=observe_batch)
         return self.runtime_driver
+
+    def release_attachment_activity(self) -> None:
+        """Called only after native suspension or detachment confirms release."""
+        activity, self.attachment_activity = self.attachment_activity, None
+        if activity is not None:
+            activity.close()
 
     async def hydrate_runtime_history(self) -> None:
         session = self.runtime_session
@@ -530,37 +615,6 @@ class LiveSession:
             and str(row.get("role") or "") in {"user", "assistant", "reasoning"}
             and str(row.get("text") or "")
         ]
-
-    async def set_writable_roots(self, roots: tuple[Path, ...]) -> bool:
-        """把新的可写根集合推给 vendor 会话 (proposal 47 §6.9)。
-
-        下一个 turn 生效: adapter 每个 turn 都会重新构造 `sandboxPolicy`,
-        所以既不需要 rebind, 也不需要重开 vendor thread。正在跑的那个 turn
-        无法中途剥夺 —— policy 已经下发过了, 上界是立即中断。
-
-        返回是否真的推下去了: adapter 不具备这个能力 (native 会话没有沙箱可写
-        根概念) 时回 False, 让调用方能把「Agent 面只读」如实告诉用户, 而不是
-        假装授权已生效。
-        """
-
-        session = self.runtime_session
-        if session is not None:
-            mode = RuntimePermissionMode(
-                self.applied_permission_mode or RuntimePermissionMode.ASK.value
-            )
-            permission = self.permission_intent(mode, writable_roots=tuple(roots))
-            applied = await session.reconfigure(
-                RuntimeConfigurationIntent(
-                    revision=permission.revision,
-                    permission=permission,
-                    required=True,
-                )
-            )
-            if applied.state is not CommandState.APPLIED:
-                return False
-            self.writable_roots = tuple(roots)
-            return True
-        return False
 
     def permission_intent(
         self,
@@ -686,17 +740,24 @@ class LiveSession:
             return ()
         return activity.blockers or (RUNTIME_ACTIVITY_UNAVAILABLE_BLOCKER,)
 
-    async def suspend_runtime(self) -> bool:
+    async def suspend_runtime(self, *, require_unsubscribed: bool = False) -> bool:
         async with self.lifecycle_lock:
             self.suspend_blockers = ()
             driver = self.runtime_driver
+            if (
+                require_unsubscribed
+                and self.subscribers
+                and (driver is None or not driver.suspending)
+            ):
+                return False
             if driver is None:
+                await self.end_browser_scope()
                 self.active_product_turn_id = ""
                 return True
             if (
                 self.running
                 or self.interrupting
-                or self.terminating
+                or self.closing
                 or self.steer_lock.locked()
                 or self.ledger.has_unknown_outcome
                 or (
@@ -712,7 +773,7 @@ class LiveSession:
                 return False
             if not driver.suspending:
                 activity = await driver.session.activity()
-                if not activity.idle:
+                if not activity.idle or not activity.execution_tree_idle:
                     self.suspend_blockers = tuple(activity.blockers)
                     self.trace_resource("suspend_blocked", blockers=list(self.suspend_blockers))
                     return False
@@ -733,15 +794,19 @@ class LiveSession:
             self.trace_resource("released", ticket_id=receipt.ticket.ticket_id)
             self.runtime_driver = None
             self.runtime_session = None
+            self.release_attachment_activity()
             self.suspend_blockers = ()
             self._skill_inventory = None
             self.bridge_token = ""
+            await self.end_browser_scope()
             self.active_product_turn_id = ""
             if self._on_release is not None:
                 self._on_release(self.id)
             return True
 
-    async def run_runtime(self, turn_input: TurnInput) -> RuntimeTurnResult:
+    async def run_runtime(
+        self, turn_input: TurnInput, *, frozen_request: TurnRequest | None = None
+    ) -> RuntimeTurnResult:
         driver = self.runtime_driver
         if driver is None:
             raise RuntimeError("runtime session driver is unavailable")
@@ -749,8 +814,19 @@ class LiveSession:
         # 出站，bridge 只能按会话反查「这一轮是谁」。
         self.active_product_turn_id = turn_input.client_user_message_id
         self._running_model = self.model_run
-        # Native hosts cache discovery independently; refresh before every new turn.
-        await self.refresh_skills(force_reload=True)
+        if frozen_request is not None:
+            if frozen_request.command_id != turn_input.client_user_message_id:
+                raise RuntimeError("frozen runtime command does not match the current input")
+            return await driver.submit(
+                replace(
+                    frozen_request,
+                    admission=turn_input.admission,
+                    submission_deadline=turn_input.submission_deadline,
+                    submission_attempts=turn_input.submission_attempts,
+                )
+            )
+        if turn_input.admission is None:
+            await self.refresh_skills()
         items: tuple[RuntimeValue, ...] = tuple(
             {
                 "kind": item.kind.value,
@@ -788,6 +864,10 @@ class LiveSession:
                 items=items,
                 model=self.model_id,
                 collaboration_mode=turn_input.collaboration_mode.value,
+                admission=turn_input.admission,
+                submission_deadline=turn_input.submission_deadline,
+                submission_attempts=turn_input.submission_attempts,
+                retry_authorizer=self.submission_retry_authorizer,
             )
         )
 
@@ -878,7 +958,10 @@ class LiveSession:
         self, events: tuple[RuntimeEvent, ...], cursor: int
     ) -> tuple[ProductEventRecord, ...]:
         pairs: list[tuple[RuntimeEvent, ProductEventRecord]] = []
-        with self._events.transaction() as connection:
+        with (
+            self._events.transaction() as connection,
+            self._events.batch(connection) as block_store,
+        ):
             for event in events:
                 payload = event.payload if isinstance(event.payload, Mapping) else {}
                 record = self._events.append(
@@ -894,6 +977,7 @@ class LiveSession:
                     },
                     idempotency_key=f"runtime:{event.event_id}",
                     connection=connection,
+                    block_store=block_store,
                 )
                 pairs.append((event, record))
         prefix: list[ProductEventRecord] = []
@@ -951,7 +1035,8 @@ class LiveSession:
                         ],
                     }
                 )
-                self._catalog.record_hil(
+                await self._persistence.run(
+                    self._catalog.record_hil,
                     product_request_id=observation.request_id,
                     session_id=self.id,
                     vendor_request_id=observation.request_id,
@@ -960,7 +1045,8 @@ class LiveSession:
                     method=observation.kind.value,
                     payload=payload,
                 )
-                self._catalog.update_status(
+                await self._persistence.run(
+                    self._catalog.update_status,
                     self.id,
                     SessionStatus.WAITING_HIL,
                     turn_id=observation.native_turn_id,
@@ -977,6 +1063,8 @@ class LiveSession:
             await self._project_runtime_event(observation)
             if self._publication_task is not None:
                 await self._publication_task
+        if self.recovery_observer is not None:
+            await self.recovery_observer(self, observation)
 
     async def _respond_service_callback(self, callback: RuntimeCallbackRequest) -> None:
         session = self.runtime_session
@@ -988,7 +1076,7 @@ class LiveSession:
             callback.kind is not CallbackKind.DYNAMIC_TOOL
             or callback.native_session_id != self.vendor_thread_id
             or callback.native_turn_id != self.ledger.active_turn_id
-            or prompt.get("tool") != SERVICE_BRIDGE_TOOL_NAME
+            or prompt.get("tool") not in SERVICE_TOOL_CAPABILITIES
         ):
             result: dict[str, Any] = {"ok": False, "error": "bridge_access_denied"}
         else:
@@ -998,6 +1086,9 @@ class LiveSession:
                     session_id=self.id,
                     token=self.bridge_token,
                     local_socket=self.local_socket,
+                    callback_request_id=callback.request_id,
+                    callback_turn_id=callback.native_turn_id,
+                    tool_name=str(prompt.get("tool")),
                 )
             except Exception:
                 self._logger.exception("service_tool_execution_failed session_id=%s", self.id)
@@ -1031,6 +1122,9 @@ class LiveSession:
             self._logger.warning("session_activity_observer_failed session_id=%s", self.id)
 
     async def _project_runtime_event(self, event: RuntimeEvent) -> None:
+        if event.kind is RuntimeEventKind.TURN_NOT_SUBMITTED:
+            await self._persistence.run(self._trace.runtime_event, event)
+            return
         if event.kind is RuntimeEventKind.RUNTIME_EVIDENCE:
             process, rpc = decode_evidence(event)
             for process_event in process:
@@ -1066,6 +1160,8 @@ class LiveSession:
             await self.ledger.incident(
                 replace(event, correlation_id=self.last_submission_id), incident
             )
+        if event.kind is RuntimeEventKind.TURN_UNKNOWN:
+            await self.ledger.refine_unknown(event)
         payload = dict(event.payload) if isinstance(event.payload, Mapping) else {}
         key = f"runtime:{event.event_id}"
         turn_id = event.native_turn_id
@@ -1074,17 +1170,29 @@ class LiveSession:
             RuntimeEventKind.SESSION_OPENED,
             RuntimeEventKind.SESSION_RESUMED,
         }:
-            self._catalog.update_status(self.id, SessionStatus.READY)
+            recovering = self.replacement_proof is not None and self.running
+            await self._persistence.run(
+                self._catalog.update_status,
+                self.id,
+                SessionStatus.RUNNING if recovering else SessionStatus.READY,
+            )
             await self.publish(
                 PRODUCT_EVENT_SESSION_STATE,
-                {"state": PRODUCT_SESSION_STATE_IDLE, "runtime_id": event.runtime_id},
+                {
+                    "state": (
+                        PRODUCT_SESSION_STATE_RUNNING if recovering else PRODUCT_SESSION_STATE_IDLE
+                    ),
+                    "runtime_id": event.runtime_id,
+                },
                 idempotency_key=key,
             )
             return
         if event.kind is RuntimeEventKind.TURN_STARTED:
             if self._running_model is not None:
                 self._turn_models[turn_id] = self._running_model
-            queued = self._catalog.mark_queue_running(self.id, event.correlation_id, turn_id)
+            queued = await self._persistence.run(
+                self._catalog.mark_queue_running, self.id, event.correlation_id, turn_id
+            )
             if queued is not None:
                 await self.publish(
                     PRODUCT_EVENT_MESSAGE_REMOVED,
@@ -1093,7 +1201,7 @@ class LiveSession:
                     idempotency_key=f"queue:{queued.queued_message_id}:started",
                 )
             await self.ledger.started(event)
-            applied_mode = str(event.payload.get(PERMISSION_MODE_KEY) or "")
+            applied_mode = str(payload.get(PERMISSION_MODE_KEY) or "")
             if (
                 applied_mode in {mode.value for mode in RuntimePermissionMode}
                 and self.applied_permission_turn_id != turn_id
@@ -1404,7 +1512,8 @@ class LiveSession:
             if any(not isinstance(row, Mapping) for row in raw_todos):
                 raise ValueError("runtime plan item must be an object")
             todos = [dict(row) for row in raw_todos if isinstance(row, Mapping)]
-            product_event = self.plans.native(
+            product_event = await self._persistence.run(
+                self.plans.native,
                 todos,
                 runtime_id=self.runtime_id,
                 vendor_thread_id=self.vendor_thread_id,
@@ -1439,8 +1548,10 @@ class LiveSession:
             if request_id:
                 current = self._catalog.hil(request_id)
                 if current.status is HilStatus.PENDING and bool(payload.get("cancelled")):
-                    self._catalog.resolve_hil(request_id, dict(payload))
-                record = self._catalog.acknowledge_hil(request_id)
+                    await self._persistence.run(
+                        self._catalog.resolve_hil, request_id, dict(payload)
+                    )
+                record = await self._persistence.run(self._catalog.acknowledge_hil, request_id)
                 resolved = interaction_snapshot(record)
             else:
                 resolved = {
@@ -1500,7 +1611,8 @@ class LiveSession:
                     or self.active_product_turn_id
                 ),
             )
-            self._catalog.record_turn_settlement(
+            await self._persistence.run(
+                self._catalog.record_turn_settlement,
                 self.id,
                 self.active_product_turn_id,
                 settlement_event,
@@ -1520,6 +1632,46 @@ class LiveSession:
             await self.ledger.incident(
                 replace(event, correlation_id=self.last_submission_id), incident
             )
+            pending = self._catalog.pending_turn_settlement(self.id)
+            if (
+                pending is not None
+                and (
+                    (
+                        incident.scope is RuntimeIncidentScope.THREAD
+                        and incident.kind is RuntimeIncidentKind.RESUME_FAILED
+                    )
+                    or (
+                        incident.scope is RuntimeIncidentScope.PROCESS
+                        and incident.kind is RuntimeIncidentKind.PROCESS_EXIT
+                    )
+                )
+                and incident.state is RuntimeIncidentState.FAILED
+                and event.native_session_id == pending.event.native_session_id
+                and event.process_generation == incident.process_generation
+                and event.process_generation
+                >= max(
+                    (row.process_generation for row in self._process_evidence),
+                    default=pending.event.process_generation,
+                )
+                and event.process_generation >= pending.event.process_generation
+            ):
+                await self._persistence.run(self._catalog.mark_turn_recovery_blocked, self.id, True)
+                await self.publish(
+                    PRODUCT_EVENT_SESSION_STATE,
+                    {
+                        "state": PRODUCT_SESSION_STATE_FAILED,
+                        "runtime_id": self.runtime_id,
+                        "reason": incident.safe_error,
+                        "recovery_blocked": True,
+                        "recovery_pending": True,
+                        "incident_id": incident.incident_id,
+                    },
+                    turn_id=pending.native_turn_id,
+                    idempotency_key=(
+                        f"{PRODUCT_RECOVERY_BLOCKED_KEY_PREFIX}:{pending.client_turn_id}:"
+                        f"{incident.incident_id}:{incident.process_generation}"
+                    ),
+                )
             return
         if event.kind is RuntimeEventKind.RUNTIME_STREAM_GAP:
             await self.publish(
@@ -1569,7 +1721,7 @@ class LiveSession:
             )
             return
         if event.kind is RuntimeEventKind.SESSION_CLOSED:
-            self._catalog.update_status(self.id, SessionStatus.CLOSED)
+            await self._persistence.run(self._catalog.update_status, self.id, SessionStatus.CLOSED)
             await self.publish(
                 PRODUCT_EVENT_SESSION_STATE,
                 {"state": PRODUCT_SESSION_STATE_CLOSED, "runtime_id": event.runtime_id},
@@ -1663,7 +1815,8 @@ class LiveSession:
                     result = await self._citation_review_task
                 except asyncio.CancelledError:
                     result["coverage"]["status"] = CoverageStatus.INTERRUPTED.value
-                    if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling():
                         raise
                 except Exception:
                     self._logger.exception("citation_review_failed session_id=%s", self.id)
@@ -1716,9 +1869,39 @@ class LiveSession:
                     event.native_turn_id, item_id, merge_review(fresh, result)
                 )
 
-    def source_text(self, client_turn_id: str) -> str | None:
+    def content_source(self, client_turn_id: str) -> ContentSource | None:
         record = self._events.by_key(self.id, f"{INTERNAL_EVENT_KEY_PREFIX}:user:{client_turn_id}")
-        return str(record.payload.get("text") or "") if record is not None else None
+        if record is None or record.payload.get("binding") != USER_MESSAGE_BINDING_ADMITTED:
+            return None
+        references: list[SourceReference] = []
+        for reference in record.payload.get("refs", ()):
+            kind = reference.get("type")
+            identity = reference.get("id")
+            if kind == "assistant_context":
+                if reference.get("origin") != ContextOrigin.EXPLICIT.value or reference.get(
+                    "state"
+                ) not in (
+                    ContextResolutionState.READY.value,
+                    ContextResolutionState.TRUNCATED.value,
+                ):
+                    continue
+                try:
+                    kind = ContextRefKind(reference.get("kind")).value
+                except (TypeError, ValueError):
+                    continue
+                identity = reference.get("ref_id")
+            elif kind not in (
+                PRODUCT_REFERENCE_FILE,
+                PRODUCT_REFERENCE_DIRECTORY,
+                PRODUCT_REFERENCE_SKILL,
+            ):
+                continue
+            if not isinstance(identity, str) or not identity:
+                continue
+            references.append(
+                SourceReference(kind=kind, identity=sha256(identity.encode()).hexdigest())
+            )
+        return ContentSource(str(record.payload.get("text") or ""), tuple(references))
 
     async def release_product_turn(self, client_turn_id: str) -> bool:
         """Release model provenance only after the native thread tree is quiescent."""
@@ -1727,6 +1910,8 @@ class LiveSession:
             return False
         session = self.runtime_session
         if session is None:
+            if not await self.end_browser_scope():
+                return False
             self.active_product_turn_id = ""
             return True
         try:
@@ -1747,8 +1932,59 @@ class LiveSession:
                 blockers=list(activity.blockers),
             )
             return False
+        if not await self.end_browser_scope():
+            return False
         self.active_product_turn_id = ""
         return True
+
+    def bind_browser_scope_end(
+        self,
+        scope: Mapping[str, object],
+        callback: Callable[[], Awaitable[dict[str, object]]],
+        *,
+        owner: str = "browser",
+    ) -> None:
+        if not owner:
+            raise ValueError("browser scope owner is required")
+        if self._browser_scope is not None:
+            if self._browser_scope[0] != scope:
+                raise RuntimeError("browser scope remains active")
+            self._browser_scope[1].setdefault(owner, callback)
+            return
+        self._browser_scope = (dict(scope), {owner: callback})
+        self._browser_scope_end_pending = False
+
+    @property
+    def browser_scope_end_pending(self) -> bool:
+        return self._browser_scope_end_pending
+
+    @property
+    def browser_delivery_lock(self) -> asyncio.Lock:
+        return self._browser_delivery_lock
+
+    async def end_browser_scope(self) -> bool:
+        async with self._browser_scope_lock:
+            current = self._browser_scope
+            if current is None:
+                self._browser_scope_end_pending = False
+                return True
+            async with self._browser_delivery_lock:
+                self._browser_scope_end_pending = True
+            try:
+                for callback in tuple(current[1].values()):
+                    result = await callback()
+                    if result.get("ok") is not True:
+                        return False
+            except Exception:
+                return False
+            try:
+                self._catalog.archive_browser_action_scope(current[0])
+            except Exception:
+                return False
+            if self._browser_scope is current:
+                self._browser_scope = None
+                self._browser_scope_end_pending = False
+            return True
 
     async def record_user_history(
         self,
@@ -1760,11 +1996,44 @@ class LiveSession:
         assistant_snapshot_id: str = "",
         assistant_context_revision: int | None = None,
         origin: str = USER_MESSAGE_ORIGIN_TURN,
+        reuse_admitted: bool = False,
     ) -> None:
         if not text and not references:
             return
         if origin not in USER_MESSAGE_ORIGINS:
             raise ValueError("user message origin is invalid")
+        if reuse_admitted:
+            previous = self._events.by_key(self.id, f"{INTERNAL_EVENT_KEY_PREFIX}:user:{turn_id}")
+            if (
+                previous is None
+                or previous.kind != PRODUCT_EVENT_USER_MESSAGE
+                or previous.payload.get("text") != text
+                or previous.payload.get("client_turn_id") != turn_id
+                or previous.payload.get("origin") != origin
+                or previous.payload.get("assistant_snapshot_id", "") != assistant_snapshot_id
+                or previous.payload.get("assistant_context_revision") != assistant_context_revision
+            ):
+                raise ValueError("manual retry changed the admitted user message")
+            prior_references = previous.payload.get("refs", [])
+
+            def source_references(rows: Any) -> list[dict[str, Any]]:
+                return [
+                    (
+                        {
+                            key: value
+                            for key, value in dict(row).items()
+                            if key not in {"estimate", "model_id", "reasoning_effort"}
+                        }
+                        if row.get("type") == PRODUCT_REFERENCE_SKILL
+                        else dict(row)
+                    )
+                    for row in rows
+                ]
+
+            if source_references(prior_references) != source_references(references):
+                raise ValueError("manual retry changed admitted references")
+            self.restore_admitted_user(turn_id)
+            return
         enriched_references: list[dict[str, Any]] = []
         for raw_reference in references:
             reference = dict(raw_reference)
@@ -1811,7 +2080,32 @@ class LiveSession:
             idempotency_key=f"{INTERNAL_EVENT_KEY_PREFIX}:user:{turn_id}",
         )
 
+    def restore_admitted_user(self, client_turn_id: str) -> None:
+        previous = self._events.by_key(
+            self.id, f"{INTERNAL_EVENT_KEY_PREFIX}:user:{client_turn_id}"
+        )
+        if (
+            previous is None
+            or previous.kind != PRODUCT_EVENT_USER_MESSAGE
+            or previous.payload.get("client_turn_id") != client_turn_id
+        ):
+            raise ValueError("admitted user message is unavailable")
+        if not any(
+            row.get("item_id") == client_turn_id and row.get("role") == "user"
+            for row in self._local_history
+        ):
+            self._local_history.append(
+                {
+                    "kind": "user",
+                    "role": "user",
+                    **dict(previous.payload),
+                    "turn_id": client_turn_id,
+                    "item_id": client_turn_id,
+                }
+            )
+
     async def record_cancelled_user_history(self, queued: QueuedMessageRecord) -> None:
+        recovery = queued.purpose == QUEUE_PURPOSE_RECOVERY
         text = str(queued.body.get(QUEUED_DISPLAY_TEXT) or "")
         references = queued.body.get(QUEUED_REFERENCES)
         if references is None:
@@ -1823,11 +2117,11 @@ class LiveSession:
         await self.publish(
             PRODUCT_EVENT_USER_MESSAGE,
             {
-                "text": text,
+                "text": AUTOMATIC_RECOVERY_MESSAGE if recovery else text,
                 "refs": references if isinstance(references, list) else [],
                 "client_turn_id": queued.queued_message_id,
                 "binding": USER_MESSAGE_BINDING_CANCELLED,
-                "origin": USER_MESSAGE_ORIGIN_TURN,
+                "origin": USER_MESSAGE_ORIGIN_RECOVERY if recovery else USER_MESSAGE_ORIGIN_TURN,
             },
             idempotency_key=f"queue:{queued.queued_message_id}:cancelled-user",
         )
@@ -2107,15 +2401,12 @@ class LiveSession:
                 }
             )
 
-    async def adopt_user_title(self, text: str, *, turn_id: str) -> bool:
-        """Persist the first natural-language request as the product-owned title."""
+    async def adopt_generated_title(self, text: str, *, turn_id: str) -> bool:
+        """Publish an independently generated product title."""
 
         clean = " ".join(text.split())
-        if not clean:
+        if not clean or len(clean) > SESSION_RENAME_MAX_LENGTH:
             return False
-        if len(clean) > SESSION_RENAME_MAX_LENGTH:
-            clean = clean[: SESSION_RENAME_MAX_LENGTH - len(SESSION_TITLE_ELLIPSIS)].rstrip()
-            clean = f"{clean}{SESSION_TITLE_ELLIPSIS}"
         record = self._catalog.adopt_generated_title(
             self.id,
             clean,
@@ -2123,6 +2414,11 @@ class LiveSession:
         )
         if record.title != clean:
             return False
+        previous = self._events.by_key(
+            self.id, f"{INTERNAL_EVENT_KEY_PREFIX}:title:{self.id}:{turn_id}"
+        )
+        if previous is not None and previous.payload.get("title") == clean:
+            return True
         await self.publish(
             PRODUCT_EVENT_SESSION_TITLE_UPDATED,
             {"title": clean, "title_fallback": None},
@@ -2301,10 +2597,12 @@ class LiveSession:
             raise ValueError("task_context_stale")
         self.active_task_lease = lease
         self.active_task_type = lease.task_type.value
+        self.task_lease_revision += 1
 
     def clear_task_lease(self) -> None:
         self.active_task_lease = None
         self.active_task_type = ""
+        self.task_lease_revision += 1
 
     def register_local_input_path(self, path: Path, kind: InputKind) -> str:
         """Authorize one exact user-selected file or directory for this session."""
@@ -2370,7 +2668,7 @@ class LiveSession:
                 self._local_input_paths[reference_id] = (canonical, kind)
                 self._local_input_path_ids[canonical] = reference_id
 
-    async def write_plan(self, command: PlanWrite) -> ProductEventRecord:
+    async def write_plan(self, command: PlanCommand) -> ProductEventRecord:
         async with self._projection_lock:
 
             def require_turn() -> None:
@@ -2384,7 +2682,8 @@ class LiveSession:
                 ):
                     raise PermissionError("plan_turn_inactive")
 
-            record = self.plans.write(
+            record = await self._persistence.run(
+                self.plans.write,
                 command,
                 runtime_id=self.runtime_id,
                 vendor_thread_id=self.vendor_thread_id,
@@ -2450,6 +2749,7 @@ class LiveSession:
         self, kind: str, data: Mapping[str, Any], turn_id: str, item_id: str, key: str
     ) -> tuple[ProductEventRecord, list[ProductEventRecord]]:
         published: list[ProductEventRecord] = []
+        record: ProductEventRecord | None = None
         with self._events.transaction() as connection:
             records = self._events.turn_records(
                 self.id,
@@ -2524,7 +2824,7 @@ class LiveSession:
                         connection=connection,
                     )
                     published.append(closed)
-            if kind not in COLLABORATION_EVENT_KINDS:
+            if record is None:
                 record = self._events.append(
                     session_id=self.id,
                     runtime_id=self.runtime_id,
@@ -2690,6 +2990,10 @@ class LiveSession:
         self._trace_and_broadcast(changed)
 
     @property
+    def bridge_activity(self) -> ActivityLease | None:
+        return self.turn_activity
+
+    @property
     def publication_turn_id(self) -> str:
         """Current execution identity admitted by the artifact publication port."""
         return self.ledger.active_turn_id
@@ -2773,27 +3077,41 @@ class LiveSession:
             self.runtime_workdir, self._cards, card_type, content
         )
         card_id = card_identity(self.id, turn_id, card_type, digest)
-        payload = {"card_id": card_id, "type": card_type, "content": normalized}
+        slot = self._cards.slot(card_type, normalized)
+        item_slot = card_identity(self.id, turn_id, card_type, slot) if slot is not None else None
         idempotency_key = f"{DISPLAY_CARD_IDEMPOTENCY_PREFIX}:{turn_id}:{card_type}:{digest}"
         with self._events.transaction() as connection:
+            if item_slot is not None:
+                previous = self._events.latest_kind(
+                    self.id,
+                    PRODUCT_EVENT_DISPLAY_CARD,
+                    connection=connection,
+                    vendor_turn_id=turn_id,
+                    vendor_item_id=item_slot,
+                )
+                if previous is not None and previous.payload.get("content") == normalized:
+                    return previous.payload
+                predecessor = previous.product_seq if previous is not None else 0
+                idempotency_key = f"{idempotency_key}:{predecessor}"
+                card_id = card_identity(self.id, turn_id, card_type, idempotency_key)
+            payload = {"card_id": card_id, "type": card_type, "content": normalized}
             existing = self._events.by_key(self.id, idempotency_key, connection=connection)
             if existing is None:
-                count, byte_count = self._events.turn_kind_usage(
+                _, byte_count = self._events.turn_kind_usage(
                     self.id,
                     turn_id,
                     PRODUCT_EVENT_DISPLAY_CARD,
                     connection=connection,
+                    item_slot=item_slot,
                 )
-                if count >= DISPLAY_CARD_MAX_PER_TURN:
-                    raise DisplayCardError("display_card_turn_limit_exceeded")
                 if byte_count + encoded_size > DISPLAY_CARD_MAX_BYTES_PER_TURN:
-                    raise DisplayCardError("display_card_turn_bytes_exceeded")
+                    raise DisplayCardError(DISPLAY_CARD_TURN_BYTES)
             record = self._events.append(
                 session_id=self.id,
                 runtime_id=self.runtime_id,
                 vendor_thread_id=self.vendor_thread_id,
                 vendor_turn_id=turn_id,
-                vendor_item_id=None,
+                vendor_item_id=item_slot,
                 kind=PRODUCT_EVENT_DISPLAY_CARD,
                 payload=payload,
                 idempotency_key=idempotency_key,
@@ -2869,6 +3187,7 @@ class LiveSession:
             )
 
     async def interrupt(self, *, cleanup_background_processes: bool = False) -> None:
+        await self.end_browser_scope()
         if await self.cancel_resource_wait():
             return
         runtime_session = self.runtime_session
@@ -2882,18 +3201,17 @@ class LiveSession:
         try:
             record = self._catalog.get(self.id)
             expected_turn_id = (record.last_turn_id if record is not None else "") or ""
-            if runtime_session is not None:
-                receipt = await runtime_session.interrupt(
-                    InterruptRequest(
-                        command_id=f"interrupt-{uuid.uuid4().hex}",
-                        expected_turn_id=expected_turn_id,
-                        cleanup_background_processes=cleanup_background_processes,
-                    )
+            receipt = await runtime_session.interrupt(
+                InterruptRequest(
+                    command_id=f"interrupt-{uuid.uuid4().hex}",
+                    expected_turn_id=expected_turn_id,
+                    cleanup_background_processes=cleanup_background_processes,
                 )
-                handled = receipt.state in {
-                    CommandState.ACCEPTED,
-                    CommandState.APPLIED,
-                }
+            )
+            handled = receipt.state in {
+                CommandState.ACCEPTED,
+                CommandState.APPLIED,
+            }
             if not handled:
                 raise RuntimeError("runtime did not accept the interrupt")
             interactions = getattr(self, "interactions", None)
@@ -2957,11 +3275,19 @@ class LiveSession:
                 {"queued_message_id": request_id, "reason": "cancelled"},
                 idempotency_key=f"queue:{request_id}:cancelled",
             )
+            self.interrupting = True
+            self.interrupt_generation += 1
+            self.last_interrupt_succeeded = None
             task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        try:
+            await asyncio.gather(task, return_exceptions=True)
+            self.last_interrupt_succeeded = True
+        finally:
+            self.interrupting = False
         return True
 
     async def terminate(self) -> None:
+        await self.end_browser_scope()
         runtime_session = self.runtime_session
         command_id = f"terminate-{uuid.uuid4().hex}"
         self.terminating = True
@@ -2993,41 +3319,124 @@ class LiveSession:
         )
 
     async def aclose(self) -> None:
+        current = asyncio.current_task()
+        if (
+            current in self._service_callbacks
+            or current in self.submission_tasks
+            or current
+            in (
+                self._close_task,
+                self.current_task,
+                self.resource_task,
+                self._citation_review_task,
+                self._publication_task,
+            )
+        ):
+            raise RuntimeError("session cannot await its own close")
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_owned())
+        cancelled = False
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        try:
+            self._close_task.result()
+        except BaseException as error:
+            if cancelled and not isinstance(error, asyncio.CancelledError):
+                raise BaseExceptionGroup(
+                    "session close failed during cancellation", [error, asyncio.CancelledError()]
+                ) from None
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _close_owned(self) -> None:
+        failures: list[BaseException] = []
+
+        async def close(call: Callable[[], Any]) -> bool:
+            try:
+                result = call()
+                if inspect.isawaitable(result):
+                    await result
+                return True
+            except BaseException as error:
+                failures.append(error)
+                return False
+
+        async def cancel(
+            tasks: tuple[asyncio.Task[Any], ...], *, request_cancel: bool = True
+        ) -> bool:
+            if request_cancel:
+                for task in tasks:
+                    task.cancel()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            errors = [
+                result
+                for result in results
+                if isinstance(result, BaseException)
+                and not isinstance(result, asyncio.CancelledError)
+            ]
+            failures.extend(errors)
+            return not errors
+
+        async def settle() -> None:
+            async with self._settlement_review_lock:
+                pass
+
         self._citation_review_closed = True
-        await self._cancel_citation_review()
-        async with self._settlement_review_lock:
-            pass
-        for task in tuple(self._service_callbacks):
-            task.cancel()
-        if self._service_callbacks:
-            await asyncio.gather(*self._service_callbacks, return_exceptions=True)
+        self._persistence.stop_waiting()
+
+        async def close_browser_scope() -> None:
+            if not await self.end_browser_scope():
+                raise RuntimeError("Browser scope did not drain")
+
+        await close(self._cancel_citation_review)
+        await close(settle)
+        await close(close_browser_scope)
+        await cancel(tuple(self._service_callbacks))
+        resource_task = self.resource_task
+        if resource_task is not None and await cancel((resource_task,)):
+            self.resource_task = None
+        # A submitted turn is no longer resource_task: it owns current_task and
+        # can still persist an unknown outcome or delivery during cancellation.
+        # Drain that work while its ledger, context and persistence remain alive.
+        current_task = self.current_task
+        if current_task is not None and await cancel((current_task,)):
+            self.current_task = None
+        # Admission releases resource_task before its wrapper awaits the turn.
+        # Cancelling the turn wakes that wrapper's persistence cleanup; await it
+        # without cancelling a second time in the middle of that cleanup.
+        await cancel(tuple(self.submission_tasks), request_cancel=False)
         self.clear_task_lease()
         self.active_product_turn_id = ""
         interactions = getattr(self, "interactions", None)
         if interactions is not None:
-            await interactions.cancel_product_requests()
-        resource_task = self.resource_task
-        if resource_task is not None and resource_task is not asyncio.current_task():
-            resource_task.cancel()
-            await asyncio.gather(resource_task, return_exceptions=True)
-        self.resource_task = None
+            await close(interactions.cancel_product_requests)
         self.bridge_token = ""
-        try:
-            if self.runtime_driver is not None:
-                await self.runtime_driver.close()
-                self.runtime_driver = None
-                self.runtime_session = None
-            self._catalog.expire_pending_hil(self.id)
-        finally:
-            if self._on_release is not None:
-                try:
-                    self._on_release(self.id)
-                except Exception:  # noqa: BLE001 - 清理失败不得遮蔽关闭路径
-                    self._logger.warning("session_release_failed session_id=%s", self.id)
-            if self._publication_task is not None:
-                await asyncio.gather(self._publication_task, return_exceptions=True)
-            await self._persistence.close()
-            self._trace.close()
+        if self.runtime_driver is not None and await close(self.runtime_driver.close):
+            self.runtime_driver = None
+            self.runtime_session = None
+        # The observation pump could enqueue callbacks while earlier owners drained.
+        await cancel(tuple(self._service_callbacks))
+        await close(lambda: self._catalog.expire_pending_hil(self.id))
+        release = self._on_release
+        if release is not None:
+            await close(lambda: release(self.id))
+        if self._publication_task is not None:
+            await close(lambda: self._publication_task)
+        # An uncertain worker shutdown cannot authorize closing its Trace dependency.
+        if await close(self._persistence.close):
+            await close(self._trace.close)
+        if failures:
+            unique = list({id(error): error for error in failures}.values())
+            if len(unique) == 1:
+                raise unique[0]
+            raise BaseExceptionGroup("session resource cleanup failed", unique)
+        self.release_attachment_activity()
 
     async def _cancel_citation_review(self) -> None:
         self.interrupt_generation += 1

@@ -1,0 +1,6 @@
+{
+  "name": "scholarseed-desktop",
+  "productName": "ScholarSeed",
+  "version": "1.0.0",
+  "main": "bootstrap.cjs"
+}

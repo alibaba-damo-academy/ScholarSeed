@@ -4,24 +4,34 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import shutil
 import subprocess
+import sys
 import tempfile
-import threading
+import time
 from pathlib import Path
-from typing import Any
 
 from scholarseed_codex.executable import _resolve_launch_arguments
 from scholarseed_codex.isolation import managed_codex_launch
+from scholarseed_codex.permission import local_socket_permissions
+from tests.integration.appserver import APP_SERVER_TIMEOUT_SECONDS, AppServer
 
 PASS = 0
 FAIL = 0
-APP_SERVER_TIMEOUT_SECONDS = 15.0
 HOSTILE_AGENTS_SENTINEL = "HOSTILE_PARENT_AGENTS_SENTINEL"
 HOSTILE_MCP_NAME = "hostile_parent"
 HOSTILE_SKILL_NAME = "hostile-host-skill"
 PRODUCT_SKILL_NAME = "scholarseed-product-skill"
+PRODUCT_MCP_NAME = "product_projection"
+REPLACEMENT_MCP_NAME = "replacement_projection"
+DISABLED_MCP_COMMAND = "unused-disabled-server"
+EMPTY_MCP_OVERRIDE = "mcp_servers={}"
+MCP_FIXTURE = Path(__file__).parent / "integration" / "mcp.py"
+MCP_TOOL_NAME = "revision"
+INITIAL_REVISION = "first"
+UPDATED_REVISION = "second"
+MCP_CONNECTED_STATUS = "connected"
+MCP_STATUS_POLL_SECONDS = 0.05
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -32,85 +42,6 @@ def check(name: str, condition: bool, detail: str = "") -> None:
     else:
         FAIL += 1
         print(f"  ✗ {name}  {detail}")
-
-
-class AppServer:
-    def __init__(
-        self,
-        executable: str,
-        cwd: Path,
-        environment: dict[str, str],
-        arguments: tuple[str, ...],
-    ) -> None:
-        self._process = subprocess.Popen(
-            [executable, *arguments, "app-server", "--listen", "stdio://"],
-            cwd=cwd,
-            env={**os.environ, **environment},
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        assert self._process.stdout is not None
-        assert self._process.stderr is not None
-        self._messages: queue.Queue[dict[str, Any]] = queue.Queue()
-        self._errors: queue.Queue[str] = queue.Queue()
-        self._stdout_thread = threading.Thread(
-            target=self._read_stdout,
-            args=(self._process.stdout,),
-            daemon=True,
-        )
-        self._stderr_thread = threading.Thread(
-            target=self._read_stderr,
-            args=(self._process.stderr,),
-            daemon=True,
-        )
-        self._stdout_thread.start()
-        self._stderr_thread.start()
-        self._request_id = 0
-
-    def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        self._request_id += 1
-        request_id = self._request_id
-        self._write({"id": request_id, "method": method, "params": params})
-        try:
-            while True:
-                payload = self._messages.get(timeout=APP_SERVER_TIMEOUT_SECONDS)
-                if payload.get("id") != request_id:
-                    continue
-                if "error" in payload:
-                    raise RuntimeError(json.dumps(payload["error"], ensure_ascii=False))
-                return dict(payload.get("result") or {})
-        except queue.Empty as error:
-            errors = list(self._errors.queue)
-            raise RuntimeError(
-                "; ".join(errors) or f"App Server request timed out: {method}"
-            ) from error
-
-    def notify(self, method: str, params: dict[str, Any]) -> None:
-        self._write({"method": method, "params": params})
-
-    def close(self) -> None:
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-            self._process.wait(timeout=3)
-
-    def _write(self, payload: dict[str, Any]) -> None:
-        assert self._process.stdin is not None
-        self._process.stdin.write(json.dumps(payload) + "\n")
-        self._process.stdin.flush()
-
-    def _read_stdout(self, stream) -> None:
-        for line in stream:
-            self._messages.put(json.loads(line))
-
-    def _read_stderr(self, stream) -> None:
-        for line in stream:
-            self._errors.put(line.strip())
 
 
 def _write_skill(root: Path, name: str, sentinel: str) -> Path:
@@ -158,7 +89,7 @@ def test_managed_runtime() -> None:
         product_skill = _write_skill(product_root, PRODUCT_SKILL_NAME, "PRODUCT_SKILL")
         runtime_home.mkdir()
         (runtime_home / "config.toml").write_text(
-            f'[projects.{json.dumps(str(workspace.resolve()))}]\ntrust_level="trusted"\n',
+            f'[projects.{json.dumps(str(workspace.resolve()))}]\ntrust_level="trusted"\n[features]\nplugins=true\n',
             encoding="utf-8",
         )
         inherited = {"HOME": str(user_home), "PATH": os.environ.get("PATH", "")}
@@ -208,6 +139,11 @@ def test_managed_runtime() -> None:
             json.dumps(effective, ensure_ascii=False),
         )
         check(
+            "managed plugin gate disables ambient marketplace startup tasks",
+            dict(effective.get("features") or {}).get("plugins") is False,
+            json.dumps(effective.get("features"), ensure_ascii=False),
+        )
+        check(
             "derived shells recover the user's original home",
             shell_values.get("HOME") == str(user_home),
             json.dumps(shell_policy, ensure_ascii=False),
@@ -243,8 +179,206 @@ def test_managed_runtime() -> None:
         )
 
 
+def test_managed_network_transport() -> None:
+    executable = os.environ.get("SCHOLARSEED_CODEX_EXECUTABLE", "")
+    if not executable:
+        raise RuntimeError("Explicit reviewed Codex binary is required for network configuration")
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        runtime_home = root / "runtime"
+        runtime_home.mkdir()
+        (runtime_home / "config.toml").write_text(
+            "[features.network_proxy]\nenable_socks5_udp=true\n", encoding="utf-8"
+        )
+        domain = "example.com"
+        profile, launch = local_socket_permissions("workspace-write", (), network_domains=(domain,))
+        environment, launch = managed_codex_launch(runtime_home, {}, launch)
+        server = AppServer(
+            executable, root, environment, _resolve_launch_arguments(launch, environment)
+        )
+        try:
+            _initialize(server)
+            effective = server.request("config/read", {"cwd": str(root)})["config"]
+        finally:
+            server.close()
+        proxy = effective["features"]["network_proxy"]
+        check(
+            "native strict config enforces Windows UDP policy over user configuration",
+            proxy.get("enable_socks5_udp") is (sys.platform != "win32"),
+            json.dumps(proxy),
+        )
+        check(
+            "native strict config preserves managed network and TCP defaults",
+            proxy["enabled"] is True
+            and proxy.get("enable_socks5", True) is True
+            and proxy["allow_local_binding"] is False
+            and proxy["dangerously_allow_all_unix_sockets"] is False,
+        )
+        check(
+            "native strict config preserves profile selection and exact domain policy",
+            effective["default_permissions"] == profile
+            and effective["permissions"][profile]["network"]["domains"] == {domain: "allow"},
+        )
+
+
+def test_strict_mcp_file_projection() -> None:
+    executable = os.environ.get("SCHOLARSEED_CODEX_EXECUTABLE", "")
+    if not executable:
+        raise RuntimeError("Explicit reviewed Codex binary is required for MCP projection")
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        runtime_home = root / "runtime"
+        user_home = root / "user"
+        workspace = root / "repository"
+        cwd = workspace / "nested"
+        cwd.mkdir(parents=True)
+        runtime_home.mkdir()
+        for directory in (workspace / ".codex", user_home / ".codex"):
+            directory.mkdir(parents=True)
+            (directory / "config.toml").write_text(
+                _disabled_mcp_config(HOSTILE_MCP_NAME), encoding="utf-8"
+            )
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        projection = runtime_home / "config.toml"
+        projection.write_text(_disabled_mcp_config(PRODUCT_MCP_NAME), encoding="utf-8")
+        environment, arguments = managed_codex_launch(
+            runtime_home,
+            {},
+            (),
+            inherited_environment={"HOME": str(user_home), "PATH": os.environ.get("PATH", "")},
+        )
+        projected_arguments = tuple(
+            argument for argument in arguments if argument.value != EMPTY_MCP_OVERRIDE
+        )
+        server = AppServer(
+            executable,
+            cwd,
+            environment,
+            _resolve_launch_arguments(projected_arguments, environment),
+        )
+        try:
+            _initialize(server)
+            for name in (PRODUCT_MCP_NAME, REPLACEMENT_MCP_NAME, ""):
+                projection.write_text(_disabled_mcp_config(name), encoding="utf-8")
+                server.request("config/mcpServer/reload", {})
+                result = server.request("config/read", {"cwd": str(cwd), "includeLayers": True})
+                config = result.get("config") or {}
+                servers = dict(config.get("mcp_servers") or config.get("mcpServers") or {})
+                expected = {name} if name else set()
+                check(
+                    f"strict file projection has exact configured servers: {name or 'empty'}",
+                    set(servers) == expected,
+                    json.dumps(servers),
+                )
+                check(
+                    "strict file projection rejects personal and project MCP origins",
+                    HOSTILE_MCP_NAME not in json.dumps(result.get("origins") or {}),
+                )
+        finally:
+            server.close()
+
+
+def _disabled_mcp_config(name: str) -> str:
+    if not name:
+        return "mcp_servers = {}\n"
+    return (
+        f"[mcp_servers.{name}]\n"
+        f"command = {json.dumps(DISABLED_MCP_COMMAND)}\n"
+        "enabled = false\n"
+    )
+
+
+def test_loaded_thread_mcp_projection() -> None:
+    executable = os.environ.get("SCHOLARSEED_CODEX_EXECUTABLE", "")
+    if not executable:
+        raise RuntimeError("Explicit reviewed Codex binary is required for MCP projection")
+    with tempfile.TemporaryDirectory() as temporary:
+        runtime_home = Path(temporary)
+        projection = runtime_home / "config.toml"
+        _write_live_projection(projection, INITIAL_REVISION)
+        environment, arguments = managed_codex_launch(runtime_home, {}, ())
+        projected_arguments = tuple(
+            argument for argument in arguments if argument.value != EMPTY_MCP_OVERRIDE
+        )
+        server = AppServer(
+            executable,
+            runtime_home,
+            environment,
+            _resolve_launch_arguments(projected_arguments, environment),
+        )
+        try:
+            _initialize(server)
+            threads = [_start_thread(server, runtime_home) for _ in range(2)]
+            for thread_id in threads:
+                check(
+                    "loaded thread calls original MCP process",
+                    _call_revision(server, thread_id) == INITIAL_REVISION,
+                )
+            _write_live_projection(projection, UPDATED_REVISION)
+            server.request("config/mcpServer/reload", {})
+            threads.append(_start_thread(server, runtime_home))
+            for thread_id in threads:
+                check(
+                    "loaded and new threads call replacement MCP without host restart",
+                    _call_revision(server, thread_id) == UPDATED_REVISION,
+                )
+                check(
+                    "replacement server reports connected rather than only queued",
+                    _wait_mcp_inventory(server, thread_id, {PRODUCT_MCP_NAME}),
+                )
+            projection.write_text(_disabled_mcp_config(""), encoding="utf-8")
+            server.request("config/mcpServer/reload", {})
+            for thread_id in threads:
+                check(
+                    "removal reaches every loaded thread inventory",
+                    _wait_mcp_inventory(server, thread_id, set()),
+                )
+        finally:
+            server.close()
+
+
+def _write_live_projection(path: Path, revision: str) -> None:
+    path.write_text(
+        f"[mcp_servers.{PRODUCT_MCP_NAME}]\n"
+        f"command={json.dumps(sys.executable)}\n"
+        f"args={json.dumps([str(MCP_FIXTURE.resolve()), revision])}\n",
+        encoding="utf-8",
+    )
+
+
+def _start_thread(server: AppServer, cwd: Path) -> str:
+    result = server.request("thread/start", {"cwd": str(cwd), "ephemeral": True})
+    return str(result["thread"]["id"])
+
+
+def _call_revision(server: AppServer, thread_id: str) -> str:
+    result = server.request(
+        "mcpServer/tool/call",
+        {"threadId": thread_id, "server": PRODUCT_MCP_NAME, "tool": MCP_TOOL_NAME, "arguments": {}},
+    )
+    return str(result["content"][0]["text"])
+
+
+def _wait_mcp_inventory(server: AppServer, thread_id: str, expected: set[str]) -> bool:
+    deadline = time.monotonic() + APP_SERVER_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        result = server.request(
+            "mcpServerStatus/list", {"threadId": thread_id, "detail": "toolsAndAuthOnly"}
+        )
+        rows = result.get("data") or []
+        if {row["name"] for row in rows} == expected and all(
+            row.get("runtimeStatus") == MCP_CONNECTED_STATUS for row in rows
+        ):
+            return True
+        time.sleep(MCP_STATUS_POLL_SECONDS)
+    return False
+
+
 def main() -> int:
     test_managed_runtime()
+    test_managed_network_transport()
+    test_strict_mcp_file_projection()
+    test_loaded_thread_mcp_projection()
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0
 

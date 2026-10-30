@@ -18,7 +18,7 @@ export function DisplayCardProvider({
   return <DisplayCardsContext.Provider value={cards}>{children}</DisplayCardsContext.Provider>
 }
 
-export function DisplayCardView({ card }: { card: DisplayCardData }): React.JSX.Element {
+export function DisplayCardView({ card, turnId }: { card: DisplayCardData; turnId?: string }): React.JSX.Element {
   const cards = useContext(DisplayCardsContext)
   const { t } = useTranslation('components')
   const contribution = cards.get(card.type)
@@ -30,7 +30,12 @@ export function DisplayCardView({ card }: { card: DisplayCardData }): React.JSX.
       </Alert>
     )
   }
-  return <>{contribution.render({ cardId: card.cardId, content: card.content })}</>
+  return <>{contribution.render({ cardId: card.cardId, content: card.content, presentationSource: card.presentationSource, turnId })}</>
+}
+
+export function usePostDeliveryCardTypes(): ReadonlySet<string> {
+  const cards = useContext(DisplayCardsContext)
+  return new Set([...cards.values()].filter(card => card.placement === 'after-artifacts').map(card => card.type))
 }
 
 export function useCardArtifacts(items: readonly ConvItem[]): ReadonlySet<string> {

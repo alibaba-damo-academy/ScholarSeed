@@ -12,6 +12,9 @@ import test_native_pipeline as fixtures
 from evidence import build,read
 from task_contract import configure,atomic_json
 from operator_cli import configure_outline,figure_plan
+from chapter_pipeline import chapter_messages
+from manuscript_delta import REFINE_GUIDANCE
+from chapter_plan import ROLES
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -29,6 +32,19 @@ def description(operation,workspace=None):
 
 
 class RequestExampleTest(unittest.TestCase):
+    def test_literature_count_guidance_reaches_all_chapters_and_refinement(self):
+        prompts = [('refinement', REFINE_GUIDANCE)]
+        for role in sorted(ROLES):
+            for output_format in ('latex_pdf', 'markdown'):
+                for shared_tables in ([], [{'table_id': 'T1'}]):
+                    packet = {'chapter_kind': role, 'output_format': output_format,
+                              'shared_tables': shared_tables}
+                    prompts.append(((role, output_format, bool(shared_tables)),
+                                    chapter_messages(packet)[0]['content']))
+        for stage, prompt in prompts:
+            with self.subTest(stage=stage):
+                self.assertIn('Do not mention how many papers this review or any of its sections uses.', prompt)
+
     def fixture(self):
         f=fixtures.NativeTest();f.setUp();self.addCleanup(f.doCleanups)
         return f

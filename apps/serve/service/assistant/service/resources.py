@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from service.assistant.persistence.links import (
@@ -26,16 +26,22 @@ from service.assistant.service.annotations import (
     text_revision,
     utf16_slice,
 )
-from service.assistant.service.citations import CitationService, citation_handles
+from service.assistant.service.citations import (
+    CITATION_EVIDENCE_UNAVAILABLE,
+    CitationService,
+    citation_handles,
+)
 from service.assistant.service.links import LibraryLinkProjection
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
 from service.chat.service.artifacts import (
+    ARTIFACT_REVISION_CONFLICT,
     ArtifactReadError,
     ArtifactService,
     ResolvedArtifact,
 )
 from service.chat.service.attachments import AttachmentService
 from service.content.domain.model import ContentError
+from service.platform.bridge import ResourceImport, ResourceImportResult
 from service.platform.content import ContentPort, FileAssetRef, ProjectRef
 from service.platform.context import (
     AssistantAnswer,
@@ -43,6 +49,7 @@ from service.platform.context import (
     AssistantTurnItem,
     ContextAuthority,
 )
+from service.platform.files import export_file_name
 from service.resources.domain.model import (
     IMPORT_CONFLICT,
     IMPORT_UNAVAILABLE,
@@ -145,29 +152,106 @@ class AssistantResourceService:
 
     def resolve_saved_citation(self, project_id: str, path: str, handle: str) -> dict:
         """Only resolve handles retained in this resource's import receipt."""
+        citation = self._saved_citation(project_id, path, handle)
+        result = self._citation_service().resolve_saved(citation, project_id)
+        result["saved_citation"] = {"project_id": project_id, "path": path, "handle": handle}
+        return result
+
+    def saved_citation_raw(self, project_id: str, path: str, handle: str) -> bytes:
+        citation = self._saved_citation(project_id, path, handle)
+        return self._citation_service().saved_raw(citation)
+
+    def saved_citation_preview(self, project_id: str, path: str, handle: str, page: int) -> bytes:
+        citation = self._saved_citation(project_id, path, handle)
+        return self._citation_service().saved_preview(citation, project_id, page)
+
+    def _citation_service(self) -> CitationService:
+        if self._citations is None:
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
+        return self._citations
+
+    def resolve_artifact_citation(
+        self, session_id: str, artifact_id: str, revision: str, handle: str
+    ) -> dict:
+        citation, project_id = self._artifact_citation(session_id, artifact_id, revision, handle)
+        result = self._citation_service().resolve_saved(citation, project_id)
+        result["artifact_citation"] = {
+            "session_id": session_id,
+            "artifact_id": artifact_id,
+            "revision": revision,
+            "handle": handle,
+        }
+        return result
+
+    def artifact_citation_raw(
+        self, session_id: str, artifact_id: str, revision: str, handle: str
+    ) -> bytes:
+        citation, _ = self._artifact_citation(session_id, artifact_id, revision, handle)
+        return self._citation_service().saved_raw(citation)
+
+    def artifact_citation_preview(
+        self, session_id: str, artifact_id: str, revision: str, handle: str, page: int
+    ) -> bytes:
+        citation, project_id = self._artifact_citation(session_id, artifact_id, revision, handle)
+        return self._citation_service().saved_preview(citation, project_id, page)
+
+    def _artifact_citation(
+        self, session_id: str, artifact_id: str, revision: str, handle: str
+    ) -> tuple[dict, str]:
+        raw, media_type = self._artifacts.read_raw(session_id, artifact_id)
+        source = self._artifacts.provenance(session_id, artifact_id)
+        if (
+            PurePosixPath(source.source_path).suffix.lower() not in MARKDOWN_ARTIFACT_SUFFIXES
+            and media_type.split(";", 1)[0].strip().lower() not in MARKDOWN_ARTIFACT_MEDIA_TYPES
+        ):
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
+        try:
+            markdown = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE) from error
+        if text_revision(markdown) != revision:
+            raise AssistantResourceError(ARTIFACT_REVISION_CONFLICT)
+        context = self._import_context(source.session_id, source.turn_id)
+        evidence = self._citation_service().markdown_evidence(
+            source.session_id, context.evidence_snapshot_id, markdown, allowed_handles=(handle,)
+        )
+        citation = next(
+            (item.get("citation") for item in evidence if item.get("evidence_id") == handle), None
+        )
+        if not isinstance(citation, dict):
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
+        project = self._project_for_session(session_id)
+        return citation, project.id if project is not None else ""
+
+    def _saved_citation(self, project_id: str, path: str, handle: str) -> dict:
         record = self._imports.get(project_id, path)
         if record is None or self._citations is None:
-            raise AssistantResourceError(IMPORT_UNAVAILABLE)
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
         evidence = next(
             (item for item in record.evidence or () if item.get("evidence_id") == handle), None
         )
         if evidence is None:
-            raise AssistantResourceError(IMPORT_UNAVAILABLE)
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
         citation = evidence.get("citation")
         if isinstance(citation, dict):
-            return self._citations.resolve_saved(citation, project_id)
+            return citation
+        if evidence.get("reason") == CITATION_EVIDENCE_UNAVAILABLE:
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
         # Existing receipts predate the self-contained citation metadata. Resolve
         # only their retained handle through the original answer, never arbitrary links.
-        if record.source_id is None:
-            raise AssistantResourceError(IMPORT_UNAVAILABLE)
+        if record.source_kind != AgentImportSourceKind.ANSWER or record.source_id is None:
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
         answer = self._answers.answer(
             session_id=record.source_session_id, answer_id=record.source_id
         )
         if answer is None:
-            raise AssistantResourceError(IMPORT_UNAVAILABLE)
-        return self._citations.resolve(
-            record.source_session_id, answer.answer_id, answer.revision, 0, 0, handle
-        )
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE)
+        try:
+            return self._citations.resolve(
+                record.source_session_id, answer.answer_id, answer.revision, 0, 0, handle
+            )
+        except ValueError as error:
+            raise AssistantResourceError(CITATION_EVIDENCE_UNAVAILABLE) from error
 
     def import_attachment(
         self,
@@ -219,7 +303,23 @@ class AssistantResourceService:
                     or item.get("kind") == "literature"
                 )
             )
-            captured = replace(captured, evidence=retained + pdf_evidence or None)
+            selected = {item["evidence_id"]: item for item in pdf_evidence}
+            captured = replace(
+                captured,
+                evidence=retained
+                + tuple(
+                    selected.get(item["evidence_id"], item)
+                    for item in self._citations.markdown_evidence(session_id, None, content)
+                )
+                or None,
+            )
+        elif self._citations is not None and citation_handles(content):
+            captured = self._import_context(session_id, answer.turn_id if answer else None)
+            captured = replace(
+                captured,
+                evidence=(captured.evidence or ())
+                + self._citations.markdown_evidence(session_id, None, content),
+            )
         try:
             if location is not None:
                 asset = self._writer.write_markdown(project.id, location, content)
@@ -263,6 +363,47 @@ class AssistantResourceService:
         """把一份结构化会话产物复制进资料库。"""
 
         project = self._project(session_id, project_id)
+        return self._import_artifact(
+            project, session_id, artifact_id, expected_sha256, location, idempotency_key
+        )
+
+    def import_publication(
+        self, session_id: str, workdir: Path, query: ResourceImport
+    ) -> ResourceImportResult:
+        project = self._project(session_id, "")
+        artifact_id = self._artifacts.published_artifact_id(
+            session_id,
+            workdir,
+            artifact_id=query.artifact_id,
+            path=query.path,
+            expected_sha256=query.expected_sha256,
+        )
+        location = (
+            ResourceLocationRef(parent=query.location.parent, name=query.location.name)
+            if query.location is not None
+            else None
+        )
+        asset = self._import_artifact(
+            project, session_id, artifact_id, query.expected_sha256, location, query.idempotency_key
+        )
+        assert asset.asset_id is not None
+        return ResourceImportResult(
+            project_id=project.id,
+            artifact_id=artifact_id,
+            asset_id=asset.asset_id,
+            path=asset.path,
+            name=asset.name,
+        )
+
+    def _import_artifact(
+        self,
+        project: ProjectRef,
+        session_id: str,
+        artifact_id: str,
+        expected_sha256: str | None,
+        location: ResourceLocationRef | None,
+        idempotency_key: str | None,
+    ) -> FileAssetRef:
         try:
             content, name = self._artifacts.export_document_bytes(
                 session_id,
@@ -276,6 +417,15 @@ class AssistantResourceService:
             markdown = self._artifact_markdown(source, context, content)
             if markdown is not None:
                 content = markdown.encode("utf-8")
+                if self._citations is not None:
+                    context = replace(
+                        context,
+                        evidence=(context.evidence or ())
+                        + self._citations.markdown_evidence(
+                            source.session_id, context.evidence_snapshot_id, markdown
+                        ),
+                    )
+            target = replace(target, name=export_file_name(target.name, source.media_type, content))
             source_key = json.dumps(
                 [session_id, artifact_id, source_sha256],
                 ensure_ascii=False,
@@ -412,8 +562,6 @@ class AssistantResourceService:
         context: _AgentImportContext,
         raw: bytes,
     ) -> str | None:
-        if not context.evidence:
-            return None
         suffix = PurePosixPath(source.source_path).suffix.lower()
         media_type = (source.media_type or "").split(";", 1)[0].strip().lower()
         if (
@@ -425,6 +573,8 @@ class AssistantResourceService:
             body = raw.decode("utf-8")
         except UnicodeDecodeError:
             return None
+        if not context.evidence:
+            return body
         return f"{self._evidence_markdown(context.evidence)}\n\n{body}"
 
     @staticmethod
@@ -524,6 +674,7 @@ class AssistantResourceService:
             "reason": item.reason,
             "retention": item.ref.retention.value,
             "source_id": item.ref.source_id,
+            **({"project_id": item.ref.project_id} if item.ref.project_id else {}),
             "source_revision": item.ref.source_revision,
             "state": item.state.value,
             "surface": dict(item.surface),

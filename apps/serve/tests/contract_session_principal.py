@@ -5,11 +5,15 @@ Run: .venv/bin/python -m tests.contract_session_principal
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 _HOME = Path(tempfile.mkdtemp(prefix="session-principal-home-"))
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
@@ -28,9 +32,15 @@ from scholarseed_runtime.contract import (  # noqa: E402 -- after SCHOLARSEED_HO
 from scholarseed_runtime.contract.history import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
     HistoryEntry,
 )
+from scholarseed_runtime.contract.resource import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
+    RESOURCE_HOST_CONFIGURATION_CONFLICT,
+)
 from service.chat.active import RUNTIME_ID  # noqa: E402
 from service.chat.api.sessions import mount_session_routes  # noqa: E402
-from service.chat.constants import SESSION_RENAME_MAX_LENGTH  # noqa: E402
+from service.chat.constants import (  # noqa: E402
+    PRODUCT_EVENT_SESSION_TITLE_UPDATED,
+    SESSION_RENAME_MAX_LENGTH,
+)
 from service.chat.persistence.artifacts import SessionArtifactStore  # noqa: E402
 from service.chat.persistence.catalog import (  # noqa: E402
     SessionAccessError,
@@ -53,10 +63,12 @@ from service.identity.service.skill_credentials import (  # noqa: E402
     skill_credentials_from_env,
 )
 from service.identity.utils import (  # noqa: E402
+    LOCAL_USER_ID,
     OWNERSHIP_AXIS_MACHINE,
     OWNERSHIP_AXIS_PRINCIPAL,
     OWNERSHIP_AXIS_STATE,
 )
+from service.platform.activity import Activities  # noqa: E402
 from service.workbench.domain.model import WorkbenchFormatPolicy  # noqa: E402
 
 PASS = 0
@@ -65,6 +77,7 @@ USER_A_EMAIL = "session-a@test.dev"
 USER_B_EMAIL = "session-b@test.dev"
 USER_PASSWORD = "secret1"
 FOREIGN_ROUTE_CASES: tuple[tuple[str, str, dict[str, Any] | None], ...] = (
+    ("put", "/api/serve/sessions/{session_id}/pin", {"pinned": True}),
     ("get", "/api/serve/history/{session_id}", None),
     ("get", "/api/serve/sessions/{session_id}/events", None),
     ("post", "/api/serve/sessions/{session_id}/turns", {"input": []}),
@@ -120,16 +133,20 @@ class _Runtime:
     runtime_id = RUNTIME_ID
     gateway_capabilities = CapabilitySet()
 
-    # 借生产实现本体, 而不是在测试里重写一遍: 这条路径的价值全在「热会话的计量身份真的
-    # 挪过去了」, 自己写一个 stub 只会断言到测试自己的逻辑。该方法只用到 _models 与
-    # _logger, 所以两个替身就够, 不必构造整个 LiveSessionService。
     realign_metering_identity = LiveSessionService.realign_metering_identity
 
     def __init__(self) -> None:
         self._models = _Models()
         self._logger = SimpleNamespace(info=lambda *_args, **_kwargs: None)
+        self.host_owner = ""
 
-    async def readiness(self, *, executable: str = "") -> RuntimeReadiness:
+    @asynccontextmanager
+    async def host_control(self, *, cwd: Path, user_id: str, model_id: str):
+        if self.host_owner and user_id != self.host_owner:
+            raise RuntimeError(RESOURCE_HOST_CONFIGURATION_CONFLICT)
+        yield
+
+    async def readiness(self, *, runtime_id: str = "", executable: str = "") -> RuntimeReadiness:
         return RuntimeReadiness(
             runtime_id=RUNTIME_ID,
             status=RuntimeStatus.READY,
@@ -156,6 +173,10 @@ class _Events:
     @staticmethod
     def activity_snapshot(_session_id: str) -> list[dict[str, object]]:
         return []
+
+    @staticmethod
+    def turn_activity_snapshot(_session_id: str) -> dict[str, object]:
+        return {}
 
     @staticmethod
     def decorate_history(
@@ -221,6 +242,7 @@ def _app(
     sessions = SessionService(
         workspace,
         live_sessions if live_sessions is not None else {},
+        activities=Activities(),
         access=access,
         events=events,
         runtime=runtime or _Runtime(),  # type: ignore[arg-type]
@@ -228,20 +250,23 @@ def _app(
         artifacts=artifacts,
         settings=SimpleNamespace(  # type: ignore[arg-type]
             runtime_executable=lambda: "codex",
+            runtime_model=lambda: "",
             permission_mode=lambda: "ask",
         ),
-        credentials=skill_credentials_from_env({}),
+        credentials=skill_credentials_from_env({}, activities=Activities()),
         logger=SimpleNamespace(error=lambda *_args, **_kwargs: None),
     )
+    app.state.session_service = sessions
+    sessions.bind_deletion(lambda _record: None)
     mount_session_routes(
         app,
         sessions=sessions,
         turns=_Turns(),  # type: ignore[arg-type]
         events=_Events(),  # type: ignore[arg-type]
         artifacts=ArtifactService(access, artifacts, events, WorkbenchFormatPolicy()),
-        credentials=skill_credentials_from_env({}),
+        credentials=skill_credentials_from_env({}, activities=Activities()),
     )
-    register_auth(app, enabled=auth_enabled, service=AuthService())
+    register_auth(app, enabled=auth_enabled, service=AuthService(), activities=Activities())
     return app, access
 
 
@@ -321,7 +346,10 @@ def test_authenticated_isolation(workspace: Path) -> None:
     for method, path_template, body in FOREIGN_ROUTE_CASES:
         path = path_template.format(session_id="session-a")
         response = client.request(method, path, headers=headers_b, json=body)
-        if response.status_code != 404 or response.json() != {"detail": "session not found"}:
+        if response.status_code != 404 or response.json() != {
+            "detail": "session not found",
+            "code": "session_not_found",
+        }:
             denied.append(f"{method} {path}: {response.status_code} {response.text}")
     check("all session routes share one non-enumerating guard", not denied, "; ".join(denied))
 
@@ -337,6 +365,29 @@ def test_authenticated_isolation(workspace: Path) -> None:
         and renamed_record.title == "Native Codex investigation",
         renamed.text,
     )
+    before_pin = access.get("session-a")
+    for pinned in (True, True, False):
+        response = client.put(
+            "/api/serve/sessions/session-a/pin", headers=headers_a, json={"pinned": pinned}
+        )
+        record = access.get("session-a")
+        check(
+            "owned pin mutation is explicit, durable and activity-neutral",
+            response.status_code == 200
+            and response.json() == {"ok": True, "session_id": "session-a", "pinned": pinned}
+            and record is not None
+            and record.pinned is pinned
+            and before_pin is not None
+            and record.updated_at == before_pin.updated_at,
+            response.text,
+        )
+    for body in ({}, {"pinned": "false"}, {"pinned": 0}, {"pinned": None}):
+        response = client.put("/api/serve/sessions/session-a/pin", headers=headers_a, json=body)
+        check("pin accepts strict booleans only", response.status_code == 422, response.text)
+    missing_pin = client.put(
+        "/api/serve/sessions/missing/pin", headers=headers_a, json={"pinned": True}
+    )
+    check("missing pin target is non-enumerating", missing_pin.status_code == 404, missing_pin.text)
     too_long = client.patch(
         "/api/serve/sessions/session-a",
         headers=headers_a,
@@ -453,8 +504,20 @@ def test_account_switch_moves_warm_session_metering(workspace: Path) -> None:
     user_a_id = str(create_user("switch-a@test.dev", USER_PASSWORD)["user_id"])
     user_b_id = str(create_user("switch-b@test.dev", USER_PASSWORD)["user_id"])
     headers_b = _authorization(issue_token(user_b_id))
-    warm = SimpleNamespace(id="session-warm", user_id=user_a_id)
-    untouched = SimpleNamespace(id="session-idle", user_id=user_a_id)
+    warm = SimpleNamespace(
+        id="session-warm",
+        model_id="",
+        runtime_workdir=workspace,
+        closing=False,
+        user_id=user_a_id,
+        lifecycle_lock=asyncio.Lock(),
+        terminating=False,
+        terminated=False,
+        publish=AsyncMock(),
+    )
+    untouched = SimpleNamespace(
+        id="session-idle", user_id=user_a_id, model_id="", runtime_workdir=workspace
+    )
     runtime = _Runtime()
     app, access = _app(
         workspace,
@@ -501,6 +564,182 @@ def test_account_switch_moves_warm_session_metering(workspace: Path) -> None:
         again.status_code == 200 and runtime._models.rebound == [("session-warm", user_b_id)],
         str(runtime._models.rebound),
     )
+    check(
+        "warm session renames still publish title updates after identity alignment",
+        warm.publish.await_count == 2
+        and warm.publish.await_args.args
+        == (
+            PRODUCT_EVENT_SESSION_TITLE_UPDATED,
+            {"title": "同一账号再来一次", "title_fallback": None},
+        ),
+        str(warm.publish.await_args_list),
+    )
+
+
+def test_passive_requests_preserve_metering(workspace: Path) -> None:
+    user_id = str(create_user("passive-account@test.dev", USER_PASSWORD)["user_id"])
+    reader_id = str(create_user("passive-reader@test.dev", USER_PASSWORD)["user_id"])
+    warm = SimpleNamespace(
+        id="session-passive",
+        closing=False,
+        user_id=user_id,
+        runtime_session=None,
+        recover_publications=lambda: None,
+        lifecycle_lock=asyncio.Lock(),
+        terminating=False,
+        terminated=False,
+        publish=AsyncMock(),
+    )
+    runtime = _Runtime()
+    app, access = _app(
+        workspace,
+        auth_enabled=False,
+        access_database=_HOME / "passive-sessions.sqlite3",
+        ownership_axis=OWNERSHIP_AXIS_MACHINE,
+        live_sessions={warm.id: warm},
+        runtime=runtime,
+    )
+    _record(access, workspace, session_id=warm.id, principal_id=user_id, created_at=1.0)
+    client = TestClient(app)
+    for headers in ({}, _authorization(issue_token(reader_id))):
+        response = client.get(f"/api/serve/history/{warm.id}", headers=headers)
+        check(
+            "history reads preserve the active model identity",
+            response.status_code == 200
+            and warm.user_id == user_id
+            and runtime._models.rebound == [],
+            f"status={response.status_code} actor={warm.user_id} rebound={runtime._models.rebound}",
+        )
+    response = client.patch(f"/api/serve/sessions/{warm.id}", json={"title": "local rename"})
+    check(
+        "anonymous local mutations do not replace the model account",
+        response.status_code == 200 and warm.user_id == user_id and runtime._models.rebound == [],
+        f"status={response.status_code} actor={warm.user_id} rebound={runtime._models.rebound}",
+    )
+    check(
+        "local rename publishes the title without replacing model identity",
+        warm.publish.await_count == 1
+        and warm.publish.await_args.args
+        == (
+            PRODUCT_EVENT_SESSION_TITLE_UPDATED,
+            {"title": "local rename", "title_fallback": None},
+        ),
+        str(warm.publish.await_args_list),
+    )
+
+
+def test_warm_resume_preserves_authenticated_identity(workspace: Path) -> None:
+    user_id = str(create_user("resume-account@test.dev", USER_PASSWORD)["user_id"])
+    next_user_id = str(create_user("resume-next@test.dev", USER_PASSWORD)["user_id"])
+    warm = SimpleNamespace(
+        id="session-resume",
+        user_id=user_id,
+        runtime_id=RUNTIME_ID,
+        closing=False,
+        model_id="",
+        runtime_workdir=workspace,
+    )
+    runtime = _Runtime()
+    app, access = _app(
+        workspace,
+        auth_enabled=False,
+        access_database=_HOME / "resume-sessions.sqlite3",
+        ownership_axis=OWNERSHIP_AXIS_MACHINE,
+        live_sessions={warm.id: warm},
+        runtime=runtime,
+    )
+    _record(access, workspace, session_id=warm.id, principal_id=user_id, created_at=1.0)
+    client = TestClient(app)
+    with patch.object(SessionService, "_snapshot", return_value={"session_id": warm.id}):
+        for headers in ({}, _authorization("invalid-credential")):
+            response = client.post(
+                "/api/serve/sessions/open",
+                headers=headers,
+                json={"resume_session_id": warm.id},
+            )
+            check(
+                "unverified warm resume preserves the model account",
+                response.status_code == 200
+                and warm.user_id == user_id
+                and runtime._models.rebound == [],
+                f"status={response.status_code} actor={warm.user_id}",
+            )
+        response = client.post(
+            "/api/serve/sessions/open",
+            headers=_authorization(issue_token(next_user_id)),
+            json={"resume_session_id": warm.id},
+        )
+        check(
+            "authenticated warm resume still switches accounts",
+            response.status_code == 200
+            and warm.user_id == next_user_id
+            and runtime._models.rebound[-1:] == [(warm.id, next_user_id)],
+        )
+
+
+def test_anonymous_identity_cannot_rebind() -> None:
+    runtime = _Runtime()
+    warm = SimpleNamespace(
+        id="identity-boundary",
+        user_id="bound-account",
+        running=True,
+        model_id="",
+        runtime_workdir=_HOME,
+    )
+    check(
+        "anonymous alignment cannot downgrade a running session",
+        not asyncio.run(runtime.realign_metering_identity(warm, LOCAL_USER_ID))
+        and warm.user_id == "bound-account"
+        and runtime._models.rebound == [],
+    )
+    warm.user_id = LOCAL_USER_ID
+    check(
+        "anonymous session can acquire an authenticated account",
+        asyncio.run(runtime.realign_metering_identity(warm, "authenticated-account"))
+        and warm.user_id == "authenticated-account",
+    )
+
+
+async def test_directory_preparation_yields_and_keeps_lock(workspace: Path) -> None:
+    app, _access = _app(
+        workspace, auth_enabled=False, access_database=_HOME / "directory-preparation.sqlite3"
+    )
+    service = app.state.session_service
+    started = threading.Event()
+    release = threading.Event()
+
+    def prepare(*_args):
+        started.set()
+        if not release.wait(5):
+            raise ValueError("directory preparation blocked event loop")
+        raise ValueError("directory preparation finished")
+
+    with patch.object(service, "_new_paths", side_effect=prepare):
+        opened = asyncio.create_task(
+            service.open({}, SessionPrincipal(LOCAL_USER_ID), actor_id=LOCAL_USER_ID)
+        )
+        try:
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            check(
+                "directory preparation yields to the event loop",
+                started.is_set() and not opened.done(),
+            )
+            opened.cancel()
+            await asyncio.sleep(0.02)
+            check(
+                "cancelled create retains serialization until disk work ends",
+                not opened.done() and service._open_lock.locked(),
+            )
+        finally:
+            release.set()
+            try:
+                await opened
+            except asyncio.CancelledError:
+                pass
+        check("directory completion releases serialization", not service._open_lock.locked())
 
 
 def main() -> int:
@@ -509,8 +748,33 @@ def main() -> int:
     test_no_auth_local_principal(workspace)
     test_machine_axis_shares_local_data(workspace)
     test_account_switch_moves_warm_session_metering(workspace)
+    test_passive_requests_preserve_metering(workspace)
+    test_warm_resume_preserves_authenticated_identity(workspace)
+    test_anonymous_identity_cannot_rebind()
+    asyncio.run(test_directory_preparation_yields_and_keeps_lock(workspace))
     print(f"\ncontract_session_principal: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
+
+
+def test_incompatible_host_preserves_identity() -> None:
+    runtime = _Runtime()
+    runtime.host_owner = "bound-account"
+    warm = SimpleNamespace(
+        id="identity-pinned", user_id="bound-account", model_id="", runtime_workdir=_HOME
+    )
+    try:
+        asyncio.run(runtime.realign_metering_identity(warm, "other-account"))
+    except RuntimeError as error:
+        check(
+            "incompatible account returns explicit conflict",
+            str(error) == RESOURCE_HOST_CONFIGURATION_CONFLICT,
+        )
+    else:
+        check("incompatible account returns explicit conflict", False)
+    check(
+        "rejected identity does not mutate live session or model registration",
+        warm.user_id == "bound-account" and runtime._models.rebound == [],
+    )
 
 
 if __name__ == "__main__":

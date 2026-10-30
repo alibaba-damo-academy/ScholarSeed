@@ -57,11 +57,9 @@ class PdfRecordStore:
         stored: PdfRecordRow,
     ) -> PdfRecordSnapshot:
         try:
-            records = decode_records(stored.payload)
+            records = stored.records()
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise ContentError("invalid_annotations") from exc
-        if stored.record_revision != record_revision(stored.source_revision, records):
-            raise ContentError("invalid_annotations")
         return PdfRecordSnapshot(
             record_target=cls._target(project_id, asset_id),
             record_revision=stored.record_revision,

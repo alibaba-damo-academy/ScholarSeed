@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from scholarseed_codex.protocol.session import (
     CodexSessionOpenRequest,
 )
 from scholarseed_codex.protocol.state import CODEX_DEFAULT_SANDBOX_MODE, CODEX_SANDBOX_MODES
-from scholarseed_runtime.contract import RuntimePermissionMode
+from scholarseed_runtime.contract import RuntimePermissionMode, RuntimeValue
 
 DANGER_FULL_ACCESS_SANDBOX = "danger-full-access"
 THREAD_SETTINGS_UPDATE_METHOD = "thread/settings/update"
@@ -81,6 +82,8 @@ LOCAL_PERMISSION_PARENTS = {"workspace-write": ":workspace", "read-only": ":read
 CONFIG_OPTION = "-c"
 STRICT_CONFIG_OPTION = "--strict-config"
 DARWIN_PLATFORM = "darwin"
+WINDOWS_PLATFORM = "win32"
+WINDOWS_NETWORK_PROXY_CONFIG = ("features.network_proxy.enable_socks5_udp=false",)
 FILESYSTEM_DENY = "deny"
 NETWORK_DOMAIN_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
@@ -138,6 +141,7 @@ def local_socket_permissions(
         "features.network_proxy.domains={}",
         "features.network_proxy.allow_local_binding=false",
         "features.network_proxy.dangerously_allow_all_unix_sockets=false",
+        *(WINDOWS_NETWORK_PROXY_CONFIG if sys.platform == WINDOWS_PLATFORM else ()),
         f"permissions.{profile}.extends={json.dumps(parent)}",
         f"permissions.{profile}.network.enabled=true",
         *network_values,
@@ -148,6 +152,42 @@ def local_socket_permissions(
         CodexRuntimeLaunchArgument(option=STRICT_CONFIG_OPTION),
         *(CodexRuntimeLaunchArgument(option=CONFIG_OPTION, value=value) for value in values),
     )
+
+
+def thread_permission_config(
+    sandbox: str,
+    sockets: tuple[Path, ...],
+    *,
+    network_access: bool = False,
+    network_domains: tuple[str, ...] = (),
+    deny_read_roots: tuple[Path, ...] = (),
+) -> tuple[str, dict[str, RuntimeValue]]:
+    profile, arguments = local_socket_permissions(
+        sandbox,
+        sockets,
+        network_access=network_access,
+        network_domains=network_domains,
+        deny_read_roots=deny_read_roots,
+    )
+    values: dict[str, RuntimeValue] = {}
+    definition: dict[str, Any] = {}
+    prefix = f"permissions.{profile}."
+    for argument in arguments:
+        if argument.option != CONFIG_OPTION:
+            continue
+        name, _, literal = argument.value.partition("=")
+        value = tomllib.loads(f"value={literal}")["value"]
+        if name.startswith(prefix):
+            parts = name.removeprefix(prefix).split(".")
+            target = definition
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = value
+        else:
+            values[name] = value
+    if profile:
+        values[f"permissions.{profile}"] = definition
+    return profile, values
 
 
 def sandbox_policy(

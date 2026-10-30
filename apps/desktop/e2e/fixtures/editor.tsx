@@ -6,6 +6,7 @@ import { createComposerDraftStore } from '../../src/renderer/src/draft'
 const draft = createComposerDraftStore('')
 const MAX_HEIGHT = 132
 const INPUT_STYLE: React.CSSProperties = { width: 240, lineHeight: '20px', boxSizing: 'border-box' }
+const NARROW_INPUT_STYLE: React.CSSProperties = { ...INPUT_STYLE, width: 40 }
 
 function Fixture(): React.JSX.Element {
   const [updates, setUpdates] = useState(0)
@@ -13,6 +14,7 @@ function Fixture(): React.JSX.Element {
   const [placeholder, setPlaceholder] = useState('idle')
   const [keys, setKeys] = useState<string[]>([])
   const [changes, setChanges] = useState(0)
+  const [narrow, setNarrow] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const onChange = useCallback(() => setChanges(value => value + 1), [])
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -27,6 +29,7 @@ function Fixture(): React.JSX.Element {
     <button onClick={() => draft.set('')}>clear draft</button>
     <button onClick={() => setDisabled(value => !value)}>toggle disabled</button>
     <button onClick={() => setPlaceholder('running')}>change placeholder</button>
+    <button onClick={() => setNarrow(value => !value)}>toggle width</button>
     <output data-testid="updates">{updates}</output>
     <output data-testid="keys">{keys.join(',')}</output>
     <output data-testid="changes">{changes}</output>
@@ -40,7 +43,7 @@ function Fixture(): React.JSX.Element {
       placeholder={placeholder}
       aria-label="draft"
       data-testid="composer-input"
-      style={INPUT_STYLE}
+      style={narrow ? NARROW_INPUT_STYLE : INPUT_STYLE}
     />
   </>
 }

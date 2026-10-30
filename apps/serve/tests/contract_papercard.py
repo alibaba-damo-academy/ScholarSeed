@@ -23,20 +23,25 @@ from service.assistant.service.authorization import (
     PRECISE_SEARCH_FULLTEXT,
     RESEARCH_IDEA_FULLTEXT,
 )
-from service.literature.api.evidence import register_card_bridge
+from service.chat.service.tasks import ProductTaskLease
+from service.literature.api.evidence import prepare_bundle, register_card_bridge
 from service.literature.domain.anchors import SentenceAnchors, original_text, sentence_pattern
 from service.literature.domain.cards import normalize_bundle
 from service.literature.persistence.cards import PaperCards
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import LiteratureItem
 from service.literature.service.evidence import LiteratureEvidenceService
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_TOKEN_HEADER,
     PDF_ROUTE_PREFIX,
     PdfQuery,
 )
 from service.platform.citations import CitationPage, PdfFragment, PdfIndex, PdfSpan
+from service.platform.context import ProductTaskType
+from service.platform.vocabulary import (
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_TOKEN_HEADER,
+)
 from service.workbench.service.extraction import decode_index, extract
 from tests import contract_citations as fixtures
 
@@ -66,76 +71,58 @@ class PaperCardContracts(unittest.TestCase):
         self.fixture.tearDown()
         self.temp.cleanup()
 
-    def test_host_extraction_and_foreign_id_rejection(self):
-        workspace = Path(self.temp.name) / "survey"
-        source = workspace / "02_retrieval"
-        source.mkdir(parents=True)
-        metadata = {
-            "paper": {
-                "title": "Evidence Paper",
+    def test_current_skill_card_output_and_foreign_id_rejection(self):
+        skill = Path(__file__).resolve().parents[3] / "skills/community/literature-review"
+        source = {
+            "info_type": "card",
+            "paper_card": {
                 "paper_type": "theory",
-                "abstract": "A documented result.",
-            }
-        }
-        (source / "selected_paper.json").write_text(json.dumps(metadata))
-        (source / "paper_info.json").write_text(
-            json.dumps({"paper": {"sentences": "#1 A documented result."}})
-        )
-        script = (
-            Path(__file__).resolve().parents[3]
-            / "skills/community/literature-review/scripts/processing/cards.py"
-        )
-
-        def run(operation):
-            result = subprocess.run(
-                [sys.executable, str(script), operation, "--workspace", str(workspace)],
-                env={
-                    **os.environ,
-                    "PYTHONPATH": os.pathsep.join(
-                        (str(script.parent), os.environ.get("PYTHONPATH", ""))
-                    ),
-                },
-                capture_output=True,
-                text=True,
-            )
-            self.assertTrue(result.stdout.strip(), result.stderr)
-            return result.returncode, json.loads(result.stdout)
-
-        code, prepared = run("prepare")
-        self.assertEqual(code, 0)
-        item = prepared["items"][0]
-        response = {
-            "input_digest": item["input_digest"],
-            "paper_type": "theory",
-            "card": {
-                key: "A documented result."
-                for key in ("background", "problem", "theorem_proof", "implication", "discussion")
+                "card": {"findings": "Generated synthesis"},
+                "common_fields": {"core_contribution": "A documented result."},
             },
-            "common_fields": {
-                "tldr": "This documented result is supported by the original paper and its stated evidence.",
-                "core_contribution": "A documented result.",
+            "source_mapping": {
+                "card_mapping": {"card.findings": [1]},
+                "sentences": {"1": "A documented result."},
             },
-            "source_map": {"card": [1], "common_fields": [1]},
         }
-        Path(item["response"]).write_text(json.dumps(response))
-        code, collected = run("collect")
-        self.assertEqual(code, 0, collected)
-        raw = json.loads(Path(collected["artifacts"][0]["bundle"]).read_text())
-        normalized = normalize_bundle(raw)
-        self.assertEqual(normalized["sentences"], {"1": "A documented result."})
-        response["source_map"]["card"] = [99]
-        Path(item["response"]).write_text(json.dumps(response))
-        code, failed = run("collect")
-        self.assertNotEqual(code, 0)
-        self.assertEqual(failed["error"], "card_sentence_id_invalid")
-        response["source_map"]["card"] = [1]
-        response["input_digest"] = "changed"
-        Path(item["response"]).write_text(json.dumps(response))
-        self.assertEqual(run("collect")[1]["error"], "card_input_digest_mismatch")
-        (source / "paper_info.json").write_text(
-            json.dumps({"paper": {"sentences": "#1 Different original."}})
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import asyncio,json,sys; from run_pipeline import _process_single_paper; "
+                "result=asyncio.run(_process_single_paper(None,'paper',"
+                "{'title':'Evidence Paper'},json.load(sys.stdin),'full','theory',"
+                "with_source_map=True)); "
+                "assert result[5]['card_from_hub']; "
+                "print(json.dumps({'paper_card':result[0],'source_mapping':result[3]}))",
+            ],
+            input=json.dumps(source),
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    (str(skill / "scripts/processing"), str(skill / "lib"))
+                ),
+            },
+            capture_output=True,
+            text=True,
+            check=True,
         )
-        self.assertEqual(run("collect")[1]["error"], "card_source_changed")
+        root = Path(self.temp.name)
+        target = root / "card.json"
+        raw = json.loads(result.stdout)
+        target.write_text(json.dumps(raw), encoding="utf-8")
+        original = normalize_bundle(prepare_bundle(root, target.name))
+        self.assertEqual(original["sentences"], {"1": "A documented result."})
+        self.assertEqual(original["card_mapping"], {"card.findings": ["1"]})
+        raw["source_mapping"]["card_mapping"]["card.findings"] = [99]
+        target.write_text(json.dumps(raw), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "papercard_sources_missing"):
+            prepare_bundle(root, target.name)
+        raw["source_mapping"]["card_mapping"]["card.findings"] = [1]
+        raw["source_mapping"]["sentences"]["1"] = "Different original."
+        target.write_text(json.dumps(raw), encoding="utf-8")
+        changed = normalize_bundle(prepare_bundle(root, target.name))
+        self.assertNotEqual(changed["revision"], original["revision"])
 
     def test_registration_scope_identity_and_persistence(self):
         root = Path(self.temp.name)
@@ -155,7 +142,10 @@ class PaperCardContracts(unittest.TestCase):
         with patch(
             "service.literature.api.evidence.LiteratureRepository", return_value=self.repository
         ):
-            register_card_bridge(app, sessions)
+            activities = Activities()
+            live.turn_activity = activities.enter(ActivityDomain.TURN)
+            self.addCleanup(live.turn_activity.close)
+            register_card_bridge(app, sessions, activities=activities)
         headers = {BRIDGE_SESSION_HEADER: live.id, BRIDGE_TOKEN_HEADER: live.bridge_token}
         route = PDF_ROUTE_PREFIX + "register-card"
         with TestClient(app) as client:
@@ -192,12 +182,27 @@ class PaperCardContracts(unittest.TestCase):
                     bridge_token="test-token",
                     publication_turn_id="turn",
                     active_assistant_snapshot_id="snapshot",
+                    active_product_turn_id="product-turn",
                     active_task_type=task_type,
+                    product_turn_generation=1,
+                    current_task=SimpleNamespace(done=lambda: False),
+                    active_task_lease=(
+                        ProductTaskLease(
+                            task_type=ProductTaskType(task_type),
+                            turn_id="product-turn",
+                            generation=1,
+                            source="skill_run",
+                            workspace="run",
+                            run_id="run",
+                        )
+                        if task_type != "research_idea"
+                        else None
+                    ),
                     runtime_workdir=root,
                     publish=AsyncMock(),
                 )
                 sessions = SimpleNamespace(
-                    bridge_caller=lambda sid: live if sid == live.id else None
+                    bridge_caller=lambda sid, caller=live: caller if sid == caller.id else None
                 )
                 authorizer = SimpleNamespace(
                     require=Mock(side_effect=ValueError("fulltext_authorization_required"))
@@ -207,7 +212,10 @@ class PaperCardContracts(unittest.TestCase):
                     "service.literature.api.evidence.LiteratureRepository",
                     return_value=self.repository,
                 ):
-                    register_card_bridge(app, sessions, authorizer)
+                    activities = Activities()
+                    live.turn_activity = activities.enter(ActivityDomain.TURN)
+                    self.addCleanup(live.turn_activity.close)
+                    register_card_bridge(app, sessions, authorizer, activities=activities)
                 headers = {
                     BRIDGE_SESSION_HEADER: live.id,
                     BRIDGE_TOKEN_HEADER: live.bridge_token,
@@ -229,6 +237,8 @@ class PaperCardContracts(unittest.TestCase):
                     turn_id=live.publication_turn_id,
                     authorization_type=authorization_type,
                     ref_id="literature:paper",
+                    client_turn_id=live.active_product_turn_id,
+                    task_context=None,
                 )
                 prepare.assert_not_called()
 
@@ -310,10 +320,15 @@ class PaperCardContracts(unittest.TestCase):
         handle = url.split(":", 1)[1]
         revision = self.fixture.answer_for(f"[1]({url})")
         with (
-            patch.object(self.evidence, "_payload", return_value=payload),
+            patch.object(
+                self.evidence._pdf,
+                "read_attachment",
+                return_value=(payload, "application/pdf", "revision"),
+            ) as read_attachment,
             patch.object(self.evidence._pdf, "primary", return_value=SimpleNamespace(id="pdf")),
         ):
             resolved = service.resolve("session", "answer:1", revision, 0, 0, handle)
+        read_attachment.assert_called_once_with("paper", "pdf")
         self.assertTrue(resolved["can_open_pdf"])
         self.assertEqual(
             resolved["record_target"],

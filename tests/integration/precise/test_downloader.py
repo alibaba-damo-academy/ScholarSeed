@@ -24,6 +24,20 @@ class DownloaderResolutionTests(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
+    def test_optional_config_requires_a_file(self):
+        self.assertIsNone(adapter._optional_file_env("PAPER_DL_CONFIG"))
+        config = self.root / "paper-dl.yaml"
+        config.write_text("zotero: false\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"PAPER_DL_CONFIG": str(config)}):
+            self.assertEqual(adapter._optional_file_env("PAPER_DL_CONFIG"), config)
+        for path in (self.root, self.root / "missing.yaml"):
+            with (
+                self.subTest(path=path),
+                mock.patch.dict(os.environ, {"PAPER_DL_CONFIG": str(path)}),
+            ):
+                with self.assertRaisesRegex(ValueError, "does not name a file"):
+                    adapter._optional_file_env("PAPER_DL_CONFIG")
+
     def test_product_uses_active_python_and_ignores_local_and_path_launchers(self):
         executable = adapter.venv_executable(self.root / ".venv", "paper-dl")
         executable.parent.mkdir(parents=True)

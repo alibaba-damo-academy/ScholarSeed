@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +19,7 @@ from service.persistence.project import transaction
 from service.platform.resources import (
     ReviewDecision,
     ReviewOutcome,
+    SnapshotIdentity,
     SnapshotState,
     TurnOutcome,
     VersionOrigin,
@@ -99,13 +102,26 @@ class ReviewMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(f.file.read_bytes(), b"agent candidate")
         self.assertEqual(f.store.history_for_file(f.initial.file_id), versions)
         self.assertEqual(self.migration.records(f.project.id)[0].status, "migrated")
-        self.assertEqual(f.store.snapshot_state(f.initial.file_id), SnapshotState.PENDING)
+        self.assertEqual(f.store.snapshot_state(f.initial.file_id), SnapshotState.SAVED)
         self.assertEqual(
-            f.store.capability_states((f.path,))[f.path].snapshot_state, SnapshotState.PENDING
+            f.store.capability_states((f.path,))[f.path].snapshot_state, SnapshotState.SAVED
         )
         original = f.store.pending(f.initial.file_id)
         self.migration.prepare(f.project.id)
         self.assertEqual(f.store.pending(f.initial.file_id), original)
+        head = f.store.working_snapshot(f.initial.file_id)
+        f.file.write_bytes(b"external working copy")
+        self.assertTrue(f.versions.observe(f.project.id, f.path))
+        capability = f.versions.capability(f.project.id, f.path)
+        self.assertTrue(capability.drifted)
+        self.assertNotEqual(capability.disk_revision, head.object_id)
+        self.assertEqual(capability.snapshot_state, SnapshotState.SAVED)
+        self.assertEqual(
+            f.store.capability_states((f.path,))[f.path].snapshot_state, SnapshotState.SAVED
+        )
+        self.assertEqual(f.store.working_snapshot(f.initial.file_id), head)
+        self.assertEqual(f.store.pending(f.initial.file_id).review.id, review.id)
+        self.assertEqual(f.store.history_for_file(f.initial.file_id), versions)
 
     async def test_disk_conflict_is_a_blocker_not_a_rollback(self) -> None:
         await self.legacy()
@@ -126,13 +142,29 @@ class ReviewMigrationTests(unittest.IsolatedAsyncioTestCase):
         with transaction(f.content.resolve(f.project.id, PROJECT_DB_RELATIVE)) as connection:
             source = tuple(connection.execute("SELECT * FROM documents_change_files").fetchone())
         self.migration.prepare(f.project.id)
+        review = f.store.pending(f.initial.file_id).review
         f._reject(f.initial.file_id)
         self.assertEqual(f.file.read_bytes(), b"initial")
-        self.assertEqual(f.store.history_for_file(f.initial.file_id), versions)
+        restored, *preserved = f.store.history_for_file(f.initial.file_id)
+        self.assertEqual(tuple(preserved), versions)
+        self.assertEqual(restored.sequence, versions[0].sequence + 1)
+        self.assertEqual(restored.origin, VersionOrigin.RESTORE)
+        self.assertEqual(restored.source_review_id, review.id)
+        self.assertFalse(restored.review_backup)
+        self.assertEqual(
+            SnapshotIdentity(
+                restored.object_id,
+                restored.state,
+                restored.path,
+                restored.mode_bits,
+                restored.annotation_object_id,
+            ),
+            review.base,
+        )
         pending = f.store.pending(f.initial.file_id)
         self.assertFalse(pending.needs_review)
         self.assertEqual(pending.origin.value, "user")
-        self.assertEqual(f.store.snapshot_state(f.initial.file_id), SnapshotState.PENDING)
+        self.assertEqual(f.store.snapshot_state(f.initial.file_id), SnapshotState.SAVED)
         self.migration.prepare(f.project.id)
         self.assertEqual(f.store.pending(f.initial.file_id), pending)
         with transaction(f.content.resolve(f.project.id, PROJECT_DB_RELATIVE)) as connection:
@@ -229,11 +261,19 @@ class ReviewMigrationTests(unittest.IsolatedAsyncioTestCase):
         f = self.fixture
         with self.assertRaisesRegex(migration.MigrationError, "legacy_resolution_not_saved"):
             self.migration.resolve(f.project.id, replace(request, version_id=f.initial.id))
-        mode = f.file.stat().st_mode & 0o777
-        f.file.chmod(mode ^ 0o100)
-        with self.assertRaisesRegex(migration.MigrationError, "legacy_disk_conflict"):
-            self.migration.resolve(f.project.id, request)
-        f.file.chmod(mode)
+        mode = stat.S_IMODE(f.file.stat().st_mode)
+        changed = (
+            (stat.S_IREAD if mode & stat.S_IWRITE else stat.S_IREAD | stat.S_IWRITE)
+            if os.name == "nt"
+            else mode ^ stat.S_IXUSR
+        )
+        try:
+            f.file.chmod(changed)
+            self.assertNotEqual(stat.S_IMODE(f.file.stat().st_mode), mode)
+            with self.assertRaisesRegex(migration.MigrationError, "legacy_disk_conflict"):
+                self.migration.resolve(f.project.id, request)
+        finally:
+            f.file.chmod(mode)
         f.file.write_bytes(b"racing external bytes")
         with self.assertRaisesRegex(migration.MigrationError, "legacy_disk_conflict"):
             self.migration.resolve(f.project.id, request)

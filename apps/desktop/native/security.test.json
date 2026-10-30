@@ -1,0 +1,875 @@
+[
+  {
+    "name": "foreign generic RX",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 2684354560,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "foreign content writer",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 2,
+      "scope": 0
+    }
+  },
+  {
+    "name": "ancestor sibling creation",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 6,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume modify",
+    "role": 2,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 1245631,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "ordinary ancestor modify",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 1245631,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 65808,
+      "scope": 0
+    }
+  },
+  {
+    "name": "same SID preceding deny",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 0,
+        "deny": true
+      },
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "later deny does not cancel grant",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 0
+      },
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 0,
+        "deny": true
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 2,
+      "scope": 0
+    }
+  },
+  {
+    "name": "unrelated deny does not cancel grant",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 2,
+        "mask": 2,
+        "flags": 0,
+        "deny": true
+      },
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 1,
+      "mask": 2,
+      "scope": 0
+    }
+  },
+  {
+    "name": "universal preceding deny",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 0,
+        "mask": 2,
+        "flags": 0,
+        "deny": true,
+        "universal": true
+      },
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 0
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "inherit only no current grant",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 10
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "no propagate deny cannot cover deeper scope",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 6,
+        "deny": true
+      },
+      {
+        "principal": 1,
+        "mask": 2,
+        "flags": 10
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 1,
+      "mask": 2,
+      "scope": 4
+    }
+  },
+  {
+    "name": "trusted program authority",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 2032127,
+        "flags": 3,
+        "trusted": true
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "unrelated execution deny",
+    "role": 3,
+    "execution": true,
+    "entries": [
+      {
+        "principal": 2,
+        "mask": 1179817,
+        "flags": 3,
+        "deny": true
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "target execution deny",
+    "role": 3,
+    "execution": true,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 1179817,
+        "flags": 0,
+        "deny": true,
+        "deny_subject": true
+      }
+    ],
+    "expected": {
+      "reason": 2,
+      "index": 0,
+      "mask": 1179817,
+      "scope": 0
+    }
+  },
+  {
+    "name": "earlier target allow consumes requested rights",
+    "role": 3,
+    "execution": true,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 1179817,
+        "flags": 0,
+        "allow_subject": true
+      },
+      {
+        "principal": 1,
+        "mask": 1179817,
+        "flags": 0,
+        "deny": true,
+        "deny_subject": true
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program owner trusted=False",
+    "role": 0,
+    "execution": false,
+    "owner": {
+      "trusted": false,
+      "allowed": false
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program owner trusted=True",
+    "role": 0,
+    "execution": false,
+    "owner": {
+      "trusted": true,
+      "allowed": true
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "ordinary ancestor owner trusted=False",
+    "role": 1,
+    "execution": false,
+    "owner": {
+      "trusted": false,
+      "allowed": false
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "ordinary ancestor owner trusted=True",
+    "role": 1,
+    "execution": false,
+    "owner": {
+      "trusted": true,
+      "allowed": true
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume owner trusted=False",
+    "role": 2,
+    "execution": false,
+    "owner": {
+      "trusted": false,
+      "allowed": true
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume owner trusted=True",
+    "role": 2,
+    "execution": false,
+    "owner": {
+      "trusted": true,
+      "allowed": true
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime owner trusted=False",
+    "role": 3,
+    "execution": false,
+    "owner": {
+      "trusted": false,
+      "allowed": false
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime owner trusted=True",
+    "role": 3,
+    "execution": false,
+    "owner": {
+      "trusted": true,
+      "allowed": true
+    },
+    "entries": [],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume foreign change DACL",
+    "role": 2,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 262144
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    },
+    "owner": {
+      "trusted": false,
+      "allowed": true
+    }
+  },
+  {
+    "name": "ordinary ancestor foreign change DACL",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 262144
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 262144,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program foreign change DACL",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 262144
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 262144,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime foreign change DACL",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 262144
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 262144,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume foreign change owner",
+    "role": 2,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 524288
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    },
+    "owner": {
+      "trusted": false,
+      "allowed": true
+    }
+  },
+  {
+    "name": "ordinary ancestor foreign change owner",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 524288
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 524288,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program foreign change owner",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 524288
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 524288,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime foreign change owner",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 524288
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 524288,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume foreign manage security",
+    "role": 2,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786432
+      }
+    ],
+    "expected": {
+      "reason": 0,
+      "index": -1,
+      "mask": 0,
+      "scope": 0
+    },
+    "owner": {
+      "trusted": false,
+      "allowed": true
+    }
+  },
+  {
+    "name": "ordinary ancestor foreign manage security",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786432
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 786432,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program foreign manage security",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786432
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 786432,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime foreign manage security",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786432
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 786432,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume foreign delete child",
+    "role": 2,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 64
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 64,
+      "scope": 0
+    },
+    "owner": {
+      "trusted": false,
+      "allowed": true
+    }
+  },
+  {
+    "name": "ordinary ancestor foreign delete child",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 64
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 64,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program foreign delete child",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 64
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 64,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime foreign delete child",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 64
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 64,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume foreign manage and delete child",
+    "role": 2,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786496
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 64,
+      "scope": 0
+    },
+    "owner": {
+      "trusted": false,
+      "allowed": true
+    }
+  },
+  {
+    "name": "ordinary ancestor foreign manage and delete child",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786496
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 786496,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program foreign manage and delete child",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786496
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 786496,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime foreign manage and delete child",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 786496
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 786496,
+      "scope": 0
+    }
+  },
+  {
+    "name": "physical volume foreign generic all",
+    "role": 2,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 268435456
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 64,
+      "scope": 0
+    },
+    "owner": {
+      "trusted": false,
+      "allowed": true
+    }
+  },
+  {
+    "name": "ordinary ancestor foreign generic all",
+    "role": 1,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 268435456
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 852304,
+      "scope": 0
+    }
+  },
+  {
+    "name": "program foreign generic all",
+    "role": 0,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 268435456
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 852310,
+      "scope": 0
+    }
+  },
+  {
+    "name": "runtime foreign generic all",
+    "role": 3,
+    "execution": false,
+    "entries": [
+      {
+        "principal": 1,
+        "mask": 268435456
+      }
+    ],
+    "expected": {
+      "reason": 1,
+      "index": 0,
+      "mask": 852310,
+      "scope": 0
+    }
+  }
+]

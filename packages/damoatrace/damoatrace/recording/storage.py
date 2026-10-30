@@ -12,7 +12,12 @@ from typing import Callable
 
 from filelock import FileLock
 
-from damoatrace.recording.content import CONTENT_FIELDS, CONTENT_MARKER, visible_content
+from damoatrace.recording.content import (
+    CONTENT_FIELDS,
+    CONTENT_MARKER,
+    inspect_content_versions,
+    visible_content,
+)
 
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
@@ -50,6 +55,11 @@ def rewrite_content(path: Path, transform: Callable[[dict], dict]) -> int:
         return 0
     changed = 0
     with evidence_lock(path):
+        # Classify the complete file before any transform or replacement. Keep
+        # the same file lock through the rewrite so cooperating writers cannot
+        # replace validated records with a different content version.
+        with path.open(encoding="utf-8") as source:
+            inspect_content_versions(source)
         descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
         target = Path(temporary)
         try:

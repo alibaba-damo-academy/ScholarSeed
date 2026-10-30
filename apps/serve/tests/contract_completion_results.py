@@ -107,6 +107,7 @@ class CompletionBridgeContract(unittest.TestCase):
         session_id="session",
         status=200,
         inputs="hello",
+        tools=None,
     ):
         observed = []
         self.diagnostics = []
@@ -152,7 +153,12 @@ class CompletionBridgeContract(unittest.TestCase):
             with TestClient(app) as client:
                 response = client.post(
                     f"/api/internal/model-bridge/{registration.bridge_id}/v1/responses",
-                    json={"model": "codex-auto-review", "input": inputs, "stream": streaming},
+                    json={
+                        "model": "codex-auto-review",
+                        "input": inputs,
+                        "stream": streaming,
+                        **({"tools": tools} if tools is not None else {}),
+                    },
                 )
                 client.portal.call(bridge.close)
         self.assertEqual(response.status_code, status)
@@ -258,6 +264,192 @@ class CompletionBridgeContract(unittest.TestCase):
         fields = self.diagnostics[-1][1]
         self.assertEqual(fields["status_code"], 429)
         self.assertEqual(fields["end_reason"], "http_error")
+
+    def test_http_rate_limit_recovers_product_semantics_after_retries(self):
+        async def no_delay(_seconds):
+            return None
+
+        for native in (True, False):
+            with (
+                self.subTest(native=native),
+                patch("service.chat.service.completions.asyncio.sleep", new=no_delay),
+            ):
+                self.model_response(
+                    b'{"error":{"code":429,"message":"Provider returned error"}}',
+                    native=native,
+                    streaming=True,
+                    status=429,
+                )
+            fields = self.diagnostics[-1][1]
+            self.assertEqual(fields["http_retries"], 2)
+            recovered = terminal_provider_failure(fields)
+            self.assertEqual(recovered["error_code"], "rate_limit_exceeded")
+            self.assertEqual(recovered["provider_http_status"], 429)
+            self.assertEqual(recovered["automatic_retry_attempts"], 3)
+            self.assertEqual(recovered["retryability"], "user_retryable")
+
+    def test_http_quota_failure_is_not_retried_or_misclassified(self):
+        for code in ("insufficient_quota", "credit_balance_exhausted"):
+            with self.subTest(code=code):
+                self.model_response(
+                    json.dumps({"error": {"code": code}}).encode(),
+                    streaming=True,
+                    status=429,
+                )
+            fields = self.diagnostics[-1][1]
+            self.assertEqual(fields["http_retries"], 0)
+            self.assertEqual(terminal_provider_failure(fields)["error_code"], code)
+
+    def test_http_known_rejections_restore_terminal_product_semantics(self):
+        cases = (
+            (401, "invalid_api_key", "The model provider rejected the credentials."),
+            (401, "authentication_error", "The model provider rejected the credentials."),
+            (400, "InvalidParameter", "The model is not supported by this endpoint."),
+            (400, "bad_request", "The model provider rejected the request."),
+            (400, "CONTENT_SAFETY_BLOCKED", "The request did not pass content safety review."),
+            (
+                402,
+                "credit_balance_exhausted",
+                "The model provider quota or credit balance was exhausted.",
+            ),
+            (
+                429,
+                "insufficient_quota",
+                "The model provider quota or credit balance was exhausted.",
+            ),
+            (503, "invalid_api_key", "The model provider rejected the credentials."),
+            (599, "invalid_api_key", "The model provider rejected the credentials."),
+            (
+                503,
+                "insufficient_quota",
+                "The model provider quota or credit balance was exhausted.",
+            ),
+        )
+        for status, code, message in cases:
+            with self.subTest(status=status, code=code):
+                fields = {
+                    "phase": "finished",
+                    "status_code": status,
+                    "http_error_code": code,
+                    "http_error_message": "secret-token https://private.example/key?token=abc",
+                    "attempt": 1,
+                    "max_attempts": 3,
+                    "downstream": {},
+                }
+                self.assertEqual(
+                    terminal_provider_failure(fields),
+                    {
+                        "error": message,
+                        "error_code": code,
+                        "safe_error": message,
+                        "retryability": "terminal",
+                        "provider_http_status": status,
+                    },
+                )
+
+    def test_http_401_preserves_authentication_over_generic_body_codes(self):
+        for native in (False, True):
+            for code in ("invalid_request_error", "bad_request"):
+                with self.subTest(native=native, code=code):
+                    self.model_response(
+                        json.dumps(
+                            {"error": {"code": code, "message": "private-key-detail"}}
+                        ).encode(),
+                        native=native,
+                        streaming=True,
+                        status=401,
+                    )
+                    fields = self.diagnostics[-1][1]
+                    failure = terminal_provider_failure(fields)
+                    self.assertEqual(failure["error_code"], "authentication_error")
+                    self.assertEqual(failure["provider_http_status"], 401)
+                    self.assertEqual(failure["retryability"], "terminal")
+                    self.assertEqual(
+                        failure["safe_error"], "The model provider rejected the credentials."
+                    )
+                    self.assertEqual(fields["http_retries"], 0)
+
+    def test_http_rejection_recovery_requires_finished_integer_error_status(self):
+        fields = {
+            "phase": "finished",
+            "status_code": 401,
+            "http_error_code": "invalid_api_key",
+            "downstream": {},
+        }
+        for phase in (None, "started", "headers", "http_error", True):
+            with self.subTest(phase=phase):
+                self.assertEqual(terminal_provider_failure({**fields, "phase": phase}), {})
+        for status in (None, True, False, "401", "429", 401.0, 429.0, 200, 302, 399, 600):
+            with self.subTest(status=status):
+                self.assertEqual(terminal_provider_failure({**fields, "status_code": status}), {})
+        for code in (None, True, 401, "unregistered_vendor_failure", ""):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    terminal_provider_failure({**fields, "http_error_code": code}),
+                    {},
+                )
+
+    def test_http_content_policy_aliases_restore_only_fixed_safe_product_code(self):
+        for code in ("content_policy_violation", "content_filter"):
+            with self.subTest(code=code):
+                recovered = terminal_provider_failure(
+                    {
+                        "phase": "finished",
+                        "status_code": 400,
+                        "http_error_code": code,
+                        "http_error_message": "private safety policy detail and secret-token",
+                        "downstream": {},
+                    }
+                )
+                self.assertEqual(
+                    recovered,
+                    {
+                        "error": "The request did not pass content safety review.",
+                        "error_code": "CONTENT_SAFETY_BLOCKED",
+                        "safe_error": "The request did not pass content safety review.",
+                        "retryability": "terminal",
+                        "provider_http_status": 400,
+                    },
+                )
+
+    def test_http_registered_terminal_code_precedes_exhausted_transient_fallback(self):
+        for code in ("invalid_api_key", "insufficient_quota"):
+            with self.subTest(code=code):
+                recovered = terminal_provider_failure(
+                    {
+                        "phase": "finished",
+                        "status_code": 503,
+                        "http_error_code": code,
+                        "attempt": 3,
+                        "max_attempts": 3,
+                        "downstream": {},
+                    }
+                )
+                self.assertEqual(recovered.get("error_code"), code)
+                self.assertEqual(recovered.get("retryability"), "terminal")
+                self.assertEqual(recovered.get("provider_http_status"), 503)
+                self.assertNotIn("automatic_retry_attempts", recovered)
+
+    def test_http_rejection_recovery_never_releases_unregistered_raw_diagnostics(self):
+        fields = {
+            "phase": "finished",
+            "status_code": 429,
+            "http_error_code": "unregistered_vendor_failure",
+            "http_error_message": "secret-token https://private.example/key?token=abc",
+            "downstream": {},
+        }
+        for attempt in (None, True, False, "3", 1):
+            with self.subTest(attempt=attempt):
+                recovered = terminal_provider_failure({**fields, "attempt": attempt})
+                self.assertEqual(recovered["error_code"], "rate_limit_exceeded")
+                self.assertEqual(recovered["retryability"], "user_retryable")
+                self.assertEqual(
+                    recovered["safe_error"], "The model provider rate limit was reached."
+                )
+                self.assertNotIn("automatic_retry_attempts", recovered)
+                self.assertNotIn("secret-token", json.dumps(recovered))
+                self.assertNotIn("private.example", json.dumps(recovered))
+        self.assertEqual(terminal_provider_failure({**fields, "status_code": 400}), {})
 
     def test_sse_observation_is_bounded_and_does_not_invent_terminal_frame(self):
         observer = StreamObservation()
@@ -387,14 +579,54 @@ class CompletionBridgeContract(unittest.TestCase):
             "instructions": "Preserve policy",
             "text": {"format": {"type": "json_schema"}},
         }
-        original = copy.deepcopy(payload)
-        normalized, counts = normalize_response_input(payload)
-        self.assertEqual(payload, original)
-        self.assertEqual(counts, {"additional_tools": 1})
-        self.assertEqual(normalized["input"], original["input"][1:])
-        self.assertEqual(normalized["tools"], tools)
-        self.assertEqual(normalized["instructions"], original["instructions"])
-        self.assertEqual(normalized["text"], original["text"])
+        toolItem, *messages = payload["input"]
+        for position in range(len(messages) + 1):
+            for declarations in ([], tools):
+                with self.subTest(position=position, tools=declarations):
+                    payload["input"] = list(messages)
+                    payload["input"].insert(position, {**toolItem, "tools": declarations})
+                    original = copy.deepcopy(payload)
+                    normalized, counts = normalize_response_input(payload)
+                    self.assertEqual(payload, original)
+                    self.assertEqual(counts, {"additional_tools": 1})
+                    self.assertEqual(normalized["input"], messages)
+                    self.assertEqual(normalized["tools"], declarations)
+                    self.assertEqual(normalized["instructions"], original["instructions"])
+                    self.assertEqual(normalized["text"], original["text"])
+
+    def test_model_switch_message_before_tools_reaches_both_wire_protocols(self):
+        tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]
+        messages = [
+            {"type": "message", "role": "developer", "content": "Model changed."},
+            {"type": "message", "role": "user", "content": "Continue."},
+        ]
+        for native in (True, False):
+            for position in range(len(messages) + 1):
+                with self.subTest(native=native, position=position):
+                    items = list(messages)
+                    items.insert(
+                        position,
+                        {"type": "additional_tools", "role": "developer", "tools": tools},
+                    )
+                    original = copy.deepcopy(items)
+                    self.model_response(b'{"choices":[]}', native=native, inputs=items)
+                    self.assertEqual(items, original)
+                    self.assertEqual(len(self.requests), 1)
+                    if native:
+                        self.assertEqual(self.requests[0]["input"], messages)
+                        self.assertEqual(self.requests[0]["tools"], tools)
+                    else:
+                        self.assertEqual(
+                            self.requests[0]["messages"],
+                            [
+                                {"role": "system", "content": "Model changed."},
+                                {"role": "user", "content": "Continue."},
+                            ],
+                        )
+                        self.assertEqual(self.requests[0]["tools"][0]["function"]["name"], "exec")
+                    self.assertEqual(
+                        self.diagnostics[-1][1]["converted_input_items"], {"additional_tools": 1}
+                    )
 
     def test_referenced_tool_prefix_is_rejected_not_dangling(self):
         with self.assertRaisesRegex(ValueError, "model_bridge_invalid_tool_input"):
@@ -411,6 +643,51 @@ class CompletionBridgeContract(unittest.TestCase):
                     ]
                 }
             )
+
+    def test_current_tools_supersede_historical_lite_tools(self):
+        historicalTools = [{"type": "function", "name": "old", "parameters": {"type": "object"}}]
+        currentTools = [{"type": "function", "name": "current", "parameters": {"type": "object"}}]
+        messages = [
+            {"type": "message", "role": "developer", "content": "Model changed."},
+            {"type": "message", "role": "user", "content": "Continue."},
+        ]
+        items = [
+            messages[0],
+            {"type": "additional_tools", "role": "developer", "tools": historicalTools},
+            messages[1],
+        ]
+        for tools in ([], currentTools):
+            for native in (True, False):
+                with self.subTest(tools=tools, native=native):
+                    payload = {"input": items, "tools": tools}
+                    original = copy.deepcopy(payload)
+                    normalized, counts = normalize_response_input(payload)
+                    self.assertEqual(payload, original)
+                    self.assertEqual(normalized, {"input": messages, "tools": tools})
+                    self.assertEqual(
+                        counts, {"additional_tools": 1, "superseded_tool_declarations": 1}
+                    )
+                    self.model_response(b'{"choices":[]}', native=native, inputs=items, tools=tools)
+                    self.assertEqual(len(self.requests), 1)
+                    if native:
+                        self.assertEqual(self.requests[0]["input"], messages)
+                        self.assertEqual(self.requests[0]["tools"], tools)
+                    else:
+                        self.assertEqual(
+                            self.requests[0]["messages"],
+                            [
+                                {"role": "system", "content": "Model changed."},
+                                {"role": "user", "content": "Continue."},
+                            ],
+                        )
+                        self.assertEqual(
+                            [
+                                tool["function"]["name"]
+                                for tool in self.requests[0].get("tools", [])
+                            ],
+                            [tool["name"] for tool in tools],
+                        )
+                    self.assertEqual(self.diagnostics[-1][1]["converted_input_items"], counts)
 
     def test_standard_input_is_unchanged(self):
         for inputs in (
@@ -636,9 +913,8 @@ class CompletionBridgeContract(unittest.TestCase):
         self.assertEqual(fields["downstream"]["terminal_event"], "response.failed")
         self.assertEqual(fields["end_reason"], "provider_error")
         self.assertEqual(fields["failure_type"], "insufficient_quota")
-        # quota 不在 bridge 终态白名单（Codex 自带白名单已保码，adapter 直接分类），
-        # 故恢复源返回空——R4 只修诊断记录，不改产品归因来源。
-        self.assertEqual(terminal_provider_failure(fields), {})
+        self.assertEqual(terminal_provider_failure(fields)["error_code"], "insufficient_quota")
+        self.assertEqual(terminal_provider_failure(fields)["retryability"], "terminal")
 
     def test_bridge_projects_tool_prefix_for_native_and_chat_requests(self):
         tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]
@@ -669,13 +945,24 @@ class CompletionBridgeContract(unittest.TestCase):
 
     def test_ambiguous_tool_inputs_fail_closed(self):
         prefix = {"type": "additional_tools", "role": "developer", "tools": []}
+        conflictingTools = [
+            {"type": "function", "name": "conflict", "parameters": {"type": "object"}},
+            {"type": "function", "name": "conflict", "parameters": {"type": "string"}},
+        ]
         for payload in (
             {"input": [prefix, prefix]},
-            {"input": [{"type": "message"}, prefix]},
+            {"input": [{"type": "message"}, prefix, {**prefix}]},
             {"input": [{**prefix, "role": "user"}]},
             {"input": [{**prefix, "tools": "bad"}]},
             {"input": [{**prefix, "tools": [None]}]},
-            {"input": [prefix], "tools": [{"type": "function", "name": "other"}]},
+            {"input": [prefix], "tools": "bad"},
+            {"input": [prefix], "tools": [None]},
+            {"input": [{**prefix, "tools": conflictingTools}]},
+            {
+                "input": [prefix],
+                "tools": [{"type": "namespace", "name": "nested", "tools": conflictingTools}],
+            },
+            {"input": [prefix], "tools": conflictingTools},
         ):
             with (
                 self.subTest(payload=payload),
@@ -690,6 +977,10 @@ class CompletionBridgeContract(unittest.TestCase):
             inputs=[{"type": "additional_tools", "role": "user", "tools": []}],
         )
         self.assertEqual(self.requests, [])
+        self.assertEqual(
+            self.diagnostics[-1][1]["failure_type"],
+            "model_bridge_invalid_tool_input:invalid_declaration",
+        )
 
     def test_lite_tools_cannot_bypass_chat_native_tool_capability_check(self):
         self.model_response(
@@ -716,6 +1007,45 @@ class CompletionBridgeContract(unittest.TestCase):
             }
             normalized, _ = normalize_response_input(payload)
             self.assertEqual(normalized, {"input": [], "tools": definitions})
+
+    def test_named_tools_reject_missing_and_blank_names_before_upstream(self):
+        for toolType in ("function", "custom", "namespace"):
+            for attributes in ({}, {"name": ""}, {"name": " \t"}, {"name": None}, {"name": 1}):
+                declaration = {"type": toolType, **attributes}
+                if toolType == "namespace":
+                    declaration["tools"] = []
+                for native in (True, False):
+                    with self.subTest(tool=declaration, native=native):
+                        self.model_response(
+                            b"",
+                            native=native,
+                            status=400,
+                            inputs=[{"type": "additional_tools", "role": "developer", "tools": []}],
+                            tools=[declaration],
+                        )
+                        self.assertEqual(self.requests, [])
+                        self.assertEqual(
+                            self.diagnostics[-1][1]["failure_type"],
+                            "model_bridge_invalid_tool_input:invalid_declaration",
+                        )
+
+    def test_unnamed_native_tools_do_not_share_an_empty_name_identity(self):
+        tools = [
+            {"type": "web_search", "search_context_size": "low"},
+            {"type": "web_search", "search_context_size": "high"},
+        ]
+        for explicit in (True, False):
+            with self.subTest(explicit=explicit):
+                payload = {
+                    "input": [{"type": "additional_tools", "role": "developer", "tools": tools}]
+                }
+                if explicit:
+                    payload["tools"] = tools
+                original = copy.deepcopy(payload)
+                normalized, counts = normalize_response_input(payload)
+                self.assertEqual(payload, original)
+                self.assertEqual(normalized, {"input": [], "tools": tools})
+                self.assertEqual(counts, {"additional_tools": 1})
 
     def test_response_model_is_captured_before_turn_changes(self):
         for native in (False, True):

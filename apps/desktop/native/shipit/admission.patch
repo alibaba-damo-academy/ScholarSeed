@@ -1,0 +1,114 @@
+--- a/Squirrel/SQRLInstaller.m
++++ b/Squirrel/SQRLInstaller.m
+@@ -10,6 +10,7 @@
+ #import "timing.h"
+ #import "cleanup.h"
+ #import "preparation.h"
++#import "admission.h"
+ 
+ #import <libkern/OSAtomic.h>
+ #import <mach-o/dyld.h>
+@@ -273,10 +274,26 @@
+ 		}]
+ 		zipWith:[self codeSignatureForBundleAtURL:request.targetBundleURL]]
+ 		reduceEach:^(NSURL *updateBundleURL, SQRLCodeSignature *codeSignature) {
+-			return [[[self
+-				verifyBundleAtURL:updateBundleURL usingSignature:codeSignature]
+-				ignoreValues]
+-				concat:[RACSignal return:updateBundleURL]];
++            BOOL (^occupied)(void) = ^BOOL {
++                if (!request.bundleIdentifier) return NO;
++                for (NSRunningApplication *application in [NSRunningApplication runningApplicationsWithBundleIdentifier:request.bundleIdentifier]) {
++                    if ([application.bundleURL.URLByStandardizingPath isEqual:request.targetBundleURL.URLByStandardizingPath]) return YES;
++                }
++                return NO;
++            };
++            return [SSAdmission(occupied, ^RACSignal *{
++                NSError *validationError = nil;
++                if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, updateBundleURL, &validationError)) return [RACSignal error:validationError];
++                return [[[self verifyBundleAtURL:updateBundleURL usingSignature:codeSignature] ignoreValues]
++                    then:^RACSignal *{
++                        NSError *error = nil;
++                        if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, updateBundleURL, &error)) return [RACSignal error:error];
++                        if (occupied()) return [RACSignal error:[NSError errorWithDomain:SQRLInstallerErrorDomain code:SQRLInstallerErrorAppStillRunning userInfo:nil]];
++                        return [RACSignal empty];
++                    }];
++            }, ^BOOL(NSError *error) {
++                return [error.domain isEqual:SQRLInstallerErrorDomain] && error.code == SQRLInstallerErrorAppStillRunning;
++            }, SSAdmissionTimeout) concat:[RACSignal return:updateBundleURL]];
+ 		}]
+ 		flatten]
+ 		setNameWithFormat:@"%@ -prepareAndValidateUpdateBundleURLForRequest: %@", self, request];
+@@ -384,6 +401,7 @@
+ 						NSDictionary *errorInfo = @{
+ 							NSLocalizedDescriptionKey: NSLocalizedString(@"App Still Running Error", nil),
+ 							NSLocalizedRecoverySuggestionErrorKey: NSLocalizedString(@"All instances of the target application should be quit during the update process", nil),
++                            SSAdmissionTargetKey: request.targetBundleURL,
+ 						};
+ 						return [RACSignal error:[NSError errorWithDomain:SQRLInstallerErrorDomain code:SQRLInstallerErrorAppStillRunning userInfo:errorInfo]];
+ 					}
+--- a/Squirrel/ShipIt-main.m
++++ b/Squirrel/ShipIt-main.m
+@@ -24,6 +24,7 @@
+ #import "cleanup.h"
+ #import "preparation.h"
+ #import "readiness.h"
++#import "admission.h"
+ #import "SQRLInstaller+Private.h"
+ #import "SQRLTerminationListener.h"
+ #import "SQRLShipItRequest.h"
+@@ -110,10 +111,12 @@
+ static void installRequest(RACSignal *readRequestSignal, NSString *applicationIdentifier) {
+     __block BOOL preparationFailed = NO;
+     __block SQRLShipItRequest *preparedRequest = nil;
++    __block SQRLShipItRequest *terminalRequest = nil;
+     __block NSURL *cleanupTarget = nil;
+     __block BOOL launchFailed = NO;
+ 	[[[[[readRequestSignal
+ 		flattenMap:^(SQRLShipItRequest *request) {
++            terminalRequest = request;
+ 			if (SSCleanupCommittedRequest(request.updateBundleURL, request.targetBundleURL)) return [RACSignal empty];
+             if (SSCleanupKnownRequest(request.updateBundleURL)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
+             // An entered install may have moved the target already. Preserve
+@@ -126,6 +129,12 @@
+             // silently wait for its exit while its Squirrel is waiting for us.
+             NSError *openError = nil;
+             BOOL openedPreparation = SSPreparationOpen(applicationIdentifier, &openError);
++            if (openedPreparation) {
++                NSInteger code = 0;
++                SSPreparationFailure failure = SSPreparationRecoverFailure(request.updateBundleURL, request.targetBundleURL, &code, &openError);
++                if (failure == SSPreparationFailureInvalid) return [RACSignal error:openError];
++                if (failure == SSPreparationFailureRestored) return [RACSignal error:[NSError errorWithDomain:SSAdmissionErrorDomain code:code userInfo:nil]];
++            }
+             if (installationAttempts(applicationIdentifier) == 0 || targetRunning) {
+                 if (!openedPreparation) {
+                     preparationFailed = YES;
+@@ -294,6 +303,28 @@
+ 			return action;
+ 		}]
+ 		subscribeError:^(NSError *error) {
++            NSURL *actualTarget = error.userInfo[SSAdmissionTargetKey];
++            BOOL finalGuard = [error.domain isEqual:SQRLInstallerErrorDomain] && error.code == SQRLInstallerErrorAppStillRunning && [actualTarget isKindOfClass:NSURL.class];
++            if ([error.domain isEqual:SSAdmissionErrorDomain] || finalGuard) {
++                NSError *terminalError = nil;
++                NSInteger code = error.code;
++                SSPreparationFailure failure = terminalRequest ? SSPreparationRecoverFailure(terminalRequest.updateBundleURL, terminalRequest.targetBundleURL, &code, &terminalError) : SSPreparationFailureInvalid;
++                if (failure == SSPreparationFailureNone) {
++                    if (!SSPreparationRecordFailure(terminalRequest.updateBundleURL, actualTarget ?: terminalRequest.targetBundleURL, code, &terminalError)) {
++                        NSLog(@"[shipit-admission] event=terminal-record-failed error=%@", terminalError);
++                        exit(EXIT_FAILURE);
++                    }
++                    failure = SSPreparationRecoverFailure(terminalRequest.updateBundleURL, terminalRequest.targetBundleURL, &code, &terminalError);
++                }
++                if (failure != SSPreparationFailureRestored || !SSReadinessPublish(terminalRequest.updateBundleURL, terminalRequest.targetBundleURL, NO, code, &terminalError)) {
++                    NSLog(@"[shipit-admission] event=terminal-evidence-unavailable error=%@", terminalError);
++                    exit(EXIT_FAILURE);
++                }
++                NSLog(@"[shipit-admission] event=terminal-failure code=%ld", (long)code);
++                clearInstallationAttempts(applicationIdentifier);
++                drainMachServicePort(applicationIdentifier.UTF8String);
++                exit(EXIT_SUCCESS);
++            }
+             if (preparationFailed) {
+                 NSLog(@"[shipit-preparation] event=failed code=%ld", (long)error.code);
+                 drainMachServicePort(applicationIdentifier.UTF8String);

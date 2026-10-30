@@ -3,15 +3,27 @@
   "files": [
     {
       "mode": 420,
+      "path": "PACKAGE-MANIFEST.sha256",
+      "sha256": "9668ae4eb8d20b697393aa8f0e1407ff794f5269817b965018301deb255a3460",
+      "size": 677
+    },
+    {
+      "mode": 420,
       "path": "SKILL.md",
-      "sha256": "fa2da0fe0a3ac4b8d61eff1796fe8948755bcc0f548cc37adfa47e541071ad57",
-      "size": 3125
+      "sha256": "6fd8eb4ed16ef0876084b42e45dbcf46ba2854787170ca59c24b85d70906f2a3",
+      "size": 8395
+    },
+    {
+      "mode": 420,
+      "path": "VERSION",
+      "sha256": "87f5b13e3a4330f0625276d4dc586b8d3623decb5779db215fc7a20d736128eb",
+      "size": 13
     },
     {
       "mode": 420,
       "path": "references/artifacts.md",
-      "sha256": "cc59ebd0e21e9e01b646a0c25d7486bfe51e087a9658b92ace5f2d3ede25da76",
-      "size": 1499
+      "sha256": "61ba54fb6907280f9dc2591800fd5038fab71456fef943302a4484b37725ff22",
+      "size": 4573
     },
     {
       "mode": 420,
@@ -21,21 +33,27 @@
     },
     {
       "mode": 420,
+      "path": "references/mcp.md",
+      "sha256": "a05b991adefb0a46c9bd060c7ec9c5062af548c78dc56994840019ce1baca133",
+      "size": 3544
+    },
+    {
+      "mode": 420,
       "path": "references/plans.md",
-      "sha256": "f880cf9ca71c8202d3da62210b8610928502bc0cc47b3667018e039aa3c2e002",
-      "size": 2673
+      "sha256": "d2da6d9cd468d360de54014f2a2b442ab89cdae788fd6bc56a0fe6220aff1169",
+      "size": 4187
     },
     {
       "mode": 420,
       "path": "references/resources.md",
-      "sha256": "fb5d627aaa3165f0b6b00d9fc21903cbc1353562726367ac4dd1e04f30bbab20",
-      "size": 2196
+      "sha256": "c9301a0c4be6f4ea51382c1f9e23441552c91e10aef5159ae4e3cb69be9dec72",
+      "size": 3825
     },
     {
       "mode": 420,
       "path": "references/retrieval.md",
-      "sha256": "84d1c906e6ac9add2fdd1c68bd9a55c74f0386cea7ba12dacfe58ebe644627bb",
-      "size": 2194
+      "sha256": "d8858f1ec750457559c06958d1068fcec92e913db1b3c5da87ff9734819fcc43",
+      "size": 2915
     }
   ],
   "name": "scholarseed-product-operations",
@@ -43,6 +61,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "c2897ca0e0229dbfe1e7c30732799b5fbf55f758a41ddd20650e2d4080d067ae",
-  "version": "2026.9.29"
+  "source_document_sha256": "6fd8eb4ed16ef0876084b42e45dbcf46ba2854787170ca59c24b85d70906f2a3",
+  "version": "2026.10.29+4"
 }

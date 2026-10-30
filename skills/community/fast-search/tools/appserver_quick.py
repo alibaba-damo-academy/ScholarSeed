@@ -470,6 +470,7 @@ class CodexAppServer:
 
 
 def quick_prompt(query: str, output_dir: Path, runner_path: Path) -> str:
+    plan_path = output_dir.with_name(".%s.fast-search-plan.json" % output_dir.name)
     return f"""${SKILL_NAME}
 $web-search
 
@@ -483,17 +484,49 @@ quick_search.py runner call. Do not choose direct runtime Web Search in place of
 an available skill route. A successfully completed runtime Web Search that
 occurs despite this priority is an acceptable compatibility result; do not
 repeat that query through another provider. Do not open result pages, generate
-a report, persist abstracts, or continue after the runner succeeds. Use 3-4 --keyword flags and no
-more than 8 --title flags;
-keyword plus title must not exceed 12. The runner call must also include `--query`
-with the full user query, `--concepts` with a comma-separated list of 3-6 distinct
-short English concepts, and `--output-dir` with the exact directory above.
+a report, persist abstracts, or continue after the runner succeeds. After the
+web batch, use a file-editing tool—not a shell command—to write the ordered JSON
+plan required by the injected fast-search skill at exactly {plan_path}. Put the
+full user query in `query`, 3-6 short English concepts in `inspect_concepts`,
+and the highest-value queries first. Use 3-4 keyword queries and no more than 8
+title queries. The runner safety guard bounds an accidental overflow without a
+retry.
+Write keyword Boolean operators as uppercase AND/OR/NOT; keep quoted literals
+and canonical paper titles intact.
+For a hard publication period, include the skill's date/year bounds in the
+plan and respect them in web queries and title choice. You interpret the full
+request, including negations, exceptions and soft preferences; the runner only
+executes the structured bounds and never infers them from the user text.
+An upper cutoff is not
+a preference for only the newest work; retain useful in-window core papers.
+Do not fill the result with out-of-window papers.
+Aim for a useful, well-covered result within the existing search budget.
+A short or empty result is a last-resort outcome, not the retrieval target.
+If a date-constrained search produces no verified matches, explain that this
+search found none under the stated dates, not that no such papers exist, and
+suggest a user-approved reformulation without relaxing dates automatically.
+Claim completion only from an actual successful runner tool result containing
+result.output and result.selected_count, not from an intended command or
+simulated transcript. Report execution failures honestly; do not invent a path
+or count. Report the actual count and stop after metadata.json is written.
 
-If the user is directly looking up one paper by arXiv URL/ID, DOI, or an
+If the user is directly looking up one paper by publisher/arXiv URL, ID, DOI, or an
 explicit full title, resolve its canonical title from the matching web
-candidate before the runner call. Add that title as an exact `--title` query
-and pass `--best-title "CANONICAL_TITLE" --require-best-target`. Never replace
+candidate in the existing web batch when available. Use the skill's
+URL normalization and failure contract. In the JSON plan set best_target.title
+to that canonical title and best_target.required to true, and include the same
+title as a mode=title query. Do not add inline CLI flags. Never replace
 the canonical-title probe with raw identifier or generic related-paper queries.
+If an input URL/DOI has no resolved title, keep best_target.required=true, omit
+the title, and let the runner verify that locator (use it as a keyword query).
+Retain up to four useful scholarly URLs from the same batch in web_papers
+(title/url only, titles also in the plan). The runner verifies external records
+in parallel with PaperHub; its absence alone is not grounds to discard a paper.
+One verified result is sufficient for a direct lookup. Do not add search rounds.
+For an explicit full paper title, preserve the user's title verbatim in the
+existing web batch, best_target.title and the exact-title query, required=true;
+never substitute a similarly titled preprint or journal version. For URL/DOI
+inputs, the linked identifier determines the requested version.
 
 When invoking the web-search skill, execute its official provider first. Only a
 structured unavailable/failed result permits its native provider, and only a
@@ -512,8 +545,10 @@ If the runner shell call yields a running session id, poll that same session unt
 runner exits before reporting completion. Polling is continuation of the one
 runner invocation, not permission to launch another command.
 
-For the runner shell call invoke exactly `scholarseed-skill-python "{runner_path}"` before its arguments.
-Omit the workdir field. The host already set the correct working directory.
+For the runner shell call invoke exactly:
+`scholarseed-skill-python "{runner_path}" --plan "{plan_path}" --consume-plan --output-dir "{output_dir}"`.
+Do not add inline query, concept, keyword, or title arguments. Omit the workdir
+field. The host already set the correct working directory.
 
 User query:
 {query}
@@ -523,6 +558,28 @@ ground truth, baselines, evaluators, prior runs, prior predictions, or sibling
 result directories. Query cache and connectivity are controlled by the host;
 do not run diagnostics or enumerate environment values.
 """
+
+
+def _validate_result_papers(document, query):
+    """Keep small/empty date-constrained results valid on the Worker path too."""
+    papers = document.get("papers") if isinstance(document, dict) else None
+    if not isinstance(papers, list) or len(papers) > 20:
+        raise AppServerError("Veryfast output must contain at most 20 papers")
+    summary = document.get("search_summary") or {}
+    try:
+        window = quick_finalize.publication_window.resolve(summary.get("publication_window"))
+    except (TypeError, ValueError) as exc:
+        raise AppServerError(str(exc)) from exc
+    required_match = bool(papers and summary.get("agent_best_target_required") and
+        quick_finalize._declared_target_match(papers[0], query, summary.get("agent_best_target_title", "")))
+    verified_shortfall = bool(papers and (summary.get("external_verification") or {}).get("added_count") and
+        any(str(paper.get("paper_id", "")).startswith("external:") and paper.get("verification_url") for paper in papers))
+    if len(papers) < 5 and not window and not (required_match or verified_shortfall):
+        raise AppServerError("Unconstrained Veryfast output must contain 5-20 papers")
+    _, exclusions = quick_finalize.publication_window.filter_papers(papers, window)
+    if any(exclusions.values()):
+        raise AppServerError("Veryfast output violates the publication window")
+    return papers
 
 
 def run_quick_query(
@@ -556,10 +613,10 @@ def run_quick_query(
         "developerInstructions": (
             "For every exec tool call omit workdir. Shell commands are allowed "
             "only for the injected web-search skill's selected provider and the "
-            "Veryfast runner at %s. Invoke that runner exactly once. Its required "
-            "flags are --query, --concepts, and --output-dir. Use at most 12 "
-            "PaperHub query flags total. Direct paper lookups also require a "
-            "resolved --best-title and --require-best-target."
+            "Veryfast runner at %s. Use the file-editing tool to create exactly "
+            "one structured plan; never use shell to create or inspect it. Invoke "
+            "the runner exactly once with --plan, --consume-plan, and --output-dir. "
+            "Direct paper lookups require best_target in that plan."
             % runner_path
         ),
         "approvalPolicy": "never",
@@ -659,13 +716,11 @@ def run_quick_query(
         max(0.0, metadata_path.stat().st_mtime - started_at), 3
     )
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
-    papers = document.get("papers") if isinstance(document, dict) else None
-    if not isinstance(papers, list) or not 5 <= len(papers) <= 20:
-        raise AppServerError("Veryfast output must contain 5-20 papers")
+    papers = _validate_result_papers(document, query)
     if any("abstract" in paper for paper in papers):
         raise AppServerError("Veryfast output must not persist paper abstracts")
     tier1 = [paper for paper in papers if paper.get("tier") == 1]
-    if not tier1 or papers[0] is not tier1[0]:
+    if papers and (not tier1 or papers[0] is not tier1[0]):
         raise AppServerError("Veryfast output must place a Tier 1 paper first")
     summary = document.get("search_summary") or {}
     query_text = summary.get("query", query)
@@ -677,8 +732,13 @@ def run_quick_query(
             quick_finalize._best_title_match(paper, best_title),
             float(paper.get("relevance_score", 0) or 0),
         ),
+        default=None,
     )
-    if papers[0] is not expected:
+    if summary.get("agent_best_target_required") and papers:
+        if not quick_finalize._declared_target_match(papers[0], query_text, best_title):
+            raise AppServerError("Veryfast top-1 is not the verified required target")
+        expected = papers[0]
+    if papers and papers[0] is not expected:
         raise AppServerError("Veryfast Tier 1 top-1 is not the best query-aligned paper")
     activity = list(server.search_activity)
     _validate_search_activity(activity)

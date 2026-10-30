@@ -7,7 +7,7 @@ test('assistant heading shows scope only when fullscreen and the sidebar is abse
   for (const fullscreen of [false, true]) {
     for (const sidebarVisible of [false, true]) {
       assert.equal(
-        assistantHeadingScope(fullscreen, sidebarVisible, '项目 A', false, '文献全览'),
+        assistantHeadingScope(fullscreen, sidebarVisible, '项目 A', false, '文献中心'),
         fullscreen && !sidebarVisible ? '项目 A' : null
       )
     }
@@ -15,12 +15,12 @@ test('assistant heading shows scope only when fullscreen and the sidebar is abse
 })
 
 test('assistant heading uses global literature overview only without a project scope', () => {
-  assert.equal(assistantHeadingScope(true, false, null, true, '文献全览'), '文献全览')
+  assert.equal(assistantHeadingScope(true, false, null, true, '文献中心'), '文献中心')
   assert.equal(assistantHeadingScope(true, false, null, true, 'All literature'), 'All literature')
-  assert.equal(assistantHeadingScope(true, false, '会话所属项目', true, '文献全览'), '会话所属项目')
-  assert.equal(assistantHeadingScope(true, false, null, false, '文献全览'), null)
-  assert.equal(assistantHeadingScope(false, false, null, true, '文献全览'), null)
-  assert.equal(assistantHeadingScope(true, true, null, true, '文献全览'), null)
+  assert.equal(assistantHeadingScope(true, false, '会话所属项目', true, '文献中心'), '会话所属项目')
+  assert.equal(assistantHeadingScope(true, false, null, false, '文献中心'), null)
+  assert.equal(assistantHeadingScope(false, false, null, true, '文献中心'), null)
+  assert.equal(assistantHeadingScope(true, true, null, true, '文献中心'), null)
 })
 
 test('project heading preserves ten visible characters and appends three dots only when needed', () => {

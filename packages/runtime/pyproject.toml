@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scholarseed-runtime"
-version = "0.2.0"
+version = "0.2.1"
 description = "Vendor-neutral contracts and gateway for external agent runtimes"
 readme = "README.md"
 license = "Apache-2.0"

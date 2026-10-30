@@ -979,7 +979,7 @@ class ResourceRecoveryService:
                 if position == "target":
                     store.mark_restore_member_applied(transaction.id, member.file_id)
                     continue
-                if position not in {"before", "partial"}:
+                if position not in {"before", "partial", "relocated"}:
                     store.set_restore_state(
                         transaction.id,
                         RestoreState.NEEDS_ATTENTION,
@@ -1082,11 +1082,28 @@ class ResourceRecoveryService:
             return
         if member.target_object_id is None:
             raise ResourceRecoveryError("version_object_missing")
+        relocating = (
+            member.target_path != member.expected_path
+            and member.before_state is FileState.PRESENT
+            and position in {"before", "relocated"}
+        )
+        if relocating and position == "before":
+            if member.expected_revision is None:
+                raise ResourceRecoveryError("preflight_stale")
+            self._content.relocate_file(
+                project_id,
+                member.expected_path,
+                member.target_path,
+                member.expected_revision,
+                notify=False,
+            )
         if position != "partial":
             cas = self._cas(project_id)
             descriptor = cas.verify(member.target_object_id)
             target_expected = (
-                member.expected_revision if member.target_path == member.expected_path else None
+                member.expected_revision
+                if member.target_path == member.expected_path or relocating
+                else None
             )
             with cas.stage_stream(
                 member.target_object_id,
@@ -1104,7 +1121,7 @@ class ResourceRecoveryService:
                     mode_bits=member.target_mode_bits,
                     notify=False,
                 )
-        if member.target_path != member.expected_path:
+        if member.target_path != member.expected_path and not relocating:
             self._annotations.move(project_id, member.expected_path, member.target_path)
             self._content.remove_bytes(
                 project_id,
@@ -1278,6 +1295,15 @@ class ResourceRecoveryService:
             return "target"
         if before_matches:
             return "before"
+        if (
+            member.target_path != member.expected_path
+            and member.before_state is FileState.PRESENT
+            and expected.state is FileState.TOMBSTONE
+            and target.state is FileState.PRESENT
+            and target.mode_bits == member.before_mode_bits
+            and target.revision == member.before_object_id
+        ):
+            return "relocated"
         if (
             member.target_path == member.expected_path
             and target.state is member.target_state

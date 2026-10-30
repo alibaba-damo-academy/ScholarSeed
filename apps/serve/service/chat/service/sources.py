@@ -136,10 +136,11 @@ def _search_candidates(
             url = str(row.get("url") or "").strip()
             identity = canonical_url(url)
             declared = event.kind == PRODUCT_EVENT_SOURCE_CANDIDATES
+            if identity is None:
+                continue
             existing = candidates.get(identity)
-            if identity is None or (
-                existing is not None
-                and (declared or existing.get("origin") != TOOL_DECLARED_ORIGIN)
+            if existing is not None and (
+                declared or existing.get("origin") != TOOL_DECLARED_ORIGIN
             ):
                 continue
             candidates[identity] = {
@@ -267,21 +268,21 @@ def _answer_links(markdown: str) -> tuple[list[tuple[str, str]], dict[str, str]]
                 if token.content in bindings:
                     links.append(bindings[token.content])
                 continue
-            href = token.attrGet("href") if token.type == "link_open" else None
-            if not href:
+            link_href = token.attrGet("href") if token.type == "link_open" else None
+            if not link_href:
                 continue
             if token.markup == "linkify" and index and children[index - 1].content.endswith("]("):
                 continue
-            label: list[str] = []
+            label_parts: list[str] = []
             for child in children[index + 1 :]:
                 if child.type == "link_close":
                     break
                 if child.type in {"text", "code_inline"}:
-                    label.append(child.content)
-            title = "".join(label).strip()
+                    label_parts.append(child.content)
+            title = "".join(label_parts).strip()
             if token.markup == "linkify" and not title.lower().startswith(AUTOLINK_PREFIXES):
                 continue
-            links.append((str(href), title))
+            links.append((str(link_href), title))
     return links, {label: href for label, (href, _) in bindings.items()}
 
 
@@ -385,14 +386,15 @@ def answer_sources(
         or fallback is not None
         or any(source["kind"] == SEARCH_SOURCE_KIND for source in sources)
     ):
-        declared = {
+        declared_sources: dict[str | None, dict[str, Any]] = {
             canonical_url(source["url"]): {
                 key: source[key] for key in ("kind", "url", "title", "search_kind", "search_id")
             }
             for source in sources
             if source["kind"] == SEARCH_SOURCE_KIND
         }
-        result["search_sources"] = list({**declared, **candidates}.values())
+        declared_sources.update(candidates)
+        result["search_sources"] = list(declared_sources.values())
         result["coverage"] = {
             "status": "pending",
             "truncated_sources": any(

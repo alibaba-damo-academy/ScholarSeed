@@ -1,0 +1,660 @@
+{
+  "schemaVersion": 1,
+  "profile": "smoke",
+  "platforms": [
+    "darwin",
+    "win32"
+  ],
+  "budget": {
+    "targetMs": 600000,
+    "preparationMs": 60000,
+    "collectionMs": 40000,
+    "executionMs": 180000,
+    "reportingCleanupMs": 20000
+  },
+  "requiredCoreIds": [
+    "session-artifacts",
+    "schema-repair",
+    "literature-delivery",
+    "runner-lifecycle",
+    "http-activity",
+    "service-lifecycle",
+    "index-shutdown",
+    "shutdown"
+  ],
+  "requiredUnitIds": [
+    "filenames",
+    "delivery-projection",
+    "smoke-infrastructure"
+  ],
+  "entries": [
+    {
+      "id": "filenames",
+      "owner": "apps/serve/tests/contract_filenames.py",
+      "markers": [
+        "smoke-unit"
+      ],
+      "layer": "native",
+      "layerDetail": "逻辑及副作用守卫；外层guard设施含真实隔离子解释器，内部四项业务规则在无副作用守卫内执行。",
+      "resources": [
+        "python"
+      ],
+      "reason": "必要文件命名规则与导入/业务双阶段副作用守卫；不按contract文件名推断层级。 顶层1项entry契约在SideEffectGuard内执行原4业务用例，4项guard回归内部含预期失败负向runner；observer只记录最外层5项顶层身份，不把嵌套业务或预期失败误计成独立业务通过/失败，入口契约仍核内部4项全部通过且零skip。",
+      "invariants": [
+        "固定输入得到独立字面expected；输入不可变",
+        "导入和业务执行禁止SQLite、网络、子进程与文件写入"
+      ],
+      "inputExpected": "tests.filenames四组固定输入/字面expected；守卫探针显式触发四类副作用",
+      "cleanup": "守卫恢复context token与dont_write_bytecode；不持有业务存储。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 261,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_filenames"
+      },
+      "requiredCases": [
+        "FilenameEntryContracts.test_import_and_all_business_cases_are_guarded",
+        "FilenameGuardContracts.test_late_side_effects_are_rejected",
+        "FilenameGuardContracts.test_normal_entry_rejects_import_and_business_side_effects",
+        "FilenameGuardContracts.test_swallowed_side_effect_is_still_a_failure",
+        "FilenameGuardContracts.test_top_level_side_effects_are_rejected"
+      ]
+    },
+    {
+      "id": "session-artifacts",
+      "owner": "apps/serve/tests/contract_session_artifacts.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "data",
+      "layerDetail": "真实SQLite及文件服务",
+      "resources": [
+        "python",
+        "sqlite",
+        "temporary-files"
+      ],
+      "reason": "冻结39例覆盖事件到产物服务接线、重开读回、幂等、修订冲突和路径拒绝。",
+      "invariants": [
+        "事件、索引及cursor同事务提交或回滚",
+        "重开保留draft/发布快照且跨会话或越界路径拒绝",
+        "未知schema不写入、迁移保留用户扩展"
+      ],
+      "inputExpected": "每例独立Home内sessions.sqlite3和PDF/文本/表格；expected为预先字节、事件序号、错误码及行快照",
+      "cleanup": "setUp立即addCleanup临时目录；SQLite连接上下文关闭；schema-repair含fixture清理负向验证。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 3175,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_session_artifacts"
+      },
+      "requiredCases": [
+        "SessionArtifactContract.test_artifact_repair_preserves_external_dependents_and_rolls_back_failures",
+        "SessionArtifactContract.test_blocked_source_is_verified_in_the_same_transaction",
+        "SessionArtifactContract.test_cross_database_transaction_is_rejected",
+        "SessionArtifactContract.test_cross_session_or_unrelated_event_attribution_is_rejected",
+        "SessionArtifactContract.test_current_schema_does_not_open_writer",
+        "SessionArtifactContract.test_event_index_and_cursor_share_commit_or_rollback",
+        "SessionArtifactContract.test_export_draft_uses_current_bytes_for_pdf_filename",
+        "SessionArtifactContract.test_export_recovers_pdf_names_without_changing_source_bytes",
+        "SessionArtifactContract.test_file_change_markdown_can_be_saved_with_revision_guard",
+        "SessionArtifactContract.test_file_change_must_be_completed_and_path_must_be_canonical",
+        "SessionArtifactContract.test_file_change_reader_follows_the_current_session_path",
+        "SessionArtifactContract.test_file_change_rejects_unsafe_spreadsheet_replacement",
+        "SessionArtifactContract.test_file_change_safe_spreadsheet_can_be_saved",
+        "SessionArtifactContract.test_file_change_text_and_code_formats_can_be_saved",
+        "SessionArtifactContract.test_filename_hint_does_not_rewrite_invalid_target_names",
+        "SessionArtifactContract.test_known_foreign_targets_preserve_artifacts_and_drafts",
+        "SessionArtifactContract.test_large_pdf_can_stream_without_becoming_editable",
+        "SessionArtifactContract.test_legacy_missing_source_refuses_migration_and_rolls_back",
+        "SessionArtifactContract.test_legacy_publication_without_snapshot_never_reads_current_source",
+        "SessionArtifactContract.test_legacy_sources_backfill_only_referenced_event_identity",
+        "SessionArtifactContract.test_missing_schema_inspection_does_not_create_directory",
+        "SessionArtifactContract.test_nonexistent_event_does_not_create_anchor",
+        "SessionArtifactContract.test_pdf_above_preview_limit_has_stable_error",
+        "SessionArtifactContract.test_pdf_card_names_preserve_source_locators",
+        "SessionArtifactContract.test_publication_without_verified_content_cannot_be_edited",
+        "SessionArtifactContract.test_published_document_draft_is_durable_and_snapshot_is_immutable",
+        "SessionArtifactContract.test_rebinding_preserves_original_file_instead_of_new_same_name",
+        "SessionArtifactContract.test_same_key_cannot_be_reused_for_another_path",
+        "SessionArtifactContract.test_saved_destination_is_durable_and_mutable_outside_event_identity",
+        "SessionArtifactContract.test_sent_pdf_keeps_original_attachment_after_rebinding",
+        "SessionArtifactContract.test_session_artifact_reader_rejects_escape",
+        "SessionArtifactContract.test_session_artifact_reader_uses_index_identity_and_runtime_root",
+        "SessionArtifactContract.test_source_anchor_rollback_and_corruption_are_not_hidden",
+        "SessionArtifactContract.test_source_anchors_are_sparse_and_session_deletion_cascades",
+        "SessionArtifactContract.test_structured_artifact_is_durable_and_idempotent",
+        "SessionArtifactContract.test_unknown_draft_column_rejected_before_writes",
+        "SessionArtifactContract.test_unknown_foreign_target_is_preserved_without_writer",
+        "SessionArtifactContract.test_wal_only_saved_to_and_index_migration",
+        "SessionArtifactContract.test_working_changes_never_replace_or_delete_publications"
+      ]
+    },
+    {
+      "id": "schema-repair",
+      "owner": "apps/serve/tests/contract_schema_repair.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "data",
+      "layerDetail": "真实SQLite事务及进程中断恢复",
+      "resources": [
+        "python",
+        "sqlite",
+        "owned-child-process",
+        "temporary-files"
+      ],
+      "reason": "9项迁移恢复和5项fixture生命周期全部保留，自定义main仅收集两类，不重复导入的SessionArtifactContract。",
+      "invariants": [
+        "事务中断/进程死亡不丢失schema、行、draft及用户索引触发器",
+        "并发初始化保留数据",
+        "setup失败、原始失败和cleanup失败同时可见且连接主动关闭"
+      ],
+      "inputExpected": "预置旧schema与unsaved user draft，独立before快照；真实子进程在事务拷贝阶段退出",
+      "cleanup": "继承fixture addCleanup注册责任；验证closed连接与目录释放，不依赖GC。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 4072,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_schema_repair",
+        "classes": [
+          "SchemaRepair",
+          "FixtureLifecycle"
+        ]
+      },
+      "requiredCases": [
+        "FixtureLifecycle.test_failed_directory_release_is_detected",
+        "FixtureLifecycle.test_missing_cleanup_registration_is_detected",
+        "FixtureLifecycle.test_setup_and_cleanup_errors_both_remain_visible",
+        "FixtureLifecycle.test_setup_failures_release_resources_before_exit",
+        "FixtureLifecycle.test_success_releases_database_connections_and_directory_before_exit",
+        "SchemaRepair.test_catalog_repair_preserves_index_trigger_and_hil",
+        "SchemaRepair.test_child_references_and_draft_survive_repair",
+        "SchemaRepair.test_concurrent_initializers_preserve_rows",
+        "SchemaRepair.test_existing_staging_table_is_preserved",
+        "SchemaRepair.test_failed_copy_rolls_back_schema_and_rows",
+        "SchemaRepair.test_generated_column_is_rejected_without_data_or_schema_loss",
+        "SchemaRepair.test_legacy_interrupted_table_is_not_deleted_on_reopen",
+        "SchemaRepair.test_process_death_rolls_back_schema_and_rows",
+        "SchemaRepair.test_unknown_foreign_target_is_rejected_without_changes"
+      ]
+    },
+    {
+      "id": "literature-delivery",
+      "owner": "apps/serve/tests/contract_literature_delivery.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "data",
+      "layerDetail": "真实业务数据库、文件和HTTP交付接线；原42方法逐例新解释器与Home，父代理保留原身份且不重复计数",
+      "resources": [
+        "python",
+        "sqlite",
+        "native-pdf-worker",
+        "owned-child-process",
+        "temporary-files"
+      ],
+      "reason": "原42项真实数据和3项隔离可靠性全部保留；仅外部下载使用MockTransport，入库、文件保存与原生句柄真实。",
+      "invariants": [
+        "关闭后新进程重开读回一致且相同业务键跨Home隔离",
+        "重复保存/并发批次不重复文件或库记录",
+        "冲突保留现有字节，失败恢复预留操作",
+        "host-only目录选择、会话ticket、symlink/FIFO安全拒绝",
+        "setup/业务/close失败均不得泄漏或掩盖另一错误"
+      ],
+      "inputExpected": "原生PDF字节、独立目标目录/库；expected是预先payload/receipts/业务状态；180个PDF worker历史52s成本不削减",
+      "cleanup": "获取资源即登记清理；原42方法逐例独立Home/文献库，真实SQLite连接强引用验证主动关闭，service.close后验证原生句柄并回收目录；子报告在退出前记录所属根已清理，原始与清理失败分别保留，补关不改写失败。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 74591,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_literature_delivery"
+      },
+      "requiredCases": [
+        "DeliveryContract.test_auto_library_and_manual_resource_save_restore_only_when_selected",
+        "DeliveryContract.test_batches_are_scoped_and_prompt_is_durable_once",
+        "DeliveryContract.test_bridge_has_no_path_field_and_host_key_is_removed_from_agent",
+        "DeliveryContract.test_cancel_keeps_acquired_bytes_and_manual_save_works",
+        "DeliveryContract.test_changed_library_choice_preserves_interrupted_file_operation",
+        "DeliveryContract.test_changed_saved_file_is_preserved_and_needs_version_choice",
+        "DeliveryContract.test_concurrent_batch_append_preserves_all_papers",
+        "DeliveryContract.test_concurrent_batches_reuse_one_file_and_one_library_item",
+        "DeliveryContract.test_conflict_retains_existing_bytes_and_retries_without_duplicates",
+        "DeliveryContract.test_cross_batch_duplicate_reuses_file_and_library",
+        "DeliveryContract.test_exact_target_file_does_not_hide_library_version_conflict",
+        "DeliveryContract.test_exact_version_cache_is_verified_and_unversioned_still_fetches",
+        "DeliveryContract.test_existing_receipt_without_attempt_fields_is_preserved_on_next_save",
+        "DeliveryContract.test_existing_renamed_pdf_is_reused_but_can_still_enter_library",
+        "DeliveryContract.test_external_existing_symlink_and_fifo_are_rejected_without_overwrite",
+        "DeliveryContract.test_external_save_does_not_write_an_unselected_project_copy",
+        "DeliveryContract.test_frozen_object_is_not_replaced_by_latest_paper_mapping",
+        "DeliveryContract.test_history_receipt_still_detects_modified_pdf_without_embedded_identifier",
+        "DeliveryContract.test_host_only_directory_api_rejects_renderer_path_submission",
+        "DeliveryContract.test_http_bridge_checkpoint_reaches_session_scoped_handler",
+        "DeliveryContract.test_identity_normalizes_aliases_without_merging_versions",
+        "DeliveryContract.test_interrupted_resource_import_resumes_reserved_operation",
+        "DeliveryContract.test_library_failure_does_not_undo_saved_file",
+        "DeliveryContract.test_library_only_version_skip_retains_saved_file",
+        "DeliveryContract.test_manual_pdf_identifier_requires_version_confirmation",
+        "DeliveryContract.test_metadata_only_item_is_completed_without_losing_notes",
+        "DeliveryContract.test_missing_saved_file_is_recreated_not_trusted",
+        "DeliveryContract.test_mixed_paper_ids_remain_readable_and_deliver_to_both_targets",
+        "DeliveryContract.test_native_tickets_are_session_bound_and_restart_requires_selection",
+        "DeliveryContract.test_new_admission_restores_project_association_without_duplicating_item",
+        "DeliveryContract.test_new_attempt_can_add_collection_to_existing_library_item",
+        "DeliveryContract.test_new_destination_has_independent_receipt_and_preserves_previous_file",
+        "DeliveryContract.test_one_batch_aliases_download_once_and_deliver_one_paper",
+        "DeliveryContract.test_project_save_and_library_have_independent_owned_pdfs",
+        "DeliveryContract.test_project_subfolder_save_is_relative_to_resource_root",
+        "DeliveryContract.test_refinement_creates_another_batch_without_mutating_the_saved_batch",
+        "DeliveryContract.test_save_attempts_restore_only_the_selected_stages_after_deletion",
+        "DeliveryContract.test_saved_directory_receipt_survives_restart_without_a_write_ticket",
+        "DeliveryContract.test_saved_without_library_can_later_admit_without_another_file",
+        "DeliveryContract.test_unknown_version_decision_is_rejected_before_writes",
+        "DeliveryContract.test_version_change_can_be_explicitly_skipped_without_writing",
+        "DeliveryContract.test_version_change_waits_for_choice_then_preserves_both",
+        "DeliveryIsolationContracts.test_independent_homes_reopen_and_cleanup_with_identical_business_keys",
+        "DeliveryIsolationContracts.test_injected_failures_release_case_directories",
+        "DeliveryIsolationContracts.test_missing_close_and_simultaneous_failures_are_detected_before_exit"
+      ]
+    },
+    {
+      "id": "runner-lifecycle",
+      "owner": "apps/serve/tests/contract_runner.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "native",
+      "layerDetail": "真实独立进程及测试设施故障恢复",
+      "resources": [
+        "python",
+        "owned-child-process",
+        "local-socket",
+        "temporary-files"
+      ],
+      "reason": "保留原22项进程隔离/清理契约，追加5项观测adapter回归；Windows API stub仅证明接线，不冒充Windows实机。",
+      "invariants": [
+        "只终止自己拥有的process scope；pipes/目录在退出前释放",
+        "原始失败和清理失败同时保留",
+        "嵌套负向runner不污染顶层身份；漏收/skip/重复/截断失败",
+        "默认完整入口不启用observer；显式list不执行测试"
+      ],
+      "inputExpected": "真实拥有的子进程/本地socket与注入失败；expected是退出码、fd/进程/目录状态和完整case身份",
+      "cleanup": "fixture addCleanup登记恢复，只清理由本例创建资源；observer复用原run_all生命周期。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 3617,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_runner"
+      },
+      "requiredCases": [
+        "RunnerImports.test_child_temporary_directories_are_physical_and_support_native_sockets",
+        "RunnerImports.test_owner_and_repository_imports_without_cwd_or_inherited_help",
+        "RunnerImports.test_real_application_source_qualification_uses_the_exclusive_coordinator_lane",
+        "RunnerLifecycle.test_execution_and_cleanup_failures_both_remain_visible",
+        "RunnerLifecycle.test_failed_drain_retains_state_and_both_causes",
+        "RunnerLifecycle.test_job_close_error_does_not_hide_undrained_state_or_delete_directories",
+        "RunnerLifecycle.test_noop_cleanup_is_detected_before_test_runner_exit",
+        "RunnerLifecycle.test_normal_exit_with_live_descendant_is_rejected_and_drained",
+        "RunnerLifecycle.test_partial_allocation_and_spawn_failures_release_only_owned_directories",
+        "RunnerLifecycle.test_pipe_close_failure_still_closes_other_pipe_and_waits",
+        "RunnerLifecycle.test_posix_empty_zombie_and_unknown_scopes_are_not_confused",
+        "RunnerLifecycle.test_real_success_and_failure_release_process_pipes_and_directories",
+        "RunnerLifecycle.test_scope_wait_keeps_the_original_timeout_and_fails_if_not_drained",
+        "RunnerLifecycle.test_timeout_and_unexpected_communication_failures_drain_before_cleanup",
+        "RunnerLifecycle.test_timeout_stops_a_real_descendant_listener_before_directory_cleanup",
+        "RunnerLifecycle.test_windows_launch_is_suspended_until_job_assignment",
+        "RunnerLifecycle.test_windows_tree_stop_terminates_owned_job_then_waits",
+        "RunnerObservations.test_missing_duplicate_and_custom_collection_are_rejected",
+        "RunnerObservations.test_nested_runner_does_not_replace_top_level_observations",
+        "RunnerObservations.test_opt_in_embeds_actual_cases_and_default_command_stays_unchanged",
+        "RunnerObservations.test_partial_and_repeated_top_level_runs_are_rejected",
+        "RunnerObservations.test_skips_and_cleanup_errors_cannot_pass",
+        "WindowsOwnership.test_ambiguous_threads_and_wrong_suspend_counts_are_rejected",
+        "WindowsOwnership.test_assignment_and_snapshot_failures_never_resume_unowned_code",
+        "WindowsOwnership.test_job_binds_before_resuming_and_excludes_breakaway_flags",
+        "WindowsOwnership.test_limit_setup_failure_releases_the_created_job",
+        "WindowsOwnership.test_query_termination_and_close_failures_cannot_report_empty_or_closed",
+        "RunnerObservations.test_isolated_pool_overlaps_children_without_sharing_state",
+        "RunnerObservations.test_isolated_pool_preserves_failure_and_drains_failfast_children",
+        "RunnerObservations.test_isolated_pool_refills_before_ordered_result_delivery",
+        "RunnerObservations.test_isolated_pool_respects_serial_barriers",
+        "RunnerObservations.test_concurrent_progress_writers_preserve_every_complete_record",
+        "RunnerObservations.test_report_mode_prints_early_and_late_failure_tracebacks",
+        "RunnerObservations.test_successful_child_with_missing_report_still_prints_failure_reason"
+      ]
+    },
+    {
+      "id": "http-activity",
+      "owner": "apps/serve/tests/contract_http_activity.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "native",
+      "layerDetail": "真实ASGI活动边界及取消决策",
+      "resources": [
+        "python"
+      ],
+      "reason": "请求/最后body/background结束前不释放活动；排空和sealed拒绝保证不是只有成功冒烟。",
+      "invariants": [
+        "请求取消仍等待background清理",
+        "drain中不授权新工作；sealed不dispatch",
+        "原始异常不得以第二个response覆盖"
+      ],
+      "inputExpected": "可控ASGI receive/send/barrier及真实Activities；expected为状态码、dispatch次数及活动占用状态",
+      "cleanup": "async fixture等待自己创建任务完成；无真实模型、外部网络或个人配置。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 1001,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_http_activity"
+      },
+      "requiredCases": [
+        "HttpActivityContract.test_application_failure_is_not_replaced_with_second_response",
+        "HttpActivityContract.test_blocked_send_keeps_request_active",
+        "HttpActivityContract.test_cancellation_keeps_cleanup_active",
+        "HttpActivityContract.test_candidate_rejects_mutations_but_restores_readonly_navigation",
+        "HttpActivityContract.test_framework_error_response_is_counted_until_sent",
+        "HttpActivityContract.test_headers_last_body_and_background_cleanup_all_hold_the_barrier",
+        "HttpActivityContract.test_non_http_scope_passes_through_without_request_activity",
+        "HttpActivityContract.test_request_observation_does_not_authorize_new_work_during_drain",
+        "HttpActivityContract.test_sealed_instance_rejects_request_without_dispatch"
+      ]
+    },
+    {
+      "id": "service-lifecycle",
+      "owner": "apps/serve/tests/contract_service_lifecycle.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "native",
+      "layerDetail": "真实应用lifespan及fake依赖端口",
+      "resources": [
+        "python",
+        "owned-child-process"
+      ],
+      "reason": "覆盖必要启动/部分启动失败/退出顺序；每例真实应用组合根子进程，runtime/MCP端口fake，不宣称完整用户E2E。",
+      "invariants": [
+        "启动失败仅关闭已构造或已进入Owner",
+        "逆序关闭并保留多个失败及cancel",
+        "仅实际成功关闭的session移除"
+      ],
+      "inputExpected": "独立Home真实app lifespan；fake依赖记录顺序和注入失败；独立expected owner序列",
+      "cleanup": "每例subprocess.run等待完成并清理独立Home；原run_all执行/进程所有权与清理机制不变。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 33720,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_service_lifecycle"
+      },
+      "requiredCases": [
+        "LifecycleContract.test_abandoned_toolchain_cancels_and_joins_deferred_reconciliation",
+        "LifecycleContract.test_abandoned_workbench_cancels_deferred_reconciliation",
+        "LifecycleContract.test_cancelled_close_is_not_success_and_remaining_owners_close",
+        "LifecycleContract.test_close_failures_preserve_body_error_and_close_remaining_owners",
+        "LifecycleContract.test_dependency_close_failures_are_all_reported_in_reverse_order",
+        "LifecycleContract.test_failed_toolchain_prevents_mcp_and_preserves_failure",
+        "LifecycleContract.test_only_successfully_closed_sessions_are_removed",
+        "LifecycleContract.test_ordered_start_and_reverse_close",
+        "LifecycleContract.test_partial_start_failure_closes_only_entered_dependencies",
+        "LifecycleContract.test_pending_toolchain_does_not_block_lifespan_or_start_mcp_early",
+        "LifecycleContract.test_pending_workbench_reconciles_mcp_after_admission",
+        "LifecycleContract.test_preparation_failure_closes_constructed_owners_without_starting_runtime",
+        "LifecycleContract.test_runtime_start_failure_closes_constructed_owners"
+      ]
+    },
+    {
+      "id": "index-shutdown",
+      "owner": "apps/serve/tests/contract_index_shutdown.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "native",
+      "layerDetail": "真实PDF worker、线程及ASGI服务",
+      "resources": [
+        "python",
+        "sqlite",
+        "native-pdf-worker",
+        "owned-child-process",
+        "temporary-files"
+      ],
+      "reason": "HTTP请求到索引关闭的关键资源路径，实际worker和executor在取消/transport失败时主动回收。",
+      "invariants": [
+        "close不能漏掉正在spawn的parser",
+        "实际commit/executor完成前不能释放",
+        "closed/maintenance/warming拒绝数据库工作且不创建schema"
+      ],
+      "inputExpected": "真实PDF样本与线程barrier，fake内容端口；expected为schema不存在、503和线程/子进程/pipe关闭",
+      "cleanup": "addCleanup立即登记临时目录；async清理实际等待worker/executor及pipes关闭。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 2202,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_index_shutdown"
+      },
+      "requiredCases": [
+        "IndexShutdownContracts.test_close_cannot_miss_a_parser_being_spawned",
+        "IndexShutdownContracts.test_close_waits_for_direct_metadata_commit",
+        "IndexShutdownContracts.test_closed_service_refuses_all_public_database_entries",
+        "IndexShutdownContracts.test_direct_http_call_during_maintenance_returns_503_without_creating_database",
+        "IndexShutdownContracts.test_parser_transport_failure_reaps_the_real_child_and_closes_pipes",
+        "IndexShutdownContracts.test_repeated_cancellation_waits_for_actual_executor_completion",
+        "IndexShutdownContracts.test_shutdown_error_and_cancellation_are_both_preserved",
+        "IndexShutdownContracts.test_warming_status_read_cannot_create_pdf_schema"
+      ]
+    },
+    {
+      "id": "shutdown",
+      "owner": "apps/serve/tests/contract_shutdown.py",
+      "markers": [
+        "smoke-core"
+      ],
+      "layer": "native",
+      "layerDetail": "真实server关闭策略及子进程非零退出",
+      "resources": [
+        "python",
+        "owned-child-process",
+        "local-socket",
+        "temporary-files"
+      ],
+      "reason": "覆盖总deadline、storage最后释放和真实lifespan超时非零退出；不缩短原用例预算。",
+      "invariants": [
+        "统一deadline不重启",
+        "Owner失败不得释放storage",
+        "真实lifespan超时必须非零退出而非误报成功"
+      ],
+      "inputExpected": "fake owner可控边界+真实ProductServer/本地listener/子进程；expected退出码、release调用序列和logger配置",
+      "cleanup": "原测试上下文关闭listener及子进程，run_all收尾验证拥有scope无残留。",
+      "measured": {
+        "source": "tmp/ci-test-GAiIUt/python-run-all.json",
+        "durationMs": 1811,
+        "scope": "prior full CI suite timing; updated observer regressions require remeasurement"
+      },
+      "runner": {
+        "kind": "run-all",
+        "suite": "contract_shutdown"
+      },
+      "requiredCases": [
+        "ShutdownContracts.test_eof_deadline_is_not_restarted_when_shutdown_begins",
+        "ShutdownContracts.test_failed_owner_does_not_release_storage",
+        "ShutdownContracts.test_non_finite_or_non_positive_budget_is_rejected",
+        "ShutdownContracts.test_private_listener_preserves_shared_logging_configuration",
+        "ShutdownContracts.test_success_releases_storage_last_and_reports_completion",
+        "ShutdownContracts.test_total_deadline_covers_lifespan_and_retains_storage_on_timeout",
+        "ShutdownProcessContracts.test_real_lifespan_timeout_exits_nonzero_without_releasing_storage"
+      ]
+    },
+    {
+      "id": "delivery-projection",
+      "owner": "apps/desktop/src/renderer/src/delivery.test.ts",
+      "markers": [
+        "smoke-unit"
+      ],
+      "layer": "logic",
+      "layerDetail": "renderer纯投影及国际化映射",
+      "resources": [
+        "node"
+      ],
+      "reason": "必要renderer状态/API字段投影，不启动真实browser；明确与UI产品验收分层。",
+      "invariants": [
+        "显式空标题及用户标题不被fallback覆盖",
+        "legacy交付identity稳定且保留material/revision"
+      ],
+      "inputExpected": "固定交付members/history输入；独立zh/en字面expected与legacy identity",
+      "cleanup": "不持有browser、网络、SQLite或业务存储；locale实例每例独立。",
+      "runner": {
+        "kind": "node",
+        "files": [
+          "apps/desktop/src/renderer/src/delivery.test.ts"
+        ]
+      },
+      "expectedCases": [
+        "delivery fallbacks redraw without translating explicit empty or user titles",
+        "legacy preview fallback retains its original delivery identity"
+      ],
+      "expectedCount": 2
+    },
+    {
+      "id": "smoke-infrastructure",
+      "owner": "scripts/ci/__tests__/smoke.test.cjs",
+      "markers": [
+        "smoke-unit"
+      ],
+      "layer": "logic",
+      "layerDetail": "smoke选择/报告判据逻辑及临时报告设施",
+      "resources": [
+        "node",
+        "temporary-report-files"
+      ],
+      "reason": "smoke自身标记、选择、证据完整性与失败语义回归显式纳入范围；临时设施文件不是业务存储。",
+      "invariants": [
+        "漏选、重复、失效marker、skip/retry/截断/清理失败均不得通过",
+        "smoke报告与full CI准入分离；允许稳定的脏工作区快照，拒绝执行期间源码发生变化"
+      ],
+      "inputExpected": "固定manifest/registry/observations负向输入；独立expected错误类别与判据",
+      "cleanup": "每例独立临时报告目录，测试自身finally清理，不访问真实用户状态。",
+      "runner": {
+        "kind": "node",
+        "files": [
+          "scripts/ci/__tests__/smoke.test.cjs"
+        ]
+      },
+      "expectedCases": [
+        "smoke manifest rejects missing required markers and duplicate identities",
+        "smoke manifest requires explicit core and unit coverage",
+        "smoke selection follows authoritative registry without omission",
+        "smoke case observations reject missing duplicate skipped retried and truncated evidence",
+        "smoke observations reject cleanup errors and incorrect collection",
+        "smoke Node observations match declared titles and reject skips",
+        "smoke verdict accepts stable dirty source and rejects changed evidence",
+        "smoke report paths stay separate from full CI",
+        "smoke concurrency changes capacity without changing selection or gates",
+        "smoke summary explains report rejection even when observed cases passed"
+      ],
+      "expectedCount": 10
+    }
+  ],
+  "assessments": [
+    {
+      "candidate": "核心数据写入、关闭后重开读回",
+      "decision": "selected",
+      "entries": [
+        "session-artifacts",
+        "literature-delivery"
+      ],
+      "reason": "原字节、SQLite记录及新进程重开均有独立expected。"
+    },
+    {
+      "candidate": "业务操作到真实数据库和文件交付接线",
+      "decision": "selected",
+      "entries": [
+        "literature-delivery",
+        "session-artifacts"
+      ],
+      "reason": "保留全部45项文献真实数据/隔离验证，Mock仅外部下载。"
+    },
+    {
+      "candidate": "幂等或重复提交",
+      "decision": "selected",
+      "entries": [
+        "literature-delivery",
+        "session-artifacts"
+      ],
+      "reason": "同业务键、多批次和并发重复保存。"
+    },
+    {
+      "candidate": "冲突不覆盖、事务失败及恢复",
+      "decision": "selected",
+      "entries": [
+        "literature-delivery",
+        "schema-repair"
+      ],
+      "reason": "原字节保留、真实事务失败/子进程死亡恢复。"
+    },
+    {
+      "candidate": "关键安全拒绝",
+      "decision": "selected",
+      "entries": [
+        "literature-delivery",
+        "session-artifacts",
+        "http-activity"
+      ],
+      "reason": "host-only路径、ticket会话、路径逃逸、未知schema及drain拒绝。"
+    },
+    {
+      "candidate": "启动、请求、退出及资源主动释放",
+      "decision": "selected",
+      "entries": [
+        "service-lifecycle",
+        "http-activity",
+        "index-shutdown",
+        "shutdown",
+        "runner-lifecycle"
+      ],
+      "reason": "真实lifespan/ASGI/worker/owned process；fake依赖边界逐项披露。"
+    },
+    {
+      "candidate": "必要renderer逻辑",
+      "decision": "selected",
+      "entries": [
+        "delivery-projection"
+      ],
+      "reason": "固定输入投影及回退逻辑，副作用资源不需要browser。"
+    },
+    {
+      "candidate": "真实renderer/backend用户链路",
+      "decision": "not-selected",
+      "entries": [],
+      "reason": "本轮只新增测试设施，不修改renderer业务；无新的UI产品风险。Outputs.render大量mock API/组件，不能补足真实后端链路；既有完整CI保留真实E2E，此smoke不宣称产品验收。"
+    },
+    {
+      "candidate": "Windows原生及平台安全",
+      "decision": "not-selected",
+      "entries": [],
+      "reason": "本轮参考环境仅darwin；现有文献安全例Windows按skipIf跳过，smoke不能把其静默skip当通过。Windows fail-closed unsupported，不以macOS或Windows API stub证明Windows原生能力。"
+    }
+  ]
+}

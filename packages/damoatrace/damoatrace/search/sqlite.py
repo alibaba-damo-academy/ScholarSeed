@@ -37,6 +37,75 @@ def is_fts5_available() -> bool:
     return _FTS5_OK
 
 
+def inspect_projection(connection: sqlite3.Connection, table: str, version: str) -> bool:
+    """Read this owner's version marker in the caller's already-held snapshot.
+
+    No schema or data writes occur here. A true result describes the marker,
+    not the whole database schema or compatibility of another package's data.
+    """
+    if type(version) is not str or not version:
+        raise ValueError("invalid projection version")
+    metadata = connection.execute(
+        "SELECT type FROM sqlite_master WHERE name = 'projection_versions'"
+    ).fetchone()
+    if metadata is None:
+        return False
+    if metadata[0] != "table":
+        raise ValueError("unsupported projection metadata")
+    rows = connection.execute(
+        "SELECT version FROM projection_versions WHERE name = ?", (table,)
+    ).fetchall()
+    if not rows:
+        return False
+    if len(rows) != 1 or rows[0][0] != version:
+        raise ValueError("unsupported projection version")
+    return True
+
+
+def initialize_projection(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    columns: Sequence[str],
+    fts_columns: Sequence[str],
+    tokenize: str = "unicode61",
+    version: str | None = None,
+) -> None:
+    """Actual startup DDL, also usable on an owner's private inspection copy."""
+    table = _ident(table)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_ ]*", tokenize or ""):
+        raise ValueError(f"unsafe tokenize: {tokenize!r}")
+    fts_set = set(fts_columns)
+    col_defs = ", ".join(_ident(c) if c in fts_set else f"{_ident(c)} UNINDEXED" for c in columns)
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if version is not None:
+            inspect_projection(connection, table, version)
+        connection.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} "
+            f"USING fts5({col_defs}, tokenize='{tokenize}')"
+        )
+
+
+def reset_projection(connection: sqlite3.Connection, table: str, version: str) -> bool:
+    """Actual unmarked-cache invalidation; unknown versions are never rewritten."""
+    table = _ident(table)
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if inspect_projection(connection, table, version):
+            return False
+        connection.execute("PRAGMA secure_delete=ON")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS projection_versions (name TEXT PRIMARY KEY, version TEXT)"
+        )
+        connection.execute(f"DELETE FROM {table}")
+        connection.execute(
+            "INSERT OR REPLACE INTO projection_versions VALUES (?, ?)", (table, version)
+        )
+    connection.execute("VACUUM")
+    return True
+
+
 class SqliteFtsStore(Store):
     """单表 FTS5 索引 (`Store` 名义实现)。"""
 
@@ -49,13 +118,13 @@ class SqliteFtsStore(Store):
         fts_columns: Sequence[str],
         id_column: str = "id",
         tokenize: str = "unicode61",
+        projection_version: str | None = None,
     ):
         if not is_fts5_available():
             raise RuntimeError("sqlite3 FTS5 not available in this build")
         self.table = _ident(table)
         self.columns = list(columns)
         self.id_column = id_column
-        fts_set = set(fts_columns)
         if id_column not in self.columns:
             raise ValueError(f"id_column {id_column!r} must be in columns")
         for c in fts_columns:
@@ -68,40 +137,29 @@ class SqliteFtsStore(Store):
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._con = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._con.row_factory = sqlite3.Row
-        self._con.execute("PRAGMA busy_timeout=5000")
-        col_defs = ", ".join(
-            _ident(c) if c in fts_set else f"{_ident(c)} UNINDEXED" for c in self.columns
-        )
-        with self._lock:
-            self._con.execute(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS {self.table} "
-                f"USING fts5({col_defs}, tokenize='{tokenize}')"
-            )
-            self._con.commit()
+        try:
+            self._con.row_factory = sqlite3.Row
+            self._con.execute("PRAGMA busy_timeout=5000")
+            with self._lock:
+                initialize_projection(
+                    self._con,
+                    table=self.table,
+                    columns=self.columns,
+                    fts_columns=fts_columns,
+                    tokenize=tokenize,
+                    version=projection_version,
+                )
+        except BaseException:
+            self._con.close()
+            raise
 
     def upsert(self, row: dict[str, Any]) -> None:
         self.upsert_many([row])
 
     def reset_projection(self, version: str) -> bool:
-        """Invalidate an old disposable projection, including freed body pages."""
+        """Invalidate the known unversioned projection, never an unknown version."""
         with self._lock:
-            self._con.execute("PRAGMA secure_delete=ON")
-            self._con.execute(
-                "CREATE TABLE IF NOT EXISTS projection_versions (name TEXT PRIMARY KEY, version TEXT)"
-            )
-            current = self._con.execute(
-                "SELECT version FROM projection_versions WHERE name = ?", (self.table,)
-            ).fetchone()
-            if current and current[0] == version:
-                return False
-            self._con.execute(f"DELETE FROM {self.table}")
-            self._con.execute(
-                "INSERT OR REPLACE INTO projection_versions VALUES (?, ?)", (self.table, version)
-            )
-            self._con.commit()
-            self._con.execute("VACUUM")
-            return True
+            return reset_projection(self._con, self.table, version)
 
     def upsert_many(self, rows: Iterable[dict[str, Any]]) -> None:
         rows = list(rows)

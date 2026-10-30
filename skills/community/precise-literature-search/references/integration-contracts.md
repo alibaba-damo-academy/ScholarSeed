@@ -134,6 +134,14 @@ with the serve-returned `ref` and `revision` and `file_path: null`. The skill
 never fetches, downloads or unpacks full-text bytes inside the sandbox, and
 never requests sandbox escalation or any elevated permission.
 
+After all acquisition batches finish, `literature delivery` with the same run
+freezes Serve's durable acquisition list and publishes a product save card.
+Its `delivery_id`, `acquired` count and pending state are not file-save receipts.
+Destination selection, saving, optional primary-PDF library admission, cancellation
+and retry are product UI operations independent of the agent turn's read receipt.
+The agent must not provide filesystem destinations or claim saved PDFs without a
+confirmed product save outcome. Original managed PDFs remain outside the run.
+
 Reading managed full texts uses the `pdf read` tool operation with the entry's
 `ref_id` (`paper:<id>`); serve checks the authorization of every ref on every
 read. Requests page through **evidence fragments**, not PDF pages:

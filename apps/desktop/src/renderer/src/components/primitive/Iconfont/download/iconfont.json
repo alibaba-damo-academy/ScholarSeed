@@ -6,6 +6,20 @@
   "description": "达摩院书深项目",
   "glyphs": [
     {
+      "icon_id": "48775666",
+      "name": "shushen",
+      "font_class": "shushen",
+      "unicode": "e62a",
+      "unicode_decimal": 58922
+    },
+    {
+      "icon_id": "48713879",
+      "name": "panel-left",
+      "font_class": "panel-left",
+      "unicode": "e629",
+      "unicode_decimal": 58921
+    },
+    {
       "icon_id": "47041590",
       "name": "line-tool-batch-follow-up",
       "font_class": "line-tool-batch-follow-up",

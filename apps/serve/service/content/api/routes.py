@@ -1,7 +1,7 @@
 """content 域 HTTP 路由 (开发 1 拥有)。
 
-只暴露**项目身份**: 资料库/文献库/文档的读写路由分别属于各自的域, 它们经
-`ContentPort` 拿路径, 不从这里过。
+暴露项目身份和项目目录树的原生文件操作。资料库/文献库/文档的专属读写路由
+仍属于各自的域, 它们经 `ContentPort` 拿路径。
 
 工作区根的读写在 chat 域的设置路由上 —— 那个域拥有产品设置文件, 而 content
 不得 import 任何上层域 (§6.1); 取值由组合根读设置后注入本域。
@@ -15,20 +15,35 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from service.content.domain.model import ContentError
+from service.content.domain.model import ContentError, visible
+from service.content.service.operations import (
+    AdoptProject,
+    AuthorizeRoot,
+    ContentOperations,
+    CreateProject,
+    ForgetProject,
+    RevokeRoot,
+)
 from service.identity.utils import (
-    HOST_PROCESS_HEADER,
-    HOST_PROCESS_KEY_ENV,
     require_host_process,
 )
-from service.platform.content import ExternalRootRef, FileEvent, ProjectRef
+from service.platform.content import (
+    AssetKind,
+    ExternalRootRef,
+    FileEvent,
+    ImportMode,
+    ProjectRef,
+    RootKind,
+)
+from service.platform.passive_events import passive_events
 
 CONTENT_ROUTE_PREFIX = "/api/content"
 
@@ -51,6 +66,14 @@ def _project_payload(project: ProjectRef) -> dict[str, Any]:
     return payload
 
 
+def _tree_path(path: str, *, allow_root: bool = False) -> str:
+    if not path and allow_root:
+        return path
+    if not path or any(not visible(part) for part in path.split("/")):
+        raise ContentError("project_tree_path_unavailable")
+    return path
+
+
 def _root_payload(ref: ExternalRootRef) -> dict[str, Any]:
     """ExternalRootRef → JSON。
 
@@ -62,43 +85,6 @@ def _root_payload(ref: ExternalRootRef) -> dict[str, Any]:
     payload = asdict(ref)
     payload["kind"] = ref.kind.value
     return payload
-
-
-async def _publish_writable_roots(
-    request: Request, content: Any, project_id: str
-) -> tuple[str, ...]:
-    """把该项目最新的可写根集合推给活跃会话。
-
-    Agent 面的生效时机是**下一个 turn**; 产品面与主进程 OS 动作是即时的
-    (每次调用都回查 `external_roots` 当前有效行)。
-    """
-
-    sessions = getattr(request.app.state, "session_service", None)
-    if sessions is None:
-        return ()
-    project = content.project(project_id)
-    roots = tuple(Path(root) for root in content.writable_roots(project.id))
-    return await sessions.publish_writable_roots(Path(project.root), roots)
-
-
-async def _reconcile_linked_root(request: Request, ref: ExternalRootRef) -> None:
-    """Refresh persisted version facts before the newly linked root is rendered.
-
-    Re-authorizing a root can expose a previously versioned path whose latest
-    observation says that the mount was absent.  The resource tree must not race
-    that stale fact against the background watcher.  Only existing identities are
-    read here; first-time files remain owned by bounded background discovery.
-    """
-
-    supervisor = getattr(request.app.state, "resource_version_supervisor", None)
-    if supervisor is None:
-        return
-    await asyncio.to_thread(
-        supervisor.reconcile_linked_root,
-        ref.project_id,
-        ref.mount_path,
-    )
-    supervisor.schedule_scan(ref.project_id)
 
 
 #: SSE 帧前缀与分隔 (与既有会话事件流一致)。
@@ -121,15 +107,16 @@ def _event_payload(event: FileEvent) -> dict[str, Any]:
     }
 
 
-async def _event_frames(stream: Any) -> Any:
+async def _event_frames(stream: Any) -> AsyncGenerator[str, None]:
     """把事件流打成 SSE 帧。
 
     必须是异步生成器: 同步阻塞迭代器会把事件循环堵住 (既有会话 SSE 端点的
     异步性同样在传给 StreamingResponse 的那个生成器里, 不在路由函数上)。
     """
 
-    async for event in stream:
-        yield f"{SSE_DATA_PREFIX}{json.dumps(_event_payload(event), ensure_ascii=False)}{SSE_FRAME_SUFFIX}"
+    async with aclosing(stream):
+        async for event in stream:
+            yield f"{SSE_DATA_PREFIX}{json.dumps(_event_payload(event), ensure_ascii=False)}{SSE_FRAME_SUFFIX}"
 
 
 def register_content_routes(app: FastAPI) -> None:
@@ -172,38 +159,80 @@ def register_content_routes(app: FastAPI) -> None:
             "workspaceRoot": str(getattr(request.app.state, "workspace", "")),
         }
 
+    @app.get(f"{CONTENT_ROUTE_PREFIX}/projects/recoveries")
+    async def project_recoveries(request: Request) -> JSONResponse:
+        operations: ContentOperations = request.app.state.content_operations
+        rows = operations.creation_recoveries(str(getattr(request.state, "user_id", "local")))
+        return JSONResponse({"creations": rows}, headers={"Cache-Control": "no-store"})
+
+    @app.post(f"{CONTENT_ROUTE_PREFIX}/projects/recoveries/{{identity}}/retry")
+    async def retry_project_creation(request: Request, identity: str) -> JSONResponse:
+        operations: ContentOperations = request.app.state.content_operations
+        try:
+            operations.retry_creation(str(getattr(request.state, "user_id", "local")), identity)
+        except ContentError as error:
+            raise HTTPException(status_code=404, detail=error.code) from error
+        return JSONResponse(
+            {"operation": identity, "state": "running"},
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post(f"{CONTENT_ROUTE_PREFIX}/projects/recoveries/{{identity}}/preserve")
+    async def preserve_project_creation(request: Request, identity: str) -> JSONResponse:
+        operations: ContentOperations = request.app.state.content_operations
+        try:
+            operations.preserve_creation(str(getattr(request.state, "user_id", "local")), identity)
+        except ContentError as error:
+            raise HTTPException(status_code=404, detail=error.code) from error
+        return JSONResponse(
+            {"operation": identity, "files_kept": True}, headers={"Cache-Control": "no-store"}
+        )
+
+    @app.get(f"{CONTENT_ROUTE_PREFIX}/projects/directory")
+    async def project_directory(request: Request, name: str = Query(default="")) -> dict[str, str]:
+        return {"root": _content(request).preview_project_directory(name)}
+
     @app.post(f"{CONTENT_ROUTE_PREFIX}/projects")
     async def create_project(  # type: ignore[unused-ignore]
         request: Request,
         payload: dict[str, Any] = Body(...),
-    ) -> dict[str, Any]:
-        """新建项目 (只填名字)。磁盘上同时出现资料库与文献库两处。"""
-
-        try:
-            project = _content(request).create_project(str(payload.get("name") or ""))
-        except ContentError as exc:
-            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
-        return _project_payload(project)
+    ) -> JSONResponse:
+        """Create only after directory preparation and initialization finish."""
+        operations: ContentOperations = request.app.state.content_operations
+        identity = operations.submit(
+            str(getattr(request.state, "user_id", "local")),
+            CreateProject(str(payload.get("name") or "")),
+        )
+        return JSONResponse(
+            {"operation": identity, "state": "queued"},
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post(f"{CONTENT_ROUTE_PREFIX}/projects/adopt")
-    async def adopt_project(  # type: ignore[unused-ignore]
-        request: Request,
-        payload: dict[str, Any] = Body(...),
-    ) -> dict[str, Any]:
-        """把一个已存在的本地目录登记成项目 (布局按 LEGACY)。
+    async def adopt_project(request: Request, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        if not isinstance(payload.get("path"), str) or not payload["path"].strip():
+            raise HTTPException(status_code=400, detail="project_directory_not_found")
+        operations: ContentOperations = request.app.state.content_operations
+        identity = operations.submit(
+            str(getattr(request.state, "user_id", "local")),
+            AdoptProject(str(payload.get("path") or ""), str(payload.get("name") or "")),
+        )
+        return JSONResponse(
+            {"operation": identity, "state": "queued"},
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
 
-        这是唯一接受客户端绝对路径的项目端点, 因为「选一个已有文件夹」这件事
-        本身就是给路径。登记之后身份仍是 ULID —— 路径只是位置, 不是身份。
-        """
-
+    @app.get(f"{CONTENT_ROUTE_PREFIX}/operations/{{identity}}")
+    async def operation_result(request: Request, identity: str) -> JSONResponse:
+        operations: ContentOperations = request.app.state.content_operations
         try:
-            project = _content(request).adopt_project(
-                str(payload.get("path") or ""),
-                str(payload.get("name") or ""),
-            )
-        except ContentError as exc:
-            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
-        return _project_payload(project)
+            result = operations.result(str(getattr(request.state, "user_id", "local")), identity)
+        except ContentError as error:
+            raise HTTPException(status_code=404, detail=error.code) from error
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @app.patch(f"{CONTENT_ROUTE_PREFIX}/projects")
     async def rename_project(  # type: ignore[unused-ignore]
@@ -213,9 +242,17 @@ def register_content_routes(app: FastAPI) -> None:
         """改显示名。目录名不跟随改名, 已开会话与关联登记都不受影响。"""
 
         try:
+            description = payload.get("description")
+            pinned = payload.get("pinned")
+            if description is not None and not isinstance(description, str):
+                raise ContentError("invalid_description")
+            if pinned is not None and not isinstance(pinned, bool):
+                raise ContentError("invalid_pinned")
             project = _content(request).rename_project(
                 str(payload.get("id") or ""),
                 str(payload.get("name") or ""),
+                description=description,
+                pinned=pinned,
             )
         except ContentError as exc:
             raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
@@ -238,17 +275,17 @@ def register_content_routes(app: FastAPI) -> None:
         return _project_payload(project)
 
     @app.delete(f"{CONTENT_ROUTE_PREFIX}/projects/{{project_id}}")
-    async def forget_project(  # type: ignore[unused-ignore]
-        request: Request,
-        project_id: str,
-    ) -> dict[str, Any]:
-        """把项目从书深移除。只摘登记, 磁盘上的资料一个字节都不动。"""
-
-        try:
-            _content(request).forget_project(project_id)
-        except ContentError as exc:
-            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
-        return {"id": project_id, "removed": True, "files_kept": True}
+    async def forget_project(request: Request, project_id: str) -> JSONResponse:
+        """Retire registration only after all project execution has drained."""
+        operations: ContentOperations = request.app.state.content_operations
+        identity = operations.submit(
+            str(getattr(request.state, "user_id", "local")), ForgetProject(project_id)
+        )
+        return JSONResponse(
+            {"operation": identity, "state": "queued"},
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get(f"{CONTENT_ROUTE_PREFIX}/project")
     async def project(  # type: ignore[unused-ignore]
@@ -285,63 +322,41 @@ def register_content_routes(app: FastAPI) -> None:
         }
 
     @app.post(f"{CONTENT_ROUTE_PREFIX}/roots")
-    async def authorize_root(  # type: ignore[unused-ignore]
-        request: Request,
-        payload: dict[str, Any] = Body(...),
-    ) -> dict[str, Any]:
-        """授权一处项目外文件或目录, 登记成项目内虚拟挂载点。
-
-        挂载点撞真实同名条目时回 `mount_conflict` 而不是静默避让: 遮蔽会让用户
-        以为自己的真实资料消失了, 改名让用户自己决定。
-        """
-
-        content = _content(request)
-        project_id = str(payload.get("project") or "")
-        try:
-            ref = content.authorize_root(
-                project_id,
+    async def authorize_root(request: Request, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        """Qualify the source before publishing a new external-root authorization."""
+        operations: ContentOperations = request.app.state.content_operations
+        identity = operations.submit(
+            str(getattr(request.state, "user_id", "local")),
+            AuthorizeRoot(
+                str(payload.get("project") or ""),
                 str(payload.get("source") or ""),
                 str(payload.get("mount") or ""),
-                supersede=bool(payload.get("supersede") or False),
-            )
-        except ContentError as exc:
-            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
-        await _reconcile_linked_root(request, ref)
-        agent_sessions = await _publish_writable_roots(request, content, project_id)
-        payload_out = _root_payload(ref)
-        # 回报哪些活跃会话拿到了新集合: 它们要到**下一个 turn** 才生效, UI 得能说实话。
-        payload_out["agentSessionsUpdated"] = list(agent_sessions)
-        return payload_out
+                bool(payload.get("supersede") or False),
+            ),
+        )
+        return JSONResponse(
+            {"operation": identity, "state": "queued"},
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.delete(f"{CONTENT_ROUTE_PREFIX}/roots/{{root_id}}")
-    async def revoke_root(  # type: ignore[unused-ignore]
+    async def revoke_root(
         request: Request,
         root_id: str,
         project_id: str | None = Query(default=None, alias="project"),
-    ) -> dict[str, Any]:
-        """撤销授权 (软撤销, 行保留留痕)。
-
-        生效语义 (§6.9): 产品 API 与主进程 OS 级动作即时失效; Agent 沙箱在
-        **下一个 turn** 生效 —— 已下发给 vendor 的那个 turn 无法中途剥夺,
-        能做到的上界是让用户勾「立即中断」。
-        """
-
-        content = _content(request)
-        try:
-            content.revoke_root(root_id)
-        except ContentError as exc:
-            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
-        agent_sessions = await _publish_writable_roots(request, content, project_id or "")
-        try:
-            writable = content.writable_roots(project_id)
-        except ContentError:
-            writable = ()
-        return {
-            "root_id": root_id,
-            "revoked": True,
-            "writableRoots": list(writable),
-            "agentSessionsUpdated": list(agent_sessions),
-        }
+    ) -> JSONResponse:
+        """Drain owners before revoking and releasing the external directory."""
+        operations: ContentOperations = request.app.state.content_operations
+        identity = operations.submit(
+            str(getattr(request.state, "user_id", "local")),
+            RevokeRoot(root_id, project_id),
+        )
+        return JSONResponse(
+            {"operation": identity, "state": "queued"},
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get(f"{CONTENT_ROUTE_PREFIX}/cursor")
     async def event_cursor(  # type: ignore[unused-ignore]
@@ -376,7 +391,7 @@ def register_content_routes(app: FastAPI) -> None:
         except ContentError as exc:
             raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
         return StreamingResponse(
-            _event_frames(stream),
+            passive_events(_event_frames(stream), request.app.state.activities),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -476,6 +491,100 @@ def register_content_routes(app: FastAPI) -> None:
             "failed": [{"source": source, "reason": reason} for source, reason in outcome.failed],
             "layout": outcome.layout.value,
         }
+
+    @app.get(f"{CONTENT_ROUTE_PREFIX}/projects/{{project_id}}/tree")
+    def project_tree(
+        request: Request,
+        project_id: str,
+        path: str = Query(default=""),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        content = _content(request)
+        try:
+            project = content.project(project_id)
+            page = content.project_tree(project.id, path, offset)
+        except ContentError as exc:
+            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
+        return {
+            "root": project.root,
+            "path": path,
+            "total": page.total,
+            "offset": page.offset,
+            "nodes": [
+                {
+                    "path": node.asset.path,
+                    "name": node.asset.name,
+                    "kind": node.asset.kind.value,
+                    "available": node.available,
+                    "count": node.child_total,
+                    "artifact": node.asset.kind is AssetKind.FILE
+                    and node.asset.path.startswith(
+                        f"{content.root_relative(project.id, RootKind.ARTIFACTS)}/"
+                    ),
+                }
+                for node in page.children
+            ],
+        }
+
+    @app.post(f"{CONTENT_ROUTE_PREFIX}/projects/{{project_id}}/nodes")
+    async def project_node(
+        request: Request, project_id: str, payload: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        content = _content(request)
+        action = str(payload.get("action") or "")
+        path = str(payload.get("path") or "")
+        parent = str(payload.get("parent") or "")
+        name = str(payload.get("name") or "")
+        target_dir = str(payload.get("target_dir") or "")
+        try:
+            if action in {"create_document", "create_folder"}:
+                _tree_path(parent, allow_root=True)
+                if not visible(name):
+                    raise ContentError("project_tree_path_unavailable")
+                kind = AssetKind.FILE if action == "create_document" else AssetKind.DIR
+                asset = await asyncio.to_thread(content.create, project_id, parent, name, kind)
+            elif action == "rename":
+                _tree_path(path)
+                if not visible(name):
+                    raise ContentError("project_tree_path_unavailable")
+                asset = await asyncio.to_thread(content.rename, project_id, path, name)
+            elif action == "move":
+                _tree_path(path)
+                _tree_path(target_dir, allow_root=True)
+                asset = await asyncio.to_thread(
+                    content.move, project_id, path, target_dir, exact=True
+                )
+            elif action == "copy":
+                _tree_path(path)
+                _tree_path(target_dir, allow_root=True)
+                asset = await asyncio.to_thread(content.copy, project_id, path, target_dir)
+            else:
+                raise ContentError("bad_action")
+        except ContentError as exc:
+            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
+        return {"path": asset.path, "name": asset.name, "kind": asset.kind.value}
+
+    @app.post(f"{CONTENT_ROUTE_PREFIX}/projects/{{project_id}}/import")
+    async def project_import(
+        request: Request, project_id: str, payload: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        content = _content(request)
+        target_dir = str(payload.get("target_dir") or "")
+        sources = payload.get("sources")
+        if (
+            not isinstance(sources, list)
+            or not sources
+            or not all(isinstance(item, str) for item in sources)
+        ):
+            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail="invalid_sources")
+        try:
+            _tree_path(target_dir, allow_root=True)
+            imported = await asyncio.to_thread(
+                content.import_sources, project_id, tuple(sources), target_dir, ImportMode.COPY
+            )
+        except ContentError as exc:
+            raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc
+        return {"paths": [item.path for item in imported]}
 
     @app.get(f"{CONTENT_ROUTE_PREFIX}/trash")
     async def trashed_history(  # type: ignore[unused-ignore]

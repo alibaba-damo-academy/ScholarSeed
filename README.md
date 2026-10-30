@@ -146,7 +146,7 @@ The executable Agent provider currently included by ScholarSeed is Codex. Runtim
 
 - Git
 - Node.js `24.16.0`
-- npm `11.13.0`
+- pnpm `12.14.0` (default; npm and Yarn are also supported)
 - Python `3.12+`
 - uv `0.12.11+`
 - Native build tools for the target platform
@@ -160,15 +160,16 @@ Clone the repository with Git so packaging can record the source commit:
 ```bash
 git clone <repository-url>
 cd ScholarSeed
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm ops dev
 ```
 
-`npm run dev` prepares the repository-pinned Python runtime and development environment before starting Electron. You normally do not need to install the workspace packages manually.
+`pnpm ops dev` prepares the repository-pinned Python runtime and development environment before starting Electron. You normally do not need to install the workspace packages manually. To use another supported manager, run `npm ci` or `yarn install` in the root and Desktop package directories as applicable; the scripts detect the invoking manager.
+Worktree setup defaults to `pnpm install --frozen-lockfile`, sharing the pnpm store rather than entire `node_modules` directories. See [worktree setup and approved pnpm installation](docs/runbooks/development.md#worktree-初始化与-pnpm-前提) before installing a missing or mismatched pnpm version; AI installation requires explicit approval.
 
 Runtime binaries are downloaded from the reviewed HTTPS URLs in the manifests, verified by size and SHA-256, and cached locally. Git LFS and GitHub Release access are not required. The first build needs network access; `SCHOLARSEED_ARTIFACT_CACHE` selects an alternative cache directory.
 
-`npm run dev` enables DevTools and the copy-session-ID button by default on macOS and Windows. Set `SCHOLARSEED_DEVTOOLS=0` to disable them.
+`pnpm ops dev` enables DevTools and the copy-session-ID button by default on macOS and Windows. Set `SCHOLARSEED_DEVTOOLS=0` to disable them.
 
 ## Model and Service Configuration
 
@@ -195,22 +196,22 @@ Common repository commands are exposed from the root `package.json`:
 
 ```bash
 # Build the desktop application
-npm run build
+pnpm ops cd build local --stage app
 
 # Run deterministic desktop tests
-npm run desktop:test
+pnpm ops ci test --scope desktop
 
 # Check Python types
-npm run python:typecheck
+pnpm ops ci check types python
 
 # Check formatting and import rules
-npm run fmt-check
+pnpm ops ci format
 
 # Inspect the local toolchain and runtime
-npm run doctor
+pnpm ops pre doctor
 ```
 
-`npm run check` runs static checks; it is not a substitute for real Electron, backend, model, and tool-flow acceptance.
+`pnpm ops ci check --profile python` runs static checks; it is not a substitute for real Electron, backend, model, and tool-flow acceptance.
 
 ## Packaging
 
@@ -218,13 +219,13 @@ Build installers on the matching native operating system:
 
 ```bash
 # Build and verify an unpacked application without signing or an installer
-npm run package:check
+pnpm ops cd build release --stage dir --candidate
 
 # Build a local development installer
-npm run package
+pnpm ops cd build local
 
 # Build a release installer; signing and notarization credentials come from CI
-npm run package:dist
+pnpm ops cd build release --workflow distribution
 ```
 
 | Target | Native build host | Installer |
@@ -256,3 +257,4 @@ Third-party software, assets, and bundled runtimes remain under their respective
 - [Desktop dependencies and corresponding source notices](apps/desktop/resources/notices/README.md)
 - [Office viewer third-party notices](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md)
 - [`paper-fulltext-dl` third-party notices](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)
+

@@ -1,0 +1,66 @@
+--- a/Squirrel/SQRLShipItRequest.h
++++ b/Squirrel/SQRLShipItRequest.h
+@@ -78,6 +78,9 @@
+ // Returns a request which can be written to disk for ShipIt to read and
+ // perform.
+ - (instancetype)initWithUpdateBundleURL:(NSURL *)updateBundleURL targetBundleURL:(NSURL *)targetBundleURL bundleIdentifier:(NSString *)bundleIdentifier launchAfterInstallation:(BOOL)launchAfterInstallation useUpdateBundleName:(BOOL)useUpdateBundleName;
++- (instancetype)initWithUpdateBundleURL:(NSURL *)updateBundleURL targetBundleURL:(NSURL *)targetBundleURL bundleIdentifier:(NSString *)bundleIdentifier launchAfterInstallation:(BOOL)launchAfterInstallation useUpdateBundleName:(BOOL)useUpdateBundleName binding:(NSDictionary *)binding installationAuthorized:(BOOL)installationAuthorized;
++@property (nonatomic, copy, readonly) NSDictionary *binding;
++@property (nonatomic, assign, readonly) BOOL installationAuthorized;
+ 
+ // The URL to the downloaded update's app bundle.
+ @property (nonatomic, copy, readonly) NSURL *updateBundleURL;
+--- a/Squirrel/SQRLShipItRequest.m
++++ b/Squirrel/SQRLShipItRequest.m
+@@ -7,6 +7,7 @@
+ //
+ 
+ #import "SQRLShipItRequest.h"
++#import "binding.h"
+ 
+ #import <ReactiveObjC/EXTKeyPathCoding.h>
+ #import <ReactiveObjC/RACSignal+Operations.h>
+@@ -41,6 +42,7 @@
+ 		return NO;
+ 	};
+ 
++	if (self.binding && !SSBindingValid(self.binding)) { if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EINVAL userInfo:nil]; return nil; }
+ 	if (!validateKey(@keypath(self.targetBundleURL))) return nil;
+ 	if (!validateKey(@keypath(self.updateBundleURL))) return nil;
+ 
+@@ -48,12 +50,18 @@
+ }
+ 
+ - (instancetype)initWithUpdateBundleURL:(NSURL *)updateBundleURL targetBundleURL:(NSURL *)targetBundleURL bundleIdentifier:(NSString *)bundleIdentifier launchAfterInstallation:(BOOL)launchAfterInstallation useUpdateBundleName:(BOOL)useUpdateBundleName {
++  return [self initWithUpdateBundleURL:updateBundleURL targetBundleURL:targetBundleURL bundleIdentifier:bundleIdentifier launchAfterInstallation:launchAfterInstallation useUpdateBundleName:useUpdateBundleName binding:nil installationAuthorized:NO];
++}
++
++- (instancetype)initWithUpdateBundleURL:(NSURL *)updateBundleURL targetBundleURL:(NSURL *)targetBundleURL bundleIdentifier:(NSString *)bundleIdentifier launchAfterInstallation:(BOOL)launchAfterInstallation useUpdateBundleName:(BOOL)useUpdateBundleName binding:(NSDictionary *)binding installationAuthorized:(BOOL)installationAuthorized {
+ 	return [self initWithDictionary:@{
+ 		@keypath(self.updateBundleURL): updateBundleURL,
+ 		@keypath(self.targetBundleURL): targetBundleURL,
+ 		@keypath(self.bundleIdentifier): bundleIdentifier ?: NSNull.null,
+ 		@keypath(self.launchAfterInstallation): @(launchAfterInstallation),
+ 		@keypath(self.useUpdateBundleName): @(useUpdateBundleName),
++    @keypath(self.binding): binding ?: NSNull.null,
++    @keypath(self.installationAuthorized): @(installationAuthorized),
+ 	} error:NULL];
+ }
+ 
+@@ -66,6 +74,8 @@
+ 		@keypath(SQRLShipItRequest.new, bundleIdentifier): @keypath(SQRLShipItRequest.new, bundleIdentifier),
+ 		@keypath(SQRLShipItRequest.new, launchAfterInstallation): @keypath(SQRLShipItRequest.new, launchAfterInstallation),
+ 		@keypath(SQRLShipItRequest.new, useUpdateBundleName): @keypath(SQRLShipItRequest.new, useUpdateBundleName),
++    @keypath(SQRLShipItRequest.new, binding): @"binding",
++    @keypath(SQRLShipItRequest.new, installationAuthorized): @"installationAuthorized",
+ 	};
+ }
+ 
+@@ -127,6 +137,7 @@
+ 				return [RACSignal error:error];
+ 			}
+ 
++			if (![JSONDictionary isKindOfClass:NSDictionary.class] || (JSONDictionary[@"binding"] && (!JSONDictionary[@"installationAuthorized"] || CFGetTypeID((__bridge CFTypeRef)JSONDictionary[@"installationAuthorized"]) != CFBooleanGetTypeID()))) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EINVAL userInfo:nil]];
+ 			SQRLShipItRequest *request = [MTLJSONAdapter modelOfClass:SQRLShipItRequest.class fromJSONDictionary:JSONDictionary error:&error];
+ 			if (request == nil) {
+ 				return [RACSignal error:error];

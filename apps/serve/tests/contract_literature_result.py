@@ -6,8 +6,10 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 from unittest.mock import Mock
 
 _HOME = tempfile.mkdtemp(prefix="ss-result-")
@@ -24,11 +26,21 @@ from service.chat.persistence.catalog import (  # noqa: E402
     SessionStatus,
 )
 from service.chat.persistence.events import ProductEventStore  # noqa: E402
-from service.chat.service.cards import CardRegistry  # noqa: E402
+from service.chat.service.cards import (  # noqa: E402
+    DISPLAY_CARD_CONTINUE_ACTION,
+    DISPLAY_CARD_LIMIT_ERRORS,
+    CardRegistry,
+    DisplayCardError,
+)
+from service.chat.service.tasks import ProductTaskLease  # noqa: E402
 from service.cli.bridge import BLOCKING_CHECKPOINTS, parser  # noqa: E402
 from service.literature.api.gate import FulltextGate  # noqa: E402
 from service.literature.api.result import register_result_routes  # noqa: E402
-from service.literature.persistence.store import LiteratureRepository  # noqa: E402
+from service.literature.domain.model import LIBRARY_UNAVAILABLE, LiteratureError  # noqa: E402
+from service.literature.persistence import fulltexts  # noqa: E402
+from service.literature.persistence.delivery import DeliveryStore  # noqa: E402
+from service.literature.persistence.files import LiteratureFileBatch, payload_revision  # noqa: E402
+from service.literature.persistence.store import LiteratureRepository, connect  # noqa: E402
 from service.literature.schema import LiteratureItem  # noqa: E402
 from service.literature.service.result import (  # noqa: E402
     SEARCH_CARD,
@@ -37,12 +49,21 @@ from service.literature.service.result import (  # noqa: E402
     prepare_result,
     validate_search_card,
 )
-from service.literature.service.status import ResultIdentity, ResultStatusService  # noqa: E402
+from service.literature.service.status import (  # noqa: E402
+    LibraryState,
+    ResultIdentity,
+    ResultStatusService,
+)
+from service.paths import SERVICE_LITERATURE_FILES_DIR  # noqa: E402
+from service.platform.activity import Activities, ActivityDomain  # noqa: E402
 from service.platform.bridge import (  # noqa: E402
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_TOKEN_HEADER,
     DISPLAY_CARD_ROUTE,
     LITERATURE_RESULT_ROUTE,
+)
+from service.platform.context import ProductTaskType  # noqa: E402
+from service.platform.vocabulary import (  # noqa: E402 - requires SCHOLARSEED_HOME isolation
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_TOKEN_HEADER,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -64,6 +85,13 @@ def fake_authorizer(*, granted: tuple[str, ...] = ()) -> SimpleNamespace:
         created_at=0.0,
     )
     return SimpleNamespace(
+        effective_scope=lambda **scope: SimpleNamespace(
+            allowed=granted,
+            denied=(),
+            unknown=scope.get("refs", ()),
+            authorizations=(challenge,) if granted else (),
+        ),
+        task_key=lambda *_scope: "",
         turn_scope=lambda **_scope: (challenge,) if granted else (),
         granted_refs=lambda _challenge: granted,
         turn_granted_refs=lambda **_scope: granted,
@@ -73,7 +101,8 @@ def fake_authorizer(*, granted: tuple[str, ...] = ()) -> SimpleNamespace:
 
 #: Delivery runs in this suite never downloaded, so serve vouches for nothing.
 AUTHORIZED = AuthorizedFulltext()
-MANAGED_REVISION = "sha256:" + "a" * 64
+MANAGED_BYTES = b"%PDF-1.7 managed fixture\n"
+MANAGED_REVISION = payload_revision(MANAGED_BYTES)
 PRECISE_SKILL = REPO_ROOT / "skills" / "community" / "precise-literature-search" / "SKILL.md"
 RESEARCH_GUIDANCE_SKILL = (
     REPO_ROOT / "skills" / "community" / "academic-research-guidance" / "SKILL.md"
@@ -170,7 +199,7 @@ class LiteratureResultContract(unittest.TestCase):
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
         self.assertIn("`academic-research-guidance`", prompt)
         self.assertIn(
-            "`precise-literature-search` skill's clarification",
+            "The selected task skill owns its stages, modes, checkpoints, authorizations,",
             RESEARCH_GUIDANCE_SKILL.read_text(encoding="utf-8"),
         )
         self.assertIn('"checkpoint":"search"', skill)
@@ -232,7 +261,7 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertIn("Before starting — mandatory confirmation", skill)
         self.assertIn("Then STOP and wait for an explicit affirmative response", skill)
         self.assertIn(
-            "skill's clarification and confirmation contract",
+            "Intent clarification is not authorization to start, download,",
             RESEARCH_GUIDANCE_SKILL.read_text(encoding="utf-8"),
         )
         self.assertIn(
@@ -404,6 +433,16 @@ class LiteratureResultContract(unittest.TestCase):
             bridge_token="private",
             publication_turn_id="t1",
             active_task_type="precise_search",
+            product_turn_generation=1,
+            current_task=SimpleNamespace(done=lambda: False),
+            active_task_lease=ProductTaskLease(
+                task_type=ProductTaskType.PRECISE_SEARCH,
+                turn_id="t1",
+                generation=1,
+                source="skill_run",
+                workspace="run",
+                run_id="run",
+            ),
             active_assistant_snapshot_id="snapshot",
             active_product_turn_id="t1",
             ledger=SimpleNamespace(active_turn_id="t1"),
@@ -412,8 +451,16 @@ class LiteratureResultContract(unittest.TestCase):
         )
         sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
         app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
         register_result_routes(
-            app, sessions, SimpleNamespace(), SimpleNamespace(), authorizer=authorizer
+            app,
+            sessions,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            activities=activities,
+            authorizer=authorizer,
         )
         with TestClient(app) as client:
             response = client.post(
@@ -465,10 +512,7 @@ class LiteratureResultContract(unittest.TestCase):
         # A grant without the bytes behind it cannot be delivered either.
         self.assertEqual(self.deliver_final(fake_authorizer(granted=("paper:p1",))), 400)
 
-        from service.literature.persistence import fulltexts
-        from service.literature.persistence.store import connect
-
-        with connect() as connection:
+        with closing(connect()) as connection, connection:
             fulltexts.ensure_fulltext_schema(connection)
             fulltexts.record_fulltext_object(
                 connection,
@@ -480,6 +524,31 @@ class LiteratureResultContract(unittest.TestCase):
                     acquired_at=1.0,
                 ),
             )
+        self.assertEqual(self.deliver_final(fake_authorizer(granted=("paper:p1",))), 400)
+        with LiteratureFileBatch(SERVICE_LITERATURE_FILES_DIR) as batch:
+            batch.stage("p1-managed.pdf", MANAGED_BYTES)
+
+            def publish():
+                with closing(connect()) as connection, connection:
+                    DeliveryStore().record(
+                        connection,
+                        "s1",
+                        "",
+                        "run",
+                        [
+                            {
+                                "paper_id": "p1",
+                                "object_name": "p1-managed.pdf",
+                                "revision": MANAGED_REVISION,
+                                "identifier_kind": "arxiv",
+                                "identifier": "2501.00001",
+                                "title": "Managed fixture",
+                            }
+                        ],
+                        [],
+                    )
+
+            batch.commit_operation(publish)
         self.assertEqual(self.deliver_final(fake_authorizer(granted=("paper:p1",))), 200)
         # No task lease means no authorization context: managed claims stay refused.
         self.assertEqual(self.deliver_final(None), 400)
@@ -579,7 +648,12 @@ class LiteratureResultContract(unittest.TestCase):
         )
         sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
         app = FastAPI()
-        register_result_routes(app, sessions, SimpleNamespace(), SimpleNamespace())
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_result_routes(
+            app, sessions, SimpleNamespace(), SimpleNamespace(), activities=activities
+        )
         with TestClient(app) as client:
             response = client.post(
                 LITERATURE_RESULT_ROUTE,
@@ -720,7 +794,30 @@ class LiteratureResultContract(unittest.TestCase):
         repository.save(LiteratureItem(id="other", title="研究方法"))
         self.assertEqual(
             service.resolve([ResultIdentity(id="p3", title="研究方法")])["p3"]["library"],
-            "ambiguous",
+            "matched",
+        )
+
+    def test_duplicate_library_rows_are_matched_not_a_third_state(self) -> None:
+        """库不去重（proposal 91）：同一篇论文两行，仍然回答「已在库中」。"""
+
+        repository = LiteratureRepository(self.root / "duplicates.sqlite3")
+        repository.save(LiteratureItem(id="row-1", title="PagedAttention", doi="10.1/paged"))
+        repository.save(
+            LiteratureItem(id="row-2", title="PagedAttention", doi="https://doi.org/10.1/paged")
+        )
+        service = ResultStatusService(repository)
+        statuses = service.resolve(
+            [
+                ResultIdentity(id="by-doi", title="PagedAttention", doi="10.1/paged"),
+                ResultIdentity(id="by-title", title="PagedAttention"),
+                ResultIdentity(id="unknown", title="Not in the library"),
+            ]
+        )
+        self.assertEqual(statuses["by-doi"]["library"], "matched")
+        self.assertEqual(statuses["by-title"]["library"], "matched")
+        self.assertEqual(statuses["unknown"]["library"], "absent")
+        self.assertLessEqual(
+            {status["library"] for status in statuses.values()}, set(get_args(LibraryState))
         )
 
     def test_library_status_is_scoped_to_project_membership(self) -> None:
@@ -734,6 +831,17 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertEqual(service.resolve(identities, "project-two")["hit"]["library"], "absent")
         repository.save_all((paper,), project_id="project-two")
         self.assertEqual(service.resolve(identities, "project-two")["hit"]["library"], "matched")
+
+    def test_library_status_failure_is_logged_and_never_reported_as_absent(self) -> None:
+        repository = Mock(spec=LiteratureRepository)
+        repository.view.side_effect = LiteratureError(LIBRARY_UNAVAILABLE)
+        service = ResultStatusService(repository)
+        papers = [ResultIdentity(id="paper", title="Research paper")]
+        with self.assertLogs("service.literature.service.status", level="WARNING") as captured:
+            result = service.resolve(papers, "project-one")
+        self.assertEqual(result, {"paper": {"library": "unavailable"}})
+        self.assertIn("project-one", captured.output[0])
+        self.assertIn("LiteratureError", captured.output[0])
 
     def test_bridge_requires_live_token_and_uses_actual_files(self) -> None:
         publications = []
@@ -759,9 +867,19 @@ class LiteratureResultContract(unittest.TestCase):
             active_assistant_snapshot_id="snapshot-1",
             active_task_type="precise_search",
             last_submission_id="client-t1",
+            active_product_turn_id="client-t1",
+            product_turn_generation=1,
+            active_task_lease=ProductTaskLease(
+                task_type=ProductTaskType.PRECISE_SEARCH,
+                turn_id="client-t1",
+                generation=1,
+                source="skill_run",
+                workspace="run",
+                run_id="run",
+            ),
             interrupt_generation=0,
             active_assistant_revision=None,
-            current_task=None,
+            current_task=SimpleNamespace(done=lambda: False),
             ledger=SimpleNamespace(active_turn_id="t1"),
             runtime_workdir=self.root,
             publish_artifact=publish_artifact,
@@ -774,21 +892,31 @@ class LiteratureResultContract(unittest.TestCase):
                 authorization_type="precise_search_fulltext",
                 scope_digest="scope-digest",
                 question_id="precise-search-fulltext:opaque",
+                turn_id="t1",
                 refs=("paper:p1",),
             )
         )
         app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
         register_result_routes(
             app,
             sessions,
             SimpleNamespace(),
             SimpleNamespace(),
+            activities=activities,
             fulltext_gate=FulltextGate(
                 SimpleNamespace(
                     prepare=prepare_authorization,
                     turn_granted_refs=lambda **_scope: (),
+                    task_key=lambda *_scope: "",
+                    effective_scope=lambda **scope: SimpleNamespace(
+                        allowed=(), denied=(), unknown=scope.get("refs", ()), authorizations=()
+                    ),
                 ),
                 SimpleNamespace(),
+                activities=activities,
             ),
             authorizer=fake_authorizer(),
         )
@@ -829,17 +957,42 @@ class LiteratureResultContract(unittest.TestCase):
                 json={"run": "run", "checkpoint": "selection"},
             )
             live.active_task_type = ""
+            denied = client.post(
+                LITERATURE_RESULT_ROUTE,
+                headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
+                json={"run": "run", "checkpoint": "selection"},
+            )
+            self.assertEqual(denied.status_code, 400, denied.text)
+            live.active_task_type = "precise_search"
             continued = client.post(
                 LITERATURE_RESULT_ROUTE,
                 headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
                 json={"run": "run", "checkpoint": "selection"},
             )
             live.active_task_type = "literature_review"
-            wrong_task = client.post(
-                LITERATURE_RESULT_ROUTE,
-                headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
-                json={"run": "run", "checkpoint": "selection"},
-            )
+            with self.assertLogs("service.literature.api.result", level="WARNING") as task_logs:
+                wrong_task = client.post(
+                    LITERATURE_RESULT_ROUTE,
+                    headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
+                    json={"run": "run", "checkpoint": "selection"},
+                )
+            live.active_task_type = "precise_search"
+            for code in DISPLAY_CARD_LIMIT_ERRORS:
+
+                async def exhausted_card(*_args, _code=code, **_kwargs):
+                    raise DisplayCardError(_code)
+
+                live.display_card = exhausted_card
+                with self.assertLogs("service.literature.api.result", level="WARNING"):
+                    exhausted = client.post(
+                        LITERATURE_RESULT_ROUTE,
+                        headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
+                        json={"run": "run", "checkpoint": "selection"},
+                    )
+                self.assertEqual(exhausted.status_code, 400, exhausted.text)
+                self.assertEqual(exhausted.json()["reason"], code)
+                self.assertEqual(exhausted.json()["action"], DISPLAY_CARD_CONTINUE_ACTION)
+                self.assertEqual(prepare_authorization.call_count, 2)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(unprepared.status_code, 400, unprepared.text)
         self.assertEqual(
@@ -858,6 +1011,11 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertEqual(continued.status_code, 200, continued.text)
         self.assertEqual(wrong_task.status_code, 400, wrong_task.text)
         self.assertEqual(wrong_task.json()["reason"], "fulltext_authorization_task_required")
+        self.assertIn("validation=active_task_type", task_logs.output[0])
+        self.assertIn("active_type_matches=False", task_logs.output[0])
+        self.assertIn("turn_id=client-t1", task_logs.output[0])
+        self.assertIn("publication_turn_id=t1", task_logs.output[1])
+        self.assertNotIn("private", " ".join(task_logs.output))
         self.assertTrue(publications[0][1]["expected_sha256"])
         self.assertEqual(publications[2]["papers"][0]["title"], "研究方法")
         authorization = selected.json()["authorization"]
@@ -909,8 +1067,16 @@ class LiteratureResultContract(unittest.TestCase):
         )
         sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
         app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
         register_result_routes(
-            app, sessions, SimpleNamespace(), SimpleNamespace(), authorizer=fake_authorizer()
+            app,
+            sessions,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            activities=activities,
+            authorizer=fake_authorizer(),
         )
 
         with TestClient(app) as client:
@@ -953,7 +1119,12 @@ class LiteratureResultContract(unittest.TestCase):
         )
         sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
         app = FastAPI()
-        register_result_routes(app, sessions, SimpleNamespace(), SimpleNamespace())
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_result_routes(
+            app, sessions, SimpleNamespace(), SimpleNamespace(), activities=activities
+        )
         headers = {BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"}
         payload = {"run": "run", "checkpoint": "final"}
 
@@ -1022,6 +1193,7 @@ class LiteratureResultContract(unittest.TestCase):
             return selection_snapshot, "selection.json"
 
         app = FastAPI()
+        activities = Activities()
         register_result_routes(
             app,
             SimpleNamespace(),
@@ -1029,6 +1201,7 @@ class LiteratureResultContract(unittest.TestCase):
             SimpleNamespace(),
             ProductEventStore(database),
             SimpleNamespace(export_bytes=export),
+            activities=activities,
         )
         (self.work.parent / "metadata.json").unlink()
         with TestClient(app) as client:
@@ -1051,7 +1224,11 @@ class LiteratureResultContract(unittest.TestCase):
         registry.register(SEARCH_CARD, validate_search_card, direct=False)
         live = SimpleNamespace(publication_turn_id="t1", bridge_token="private")
         app = FastAPI()
-        register_card_routes(app, lambda _: live, registry)
+        activities = Activities()
+        self.activities = activities
+        live.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.bridge_activity.close)
+        register_card_routes(app, lambda _: live, registry, activities=activities)
         with TestClient(app) as client:
             response = client.post(
                 DISPLAY_CARD_ROUTE,
@@ -1110,21 +1287,34 @@ class LiteratureResultContract(unittest.TestCase):
                 authorization_type="research_idea_fulltext",
                 scope_digest="scope-digest",
                 question_id="research-idea-fulltext:opaque",
+                turn_id="t1",
                 refs=("literature:r1",),
             )
         )
         app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
         register_result_routes(
             app,
             sessions,
             SimpleNamespace(),
             SimpleNamespace(),
+            activities=activities,
             fulltext_gate=FulltextGate(
                 SimpleNamespace(
                     prepare=prepare_authorization,
                     turn_granted_refs=lambda **_scope: (),
+                    task_key=lambda *_scope: "",
+                    effective_scope=lambda **scope: SimpleNamespace(
+                        allowed=("literature:r1",) if questions else (),
+                        denied=(),
+                        unknown=() if questions else scope.get("refs", ()),
+                        authorizations=(),
+                    ),
                 ),
                 SimpleNamespace(),
+                activities=activities,
             ),
             authorizer=fake_authorizer(),
         )

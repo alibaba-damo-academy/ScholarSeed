@@ -113,6 +113,7 @@
     "codeLineComment": { "title": "切换行注释", "description": "切换当前行或所选行的行注释。" },
     "codeIndent": { "title": "缩进", "description": "缩进当前行或所选内容。" },
     "codeOutdent": { "title": "反缩进", "description": "减少当前行或所选内容的缩进。" },
+    "pdfUndo": { "title": "撤销 PDF 标注", "description": "撤销当前 PDF 中上一次已保存的标注操作，包括新增、修改和删除；输入框保留文字撤销。" },
     "pdfFind": {
       "title": "在 PDF 中查找",
       "description": "打开当前 PDF 的文内搜索。"

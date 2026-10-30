@@ -1,18 +1,15 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Eye, Info, Paperclip, PenLine, Trash } from 'lucide-react'
+import { Copy, Eye, Info, Paperclip, PenLine, Trash } from 'lucide-react'
 
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuTrigger
+  ContextMenuTrigger,
 } from '../../components/ui'
-import {
-  isAttachmentAvailable,
-  type LiteratureSummary
-} from '../../contracts/literature'
+import { isAttachmentAvailable, type LiteratureSummary } from '../../contracts/literature'
 
 /**
  * 行右键菜单的动作出口。
@@ -24,13 +21,15 @@ import {
 export interface RowMenuActions {
   /** 打开主附件全文。只在有可用主附件时可达。 */
   viewPdf: (attachmentId: string) => void
+  /** 把这一条的标题写进系统剪贴板。标题为空时不可达。 */
+  copyTitle: () => void
   /** 打开文献详情（基本信息）。 */
   viewInfo: () => void
   /** 打开详情并直接进入新建笔记。 */
   addNote: () => void
   /** 打开详情并直接唤起附件选择器。 */
   addAttachment: () => void
-  /** 项目内 = 移出项目；文献全览 = 删除文献。由列表弹出确认。 */
+  /** 项目内 = 移出项目；文献中心 = 删除文献。由列表弹出确认。 */
   remove: () => void
 }
 
@@ -46,7 +45,7 @@ export function LiteratureRowMenu({
   actions,
   children,
   item,
-  projectId
+  projectId,
 }: {
   actions: RowMenuActions
   children: React.ReactElement
@@ -72,6 +71,10 @@ export function LiteratureRowMenu({
           <Eye aria-hidden="true" size={MENU_ICON_SIZE} />
           {literature('list.rowMenu.viewPdf')}
         </ContextMenuItem>
+        <ContextMenuItem disabled={item.title.trim() === ''} onSelect={actions.copyTitle}>
+          <Copy aria-hidden="true" size={MENU_ICON_SIZE} />
+          {literature('list.rowMenu.copyTitle')}
+        </ContextMenuItem>
         <ContextMenuItem onSelect={actions.viewInfo}>
           <Info aria-hidden="true" size={MENU_ICON_SIZE} />
           {literature('list.rowMenu.viewInfo')}
@@ -88,9 +91,7 @@ export function LiteratureRowMenu({
         <ContextMenuSeparator />
         <ContextMenuItem destructive onSelect={actions.remove}>
           <Trash aria-hidden="true" size={MENU_ICON_SIZE} />
-          {projectId
-            ? literature('batch.removeProject')
-            : literature('batch.deleteTitle')}
+          {projectId ? literature('batch.removeProject') : literature('batch.deleteTitle')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

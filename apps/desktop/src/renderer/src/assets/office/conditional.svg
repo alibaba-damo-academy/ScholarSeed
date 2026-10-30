@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<title>Self-authored legacy spreadsheet conditional-format glyphs</title>
+<view id="glyph-0" viewBox="0 0 16 16"/>
+<g transform="translate(0 0)"><path d="M4 4l8 8m0-8l-8 8" fill="none" stroke="#C00000" stroke-width="3"/></g>
+<view id="glyph-1" viewBox="16 0 16 16"/>
+<g transform="translate(16 0)"><path d="M8 2v8" stroke="#C09000" stroke-width="3"/><circle cx="8" cy="13" r="1.5" fill="#C09000"/></g>
+<view id="glyph-2" viewBox="32 0 16 16"/>
+<g transform="translate(32 0)"><path d="M2 8l4 4L14 3" fill="none" stroke="#008000" stroke-width="3"/></g>
+<view id="glyph-3" viewBox="48 0 16 16"/>
+<g transform="translate(48 0)"><path d="M5 2h6v7h3l-6 5-6-5h3z" fill="#C00000" stroke="#800000" stroke-width=".6"/></g>
+<view id="glyph-4" viewBox="64 0 16 16"/>
+<g transform="translate(64 0)"><path d="M2 5h7V2l5 6-5 6v-3H2z" fill="#FFCC00" stroke="#A08000" stroke-width=".6"/></g>
+<view id="glyph-5" viewBox="80 0 16 16"/>
+<g transform="translate(80 0)"><path d="M5 14h6V7h3l-6-5-6 5h3z" fill="#008000" stroke="#005000" stroke-width=".6"/></g>
+<view id="glyph-6" viewBox="96 0 16 16"/>
+<g transform="translate(96 0)"><circle cx="8" cy="8" r="5.5" fill="#C00000" stroke="#606060" stroke-width=".7"/><ellipse cx="6.5" cy="5.5" rx="2" ry="1.1" fill="#FFFFFF" opacity=".35"/></g>
+<view id="glyph-7" viewBox="112 0 16 16"/>
+<g transform="translate(112 0)"><circle cx="8" cy="8" r="5.5" fill="#FFCC00" stroke="#606060" stroke-width=".7"/><ellipse cx="6.5" cy="5.5" rx="2" ry="1.1" fill="#FFFFFF" opacity=".35"/></g>
+<view id="glyph-8" viewBox="128 0 16 16"/>
+<g transform="translate(128 0)"><circle cx="8" cy="8" r="5.5" fill="#008000" stroke="#606060" stroke-width=".7"/><ellipse cx="6.5" cy="5.5" rx="2" ry="1.1" fill="#FFFFFF" opacity=".35"/></g>
+<view id="glyph-9" viewBox="144 0 16 16"/>
+<g transform="translate(144 0)"><circle cx="8" cy="8" r="6" fill="#FFFFFF" stroke="#000000" stroke-width="1"/></g>
+<view id="glyph-10" viewBox="160 0 16 16"/>
+<g transform="translate(160 0)"><circle cx="8" cy="8" r="6" fill="#FFFFFF" stroke="#000000" stroke-width="1"/><path d="M8 8V2a6 6 0 0 1 6 6z" fill="#000000"/></g>
+<view id="glyph-11" viewBox="176 0 16 16"/>
+<g transform="translate(176 0)"><circle cx="8" cy="8" r="6" fill="#FFFFFF" stroke="#000000" stroke-width="1"/><path d="M8 8V2a6 6 0 0 1 0 12z" fill="#000000"/></g>
+<view id="glyph-12" viewBox="192 0 16 16"/>
+<g transform="translate(192 0)"><circle cx="8" cy="8" r="6" fill="#FFFFFF" stroke="#000000" stroke-width="1"/><path d="M8 8V2a6 6 0 1 1-6 6z" fill="#000000"/></g>
+<view id="glyph-13" viewBox="208 0 16 16"/>
+<g transform="translate(208 0)"><circle cx="8" cy="8" r="6" fill="#000000"/></g>
+</svg>

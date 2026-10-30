@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -116,12 +117,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(f"{LOG_PREFIX} FAILED: {exc}")
+            traceback.print_exc()
             return 1
     if args.verify_source:
         try:
             ok, problems = verify_source_pack(args.target, args.source)
         except (OSError, SkillPackError, ValueError) as exc:
             print(f"{LOG_PREFIX} FAILED: {exc}")
+            traceback.print_exc()
             return 1
         print(f"{LOG_PREFIX} source={args.source.expanduser().resolve()}")
         print(f"{LOG_PREFIX} root={args.target.expanduser().resolve()}")
@@ -138,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"{LOG_PREFIX} lock={frozen}")
         except (OSError, SkillPackError, ValueError) as exc:
             print(f"{LOG_PREFIX} FAILED: {exc}")
+            traceback.print_exc()
             return 1
         expected = frozenset(built.skills)
         print(f"{LOG_PREFIX} source={args.source.expanduser().resolve()}")
@@ -148,6 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         outcome = validate_bundled_skills(args.target, expected=expected)
     except (OSError, SkillPackError, ValueError) as exc:
         print(f"{LOG_PREFIX} FAILED: {exc}")
+        traceback.print_exc()
         return 1
     print(f"{LOG_PREFIX} root={args.target.expanduser().resolve()}")
     print(f"{LOG_PREFIX} {outcome.summary()}")

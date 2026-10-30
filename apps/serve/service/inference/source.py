@@ -2,12 +2,29 @@
 
 import hashlib
 import json
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 SOURCE_FIELD = "scholarseed_content_source"
 SOURCE_VERSION = 1
 SOURCE_UNAVAILABLE = "model_content_source_unavailable"
+
+
+@dataclass(frozen=True)
+class SourceReference:
+    kind: str
+    identity: str
+
+
+@dataclass(frozen=True)
+class ContentSource:
+    text: str
+    references: tuple[SourceReference, ...] = ()
+
+    @property
+    def has_content(self) -> bool:
+        return bool(self.text.strip() or self.references)
 
 
 def accepts_source(endpoint: str, destinations: Sequence[str]) -> bool:
@@ -20,9 +37,16 @@ def accepts_source(endpoint: str, destinations: Sequence[str]) -> bool:
     )
 
 
-def attach_source(body: Mapping[str, Any], *, session_id: str, turn_id: str, text: str) -> dict:
+def attach_source(
+    body: Mapping[str, Any],
+    *,
+    session_id: str,
+    turn_id: str,
+    text: str,
+    references: tuple[SourceReference, ...] = (),
+) -> dict:
     """Attach only at a caller-selected destination; never alter model messages."""
-    if not session_id or not turn_id or not text.strip():
+    if not session_id or not turn_id or not ContentSource(text, references).has_content:
         raise ValueError(SOURCE_UNAVAILABLE)
     result = dict(body)
     digest = hashlib.sha256(
@@ -35,4 +59,6 @@ def attach_source(body: Mapping[str, Any], *, session_id: str, turn_id: str, tex
         "text": text,
         "request_sha256": digest,
     }
+    if references:
+        result[SOURCE_FIELD]["references"] = [asdict(reference) for reference in references]
     return result

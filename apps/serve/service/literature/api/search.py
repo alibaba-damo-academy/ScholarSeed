@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
@@ -23,6 +24,7 @@ from service.invocation.service.runtime import (
 from service.invocation.service.skills import InvocationSkillError, InvocationSkillRuntimeError
 from service.literature.persistence.search import LiteratureSearchError, LiteratureSearchService
 from service.literature.service.status import ResultStatusRequest, ResultStatusService
+from service.platform.passive_events import passive_events
 
 LITERATURE_SEARCH_ROUTE_PREFIX = "/api/literature/searches"
 LITERATURE_SEARCH_STATUS_ROUTE = LITERATURE_SEARCH_ROUTE_PREFIX + "/result-status"
@@ -100,10 +102,17 @@ def register_literature_search_routes(app: FastAPI) -> None:
             raise HTTPException(HTTP_404_NOT_FOUND, error.code) from error
 
         async def body():
-            async for event in service.events(task_id, owner_id=owner_id, after_seq=after_seq):
-                yield SSE_HEARTBEAT_FRAME if event is None else sse_encode(event)
+            async with aclosing(
+                service.events(task_id, owner_id=owner_id, after_seq=after_seq)
+            ) as source:
+                async for event in source:
+                    yield SSE_HEARTBEAT_FRAME if event is None else sse_encode(event)
 
-        return StreamingResponse(body(), media_type=SSE_MEDIA_TYPE, headers=SSE_HEADERS)
+        return StreamingResponse(
+            passive_events(body(), request.app.state.activities),
+            media_type=SSE_MEDIA_TYPE,
+            headers=SSE_HEADERS,
+        )
 
     @app.delete(LITERATURE_SEARCH_ROUTE_PREFIX + "/{task_id}", status_code=204)
     async def delete_search(task_id: str, request: Request) -> Response:

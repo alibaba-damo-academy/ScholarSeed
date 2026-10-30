@@ -36,3 +36,28 @@ class AdmissionPolicy:
             return ManagementState.MANAGED if included else ManagementState.UNSUPPORTED
         excluded = GitIgnoreSpec.from_lines(self.ignore_patterns).match_file(path)
         return ManagementState.IGNORED if excluded else ManagementState.MANAGED
+
+
+@dataclass(frozen=True)
+class VersionPolicyInputs:
+    """One qualified settings snapshot consumed by live and projected recovery."""
+
+    mode: VersionMode
+    include_patterns: tuple[str, ...] | None
+    ignore_patterns: tuple[str, ...]
+    max_size_bytes: int
+    migration_required: bool
+
+    def classify(
+        self, path: str, size: int, *, manual: bool, default_patterns: tuple[str, ...]
+    ) -> ManagementState:
+        if size > self.max_size_bytes:
+            return ManagementState.OVERSIZED
+        if self.migration_required:
+            return ManagementState.MANAGED if manual else ManagementState.MIGRATION_REQUIRED
+        return AdmissionPolicy(
+            self.mode,
+            self.include_patterns if self.include_patterns is not None else default_patterns,
+            self.ignore_patterns,
+            self.max_size_bytes,
+        ).classify(path, size, manual=manual)

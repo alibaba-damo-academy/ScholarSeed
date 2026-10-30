@@ -12,10 +12,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from service.capabilities.api.admission import register_skill_admission
-from service.platform.bridge import (
+from service.capabilities.domain import SKILL_ADMISSION_ROUTE
+from service.platform.activity import Activities, ActivityDomain
+from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
-    SKILL_ADMISSION_ROUTE,
 )
 
 
@@ -33,8 +34,15 @@ class SkillAdmissionContracts(unittest.TestCase):
             skill_admission=AsyncMock(return_value={"name": "search", "active": True})
         )
         app = FastAPI()
+        activities = Activities()
+        self.activities = activities
+        self.caller.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(self.caller.bridge_activity.close)
         register_skill_admission(
-            app, lambda scope: self.caller if scope == self.caller.id else None, self.runtime
+            app,
+            lambda scope: self.caller if scope == self.caller.id else None,
+            self.runtime,
+            activities=activities,
         )
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
@@ -45,9 +53,7 @@ class SkillAdmissionContracts(unittest.TestCase):
             SKILL_ADMISSION_ROUTE, headers=self.headers, json={"path": str(self.script)}
         )
         self.assertEqual(response.status_code, 200, response.text)
-        self.runtime.skill_admission.assert_awaited_once_with(
-            path=self.script, cwd=self.root, user_id="account"
-        )
+        self.runtime.skill_admission.assert_awaited_once_with(path=self.script, caller=self.caller)
 
     def test_old_context_cannot_bypass_current_login_or_pause(self) -> None:
         for reason in ("login_required", "已暂停"):

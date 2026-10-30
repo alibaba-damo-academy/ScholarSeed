@@ -1,0 +1,57 @@
+--- a/texk/kpathsea/progname.c
++++ b/texk/kpathsea/progname.c
+@@ -567,13 +567,17 @@
+      stuff useless for win32. */
+   {
+     char short_path[PATH_MAX], path[PATH_MAX], *fp;
++    DWORD path_length;
+ #if !defined(__MINGW32__)
+     HANDLE hnd;
+     WIN32_FIND_DATA ffd;
++    size_t prefix_length, name_length;
+ #endif
+ 
+     /* SearchPath() always gives back an absolute directory */
+-    if (SearchPath(NULL, argv0, ".exe", PATH_MAX, short_path, &fp) == 0)
++    path_length = SearchPath(NULL, argv0, ".exe", sizeof(short_path),
++                             short_path, &fp);
++    if (path_length == 0 || path_length >= sizeof(short_path))
+         LIB_FATAL1("Can't determine where the executable %s is.\n", argv0);
+ #if defined(__MINGW32__)
+     if (!win32_get_long_filename(short_path, path, sizeof(path))) {
+@@ -583,12 +587,31 @@
+     for (fp = path; fp && *fp; fp++)
+         if (IS_DIR_SEP(*fp)) *fp = DIR_SEP;
+ #else /* !__MINGW32__ */
+-    if (kpathsea_getlongpath(kpse, path, short_path, PATH_MAX) == 0)
+-        FATAL1("Can't get long name for %s.\n", short_path);
++    /* SearchPath already supplies an absolute, usable directory.  Expanding
++       every ancestor with kpathsea_getlongpath unnecessarily requires list
++       access to those ancestors, which restricted Windows tokens may lack.
++       Keep that directory (including short names and junctions), and expand
++       only the leaf: its long name selects the format, e.g. xelatex. */
++    if (fp == NULL || fp < short_path || fp >= short_path + path_length)
++        FATAL1("Can't determine the executable name in %s.\n", short_path);
+     if ((hnd = FindFirstFile(short_path, &ffd)) == INVALID_HANDLE_VALUE)
+-        FATAL1("The following path points to an invalid file : %s\n", path);
++        FATAL1("The following path points to an invalid file : %s\n", short_path);
+     FindClose(hnd);
+-    /* dirname aleady slashified in WIN32 */
++    if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
++        FATAL1("The executable path is a directory : %s\n", short_path);
++    prefix_length = (size_t)(fp - short_path);
++    name_length = strlen(ffd.cFileName);
++    if (prefix_length + name_length >= sizeof(path))
++        FATAL1("The executable path is too long : %s\n", short_path);
++    memcpy(path, short_path, prefix_length);
++    memcpy(path + prefix_length, ffd.cFileName, name_length + 1);
++    for (fp = path; *fp; fp++) {
++        if (kpathsea_IS_KANJI(kpse, fp)) {
++            if (fp[1]) fp++;
++        } else if (IS_DIR_SEP(*fp)) {
++            *fp = DIR_SEP;
++        }
++    }
+ #endif /* !__MINGW32__ */
+     /* sdir will be the directory of the executable, ie: c:/TeX/bin */
+     sdir = xdirname(path);

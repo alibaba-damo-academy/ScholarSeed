@@ -1,6 +1,6 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Archive, Folder, MoreHorizontal, Pencil } from 'lucide-react'
+import { Archive, Folder, MoreHorizontal, MoreVertical, Pencil, Pin, PinOff } from 'lucide-react'
 
 import type { Project } from '../../api'
 import { listProjects, revealSystemPath } from '../../api'
@@ -32,7 +32,7 @@ import {
   DropdownMenuTrigger,
   IconButton,
   Input,
-  useToast
+  useToast,
 } from '../ui'
 
 /**
@@ -46,20 +46,16 @@ import {
 /** 「在访达中显示」按平台换文案：macOS 是访达，Windows 是资源管理器。 */
 const REVEAL_LABEL_KEYS = {
   darwin: 'home.menu.revealDarwin',
-  win32: 'home.menu.revealWin32'
+  win32: 'home.menu.revealWin32',
 } as const
 const REVEAL_LABEL_FALLBACK_KEY = 'home.menu.revealFallback'
 
 export type ProjectRevealLabelKey =
-  | (typeof REVEAL_LABEL_KEYS)[keyof typeof REVEAL_LABEL_KEYS]
-  | typeof REVEAL_LABEL_FALLBACK_KEY
+  (typeof REVEAL_LABEL_KEYS)[keyof typeof REVEAL_LABEL_KEYS] | typeof REVEAL_LABEL_FALLBACK_KEY
 
 export function projectRevealLabelKey(): ProjectRevealLabelKey {
   const platform = window.scholarseed?.platform
-  return (
-    REVEAL_LABEL_KEYS[platform as keyof typeof REVEAL_LABEL_KEYS] ??
-    REVEAL_LABEL_FALLBACK_KEY
-  )
+  return REVEAL_LABEL_KEYS[platform as keyof typeof REVEAL_LABEL_KEYS] ?? REVEAL_LABEL_FALLBACK_KEY
 }
 
 /** 后端错误码 → 用户能看懂的提示。按码分支不按文案。 */
@@ -67,7 +63,7 @@ const PROJECT_ERROR_KEYS = {
   name_required: 'errors.name_required',
   name_too_long: 'errors.name_too_long',
   unknown_project: 'errors.unknown_project',
-  cannot_archive_current_project: 'errors.cannot_archive_current_project'
+  cannot_archive_current_project: 'errors.cannot_archive_current_project',
 } as const
 
 /**
@@ -83,17 +79,24 @@ export function ProjectActionsMenu({
   idPrefix,
   triggerClassName,
   triggerTestId,
+  triggerOrientation = 'horizontal',
   side = 'bottom',
-  onAction
+  horizontalAnchorRef,
+  sideOffset,
+  onAction,
 }: {
   project: Project
   idPrefix: string
   triggerClassName: string
   triggerTestId: string
+  triggerOrientation?: 'horizontal' | 'vertical'
   side?: 'bottom' | 'right'
+  horizontalAnchorRef?: React.RefObject<HTMLElement | null>
+  sideOffset?: number | `--${string}`
   onAction?: () => void
 }): React.JSX.Element {
   const { set } = useApp()
+  const { t: layoutText } = useTranslation('layout')
   const { t } = useTranslation('components')
   const { t: projectText } = useTranslation('project')
   const { toast } = useToast()
@@ -104,7 +107,7 @@ export function ProjectActionsMenu({
     if (!result.ok) {
       toast({
         title: projectText('errors.reveal_unavailable', { path: project.path }),
-        tone: 'error'
+        tone: 'error',
       })
     }
   }
@@ -115,22 +118,52 @@ export function ProjectActionsMenu({
         <IconButton
           className={triggerClassName}
           data-testid={triggerTestId}
-          icon={<MoreHorizontal size={16} strokeWidth={1.6} />}
+          icon={
+            triggerOrientation === 'vertical' ? (
+              <MoreVertical size={16} strokeWidth={1.6} />
+            ) : (
+              <MoreHorizontal size={16} strokeWidth={1.6} />
+            )
+          }
           label={label}
           size="sm"
-          variant="ghost"
+          variant="ghostIcon"
         />
       </DropdownMenuTrigger>
-      <DropdownMenuContent aria-label={label} side={side}>
+      <DropdownMenuContent
+        aria-label={label}
+        horizontalAnchorRef={horizontalAnchorRef}
+        side={side}
+        sideOffset={sideOffset}
+      >
+        <DropdownMenuItem
+          data-testid={`${idPrefix}pin-${project.id}`}
+          onSelect={() => {
+            onAction?.()
+            void renameProject(project.id, project.name, { pinned: !project.pinned }).then(
+              async (result) => {
+                if (!result.ok) {
+                  toast({ title: layoutText('saveFailed'), tone: 'error' })
+                  return
+                }
+                const listing = await listProjects()
+                if (listing) set({ projects: listing.projects })
+              }
+            )
+          }}
+        >
+          {project.pinned ? <PinOff /> : <Pin />}
+          {layoutText(project.pinned ? 'unpin' : 'pin')}
+        </DropdownMenuItem>
         <DropdownMenuItem
           data-testid={`${idPrefix}rename-${project.id}`}
           onSelect={() => {
             onAction?.()
-            set({ projectRename: { id: project.id, name: project.name } })
+            set({ projectForm: { mode: 'edit', project } })
           }}
         >
           <Pencil size={14} strokeWidth={1.6} />
-          {t('home.menu.rename')}
+          {layoutText('editProject')}
         </DropdownMenuItem>
         <DropdownMenuItem
           data-testid={`${idPrefix}reveal-${project.id}`}
@@ -144,7 +177,6 @@ export function ProjectActionsMenu({
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          destructive
           data-testid={`${idPrefix}archive-${project.id}`}
           onSelect={() => {
             onAction?.()
@@ -188,10 +220,9 @@ export function ProjectManageDialogs(): React.JSX.Element {
   const projectErrorText = React.useCallback(
     (code: string): string =>
       Object.prototype.hasOwnProperty.call(PROJECT_ERROR_KEYS, code)
-        ? projectText(
-            PROJECT_ERROR_KEYS[code as keyof typeof PROJECT_ERROR_KEYS],
-            { max: PROJECT_NAME_MAX }
-          )
+        ? projectText(PROJECT_ERROR_KEYS[code as keyof typeof PROJECT_ERROR_KEYS], {
+            max: PROJECT_NAME_MAX,
+          })
         : projectText('notices.unknown', { code }),
     [projectText]
   )
@@ -201,7 +232,7 @@ export function ProjectManageDialogs(): React.JSX.Element {
     if (listing) {
       set({
         projects: listing.projects,
-        defaultWorkspacePath: listing.default || state.defaultWorkspacePath
+        defaultWorkspacePath: listing.default || state.defaultWorkspacePath,
       })
     }
   }, [set, state.defaultWorkspacePath])
@@ -236,7 +267,7 @@ export function ProjectManageDialogs(): React.JSX.Element {
       if (!result.ok) {
         toast({
           title: projectErrorText(result.error ?? 'unknown_project'),
-          tone: 'error'
+          tone: 'error',
         })
         return
       }
@@ -262,9 +293,7 @@ export function ProjectManageDialogs(): React.JSX.Element {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('home.rename.title')}</DialogTitle>
-            <DialogDescription>
-              {t('home.rename.description')}
-            </DialogDescription>
+            <DialogDescription>{t('home.rename.description')}</DialogDescription>
           </DialogHeader>
           <Input
             autoFocus
@@ -280,14 +309,9 @@ export function ProjectManageDialogs(): React.JSX.Element {
               }
             }}
           />
-          {renameError ? (
-            <Alert tone="error" title={projectErrorText(renameError)} />
-          ) : null}
+          {renameError ? <Alert tone="error" title={projectErrorText(renameError)} /> : null}
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => set({ projectRename: null })}
-            >
+            <Button variant="outline" onClick={() => set({ projectRename: null })}>
               {t('home.rename.cancel')}
             </Button>
             <Button
@@ -311,12 +335,10 @@ export function ProjectManageDialogs(): React.JSX.Element {
             <AlertDialogHeader>
               <AlertDialogTitle>
                 {projectText('archive.title', {
-                  name: archiveTarget?.name ?? ''
+                  name: archiveTarget?.name ?? '',
                 })}
               </AlertDialogTitle>
-              <AlertDialogDescription>
-                {projectText('archive.description')}
-              </AlertDialogDescription>
+              <AlertDialogDescription>{projectText('archive.description')}</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={archiveBusy}>

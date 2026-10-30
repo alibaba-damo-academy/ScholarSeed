@@ -2,7 +2,7 @@
 name: precise-literature-search
 description: Iteratively search a precise research question, present candidate papers for review and selection, download authorized full texts, verify PDFs, and synthesize evidence grounded in the verified files. Use when the user emphasizes finding specific papers to answer specific research questions that may need fulltext screening. It may run unattended when explicitly requested after this skill is selected. Do not use when the user primarily wants an autonomous narrative literature review, asks broad research questions, or simply wants to download specific papers. The host must be a ScholarSeed product session, where full-text acquisition and reading happen only through the in-process `scholarseed_bridge` product tool, so other hosts cannot download or read full texts.
 description_zh: 围绕明确的研究问题开展迭代检索，展示候选论文供审阅和筛选，下载具有访问授权的全文，核验 PDF，并基于已核验文件中的证据形成综合分析。适用于用户强调查找特定论文来回答可能需要阅读全文才能回答的具体研究问题。选定本技能后，用户明确要求时可无人值守运行。如果用户的主要需求是自主撰写叙述性文献综述，提出宽泛的研究问题，或者下载具体文章，则不应使用本技能。宿主必须是书深（ScholarSeed）产品会话：全文获取与阅读只通过服务进程内的 `scholarseed_bridge` 产品工具完成，其他宿主不能下载或阅读全文。
-version: "1.0.18"
+version: "1.0.27"
 ---
 
 # Precise Literature Search
@@ -56,7 +56,9 @@ later research decisions, but must not bypass this initial confirmation.
 Interactive is the default. Auto mode requires an explicit request for automatic,
 unattended or no-interaction execution. It delegates research choices within the
 confirmed scope, records decisions, uses `PAPER_DL_MODE=autodev`, and skips access
-interventions. Silence or ordinary acknowledgement is not auto authorization.
+interventions. Both modes allocate a dedicated Chrome or Edge from the shared
+browser pool and download over CDP; auto mode does not launch headless Chromium.
+Silence or ordinary acknowledgement is not auto authorization.
 
 ## User-facing language
 
@@ -307,9 +309,62 @@ Use [download recovery](scripts/download_recovery.py) to retry unsuccessful item
 recover manually provided files or explicitly skip failures. Empty input does
 not resolve an intervention. Preserve verified successes.
 
-Report computed verified/selected counts, unresolved counts and the absolute
-PDF directory. Mention browser release only when the returned notice confirms it.
+Report computed acquired/selected counts and unresolved counts. Managed acquisition
+is not a user-visible PDF directory: never report `downloads/papers/` or a managed
+object path as the user's download location. Mention browser release only when
+the returned notice confirms it.
 
+### Download admission
+
+Serve acquisition automatically saves each successful PDF as a literature item with its
+own primary attachment and links it to the current session's project. Check the separate
+`admission` result: downloaded does not mean admitted. A failed admission does not require
+another download.
+
+After every download or recovery batch with verified successes, including a partial batch
+waiting for login, immediately call the native `scholarseed_bridge` tool with
+`{"capability":"literature","operation":"ingest","request":{"run":"<actual run directory relative to the session workdir>"}}`.
+`stage.py download` returns this as `download_admission` when its manifest contains
+successes, including a blocked download with partial successes. Preserve and report the
+download error while admitting those successes. Status, reading, report, resume and
+cancel commands do not request admission.
+After a recovery batch or an explicit admission retry, use the native request above.
+Do not ask the
+user to import manually or wait for reading/final-report. This product operation verifies
+the actual PDFs, saves their complete search metadata, and publishes an “Open full text”
+card. Repeating it for the same run is safe and does not duplicate admitted papers.
+Report any `failures` independently and retry admission when recoverable. Ingest returns
+admission receipts separately from `delivery`. Large results include `total_papers`,
+`total_failures` and `next_cursor`: continue the same native ingest request with its
+unchanged `run` and the returned `cursor` until `next_cursor` is null. These pages only
+read saved receipts; they do not download or admit again. Report every failure, including
+failures on later pages. If `receipt_delivery.ok=false`, the complete receipt could not
+be stored; saved papers still remain in the library. Report that error and retry ingest
+without downloading again. `delivery.ok=false` means
+the chat card was not published, not that saved papers were lost. Report that error and
+retry ingest without downloading again; bounded cards preview a few papers and link to
+the existing library for the rest. Never fabricate
+library IDs or bypass the product interface with filesystem/database writes.
+
+
+After registering every successful download or recovery batch through ingest, including
+managed acquisition and paper-dl files, and finishing this round's download stage,
+call the `scholarseed_bridge` model tool with
+`{"capability":"literature","operation":"delivery","request":{"run":"<same actual run directory relative to the session workdir>"}}`.
+Serve freezes its recorded acquisition batch and presents one product-owned save
+dialog. The user chooses a project folder or a local folder independently of automatic
+library admission. The library option reuses valid existing papers and restores deleted
+papers only when the user explicitly confirms saving with that option selected. Automatic
+ingest retries must not restore user-deleted papers. Never supply destination paths or fetch PDF
+bytes in the sandbox. The returned delivery ID and acquired count do not mean
+the PDFs have been saved. User cancellation does not revoke authorized reading.
+Continue the research without waiting for the save dialog; report only confirmed
+product results separately: library admission and resource saving are different outcomes.
+If resource saving was not confirmed, say "not saved to resources", even when library
+admission succeeded. The product
+card remains available for saving later, retrying failures, and opening the folder.
+Refining the same run starts another acquisition batch without changing earlier
+delivery receipts. If no acquisition was attempted, do not call this checkpoint.
 
 ## Phase 5: read verified full texts
 

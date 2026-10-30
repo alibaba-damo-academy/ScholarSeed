@@ -1,0 +1,8 @@
+{
+  "scenarioId": "research-evidence-revision",
+  "version": "2026-10-19",
+  "provisional": true,
+  "metrics": {
+    "turnCount": { "min": 2, "max": 2 }
+  }
+}

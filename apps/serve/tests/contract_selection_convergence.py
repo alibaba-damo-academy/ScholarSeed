@@ -9,6 +9,7 @@ from pathlib import Path
 
 from service.assistant.persistence.invocations import AssistantInvocationStore
 from service.assistant.service.actions import AssistantActionService, CompiledAssistantAction
+from service.platform.activity import Activities
 from service.platform.inference import ModelInvocationResult, ModelInvocationStatus
 
 
@@ -33,7 +34,7 @@ class SelectionConvergenceContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = AssistantInvocationStore(Path(directory) / "invocations.sqlite3")
             agent = OneShotProvider()
-            service = AssistantActionService(store, model=agent)
+            service = AssistantActionService(store, activities=Activities(), model=agent)
             arguments = dict(
                 owner_id="owner",
                 client_action_id="action",
@@ -66,6 +67,7 @@ class SelectionConvergenceContract(unittest.TestCase):
             agent = OneShotProvider()
             service = AssistantActionService(
                 AssistantInvocationStore(Path(directory) / "invocations.sqlite3"),
+                activities=Activities(),
             )
             result = asyncio.run(
                 service.invoke_compiled(

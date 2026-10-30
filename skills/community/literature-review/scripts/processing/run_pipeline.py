@@ -39,7 +39,6 @@ from step3_warmup import _warmup_cache
 from step4_card import _extract_card_combined, _validate_card
 from step5_delta import _extract_delta, _validate_delta
 from step6_ideation import _extract_ideation_claims, _validate_ideation
-from step7_upload import _upload_paper_info
 from step0_load import load_inputs
 from utils import (
     _atomic_write_json,
@@ -70,11 +69,10 @@ async def _process_single_paper(
     with_ideation: bool = False,
     stop: Optional[PipelineStop] = None,
     usage_out: Optional[dict] = None,
-) -> tuple[dict, Optional[dict], Optional[dict], Optional[dict], dict, dict]:
+) -> tuple[dict, Optional[dict], Optional[dict], Optional[dict], dict]:
     """Process a single paper end-to-end (KV Cache Scheme 2).
 
-    Returns: (card_entry, delta_entry, ideation_entry, source_map_entry, aggregated_usage, meta)
-    where meta = {card_from_hub, gen_delta, gen_ideation} drives the upload decision.
+    Returns: (card_entry, delta_entry, ideation_entry, source_map_entry, aggregated_usage).
     If usage_out is passed, usage is also accumulated into it (survives exceptions).
     """
     paper_info_entry = paper_info_entry or {}
@@ -404,12 +402,7 @@ async def _process_single_paper(
             "sentences": resolved_sentences,
         }
 
-    meta = {
-        "card_from_hub": card_from_hub,
-        "gen_delta": delta is not None,
-        "gen_ideation": ideation is not None,
-    }
-    return result_entry, delta_entry, ideation_entry, source_map_entry, agg_usage, meta
+    return result_entry, delta_entry, ideation_entry, source_map_entry, agg_usage
 
 
 # ============================================================================
@@ -550,7 +543,7 @@ async def _run_async(args):
                         paper_type = ""
 
                 # Process (usage_out survives exceptions)
-                card_entry, delta_entry, ideation_entry, source_map_entry, _, paper_meta = (
+                card_entry, delta_entry, ideation_entry, source_map_entry, _ = (
                     await _process_single_paper(
                         llm, pid, ent, info, depth, paper_type,
                         with_source_map=with_source_map,
@@ -594,25 +587,6 @@ async def _run_async(args):
                 if source_map_entry is not None:
                     source_maps_data[pid] = source_map_entry
                     _atomic_write_json(source_maps_path, source_maps_data)
-
-                # Upload to PaperHub
-                arxiv_id = (info.get("arxiv_id") if info else None) or ent.get("arxiv_id")
-                produced_new = (
-                    (not paper_meta.get("card_from_hub"))
-                    or paper_meta.get("gen_delta")
-                    or paper_meta.get("gen_ideation")
-                )
-                should_upload = (
-                    depth == "full"
-                    and arxiv_id
-                    and isinstance(card_entry, dict)
-                    and card_entry.get("card")
-                    and produced_new
-                )
-                if should_upload:
-                    await _upload_paper_info(
-                        arxiv_id, card_entry, delta_entry, source_map_entry, ideation_entry
-                    )
 
                 tracker.record_success(pid)
                 await pipeline_stop.record_paper_success(pid)

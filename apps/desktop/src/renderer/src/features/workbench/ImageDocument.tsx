@@ -13,22 +13,29 @@ import {
   IMAGE_PERCENT,
   IMAGE_ZOOM_FACTOR,
   type ImageSize,
-  type ImageViewState
+  type ImageViewState,
 } from './image'
 import { useDocumentWorkspace, useWorkspaceController } from './workspace'
-import './image.css'
 
 const EMPTY_SIZE: ImageSize = { width: 0, height: 0 }
 const PRIMARY_POINTER_BUTTON = 0
 
-export function ImageDocument({ sessionId, tabId }: { sessionId: string; tabId: string }): React.JSX.Element {
+export function ImageDocument({
+  sessionId,
+  tabId,
+}: {
+  sessionId: string
+  tabId: string
+}): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const workspace = useDocumentWorkspace()
   const controller = useWorkspaceController()
   const session = workspace.sessions[sessionId]
   const tab = workspace.tabs[tabId]
   const viewportRef = useRef<HTMLDivElement>(null)
-  const drag = useRef<{ pointerId: number; x: number; y: number; view: ImageViewState } | null>(null)
+  const drag = useRef<{ pointerId: number; x: number; y: number; view: ImageViewState } | null>(
+    null
+  )
   const [url, setUrl] = useState('')
   const [natural, setNatural] = useState<ImageSize>(EMPTY_SIZE)
   const [viewport, setViewport] = useState<ImageSize>(EMPTY_SIZE)
@@ -45,7 +52,11 @@ export function ImageDocument({ sessionId, tabId }: { sessionId: string; tabId: 
       setUrl('')
       return
     }
-    const objectUrl = URL.createObjectURL(new Blob([new Uint8Array(session.bytes)], { type: imageMediaType(session.source.path, session.mediaType) }))
+    const objectUrl = URL.createObjectURL(
+      new Blob([new Uint8Array(session.bytes)], {
+        type: imageMediaType(session.source.path, session.mediaType),
+      })
+    )
     setUrl(objectUrl)
     return () => URL.revokeObjectURL(objectUrl)
   }, [session?.bytes, session?.mediaType, session?.loadState, session?.source.path])
@@ -53,7 +64,8 @@ export function ImageDocument({ sessionId, tabId }: { sessionId: string; tabId: 
   useEffect(() => {
     const element = viewportRef.current
     if (!element) return
-    const measure = (): void => setViewport({ width: element.clientWidth, height: element.clientHeight })
+    const measure = (): void =>
+      setViewport({ width: element.clientWidth, height: element.clientHeight })
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(element)
@@ -65,23 +77,65 @@ export function ImageDocument({ sessionId, tabId }: { sessionId: string; tabId: 
     if (drag.current?.pointerId !== event.pointerId) return
     drag.current = null
     setDragging(false)
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
   return (
-    <div className="vds-image-document" data-testid="image-viewer">
-      <div className="vds-image-toolbar" role="toolbar" aria-label={t('image.toolbar')}>
-        <Button variant="ghost" size="sm" aria-label={t('image.zoomOut')} disabled={!ready || view.scale <= IMAGE_MIN_SCALE} onClick={() => saveView(zoomImage(view, view.scale / IMAGE_ZOOM_FACTOR))}>−</Button>
-        <output data-testid="image-zoom" aria-label={t('image.zoom')}>{Math.round(view.scale * IMAGE_PERCENT)}%</output>
-        <Button variant="ghost" size="sm" aria-label={t('image.zoomIn')} disabled={!ready || view.scale >= IMAGE_MAX_SCALE} onClick={() => saveView(zoomImage(view, view.scale * IMAGE_ZOOM_FACTOR))}>+</Button>
-        <Button variant="ghost" size="sm" disabled={!ready} aria-pressed={view.mode === 'fit'} onClick={() => saveView(fitImage(natural, viewport))}>{t('image.fit')}</Button>
-        <Button variant="ghost" size="sm" disabled={!ready} onClick={() => saveView({ mode: 'manual', scale: 1, x: 0, y: 0 })}>{t('image.actual')}</Button>
-        {ready && <span data-testid="image-dimensions">{natural.width} × {natural.height}</span>}
+    <div className="flex h-full w-full min-h-0 min-w-0 flex-col" data-testid="image-viewer">
+      <div
+        className="flex shrink-0 flex-wrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-line-2)] bg-[var(--vds-bg-gray-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--vds-text-7)] [font-variant-numeric:tabular-nums]"
+        role="toolbar"
+        aria-label={t('image.toolbar')}
+      >
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={t('image.zoomOut')}
+          disabled={!ready || view.scale <= IMAGE_MIN_SCALE}
+          onClick={() => saveView(zoomImage(view, view.scale / IMAGE_ZOOM_FACTOR))}
+        >
+          −
+        </Button>
+        <output data-testid="image-zoom" aria-label={t('image.zoom')}>
+          {Math.round(view.scale * IMAGE_PERCENT)}%
+        </output>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={t('image.zoomIn')}
+          disabled={!ready || view.scale >= IMAGE_MAX_SCALE}
+          onClick={() => saveView(zoomImage(view, view.scale * IMAGE_ZOOM_FACTOR))}
+        >
+          +
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!ready}
+          aria-pressed={view.mode === 'fit'}
+          onClick={() => saveView(fitImage(natural, viewport))}
+        >
+          {t('image.fit')}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!ready}
+          onClick={() => saveView({ mode: 'manual', scale: 1, x: 0, y: 0 })}
+        >
+          {t('image.actual')}
+        </Button>
+        {ready && (
+          <span data-testid="image-dimensions">
+            {natural.width} × {natural.height}
+          </span>
+        )}
         <span>{t('image.readonly')}</span>
       </div>
       <div
         ref={viewportRef}
-        className="vds-image-viewport"
+        className="relative flex min-h-0 min-w-0 flex-1 cursor-grab items-center justify-center overflow-hidden bg-[var(--vds-fill-3)] [touch-action:none] [user-select:none] data-[dragging=true]:cursor-grabbing [&>img]:pointer-events-none [&>img]:absolute [&>img]:left-1/2 [&>img]:top-1/2 [&>img]:max-h-none [&>img]:max-w-none [&>img]:[transform-origin:center]"
         data-testid="image-viewport"
         data-scale={view.scale}
         data-pan-x={view.x}
@@ -97,11 +151,15 @@ export function ImageDocument({ sessionId, tabId }: { sessionId: string; tabId: 
         }}
         onPointerMove={(event) => {
           const start = drag.current
-          if (start?.pointerId === event.pointerId) saveView(panImage(start.view, event.clientX - start.x, event.clientY - start.y))
+          if (start?.pointerId === event.pointerId)
+            saveView(panImage(start.view, event.clientX - start.x, event.clientY - start.y))
         }}
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
-        onLostPointerCapture={() => { drag.current = null; setDragging(false) }}
+        onLostPointerCapture={() => {
+          drag.current = null
+          setDragging(false)
+        }}
       >
         {url && !failed && (
           <img
@@ -119,13 +177,15 @@ export function ImageDocument({ sessionId, tabId }: { sessionId: string; tabId: 
               width: natural.width || undefined,
               height: natural.height || undefined,
               visibility: ready ? 'visible' : 'hidden',
-              transform: `translate(-50%, -50%) translate(${view.x}px, ${view.y}px) scale(${view.scale})`
+              transform: `translate(-50%, -50%) translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
             }}
           />
         )}
-        {(failed || !session || session.loadState === 'error')
-          ? <span role="alert">{t('image.error')}</span>
-          : !ready && <Spinner aria-label={t('image.loading')} />}
+        {failed || !session || session.loadState === 'error' ? (
+          <span role="alert">{t('image.error')}</span>
+        ) : (
+          !ready && <Spinner aria-label={t('image.loading')} />
+        )}
       </div>
     </div>
   )

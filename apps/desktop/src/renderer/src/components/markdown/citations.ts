@@ -1,6 +1,6 @@
 import type { Element, RootContent } from 'hast'
 
-import { isCitationUrl } from '../../contracts/citations'
+import { isCitationUrl } from '../../contracts/citations.ts'
 
 export const CITATION_MARKER = 'dataCitationMarker'
 export const CITATION_PENDING = 'dataCitationPending'

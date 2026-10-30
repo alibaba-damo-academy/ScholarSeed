@@ -7,11 +7,48 @@ import { linkAttr } from '@milkdown/kit/preset/commonmark'
 import { Schema, type Mark } from '@milkdown/kit/prose/model'
 import { EditorState, TextSelection } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
-import { configureCitationLinks, editDocumentLink } from './citations.ts'
+import { unified } from 'unified'
+import remarkParse from 'remark-parse'
+import { configureCitationLinks, editDocumentLink, projectNumericCitations } from './citations.ts'
 
 const schema = new Schema({
   nodes: { doc: { content: 'paragraph+' }, paragraph: { content: 'text*' }, text: {} },
   marks: { link: { attrs: { href: {}, title: { default: null } } }, strong: {} },
+})
+
+test('plain numeric citations link to matching bibliography entries without changing source', () => {
+  const source = [
+    '# Research review',
+    '正文[1]，以及组合引用[3,4]。`代码[1]` 和已有链接 [[1]](#existing) 不应改变。',
+    '',
+    '## 参考文献',
+    '[1] First paper.',
+    '',
+    '[3] Third paper.',
+    '',
+    '[4] Fourth paper.',
+  ].join('\n')
+  const tree = unified().use(remarkParse).parse(source)
+  projectNumericCitations(tree)
+  const paragraph = tree.children[1]
+  assert.equal(paragraph.type, 'paragraph')
+  assert.deepEqual(
+    paragraph.children.filter((child) => child.type === 'link').map((child) => child.url),
+    ['#ref-1', '#ref-3', '#ref-4', '#existing']
+  )
+  assert.equal(tree.children.some((child) => child.type === 'html'), false)
+  assert.equal(paragraph.children.find((child) => child.type === 'inlineCode')?.value, '代码[1]')
+  assert.equal(source.includes('](#ref-1)'), false)
+})
+
+test('unmatched numbers and documents without a bibliography remain ordinary text', () => {
+  for (const source of ['正文[1]。', '正文[2]。\n\n## References\n\n[1] First paper.']) {
+    const tree = unified().use(remarkParse).parse(source)
+    projectNumericCitations(tree)
+    assert.equal(tree.children[0].type, 'paragraph')
+    assert.equal(tree.children[0].children.some((child) => child.type === 'link'), false)
+    assert.equal(tree.children.some((child) => child.type === 'html'), false)
+  }
 })
 
 test('link projection keeps original citation and fragment URLs outside the sanitized href', () => {

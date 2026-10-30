@@ -333,6 +333,37 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(calls), 2)
 
+    async def test_cancel_during_rate_limit_wait_stops_requests(self) -> None:
+        waiting = asyncio.Event()
+        calls = []
+
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="access")
+
+        async def wait_for_cancel(_seconds):
+            waiting.set()
+            await asyncio.Event().wait()
+
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(429, json={"error": {"code": 429}})
+
+        registration = self.register(resolve)
+        transport, _ = self.transport(respond)
+        with (
+            transport,
+            patch("service.chat.service.completions.asyncio.sleep", new=wait_for_cancel),
+        ):
+            task = asyncio.create_task(
+                self.bridge.forward(registration.bridge_id, {"model": "model"})
+            )
+            await asyncio.wait_for(waiting.wait(), timeout=2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(self.bridge._calls)
+
     async def test_registered_product_error_code_passes_the_redaction_branch(self) -> None:
         async def resolve(owner, connection):
             return ModelCredential(api_key="secret-access")
@@ -366,7 +397,7 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
         with transport:
             response = await self.bridge.forward(registration.bridge_id, {"model": "model"})
         self.assertEqual(response.status_code, 429)
-        self.assertEqual(json.loads(response.body), {"error": {"code": "model_upstream_rejected"}})
+        self.assertEqual(json.loads(response.body), {"error": {"code": "rate_limit_exceeded"}})
         self.assertNotIn(b"secret-access", response.body)
 
     async def test_response_start_failure_closes_unstarted_stream(self) -> None:

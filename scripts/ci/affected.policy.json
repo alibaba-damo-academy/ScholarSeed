@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "fallbackCommand": "pnpm ops ci test --profile quality",
+  "fallbackReason": "映射不到定向测试时升级 L2（offline profile，自动启用 quarantine 快速通道）",
+  "pythonSuites": {
+    "discoverModule": "tests.run_all",
+    "discoverAttr": "SUITES"
+  },
+  "limits": {
+    "maxPythonSuitesPerCommand": 12,
+    "ipcFilePattern": "\\b(ipc|preload|handoff|bridge)\\b"
+  },
+  "rules": [
+    {
+      "id": "desktop-adjacent-unit",
+      "match": "^apps/desktop/.+\\.(ts|tsx|js|mjs|cjs)$",
+      "command": "cd apps/desktop && node --experimental-transform-types --test {files}",
+      "resolve": "adjacentTest",
+      "onMiss": "consumerImportScan"
+    },
+    {
+      "id": "serve-python-contracts",
+      "match": "^apps/serve/service/.+\\.py$",
+      "command": ".venv/bin/python -m tests.run_all --only-suite {suites}",
+      "cwd": "apps/serve",
+      "env": { "PYTHONPATH": "{root}" },
+      "resolve": "pythonSuiteBySourceStem"
+    },
+    {
+      "id": "root-python-contracts",
+      "match": "^tests/(contract|release|integration)/.+\\.py$|^packages/.+\\.py$",
+      "command": ".venv/bin/python -m tests.run_all --only-suite {suites}",
+      "cwd": "apps/serve",
+      "env": { "PYTHONPATH": "{root}" },
+      "resolve": "pythonSuiteBySourceStem"
+    }
+  ],
+  "ipc": {
+    "channelPattern": "(?:ipcMain\\.handle|webContents\\.send)\\(\\s*['\"]([^'\"]+)['\"]",
+    "consumerPatterns": ["ipcRenderer\\.invoke\\(\\s*['\"]{channel}['\"]", "invoke\\(\\s*['\"]{channel}['\"]"],
+    "scanRoots": ["apps/desktop/src"]
+  }
+}

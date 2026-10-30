@@ -68,6 +68,36 @@ class ClaimKind(str, Enum):
     ADVICE = "advice"
 
 
+class BindingRejection(str, Enum):
+    INVALID_BINDING = "invalid_binding"
+    UNKNOWN_SOURCE = "unknown_source"
+    PAGE_UNAVAILABLE = "page_unavailable"
+    INVALID_QUOTE = "invalid_quote"
+    QUOTE_TOO_LONG = "quote_too_long"
+    QUOTE_MISMATCH = "quote_mismatch"
+
+
+def binding_rejection(
+    binding: object, candidates: dict[str, dict], pages: dict[str, WebEvidencePage]
+) -> BindingRejection | None:
+    if not isinstance(binding, dict):
+        return BindingRejection.INVALID_BINDING
+    source_id = binding.get("source_id")
+    if not isinstance(source_id, str) or source_id not in candidates:
+        return BindingRejection.UNKNOWN_SOURCE
+    page = pages.get(source_id)
+    if page is None:
+        return BindingRejection.PAGE_UNAVAILABLE
+    evidence = binding.get("evidence_quote")
+    if not isinstance(evidence, str) or not evidence.strip():
+        return BindingRejection.INVALID_QUOTE
+    if len(evidence) > MAX_EVIDENCE_QUOTE_CHARACTERS:
+        return BindingRejection.QUOTE_TOO_LONG
+    if evidence not in page.text:
+        return BindingRejection.QUOTE_MISMATCH
+    return None
+
+
 def answer_segments(answer: str) -> dict[str, tuple[int, int]]:
     lines = answer.splitlines(keepends=True)
     offsets = [0]
@@ -135,6 +165,7 @@ def bind_claims(
         if source["kind"] == "searched"
     }
     unresolved: list[str] = []
+    rejected: dict[str, int] = {}
     supported = 0
     for claim in claims:
         if not isinstance(claim, dict):
@@ -160,20 +191,13 @@ def bind_claims(
         }
         attached = False
         for binding in bindings:
-            if not isinstance(binding, dict):
-                raise ValueError("invalid_review_binding")
-            source_id = binding.get("source_id")
-            evidence = binding.get("evidence_quote")
-            page = pages.get(source_id) if isinstance(source_id, str) else None
-            if (
-                page is None
-                or source_id not in candidates
-                or not isinstance(evidence, str)
-                or not evidence.strip()
-                or len(evidence) > MAX_EVIDENCE_QUOTE_CHARACTERS
-                or evidence not in page.text
-            ):
-                raise ValueError("invalid_review_evidence")
+            reason = binding_rejection(binding, candidates, pages)
+            if reason is not None:
+                rejected[reason.value] = rejected.get(reason.value, 0) + 1
+                continue
+            source_id = binding["source_id"]
+            evidence = binding["evidence_quote"]
+            page = pages[source_id]
             candidate = candidates[source_id]
             identity = canonical_url(candidate["url"])
             source = registered.get(identity)
@@ -206,12 +230,17 @@ def bind_claims(
             supported += 1
         else:
             unresolved.append(quote)
+    status = CoverageStatus.PARTIAL if unresolved or rejected else CoverageStatus.REVIEWED
+    if rejected and not supported:
+        status = CoverageStatus.UNAVAILABLE
     result["coverage"] = {
-        "status": CoverageStatus.PARTIAL.value if unresolved else CoverageStatus.REVIEWED.value,
+        "status": status.value,
         "unresolved": unresolved,
         "associated_claims": supported,
         "reviewed_claims": len(claims),
     }
+    if rejected:
+        result["coverage"]["rejected_bindings"] = rejected
     return result
 
 
@@ -317,6 +346,15 @@ class CitationCoverage:
                 response = await self._model.invoke(request)
                 if response.status == ModelInvocationStatus.COMPLETED:
                     result = bind_claims(answer, projection, pages, response.output_text)
+                    if result["coverage"].get("rejected_bindings"):
+                        LOGGER.warning(
+                            "citation_review_bindings_rejected invocation_id=%s status=%s "
+                            "associated_claims=%s rejected_bindings=%s",
+                            invocation_id,
+                            result["coverage"]["status"],
+                            result["coverage"]["associated_claims"],
+                            result["coverage"]["rejected_bindings"],
+                        )
                     result["coverage"]["unread_sources"] = len(candidates) - len(pages)
                     result["coverage"]["snippet_sources"] = sum(
                         page.origin == "search_excerpt" for page in pages.values()
@@ -324,7 +362,7 @@ class CitationCoverage:
                     result["coverage"]["truncated_sources"] = bool(
                         projection.get("coverage", {}).get("truncated_sources")
                     )
-                    if (
+                    if result["coverage"]["status"] != CoverageStatus.UNAVAILABLE.value and (
                         result["coverage"]["unread_sources"]
                         or result["coverage"]["snippet_sources"]
                         or result["coverage"]["truncated_sources"]

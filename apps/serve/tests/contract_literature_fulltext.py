@@ -1,17 +1,19 @@
-"""获取全文的离线契约: 两条腿只许报三类结果, 且分类不许撒谎。
+"""获取全文的离线契约: 两条腿共用四类结果, 超时不等于未找到。
 
 全部用 ``httpx.MockTransport`` 按 host 路由, 不出网。要钉住的是产品口径本身: 无论走
-arXiv 还是 DOI, 用户只会看到「未找到全文 / 无法访问 / 请求被限流」三种结果 —— 没有回应
+arXiv 还是 DOI, 用户只会看到「未找到全文 / 无法访问 / 请求被限流 / 超时」四种结果 —— 非超时传输失败
 和 404 是同一类, 要登录要付费和「拿到的不是 PDF」是同一类, 429 单独一类。上游行为的
 差异 (HTML 落地页 / 403 付费墙 / 标错 content-type / 限流) 才是这条链路的真实风险面。
 """
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import tempfile
 import threading
 import unittest
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,12 +22,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from apps.serve.tests import pdf as pdf_fixture
-from service.literature.api.catalogue import FULLTEXT_ERROR_MESSAGES
-from service.literature.api.routes import register_literature_routes
+from service.literature.api.catalogue import FULLTEXT_ERROR_MESSAGES, register_global_routes
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import FulltextStatus, LiteratureItem
-from service.literature.service import arxiv, fulltext
-from service.literature.service.arxiv import ARXIV_INVALID, ArxivDownloadError, fetch_arxiv_pdf
+from service.literature.service import arxiv, fulltext, transport
+from service.literature.service.arxiv import (
+    ARXIV_INVALID,
+    ArxivDownloadError,
+    arxiv_id_from_doi,
+    fetch_arxiv_pdf,
+)
 from service.literature.service.fulltext import (
     DOI_INVALID,
     FULLTEXT_IDENTIFIER_MISSING,
@@ -38,8 +44,18 @@ from service.literature.service.outcome import (
     FULLTEXT_NOT_FOUND,
     FULLTEXT_OUTCOMES,
     FULLTEXT_RATE_LIMITED,
+    FULLTEXT_TIMEOUT,
     OUTCOME_STATUS,
     PRECONDITION_STATUS,
+)
+from service.literature.service.transport import (
+    PLAIN_CONNECT_TIMEOUT_SECONDS,
+    PLAIN_READ_TIMEOUT_SECONDS,
+    PLAIN_TOTAL_TIMEOUT_SECONDS,
+    STREAM_CONNECT_TIMEOUT_SECONDS,
+    STREAM_READ_TIMEOUT_SECONDS,
+    STREAM_TOTAL_TIMEOUT_SECONDS,
+    binary_stream_timeout,
 )
 
 DOI = "10.1234/example"
@@ -54,11 +70,12 @@ LANDING_URL = "https://publisher.example/article"
 HTML_BODY = b"<html><body>landing page</body></html>"
 NOT_PDF_BODY = b"%PDF-1.7 but not really a pdf"
 
-# 三类结果的产品文案: 与前端 detail.fulltext* 的中英文逐字对应, 不许各写一套。
+# 获取结果的产品文案: 与前端 detail.fulltext* 的中英文逐字对应, 不许各写一套。
 OUTCOME_MESSAGES = {
     FULLTEXT_NOT_FOUND: "未找到全文",
     FULLTEXT_NO_ACCESS: "无法访问",
     FULLTEXT_RATE_LIMITED: "请求被限流",
+    FULLTEXT_TIMEOUT: "下载超时，请稍后重试",
 }
 
 
@@ -90,6 +107,31 @@ def work_payload(url: str | None, *, landing: str | None = LANDING_URL) -> dict:
     if landing is not None:
         location["landing_page_url"] = landing
     return {"ids": {"doi": f"https://doi.org/{DOI}"}, "primary_location": location}
+
+
+class TestStream(httpx.SyncByteStream, httpx.AsyncByteStream):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self:
+            yield chunk
+
+
+class InterruptedStream(TestStream):
+    def __iter__(self) -> Iterator[bytes]:
+        yield b"%PDF-partial"
+        raise httpx.ReadError("secret-exception-message") from ConnectionResetError(
+            errno.ECONNRESET, "secret-proxy-password"
+        )
+
+
+class AdvancingStream(TestStream):
+    def __init__(self, payload: bytes, clock: list[float], elapsed: float) -> None:
+        self.payload = payload
+        self.clock = clock
+        self.elapsed = elapsed
+
+    def __iter__(self) -> Iterator[bytes]:
+        self.clock[0] = self.elapsed
+        yield self.payload
 
 
 class Router:
@@ -161,14 +203,14 @@ def fetch_arxiv(router: Router) -> tuple[str, bytes]:
 
 
 class OutcomeVocabularyTests(unittest.TestCase):
-    def test_exactly_three_outcomes_carry_a_status_and_the_product_wording(self) -> None:
-        """三类结果是闭集: 少一类会漏报, 多一类前端就没有对应文案。"""
+    def test_exactly_four_outcomes_carry_a_status_and_the_product_wording(self) -> None:
+        """四类结果是闭集: 每个结果必须有对应文案。"""
 
         self.assertEqual(
             set(OUTCOME_STATUS),
-            {FULLTEXT_NOT_FOUND, FULLTEXT_NO_ACCESS, FULLTEXT_RATE_LIMITED},
+            {FULLTEXT_NOT_FOUND, FULLTEXT_NO_ACCESS, FULLTEXT_RATE_LIMITED, FULLTEXT_TIMEOUT},
         )
-        self.assertEqual(tuple(OUTCOME_STATUS.values()), (404, 403, 429))
+        self.assertEqual(tuple(OUTCOME_STATUS.values()), (404, 403, 429, 504))
         for outcome in FULLTEXT_OUTCOMES:
             with self.subTest(outcome=outcome):
                 self.assertEqual(FULLTEXT_ERROR_MESSAGES[outcome], OUTCOME_MESSAGES[outcome])
@@ -460,7 +502,7 @@ class FulltextIdentifierTests(unittest.TestCase):
             item = repository.save(LiteratureItem(id="doi-paper", title="Doi paper", doi=DOI))
             files = root / "attachments"
             app = FastAPI()
-            register_literature_routes(app)
+            register_global_routes(app)
             router = Router({**lookup(), PDF_HOST: pdf_response(payload)})
             transport = httpx.MockTransport(router.handler)
 
@@ -480,6 +522,12 @@ class FulltextIdentifierTests(unittest.TestCase):
                     "service.literature.persistence.files.SERVICE_LITERATURE_FILES_DIR",
                     files,
                 ),
+                # 主附件的暂存根归 attachment owner 持有 (attach_primary_pdf), 少指一个就会
+                # 把副本写进真实的 SCHOLARSEED_HOME。
+                patch(
+                    "service.literature.service.attachment.SERVICE_LITERATURE_FILES_DIR",
+                    files,
+                ),
                 patch(
                     "service.literature.api.catalogue.fetch_identifier_pdf",
                     side_effect=download,
@@ -495,12 +543,13 @@ class FulltextIdentifierTests(unittest.TestCase):
             self.assertIsNotNone(response.json()["primary_attachment"])
 
     def test_every_failure_code_reaches_the_client_with_its_own_status(self) -> None:
-        """三类结果各归各的状态与文案; 前置校验问题一律 400, 不混进获取失败。"""
+        """四类结果各归各的状态与文案; 前置校验问题一律 400, 不混进获取失败。"""
 
         expectations = {
             FULLTEXT_NOT_FOUND: 404,
             FULLTEXT_NO_ACCESS: 403,
             FULLTEXT_RATE_LIMITED: 429,
+            FULLTEXT_TIMEOUT: 504,
             ARXIV_INVALID: 400,
             DOI_INVALID: 400,
             FULLTEXT_IDENTIFIER_MISSING: 400,
@@ -510,7 +559,7 @@ class FulltextIdentifierTests(unittest.TestCase):
             repository = LiteratureRepository(root / "codes.sqlite3")
             item = repository.save(LiteratureItem(id="codes", title="Codes", doi=DOI))
             app = FastAPI()
-            register_literature_routes(app)
+            register_global_routes(app)
 
             for code, status in expectations.items():
                 with self.subTest(code=code):
@@ -534,6 +583,482 @@ class FulltextIdentifierTests(unittest.TestCase):
                     self.assertEqual(detail["message"], FULLTEXT_ERROR_MESSAGES[code])
                     if code in OUTCOME_MESSAGES:
                         self.assertEqual(detail["message"], OUTCOME_MESSAGES[code])
+
+
+class ArxivRegisteredDoiTests(unittest.TestCase):
+    """``10.48550/arXiv.*`` 这类 DOI: 先按 arXiv 取, 取不到再原样回落 DOI 腿。"""
+
+    ARXIV_DOI = f"10.48550/arXiv.{ARXIV_ID}"
+    LEGACY_DOI = "10.48550/arXiv.math/0211159"
+
+    def fetch(self, doi: str, router: Router) -> fulltext.FulltextDownload:
+        item = LiteratureItem(id="arxiv-doi", title="Preprint", doi=doi)
+        return fetch_identifier_pdf(item, transport=httpx.MockTransport(router.handler), environ={})
+
+    def test_derivation_recognizes_only_arxiv_registered_dois(self) -> None:
+        """派生只认 arXiv 自己注册的前缀; 认不出就返回空串, 不猜别的出版商 DOI。"""
+
+        self.assertEqual(arxiv_id_from_doi(self.ARXIV_DOI), ARXIV_ID)
+        self.assertEqual(arxiv_id_from_doi("10.48550/arxiv.1706.03762"), "1706.03762")
+        self.assertEqual(arxiv_id_from_doi(f"{self.ARXIV_DOI}v3"), f"{ARXIV_ID}v3")
+        self.assertEqual(arxiv_id_from_doi(self.LEGACY_DOI), "math/0211159")
+        for value in ("", DOI, "10.48550/example", "10.48550/arXiv.not-an-id"):
+            with self.subTest(value=value):
+                self.assertEqual(arxiv_id_from_doi(value), "")
+
+    def test_an_arxiv_registered_doi_never_queries_the_doi_leg(self) -> None:
+        payload = pdf_bytes()
+        router = Router(
+            {
+                ARXIV_HOST: pdf_response(payload),
+                **lookup(),
+                PDF_HOST: pdf_response(payload),
+            }
+        )
+
+        result = self.fetch(self.ARXIV_DOI, router)
+
+        self.assertEqual(result.content, payload)
+        self.assertEqual(router.urls(), [f"{arxiv.ARXIV_PDF_ROOT}/{ARXIV_ID}.pdf"])
+        # 不写回: 派生出来的标识只是这一次的取件路径, 库里仍然只有用户导入的那个 DOI。
+        self.assertIsNone(result.arxiv)
+        self.assertEqual(result.doi, self.ARXIV_DOI)
+
+    def test_a_legacy_arxiv_identifier_keeps_its_slash(self) -> None:
+        router = Router({ARXIV_HOST: pdf_response(pdf_bytes())})
+
+        self.fetch(self.LEGACY_DOI, router)
+
+        self.assertEqual(router.urls(), [f"{arxiv.ARXIV_PDF_ROOT}/math/0211159.pdf"])
+
+    def test_a_refused_arxiv_leg_falls_back_to_the_doi_leg(self) -> None:
+        """回落口径: arXiv 腿不成立时按原样走 DOI, 最坏情况不比现状差。"""
+
+        payload = pdf_bytes()
+        router = Router(
+            {
+                ARXIV_HOST: httpx.Response(404),
+                **lookup(),
+                PDF_HOST: pdf_response(payload),
+            }
+        )
+
+        result = self.fetch(self.ARXIV_DOI, router)
+
+        self.assertEqual(result.content, payload)
+        self.assertEqual(router.hosts(), [ARXIV_HOST, OPENALEX_HOST, PDF_HOST])
+        self.assertIsNone(result.arxiv)
+        self.assertEqual(result.doi, self.ARXIV_DOI)
+
+    def test_an_unusable_derived_identifier_never_reaches_arxiv(self) -> None:
+        router = Router(
+            {
+                ARXIV_HOST: pdf_response(pdf_bytes()),
+                **lookup(),
+                PDF_HOST: pdf_response(pdf_bytes()),
+            }
+        )
+
+        self.fetch("10.48550/arXiv.not-an-id", router)
+
+        self.assertEqual(router.hosts(), [OPENALEX_HOST, PDF_HOST])
+
+    def test_an_ordinary_doi_still_uses_the_doi_leg(self) -> None:
+        payload = pdf_bytes()
+        router = Router(
+            {
+                ARXIV_HOST: pdf_response(payload),
+                **lookup(),
+                PDF_HOST: pdf_response(payload),
+            }
+        )
+
+        result = self.fetch(DOI, router)
+
+        self.assertEqual(result.content, payload)
+        self.assertEqual(router.hosts(), [OPENALEX_HOST, PDF_HOST])
+        self.assertEqual(result.doi, DOI)
+
+
+class DownloadDiagnosticTests(unittest.TestCase):
+    def test_interrupted_stream_retains_response_status_and_safe_cause(self) -> None:
+        for module, fetch, host in (
+            (arxiv, fetch_arxiv, ARXIV_HOST),
+            (fulltext, fetch_doi, PDF_HOST),
+        ):
+            routes = {} if module is arxiv else lookup()
+            routes[host] = httpx.Response(
+                200, stream=InterruptedStream(), headers={"content-type": "application/pdf"}
+            )
+            with self.subTest(module=module.__name__):
+                with self.assertLogs(module.LOGGER, level="INFO") as captured:
+                    with self.assertRaises((ArxivDownloadError, FulltextDownloadError)):
+                        fetch(Router(routes))
+                output = "\n".join(captured.output)
+                self.assertIn("status=200 error=ReadError cause=ConnectionResetError", output)
+                self.assertIn(f"cause_errno={errno.ECONNRESET}", output)
+                self.assertNotIn("secret-exception-message", output)
+                self.assertNotIn("secret-proxy-password", output)
+
+    def test_arxiv_transport_failure_preserves_diagnostics_without_exception_message(self) -> None:
+        router = Router({ARXIV_HOST: httpx.ReadTimeout("secret-proxy-password")})
+        with self.assertLogs(arxiv.LOGGER, level="INFO") as captured:
+            with self.assertRaises(ArxivDownloadError) as caught:
+                fetch_arxiv(router)
+        output = "\n".join(captured.output)
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+        self.assertIn(f"arxiv={ARXIV_ID}", output)
+        self.assertIn("error=ReadTimeout", output)
+        self.assertIn("elapsed_seconds=", output)
+        self.assertNotIn("secret-proxy-password", output)
+
+    def test_arxiv_http_failure_records_status_and_final_host(self) -> None:
+        router = Router({ARXIV_HOST: httpx.Response(503)})
+        with self.assertLogs(arxiv.LOGGER, level="INFO") as captured:
+            with self.assertRaises(ArxivDownloadError):
+                fetch_arxiv(router)
+        output = "\n".join(captured.output)
+        self.assertIn("status=503", output)
+        self.assertIn(f"host={ARXIV_HOST}", output)
+
+    def test_doi_lookup_transport_failure_has_identifier_and_stage(self) -> None:
+        router = Router({OPENALEX_HOST: httpx.ConnectError("secret-proxy-password")})
+        with self.assertLogs(fulltext.LOGGER, level="INFO") as captured:
+            with self.assertRaises(FulltextDownloadError):
+                fetch_doi(router)
+        output = "\n".join(captured.output)
+        self.assertIn("fulltext lookup unreachable", output)
+        self.assertIn(f"doi={DOI}", output)
+        self.assertIn("error=ConnectError", output)
+        self.assertIn("elapsed_seconds=", output)
+        self.assertNotIn("secret-proxy-password", output)
+
+    def test_doi_pdf_protocol_failure_does_not_log_signed_url_or_exception_message(self) -> None:
+        url = f"https://user:secret-password@{PDF_HOST}/paper.pdf?token=secret-token"
+        router = Router(
+            {
+                **lookup(httpx.Response(200, json=work_payload(url))),
+                PDF_HOST: httpx.RemoteProtocolError("secret-exception-message"),
+            }
+        )
+        with self.assertLogs(fulltext.LOGGER, level="INFO") as captured:
+            with self.assertRaises(FulltextDownloadError) as caught:
+                fetch_doi(router)
+        output = "\n".join(captured.output)
+        self.assertEqual(caught.exception.code, FULLTEXT_NOT_FOUND)
+        self.assertIn("fulltext pdf unreachable", output)
+        self.assertIn(f"doi={DOI}", output)
+        self.assertIn(f"host={PDF_HOST}", output)
+        self.assertIn("error=RemoteProtocolError", output)
+        self.assertIn("elapsed_seconds=", output)
+        for secret in ("secret-password", "secret-token", "secret-exception-message"):
+            self.assertNotIn(secret, output)
+
+    def test_arxiv_total_budget_failure_is_distinct_from_transport_failure(self) -> None:
+        router = Router({ARXIV_HOST: pdf_response(pdf_bytes())})
+        with (
+            patch("service.literature.service.arxiv.STREAM_TOTAL_TIMEOUT_SECONDS", 0.0),
+            self.assertLogs(arxiv.LOGGER, level="INFO") as captured,
+            self.assertRaises(ArxivDownloadError),
+        ):
+            fetch_arxiv(router)
+        output = "\n".join(captured.output)
+        self.assertIn("error=TimeoutException", output)
+        self.assertIn("bytes=0", output)
+        self.assertIn(f"arxiv={ARXIV_ID}", output)
+
+    def test_doi_missing_pdf_and_success_are_observable(self) -> None:
+        with self.assertLogs(fulltext.LOGGER, level="INFO") as captured:
+            with self.assertRaises(FulltextDownloadError):
+                fetch_doi(Router(lookup(httpx.Response(200, json=work_payload(None)))))
+        self.assertIn(f"no primary pdf_url: doi={DOI}", "\n".join(captured.output))
+        for module, fetch, routes in (
+            (arxiv, fetch_arxiv, {ARXIV_HOST: pdf_response(pdf_bytes())}),
+            (fulltext, fetch_doi, {**lookup(), PDF_HOST: pdf_response(pdf_bytes())}),
+        ):
+            with self.subTest(module=module.__name__):
+                with self.assertLogs(module.LOGGER, level="INFO") as captured:
+                    fetch(Router(routes))
+                output = "\n".join(captured.output)
+                self.assertIn("acquired:", output)
+                self.assertIn("bytes=", output)
+                self.assertIn("elapsed_seconds=", output)
+
+
+class SlowDownloadTests(unittest.TestCase):
+    def test_arxiv_keeps_downloading_after_two_minutes(self) -> None:
+        clock = [0.0]
+        payload = pdf_bytes()
+
+        class SlowStream(TestStream):
+            def __iter__(self) -> Iterator[bytes]:
+                clock[0] = 121.0
+                yield payload
+
+        router = Router({ARXIV_HOST: httpx.Response(200, stream=SlowStream())})
+        with patch.object(transport.time, "monotonic", side_effect=lambda: clock[0]):
+            _, result = fetch_arxiv(router)
+        self.assertEqual(result, payload)
+
+    def test_arxiv_checks_budget_when_stream_ends_without_another_chunk(self) -> None:
+        clock = [0.0]
+        payload = pdf_bytes()
+
+        class LateEof(TestStream):
+            def __iter__(self) -> Iterator[bytes]:
+                yield payload
+                clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS + 1.0
+
+        router = Router({ARXIV_HOST: httpx.Response(200, stream=LateEof())})
+        with (
+            patch.object(transport.time, "monotonic", side_effect=lambda: clock[0]),
+            self.assertRaises(ArxivDownloadError) as caught,
+        ):
+            fetch_arxiv(router)
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+
+    def test_fulltext_timeout_is_not_resource_not_found(self) -> None:
+        for fetch, routes in (
+            (fetch_arxiv, {ARXIV_HOST: httpx.ReadTimeout("stalled")}),
+            (fetch_doi, {OPENALEX_HOST: httpx.ConnectTimeout("stalled")}),
+            (fetch_doi, {**lookup(), PDF_HOST: httpx.ReadTimeout("stalled")}),
+            (fetch_arxiv, {ARXIV_HOST: httpx.Response(504)}),
+            (fetch_doi, {OPENALEX_HOST: httpx.Response(408)}),
+        ):
+            with self.subTest(fetch=fetch.__name__, routes=tuple(routes)):
+                with self.assertRaises((ArxivDownloadError, FulltextDownloadError)) as caught:
+                    fetch(Router(routes))
+                self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+
+    def test_doi_pdf_can_cross_two_minutes_but_not_the_shared_budget(self) -> None:
+        payload = pdf_bytes()
+        for elapsed, succeeds in ((121.0, True), (STREAM_TOTAL_TIMEOUT_SECONDS + 1.0, False)):
+            clock = [0.0]
+
+            router = Router(
+                {
+                    **lookup(),
+                    PDF_HOST: httpx.Response(
+                        200,
+                        stream=AdvancingStream(payload, clock, elapsed),
+                        headers={"content-type": "application/pdf"},
+                    ),
+                }
+            )
+            with (
+                self.subTest(elapsed=elapsed),
+                patch.object(transport.time, "monotonic", side_effect=lambda clock=clock: clock[0]),
+            ):
+                if succeeds:
+                    self.assertEqual(fetch_doi(router)[1], payload)
+                else:
+                    with self.assertRaises(FulltextDownloadError) as caught:
+                        fetch_doi(router)
+                    self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+
+    def test_redirects_cannot_reset_budget_or_start_after_it_expires(self) -> None:
+        clock = [0.0]
+
+        def redirect(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.extensions["timeout"]["read"], 5.0)
+            clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS + 1.0
+            return httpx.Response(302, headers={"location": "https://export.arxiv.org/pdf/test"})
+
+        router = Router({ARXIV_HOST: redirect})
+        with (
+            patch.object(transport.time, "monotonic", side_effect=lambda: clock[0]),
+            self.assertRaises(ArxivDownloadError) as caught,
+        ):
+            fetch_arxiv(router)
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+        self.assertEqual(router.count(), 1)
+
+    def test_redirect_phase_timeouts_are_clamped_to_remaining_budget(self) -> None:
+        clock = [0.0]
+
+        def redirect(request: httpx.Request) -> httpx.Response:
+            clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS - 1.0
+            return httpx.Response(302, headers={"location": "https://export.arxiv.org/pdf/test"})
+
+        def final(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(
+                request.extensions["timeout"],
+                dict.fromkeys(("connect", "read", "write", "pool"), 1.0),
+            )
+            return pdf_response(pdf_bytes())
+
+        router = Router({ARXIV_HOST: redirect, "export.arxiv.org": final})
+        with patch.object(transport.time, "monotonic", side_effect=lambda: clock[0]):
+            fetch_arxiv(router)
+        self.assertEqual(router.count(), 2)
+
+    def test_derived_arxiv_fallback_shares_original_deadline(self) -> None:
+        clock = [0.0]
+
+        def arxiv_missing(request: httpx.Request) -> httpx.Response:
+            clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS - 10.0
+            return httpx.Response(404)
+
+        def late_pdf(request: httpx.Request) -> httpx.Response:
+            clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS + 1.0
+            return pdf_response(pdf_bytes())
+
+        router = Router({ARXIV_HOST: arxiv_missing, **lookup(), PDF_HOST: late_pdf})
+        item = LiteratureItem(id="shared-budget", title="Shared", doi=f"10.48550/arXiv.{ARXIV_ID}")
+        with (
+            patch.object(transport.time, "monotonic", side_effect=lambda: clock[0]),
+            self.assertRaises(FulltextDownloadError) as caught,
+        ):
+            fetch_identifier_pdf(item, transport=httpx.MockTransport(router.handler))
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+        self.assertEqual(router.hosts(), [ARXIV_HOST, OPENALEX_HOST, PDF_HOST])
+
+    def test_arxiv_active_stream_still_stops_at_total_budget(self) -> None:
+        clock = [0.0]
+
+        class DripStream(TestStream):
+            def __iter__(self) -> Iterator[bytes]:
+                clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS - 1.0
+                yield b"%PDF-"
+                clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS + 1.0
+                yield b"partial"
+
+        router = Router({ARXIV_HOST: httpx.Response(200, stream=DripStream())})
+        with (
+            patch.object(transport.time, "monotonic", side_effect=lambda: clock[0]),
+            self.assertRaises(ArxivDownloadError) as caught,
+        ):
+            fetch_arxiv(router)
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+
+    def test_total_budget_cancels_waiting_body_including_redirect_body(self) -> None:
+        for status in (200, 302):
+            closed = []
+
+            class WaitingStream(httpx.AsyncByteStream):
+                def __init__(self, closed: list[bool]) -> None:
+                    self.closed = closed
+
+                async def __aiter__(self) -> AsyncIterator[bytes]:
+                    yield b"%PDF-partial"
+                    await asyncio.Event().wait()
+
+                async def aclose(self) -> None:
+                    self.closed.append(True)
+
+            headers = {"location": "https://export.arxiv.org/pdf/test"} if status == 302 else {}
+            router = Router(
+                {ARXIV_HOST: httpx.Response(status, headers=headers, stream=WaitingStream(closed))}
+            )
+            with (
+                self.subTest(status=status),
+                patch.object(arxiv, "STREAM_TOTAL_TIMEOUT_SECONDS", 0.02),
+                self.assertRaises(ArxivDownloadError) as caught,
+            ):
+                fetch_arxiv(router)
+            self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+            self.assertEqual(router.count(), 1)
+            self.assertTrue(closed)
+
+    def test_total_budget_cancels_waiting_response_headers(self) -> None:
+        async def waiting(request: httpx.Request) -> httpx.Response:
+            await asyncio.Event().wait()
+            return pdf_response(pdf_bytes())
+
+        with (
+            patch.object(arxiv, "STREAM_TOTAL_TIMEOUT_SECONDS", 0.02),
+            self.assertRaises(ArxivDownloadError) as caught,
+        ):
+            fetch_arxiv_pdf(ARXIV_ID, transport=httpx.MockTransport(waiting))
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+
+    def test_pdf_validation_cannot_publish_a_late_success(self) -> None:
+        for module, fetch, routes in (
+            (arxiv, fetch_arxiv, {ARXIV_HOST: pdf_response(pdf_bytes())}),
+            (fulltext, fetch_doi, {**lookup(), PDF_HOST: pdf_response(pdf_bytes())}),
+        ):
+            clock = [0.0]
+
+            def late_validation(payload: bytes, clock: list[float] = clock) -> None:
+                clock[0] = STREAM_TOTAL_TIMEOUT_SECONDS + 1.0
+
+            with (
+                self.subTest(module=module.__name__),
+                patch.object(transport.time, "monotonic", side_effect=lambda clock=clock: clock[0]),
+                patch.object(module, "extract_pdf_metadata", side_effect=late_validation),
+                self.assertLogs(module.LOGGER, level="INFO") as captured,
+                self.assertRaises((ArxivDownloadError, FulltextDownloadError)) as caught,
+            ):
+                fetch(Router(routes))
+            self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+            self.assertNotIn("acquired:", "\n".join(captured.output))
+
+
+class TotalBudgetTests(unittest.TestCase):
+    """两条腿的 total 预算: 5/5/10 问元数据, 5/5/300 下 PDF。
+
+    总预算取消作用域覆盖网络读取，并在数据块和EOF核对截止点。
+    把预算压到 0 可确定性验证到期拒绝新请求，超时必须区别于未找到全文。
+    """
+
+    def test_the_doi_lookup_gives_up_at_its_plain_total_budget(self) -> None:
+        router = Router(lookup())
+
+        with (
+            patch("service.literature.service.fulltext.PLAIN_TOTAL_TIMEOUT_SECONDS", 0.0),
+            self.assertRaises(FulltextDownloadError) as caught,
+        ):
+            fetch_doi(router)
+
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+        # 预算已用完时不许开始新的查询或下载请求。
+        self.assertEqual(router.hosts(), [])
+
+    def test_the_pdf_download_gives_up_at_its_stream_total_budget(self) -> None:
+        router = Router({**lookup(), PDF_HOST: pdf_response(pdf_bytes())})
+
+        with (
+            patch("service.literature.service.fulltext.STREAM_TOTAL_TIMEOUT_SECONDS", 0.0),
+            self.assertRaises(FulltextDownloadError) as caught,
+        ):
+            fetch_doi(router)
+
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+        self.assertEqual(router.hosts(), [])
+
+    def test_the_arxiv_download_gives_up_at_its_stream_total_budget(self) -> None:
+        router = Router({ARXIV_HOST: pdf_response(pdf_bytes())})
+
+        with (
+            patch("service.literature.service.arxiv.STREAM_TOTAL_TIMEOUT_SECONDS", 0.0),
+            self.assertRaises(ArxivDownloadError) as caught,
+        ):
+            fetch_arxiv(router)
+
+        self.assertEqual(caught.exception.code, FULLTEXT_TIMEOUT)
+
+    def test_the_two_payload_shapes_are_pinned_to_their_phases(self) -> None:
+        """常量就是口径本身: 改数值必须同时改这条契约。"""
+
+        self.assertEqual(
+            (
+                PLAIN_CONNECT_TIMEOUT_SECONDS,
+                PLAIN_READ_TIMEOUT_SECONDS,
+                PLAIN_TOTAL_TIMEOUT_SECONDS,
+            ),
+            (5.0, 5.0, 10.0),
+        )
+        self.assertEqual(
+            (
+                STREAM_CONNECT_TIMEOUT_SECONDS,
+                STREAM_READ_TIMEOUT_SECONDS,
+                STREAM_TOTAL_TIMEOUT_SECONDS,
+            ),
+            (5.0, 5.0, 300.0),
+        )
+        phases = binary_stream_timeout()
+        self.assertEqual(phases.connect, STREAM_CONNECT_TIMEOUT_SECONDS)
+        self.assertEqual(phases.read, STREAM_READ_TIMEOUT_SECONDS)
 
 
 if __name__ == "__main__":

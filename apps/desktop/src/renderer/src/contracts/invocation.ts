@@ -19,7 +19,7 @@ export type AgentInvocationSandbox = 'read-only' | 'workspace-write' | 'danger-f
 export type AgentInvocationReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
 export interface AgentInvocationExecution {
-  web_search: boolean
+  web_search: boolean | 'optional'
   sandbox: AgentInvocationSandbox
   network_access: boolean
   reasoning_effort: AgentInvocationReasoningEffort | null

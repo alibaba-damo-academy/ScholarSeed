@@ -1,4 +1,4 @@
-"""Durable Assistant actions executed through isolated Agent turns."""
+"""Durable Assistant actions executed through tool-free model invocations."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from service.assistant.persistence.invocations import (
     AssistantInvocationRecord,
     AssistantInvocationStore,
 )
+from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.platform.inference import (
     ModelAttachment,
     ModelInvocationEvent,
@@ -162,12 +163,14 @@ class AssistantActionService:
         self,
         store: AssistantInvocationStore,
         *,
+        activities: Activities,
         model: OneShotModelProvider | None = None,
         compilers: tuple[AssistantActionCompiler, ...] | None = None,
     ) -> None:
+        self._activities = activities
         self._store = store
         self._model = model
-        self._active: set[str] = set()
+        self._active: dict[str, ActivityLease] = {}
         self._cancel_requested: set[str] = set()
         registered = compilers or (TranslationCompiler(),)
         self._compilers = {compiler.kind: compiler for compiler in registered}
@@ -313,113 +316,116 @@ class AssistantActionService:
         request_hash: str,
         observer: ModelInvocationObserver | None = None,
     ) -> AssistantInvocationRecord:
-        self._validate_input(compiled)
-        self._validate_retry(
-            owner_id=owner_id,
-            client_action_id=client_action_id,
-            client_attempt_id=client_attempt_id,
-            retry_of_attempt_id=retry_of_attempt_id,
-            kind=kind,
-        )
-        record, created = self._store.claim(
-            AssistantInvocationRecord(
-                invocation_id=uuid.uuid4().hex,
+        with self._activities.enter(ActivityDomain.ACTION) as activity:
+            self._validate_input(compiled)
+            self._validate_retry(
                 owner_id=owner_id,
                 client_action_id=client_action_id,
                 client_attempt_id=client_attempt_id,
                 retry_of_attempt_id=retry_of_attempt_id,
-                kind=kind.value,
-                request_hash=request_hash,
-                project_id=project_id,
-                source_id=source_id,
-                source_revision=source_revision,
-                prompt_version=compiled.prompt_version,
-                status=ModelInvocationStatus.PENDING,
-                target_language=compiled.target_language,
+                kind=kind,
             )
-        )
-        if not created:
-            return record
-        model = self._model
-        if model is None or not model.available():
-            return self._fail(record, ACTION_RUNTIME_UNAVAILABLE)
-        running = self._store.save(replace(record, status=ModelInvocationStatus.RUNNING))
-        self._active.add(record.invocation_id)
-
-        async def observe(event: ModelInvocationEvent) -> None:
-            if (
-                event.kind is ModelInvocationEventKind.STARTED
-                and record.invocation_id in self._cancel_requested
-            ):
-                await model.cancel(invocation_id=record.invocation_id, owner_id=owner_id)
-            if observer is not None:
-                await observer(event)
-
-        try:
-            if observer is not None:
-                await observer(
-                    ModelInvocationEvent(record.invocation_id, ModelInvocationEventKind.ACCEPTED)
-                )
-            result = await model.invoke(
-                ModelInvocationRequest(
-                    invocation_id=record.invocation_id,
+            record, created = self._store.claim(
+                AssistantInvocationRecord(
+                    invocation_id=uuid.uuid4().hex,
                     owner_id=owner_id,
+                    client_action_id=client_action_id,
+                    client_attempt_id=client_attempt_id,
+                    retry_of_attempt_id=retry_of_attempt_id,
+                    kind=kind.value,
+                    request_hash=request_hash,
                     project_id=project_id,
-                    purpose=compiled.purpose,
-                    model_key=model_key,
-                    instructions=compiled.instructions,
-                    input_text=compiled.input_text,
-                    limits=ModelInvocationLimits(
-                        max_input_chars=compiled.max_input_chars,
-                        max_output_tokens=compiled.max_output_tokens,
+                    source_id=source_id,
+                    source_revision=source_revision,
+                    prompt_version=compiled.prompt_version,
+                    status=ModelInvocationStatus.PENDING,
+                    target_language=compiled.target_language,
+                )
+            )
+            if not created:
+                return record
+            model = self._model
+            if model is None or not model.available():
+                return self._fail(record, ACTION_RUNTIME_UNAVAILABLE)
+            running = self._store.save(replace(record, status=ModelInvocationStatus.RUNNING))
+            self._active[record.invocation_id] = activity
+
+            async def observe(event: ModelInvocationEvent) -> None:
+                if (
+                    event.kind is ModelInvocationEventKind.STARTED
+                    and record.invocation_id in self._cancel_requested
+                ):
+                    await model.cancel(invocation_id=record.invocation_id, owner_id=owner_id)
+                if observer is not None:
+                    await observer(event)
+
+            try:
+                if observer is not None:
+                    await observer(
+                        ModelInvocationEvent(
+                            record.invocation_id, ModelInvocationEventKind.ACCEPTED
+                        )
+                    )
+                result = await model.invoke(
+                    ModelInvocationRequest(
+                        invocation_id=record.invocation_id,
+                        owner_id=owner_id,
+                        project_id=project_id,
+                        purpose=compiled.purpose,
+                        model_key=model_key,
+                        instructions=compiled.instructions,
+                        input_text=compiled.input_text,
+                        limits=ModelInvocationLimits(
+                            max_input_chars=compiled.max_input_chars,
+                            max_output_tokens=compiled.max_output_tokens,
+                        ),
+                        trace_attributes={
+                            "action_kind": kind.value,
+                            "prompt_version": compiled.prompt_version,
+                            "project_id": project_id,
+                            "source_revision": source_revision or "",
+                        },
+                        attachments=compiled.attachments,
+                        json_output=compiled.json_output,
+                        reasoning_policy=compiled.reasoning_policy,
                     ),
-                    trace_attributes={
-                        "action_kind": kind.value,
-                        "prompt_version": compiled.prompt_version,
-                        "project_id": project_id,
-                        "source_revision": source_revision or "",
-                    },
-                    attachments=compiled.attachments,
-                    json_output=compiled.json_output,
-                    reasoning_policy=compiled.reasoning_policy,
-                ),
-                **({"observer": observe} if observer is not None else {}),
+                    **({"observer": observe} if observer is not None else {}),
+                )
+            except asyncio.CancelledError:
+                self._fail(running, ACTION_RUNTIME_FAILED, status=ModelInvocationStatus.UNKNOWN)
+                raise
+            except Exception as exc:  # noqa: BLE001 - persist a redacted runtime failure
+                return self._fail(
+                    running,
+                    ACTION_RUNTIME_FAILED,
+                    detail=type(exc).__name__,
+                    status=ModelInvocationStatus.UNKNOWN,
+                )
+            finally:
+                self._active.pop(record.invocation_id, None)
+                self._cancel_requested.discard(record.invocation_id)
+            if result.invocation_id != record.invocation_id:
+                return self._fail(
+                    running,
+                    ACTION_INVOCATION_INVALID,
+                    status=ModelInvocationStatus.UNKNOWN,
+                )
+            return self._store.save(
+                replace(
+                    running,
+                    status=result.status,
+                    detected_source_language=(
+                        compiled.source_language if compiled.source_language != "auto" else ""
+                    ),
+                    model_key=result.model_key,
+                    output_text=result.output_text,
+                    error_code=result.error_code,
+                    error_detail=result.error_detail,
+                    input_tokens=result.usage.input_tokens,
+                    output_tokens=result.usage.output_tokens,
+                    receipt_id=result.usage.receipt_id,
+                )
             )
-        except asyncio.CancelledError:
-            self._fail(running, ACTION_RUNTIME_FAILED, status=ModelInvocationStatus.UNKNOWN)
-            raise
-        except Exception as exc:  # noqa: BLE001 - persist a redacted runtime failure
-            return self._fail(
-                running,
-                ACTION_RUNTIME_FAILED,
-                detail=type(exc).__name__,
-                status=ModelInvocationStatus.UNKNOWN,
-            )
-        finally:
-            self._active.discard(record.invocation_id)
-            self._cancel_requested.discard(record.invocation_id)
-        if result.invocation_id != record.invocation_id:
-            return self._fail(
-                running,
-                ACTION_INVOCATION_INVALID,
-                status=ModelInvocationStatus.UNKNOWN,
-            )
-        return self._store.save(
-            replace(
-                running,
-                status=result.status,
-                detected_source_language=(
-                    compiled.source_language if compiled.source_language != "auto" else ""
-                ),
-                model_key=result.model_key,
-                output_text=result.output_text,
-                error_code=result.error_code,
-                error_detail=result.error_detail,
-                input_tokens=result.usage.input_tokens,
-                output_tokens=result.usage.output_tokens,
-                receipt_id=result.usage.receipt_id,
-            )
-        )
 
     def get(self, invocation_id: str, owner_id: str) -> AssistantInvocationRecord | None:
         return self._store.get(invocation_id, owner_id)
@@ -427,10 +433,11 @@ class AssistantActionService:
     async def cancel(self, *, invocation_id: str, owner_id: str) -> bool:
         if self._store.get(invocation_id, owner_id) is None or invocation_id not in self._active:
             return False
-        self._cancel_requested.add(invocation_id)
-        if self._model is not None:
-            await self._model.cancel(invocation_id=invocation_id, owner_id=owner_id)
-        return True
+        with self._activities.continue_from(self._active[invocation_id], ActivityDomain.ACTION):
+            self._cancel_requested.add(invocation_id)
+            if self._model is not None:
+                await self._model.cancel(invocation_id=invocation_id, owner_id=owner_id)
+            return True
 
     def _validate_retry(
         self,

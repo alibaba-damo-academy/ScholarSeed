@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from pathlib import PurePath
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -10,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from service.content.domain.model import ContentError
 from service.content.service.spreadsheet import (
+    CSV_SUFFIX,
     SpreadsheetRangeError,
     SpreadsheetRangeTooLarge,
     read_spreadsheet_range,
@@ -34,7 +37,7 @@ from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
 from service.platform.ranges import parse_byte_range
 from service.platform.records import EMPTY_RECORDS, ProjectPdfRecordPort, RecordOwner, RecordTarget
 from service.platform.resources import ResourceManagedCopyPort
-from service.platform.workbench import DocumentFormatPort
+from service.platform.workbench import DocumentFormatPort, DocumentFormatProjection
 from service.workbench.service.regions import crop as crop_region
 from service.workbench.service.regions import manifest as region_manifest
 from service.workbench.service.regions import region as resolve_region
@@ -80,12 +83,24 @@ CONTENT_ERROR_MESSAGE = {
     "file_not_found": "附件文件不存在",
     "prepared_content_unavailable": "附件内容尚不可用",
 }
+
+
 RETRYABLE_CONTENT_ERRORS = frozenset(
     {
         "literature_attachment_unreadable",
         "prepared_content_unavailable",
     }
 )
+
+
+def _attachment_projection(
+    formats: DocumentFormatPort, name: str, payload: bytes
+) -> DocumentFormatProjection:
+    """CSV editing belongs to project files; literature copies retain their readonly contract."""
+    projection = formats.project(name, payload)
+    if PurePath(name).suffix.lower() == CSV_SUFFIX:
+        return replace(projection, can_edit=False, can_save=False, can_edit_artifact=False)
+    return projection
 
 
 class SelectionSnapshotRequest(BaseModel):
@@ -167,7 +182,7 @@ def register_reading_routes(
             data, media_type, revision = attachments.read_attachment(literature_id, attachment_id)
         except ContentError as error:
             raise _content_error(error) from error
-        projection = formats.project(attachment.name, data)
+        projection = _attachment_projection(formats, attachment.name, data)
         return Response(
             content=json.dumps(
                 {
@@ -294,12 +309,13 @@ def register_reading_routes(
         request: Request,
         revision: str = Query(...),
         page: int = Query(..., ge=1),
+        quad: list[float] | None = Query(default=None),
     ) -> Response:
         try:
             document = attachment_document(literature_id, attachment_id)
             if document.revision != revision:
                 raise HTTPException(409, "source_revision_conflict")
-            selected = resolve_region(_pdf_indexes(request), document, page, region_id)
+            selected = resolve_region(_pdf_indexes(request), document, page, region_id, quad)
             return Response(crop_region(document.payload, selected), media_type="image/png")
         except ContentError as error:
             raise _content_error(error) from error
@@ -330,8 +346,8 @@ def register_reading_routes(
             current, _media_type, _revision = attachments.read_attachment(
                 literature_id, attachment_id
             )
-            current_projection = formats.project(attachment.name, current)
-            replacement_projection = formats.project(attachment.name, bytes(body))
+            current_projection = _attachment_projection(formats, attachment.name, current)
+            replacement_projection = _attachment_projection(formats, attachment.name, bytes(body))
             if not current_projection.can_save:
                 raise ContentError("literature_attachment_read_only")
             if (

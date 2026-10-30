@@ -24,6 +24,7 @@ from service.literature.service.analysis import (
     AnalysisRequest,
     PreparedAnalysis,
 )
+from service.platform.activity import Activities
 from service.platform.inference import ModelInvocationStatus
 
 
@@ -59,7 +60,12 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                 patch("service.literature.api.analysis.request_user_id", return_value="owner"),
             ):
                 register_analysis_routes(
-                    app, actions=Mock(), tasks=tasks, models=models, pdf=Mock()
+                    app,
+                    activities=Activities(),
+                    actions=Mock(),
+                    tasks=tasks,
+                    models=models,
+                    pdf=Mock(),
                 )
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -201,7 +207,12 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                     patch("service.literature.api.analysis.prepare", return_value=prepared),
                 ):
                     register_analysis_routes(
-                        app, actions=actions, tasks=tasks, models=models, pdf=Mock()
+                        app,
+                        activities=Activities(),
+                        actions=actions,
+                        tasks=tasks,
+                        models=models,
+                        pdf=Mock(),
                     )
                     async with httpx.AsyncClient(
                         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -239,7 +250,12 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                     )
                     restored_app = FastAPI()
                     register_analysis_routes(
-                        restored_app, actions=actions, tasks=reopened, models=models, pdf=Mock()
+                        restored_app,
+                        activities=Activities(),
+                        actions=actions,
+                        tasks=reopened,
+                        models=models,
+                        pdf=Mock(),
                     )
                     async with httpx.AsyncClient(
                         transport=httpx.ASGITransport(app=restored_app), base_url="http://test"

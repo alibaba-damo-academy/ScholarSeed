@@ -178,14 +178,24 @@ def decode_evidence(
 def session_trace_paths(session_id: str, trace_dir: Path = TRACE_DIR) -> tuple[Path, ...]:
     """Find traces for one safe product session without assuming a runtime vendor."""
 
-    if not session_id or Path(session_id).name != session_id:
+    if not session_id or not all(
+        character.isalnum() or character in "-_" for character in session_id
+    ):
         return ()
     suffix = f"-{session_id}.jsonl"
     try:
-        candidates = tuple(trace_dir.glob(f"{PRODUCT_TRACE_NAMESPACE}-*{suffix}"))
+        root = trace_dir.resolve(strict=True)
+        candidates = tuple(trace_dir.glob(f"*{suffix}"))
+        return tuple(
+            path
+            for path in candidates
+            if path.is_file()
+            and not path.is_symlink()
+            and path.name.endswith(suffix)
+            and path.resolve().is_relative_to(root)
+        )
     except OSError:
         return ()
-    return tuple(path for path in candidates if path.is_file() and path.name.endswith(suffix))
 
 
 class TraceKind(str, Enum):
@@ -519,6 +529,8 @@ class SessionTrace:
         instruction_chars: int,
         input_chars: int,
         skill_identity: Mapping[str, str] | None,
+        required_capabilities: tuple[str, ...] = (),
+        optional_capabilities: tuple[str, ...] = (),
     ) -> None:
         """Start one non-Session model action without recording its input."""
 
@@ -540,6 +552,8 @@ class SessionTrace:
                 "instruction_chars": instruction_chars,
                 "input_chars": input_chars,
                 "skill": skill or None,
+                "required_capabilities": list(required_capabilities),
+                "optional_capabilities": list(optional_capabilities),
             },
         )
 
@@ -553,6 +567,7 @@ class SessionTrace:
         status: str,
         input_tokens: int,
         output_tokens: int,
+        runtime_capabilities: Mapping[str, str] | None = None,
     ) -> None:
         """Record one bounded model result so DamoATrace can query usage by invocation."""
 
@@ -568,6 +583,7 @@ class SessionTrace:
                 "vendor_thread_id": vendor_thread_id,
                 "vendor_turn_id": vendor_turn_id,
                 "invocation_status": status,
+                "runtime_capabilities": dict(runtime_capabilities or {}),
                 "usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,

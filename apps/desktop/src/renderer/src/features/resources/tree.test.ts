@@ -10,10 +10,10 @@ test('resource tree refreshes bypass the browser cache', async () => {
     let cache: RequestCache | undefined
     globalThis.fetch = async (_url, init) => {
       cache = init?.cache
-      return Response.json({ root: '/project', nodes: [], total: 0, offset: 0, linked_roots: {} })
+      return Response.json({ root: '/project', resource_root: '/project/resources', nodes: [], total: 0, offset: 0, linked_roots: {} })
     }
     assert.deepEqual(await fetchResourceTree('project'), {
-      root: '/project', nodes: [], total: 0, offset: 0
+      root: '/project', resourceRoot: '/project/resources', nodes: [], total: 0, offset: 0
     })
     assert.equal(cache, 'no-store')
   } finally {

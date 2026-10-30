@@ -21,6 +21,8 @@ NATIVE_HARNESS_WORK = "assistant"
 
 PRODUCT_SESSION_STATE_STARTING = "starting"
 PRODUCT_SESSION_STATE_IDLE = "idle"
+PRODUCT_SESSION_STATE_FAILED = "failed"
+PRODUCT_RECOVERY_BLOCKED_KEY_PREFIX = "recovery-blocked"
 PRODUCT_SESSION_STATE_RUNNING = "running"
 PRODUCT_SESSION_STATE_WAITING = "waiting"
 PRODUCT_SESSION_STATE_INTERRUPTED = "interrupted"
@@ -30,6 +32,7 @@ PRODUCT_SESSION_STATE_CLOSED = "closed"
 PRODUCT_EVENT_SESSION_STATE = "session_state"
 PRODUCT_EVENT_SESSION_TITLE_UPDATED = "session_title_updated"
 PRODUCT_EVENT_USER_MESSAGE = "user_message"
+PRODUCT_EVENT_RECOVERY_CHECKPOINT = "recovery_checkpoint"
 PRODUCT_EVENT_MESSAGE_QUEUED = "message_queued"
 QUEUED_ASSISTANT_REFERENCES = "assistant_references"
 PRODUCT_EVENT_MESSAGE_UPDATED = "message_updated"
@@ -50,6 +53,7 @@ PRODUCT_EVENT_TOOL_STARTED = "tool_started"
 PRODUCT_EVENT_TOOL_OUTPUT_DELTA = "tool_output_delta"
 PRODUCT_EVENT_TOOL_COMPLETED = "tool_completed"
 PRODUCT_EVENT_HISTORY_RETRIEVED = "history_retrieved"
+AUTOMATIC_CRASH_RETRY = "automatic_crash_retry"
 PRODUCT_EVENT_WEB_SEARCH_STARTED = "web_search_started"
 PRODUCT_EVENT_WEB_SEARCH_COMPLETED = "web_search_completed"
 PRODUCT_EVENT_SOURCE_CANDIDATES = "source_candidates"
@@ -67,6 +71,9 @@ PRODUCT_EVENT_SUBAGENT_FAILED = "subagent_failed"
 PRODUCT_EVENT_SUBAGENT_INTERRUPTED = "subagent_interrupted"
 PRODUCT_EVENT_PLAN_SNAPSHOT = "plan_snapshot"
 PRODUCT_EVENT_FILE_CHANGED = "file_changed"
+#: 粗失效广播。AI 经 bridge 改动产品数据后, 告诉界面「哪些数据域过期了」; 只带域名
+#: 不带条目, 消费方按域整片重取。语义与取舍见 service/chat/service/invalidation.py。
+PRODUCT_EVENT_PRODUCT_DATA_CHANGED = "product_data_changed"
 PRODUCT_EVENT_DISPLAY_CARD = "display_card"
 PRODUCT_EVENT_ARTIFACT_CHANGED = "artifact_changed"
 PRODUCT_EVENT_ARTIFACT_PUBLISHED = "artifact_published"
@@ -119,7 +126,11 @@ QUEUED_DISPLAY_TEXT = "queued_display_text"
 QUEUED_REFERENCES = "queued_references"
 USER_MESSAGE_ORIGIN_TURN = "turn"
 USER_MESSAGE_ORIGIN_STEER = "steer"
-USER_MESSAGE_ORIGINS = frozenset((USER_MESSAGE_ORIGIN_TURN, USER_MESSAGE_ORIGIN_STEER))
+USER_MESSAGE_ORIGIN_RECOVERY = "recovery"
+AUTOMATIC_RECOVERY_MESSAGE = "Automatic recovery continuation (system-generated)."
+USER_MESSAGE_ORIGINS = frozenset(
+    (USER_MESSAGE_ORIGIN_TURN, USER_MESSAGE_ORIGIN_STEER, USER_MESSAGE_ORIGIN_RECOVERY)
+)
 
 PRODUCT_TURN_OUTCOME_COMPLETED = "completed"
 PRODUCT_TURN_OUTCOME_FAILED = "failed"
@@ -182,12 +193,14 @@ SESSION_MODEL_RESTORE_FAILED_EVENT = "serve.session_model_restore_failed"
 SESSION_OPEN_FAILED_EVENT = "serve.session_open_failed"
 SESSION_DELETE_REASON = "session_delete"
 SESSION_DELETE_RUNNING_ERROR = "session_running"
+SESSION_DELETE_STOP_FAILED = "session_delete_stop_failed"
 SESSION_DELETE_MISSING_ERROR = "session_not_found"
 SESSION_RENAME_EMPTY_ERROR = "session_title_required"
 SESSION_RENAME_MAX_LENGTH = 150
 SESSION_TITLE_DEFAULT = "新对话"
 SESSION_TITLE_ELLIPSIS = "…"
 SESSION_NOT_FOUND_ERROR = "session not found"
+SESSION_NOT_FOUND_CODE = "session_not_found"
 SESSION_LIST_CREATED_AT_KEY = "created_at"
 SESSION_LIST_ID_KEY = "session_id"
 SESSION_LIST_WAITING_KEY = "waiting"
@@ -211,6 +224,10 @@ SESSION_PERMISSION_SWITCH_REQUIRES_HIL_RESOLUTION_ERROR = (
     "session_permission_switch_requires_hil_resolution"
 )
 SESSION_RUNNING_ERROR = "session_running"
+SESSION_ARCHIVED_ERROR = "session_archived"
+SESSION_ARCHIVE_STOP_FAILED = "session_archive_stop_failed"
+SESSION_ARCHIVE_STOP_TIMEOUT_SECONDS = 30.0
+SESSION_ARCHIVE_POLL_SECONDS = 0.1
 SESSION_TERMINATED = "session_terminated"
 DELETE_LIVE_CLOSE_TIMEOUT_SECONDS = 30.0
 CRON_SESSION_KIND = "cron"
@@ -310,7 +327,6 @@ WORKSPACE_ROOT_KEY = "workspace_root"
 DEFAULT_WORKFLOW_ENABLED = True
 DEFAULT_AUTO_REVIEW_ENABLED = False
 AUTO_REVIEW_CAPABILITY_UNAVAILABLE_ERROR = "auto_review_capability_unavailable"
-SETTINGS_TMP_SUFFIX = ".tmp"
 WORKFLOW_CAPABILITY_UNAVAILABLE_ERROR = "workflow_capability_unavailable"
 WORKSPACE_ROOT_NOT_FOUND_ERROR = "workspace_root_not_found"
 WORKFLOW_RUNTIME_PROVISIONED = True

@@ -4,9 +4,11 @@ import {
   NavigationTabs,
   type NavigationTabElementProps,
   type NavigationTabItem,
-  type NavigationTabsProps
+  type NavigationTabsProps,
 } from '../../components/ui'
 import { DocumentDragContext } from './documentDragContext'
+import { useApp } from '../../store'
+import { showUnsavedIndicator } from './utils'
 import type { DockLeaf, DropEdge, TabInsertion } from './layout'
 import { useDocumentWorkspace, useWorkspaceController } from './workspace'
 
@@ -36,7 +38,11 @@ export interface DocumentDragContextValue {
   setPreview: (preview: DocumentDropPreview | null) => void
 }
 
-export function DocumentDragProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
+export function DocumentDragProvider({
+  children,
+}: {
+  children: React.ReactNode
+}): React.JSX.Element {
   const [draggingTabId, setDraggingTabId] = useState<string | null>(null)
   const [insertionTarget, setInsertionTarget] = useState<DocumentTabInsertionTarget | null>(null)
   const [preview, setPreview] = useState<DocumentDropPreview | null>(null)
@@ -50,15 +56,18 @@ export function DocumentDragProvider({ children }: { children: React.ReactNode }
     setInsertionTarget(null)
     setPreview(null)
   }, [])
-  const value = useMemo<DocumentDragContextValue>(() => ({
-    begin,
-    draggingTabId,
-    finish,
-    insertionTarget,
-    preview,
-    setInsertionTarget,
-    setPreview
-  }), [begin, draggingTabId, finish, insertionTarget, preview])
+  const value = useMemo<DocumentDragContextValue>(
+    () => ({
+      begin,
+      draggingTabId,
+      finish,
+      insertionTarget,
+      preview,
+      setInsertionTarget,
+      setPreview,
+    }),
+    [begin, draggingTabId, finish, insertionTarget, preview]
+  )
   return <DocumentDragContext.Provider value={value}>{children}</DocumentDragContext.Provider>
 }
 
@@ -68,7 +77,7 @@ export function useDocumentDrag(): DocumentDragContextValue {
   return context
 }
 
-interface DocumentNavigationTabsProps extends Omit<NavigationTabsProps, 'getTabProps' | 'tabs'> {
+interface DocumentNavigationTabsProps extends Omit<NavigationTabsProps, 'tabs'> {
   leaf: DockLeaf
   tabs: readonly NavigationTabItem[]
 }
@@ -76,23 +85,26 @@ interface DocumentNavigationTabsProps extends Omit<NavigationTabsProps, 'getTabP
 export function DocumentNavigationTabs({
   leaf,
   tabs,
+  getTabProps,
+  onReorder,
   ...props
 }: DocumentNavigationTabsProps): React.JSX.Element {
+  const { state } = useApp()
   const workspace = useWorkspaceController()
   const documentWorkspace = useDocumentWorkspace()
   const drag = useDocumentDrag()
   const documentTabIds = new Set(leaf.tabIds)
   const displayedTabs = tabs.map((tab) => ({
     ...tab,
-    dropIndicator: drag.insertionTarget?.tabId === tab.id
-      ? drag.insertionTarget.insertion
-      : undefined
+    dirty: showUnsavedIndicator(Boolean(tab.dirty), state.autoSave),
+    dropIndicator:
+      drag.insertionTarget?.tabId === tab.id ? drag.insertionTarget.insertion : undefined,
   }))
   const tabProps = (item: NavigationTabItem): NavigationTabElementProps => {
     if (!documentTabIds.has(item.id)) return {}
     const tab = documentWorkspace.tabs[item.id]
     if (!tab || !workspace.canRelocateTab(tab.id)) {
-      return { 'data-testid': `document-tab-${item.id}` }
+      return { draggable: false, 'data-testid': `document-tab-${item.id}` }
     }
     return {
       draggable: true,
@@ -115,7 +127,7 @@ export function DocumentNavigationTabs({
         drag.setPreview(null)
         drag.setInsertionTarget({
           tabId: item.id,
-          insertion: event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+          insertion: event.clientX < rect.left + rect.width / 2 ? 'before' : 'after',
         })
       },
       onDragLeave: (event) => {
@@ -130,9 +142,23 @@ export function DocumentNavigationTabs({
         const insertion = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
         drag.finish()
         if (tabId && tabId !== item.id) void workspace.moveTabToTab(tabId, item.id, insertion)
-      }
+      },
     }
   }
 
-  return <NavigationTabs {...props} getTabProps={tabProps} tabs={displayedTabs} />
+  return (
+    <NavigationTabs
+      {...props}
+      onReorder={(ids, movedId) => {
+        const documentIds = ids.filter((id) => documentTabIds.has(id))
+        const index = documentIds.indexOf(movedId)
+        if (index > 0) workspace.reorderTab(movedId, documentIds[index - 1], 'after')
+        else if (index === 0 && documentIds.length > 1)
+          workspace.reorderTab(movedId, documentIds[1], 'before')
+        onReorder?.(ids, movedId)
+      }}
+      getTabProps={(tab) => ({ ...getTabProps?.(tab), ...tabProps(tab) })}
+      tabs={displayedTabs}
+    />
+  )
 }

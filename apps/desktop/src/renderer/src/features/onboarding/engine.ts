@@ -1,10 +1,17 @@
 import type { OnboardingGroup } from '../../../../onboarding.ts'
 
-export interface GuideRequest { group: OnboardingGroup; force?: boolean; projectId?: string; documentId?: string }
+export interface GuideRequest {
+  group: OnboardingGroup
+  force?: boolean
+  projectId?: string
+  documentId?: string
+}
 export interface GuideStep {
   id: string
   targets: readonly string[]
   extra?: readonly string[]
+  placement?: 'below' | 'left'
+  navigate?: (signal: AbortSignal) => void | Promise<void>
   before?: (signal: AbortSignal) => void | Promise<void>
   setup?: (signal: AbortSignal) => void | Promise<void>
   after?: (signal: AbortSignal) => void | Promise<void>
@@ -27,11 +34,12 @@ export interface GuidePort {
   unavailable(): void
 }
 const EMPTY: GuideSnapshot = { request: null, steps: [], index: 0, ready: false, center: false }
+type Entry = 'automatic' | 'next' | 'replay' | 'skip'
 
 /** One serial queue. Failed preconditions never consume the persisted first-use flag. */
 export class GuideEngine {
   private state = EMPTY
-  private queue: GuideRequest[] = []
+  private queue: Array<{ request: GuideRequest; entry: 'automatic' | 'replay' }> = []
   private listeners = new Set<() => void>()
   private flight: AbortController | null = null
   private advancing = false
@@ -39,51 +47,72 @@ export class GuideEngine {
   snapshot = (): GuideSnapshot => this.state
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
+    return () => {
+      this.listeners.delete(listener)
+    }
   }
   private publish(patch: Partial<GuideSnapshot>): void {
     this.state = { ...this.state, ...patch }
-    this.listeners.forEach(listener => listener())
+    this.listeners.forEach((listener) => listener())
   }
   enqueue(request: GuideRequest): void {
     if (!request.force && (this.state.request?.force || this.state.center)) return
-    if (this.state.request?.group === request.group || this.queue.some(item => item.group === request.group)) return
-    this.queue.push(request)
+    if (
+      this.state.request?.group === request.group ||
+      this.queue.some((item) => item.request.group === request.group)
+    )
+      return
+    this.queue.push({ request, entry: 'automatic' })
   }
   async drain(): Promise<void> {
     if (this.state.request || this.state.center || this.port.blocked()) return
-    const request = this.queue.shift()
-    if (!request) return
-    if ((!request.force && this.port.seen(request.group)) || !this.port.valid(request)) return this.drain()
+    const queued = this.queue.shift()
+    if (!queued) return
+    const { request, entry } = queued
+    if ((!request.force && this.port.seen(request.group)) || !this.port.valid(request))
+      return this.drain()
     this.flight = new AbortController()
     this.publish({ request, steps: this.port.steps(request.group), index: 0, ready: false })
-    await this.enter()
+    await this.enter(entry)
   }
-  private async enter(): Promise<void> {
-    const flight = this.flight, request = this.state.request
+  private async enter(entry: Entry): Promise<void> {
+    const flight = this.flight,
+      request = this.state.request
     if (!flight || !request) return
-    if (!this.port.valid(request)) { this.cancel(); return }
+    if (!this.port.valid(request)) {
+      this.cancel()
+      return
+    }
     const step = this.state.steps[this.state.index]
-    if (!step) { this.cancel(); return }
+    if (!step) {
+      this.cancel()
+      return
+    }
     this.publish({ ready: false })
     try {
+      if (flight.signal.aborted) return
+      if (entry === 'next' || entry === 'replay') await step.navigate?.(flight.signal)
+      if (flight.signal.aborted) return
       await step.before?.(flight.signal)
       if (flight.signal.aborted) return
       await step.setup?.(flight.signal)
       if (flight.signal.aborted) return
       const available = await this.port.prepare(step, flight.signal)
       if (flight.signal.aborted) return
-      if (!this.port.valid(request)) { this.cancel(); return }
+      if (!this.port.valid(request)) {
+        this.cancel()
+        return
+      }
       if (!available) {
         // Missing real UI is skipped, never replaced with a mock control.
-        const steps = this.state.steps.filter(item => item !== step)
+        const steps = this.state.steps.filter((item) => item !== step)
         if (!steps.length || this.state.index >= steps.length) {
           this.port.unavailable()
           this.cancel()
           return
         }
         this.publish({ steps })
-        await this.enter()
+        await this.enter('skip')
         return
       }
       this.port.markSeen(request.group)
@@ -104,19 +133,34 @@ export class GuideEngine {
       await this.state.steps[this.state.index]?.after?.(flight.signal)
       if (flight?.signal.aborted) return
       if (this.state.index === this.state.steps.length - 1) this.finish()
-      else { this.publish({ index: this.state.index + 1 }); await this.enter() }
+      else {
+        this.publish({ index: this.state.index + 1 })
+        await this.enter('next')
+      }
     } catch (error) {
       if (!flight?.signal.aborted) {
         this.port.unavailable()
         this.cancel()
         console.error('[onboarding] step completion failed', error)
       }
-    } finally { this.advancing = false }
+    } finally {
+      this.advancing = false
+    }
+  }
+  async previous(): Promise<void> {
+    if (!this.state.ready || !this.state.request || this.advancing || this.state.index === 0) return
+    this.advancing = true
+    try {
+      this.publish({ index: this.state.index - 1 })
+      await this.enter('replay')
+    } finally {
+      this.advancing = false
+    }
   }
   finish(): void {
     const request = this.state.request
-    if (!request || !this.state.ready) return
-    this.port.markSeen(request.group)
+    if (!request) return
+    if (this.state.ready) this.port.markSeen(request.group)
     this.cancel()
   }
   cancel(): void {
@@ -125,12 +169,22 @@ export class GuideEngine {
     this.port.cleanup()
     this.publish({ ...EMPTY, center: this.state.center })
   }
-  openCenter(): void { this.cancel(); this.queue = []; this.publish({ center: true }) }
-  closeCenter(): void { this.publish({ center: false }) }
-  replay(request: GuideRequest): void {
+  openCenter(): void {
     this.cancel()
-    this.queue = [{ ...request, force: true }]
+    this.queue = []
+    this.publish({ center: true })
+  }
+  closeCenter(): void {
     this.publish({ center: false })
   }
-  dispose(): void { this.flight?.abort(); this.queue = []; this.port.cleanup() }
+  replay(request: GuideRequest): void {
+    this.cancel()
+    this.queue = [{ request: { ...request, force: true }, entry: 'replay' }]
+    this.publish({ center: false })
+  }
+  dispose(): void {
+    this.flight?.abort()
+    this.queue = []
+    this.port.cleanup()
+  }
 }

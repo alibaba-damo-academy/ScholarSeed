@@ -2,13 +2,55 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { loadConversationSearch, createLiteratureSearch, LiteratureApiError, streamLiteratureSearch } from './api.ts'
-import { conversationSearchPapers, presentedSearchArtifacts, searchPapersBibtex, searchResultPapers, visibleSearchPapers } from './result.ts'
+import {
+  loadConversationSearch,
+  createLiteratureSearch,
+  LiteratureApiError,
+  streamLiteratureSearch,
+} from './api.ts'
+import {
+  conversationSearchPapers,
+  presentedSearchArtifacts,
+  searchPapersBibtex,
+  searchResultPapers,
+  searchWarningKeys,
+  visibleSearchPapers,
+} from './result.ts'
 import { literatureSearchTab, openLiteratureSearchTabs } from '../workbench/tabs.ts'
 
 const papers = [
-  { paper_id: 'one', title: 'Zeta', authors: ['A', 'B'], year: 2022, venue: 'V', abstract: 'A {test}', citation_count: 4, doi: '10/one', arxiv_id: '', tier: 2, reason: '', subtopics_covered: [], access: 'open', source: 'paperhub' },
-  { paper_id: 'two', title: 'Alpha', authors: ['C'], year: 2024, venue: '', abstract: '', citation_count: 20, doi: '', arxiv_id: '2401.1', tier: 1, reason: '', subtopics_covered: [], access: 'closed_or_unknown', source: 'paperhub' }
+  {
+    paper_id: 'one',
+    title: 'Zeta',
+    authors: ['A', 'B'],
+    year: 2022,
+    venue: 'V',
+    abstract: 'A {test}',
+    citation_count: 4,
+    doi: '10/one',
+    arxiv_id: '',
+    tier: 2,
+    reason: '',
+    subtopics_covered: [],
+    access: 'open',
+    source: 'paperhub',
+  },
+  {
+    paper_id: 'two',
+    title: 'Alpha',
+    authors: ['C'],
+    year: 2024,
+    venue: '',
+    abstract: '',
+    citation_count: 20,
+    doi: '',
+    arxiv_id: '2401.1',
+    tier: 1,
+    reason: '',
+    subtopics_covered: [],
+    access: 'closed_or_unknown',
+    source: 'paperhub',
+  },
 ]
 
 test('search report evidence stays inside its card rather than making file cards', () => {
@@ -17,17 +59,40 @@ test('search report evidence stays inside its card rather than making file cards
     metadata: { artifact_id: 'metadata' },
     selection: { artifact_id: 'selection' },
     report: { artifact_id: 'report' },
-    fulltext: { artifact_id: 'fulltext' }
+    fulltext: { artifact_id: 'fulltext' },
   }
-  assert.deepEqual(presentedSearchArtifacts(result), ['metadata', 'selection', 'fulltext', 'report'])
-  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'precise-search' }), ['metadata', 'selection', 'fulltext', 'report'])
-  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'agentic-search' }), ['metadata', 'selection', 'fulltext'])
+  assert.deepEqual(presentedSearchArtifacts(result), [
+    'metadata',
+    'selection',
+    'fulltext',
+    'report',
+  ])
+  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'precise-search' }), [
+    'metadata',
+    'selection',
+    'fulltext',
+    'report',
+  ])
+  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'agentic-search' }), [
+    'metadata',
+    'selection',
+    'fulltext',
+  ])
 })
 
 test('literature search results filter and sort without mutating metadata order', () => {
-  assert.deepEqual(visibleSearchPapers(papers, 'all', 'relevance').map((paper) => paper.paper_id), ['two', 'one'])
-  assert.deepEqual(visibleSearchPapers(papers, 'open', 'citations').map((paper) => paper.paper_id), ['one'])
-  assert.deepEqual(papers.map((paper) => paper.paper_id), ['one', 'two'])
+  assert.deepEqual(
+    visibleSearchPapers(papers, 'all', 'relevance').map((paper) => paper.paper_id),
+    ['two', 'one']
+  )
+  assert.deepEqual(
+    visibleSearchPapers(papers, 'open', 'citations').map((paper) => paper.paper_id),
+    ['one']
+  )
+  assert.deepEqual(
+    papers.map((paper) => paper.paper_id),
+    ['one', 'two']
+  )
 })
 
 test('selected search papers convert to importable BibTeX', () => {
@@ -49,8 +114,14 @@ test('literature search content fills the available workbench width', () => {
 
 test('AI search results drop abstracts so the library import stays without one', () => {
   const projected = searchResultPapers(papers)
-  assert.deepEqual(projected.map((paper) => paper.abstract), ['', ''])
-  assert.deepEqual(projected.map((paper) => paper.title), ['Zeta', 'Alpha'])
+  assert.deepEqual(
+    projected.map((paper) => paper.abstract),
+    ['', '']
+  )
+  assert.deepEqual(
+    projected.map((paper) => paper.title),
+    ['Zeta', 'Alpha']
+  )
   assert.ok(!searchPapersBibtex(projected).includes('abstract ='))
   assert.ok(searchPapersBibtex(papers).includes('abstract = {A \\{test\\}}'))
 })
@@ -66,6 +137,11 @@ test('submitted searches and conversation results share the query summary header
   assert.match(header, /SEARCH_STATUS_KEYS\[status\]/)
   assert.match(header, /<JoinLibraryMenu papers=\{picked\}/)
   assert.match(header, /t\('batch.selected', \{ count: picked.length \}\)/)
+  assert.match(header, /flex-wrap items-center justify-between/)
+  assert.match(header, /flex min-w-0 flex-auto items-center/)
+  assert.match(header, /min-w-0 truncate/)
+  assert.match(header, /picked\.length > 0 \? \(/)
+  assert.doesNotMatch(header, /overflow-x-auto/)
   assert.match(resultsSource, /query=\{result\.criteria/)
 })
 
@@ -108,13 +184,19 @@ test('literature panel filters return focus to the literature overview tab', () 
     source.indexOf('const scope =')
   )
   assert.match(scopeHelper, /act\.activateTab\('literature'\)/)
-  assert.match(scopeHelper, /catalogue\.query\(patch\)/)
+  assert.match(scopeHelper, /catalogue\.navigate\(patch\)/)
   assert.match(source, /onClick=\{\(\) => selectLiteratureScope\(patch\)\}/)
   assert.match(source, /selectLiteratureScope\(\{ \.\.\.clear, project_id: project\.id \}\)/)
-  assert.match(source, /selectLiteratureScope\(\{\s+\.\.\.clear,\s+project_id: project\?\.id \?\? projectId,\s+collection_id: \[collection\.id\]/)
+  assert.match(
+    source,
+    /selectLiteratureScope\(\{\s+\.\.\.clear,\s+project_id: project\?\.id \?\? projectId,\s+collection_id: \[collection\.id\]/
+  )
   // 标签不再是作用域切换而是可叠加的多选过滤: 走 catalogue.filter 保留列表勾选,
   // 且不能再出现「整体替换成单个标签」的旧写法。
-  assert.match(scopeHelper, /catalogue\.filter\(\{ tag_id: next\.length > 0 \? next : undefined \}\)/)
+  assert.match(
+    scopeHelper,
+    /catalogue\.filter\(\{ tag_id: next\.length > 0 \? next : undefined \}\)/
+  )
   assert.doesNotMatch(source, /tag_id: \[item\.id\]/)
   assert.match(source, /selected=\{activeTagIds\.has\(item\.id\)\}/)
 })
@@ -144,7 +226,12 @@ test('attachment deletion refreshes the shared literature catalogue after closin
 
 test('literature search tabs are stable and restored in supplied timestamp order', () => {
   const overview = { id: 'overview', kind: 'overview' as const, title: '总览', closable: false }
-  const literature = { id: 'literature', kind: 'literature' as const, title: '文献库', closable: true }
+  const literature = {
+    id: 'literature',
+    kind: 'literature' as const,
+    title: '文献库',
+    closable: true,
+  }
   const first = literatureSearchTab('task-100', 'first')
   assert.deepEqual(first, {
     id: 'literature-search:task-100',
@@ -152,19 +239,20 @@ test('literature search tabs are stable and restored in supplied timestamp order
     title: 'AI检索：first',
     titleFallback: { kind: 'literatureSearch', query: 'first' },
     closable: true,
-    projectId: null
+    projectId: null,
   })
   assert.equal(literatureSearchTab('task-project', 'scoped', 'project-a').projectId, 'project-a')
   const restored = openLiteratureSearchTabs(
     [overview, literature],
-    [{ id: 'task-100', query: 'first' }, { id: 'task-200', query: 'second' }]
+    [
+      { id: 'task-100', query: 'first' },
+      { id: 'task-200', query: 'second' },
+    ]
   )
-  assert.deepEqual(restored.map((tab) => tab.id), [
-    'overview',
-    'literature',
-    'literature-search:task-100',
-    'literature-search:task-200'
-  ])
+  assert.deepEqual(
+    restored.map((tab) => tab.id),
+    ['overview', 'literature', 'literature-search:task-100', 'literature-search:task-200']
+  )
   assert.equal(openLiteratureSearchTabs(restored, [{ id: 'task-100', query: 'first' }]), restored)
 })
 
@@ -173,17 +261,30 @@ test('literature search SSE parser handles chunk boundaries and seq replay dedup
   const previousFetch = globalThis.fetch
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
-    value: { location: { href: 'http://desktop.test/' }, scholarseed: { getApiBase: () => 'http://service.test' } }
+    value: {
+      location: { href: 'http://desktop.test/' },
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
   })
   const encoder = new TextEncoder()
-  globalThis.fetch = async () => new Response(new ReadableStream({
-    start(controller) {
-      controller.enqueue(encoder.encode('data: {"schema_version":1,"seq":1,"type":"content.delta","data":{"text":"old"}}\n\n'))
-      controller.enqueue(encoder.encode('data: {\"schema_version\":1,\"seq\":2,\"type\":\"content.delta\",'))
-      controller.enqueue(encoder.encode('"data":{"text":"new"}}\n\n'))
-      controller.close()
-    }
-  }), { headers: { 'Content-Type': 'text/event-stream' } })
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"schema_version":1,"seq":1,"type":"content.delta","data":{"text":"old"}}\n\n'
+            )
+          )
+          controller.enqueue(
+            encoder.encode('data: {\"schema_version\":1,\"seq\":2,\"type\":\"content.delta\",')
+          )
+          controller.enqueue(encoder.encode('"data":{"text":"new"}}\n\n'))
+          controller.close()
+        },
+      }),
+      { headers: { 'Content-Type': 'text/event-stream' } }
+    )
   try {
     const observed: number[] = []
     await streamLiteratureSearch('task-1', 1, (event) => observed.push(event.seq))
@@ -199,19 +300,21 @@ test('literature search presents runtime incompatibility instead of raw fetch fa
   const previousFetch = globalThis.fetch
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
-    value: { location: { href: 'http://desktop.test/' }, scholarseed: { getApiBase: () => 'http://service.test' } }
+    value: {
+      location: { href: 'http://desktop.test/' },
+      scholarseed: { getApiBase: () => 'http://service.test' },
+    },
   })
-  globalThis.fetch = async () => Response.json(
-    { detail: 'invocation_runtime_unavailable' },
-    { status: 503 }
-  )
+  globalThis.fetch = async () =>
+    Response.json({ detail: 'invocation_runtime_unavailable' }, { status: 503 })
   try {
     await assert.rejects(
       createLiteratureSearch('agent systems'),
-      (error: unknown) => error instanceof LiteratureApiError
-        && error.failure.status === 503
-        && error.failure.code === 'invocation_runtime_unavailable'
-        && error.message === 'invocation_runtime_unavailable'
+      (error: unknown) =>
+        error instanceof LiteratureApiError &&
+        error.failure.status === 503 &&
+        error.failure.code === 'invocation_runtime_unavailable' &&
+        error.message === 'invocation_runtime_unavailable'
     )
   } finally {
     globalThis.fetch = previousFetch
@@ -219,16 +322,39 @@ test('literature search presents runtime incompatibility instead of raw fetch fa
   }
 })
 
-
 test('conversation results reuse library rows without inventing scores or losing source URLs', () => {
   const rows = conversationSearchPapers([
-    { id: 'first', title: 'Selected work', authors: ['A'], year: null, venue: null, doi: null,
-      url: 'https://example.org/paper', abstract: 'Original abstract', reasons: ['Matches method', 'Matches scope'],
-      access: 'yes', sources: ['paperhub', 'web'] },
-    { id: 'second', title: 'Another work', authors: [], year: 2026, venue: null, doi: null,
-      url: null, abstract: null, reasons: [], access: 'unknown', sources: [] }
+    {
+      id: 'first',
+      title: 'Selected work',
+      authors: ['A'],
+      year: null,
+      venue: null,
+      doi: null,
+      url: 'https://example.org/paper',
+      abstract: 'Original abstract',
+      reasons: ['Matches method', 'Matches scope'],
+      access: 'yes',
+      sources: ['paperhub', 'web'],
+    },
+    {
+      id: 'second',
+      title: 'Another work',
+      authors: [],
+      year: 2026,
+      venue: null,
+      doi: null,
+      url: null,
+      abstract: null,
+      reasons: [],
+      access: 'unknown',
+      sources: [],
+    },
   ])
-  assert.deepEqual(visibleSearchPapers(rows, 'all', 'relevance').map(row => row.paper_id), ['first', 'second'])
+  assert.deepEqual(
+    visibleSearchPapers(rows, 'all', 'relevance').map((row) => row.paper_id),
+    ['first', 'second']
+  )
   assert.equal(rows[0].year, null)
   assert.equal(rows[0].citation_count, null)
   assert.equal(rows[0].reason, 'Matches method；Matches scope')
@@ -237,12 +363,22 @@ test('conversation results reuse library rows without inventing scores or losing
   assert.match(searchPapersBibtex(rows), /url = \{https:\/\/example.org\/paper\}/)
 })
 
-
 test('saved results retain all rows across batched library lookup failures', async () => {
   const previousWindow = globalThis.window
   const previousFetch = globalThis.fetch
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: { scholarseed: { getApiBase: () => '' } } })
-  const result = { session_id: 'session', papers: Array.from({ length: 25 }, (_, id) => ({ id: String(id), title: `Paper ${id}`, doi: null, year: null })) }
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  const result = {
+    session_id: 'session',
+    papers: Array.from({ length: 25 }, (_, id) => ({
+      id: String(id),
+      title: `Paper ${id}`,
+      doi: null,
+      year: null,
+    })),
+  }
   const calls: string[] = []
   globalThis.fetch = async (url, init) => {
     calls.push(String(url))
@@ -251,32 +387,189 @@ test('saved results retain all rows across batched library lookup failures', asy
     assert.equal(request.project_id, 'project-two')
     const batch = request.papers
     if (batch.length === 20) return new Response('', { status: 503 })
-    return Response.json({ items: Object.fromEntries(batch.map((paper: { id: string }) => [paper.id, { library: 'matched' }])) })
+    return Response.json({
+      items: Object.fromEntries(
+        batch.map((paper: { id: string }) => [paper.id, { library: 'matched' }])
+      ),
+    })
   }
   try {
-    const loaded = await loadConversationSearch('session', 'card', new AbortController().signal, 'project-two')
+    const loaded = await loadConversationSearch(
+      'session',
+      'card',
+      new AbortController().signal,
+      'project-two'
+    )
     assert.equal(loaded.result.papers.length, 25)
     assert.deepEqual(loaded.saved, ['20', '21', '22', '23', '24'])
     assert.equal(loaded.warning, true)
     assert.equal(calls.length, 3)
-    assert.ok(calls.every(url => url.includes('/api/sessions/session/literature/')))
-  } finally { Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow }); globalThis.fetch = previousFetch }
+    assert.ok(calls.every((url) => url.includes('/api/sessions/session/literature/')))
+  } finally {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow })
+    globalThis.fetch = previousFetch
+  }
 })
 
 test('unknown library states warn without implying absence, and missing snapshots fail', async () => {
   const previousWindow = globalThis.window
   const previousFetch = globalThis.fetch
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: { scholarseed: { getApiBase: () => '' } } })
-  globalThis.fetch = async url => String(url).endsWith('/results/card')
-    ? Response.json({ session_id: 'session', papers: [{ id: 'one', title: 'Paper' }] })
-    : Response.json({ items: { one: { library: 'unavailable' } } })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  globalThis.fetch = async (url) =>
+    String(url).endsWith('/results/card')
+      ? Response.json({ session_id: 'session', papers: [{ id: 'one', title: 'Paper' }] })
+      : Response.json({ items: { one: { library: 'unavailable' } } })
   try {
     const loaded = await loadConversationSearch('session', 'card', new AbortController().signal)
     assert.deepEqual(loaded.saved, [])
     assert.equal(loaded.warning, true)
     globalThis.fetch = async () => new Response('', { status: 404 })
-    await assert.rejects(loadConversationSearch('session', 'missing', new AbortController().signal), /result_unavailable/)
-  } finally { Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow }); globalThis.fetch = previousFetch }
+    await assert.rejects(
+      loadConversationSearch('session', 'missing', new AbortController().signal),
+      /result_unavailable/
+    )
+  } finally {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow })
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('forty published papers keep individual library states without reporting ambiguous matches as outages', async (context) => {
+  const previousWindow = globalThis.window
+  const previousFetch = globalThis.fetch
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  context.after(() => {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow })
+    globalThis.fetch = previousFetch
+  })
+  const result = {
+    session_id: 'session',
+    retained: 40,
+    papers: Array.from({ length: 40 }, (_, index) => ({
+      id: String(index),
+      title: `Paper ${index}`,
+      doi: null,
+      year: 2025,
+    })),
+  }
+  const batches: number[] = []
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/results/card')) return Response.json(result)
+    const body = JSON.parse(String(init?.body))
+    assert.equal(body.project_id, 'project-two')
+    batches.push(body.papers.length)
+    return Response.json({
+      items: Object.fromEntries(
+        body.papers.map((paper: { id: string }) => [
+          paper.id,
+          {
+            library: paper.id === '0' ? 'matched' : paper.id === '1' ? 'ambiguous' : 'absent',
+          },
+        ])
+      ),
+    })
+  }
+  const loaded = await loadConversationSearch(
+    'session',
+    'card',
+    new AbortController().signal,
+    'project-two'
+  )
+  assert.equal(loaded.warning, false)
+  assert.deepEqual(batches, [20, 20])
+  assert.equal(loaded.result.retained, 40)
+  assert.deepEqual(loaded.result.papers, result.papers)
+  assert.deepEqual(loaded.saved, ['0'])
+  assert.equal(loaded.libraryStatuses['0'], 'matched')
+  assert.equal(loaded.libraryStatuses['1'], 'ambiguous')
+  assert.equal(loaded.libraryStatuses['39'], 'absent')
+})
+
+test('failed and malformed status batches remain unknown without losing successful matches or papers', async (context) => {
+  const previousWindow = globalThis.window
+  const previousFetch = globalThis.fetch
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  context.after(() => {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow })
+    globalThis.fetch = previousFetch
+  })
+  const result = {
+    session_id: 'session',
+    retained: 40,
+    papers: Array.from({ length: 40 }, (_, index) => ({
+      id: String(index),
+      title: `Paper ${index}`,
+      doi: null,
+      year: 2025,
+    })),
+  }
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/results/card')) return Response.json(result)
+    const body = JSON.parse(String(init?.body))
+    if (body.papers[0].id === '0') return new Response('', { status: 503 })
+    return Response.json({
+      items: { '20': { library: 'matched' }, '21': { library: 'future_status' } },
+    })
+  }
+  const loaded = await loadConversationSearch('session', 'card', new AbortController().signal)
+  assert.equal(loaded.warning, true)
+  assert.equal(loaded.result.papers.length, 40)
+  assert.deepEqual(loaded.saved, ['20'])
+  assert.equal(loaded.libraryStatuses['0'], 'unavailable')
+  assert.equal(loaded.libraryStatuses['20'], 'matched')
+  assert.equal(loaded.libraryStatuses['21'], 'unavailable')
+  assert.equal(loaded.libraryStatuses['39'], 'unavailable')
+})
+
+test('retrieval warnings map legacy diagnostics to localized keys without exposing internal parameters', () => {
+  assert.deepEqual(
+    searchWarningKeys([
+      'agentic-search used degraded retrieval (source_mode=web_only)',
+      'agentic-search used degraded retrieval (source_mode=web_only)',
+      'agentic-search returned a partial result',
+      'unknown-tool secret_parameter=value',
+    ]),
+    ['result.warning.webOnly', 'result.warning.partial', 'result.warning.limited']
+  )
+  assert.deepEqual(searchWarningKeys([]), [])
+  for (const language of ['zh', 'en']) {
+    const resource = JSON.parse(
+      readFileSync(
+        new URL(`../../../../localization/locales/${language}/literature.json`, import.meta.url),
+        'utf8'
+      )
+    )
+    const messages = searchWarningKeys([
+      'agentic-search used degraded retrieval (source_mode=web_only)',
+      'agentic-search used degraded retrieval (source_mode=metadata_only)',
+      'agentic-search returned a partial result',
+      'search trace unavailable; only metadata.json was supplied',
+      'search abstracts filtered',
+      'supplemental search shortfall',
+      '检索来源统计未记录。',
+      '来源候选数与候选池口径不一致，候选总数无法核对。',
+      'private-tool raw_parameter=value',
+    ]).map((key) => key.split('.').reduce((value, part) => value[part], resource))
+    assert.equal(messages.length, 9)
+    for (const message of messages) {
+      assert.equal(typeof message, 'string')
+      assert.ok(message.length > 0)
+      assert.doesNotMatch(
+        message,
+        /agentic-search|source_mode|web_only|metadata\.json|private-tool|raw_parameter/
+      )
+      if (language === 'zh') assert.match(message, /[\u4e00-\u9fff]/)
+    }
+  }
 })
 
 test('unrestorable searches surface as an interrupted status instead of an internal code', () => {

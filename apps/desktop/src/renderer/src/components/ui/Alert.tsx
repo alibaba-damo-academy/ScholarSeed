@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next'
 import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from 'react'
 import { forwardRef } from 'react'
 
-import { IconFont } from '../primitive'
+import { IconFont } from '../primitive/Iconfont'
 import {
   alertActionClassName,
   alertAsideClassName,

@@ -43,7 +43,9 @@ from scholarseed_runtime.contract.interaction import (
     RuntimeServiceTool,
     service_tool_profile,
 )
+from scholarseed_runtime.contract.inventory import SkillPolicy
 from scholarseed_runtime.contract.model import (
+    MODEL_CATALOG_UNAVAILABLE,
     ModelCapabilities,
     ModelCatalogEntry,
     ModelConnectionMode,
@@ -56,7 +58,7 @@ from scholarseed_runtime.contract.model import (
     ModelWireProtocol,
 )
 from scholarseed_runtime.contract.permission import PermissionIntent, RuntimePermissionMode
-from scholarseed_runtime.contract.provider import RuntimeProvider
+from scholarseed_runtime.contract.provider import RuntimeOpenNotAppliedError, RuntimeProvider
 from scholarseed_runtime.contract.runtime import (
     RUNTIME_ABI_VERSION,
     RuntimeDescriptor,
@@ -71,8 +73,11 @@ from scholarseed_runtime.contract.secret import (
     RuntimeSecretPort,
 )
 from scholarseed_runtime.contract.session import RuntimeSession
+from scholarseed_runtime.contract.storage import StorageRoot
 
 __all__ = [
+    "StorageRoot",
+    "SkillPolicy",
     "AppliedState",
     "ActorKind",
     "ArchiveRequest",
@@ -91,6 +96,7 @@ __all__ = [
     "LaunchSecretIntent",
     "LaunchSecretScope",
     "InventoryRequest",
+    "MODEL_CATALOG_UNAVAILABLE",
     "ModelConnectionMode",
     "ModelCapabilities",
     "ModelCatalogEntry",
@@ -120,6 +126,7 @@ __all__ = [
     "RuntimeInventory",
     "RuntimeInspectionRequest",
     "RuntimeProvider",
+    "RuntimeOpenNotAppliedError",
     "RuntimePermissionMode",
     "RuntimeReadiness",
     "RuntimeSecret",

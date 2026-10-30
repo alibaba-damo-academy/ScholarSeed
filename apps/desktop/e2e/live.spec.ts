@@ -1,13 +1,45 @@
 import { randomUUID } from 'crypto'
+import { execFileSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { join, sep } from 'path'
 import { DatabaseSync } from 'node:sqlite'
+import assert from 'node:assert/strict'
 import { expect, test, type Page } from '@playwright/test'
+import { WORKSPACE_WINDOW_MINIMUM } from '../src/window'
 import { apiBase, DesktopSession, liveStatus, waitForFinishedTurn } from './fixtures/electron'
 import { createRuntime, seedLiveConfig, type RuntimePaths } from './fixtures/runtime'
+import type { OpenResp } from '../src/renderer/src/api'
 
 const GREETING = '请用一句话确认本次桌面端端到端测试已收到。'
-const INTERRUPTION_STYLE_PROMPT = '请只调用一次 shell 运行 python -c "import time; time.sleep(60)"，等待命令完成后再简短回复。'
+const BRANCH_FIRST_MARKER = 'BRANCH_FIRST_87828014'
+const BRANCH_SECOND_MARKER = 'BRANCH_SECOND_87828014'
+const BRANCH_EXCLUDED_MARKER = 'BRANCH_EXCLUDED_87828014'
+const CONTINUATION_MARKER_FILE = 'continued-task.txt'
+const CONTINUATION_MARKER = 'CONTINUED_TASK_COMPLETE'
+const CONTINUATION_DRAFT = '这条草稿不应被继续任务按钮发送或清空'
+const PROVIDER_MARKER_FILE = 'provider-continuation.txt'
+const PROVIDER_MARKER = 'PROVIDER_TOOL_COMPLETED'
+const PROVIDER_COMPLETION = 'PROVIDER_CONTINUATION_COMPLETE'
+const PROVIDER_FAILURE_STATUS = 503
+const PROVIDER_FAILURE_TIMEOUT_MS = 240_000
+const PROVIDER_PROXY_PATH = '/v1/chat/completions'
+const PROVIDER_STREAM_PREFIX_BYTES = 64
+const PROVIDER_TERMINAL_TIMEOUT_MS = 300_000
+const PROVIDER_HOP_HEADERS = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'content-encoding'])
+const CONTROLLED_PROVIDER_FAILURES = [
+  { kind: 'auth', status: 401, code: 'authentication_error', recoverable: false, message: '模型服务认证失败。' },
+  { kind: 'rate-limit', status: 429, code: 'rate_limit_error', recoverable: true, message: '模型请求过于频繁，请稍后再试。' },
+  { kind: 'quota', status: 429, code: 'insufficient_quota', recoverable: false, message: '模型分配额度已用完。' },
+  { kind: 'credits', status: 402, code: 'credit_balance_exhausted', recoverable: false, message: '积分余额已用尽，本次生成已停止。' },
+  { kind: 'request', status: 400, code: 'invalid_request_error', recoverable: false, message: '当前请求未被模型服务接受。' },
+  { kind: 'model-config', status: 404, code: 'model_not_found', recoverable: false, message: '该模型不被当前端点支持。' },
+  { kind: 'content-policy', status: 400, code: 'content_policy_violation', recoverable: false, message: '本次内容未通过安全审核，请修改后重试。' },
+  { kind: 'overloaded', status: 503, code: 'overloaded', recoverable: true, message: '模型服务暂时不可用' },
+  { kind: 'unavailable', status: 503, code: 'service_unavailable', recoverable: true, message: '模型服务暂时不可用' },
+  { kind: 'unknown', status: 418, code: 'controlled_unrecognized_failure', recoverable: true, message: '本轮未能完成。' },
+] as const
+const INTERRUPTION_STYLE_PROMPT = `请实际使用 shell 运行 python -c "import time; from pathlib import Path; time.sleep(20); Path('${CONTINUATION_MARKER_FILE}').write_text('${CONTINUATION_MARKER}')"，等待命令完成后只回复 ${CONTINUATION_MARKER}。如果任务中断，继续时先检查该文件；已写入则不要重复执行。`
 const DATABASE_READ_TIMEOUT_MS = 5_000
 const PERMISSION_TERMINAL_STATUSES = new Set(['completed', 'failed', 'interrupted'])
 const PERMISSION_DIALOG_VIEWPORT = { width: 600, height: 500 }
@@ -24,7 +56,252 @@ function nativeThread(runtime: RuntimePaths, sessionId: string): string {
   }
 }
 
-async function permissionSnapshot(page: Page, base: string, sessionId: string) {
+for (const faultMode of ['http-503', 'sse-cut'] as const) {
+for (const theme of ['light', 'dark'] as const) {
+test(`recoverable provider gateway failure continues once with the real upstream and preserves the draft (${faultMode}, ${theme})`, async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  const preferencesPath = join(runtime.userData, 'renderer-preferences.json')
+  writeFileSync(preferencesPath, JSON.stringify({ ...JSON.parse(readFileSync(preferencesPath, 'utf8')), theme }))
+  const modelKey = process.env.SCHOLARSEED_ACTION_MODEL ?? ''
+  const separator = modelKey.indexOf(':')
+  expect(separator, 'SCHOLARSEED_ACTION_MODEL must identify a personal profile:model').toBeGreaterThan(0)
+  const profilesPath = join(runtime.home, 'model_profiles.json')
+  const profiles = JSON.parse(readFileSync(profilesPath, 'utf8'))
+  const profile = profiles.profiles[modelKey.slice(0, separator)]
+  expect(profile?.wire_api).toBe('chat_completions')
+  const upstreamUrl = `${String(profile.base_url).replace(/\/$/, '')}/chat/completions`
+  let markerPath = ''
+  let faultEnabled = false
+  let injectedRequests = 0
+  let forwardedRequests = 0
+  let recoveredRequests = 0
+  let truncatedResponses = 0
+  const gatewayErrors: string[] = []
+  const gateway = createServer(async (request, response) => {
+    try {
+      if (request.method !== 'POST' || request.url !== PROVIDER_PROXY_PATH) {
+        response.writeHead(404).end()
+        return
+      }
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      const shouldFault = Boolean(faultEnabled && markerPath && existsSync(markerPath))
+      if (shouldFault && faultMode === 'http-503') {
+        injectedRequests += 1
+        response.writeHead(PROVIDER_FAILURE_STATUS, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ error: { code: 'service_unavailable', message: 'Controlled acceptance gateway outage' } }))
+        return
+      }
+      const headers = new Headers()
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value !== undefined && !PROVIDER_HOP_HEADERS.has(name)) headers.set(name, Array.isArray(value) ? value.join(', ') : value)
+      }
+      const upstream = await fetch(upstreamUrl, { method: 'POST', headers, body: Buffer.concat(chunks) })
+      forwardedRequests += 1
+      if (!shouldFault && injectedRequests > 0 && upstream.ok) recoveredRequests += 1
+      response.writeHead(upstream.status, Object.fromEntries([...upstream.headers].filter(([name]) => !PROVIDER_HOP_HEADERS.has(name))))
+      if (upstream.body) {
+        for await (const chunk of upstream.body) {
+          if (shouldFault && faultMode === 'sse-cut' && upstream.ok) {
+            injectedRequests += 1
+            truncatedResponses += 1
+            await new Promise<void>(resolve => {
+              response.write(chunk.subarray(0, PROVIDER_STREAM_PREFIX_BYTES), () => {
+                response.destroy()
+                resolve()
+              })
+            })
+            return
+          }
+          response.write(chunk)
+        }
+      }
+      response.end()
+    } catch (error) {
+      gatewayErrors.push(error instanceof Error ? error.message : String(error))
+      response.destroy()
+    }
+  })
+  await new Promise<void>(resolve => gateway.listen(0, '127.0.0.1', resolve))
+  const address = gateway.address()
+  expect(address && typeof address !== 'string').toBeTruthy()
+  profile.base_url = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/v1`
+  writeFileSync(profilesPath, JSON.stringify(profiles, null, 2))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  const startedAt = Date.now()
+  try {
+    const page = await desktop.launch()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, { timeout: RUNTIME_READY_TIMEOUT_MS }).toBe(true)
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await page.getByTestId('mode-bypassPermissions-confirm').click()
+    await send(page, GREETING)
+    expect((await waitForFinishedTurn(page)).status).toBe('done')
+    const sessionId = (await liveStatus(page))?.activeSession
+    const workdir = await activeSessionWorkdir(page, sessionId ?? null)
+    expect(workdir).not.toBe('')
+    markerPath = join(workdir, PROVIDER_MARKER_FILE)
+    expect(forwardedRequests).toBeGreaterThan(0)
+    const faultStartSeq = (await liveStatus(page))?.lastSeq ?? -1
+    faultEnabled = true
+    await send(page, `请实际调用 shell，使用 python 在当前目录以独占创建模式 open('${PROVIDER_MARKER_FILE}', 'x') 写入 ${PROVIDER_MARKER}。工具结束后只回复 ${PROVIDER_COMPLETION}。如果中断后继续，先用工具读取并检查已有文件，内容正确就不要重新创建文件，只回复 ${PROVIDER_COMPLETION}。`)
+    await expect.poll(() => existsSync(markerPath), { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBe(true)
+    const base = await apiBase(page)
+    const terminal = await page.evaluate(({ base, sessionId, fromSeq, timeoutMs }) => new Promise<Record<string, unknown>>((resolve, reject) => {
+      const source = new EventSource(`${base}/api/serve/sessions/${sessionId}/events?from_seq=${fromSeq}`, { withCredentials: true })
+      const timer = setTimeout(() => {
+        source.close()
+        reject(new Error('provider fault terminal event was not observed'))
+      }, timeoutMs)
+      source.onmessage = message => {
+        const event = JSON.parse(message.data)
+        if (['turn_failed', 'turn_unknown', 'turn_completed', 'turn_interrupted'].includes(event.type)) {
+          clearTimeout(timer)
+          source.close()
+          resolve(event)
+        }
+      }
+    }), { base, sessionId, fromSeq: faultStartSeq, timeoutMs: PROVIDER_TERMINAL_TIMEOUT_MS })
+    await testInfo.attach('actual-provider-fault-terminal', { body: JSON.stringify({ faultMode, terminal }), contentType: 'application/json' })
+    expect(terminal.type).toBe('turn_failed')
+    const notice = page.getByTestId('turn-recoverable-notice')
+    await expect(notice).toBeVisible({ timeout: PROVIDER_FAILURE_TIMEOUT_MS })
+    await expect(page.getByTestId('turn-failure-card')).toHaveCount(0)
+    await expect(notice).toHaveAttribute('role', 'status')
+    if (faultMode === 'sse-cut') {
+      expect(truncatedResponses).toBeGreaterThan(0)
+      await expect(notice).toContainText('本轮未能完成。')
+    }
+    await expect(notice.getByTestId('turn-continue')).toBeEnabled()
+    expect(injectedRequests).toBeGreaterThan(0)
+    expect(readFileSync(markerPath, 'utf8')).toBe(PROVIDER_MARKER)
+    await page.getByTestId('composer-input').fill(CONTINUATION_DRAFT)
+    await page.screenshot({ path: testInfo.outputPath('provider-recoverable-notice.png') })
+    const nativeWindow = await desktop.browserWindow(page)
+    await nativeWindow.evaluate((window, minimum) => {
+      window.setSize(minimum.width, minimum.height)
+    }, WORKSPACE_WINDOW_MINIMUM)
+    await notice.scrollIntoViewIfNeeded()
+    await expect.poll(() => notice.evaluate(element => {
+      const bounds = element.getBoundingClientRect()
+      const button = element.querySelector('[data-testid="turn-continue"]')?.getBoundingClientRect()
+      return element.scrollWidth <= element.clientWidth && bounds.left >= 0 && bounds.right <= innerWidth && Boolean(button && button.left >= bounds.left && button.right <= bounds.right)
+    })).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath('provider-recoverable-notice-minimum.png') })
+    const turnStarts: Array<Record<string, unknown>> = []
+    page.on('request', request => {
+      if (request.method() === 'POST' && request.url().endsWith(`/api/serve/sessions/${sessionId}/turns`)) turnStarts.push(request.postDataJSON())
+    })
+    const failureSeq = (await liveStatus(page))?.lastSeq ?? -1
+    const continuation = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(`/api/serve/sessions/${sessionId}/turns`))
+    faultEnabled = false
+    const continueButton = notice.getByTestId('turn-continue')
+    if (theme === 'dark') {
+      await continueButton.focus()
+      await expect(continueButton).toBeFocused()
+      await page.keyboard.press('Enter')
+    } else {
+      await continueButton.click()
+    }
+    expect((await continuation).status()).toBe(202)
+    expect(turnStarts).toHaveLength(1)
+    expect(turnStarts[0].continue_turn_id).toEqual(expect.any(String))
+    expect(turnStarts[0].input).toEqual([{ type: 'text', text: expect.stringContaining('继续完成上次未完成的任务') }])
+    await expect(page.getByTestId('composer-input')).toHaveValue(CONTINUATION_DRAFT)
+    await expect.poll(async () => {
+      const status = await liveStatus(page)
+      return Boolean(status && !status.running && status.status === 'done' && status.lastSeq > failureSeq)
+    }, { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBe(true)
+    await expect(page.getByText(PROVIDER_COMPLETION, { exact: true }).last()).toBeVisible({ timeout: TURN_COMPLETE_TIMEOUT_MS })
+    await expect(notice.getByTestId('turn-continue')).toHaveCount(0)
+    await expect(page.getByTestId('composer-input')).toHaveValue(CONTINUATION_DRAFT)
+    expect(turnStarts).toHaveLength(1)
+    expect(recoveredRequests).toBeGreaterThan(0)
+    expect(readFileSync(markerPath, 'utf8')).toBe(PROVIDER_MARKER)
+    expect(gatewayErrors).toEqual([])
+    await page.getByText(PROVIDER_COMPLETION, { exact: true }).last().scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath('provider-continuation-completed.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await testInfo.attach('provider-gateway-statistics', { body: JSON.stringify({ faultMode, injectedRequests, truncatedResponses, forwardedRequests, recoveredRequests, elapsedMs: Date.now() - startedAt, gatewayErrors }), contentType: 'application/json' })
+    try {
+      await desktop.attachArtifacts()
+    } finally {
+      gateway.closeAllConnections()
+      await new Promise<void>((resolve, reject) => gateway.close(error => error ? reject(error) : resolve()))
+    }
+  }
+})
+}
+}
+
+for (const failure of CONTROLLED_PROVIDER_FAILURES) {
+  test(`controlled integration provider HTTP ${failure.kind} projects the expected failure surface`, async ({}, testInfo) => {
+    const runtime = createRuntime(testInfo)
+    const blocker = seedLiveConfig(runtime)
+    test.skip(Boolean(blocker), blocker ?? '')
+    const modelKey = process.env.SCHOLARSEED_ACTION_MODEL ?? ''
+    const separator = modelKey.indexOf(':')
+    expect(separator, 'SCHOLARSEED_ACTION_MODEL must identify a personal profile:model').toBeGreaterThan(0)
+    const profilesPath = join(runtime.home, 'model_profiles.json')
+    const profiles = JSON.parse(readFileSync(profilesPath, 'utf8'))
+    const profile = profiles.profiles[modelKey.slice(0, separator)]
+    expect(profile?.wire_api).toBe('chat_completions')
+    let injectedRequests = 0
+    const gateway = createServer(async (request, response) => {
+      if (request.method !== 'POST' || request.url !== PROVIDER_PROXY_PATH) {
+        response.writeHead(404).end()
+        return
+      }
+      for await (const chunk of request) Buffer.byteLength(chunk)
+      injectedRequests += 1
+      response.writeHead(failure.status, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ error: { code: failure.code, type: failure.code, message: failure.code } }))
+    })
+    await new Promise<void>(resolve => gateway.listen(0, '127.0.0.1', resolve))
+    const address = gateway.address()
+    expect(address && typeof address !== 'string').toBeTruthy()
+    profile.base_url = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/v1`
+    writeFileSync(profilesPath, JSON.stringify(profiles, null, 2))
+    const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+    const startedAt = Date.now()
+    try {
+      const page = await desktop.launch()
+      await expect.poll(async () => (await liveStatus(page))?.runtimeReady, { timeout: RUNTIME_READY_TIMEOUT_MS }).toBe(true)
+      await send(page, GREETING)
+      const expectedSurface = page.getByTestId(failure.recoverable ? 'turn-recoverable-notice' : 'turn-failure-card')
+      const excludedSurface = page.getByTestId(failure.recoverable ? 'turn-failure-card' : 'turn-recoverable-notice')
+      await expect(expectedSurface).toBeVisible({ timeout: PROVIDER_FAILURE_TIMEOUT_MS })
+      await expect(expectedSurface).toHaveAttribute('role', failure.recoverable ? 'status' : 'alert')
+      await expect(expectedSurface).toContainText(failure.message)
+      await expect(excludedSurface).toHaveCount(0)
+      expect(injectedRequests).toBeGreaterThan(0)
+      if (failure.recoverable) await expect(expectedSurface.getByTestId('turn-continue')).toBeEnabled()
+      else if (failure.kind === 'auth') {
+        await expect(expectedSurface.getByTestId('turn-authentication-repair')).toBeEnabled()
+        await expect(expectedSurface.getByTestId('turn-authentication-repair')).toHaveText('检查模型凭证')
+      } else {
+        await expect(expectedSurface.getByTestId('turn-continue')).toHaveCount(0)
+        await expect(expectedSurface.getByTestId('turn-authentication-repair')).toHaveCount(0)
+      }
+      await page.screenshot({ path: testInfo.outputPath(`controlled-${failure.kind}.png`) })
+      desktop.assertNoPageErrors()
+    } finally {
+      await testInfo.attach('controlled-provider-http-statistics', { body: JSON.stringify({ ...failure, injectedRequests, elapsedMs: Date.now() - startedAt, realUpstreamRequests: 0 }), contentType: 'application/json' })
+      try {
+        await desktop.attachArtifacts()
+      } finally {
+        gateway.closeAllConnections()
+        await new Promise<void>((resolve, reject) => gateway.close(error => error ? reject(error) : resolve()))
+      }
+    }
+  })
+}
+
+async function permissionSnapshot(page: Page, base: string, sessionId: string): Promise<OpenResp> {
   return page.evaluate(async ({ base, sessionId }) => {
     const response = await fetch(`${base}/api/serve/sessions/open`, {
       method: 'POST',
@@ -37,7 +314,7 @@ async function permissionSnapshot(page: Page, base: string, sessionId: string) {
   }, { base, sessionId })
 }
 
-test('interrupted task uses a warning card and user message uses normal weight', async ({}, testInfo) => {
+test('interrupted task continues with one click without replaying the old request', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const blocker = seedLiveConfig(runtime)
   test.skip(Boolean(blocker), blocker ?? '')
@@ -62,6 +339,7 @@ test('interrupted task uses a warning card and user message uses normal weight',
     await expect(page.getByTestId('composer-stop')).toBeVisible()
     const sessionId = (await liveStatus(page))?.activeSession
     expect(sessionId).toBeTruthy()
+    const workdir = await activeSessionWorkdir(page, sessionId ?? null)
     await expect.poll(async () => {
       const snapshot = await page.evaluate(async (resumeSessionId) => {
         const response = await fetch('/api/serve/sessions/open', {
@@ -84,28 +362,41 @@ test('interrupted task uses a warning card and user message uses normal weight',
     await expect(notice).toHaveClass(/vds-alert--warning/)
     await expect(notice).toHaveCSS('margin-bottom', '12px')
     await expect(notice.getByTestId('turn-unknown-continue')).toBeEnabled()
+    await expect(notice.getByTestId('turn-unknown-continue')).toHaveText('继续任务')
     await expect(page.getByTestId('user-bubble').getByText(INTERRUPTION_STYLE_PROMPT, { exact: true })).toHaveCSS('font-weight', '400')
     await page.screenshot({ path: testInfo.outputPath('interrupted-warning-card.png') })
-    const turnStarts: string[] = []
+    await page.getByTestId('composer-input').fill(CONTINUATION_DRAFT)
+    const turnStarts: Array<Record<string, unknown>> = []
+    const confirmations: string[] = []
     page.on('request', request => {
       if (request.method() === 'POST' && request.url().endsWith(`/api/serve/sessions/${sessionId}/turns`))
-        turnStarts.push(request.url())
+        turnStarts.push(request.postDataJSON())
+      if (request.method() === 'POST' && request.url().includes('/confirm-unknown'))
+        confirmations.push(request.url())
     })
-    const confirmed = page.waitForResponse(response => response.url().includes('/confirm-unknown') && response.request().method() === 'POST')
-    await notice.getByTestId('turn-unknown-continue').click()
-    expect((await confirmed).ok()).toBe(true)
-    await expect(notice).toHaveCount(0)
     expect(turnStarts).toHaveLength(0)
     const nextAdmission = page.waitForResponse(response =>
       response.request().method() === 'POST' && response.url().endsWith(`/api/serve/sessions/${sessionId}/turns`))
-    await send(page, GREETING)
+    await notice.getByTestId('turn-unknown-continue').click()
     expect((await nextAdmission).status()).toBe(202)
+    expect(turnStarts).toHaveLength(1)
+    expect(turnStarts[0].continue_turn_id).toEqual(expect.any(String))
+    expect(turnStarts[0].input).toEqual([{ type: 'text', text: expect.stringContaining('继续完成上次未完成的任务') }])
+    expect(confirmations).toHaveLength(0)
+    await expect(notice).toHaveCount(0)
     await expect(page.getByTestId('composer-stop')).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('continuation-running.png') })
+    await expect(page.getByText(CONTINUATION_MARKER, { exact: true }).last()).toBeVisible({ timeout: TURN_COMPLETE_TIMEOUT_MS })
     await expect(page.getByTestId('composer-stop')).toHaveCount(0, { timeout: TURN_COMPLETE_TIMEOUT_MS })
     expect(turnStarts).toHaveLength(1)
-    await expect(page.getByTestId('user-bubble').getByText(GREETING, { exact: true })).toBeVisible()
-    await page.screenshot({ path: testInfo.outputPath('safe-follow-up.png') })
+    await expect(page.getByTestId('composer-input')).toHaveValue(CONTINUATION_DRAFT)
+    expect(readFileSync(join(workdir, CONTINUATION_MARKER_FILE), 'utf8')).toBe(CONTINUATION_MARKER)
+    await page.getByText(CONTINUATION_MARKER, { exact: true }).last().scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath('continued-task-complete.png') })
     desktop.assertNoPageErrors()
+  } catch (error) {
+    await desktop.page?.screenshot({ path: testInfo.outputPath('continuation-failure.png') })
+    throw error
   } finally {
     await desktop.attachArtifacts()
   }
@@ -148,6 +439,75 @@ async function send(page: Page, message: string): Promise<void> {
   await expect(page.getByTestId('composer-send')).toBeEnabled({ timeout: RUNTIME_READY_TIMEOUT_MS })
   await page.getByTestId('composer-send').click()
 }
+
+test('branches a completed middle turn into an independent task', async ({}, testInfo) => {
+  test.fixme(true, '88195309: fork entry is hidden until inherited file access is supported')
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    for (const [index, marker] of [BRANCH_FIRST_MARKER, BRANCH_SECOND_MARKER, BRANCH_EXCLUDED_MARKER].entries()) {
+      const before = (await liveStatus(page))?.lastSeq ?? -1
+      await send(page, `这是纯文本上下文测试，本条消息的测试代号为 ${marker}。不要保存记忆、不要调用工具或执行其他操作，只输出该代号。`)
+      await waitForFinishedTurn(page, before)
+      await expect(page.getByTestId('message-fork-task')).toHaveCount(index + 1, { timeout: TURN_COMPLETE_TIMEOUT_MS })
+    }
+    const sourceId = (await liveStatus(page))?.activeSession
+    expect(sourceId).toBeTruthy()
+    const base = await apiBase(page)
+    const history = (sessionId: string) => page.evaluate(async ({ base, sessionId }) => {
+      const response = await fetch(`${base}/api/serve/history/${sessionId}`)
+      if (!response.ok) throw new Error(`history failed: ${response.status}`)
+      return response.json()
+    }, { base, sessionId })
+    const sourceBefore = await history(sourceId!)
+    const buttons = page.getByTestId('message-fork-task')
+    await expect(buttons).toHaveCount(3)
+    await page.screenshot({ path: join(runtime.artifacts, 'fork-source.png') })
+    const forkResponse = page.waitForResponse(response => response.url().endsWith('/sessions/open') &&
+      Boolean(response.request().postDataJSON()?.fork_session_id))
+    await buttons.nth(1).click()
+    const response = await forkResponse
+    const payload = await response.json()
+    expect({ status: response.status(), payload }).toMatchObject({ status: 200, payload: { resumed: false } })
+    const childId = String(payload.session_id)
+    expect(childId).not.toBe(sourceId)
+    expect(nativeThread(runtime, childId)).not.toBe(nativeThread(runtime, sourceId!))
+    await expect.poll(async () => (await liveStatus(page))?.activeSession).toBe(childId)
+    await expect(page.getByTestId('user-bubble')).toHaveCount(2)
+    const childBefore = await history(childId)
+    const inherited = childBefore.turns.map((entry: { text?: string }) => entry.text ?? '').join('\n')
+    expect(inherited).toContain(BRANCH_FIRST_MARKER)
+    expect(inherited).toContain(BRANCH_SECOND_MARKER)
+    expect(inherited).not.toContain(BRANCH_EXCLUDED_MARKER)
+    await page.screenshot({ path: join(runtime.artifacts, 'fork-child.png') })
+    await page.reload()
+    await expect.poll(async () => (await liveStatus(page))?.activeSession, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(childId)
+    await expect(page.getByTestId('user-bubble')).toHaveCount(2)
+    const before = (await liveStatus(page))?.lastSeq ?? -1
+    await send(page, '这是纯文本上下文测试，不调用工具或保存记忆。只列出此前用户消息中的测试代号，按先后顺序输出。')
+    await waitForFinishedTurn(page, before)
+    await expect(page.getByTestId('message-fork-task')).toHaveCount(3, { timeout: TURN_COMPLETE_TIMEOUT_MS })
+    const childAfter = await history(childId)
+    const answer = childAfter.turns.filter((entry: { role?: string }) => entry.role === 'assistant').at(-1)?.text ?? ''
+    expect(answer).toContain(BRANCH_FIRST_MARKER)
+    expect(answer).toContain(BRANCH_SECOND_MARKER)
+    expect(answer).not.toContain(BRANCH_EXCLUDED_MARKER)
+    expect((await history(sourceId!)).turns).toEqual(sourceBefore.turns)
+    await page.screenshot({ path: join(runtime.artifacts, 'fork-independent-continuation.png') })
+    desktop.assertNoPageErrors()
+    await testInfo.attach('fork-identities', { body: JSON.stringify({ sourceId, childId, runtimeHome: runtime.home }), contentType: 'application/json' })
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
 
 async function activeSessionWorkdir(page: Page, sessionId: string | null): Promise<string> {
   expect(sessionId).toBeTruthy()
@@ -326,18 +686,32 @@ test('P0-13 renders native Codex subagent lifecycle as product activity', async 
     await page.getByTestId('mode-bypassPermissions').click()
     await page.getByTestId('mode-bypassPermissions-confirm').click()
     await send(page, SUBAGENT_PROMPT)
-    await expect(page.getByTestId('turn-activity').filter({ hasText: '子代理活动' }).first()).toBeVisible({
+    const agents = page.getByTestId('native-activity-subagent_activity')
+    await expect(agents.first()).toBeVisible({
       timeout: TURN_COMPLETE_TIMEOUT_MS
     })
     const elapsed = page.getByTestId('subagent-elapsed').first()
     await expect(elapsed).toBeVisible({ timeout: TURN_COMPLETE_TIMEOUT_MS })
+    await expect(agents.first().getByTestId('native-activity-status')).toHaveText('执行中')
+    await expect(elapsed).toContainText('已运行')
     await expect(page.getByTestId('subagent-last-observed').first()).toContainText('最近确认')
     const initialElapsed = await elapsed.textContent()
     await expect.poll(async () => elapsed.textContent(), { timeout: RUNTIME_READY_TIMEOUT_MS }).not.toBe(initialElapsed)
     await page.screenshot({ path: join(runtime.artifacts, 'native-subagent-running.png') })
     await waitForFinishedTurn(page)
+    await expect(agents).toHaveCount(2)
+    const names = await agents.getByTestId('native-activity-name').allTextContents()
+    expect(new Set(names).size).toBe(2)
+    const identities = names.slice()
+    const calls = page.getByTestId('native-activity-agent_collaboration')
+    const statuses = await calls.getByTestId('native-activity-status').allTextContents()
+    expect(statuses.length).toBeGreaterThan(0)
+    expect(statuses.every((status) => /调用已(完成|结束)/.test(status))).toBe(true)
     await expect(page.getByTestId('subagent-elapsed')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'native-subagent-completed.png') })
+    await page.reload()
+    await expect(agents).toHaveCount(2, { timeout: RUNTIME_READY_TIMEOUT_MS })
+    await expect(agents.getByTestId('native-activity-name')).toHaveText(identities)
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
@@ -575,6 +949,8 @@ test('activity summary shows running and completed duration copy', async ({}, te
     await send(page, NO_TOOL_ACTIVITY_COPY_PROMPT)
     const noToolStatus = await waitForFinishedTurn(page, beforeNoTool?.lastSeq ?? 0)
     expect(noToolStatus.status).toBe('done')
+    await expect(page.getByTestId('message-fork-task')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '复制消息', exact: true }).last()).toBeVisible()
     const noToolSummary = page.getByTestId('turn-activity-trigger').last()
     await expect(noToolSummary).toContainText(/已处理\s*· 用时\d+s/)
     await expect(noToolSummary).not.toContainText('执行工具')
@@ -608,6 +984,169 @@ test('P0-2 sends a message through the real Agent session', async ({}, testInfo)
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
+  }
+})
+
+test('feedback exports historical native roots and subagent rollouts from a real session', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  const historicalSession = process.env.SCHOLARSEED_FEEDBACK_SOURCE_SESSION
+  test.skip(!historicalSession, 'an authentic historical session snapshot is required')
+  const receipts: string[] = []
+  const receiver = createServer(async (request, response) => {
+    const chunks: Buffer[] = []
+    for await (const chunk of request) chunks.push(Buffer.from(chunk))
+    const path = join(runtime.artifacts, `feedback-${receipts.length + 1}.multipart`)
+    writeFileSync(path, Buffer.concat([
+      Buffer.from(`Content-Type: ${request.headers['content-type']}\r\n\r\n`), ...chunks
+    ]))
+    receipts.push(path)
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, id: `local-export-acceptance-${receipts.length}` }))
+  })
+  await new Promise<void>(resolve => receiver.listen(0, '127.0.0.1', resolve))
+  const address = receiver.address()
+  expect(address && typeof address !== 'string').toBeTruthy()
+  const configPath = join(runtime.home, 'config.json')
+  const config = JSON.parse(readFileSync(configPath, 'utf8'))
+  config.damoclaw_server_url = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`
+  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await page.getByTestId('mode-bypassPermissions-confirm').click()
+    await send(page, SUBAGENT_PROMPT)
+    await expect(page.getByTestId('turn-activity').filter({ hasText: '子代理活动' }).first()).toBeVisible({
+      timeout: TURN_COMPLETE_TIMEOUT_MS
+    })
+    await page.screenshot({ path: join(runtime.artifacts, 'feedback-subagents-running.png') })
+    const status = await waitForFinishedTurn(page)
+    const rootIds = [nativeThread(runtime, status.activeSession!)]
+    await desktop.app!.evaluate(({ app, BrowserWindow }) => {
+      const main = BrowserWindow.getAllWindows().find(window => !window.webContents.getURL().includes('menu.html'))!
+      main.show()
+      main.focus()
+      app.focus({ steal: true })
+    })
+    await page.bringToFront()
+    await page.getByTestId('activity-account').click()
+    await expect.poll(async () => {
+      for (const window of desktop.app!.windows()) {
+        if (await window.getByTestId('account-menu-feedback').isVisible().catch(() => false)) return true
+      }
+      return false
+    }).toBe(true)
+    for (const window of desktop.app!.windows()) {
+      const feedback = window.getByTestId('account-menu-feedback')
+      if (await feedback.isVisible().catch(() => false)) {
+        await feedback.evaluate((element: HTMLElement) => element.click())
+        break
+      }
+    }
+    await expect(page.getByTestId('feedback-dialog')).toBeVisible()
+    await page.getByTestId('feedback-description').fill('本地导出验收：真实原生子代理，不提交到线上服务。')
+    await expect(page.getByTestId('feedback-include-logs')).toBeChecked()
+    await expect(page.getByTestId('feedback-include-trace')).toBeChecked()
+    await page.screenshot({ path: join(runtime.artifacts, 'feedback-consent.png') })
+    await page.getByTestId('feedback-submit').click()
+    await expect(page.getByTestId('feedback-done')).toBeVisible({ timeout: RUNTIME_READY_TIMEOUT_MS })
+    await page.screenshot({ path: join(runtime.artifacts, 'feedback-received.png') })
+    expect(receipts).toHaveLength(1)
+    const python = process.platform === 'win32' ? join(process.cwd(), '..', '..', '.venv', 'Scripts', 'python.exe')
+      : join(process.cwd(), '..', '..', '.venv', 'bin', 'python')
+    const inspectReceipt = (index: number, filename: string) => JSON.parse(execFileSync(python, ['-c', `
+import io,json,sys,zipfile
+from email.parser import BytesParser
+from email.policy import default
+from pathlib import Path
+message=BytesParser(policy=default).parsebytes(Path(sys.argv[1]).read_bytes())
+bundle=next(part.get_payload(decode=True) for part in message.iter_parts() if part.get_param('name',header='content-disposition')=='logs_bundle')
+Path(sys.argv[2]).write_bytes(bundle)
+with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+    tree=json.loads(archive.read('conversation/thread-tree.json'))
+    names=archive.namelist()
+    for row in tree['root_threads']+tree['threads']:
+        for line in archive.read(row['path']).splitlines():
+            json.loads(line)
+    print(json.dumps({'tree':tree,'names':names,'bytes':len(bundle)}))
+`, receipts[index], join(runtime.artifacts, filename)], { encoding: 'utf8' }))
+    const inspection = inspectReceipt(0, 'received-feedback.zip')
+    expect(new Set(inspection.tree.root_threads.map((row: { thread_id: string }) => row.thread_id))).toEqual(new Set(rootIds))
+    expect(inspection.tree.history_discovery_status).toBe('complete')
+    expect(inspection.tree.discovery_status).toBe('complete')
+    expect(inspection.tree.threads.length).toBeGreaterThanOrEqual(2)
+    for (const row of [...inspection.tree.root_threads, ...inspection.tree.threads]) {
+      expect(row.status).toBe('included')
+      expect(inspection.names).toContain(row.path)
+    }
+    expect(new Set(inspection.names).size).toBe(inspection.names.length)
+    writeFileSync(join(runtime.artifacts, 'received-feedback-index.json'), JSON.stringify(inspection, null, 2))
+    await testInfo.attach('actual-received-feedback-index', { body: JSON.stringify(inspection, null, 2), contentType: 'application/json' })
+    await desktop.close()
+    const historicalRoots = JSON.parse(execFileSync(python, ['-c', `
+import json,shutil,sqlite3,sys
+from pathlib import Path
+source,target,session=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+with sqlite3.connect(f'file:{source / "service/sessions.sqlite3"}?mode=ro',uri=True) as original:
+    original.row_factory=sqlite3.Row
+    record=original.execute('SELECT * FROM session_catalog WHERE session_id=?',(session,)).fetchone()
+    if record is None: raise ValueError('historical session is absent from the source catalog')
+    with sqlite3.connect(target / 'service/sessions.sqlite3') as snapshot:
+        columns=[row[1] for row in snapshot.execute('PRAGMA table_info(session_catalog)') if row[1] in record.keys()]
+        placeholders=','.join('?' for column in columns)
+        snapshot.execute(f'INSERT INTO session_catalog ({",".join(columns)}) VALUES ({placeholders})',[record[column] for column in columns])
+threads=set()
+for trace in (source/'logs/trace').glob(f'*-{session}.jsonl'):
+    destination=target/'logs/trace'/trace.name
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copyfile(trace,destination)
+    for line in trace.open():
+        try: event=json.loads(line)
+        except ValueError: continue
+        if event.get('session_id')==session and event.get('name')=='session.runtime.bound':
+            attributes=event.get('attributes',{})
+            if attributes.get('runtime_id')=='codex': threads.add(attributes['vendor_thread_id'])
+for rollout in (source/'codex/sessions').rglob('rollout-*.jsonl'):
+    if any(rollout.name.endswith(f'-{thread}.jsonl') for thread in threads):
+        destination=target/'codex/sessions'/rollout.name
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(rollout,destination)
+print(json.dumps(sorted(threads)))
+`, process.env.SCHOLARSEED_REAL_HOME!, runtime.home, historicalSession!], { encoding: 'utf8' }))
+    expect(historicalRoots.length).toBeGreaterThanOrEqual(2)
+    const restoredPage = await desktop.launch()
+    const base = await apiBase(restoredPage)
+    const historicalResult = await restoredPage.evaluate(async ({ base, session }) => {
+      const form = new FormData()
+      form.set('description', '本地历史会话导出验收：原始日志逐字节保留，不提交到线上服务。')
+      form.set('session_id', session)
+      form.set('include_logs', 'true')
+      form.set('include_trace', 'true')
+      const result = await fetch(`${base}/api/serve/feedback`, { method: 'POST', body: form })
+      return { status: result.status, body: await result.json() }
+    }, { base, session: historicalSession! })
+    expect(historicalResult.status).toBe(200)
+    expect(receipts).toHaveLength(2)
+    const historicalInspection = inspectReceipt(1, 'received-history-feedback.zip')
+    expect(new Set(historicalInspection.tree.root_threads.map((row: { thread_id: string }) => row.thread_id)))
+      .toEqual(new Set(historicalRoots))
+    expect(historicalInspection.tree.history_discovery_status).toBe('complete')
+    expect(historicalInspection.tree.root_threads.every((row: { status: string }) => row.status === 'included')).toBe(true)
+    writeFileSync(join(runtime.artifacts, 'received-history-feedback-index.json'), JSON.stringify(historicalInspection, null, 2))
+    await testInfo.attach('actual-received-history-feedback-index', { body: JSON.stringify(historicalInspection, null, 2), contentType: 'application/json' })
+    desktop.assertNoPageErrors()
+  } catch (error) {
+    await desktop.page?.screenshot({ path: join(runtime.artifacts, 'feedback-failure.png') })
+    throw error
+  } finally {
+    await desktop.attachArtifacts()
+    await new Promise<void>(resolve => receiver.close(() => resolve()))
   }
 })
 
@@ -770,6 +1309,7 @@ test('permission selection during a real approval hot switches and safely contin
     await expect(page.getByTestId('foreground-error')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-live.png') })
     const pendingSnapshot = await permissionSnapshot(page, base, sessionId!)
+    assert.ok(pendingSnapshot.pending_hil)
     const offeredOptions = pendingSnapshot.pending_hil.flatMap((item) => item.options ?? [])
     await testInfo.attach('native-permission-options', {
       body: JSON.stringify(offeredOptions), contentType: 'application/json'
@@ -835,11 +1375,12 @@ test('permission selection during a real approval hot switches and safely contin
       status: 200,
       payload: { ok: true, mode: 'bypassPermissions', active_mode: 'bypassPermissions', continued: true }
     })
-    let continuationStatus = ''
+    let continuationStatus: OpenResp['last_turn_status']
     await expect.poll(async () => {
       const snapshot = await permissionSnapshot(page, base, sessionId!)
       continuationStatus = snapshot.last_turn_status
-      return !snapshot.running && PERMISSION_TERMINAL_STATUSES.has(continuationStatus)
+      return !snapshot.running && typeof continuationStatus === 'string'
+        && PERMISSION_TERMINAL_STATUSES.has(continuationStatus)
         && snapshot.last_turn_id !== pendingSnapshot.active_turn_id
     }, { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBe(true)
     await waitForFinishedTurn(page)
@@ -964,6 +1505,7 @@ test('native session-scope permission remains reachable in the dock', async ({},
     const sessionId = (await liveStatus(page))?.activeSession
     const base = await apiBase(page)
     const snapshot = await permissionSnapshot(page, base, sessionId!)
+    assert.ok(snapshot.pending_hil)
     await testInfo.attach('session-scope-offered-options', {
       body: JSON.stringify({ home: runtime.home, sessionId, options: snapshot.pending_hil.flatMap((item) => item.options ?? []) }),
       contentType: 'application/json'

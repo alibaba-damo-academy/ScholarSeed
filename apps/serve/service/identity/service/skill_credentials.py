@@ -31,6 +31,7 @@ from starlette.status import HTTP_200_OK
 
 from service.identity.service.account import ACCOUNT_BASE_URL_ENV
 from service.identity.service.account_token import looks_like_jwt
+from service.platform.activity import Activities, ActivityDomain
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +87,12 @@ class SkillCredentialService:
         self,
         base_url: str,
         *,
+        activities: Activities,
         client: Optional[httpx.Client] = None,
         environ: Optional[Mapping[str, str]] = None,
     ) -> None:
         self._base_url = base_url.strip().rstrip("/")
+        self._activities = activities
         self._client = client if client is not None else httpx.Client(timeout=HTTP_TIMEOUT_S)
         self._environ = os.environ if environ is None else environ
         self._lock = asyncio.Lock()
@@ -116,6 +119,12 @@ class SkillCredentialService:
         self._revision += 1
         self._tokens.pop(user_id, None)
 
+    def forget_if_current(self, user_id: str, expected_credential: str) -> bool:
+        if not expected_credential or self._current(user_id) != expected_credential:
+            return False
+        self.forget(user_id)
+        return True
+
     def _authorized(self, user_id: str, credential: str) -> bool:
         who = self._identity(credential) if credential else None
         return bool(who and who.get("user_id") == user_id and self._current(user_id) == credential)
@@ -139,6 +148,13 @@ class SkillCredentialService:
         return await self.ensure(user_id, self._current(user_id))
 
     async def environment(self, user_id: str, credential: str) -> Dict[str, str]:
+        """Own issuance through cache reconciliation, even if the caller leaves."""
+        with self._activities.enter(ActivityDomain.CREDENTIAL):
+            return await self._activities.finish(
+                ActivityDomain.CREDENTIAL, lambda: self._environment(user_id, credential)
+            )
+
+    async def _environment(self, user_id: str, credential: str) -> Dict[str, str]:
         """返回该用户会话进程要额外带上的环境变量, 拿不到就返回空 dict。
 
         计量归属那一项（ACCOUNT_TOKEN_ENV）与 `ssk-` 签发**解耦**：它只是把本请求已经持有的
@@ -147,7 +163,7 @@ class SkillCredentialService:
         """
 
         if not self._authorized(user_id, credential):
-            self.forget(user_id)
+            self.forget_if_current(user_id, credential)
             return {}
         revision = self._revision
         env = self._account_environment(user_id, credential)
@@ -158,7 +174,9 @@ class SkillCredentialService:
         if not self._base_url or not user_id or not credential:
             return env
         async with self._lock:
-            token = await asyncio.to_thread(self._issue_slot, credential)
+            token = await self._activities.to_thread(
+                ActivityDomain.CREDENTIAL, self._issue_slot, credential
+            )
             if revision != self._revision or not self._authorized(user_id, credential):
                 return {}
             if not token:
@@ -183,7 +201,7 @@ class SkillCredentialService:
 
         credential = self._current(user_id)
         if not self._authorized(user_id, credential):
-            self.forget(user_id)
+            self.forget_if_current(user_id, credential)
             return {}
         token = str(self._environ.get(SKILL_API_KEY_ENV, "") or "").strip() or self._tokens.get(
             user_id, ""
@@ -205,7 +223,7 @@ class SkillCredentialService:
         """
 
         if not self._authorized(user_id, credential):
-            self.forget(user_id)
+            self.forget_if_current(user_id, credential)
             return {}
         cached = self.cached_environment(user_id)
         if cached.get(SKILL_API_KEY_ENV):
@@ -213,6 +231,13 @@ class SkillCredentialService:
         return await self.environment(user_id, credential)
 
     async def refresh(self, user_id: str, credential: str) -> Dict[str, str]:
+        """Do not release the issuance lock before the real operation finishes."""
+        with self._activities.enter(ActivityDomain.CREDENTIAL):
+            return await self._activities.finish(
+                ActivityDomain.CREDENTIAL, lambda: self._refresh(user_id, credential)
+            )
+
+    async def _refresh(self, user_id: str, credential: str) -> Dict[str, str]:
         """跳过缓存取回权威凭据 (用户轮换后由客户端通知触发)。
 
         **跳过缓存校验**: 轮换后缓存里那把已经死了, 再去验一次只是白跑一趟。这一步是
@@ -221,7 +246,7 @@ class SkillCredentialService:
         """
 
         if not self._authorized(user_id, credential):
-            self.forget(user_id)
+            self.forget_if_current(user_id, credential)
             return {}
         revision = self._revision
         env = self._account_environment(user_id, credential)
@@ -231,7 +256,9 @@ class SkillCredentialService:
         if not self._base_url:
             return env
         async with self._lock:
-            token = await asyncio.to_thread(self._issue_slot, credential)
+            token = await self._activities.to_thread(
+                ActivityDomain.CREDENTIAL, self._issue_slot, credential
+            )
             if revision != self._revision or not self._authorized(user_id, credential):
                 return {}
             if not token:
@@ -298,12 +325,15 @@ class SkillCredentialService:
 
 def skill_credentials_from_env(
     env: Optional[Mapping[str, str]] = None,
+    *,
+    activities: Activities,
 ) -> SkillCredentialService:
     """按环境变量装配 (未配账号服务地址时 configured() 为 False, 整条腿静默不参与)。"""
 
     source = os.environ if env is None else env
     return SkillCredentialService(
         source.get(ACCOUNT_BASE_URL_ENV, ""),
+        activities=activities,
         environ=source,
     )
 

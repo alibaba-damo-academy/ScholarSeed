@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from scholarseed_runtime.contract.binding import RuntimeBinding
 from scholarseed_runtime.contract.capability import CapabilitySet
@@ -13,6 +13,7 @@ from scholarseed_runtime.contract.command import (
     AppliedState,
     ArchiveRequest,
     CommandReceipt,
+    CommandState,
     DeleteRequest,
     ForkRequest,
     InterruptRequest,
@@ -33,6 +34,51 @@ RUNTIME_SUSPEND_UNSUPPORTED = "runtime_suspend_unsupported"
 RUNTIME_SUSPEND_STALE = "runtime_suspend_stale"
 RUNTIME_SUSPEND_UNPERSISTED = "runtime_suspend_unpersisted"
 RUNTIME_SUSPEND_FAILED = "runtime_suspend_failed"
+RUNTIME_CONFIRMATION_UNSUPPORTED = "runtime_turn_confirmation_unsupported"
+RUNTIME_CONFIRMATION_STALE = "runtime_turn_confirmation_stale"
+RUNTIME_CONFIRMATION_BUSY = "runtime_turn_confirmation_busy"
+RUNTIME_CONFIRMATION_UNPERSISTED = "runtime_turn_confirmation_unpersisted"
+RUNTIME_OBSERVATION_PENDING = "runtime_observation_pending"
+RUNTIME_ACTIVITY_CHANGED = "runtime_activity_changed"
+RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS = frozenset(
+    {RUNTIME_OBSERVATION_PENDING, RUNTIME_ACTIVITY_CHANGED}
+)
+
+
+@dataclass(frozen=True)
+class TurnConfirmationTarget:
+    product_session_id: str
+    native_session_id: str
+    client_submission_id: str
+    incident_id: str
+    process_generation: int
+
+
+@dataclass(frozen=True)
+class TurnConfirmationTicket:
+    ticket_id: str
+    target: TurnConfirmationTarget
+    generation: str
+    revision: int
+    watermark: int
+
+
+@dataclass(frozen=True)
+class TurnConfirmationReceipt:
+    ticket: TurnConfirmationTicket
+    state: CommandState
+    safe_error: str = ""
+
+
+@runtime_checkable
+class RuntimeTurnConfirmation(Protocol):
+    async def prepare_turn_confirmation(
+        self, target: TurnConfirmationTarget
+    ) -> TurnConfirmationTicket: ...
+
+    async def commit_turn_confirmation(
+        self, ticket: TurnConfirmationTicket, persisted_watermark: int
+    ) -> TurnConfirmationReceipt: ...
 
 
 class SuspendState(str, Enum):
@@ -142,6 +188,10 @@ class RuntimeSession(Protocol):
 
 
 __all__ = [
+    "RuntimeTurnConfirmation",
+    "TurnConfirmationTarget",
+    "TurnConfirmationTicket",
+    "TurnConfirmationReceipt",
     "RuntimeSession",
     "RuntimeActivitySnapshot",
     "RuntimeExecutionTreeBlocker",

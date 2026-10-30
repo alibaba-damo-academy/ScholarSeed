@@ -13,17 +13,20 @@
  */
 
 import { withViewerBoundary } from './viewer'
+import { availabilityPolicy } from './policy'
 
 import {
   composeFeatures,
   type FeatureModule,
   type FeatureRegistry,
-  type RouteKey
+  type RouteKey,
 } from '../contracts/features'
 import { assistantFeature } from '../features/assistant/feature'
+import { browserFeature } from '../features/browser/feature'
 import { feedbackRecorderFeature } from '../features/feedback-recorder/feature'
 import { literatureFeature } from '../features/literature/feature'
 import { projectFeature } from '../features/project/feature'
+import { skillsFeature } from '../features/skills/feature'
 import { resourcesFeature } from '../features/resources/feature'
 import { workbenchFeature } from '../features/workbench/feature'
 
@@ -36,11 +39,13 @@ import { workbenchFeature } from '../features/workbench/feature'
  */
 const MODULES: readonly FeatureModule[] = [
   projectFeature(),
+  skillsFeature(),
   resourcesFeature(),
   literatureFeature(),
   workbenchFeature(),
   assistantFeature(),
-  ...(window.scholarseed.feedbackRecorderEnabled ? [feedbackRecorderFeature()] : [])
+  ...(availabilityPolicy.browserEnabled ? [browserFeature()] : []),
+  feedbackRecorderFeature(),
 ]
 
 /**
@@ -66,9 +71,7 @@ function withViewerBoundaries(module: FeatureModule): FeatureModule {
  * ActivityRail）都要读它，且它在运行期不变。走 context 只会多一层
  * Provider 而不带来任何好处。
  */
-export const featureRegistry: FeatureRegistry = composeFeatures(
-  MODULES.map(withViewerBoundaries)
-)
+export const featureRegistry: FeatureRegistry = composeFeatures(MODULES.map(withViewerBoundaries))
 
 /** 已注册的 Feature id，供诊断与验收 harness 断言。 */
 export const registeredFeatureIds = MODULES.map((module) => module.id)

@@ -120,6 +120,8 @@ def decode_docx(payload: bytes) -> str:
                 section.even_page_footer,
             )
             for container in containers:
+                if container.is_linked_to_previous:
+                    continue
                 part = str(container.part.partname)
                 if part in seen_parts:
                     continue

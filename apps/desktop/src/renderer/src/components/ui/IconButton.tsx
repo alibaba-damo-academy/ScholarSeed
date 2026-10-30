@@ -7,7 +7,7 @@ import {
   iconButtonClassName,
   iconButtonContentClassName,
   iconButtonStyleClassName,
-  type IconButtonSize
+  type IconButtonSize,
 } from './classes'
 import { cx } from './utils'
 
@@ -23,12 +23,21 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
   ({ className, icon, label, size = 'md', variant = 'primary', ...props }, ref) => (
     <Button
       aria-label={label}
-      className={cx(buttonClassName({ size, variant }), iconButtonClassName({ size }), iconButtonStyleClassName({ size, variant }), className)}
+      className={cx(
+        buttonClassName({ size: size === 'mini' ? 'xs' : size, variant }),
+        iconButtonClassName({ size }),
+        iconButtonStyleClassName({ size, variant }),
+        className
+      )}
       unstyled
       ref={ref}
-      size={size}
+      size={size === 'mini' ? 'xs' : size}
       title={label}
-      icon={<span aria-hidden="true" className={iconButtonContentClassName}>{icon}</span>}
+      icon={
+        <span aria-hidden="true" className={iconButtonContentClassName}>
+          {icon}
+        </span>
+      }
       {...props}
     />
   )

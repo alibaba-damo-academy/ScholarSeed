@@ -7,12 +7,13 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
 from service.content.domain.model import ContentError
 from service.persistence.project import StorageFailureKind, classify_storage_failure
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.content import (
     DISK_FULL_ERROR,
     IMPORT_CANCELLED_ERROR,
@@ -20,6 +21,7 @@ from service.platform.content import (
     ContentImportSourceResult,
     ContentImportStage,
     ContentPort,
+    ExternalRootRef,
     ImportFailurePolicy,
     ImportMode,
 )
@@ -33,6 +35,7 @@ from service.resources.domain.jobs import (
     VersionInitializationProgress,
 )
 from service.resources.persistence.jobs import ImportJobStore
+from service.resources.service.listing import ResourceListing
 
 IMPORT_POLL_SECONDS = 0.1
 IMPORT_IDLE_SECONDS = 0.25
@@ -53,13 +56,17 @@ class ResourceImportError(RuntimeError):
 
 
 class ResourceImportService:
-    def __init__(self, content: ContentPort, store: ImportJobStore) -> None:
+    def __init__(
+        self, content: ContentPort, store: ImportJobStore, *, activities: Activities
+    ) -> None:
         self._content = content
         self._store = store
+        self._activities = activities
         self._worker_id = uuid4().hex
         self._task: asyncio.Task[None] | None = None
+        self._waiter: asyncio.Future[None] | None = None
         self._stopping = False
-        self._roots_publisher: Callable[[str], Awaitable[None]] | None = None
+        self._linker: Callable[[ImportJob], Awaitable[None]] | None = None
         self._version_initializer: (
             Callable[
                 [str, tuple[str, ...], Callable[[VersionInitializationProgress], None]], object
@@ -67,8 +74,70 @@ class ResourceImportService:
             | None
         ) = None
 
-    def bind_roots_publisher(self, publisher: Callable[[str], Awaitable[None]]) -> None:
-        self._roots_publisher = publisher
+    @staticmethod
+    def link_receipt(job: ImportJob) -> str:
+        return json.dumps(
+            {
+                "version": 1,
+                "owner_id": job.owner_id,
+                "project_id": job.project_id,
+                "sources": job.sources,
+                "target_dir": job.target_dir,
+                "generation": job.lease_generation,
+                "indices": [
+                    row.source_index
+                    for row in job.source_results
+                    if row.status is ImportSourceStatus.PENDING
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def bind_linker(self, linker: Callable[[ImportJob], Awaitable[None]]) -> None:
+        self._linker = linker
+
+    def link_request(self, job_id: str, owner_id: str, generation: int) -> ImportJob:
+        """Revalidate the durable claim inside the directory transaction."""
+        job = self._store.get(job_id, owner_id)
+        if (
+            self._stopping
+            or job is None
+            or job.mode is not ImportMode.LINK
+            or job.status is not ImportJobStatus.RUNNING
+            or job.lease_generation != generation
+            or self._store.cancelled(job_id, self._worker_id, generation)
+        ):
+            raise ContentError(IMPORT_CANCELLED_ERROR)
+        if not self._store.update(
+            job_id,
+            self._worker_id,
+            generation,
+            status=ImportJobStatus.RUNNING,
+            phase=ImportJobPhase.LINKING,
+            completed_items=job.completed_items,
+            completed_bytes=job.completed_bytes,
+            total_bytes=job.total_bytes,
+        ):
+            raise ContentError(IMPORT_CANCELLED_ERROR)
+        return job
+
+    def record_links(self, job: ImportJob, roots: tuple[ExternalRootRef, ...]) -> None:
+        pending = tuple(
+            row for row in job.source_results if row.status is ImportSourceStatus.PENDING
+        )
+        if len(pending) != len(roots):
+            raise RuntimeError("LINK receipt does not match pending sources")
+        if not pending:
+            return
+        results = tuple(
+            ImportSourceResult(row.source_index, ImportSourceStatus.SUCCEEDED, "", root.mount_path)
+            for row, root in zip(pending, roots)
+        )
+        if not self._store.record_source_results(
+            job.job_id, self._worker_id, job.lease_generation, results
+        ):
+            raise RuntimeError("LINK source receipt lost its worker claim")
 
     def bind_version_initializer(
         self,
@@ -84,19 +153,31 @@ class ResourceImportService:
 
     async def aclose(self) -> None:
         self._stopping = True
+        # Cancelling to_thread only cancels its waiter, not the SQLite/file
+        # worker. Wake idle admission/timer waits, then join the actual work.
+        if self._waiter is not None:
+            self._waiter.cancel()
         task = self._task
-        self._task = None
         if task is None:
             return
-        # Shutdown may already have cancelled the lifespan task that owns this
-        # worker.  Treat that cancellation as normal shutdown and never let it
-        # turn Ctrl+C into an ERROR traceback.
-        if not task.done():
-            task.cancel()
         try:
-            await task
+            # The caller's shutdown deadline may stop waiting, but cannot turn
+            # an unfinished worker into a closed owner or discard its handle.
+            await asyncio.shield(task)
+        finally:
+            if task.done():
+                self._task = None
+
+    async def _wait(self, operation: Awaitable[None]) -> bool:
+        self._waiter = asyncio.ensure_future(operation)
+        try:
+            await self._waiter
         except asyncio.CancelledError:
-            pass
+            if not self._stopping:
+                raise
+        finally:
+            self._waiter = None
+        return not self._stopping
 
     def create(
         self,
@@ -108,33 +189,34 @@ class ResourceImportService:
         sources: tuple[str, ...],
         idempotency_key: str,
     ) -> ImportJob:
-        if not sources:
-            raise ResourceImportError("sources_required")
-        project = self._content.project(project_id)
-        digest = hashlib.sha256(
-            json.dumps(
-                {
-                    "project": project.id,
-                    "mode": mode.value,
-                    "target_dir": target_dir,
-                    "sources": sources,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest()
-        try:
-            return self._store.create(
-                owner_id=owner_id,
-                project_id=project.id,
-                mode=mode,
-                target_dir=target_dir,
-                sources=sources,
-                request_digest=digest,
-                idempotency_key=idempotency_key,
-            )
-        except ValueError as error:
-            raise ResourceImportError(str(error)) from error
+        with self._activities.enter(ActivityDomain.IMPORT, root=True):
+            if not sources:
+                raise ResourceImportError("sources_required")
+            project = self._content.project(project_id)
+            digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "project": project.id,
+                        "mode": mode.value,
+                        "target_dir": target_dir,
+                        "sources": sources,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            try:
+                return self._store.create(
+                    owner_id=owner_id,
+                    project_id=project.id,
+                    mode=mode,
+                    target_dir=target_dir,
+                    sources=sources,
+                    request_digest=digest,
+                    idempotency_key=idempotency_key,
+                )
+            except ValueError as error:
+                raise ResourceImportError(str(error)) from error
 
     def get(self, job_id: str, *, owner_id: str) -> ImportJob:
         job = self._store.get(job_id, owner_id)
@@ -152,14 +234,15 @@ class ResourceImportService:
         return job
 
     def retry(self, job_id: str, *, owner_id: str) -> ImportJob:
-        job = self._store.retry(job_id, owner_id)
-        if job is None:
-            raise ResourceImportError("resource_import_job_not_retryable")
-        return job
+        with self._activities.enter(ActivityDomain.IMPORT, root=True):
+            job = self._store.retry(job_id, owner_id)
+            if job is None:
+                raise ResourceImportError("resource_import_job_not_retryable")
+            return job
 
     async def events(
         self, job_id: str, *, owner_id: str, after_seq: int
-    ) -> AsyncIterator[dict[str, Any] | None]:
+    ) -> AsyncGenerator[dict[str, Any] | None, None]:
         self.get(job_id, owner_id=owner_id)
         cursor = after_seq
         while True:
@@ -180,16 +263,50 @@ class ResourceImportService:
 
     async def _run(self) -> None:
         while not self._stopping:
-            interrupted = await asyncio.to_thread(self._store.interrupt_expired)
-            if interrupted:
-                _log.warning("Marked %d expired resource import jobs interrupted", interrupted)
-            job = await asyncio.to_thread(self._store.claim, self._worker_id, IMPORT_LEASE_SECONDS)
-            if job is None:
-                await asyncio.sleep(IMPORT_IDLE_SECONDS)
+            if not await self._wait(self._activities.wait_open()):
+                return
+            try:
+                lease = self._activities.enter(ActivityDomain.IMPORT, root=True)
+            except MaintenanceActive:
                 continue
-            await self._execute(job)
+            with lease:
+                interrupted = await self._activities.to_thread(
+                    ActivityDomain.IMPORT, self._store.interrupt_expired
+                )
+                if self._stopping:
+                    return
+                if interrupted:
+                    _log.warning("Marked %d expired resource import jobs interrupted", interrupted)
+                job = await self._activities.to_thread(
+                    ActivityDomain.IMPORT, self._store.claim, self._worker_id, IMPORT_LEASE_SECONDS
+                )
+                if job is not None and job.mode is ImportMode.COPY:
+                    await self._execute(job)
+            if self._stopping:
+                return
+            if job is not None and job.mode is ImportMode.LINK:
+                failure = None
+                try:
+                    if self._linker is None:
+                        raise ResourceImportError("resource_linker_unavailable")
+                    await self._linker(job)
+                except Exception as error:
+                    failure = error
+                while True:
+                    if not await self._wait(self._activities.wait_open()):
+                        return
+                    try:
+                        continuation = self._activities.enter(ActivityDomain.IMPORT, root=True)
+                        break
+                    except MaintenanceActive:
+                        continue
+                with continuation:
+                    await self._execute(job, link_failure=failure)
+            if job is None:
+                if not await self._wait(asyncio.sleep(IMPORT_IDLE_SECONDS)):
+                    return
 
-    async def _execute(self, job: ImportJob) -> None:
+    async def _execute(self, job: ImportJob, *, link_failure: Exception | None = None) -> None:
         generation = job.lease_generation
         completed_items = job.completed_items
         completed_bytes = job.completed_bytes
@@ -244,23 +361,32 @@ class ResourceImportService:
 
                 def record_source(result: ContentImportSourceResult) -> None:
                     source_index = pending_results[result.source_index].source_index
+                    if result.imported is not None:
+                        ResourceListing(self._content).record_import(
+                            job.project_id, (result.imported,)
+                        )
                     status = (
                         ImportSourceStatus.SUCCEEDED
                         if result.imported is not None
                         else ImportSourceStatus.FAILED
                     )
-                    self._store.record_source_result(
+                    self._store.record_source_results(
                         job.job_id,
                         self._worker_id,
                         generation,
-                        source_index,
-                        status,
-                        error=result.error,
-                        target_path=result.imported.path if result.imported is not None else "",
+                        (
+                            ImportSourceResult(
+                                source_index,
+                                status,
+                                result.error,
+                                result.imported.path if result.imported is not None else "",
+                            ),
+                        ),
                     )
 
                 if pending_sources:
-                    await asyncio.to_thread(
+                    await self._activities.to_thread(
+                        ActivityDomain.IMPORT,
                         self._content.import_sources,
                         job.project_id,
                         pending_sources,
@@ -273,60 +399,15 @@ class ResourceImportService:
                         result_observer=record_source,
                     )
             else:
-                self._store.update(
-                    job.job_id,
-                    self._worker_id,
-                    generation,
-                    status=ImportJobStatus.RUNNING,
-                    phase=ImportJobPhase.LINKING,
-                    completed_items=0,
-                    completed_bytes=0,
-                    total_bytes=0,
-                    scan_discovered_items=0,
-                )
+                if link_failure is not None:
+                    raise link_failure
                 if cancelled():
                     raise ContentError(IMPORT_CANCELLED_ERROR)
-                try:
-                    linked = await asyncio.to_thread(
-                        self._content.authorize_import_roots,
-                        job.project_id,
-                        pending_sources,
-                        job.target_dir,
-                    )
-                except ContentError as error:
-                    for result in pending_results:
-                        self._store.record_source_result(
-                            job.job_id,
-                            self._worker_id,
-                            generation,
-                            result.source_index,
-                            ImportSourceStatus.FAILED,
-                            error=error.code,
-                        )
-                    linked = ()
-                else:
-                    for result, root in zip(pending_results, linked):
-                        self._store.record_source_result(
-                            job.job_id,
-                            self._worker_id,
-                            generation,
-                            result.source_index,
-                            ImportSourceStatus.SUCCEEDED,
-                            target_path=root.mount_path,
-                        )
-                completed_items = len(linked)
-                self._store.update(
-                    job.job_id,
-                    self._worker_id,
-                    generation,
-                    status=ImportJobStatus.RUNNING,
-                    phase=ImportJobPhase.LINKING,
-                    completed_items=completed_items,
-                    completed_bytes=0,
-                    total_bytes=0,
+                current = self._store.get(job.job_id, job.owner_id)
+                completed_items = sum(
+                    result.status is ImportSourceStatus.SUCCEEDED
+                    for result in (current.source_results if current is not None else ())
                 )
-                if linked and self._roots_publisher is not None:
-                    await self._roots_publisher(job.project_id)
             current = self._store.get(job.job_id, job.owner_id)
             current_results = current.source_results if current is not None else ()
             paths = tuple(
@@ -371,7 +452,8 @@ class ResourceImportService:
                         version_total_items=progress.total_items,
                     )
 
-                await asyncio.to_thread(
+                await self._activities.to_thread(
+                    ActivityDomain.IMPORT,
                     self._version_initializer,
                     job.project_id,
                     paths,

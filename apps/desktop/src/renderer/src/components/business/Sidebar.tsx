@@ -6,6 +6,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 
 import { listProjects } from '../../api'
 import { sessionNeedsAttention } from '../../attention'
+import { useAttention } from '../../features/assistant/attention'
 import { Icon } from '../../icons'
 import type { SessionNode } from '../../model'
 import { useApp } from '../../store'
@@ -19,6 +20,7 @@ import {
   type SessionContextMenuTarget,
 } from './SessionContextMenu'
 import { SessionTitleEditor } from './SessionTitle'
+import { TaskPausedIcon } from './TaskStatus'
 
 // Sidebar.tsx — the left column of the ScholarSeed shell (PRD 2.1.1): window
 // controls row, 新对话, 技能, the project tree, the recent-session list, and the
@@ -59,23 +61,15 @@ const SIDEBAR_PANEL_ACTION_CLASS_NAME =
 const SIDEBAR_EMPTY_CLASS_NAME =
   'px-[8px] py-[8px] text-[10.5px] leading-[1.6] text-[var(--text-3)]'
 
-/** PRD 2.1.1 会话状态标记: ?=等待确认, 转圈=运行中, ·=完成未查看, 无=空闲 */
 function StatusMark({
   node,
-  active,
   unseen,
 }: {
   node: SessionNode
-  active: boolean
   unseen: boolean
 }): React.JSX.Element | null {
-  if (node.status === 'waiting') {
-    // 问号：等待用户确认（HIL / 授权请求）
-    return (
-      <span className="inline-flex size-[15px] flex-none items-center justify-center rounded-full border-[1.6px] border-[var(--sidebar-waiting)] text-[10.5px] font-bold leading-none text-[var(--sidebar-waiting)]">
-        ?
-      </span>
-    )
+  if (node.status === 'waiting' && unseen) {
+    return <TaskPausedIcon className="flex-none" />
   }
   if (node.status === 'running') {
     // 转圈：任务正在执行
@@ -83,11 +77,7 @@ function StatusMark({
       <span className="size-[10px] flex-none animate-[statusSpin_0.8s_linear_infinite] rounded-full border-[1.5px] border-[var(--c-experience)] border-t-transparent" />
     )
   }
-  if (
-    (node.status === 'done' || node.status === 'failed' || node.status === 'abandon') &&
-    !active &&
-    unseen
-  ) {
+  if (unseen) {
     // 小圆点：完成但用户未进入
     return <span className="size-[7px] flex-none rounded-full bg-[var(--c-experience)]" />
   }
@@ -110,10 +100,12 @@ function SessionRow({
   const format = createFormatters(state.lang)
   const active = state.activeSession === node.id && state.capGallery !== 'skill'
   const selectable = !node.container && node.openable !== false
-  const unseen = sessionNeedsAttention(node, state.sessionActivitySeen[node.id] ?? 0)
+  const reminders = useAttention()
+  const unseen = !node.container && sessionNeedsAttention(reminders.by_session[node.id] ?? 0)
   const children = node.children ?? []
   const collapsed = Boolean(state.collapsedSessionIds[node.id])
-  const renaming = state.sessionRename?.sessionId === node.id
+  const renaming =
+    state.sessionRename?.mode !== 'dialog' && state.sessionRename?.sessionId === node.id
   const [menuOpen, setMenuOpen] = React.useState(false)
   const menuTarget: SessionContextMenuTarget = {
     inProject,
@@ -139,7 +131,7 @@ function SessionRow({
             color: active ? 'var(--text)' : 'var(--text-2)',
           }}
         >
-          <StatusMark node={node} active={active} unseen={unseen} />
+          <StatusMark node={node} unseen={unseen} />
           <SessionTitleEditor node={node} />
         </div>
       ) : (
@@ -150,7 +142,7 @@ function SessionRow({
           onClick={() =>
             node.container
               ? act.toggleSessionChildren(node.id)
-              : selectable && act.openSession(node.id)
+              : selectable && act.openSession(node.id, undefined, 'task')
           }
           className={cx(
             'flex min-h-[31px] min-w-0 w-full max-w-full flex-1 items-center gap-[9px] rounded-[7px] border-0 bg-transparent py-[4px] pl-[0] text-left',
@@ -165,7 +157,7 @@ function SessionRow({
             {node.container ? (
               <Icon name="git-branch" size={13} />
             ) : (
-              <StatusMark node={node} active={active} unseen={unseen} />
+              <StatusMark node={node} unseen={unseen} />
             )}
           </span>
           <span
@@ -237,7 +229,10 @@ function VirtualizedSessionList({ sessions }: { sessions: SessionNode[] }): Reac
     overscan: 5,
   })
   return (
-    <div ref={parentRef} className="max-h-[60vh] overflow-y-auto">
+    <div
+      ref={parentRef}
+      className="max-h-[var(--vds-sidebar-project-list-max-height)] overflow-y-auto"
+    >
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
         {virtualizer.getVirtualItems().map((virtualRow) => (
           <div
@@ -380,7 +375,7 @@ export function Sidebar(): React.JSX.Element {
                       data-testid={`sidebar-search-result-${node.id}`}
                       onClick={() => {
                         set({ searchHint: false })
-                        act.openSession(node.id)
+                        act.openSession(node.id, undefined, 'task')
                       }}
                     >
                       <Icon name="doc" size={13} />
@@ -494,7 +489,7 @@ export function Sidebar(): React.JSX.Element {
                       data-testid={`sidebar-search-result-${node.id}`}
                       onClick={() => {
                         set({ searchHint: false })
-                        act.openSession(node.id)
+                        act.openSession(node.id, undefined, 'task')
                       }}
                     >
                       <Icon name="doc" size={13} />

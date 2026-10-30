@@ -28,6 +28,8 @@ from service.paths import (  # noqa: E402
     SERVICE_BRIDGE_DIR,
     SERVICE_DIR,
     SERVICE_LITERATURE_FILES_DIR,
+    SESSION_BLOCKS_DIR,
+    SESSION_BODIES_DIR,
     SESSION_RUNTIME_DIR,
     service_deny_read_roots,
 )
@@ -55,6 +57,10 @@ class DenyReadRootsContract(unittest.TestCase):
 
     def roots(self) -> set[Path]:
         return set(service_deny_read_roots())
+
+    def test_session_bodies_are_denied_before_the_first_write(self) -> None:
+        self.assertIn(SESSION_BODIES_DIR, self.roots())
+        self.assertIn(SESSION_BLOCKS_DIR, self.roots())
 
     def test_managed_full_text_store_is_denied(self) -> None:
         self.assertIn(SERVICE_LITERATURE_FILES_DIR, self.roots())

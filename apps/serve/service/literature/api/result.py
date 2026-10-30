@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN, HTTP_404_NOT_FOUND
 
@@ -17,7 +16,7 @@ from service.assistant.service.authorization import (
     FulltextAuthorizer,
     task_authorization_policy,
 )
-from service.chat.api.bridge import bridge_caller
+from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.persistence.catalog import (
     SessionAccessError,
     SessionCatalogStore,
@@ -26,9 +25,18 @@ from service.chat.persistence.catalog import (
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.live import LiveSession
 from service.chat.service.artifacts import ArtifactReadError, ArtifactService
-from service.chat.service.cards import DisplayCardError, session_cards
+from service.chat.service.cards import (
+    DISPLAY_CARD_CONTINUE_ACTION,
+    DISPLAY_CARD_LIMIT_ERRORS,
+    DisplayCardError,
+    session_cards,
+)
 from service.chat.service.sessions import SessionService
-from service.chat.service.tasks import TASK_ACTIVATION_REQUIRED_ACTION
+from service.chat.service.tasks import (
+    TASK_ACTIVATION_REQUIRED_ACTION,
+    fulltext_binding_workspace,
+    verified_authorization_context,
+)
 from service.identity.utils import request_owner_id
 from service.literature.api.gate import FulltextGate, publish_checkpoint_card
 from service.literature.persistence.files import scoped_relative
@@ -55,14 +63,15 @@ from service.literature.service.review import (
     project_review_search_artifacts,
 )
 from service.literature.service.status import ResultStatusRequest, ResultStatusService
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.bridge import (
-    BRIDGE_MAX_REQUEST_BYTES,
     LITERATURE_RESULT_ROUTE,
     ArtifactPublishFailure,
     DisplayCardContent,
     LiteratureResultPublish,
 )
-from service.platform.context import ProductTaskType
+from service.platform.context import FulltextBindingScope, ProductTaskType
+from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 RESULT_STATUS_ROUTE = "/api/sessions/{session_id}/literature/result-status"
 RESULT_REPORT_ROLE = "supporting"
@@ -90,8 +99,10 @@ def register_result_routes(
     artifacts: ArtifactService | None = None,
     fulltext_gate: FulltextGate | None = None,
     authorizer: FulltextAuthorizer | None = None,
+    *,
+    activities: Activities,
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
 
     @router.post(LITERATURE_RESULT_ROUTE)
     async def publish_result(request: Request) -> JSONResponse:
@@ -118,14 +129,32 @@ def register_result_routes(
                 and active_task_type
                 and active_task_type != ProductTaskType.PRECISE_SEARCH.value
             ):
+                logger.warning(
+                    "task_authorization_rejected session_id=%s task_type=precise_search "
+                    "validation=active_task_type active_type_matches=False turn_id=%s "
+                    "generation=%s lease_revision=%s",
+                    live.id,
+                    getattr(live, "active_product_turn_id", ""),
+                    getattr(live, "product_turn_generation", None),
+                    getattr(live, "task_lease_revision", None),
+                )
                 raise ValueError(FULLTEXT_AUTHORIZATION_TASK_REQUIRED)
             if command.checkpoint == FINAL_DELIVERY_CHECKPOINT:
                 return await publish_final_delivery(live, turn_id, command.run)
+            task_context = None
+            if command.checkpoint == SELECTION_CHECKPOINT:
+                task_context = verified_authorization_context(
+                    live, ProductTaskType.PRECISE_SEARCH, workspace=command.run
+                )
             result_checkpoint: Literal["search", "selection"] = (
                 SELECTION_CHECKPOINT if command.checkpoint == SELECTION_CHECKPOINT else "search"
             )
-            prepared = await asyncio.to_thread(
-                prepare_result, live.runtime_workdir, command.run, result_checkpoint
+            prepared = await activities.to_thread(
+                ActivityDomain.BRIDGE,
+                prepare_result,
+                live.runtime_workdir,
+                command.run,
+                result_checkpoint,
             )
             if sessions.bridge_caller(live.id) is not live or live.publication_turn_id != turn_id:
                 return JSONResponse(
@@ -186,6 +215,7 @@ def register_result_routes(
                     snapshot_id=live.active_assistant_snapshot_id,
                     authorization_type=PRECISE_SEARCH_FULLTEXT,
                     refs=prepared.authorization_refs,
+                    task_context=task_context,
                     source_count=len(prepared.authorization_sources),
                     papers=tuple(
                         {"id": source.ref_id, "label": source.title, "description": ""}
@@ -211,17 +241,23 @@ def register_result_routes(
                             authorization_type=PRECISE_SEARCH_FULLTEXT,
                             refs=prepared.authorization_refs,
                             client_turn_id=getattr(live, "active_product_turn_id", ""),
+                            task_context=task_context,
                         )
                     ),
                 }
         except (ValueError, OSError, DisplayCardError, ArtifactPublishFailure) as error:
             logger.warning(
                 "literature_result_publication_failed session_id=%s checkpoint=%s "
-                "failure_type=%s failure=%s",
+                "failure_type=%s failure=%s turn_id=%s publication_turn_id=%s "
+                "generation=%s lease_revision=%s",
                 live.id,
                 checkpoint,
                 type(error).__name__,
                 str(error)[:200] if isinstance(error, ValueError) else "",
+                getattr(live, "active_product_turn_id", ""),
+                turn_id,
+                getattr(live, "product_turn_generation", None),
+                getattr(live, "task_lease_revision", None),
             )
             reason = (
                 str(error)
@@ -229,7 +265,9 @@ def register_result_routes(
                 else RESULT_ARTIFACT_INVALID
             )
             action = RESULT_RETRY_ACTION
-            if reason == SELECTION_NOT_PREPARED:
+            if reason in DISPLAY_CARD_LIMIT_ERRORS:
+                action = DISPLAY_CARD_CONTINUE_ACTION
+            elif reason == SELECTION_NOT_PREPARED:
                 action = SELECTION_PREPARE_ACTION
             elif reason == FULLTEXT_AUTHORIZATION_TASK_REQUIRED:
                 action = TASK_ACTIVATION_REQUIRED_ACTION
@@ -257,12 +295,22 @@ def register_result_routes(
         """Publish the terminal answer and its supporting evidence from one bound run."""
 
         policy = task_authorization_policy(getattr(live, "active_task_type", ""))
-        if policy is None or authorizer is None:
+        task_context = None
+        binding_scope = None
+        if policy is None or authorizer is None or getattr(live, "active_task_lease", None) is None:
             # Without a task lease there is no authorization context, so nothing managed can
             # be vouched for; a run that never acquired managed full text still delivers.
             authorized = AuthorizedFulltext()
         else:
-            receipt = issue_receipt(
+            task_context = verified_authorization_context(live, policy.task_type, workspace=run)
+            binding_scope = FulltextBindingScope(
+                live.id,
+                getattr(live, "project_id", "") or "",
+                fulltext_binding_workspace(live, policy.task_type),
+            )
+            receipt = await activities.to_thread(
+                ActivityDomain.BRIDGE,
+                issue_receipt,
                 authorizer,
                 run=run,
                 session_id=live.id,
@@ -270,16 +318,31 @@ def register_result_routes(
                 turn_id=live.ledger.active_turn_id,
                 authorization_type=policy.authorization_type,
                 client_turn_id=getattr(live, "active_product_turn_id", ""),
+                task_context=task_context,
+                binding_scope=binding_scope,
             )
             authorized = AuthorizedFulltext(
                 refs=receipt.refs,
                 revisions={paper.paper_id: paper.revision for paper in receipt.papers},
             )
-        prepared = await asyncio.to_thread(
-            prepare_final_delivery, live.runtime_workdir, run, authorized=authorized
+        prepared = await activities.to_thread(
+            ActivityDomain.BRIDGE,
+            prepare_final_delivery,
+            live.runtime_workdir,
+            run,
+            authorized=authorized,
         )
         published = []
         for artifact in prepared.artifacts:
+            if binding_scope is not None and policy is not None:
+                if fulltext_binding_workspace(live, policy.task_type) != binding_scope.workspace:
+                    raise ValueError(FULLTEXT_AUTHORIZATION_TASK_REQUIRED)
+            if task_context is not None and policy is not None:
+                if (
+                    verified_authorization_context(live, policy.task_type, workspace=run)
+                    != task_context
+                ):
+                    raise ValueError(FULLTEXT_AUTHORIZATION_TASK_REQUIRED)
             if sessions.bridge_caller(live.id) is not live or live.publication_turn_id != turn_id:
                 return JSONResponse(
                     {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
@@ -307,7 +370,9 @@ def register_result_routes(
             raise ValueError("fulltext_authorization_unavailable")
         policy = policy_for(RESEARCH_IDEA_FULLTEXT)
         trigger = scoped_relative(run, AGENTIC_METADATA_FILE)
-        content = await asyncio.to_thread(policy.read, live.runtime_workdir, trigger)
+        content = await activities.to_thread(
+            ActivityDomain.BRIDGE, policy.read, live.runtime_workdir, trigger
+        )
         if content is None or not content.refs:
             raise ValueError("literature_candidates_unavailable")
         card = await publish_checkpoint_card(live, content, turn_id)
@@ -340,7 +405,17 @@ def register_result_routes(
 
     app.include_router(router)
 
-    @app.post(RESULT_STATUS_ROUTE)
+    async def admit_read():
+        try:
+            activity = activities.enter(ActivityDomain.LITERATURE, root=True)
+        except MaintenanceActive as error:
+            raise HTTPException(503, "update_maintenance") from error
+        with activity:
+            yield
+
+    read_admission = [Depends(admit_read)]
+
+    @app.post(RESULT_STATUS_ROUTE, dependencies=read_admission)
     async def result_status(
         session_id: str, command: ResultStatusRequest, request: Request
     ) -> dict:
@@ -348,10 +423,12 @@ def register_result_routes(
             catalog.require(session_id, SessionPrincipal(request_owner_id(request)))
         except SessionAccessError as error:
             raise HTTPException(HTTP_404_NOT_FOUND, "session_not_found") from error
-        result = await asyncio.to_thread(statuses.resolve, command.papers, command.project_id)
+        result = await activities.to_thread(
+            ActivityDomain.BRIDGE, statuses.resolve, command.papers, command.project_id
+        )
         return {"items": result}
 
-    @app.get("/api/sessions/{session_id}/literature/results/{card_id}")
+    @app.get("/api/sessions/{session_id}/literature/results/{card_id}", dependencies=read_admission)
     async def read_result(session_id: str, card_id: str, request: Request) -> dict:
         try:
             catalog.require(session_id, SessionPrincipal(request_owner_id(request)))

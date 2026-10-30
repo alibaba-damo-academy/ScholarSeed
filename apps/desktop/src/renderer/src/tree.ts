@@ -22,9 +22,13 @@ export function serveSessionNode(
     ? 'waiting'
     : running
       ? 'running'
-      : session.session_id !== activeSession && activityAt > viewedActivity
-        ? 'done'
-        : 'dormant'
+      : session.last_turn_status === 'failed'
+        ? 'failed'
+        : session.recovery_blocked || session.last_turn_status === 'interrupted'
+          ? 'abandon'
+          : session.session_id !== activeSession && activityAt > viewedActivity
+            ? 'done'
+            : 'dormant'
   return {
     id: session.session_id,
     title: session.title || session.session_id.slice(0, 8),
@@ -39,7 +43,7 @@ export function serveSessionNode(
     projectPath: session.project_path ?? null,
     runtimeId: session.runtime_id,
     pulse: waiting ? 1.2 : running ? 1.6 : undefined,
-    openable: true
+    openable: true,
   }
 }
 
@@ -71,10 +75,10 @@ export function searchSessionTitles(nodes: SessionNode[], query: string): Sessio
   const visit = (rows: SessionNode[]): void => {
     for (const node of rows) {
       if (
-        !node.container
-        && node.openable !== false
-        && node.title.trim()
-        && !node.title.startsWith('serve:')
+        !node.container &&
+        node.openable !== false &&
+        node.title.trim() &&
+        !node.title.startsWith('serve:')
       ) {
         const known = sessions.get(node.id)
         if (!known || sessionActivity(node) > sessionActivity(known)) sessions.set(node.id, node)
@@ -85,14 +89,15 @@ export function searchSessionTitles(nodes: SessionNode[], query: string): Sessio
   visit(nodes)
 
   return [...sessions.values()]
-    .filter((node) => (
-      !normalizedQuery || node.title.toLocaleLowerCase('zh-CN').includes(normalizedQuery)
-    ))
-    .sort((left, right) => (
-      sessionActivity(right) - sessionActivity(left)
-      || (right.createdAt ?? 0) - (left.createdAt ?? 0)
-      || right.id.localeCompare(left.id)
-    ))
+    .filter(
+      (node) => !normalizedQuery || node.title.toLocaleLowerCase('zh-CN').includes(normalizedQuery)
+    )
+    .sort(
+      (left, right) =>
+        sessionActivity(right) - sessionActivity(left) ||
+        (right.createdAt ?? 0) - (left.createdAt ?? 0) ||
+        right.id.localeCompare(left.id)
+    )
 }
 
 function replaceSessionNode(nodes: SessionNode[], node: SessionNode): SessionNode[] {
@@ -116,7 +121,11 @@ export function upsertSessionNode(nodes: SessionNode[], node: SessionNode): Sess
 }
 
 /** Preserve a branch's position in the sidebar tree when it receives its real session id. */
-export function renameSessionNode(nodes: SessionNode[], oldId: string, newId: string): SessionNode[] {
+export function renameSessionNode(
+  nodes: SessionNode[],
+  oldId: string,
+  newId: string
+): SessionNode[] {
   return nodes.map((node) => {
     if (node.id === oldId) return { ...node, id: newId }
     if (!node.children?.length) return node
@@ -124,7 +133,11 @@ export function renameSessionNode(nodes: SessionNode[], oldId: string, newId: st
   })
 }
 
-export function appendSessionChildren(nodes: SessionNode[], parentId: string, children: SessionNode[]): SessionNode[] {
+export function appendSessionChildren(
+  nodes: SessionNode[],
+  parentId: string,
+  children: SessionNode[]
+): SessionNode[] {
   return nodes.map((node) => {
     if (node.id === parentId) {
       const incoming = new Map(children.map((child) => [child.id, child]))
@@ -136,7 +149,7 @@ export function appendSessionChildren(nodes: SessionNode[], parentId: string, ch
       const known = new Set(current.map((child) => child.id))
       return {
         ...node,
-        children: [...refreshed, ...children.filter((child) => !known.has(child.id))]
+        children: [...refreshed, ...children.filter((child) => !known.has(child.id))],
       }
     }
     if (!node.children?.length) return node
@@ -147,5 +160,7 @@ export function appendSessionChildren(nodes: SessionNode[], parentId: string, ch
 export function removeSessionNode(nodes: SessionNode[], id: string): SessionNode[] {
   return nodes
     .filter((node) => node.id !== id)
-    .map((node) => (node.children?.length ? { ...node, children: removeSessionNode(node.children, id) } : node))
+    .map((node) =>
+      node.children?.length ? { ...node, children: removeSessionNode(node.children, id) } : node
+    )
 }

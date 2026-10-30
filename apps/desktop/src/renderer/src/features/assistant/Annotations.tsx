@@ -26,13 +26,15 @@ import {
   type SelectionToolbarPosition,
 } from './selection-toolbar'
 import { SessionFileLink } from './Links'
+import { answerProjectSource, sharedTaskSources } from './sources'
 
 const ANSWER_ID_PREFIX = 'answer:'
 const ITEM_ID_PREFIX = 'item:'
 // 设计稿: 注释标识悬浮在被注释文本结束处的上方(蓝色气泡+序号);
 // 零宽行内锚点不参与文字排版, 浮层相对锚点抬升到当前行上方。
 const INLINE_MARKER_ANCHOR_CLASS = 'relative inline-block h-0 w-0'
-const INLINE_MARKER_FLOAT_CLASS = 'absolute bottom-full left-0 z-10 mb-[12px] -translate-x-1/2'
+const INLINE_MARKER_FLOAT_CLASS =
+  'absolute bottom-full left-0 z-[var(--vds-z-local-top)] mb-[var(--vds-space-3)] -translate-x-1/2'
 const ANSWER_ANNOTATION_FOCUS_DURATION_MS = 2400
 const CONVERSATION_STREAM_SELECTOR = '.conversation-stream'
 const SELECTION_TOOLBAR_MAX_WIDTH_PX = 390
@@ -46,7 +48,7 @@ const ANNOTATION_SAVE_FALLBACK_MESSAGE = 'remaining.annotationFailed'
 const ANSWER_ANNOTATION_SAVE_TOAST_ID = 'answer-annotation-save-failed'
 // 选区菜单项共用一套样式：默认不上底色，仅 hover 时高亮，避免某一项看起来像已选中。
 const SELECTION_ACTION_CLASS =
-  'w-full justify-start rounded-[var(--vds-radius-3)] !border-0 px-3 !text-[var(--vds-text-primary)] !shadow-none hover:!bg-[var(--vds-surface-hover)]'
+  'w-full justify-start rounded-[var(--vds-radius-3)] !border-0 px-[var(--vds-space-3)] !text-[var(--vds-text-primary)] !shadow-none hover:!bg-[var(--vds-surface-hover)]'
 
 interface SelectionDraft {
   clientAnnotationId: string
@@ -329,6 +331,10 @@ export function AnnotatedAnswer({
   const thread = activeThread(state)
   const sessionProject =
     state.projects.find((project) => project.path === thread.projectPath) ?? null
+  const observedSources = useMemo(
+    () => (sessionProject ? sharedTaskSources(thread.conversation, sessionProject.id) : []),
+    [thread.conversation, sessionProject]
+  )
   const targetProject = state.projects.find((project) => project.id === targetProjectId) ?? null
   const answerId = messageId ?? (eventSeq !== undefined ? `${ANSWER_ID_PREFIX}${eventSeq}` : null)
   const originalQuestion = useMemo(() => {
@@ -713,6 +719,24 @@ export function AnnotatedAnswer({
         answerAnnotations={answerAnnotations}
         className={markdownClassName ?? 'md-agent'}
         evidence={evidence}
+        renderSourceLink={(href, children) => {
+          const project = state.projects.find((candidate) => candidate.path === thread.projectPath)
+          const source = project && answerProjectSource(href, project, observedSources)
+          if (!source || !project) return undefined
+          return (
+            <Button
+              unstyled
+              className="inline text-[var(--vds-link)] underline hover:text-[var(--vds-link-hover)]"
+              data-testid="project-source-link"
+              onClick={() => {
+                if (source.kind === 'resource') act.openResourceFile(source.path, project.id)
+                else void act.openLiteratureItem(source.id, project.id)
+              }}
+            >
+              {children}
+            </Button>
+          )
+        }}
         renderSessionFileLink={
           thread.sessionId
             ? (path, children) => (

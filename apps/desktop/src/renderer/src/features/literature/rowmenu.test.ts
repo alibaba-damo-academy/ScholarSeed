@@ -33,6 +33,7 @@ test('menu entries keep the required order and separators', () => {
     .map((match) => match[1] ?? '|')
   assert.deepEqual(sequence, [
     'list.rowMenu.viewPdf',
+    'list.rowMenu.copyTitle',
     'list.rowMenu.viewInfo',
     '|',
     'list.rowMenu.addNote',
@@ -44,7 +45,7 @@ test('menu entries keep the required order and separators', () => {
 })
 
 test('icons come from the shared icon set instead of hand drawn svg', () => {
-  assert.match(menuSource, /import \{ Eye, Info, Paperclip, PenLine, Trash \} from 'lucide-react'/)
+  assert.match(menuSource, /import \{ Copy, Eye, Info, Paperclip, PenLine, Trash \} from 'lucide-react'/)
   assert.doesNotMatch(menuSource, /<svg|<path\s/)
 })
 
@@ -54,6 +55,21 @@ test('view pdf is unavailable exactly when the row has no usable primary attachm
   assert.match(menuSource, /disabled=\{primaryAttachment === null\}/)
   assert.match(menuSource, /if \(primaryAttachment\) actions\.viewPdf\(primaryAttachment\.id\)/)
   assert.match(listSource, /viewPdf: \(attachmentId\) =>\s*act\.openLiteratureAttachment\(item\.id, attachmentId\)/)
+})
+
+test('copy title is a clipboard action owned by the list, not by the menu', () => {
+  // 菜单只摆动作, 不碰剪贴板: 复制的实现与它的成功/失败提示都留在列表里。
+  assert.match(menuSource, /onSelect=\{actions\.copyTitle\}/)
+  assert.doesNotMatch(menuSource, /clipboard/i)
+  // 标题为空的行没有可复制的东西, 与「没有主附件就不能查看 PDF」同一种处理: 置灰。
+  assert.match(menuSource, /disabled=\{item\.title\.trim\(\) === ''\}/)
+  // 走共享剪贴板能力 (主进程优先), 不用只认聚焦态的 navigator.clipboard。
+  assert.match(listSource, /import \{ writeClipboard \} from '\.\.\/\.\.\/components\/primitive\/clipboard'/)
+  assert.match(listSource, /await writeClipboard\(title\)/)
+  assert.match(listSource, /copyTitle: \(\) => void copyItemTitle\(item\)/)
+  // 成与败都要有用户可见反馈, 不能静默。
+  assert.match(listSource, /literature\('list\.rowMenu\.titleCopied'\)/)
+  assert.match(listSource, /literature\('list\.rowMenu\.copyTitleFailed'\)/)
 })
 
 test('the destructive entry follows the scope: remove in a project, delete in the overview', () => {
@@ -95,10 +111,12 @@ test('row menu labels are localized in both languages', () => {
   const zh = engine.getFixedT('zh', 'literature')
   const en = engine.getFixedT('en', 'literature')
   assert.equal(zh('list.rowMenu.viewPdf'), '查看 PDF')
+  assert.equal(zh('list.rowMenu.copyTitle'), '复制标题')
   assert.equal(zh('list.rowMenu.viewInfo'), '查看基本信息')
   assert.equal(zh('list.rowMenu.addNote'), '添加笔记')
   assert.equal(zh('list.rowMenu.addAttachment'), '添加附件')
   assert.equal(en('list.rowMenu.viewPdf'), 'View PDF')
+  assert.equal(en('list.rowMenu.copyTitle'), 'Copy title')
   assert.equal(en('list.rowMenu.viewInfo'), 'View basic information')
   assert.equal(en('list.rowMenu.addNote'), 'Add note')
   assert.equal(en('list.rowMenu.addAttachment'), 'Add attachment')

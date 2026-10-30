@@ -26,12 +26,16 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.types import Message, Receive, Scope, Send
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
+from service.chat.service.namespaces import NAMESPACE_TOOL_TYPE, NamespaceTools
 from service.chat.service.provenance import ProvenanceStream, response_provenance
 from service.chat.service.rejections import (
+    PRODUCT_PROVIDER_REJECTIONS,
+    RATE_LIMIT_CODE,
     TRANSIENT_PROVIDER_CODES,
     TRANSIENT_PROVIDER_FAILURE_CODE,
     TRANSIENT_PROVIDER_FAILURE_MESSAGE,
     TRANSIENT_PROVIDER_HTTP_STATUSES,
+    rate_limit_policy,
 )
 from service.chat.service.streams import (
     RESPONSE_FAILED,
@@ -56,7 +60,12 @@ from service.inference.reasoning import (
     strip_thinking,
     thinking_parameters,
 )
-from service.inference.source import SOURCE_UNAVAILABLE, accepts_source, attach_source
+from service.inference.source import (
+    SOURCE_UNAVAILABLE,
+    ContentSource,
+    accepts_source,
+    attach_source,
+)
 
 MODEL_BRIDGE_ROUTE_PREFIX = "/api/internal/model-bridge/"
 BRIDGE_ROUTE = f"{MODEL_BRIDGE_ROUTE_PREFIX}{{bridge_id}}/v1/responses"
@@ -82,6 +91,7 @@ COMPLETION_STATUS_INCOMPLETE = "incomplete"
 COMPLETION_STATUS_COMPLETED = "completed"
 COMPLETION_STATUS_FAILED = "failed"
 CHAT_COMPLETIONS_TOOL_TYPE = "function"
+NAMED_TOOL_TYPES = frozenset((CHAT_COMPLETIONS_TOOL_TYPE, "custom", NAMESPACE_TOOL_TYPE))
 REASONING_ITEM_TYPE = "reasoning"
 REASONING_TEXT_TYPE = "reasoning_text"
 CHAT_REASONING_CONTENT = "reasoning_content"
@@ -94,6 +104,7 @@ RESPONSE_FIELD = "response"
 SSE_DATA_PREFIX = b"data:"
 SSE_DONE = b"[DONE]"
 ADDITIONAL_TOOLS_ITEM_TYPE = "additional_tools"
+SUPERSEDED_TOOL_DECLARATIONS = "superseded_tool_declarations"
 DEVELOPER_ROLE = "developer"
 ITEM_REFERENCE_TYPE = "item_reference"
 MODEL_BRIDGE_INVALID_TOOL_INPUT = "model_bridge_invalid_tool_input"
@@ -115,6 +126,13 @@ HTTP_CORE_TRACE_EXTENSION = "trace"
 class TransportStage(str, Enum):
     REQUEST = "request"
     RESPONSE_BODY = "response_body"
+
+
+class ToolInputFailure(str, Enum):
+    MULTIPLE = f"{MODEL_BRIDGE_INVALID_TOOL_INPUT}:multiple_declarations"
+    SHAPE = f"{MODEL_BRIDGE_INVALID_TOOL_INPUT}:invalid_declaration"
+    CONFLICT = f"{MODEL_BRIDGE_INVALID_TOOL_INPUT}:conflicting_declarations"
+    REFERENCE = f"{MODEL_BRIDGE_INVALID_TOOL_INPUT}:referenced_declaration"
 
 
 # 账号腿脱敏分支把上游 >=400 一律折成该码：上游体内可能带厂商内部信息或凭据片段，
@@ -156,6 +174,10 @@ class CompletionCredentialError(ValueError):
     """Credential policy failure carrying only a safe public error code."""
 
 
+class CompletionCleanupUnknown(RuntimeError):
+    """An invocation cannot prove its registered HTTP consumers have closed."""
+
+
 @dataclass(eq=False)
 class CompletionCall:
     """Own one upstream connection across response creation and stream consumption."""
@@ -168,6 +190,7 @@ class CompletionCall:
     streaming: bool = False
     revoked: bool = False
     closing: asyncio.Task | None = None
+    before_output: Callable[[str, str, bytes], Awaitable[None]] | None = None
 
     def revoke(self) -> None:
         self.revoked = True
@@ -221,6 +244,10 @@ class CompletionStream(StreamingResponse):
         async def observed_send(message: Message) -> None:
             body = message.get("body", b"") if message["type"] == "http.response.body" else b""
             send_started_at = time.perf_counter() if body else None
+            if body and self.call.before_output is not None:
+                await self.call.before_output(
+                    self.call.diagnostic.session_id, self.call.diagnostic.turn_id, body
+                )
             await send(message)
             if body:
                 self.call.diagnostic.downstream.feed(body)
@@ -297,6 +324,7 @@ class CompletionUpstream:
     """
 
     endpoint: str
+    authority_id: str = field(default_factory=lambda: secrets.token_hex(16), init=False)
     api_key: str = field(repr=False)
     headers: dict[str, str] = field(repr=False)
     model_routes: dict[str, str] = field(default_factory=dict)
@@ -416,6 +444,13 @@ class CompletionModelObservation:
                     self.data.append(value)
 
 
+@dataclass(frozen=True)
+class CompletionAuthority:
+    identity: str
+    retryable_tools: frozenset[str]
+    current: Callable[[], bool]
+
+
 class CompletionBridge:
     """Hold private upstream credentials and translate one Codex Responses call."""
 
@@ -427,16 +462,21 @@ class CompletionBridge:
         on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
         on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
         turn_ids: Callable[[str], str] | None = None,
-        source_text: Callable[[str, str], str | None] | None = None,
+        content_source: Callable[[str, str], ContentSource | None] | None = None,
         source_endpoints: Sequence[str] = (),
+        retryable_tool_endpoints: Mapping[str, frozenset[str]] | None = None,
         shared_ownership: bool = False,
     ) -> None:
         self._on_model = on_model
         self._on_diagnostic = on_diagnostic
         self._on_sources = on_sources
         self._turn_ids = turn_ids
-        self._source_text = source_text
+        self._content_source = content_source
         self._source_endpoints = tuple(source_endpoints)
+        self._retryable_tool_endpoints = {
+            endpoint: frozenset(kinds)
+            for endpoint, kinds in (retryable_tool_endpoints or {}).items()
+        }
         self._internal_base_url = internal_base_url.rstrip("/")
         # machine 轴下订阅桥归这台机器所有, 切账号不该把它拆掉(见 rebind_owner)。
         self._shared_ownership = bool(shared_ownership)
@@ -444,6 +484,35 @@ class CompletionBridge:
         self._calls: set[CompletionCall] = set()
         self._clients: dict[bool, httpx.AsyncClient] = {}
         self._closed = False
+        self._before_output: Callable[[str, str, bytes], Awaitable[None]] | None = None
+        self._before_request: (
+            Callable[[str, str, Mapping[str, Any], CompletionAuthority], Awaitable[None]] | None
+        ) = None
+
+    def bind_output_guard(
+        self,
+        guard: Callable[[str, str, bytes], Awaitable[None]],
+        *,
+        before_request: (
+            Callable[[str, str, Mapping[str, Any], CompletionAuthority], Awaitable[None]] | None
+        ) = None,
+    ) -> None:
+        self._before_output = guard
+        self._before_request = before_request
+
+    async def quiesce_turn(self, session_id: str, client_turn_id: str) -> None:
+        calls = tuple(
+            call
+            for call in self._calls
+            if call.diagnostic.session_id == session_id
+            and call.diagnostic.turn_id == client_turn_id
+        )
+        tasks = tuple(call.task for call in calls if call.task is not None)
+        for call in calls:
+            call.revoke()
+        await asyncio.gather(*(call.close() for call in calls))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _client(self, trust_env: bool) -> tuple[httpx.AsyncClient, bool]:
         client = self._clients.get(trust_env)
@@ -464,6 +533,41 @@ class CompletionBridge:
 
     def accepts_source(self, endpoint: str) -> bool:
         return accepts_source(endpoint, self._source_endpoints)
+
+    def _request_authority(
+        self, upstream: CompletionUpstream, endpoint: str, protocol: ModelWireProtocol
+    ) -> CompletionAuthority:
+        def source() -> tuple[Any, ...]:
+            return (
+                upstream.endpoint,
+                upstream.responses_endpoint,
+                upstream.wire_protocol,
+                upstream.owner_id,
+                upstream.connection_id,
+                upstream.request_policy,
+                upstream.credential_resolver,
+                upstream.token_provider,
+                upstream.trust_env,
+                upstream.provider,
+                dict(upstream.model_routes),
+            )
+
+        binding = source()
+
+        def current() -> bool:
+            return not self._closed and upstream.active and binding == source()
+
+        return CompletionAuthority(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL, f"{upstream.authority_id}:{protocol.value}:{endpoint}"
+            ).hex,
+            (
+                self._retryable_tool_endpoints.get(endpoint, frozenset())
+                if protocol is ModelWireProtocol.RESPONSES
+                else frozenset()
+            ),
+            current,
+        )
 
     def register(
         self,
@@ -616,6 +720,25 @@ class CompletionBridge:
             self._invalidate(key)
         return len(stale)
 
+    async def release_registration(self, registration: CompletionRegistration) -> None:
+        upstream = self._upstreams.get(registration.bridge_id)
+        calls = tuple(upstream.calls) if upstream is not None else ()
+        self._invalidate(registration.bridge_id)
+        closing = asyncio.gather(*(call.close() for call in calls), return_exceptions=True)
+        interrupted = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                interrupted = True
+        for result in closing.result():
+            if isinstance(result, BaseException):
+                raise CompletionCleanupUnknown(
+                    "model invocation bridge cleanup remains unknown"
+                ) from result
+        if interrupted:
+            raise asyncio.CancelledError
+
     def _invalidate(self, bridge_id: str) -> None:
         upstream = self._upstreams.pop(bridge_id, None)
         if upstream is not None:
@@ -728,13 +851,21 @@ class CompletionBridge:
             diagnostic.turn_id = str(self._turn_ids(upstream.session_id) or "").strip()
         diagnostic.emit("started")
         call = CompletionCall(
-            asyncio.get_running_loop(), asyncio.current_task(), deregister, diagnostic
+            asyncio.get_running_loop(),
+            asyncio.current_task(),
+            deregister,
+            diagnostic,
+            before_output=self._before_output,
         )
         upstream.calls.add(call)
         self._calls.add(call)
         reason = StreamEnd.EOF.value
         try:
+            if call.before_output is not None:
+                await call.before_output(upstream.session_id, diagnostic.turn_id, b"")
             result = await self._forward(upstream, payload, call)
+            if not call.streaming and result.status_code < 400 and call.before_output is not None:
+                await call.before_output(upstream.session_id, diagnostic.turn_id, result.body)
             if result.status_code >= 400:
                 reason = StreamEnd.HTTP_ERROR.value
             return result
@@ -759,12 +890,21 @@ class CompletionBridge:
         upstream.last_used_at = time.monotonic()
         try:
             payload, converted_items = normalize_response_input(payload)
-        except ValueError:
+        except ValueError as error:
+            call.diagnostic.failure_type = str(error)
             return JSONResponse(
                 {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
             )
         call.diagnostic.converted_input_items = converted_items
         call.diagnostic.observe_tools(payload)
+        namespace_tools = NamespaceTools({})
+        if upstream.wire_protocol == ModelWireProtocol.CHAT_COMPLETIONS:
+            try:
+                payload, namespace_tools = NamespaceTools.project(payload)
+            except ValueError:
+                return JSONResponse(
+                    {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
+                )
         native_tool_types = sorted(
             {
                 str(tool.get("type") or "")
@@ -953,25 +1093,39 @@ class CompletionBridge:
 
         observation = CompletionModelObservation(observed_model)
         if self.accepts_source(endpoint):
-            text = (
-                upstream.source_text
+            source = (
+                ContentSource(upstream.source_text)
                 if upstream.source_text is not None
                 else (
-                    self._source_text(upstream.session_id, captured_turn_id)
-                    if self._source_text
+                    self._content_source(upstream.session_id, captured_turn_id)
+                    if self._content_source
                     else None
                 )
             )
-            if text is None or not text.strip():
+            if source is None or not source.has_content:
+                call.diagnostic.status_code = HTTPStatus.BAD_REQUEST
+                call.diagnostic.http_error_code = SOURCE_UNAVAILABLE
+                call.diagnostic.failure_type = SOURCE_UNAVAILABLE
                 return JSONResponse({"error": {"code": SOURCE_UNAVAILABLE}}, status_code=400)
             chat_request = attach_source(
-                chat_request, session_id=upstream.session_id, turn_id=captured_turn_id, text=text
+                chat_request,
+                session_id=upstream.session_id,
+                turn_id=captured_turn_id,
+                text=source.text,
+                references=source.references,
             )
             logger.info(
                 "model_content_source session_id=%s turn_id=%s chars=%d",
                 upstream.session_id,
                 captured_turn_id,
-                len(text),
+                len(source.text),
+            )
+        if self._before_request is not None:
+            await self._before_request(
+                upstream.session_id,
+                captured_turn_id,
+                chat_request,
+                self._request_authority(upstream, endpoint, protocol),
             )
         client, call.diagnostic.client_pool_hit = self._client(upstream.trust_env)
         call.diagnostic.max_attempts = UPSTREAM_RETRY_MAX_ATTEMPTS
@@ -998,7 +1152,7 @@ class CompletionBridge:
                 request.extensions[HTTP_CORE_TRACE_EXTENSION] = observe_connection
                 call.diagnostic.attempt = attempt
                 try:
-                    response = await client.send(request, stream=True)
+                    response = await client.send(request, stream=True, follow_redirects=False)
                 except httpx.TransportError as error:
                     diagnostics = transport_diagnostics(error)
                     retryable = retryable_pre_response_failure(error, diagnostics["category"])
@@ -1020,7 +1174,7 @@ class CompletionBridge:
                         call.diagnostic.connect_retries += 1
                     if diagnostics["category"] == TransportFailureCategory.TLS.value:
                         call.diagnostic.tls_retries += 1
-                    delay = _retry_backoff_delay(attempt)
+                    backoff_delay = _retry_backoff_delay(attempt)
                     logger.warning(
                         "%s session_id=%s "
                         "failure_type=%s category=%s attempt=%d max_attempts=%d "
@@ -1035,10 +1189,10 @@ class CompletionBridge:
                         diagnostics["category"],
                         attempt,
                         max_attempts,
-                        delay,
+                        backoff_delay,
                     )
                     attempt += 1
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(backoff_delay)
                     if call.revoked or not upstream.active:
                         raise asyncio.CancelledError() from error
                     continue
@@ -1048,12 +1202,16 @@ class CompletionBridge:
                 call.response = response
                 retryable = response.status_code in TRANSIENT_PROVIDER_HTTP_STATUSES
                 if response.status_code == UPSTREAM_RATE_LIMIT_STATUS:
-                    retryable = _retryable_internal_rate_limit(upstream, await response.aread())
+                    body = await response.aread()
+                    code = _product_error_code(body) or _upstream_error_summary(body)["code"]
+                    retryable = rate_limit_policy(code).product_code == RATE_LIMIT_CODE
+                delay = _upstream_retry_delay(response, attempt) if retryable else None
+                retryable = retryable and delay is not None
                 if retryable:
                     call.diagnostic.max_attempts = max(UPSTREAM_RETRY_MAX_ATTEMPTS, attempt)
                 if attempt < UPSTREAM_RETRY_MAX_ATTEMPTS and retryable:
                     call.diagnostic.http_retries += 1
-                    delay = _upstream_retry_delay(response, attempt)
+                    assert delay is not None
                     logger.warning(
                         "model_bridge_upstream_retry session_id=%s status=%d "
                         "attempt=%d max_attempts=%d delay_seconds=%.3f",
@@ -1160,25 +1318,38 @@ class CompletionBridge:
                 }
             return JSONResponse({"error": error_payload}, status_code=502)
         if response.status_code >= 400:
+            revocation_code = ""
             try:
                 body = await response.aread()
-            finally:
-                await call.close()
-            product_code = _product_error_code(body)
-            if upstream.credential_resolver is not None:
+                product_code = _product_error_code(body)
                 summary = _upstream_error_summary(body)
-                # 上游明确吊销令牌时把凭证回写交回订阅侧（桥不持有凭证 store），并透出 reauth
-                # 码，使推理路径与目录路径一致地提示「请重新登录」而非通用 model_upstream_rejected。
-                revocation_code = (
-                    upstream.credential_revocation_handler(
+                if (
+                    upstream.credential_resolver is not None
+                    and upstream.credential_revocation_handler is not None
+                ):
+                    revocation_code = upstream.credential_revocation_handler(
                         upstream.owner_id,
                         upstream.connection_id,
                         response.status_code,
                         summary["code"],
                     )
-                    if upstream.credential_revocation_handler is not None
-                    else ""
+                code = revocation_code or product_code or summary["code"]
+                policy = (
+                    rate_limit_policy(code)
+                    if response.status_code == UPSTREAM_RATE_LIMIT_STATUS
+                    else PRODUCT_PROVIDER_REJECTIONS.get(code.casefold())
                 )
+                if policy is not None:
+                    call.diagnostic.http_error_code = policy.product_code or (
+                        code.casefold()
+                        if response.status_code == UPSTREAM_RATE_LIMIT_STATUS
+                        else code
+                    )
+            finally:
+                await call.close()
+            if upstream.credential_resolver is not None:
+                # 上游明确吊销令牌时把凭证回写交回订阅侧（桥不持有凭证 store），并透出 reauth
+                # 码，使推理路径与目录路径一致地提示「请重新登录」而非通用 model_upstream_rejected。
                 logger.warning(
                     "model_connection_upstream_rejected status=%d code=%s type=%s param=%s "
                     "product_code=%s",
@@ -1189,7 +1360,18 @@ class CompletionBridge:
                     product_code or "-",
                 )
                 return JSONResponse(
-                    {"error": {"code": revocation_code or product_code or MODEL_UPSTREAM_REJECTED}},
+                    {
+                        "error": {
+                            "code": revocation_code
+                            or product_code
+                            or (
+                                call.diagnostic.http_error_code
+                                if response.status_code == UPSTREAM_RATE_LIMIT_STATUS
+                                else ""
+                            )
+                            or MODEL_UPSTREAM_REJECTED
+                        }
+                    },
                     status_code=response.status_code,
                 )
             if product_code:
@@ -1240,7 +1422,9 @@ class CompletionBridge:
                             await self._on_sources(upstream.session_id, captured_turn_id, record)
                 return Response(content=body, media_type="application/json")
             try:
-                converted = chat_response_to_response(json.loads(body))
+                converted = chat_response_to_response(
+                    json.loads(body), namespace_tools=namespace_tools
+                )
             except (TypeError, ValueError, json.JSONDecodeError):
                 return JSONResponse(
                     {"error": {"message": "invalid Chat Completions response"}},
@@ -1324,6 +1508,7 @@ class CompletionBridge:
                 async for chunk in chat_stream_to_responses(
                     response,
                     request_metrics=_chat_request_metrics(chat_request),
+                    namespace_tools=namespace_tools,
                     on_model=observation.observe,
                     on_line=lambda line: _observe_chat_stream_line(call.diagnostic, line),
                 ):
@@ -1360,7 +1545,7 @@ class CompletionBridge:
 
 
 def normalize_response_input(payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
-    """Project Responses Lite's tool prefix into the standard request tool field."""
+    """Project Responses Lite's tool declaration into the standard request tool field."""
     result = dict(payload)
     items = payload.get("input")
     if not isinstance(items, list):
@@ -1372,17 +1557,20 @@ def normalize_response_input(payload: Mapping[str, Any]) -> tuple[dict[str, Any]
     ]
     if not tool_items:
         return result, {}
-    if len(tool_items) != 1 or items[0] is not tool_items[0]:
-        raise ValueError(MODEL_BRIDGE_INVALID_TOOL_INPUT)
+    if len(tool_items) != 1:
+        raise ValueError(ToolInputFailure.MULTIPLE.value)
     tool_item = tool_items[0]
     tools = tool_item.get("tools")
-    if (
-        tool_item.get("role") != DEVELOPER_ROLE
-        or not isinstance(tools, list)
-        or any(not isinstance(tool, Mapping) for tool in tools)
-        or (payload.get("tools") is not None and payload["tools"] != tools)
-    ):
-        raise ValueError(MODEL_BRIDGE_INVALID_TOOL_INPUT)
+    if tool_item.get("role") != DEVELOPER_ROLE:
+        raise ValueError(ToolInputFailure.SHAPE.value)
+    tools = _validate_tool_declarations(tools)
+    convertedItems = {ADDITIONAL_TOOLS_ITEM_TYPE: 1}
+    currentTools = payload.get("tools")
+    if currentTools is not None:
+        currentTools = _validate_tool_declarations(currentTools)
+        if currentTools != tools:
+            convertedItems[SUPERSEDED_TOOL_DECLARATIONS] = 1
+        tools = currentTools
     references = {
         item.get("id")
         for item in items
@@ -1392,10 +1580,31 @@ def normalize_response_input(payload: Mapping[str, Any]) -> tuple[dict[str, Any]
     }
     item_id = tool_item.get("id")
     if isinstance(item_id, str) and item_id in references:
-        raise ValueError(MODEL_BRIDGE_INVALID_TOOL_INPUT)
-    result["input"] = items[1:]
+        raise ValueError(ToolInputFailure.REFERENCE.value)
+    result["input"] = [item for item in items if item is not tool_item]
     result["tools"] = list(tools)
-    return result, {ADDITIONAL_TOOLS_ITEM_TYPE: 1}
+    return result, convertedItems
+
+
+def _validate_tool_declarations(tools: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(tools, list) or any(not isinstance(tool, Mapping) for tool in tools):
+        raise ValueError(ToolInputFailure.SHAPE.value)
+    definitions: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for tool in tools:
+        toolType = tool.get("type")
+        toolName = tool.get("name", "")
+        if not isinstance(toolType, str) or not toolType or not isinstance(toolName, str):
+            raise ValueError(ToolInputFailure.SHAPE.value)
+        if toolType in NAMED_TOOL_TYPES and not toolName.strip():
+            raise ValueError(ToolInputFailure.SHAPE.value)
+        if toolName.strip():
+            identity = (toolType, toolName)
+            if identity in definitions and definitions[identity] != tool:
+                raise ValueError(ToolInputFailure.CONFLICT.value)
+            definitions[identity] = tool
+        if toolType == NAMESPACE_TOOL_TYPE:
+            _validate_tool_declarations(tool.get("tools"))
+    return tools
 
 
 def mount_completion_bridge(app: FastAPI, bridge: CompletionBridge) -> None:
@@ -1546,18 +1755,6 @@ def _upstream_error_summary(body: bytes) -> dict[str, str]:
     }
 
 
-def _retryable_internal_rate_limit(upstream: CompletionUpstream, body: bytes) -> bool:
-    if upstream.credential_resolver is not None or upstream.token_provider is None:
-        return False
-    if _product_error_code(body):
-        return False
-    try:
-        document = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return True
-    return not (isinstance(document, Mapping) and isinstance(document.get("error"), Mapping))
-
-
 def _observe_chat_stream_line(diagnostic: CompletionDiagnostic, line: str) -> None:
     diagnostic.upstream.feed(line.encode(JSON_ENCODING) + b"\n")
     diagnostic.observe_upstream_chunk()
@@ -1621,7 +1818,7 @@ def _retry_backoff_delay(attempt: int) -> float:
     )
 
 
-def _upstream_retry_delay(response: httpx.Response, attempt: int) -> float:
+def _upstream_retry_delay(response: httpx.Response, attempt: int) -> float | None:
     retry_after = str(response.headers.get(UPSTREAM_RETRY_AFTER_HEADER) or "").strip()
     if retry_after:
         try:
@@ -1632,6 +1829,11 @@ def _upstream_retry_delay(response: httpx.Response, attempt: int) -> float:
             except (TypeError, ValueError, OverflowError):
                 delay = -1.0
         if delay >= 0:
+            if (
+                response.status_code == UPSTREAM_RATE_LIMIT_STATUS
+                and delay > UPSTREAM_RETRY_MAX_DELAY_SECONDS
+            ):
+                return None
             return min(delay, UPSTREAM_RETRY_MAX_DELAY_SECONDS)
     return _retry_backoff_delay(attempt)
 
@@ -1931,6 +2133,7 @@ async def chat_stream_to_responses(
     request_metrics: Mapping[str, int] | None = None,
     on_model: Callable[[Mapping[str, Any]], None] | None = None,
     on_line: Callable[[str], None] | None = None,
+    namespace_tools: NamespaceTools | None = None,
 ) -> AsyncIterator[bytes]:
     response_id = f"resp_{uuid.uuid4().hex}"
     message_id = f"msg_{uuid.uuid4().hex}"
@@ -2200,13 +2403,15 @@ async def chat_stream_to_responses(
             {
                 "type": "response.output_item.done",
                 "output_index": next_output_index,
-                "item": {
-                    "type": "function_call",
-                    "id": f"fc_{uuid.uuid4().hex}",
-                    "call_id": call_id,
-                    "name": call["name"] or "tool",
-                    "arguments": call["arguments"] or "{}",
-                },
+                "item": (namespace_tools or NamespaceTools({})).restore(
+                    {
+                        "type": "function_call",
+                        "id": f"fc_{uuid.uuid4().hex}",
+                        "call_id": call_id,
+                        "name": call["name"] or "tool",
+                        "arguments": call["arguments"] or "{}",
+                    }
+                ),
             }
         )
         next_output_index += 1
@@ -2237,7 +2442,9 @@ def _structured_stream_error(text: str) -> StructuredStreamError | None:
     return StructuredStreamError(code=code, message=message) if code and message else None
 
 
-def chat_response_to_response(payload: Mapping[str, Any]) -> dict[str, Any]:
+def chat_response_to_response(
+    payload: Mapping[str, Any], *, namespace_tools: NamespaceTools | None = None
+) -> dict[str, Any]:
     response_id = str(payload.get("id") or f"resp_{uuid.uuid4().hex}")
     choices = payload.get("choices")
     choice = choices[0] if isinstance(choices, list) and choices else {}
@@ -2260,13 +2467,15 @@ def chat_response_to_response(payload: Mapping[str, Any]) -> dict[str, Any]:
         function = raw_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         output.append(
-            {
-                "type": "function_call",
-                "id": f"fc_{uuid.uuid4().hex}",
-                "call_id": str(raw_call.get("id") or f"call_{uuid.uuid4().hex}"),
-                "name": str(function.get("name") or "tool"),
-                "arguments": str(function.get("arguments") or "{}"),
-            }
+            (namespace_tools or NamespaceTools({})).restore(
+                {
+                    "type": "function_call",
+                    "id": f"fc_{uuid.uuid4().hex}",
+                    "call_id": str(raw_call.get("id") or f"call_{uuid.uuid4().hex}"),
+                    "name": str(function.get("name") or "tool"),
+                    "arguments": str(function.get("arguments") or "{}"),
+                }
+            )
         )
     usage = payload.get("usage")
     return {

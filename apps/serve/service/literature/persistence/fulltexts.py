@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 
 from service.literature.persistence.store import connect
@@ -36,17 +37,27 @@ class FulltextObject:
     source_kind: str
     acquired_at: float
     title: str = ""
+    identifier_kind: str = ""
+    identifier: str = ""
 
 
 def ensure_fulltext_schema(connection: sqlite3.Connection) -> None:
     connection.execute(FULLTEXT_OBJECTS_DDL)
+    columns = {
+        row["name"] for row in connection.execute(f"PRAGMA table_info({FULLTEXT_OBJECTS_TABLE})")
+    }
+    for column in ("identifier_kind", "identifier"):
+        if column not in columns:
+            connection.execute(
+                f"ALTER TABLE {FULLTEXT_OBJECTS_TABLE} ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def record_fulltext_object(connection: sqlite3.Connection, obj: FulltextObject) -> None:
     connection.execute(
         f"INSERT OR REPLACE INTO {FULLTEXT_OBJECTS_TABLE}"
-        " (paper_id, object_name, title, revision, source_kind, acquired_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
+        " (paper_id, object_name, title, revision, source_kind, acquired_at, identifier_kind, identifier)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             obj.paper_id,
             obj.object_name,
@@ -54,16 +65,17 @@ def record_fulltext_object(connection: sqlite3.Connection, obj: FulltextObject) 
             obj.revision,
             obj.source_kind,
             obj.acquired_at,
+            obj.identifier_kind,
+            obj.identifier,
         ),
     )
 
 
 def find_fulltext_object(paper_id: str) -> FulltextObject | None:
-    with connect() as connection:
+    with closing(connect()) as connection, connection:
         ensure_fulltext_schema(connection)
         row = connection.execute(
-            f"SELECT paper_id, object_name, title, revision, source_kind, acquired_at"
-            f" FROM {FULLTEXT_OBJECTS_TABLE} WHERE paper_id = ?",
+            f"SELECT *" f" FROM {FULLTEXT_OBJECTS_TABLE} WHERE paper_id = ?",
             (paper_id,),
         ).fetchone()
     if row is None:
@@ -75,7 +87,18 @@ def find_fulltext_object(paper_id: str) -> FulltextObject | None:
         revision=row["revision"],
         source_kind=row["source_kind"],
         acquired_at=row["acquired_at"],
+        identifier_kind=row["identifier_kind"],
+        identifier=row["identifier"],
     )
+
+
+def fulltext_candidates() -> tuple[dict, ...]:
+    with closing(connect()) as connection, connection:
+        ensure_fulltext_schema(connection)
+        rows = connection.execute(
+            f"SELECT * FROM {FULLTEXT_OBJECTS_TABLE} ORDER BY acquired_at DESC"
+        ).fetchall()
+    return tuple(dict(row) for row in rows)
 
 
 def acquired_at() -> float:

@@ -6,11 +6,21 @@ import { BookOpenText } from 'lucide-react'
 import { LITERATURE_RESULT_PREFIX } from '../workbench/tabs'
 import { LiteratureSearchView } from './Search'
 import { loadConversationSearch } from './api'
-import { conversationSearchPapers, presentedSearchArtifacts } from './result'
-import type { ConversationSearchResult } from '../../contracts/literature'
+import { conversationSearchPapers, presentedSearchArtifacts, searchWarningKeys } from './result'
+import type { ConversationSearchResult, ResultLibraryState } from '../../contracts/literature'
 
 import { useApp } from '../../store'
-import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, EllipsisText } from '../../components/ui'
+import {
+  Alert,
+  AlertDescription,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EllipsisText,
+} from '../../components/ui'
 
 const PREVIEW_PAPERS = 3
 const SEARCH_CARD_VERSION = '1.0'
@@ -32,72 +42,170 @@ const SOURCE_LABELS = {
   authentication_error: 'result.sourceStatus.authentication_error',
   unknown: 'result.sourceStatus.unknown',
 } as const
-const numberLabel = (value: number | null, t: TFunction<'literature'>): string => value === null ? t('searchResult.notRecorded') : String(value)
+const numberLabel = (value: number | null, t: TFunction<'literature'>): string =>
+  value === null ? t('searchResult.notRecorded') : String(value)
 
 function parseResult(content: Record<string, unknown>): ConversationSearchResult | null {
-  if (content.schema_version !== SEARCH_CARD_VERSION || typeof content.session_id !== 'string'
-    || typeof content.status !== 'string' || !Object.prototype.hasOwnProperty.call(RESULT_LABELS, content.status)
-    || !Array.isArray(content.papers) || !Array.isArray(content.criteria)
-    || !Array.isArray(content.sources) || !Array.isArray(content.warnings)) return null
+  if (
+    content.schema_version !== SEARCH_CARD_VERSION ||
+    typeof content.session_id !== 'string' ||
+    typeof content.status !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(RESULT_LABELS, content.status) ||
+    !Array.isArray(content.papers) ||
+    !Array.isArray(content.criteria) ||
+    !Array.isArray(content.sources) ||
+    !Array.isArray(content.warnings)
+  )
+    return null
   return content as unknown as ConversationSearchResult
 }
 
-export function LiteratureResults({ content, cardId }: { content: Record<string, unknown>; cardId: string }): React.JSX.Element {
+export function LiteratureResults({
+  content,
+  cardId,
+}: {
+  content: Record<string, unknown>
+  cardId: string
+}): React.JSX.Element {
   const { t } = useTranslation('literature')
   const { act } = useApp()
   const result = parseResult(content)
-  if (!result) return <Alert tone="warning"><AlertDescription>{t('result.unreadable')}</AlertDescription></Alert>
+  if (!result)
+    return (
+      <Alert tone="warning">
+        <AlertDescription>{t('result.unreadable')}</AlertDescription>
+      </Alert>
+    )
   const selectedCorpus = Boolean(result.selection?.artifact_id)
-  return <Card data-testid="literature-search-preview">
-    <CardHeader><CardTitle className="!text-[14px] !font-medium !text-[var(--vds-text-primary)]">{t('result.heading', { heading: selectedCorpus ? t('searchResult.authorizationPending') : t(RESULT_LABELS[result.status as keyof typeof RESULT_LABELS]), count: result.retained })}</CardTitle>
-      <CardDescription className="line-clamp-2 text-[var(--vds-text-tertiary)]">{result.criteria[0] || t('result.search')}</CardDescription></CardHeader>
-    <CardContent><div className="grid gap-[var(--vds-space-2)]">
-      <div className="grid gap-[6px]">
-        {conversationSearchPapers(result.papers.slice(0, PREVIEW_PAPERS)).map(paper => (
-          <div key={paper.paper_id} className="flex min-w-0 items-center gap-[6px] rounded-[8px] bg-[var(--vds-bg-gray-default-transparent)] px-[8px] py-[6px]">
-            <BookOpenText aria-hidden className="shrink-0 text-[var(--vds-icon-outline-default)]" size={14} />
-            <EllipsisText className="text-[12px] text-[var(--vds-text-secondary)]" wrapperClassName="min-w-0 flex-1" tooltipPortalled>
-              {paper.title}{paper.year ? ` · ${paper.year}` : ''}
-            </EllipsisText>
+  const warnings = searchWarningKeys(result.warnings).map((key) => t(key))
+  return (
+    <Card data-testid="literature-search-preview">
+      <CardHeader>
+        <CardTitle className="!text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-medium)] !text-[var(--vds-text-primary)]">
+          {t('result.heading', {
+            heading: selectedCorpus
+              ? t('searchResult.authorizationPending')
+              : t(RESULT_LABELS[result.status as keyof typeof RESULT_LABELS]),
+            count: result.retained,
+          })}
+        </CardTitle>
+        <CardDescription className="line-clamp-2 text-[var(--vds-text-tertiary)]">
+          {result.criteria[0] || t('result.search')}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-[var(--vds-space-2)]">
+          <div className="grid gap-[var(--vds-library-result-paper-gap)]">
+            {conversationSearchPapers(result.papers.slice(0, PREVIEW_PAPERS)).map((paper) => (
+              <div
+                key={paper.paper_id}
+                className="flex min-w-0 items-center gap-[var(--vds-library-result-paper-gap)] rounded-[var(--vds-library-result-paper-radius)] bg-[var(--vds-bg-gray-default-transparent)] p-[var(--vds-library-result-paper-padding)]"
+              >
+                <BookOpenText
+                  aria-hidden
+                  className="shrink-0 text-[var(--vds-icon-outline-default)]"
+                  size={14}
+                />
+                <EllipsisText
+                  className="text-[length:var(--vds-library-result-paper-font-size)] text-[var(--vds-text-secondary)]"
+                  wrapperClassName="min-w-0 flex-1"
+                  tooltipPortalled
+                >
+                  {paper.title}
+                  {paper.year ? ` · ${paper.year}` : ''}
+                </EllipsisText>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      {result.warnings.length > 0 && <p className="m-0 line-clamp-2 text-[var(--vds-text-secondary)]">{result.warnings[0]}</p>}
-      <Button variant="outline" onClick={() => act.openLiteratureResult({ session_id: result.session_id, card_id: cardId, title: result.criteria[0] || '' })}>{t('result.viewAll')}</Button>
-    </div></CardContent>
-  </Card>
+          {warnings.length > 0 && (
+            <p className="m-0 line-clamp-2 text-[var(--vds-text-secondary)]">{warnings[0]}</p>
+          )}
+          <Button
+            variant="outline"
+            onClick={() =>
+              act.openLiteratureResult({
+                session_id: result.session_id,
+                card_id: cardId,
+                title: result.criteria[0] || '',
+              })
+            }
+          >
+            {t('result.viewAll')}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 export function LiteratureResultTab({ tabId }: { tabId: string }): React.JSX.Element {
   const { state } = useApp()
   const projectId = state.homeSelectedProjectId ?? undefined
-  return <ScopedLiteratureResultTab key={JSON.stringify([tabId, projectId])} tabId={tabId} projectId={projectId} />
+  return (
+    <ScopedLiteratureResultTab
+      key={JSON.stringify([tabId, projectId])}
+      tabId={tabId}
+      projectId={projectId}
+    />
+  )
 }
 
-function ScopedLiteratureResultTab({ tabId, projectId }: { tabId: string; projectId?: string }): React.JSX.Element {
+function ScopedLiteratureResultTab({
+  tabId,
+  projectId,
+}: {
+  tabId: string
+  projectId?: string
+}): React.JSX.Element {
   const { t } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const [content, setContent] = useState<Record<string, unknown> | null>(null)
   const [error, setError] = useState(false)
   const [saved, setSaved] = useState<string[]>([])
   const [statusWarning, setStatusWarning] = useState(false)
+  const [libraryStatuses, setLibraryStatuses] = useState<Record<string, ResultLibraryState>>({})
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     const controller = new AbortController()
-    setContent(null); setError(false); setStatusWarning(false); setSaved([])
+    setContent(null)
+    setError(false)
+    setStatusWarning(false)
+    setSaved([])
+    setLibraryStatuses({})
     const [session, card] = tabId.slice(LITERATURE_RESULT_PREFIX.length).split('/')
-    void loadConversationSearch(decodeURIComponent(session), decodeURIComponent(card), controller.signal, projectId)
-      .then(({ result, saved, warning }) => {
+    void loadConversationSearch(
+      decodeURIComponent(session),
+      decodeURIComponent(card),
+      controller.signal,
+      projectId
+    )
+      .then(({ result, saved, warning, libraryStatuses }) => {
         if (!controller.signal.aborted) {
-          setSaved(saved); setStatusWarning(warning)
+          setSaved(saved)
+          setStatusWarning(warning)
+          setLibraryStatuses(libraryStatuses)
           setContent(result as unknown as Record<string, unknown>)
           if (!parseResult(result as unknown as Record<string, unknown>)) setError(true)
         }
       })
-      .catch(() => { if (!controller.signal.aborted) setError(true) })
+      .catch(() => {
+        if (!controller.signal.aborted) setError(true)
+      })
     return () => controller.abort()
   }, [tabId, attempt, projectId])
-  if (error) return <Alert action={<Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>{ui('retry')}</Button>} description={t('result.retryDescription')} layout="stacked" tone="warning" />
+  if (error)
+    return (
+      <Alert
+        action={
+          <Button variant="secondary" onClick={() => setAttempt((value) => value + 1)}>
+            {ui('retry')}
+          </Button>
+        }
+        description={t('result.retryDescription')}
+        layout="stacked"
+        tone="warning"
+      />
+    )
   const result = content ? parseResult(content) : null
   if (!result) return <p>{t('result.opening')}</p>
   const statusWarningText = statusWarning ? t('result.statusUnavailable') : ''
@@ -105,15 +213,50 @@ function ScopedLiteratureResultTab({ tabId, projectId }: { tabId: string; projec
     ...result.criteria,
     result.selection?.artifact_id
       ? t('result.pending', { count: result.retained })
-      : t('result.counts', { candidates: numberLabel(result.candidates, t), deduplicated: numberLabel(result.deduplicated, t), retained: result.retained }),
-    ...result.sources.map(source => t('result.source', { name: source.name, status: t(Object.prototype.hasOwnProperty.call(SOURCE_LABELS, source.status) ? SOURCE_LABELS[source.status as keyof typeof SOURCE_LABELS] : 'searchResult.notRecorded'), queries: numberLabel(source.queries, t), candidates: numberLabel(source.candidates, t) })),
-    ...result.warnings, statusWarningText
+      : t('result.counts', {
+          candidates: numberLabel(result.candidates, t),
+          deduplicated: numberLabel(result.deduplicated, t),
+          retained: result.retained,
+        }),
+    ...result.sources.map((source) =>
+      t('result.source', {
+        name: source.name,
+        status: t(
+          Object.prototype.hasOwnProperty.call(SOURCE_LABELS, source.status)
+            ? SOURCE_LABELS[source.status as keyof typeof SOURCE_LABELS]
+            : 'searchResult.notRecorded'
+        ),
+        queries: numberLabel(source.queries, t),
+        candidates: numberLabel(source.candidates, t),
+      })
+    ),
+    ...searchWarningKeys(result.warnings).map((key) => t(key)),
+    statusWarningText,
   ].join('\n\n')
-  const status = result.papers.length ? 'completed' : result.status === 'no_confident_match' ? 'empty' : 'failed'
-  return <LiteratureSearchView key={tabId} query={result.criteria[0] || t('result.query')}
-    papers={conversationSearchPapers(result.papers)} status={status} output={overview}
-    warning={[statusWarningText, ...(result.status === 'success' || result.status === 'no_confident_match' ? [] : [t(RESULT_LABELS[result.status as keyof typeof RESULT_LABELS])])].filter(Boolean).join('；')}
-    savedPaperIds={saved} />
+  const status = result.papers.length
+    ? 'completed'
+    : result.status === 'no_confident_match'
+      ? 'empty'
+      : 'failed'
+  return (
+    <LiteratureSearchView
+      key={tabId}
+      query={result.criteria[0] || t('result.query')}
+      papers={conversationSearchPapers(result.papers)}
+      status={status}
+      output={overview}
+      warning={[
+        statusWarningText,
+        ...(result.status === 'success' || result.status === 'no_confident_match'
+          ? []
+          : [t(RESULT_LABELS[result.status as keyof typeof RESULT_LABELS])]),
+      ]
+        .filter(Boolean)
+        .join('；')}
+      savedPaperIds={saved}
+      libraryStatuses={libraryStatuses}
+    />
+  )
 }
 
 export function literatureResultArtifacts(content: Record<string, unknown>): readonly string[] {

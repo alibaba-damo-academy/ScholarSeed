@@ -1,8 +1,8 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { spawn, spawnSync } = require('node:child_process')
-const { nativeTar } = require('../../../scripts/python.cjs')
-const { ensureArtifact } = require('../../../scripts/artifacts.cjs')
+const { nativeTar } = require('../../../scripts/shared/python.cjs')
+const { ensureArtifact } = require('../../../scripts/shared/artifacts.cjs')
 
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'powershell')
 const MANIFEST_NAME = 'manifest.json'
@@ -50,7 +50,7 @@ function parseProbeOutput(output, expectedVersion) {
 
 function probe(executable, expectedVersion) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', PROBE_SCRIPT], {
+    const child = spawn(path.toNamespacedPath(executable), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', PROBE_SCRIPT], {
       windowsHide: true,
       timeout: PROBE_TIMEOUT_MS
     })
@@ -87,7 +87,9 @@ async function stageVerifiedPowerShell(backendDirectory, desktopRoot, platform =
   await ensureArtifact(selected.archive, selected)
   const tree = path.join(backendDirectory, TREE_DIRECTORY)
   fs.mkdirSync(tree, { recursive: true })
-  const result = spawnSync(nativeTar(platform), ['-xf', selected.archive, '-C', tree], { encoding: 'utf8' })
+  const result = spawnSync(path.toNamespacedPath(nativeTar(platform)), ['-xf', path.toNamespacedPath(selected.archive)], {
+    cwd: path.toNamespacedPath(tree), encoding: 'utf8'
+  })
   if (result.error || result.status !== 0) {
     throw new Error(`PowerShell archive extraction failed: ${result.stderr || result.error}`)
   }

@@ -24,6 +24,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
+
 os.environ["SCHOLARSEED_HOME"] = tempfile.mkdtemp(prefix="align-home-")
 
 from pathlib import Path  # noqa: E402
@@ -53,9 +55,11 @@ from service.chat.runtime.live import (  # noqa: E402 -- after SCHOLARSEED_HOME 
 from service.chat.service.models import SessionModelUnavailableError  # noqa: E402
 from service.chat.service.sessions import (  # noqa: E402
     PRODUCT_PERMISSION_MODES,
+    SESSION_WRITABLE_ROOTS_CHANGED_ERROR,
     SessionService,
     workspace_allows,
 )
+from service.chat.service.settings import SettingsService  # noqa: E402
 from service.chat.service.workspaces import SessionWorkspaceService  # noqa: E402
 from service.identity.service.skill_credentials import SKILL_API_KEY_ENV  # noqa: E402
 
@@ -158,6 +162,7 @@ class _Live:
         self.runtime_session = _PermissionSession()
         self.runtime_binding = object()
         self.runtime_driver = None
+        self.project_path = None
         self.suspensions = 0
         self.writable_roots: tuple[Path, ...] = ()
         self.local_socket = None
@@ -191,7 +196,9 @@ class _Runtime:
         self.catalog: SessionCatalogStore | None = None
         self._fail = fail
 
-    async def skill_configurations(self, *, cwd: Path, user_id: str) -> tuple:
+    async def skill_configurations(
+        self, *, cwd: Path, user_id: str, model_id: str = "", process_environment=None
+    ) -> tuple:
         return ()
 
     async def wait_until_suspended(
@@ -263,6 +270,10 @@ class _Runtime:
         self.policies.append(_native_policy(record.policy_id or "ask"))
         live.runtime_session = _PermissionSession()
         live.runtime_session.mode = RuntimePermissionMode(record.policy_id)
+        permission = live.permission_intent(RuntimePermissionMode(record.policy_id))
+        live.runtime_session.writable_roots = permission.writable_roots
+        live.runtime_session.local_sockets = permission.local_sockets
+        live.runtime_session.network_domains = permission.network_domains
         live.applied_permission_mode = record.policy_id
         if self.catalog.model_state(live.id).active_model_id != selected:
             self.model_switches.append(selected)
@@ -304,17 +315,19 @@ def _service(
     engine.catalog = catalog
     if live is not None:
         live.runtime_workdir = root
+        live.project_path = None
     if live is not None and live.runtime_session is not None:
         live.runtime_session.model_switches = engine.model_switches
     service = SessionService(
         root,
         sessions,
+        activities=Activities(),
         access=catalog,
         events=ProductEventStore(catalog.database),
         runtime=engine,  # type: ignore[arg-type]
         workspaces=SessionWorkspaceService(workspace_allows),
         artifacts=SimpleNamespace(),  # type: ignore[arg-type]
-        settings=SimpleNamespace(runtime_executable=lambda: "codex"),  # type: ignore[arg-type]
+        settings=SettingsService(),
         credentials=credentials,  # type: ignore[arg-type]
         logger=SimpleNamespace(error=lambda *_a, **_k: None),
     )
@@ -649,6 +662,45 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(runtime.policies, [])
 
+    async def test_permission_switch_rejected_during_drain_before_side_effects(self) -> None:
+        live = _Live(environment=CURRENT, running=True)
+        service, runtime, catalog = _service(live, _Credentials(CURRENT))
+        service._activities.begin()
+        with self.assertRaises(MaintenanceActive):
+            await service.set_mode(SESSION_ID, OWNER, "safe_auto")
+        self.assertEqual(catalog.get(SESSION_ID).policy_id, "ask")
+        self.assertEqual(live.applied_permission_mode, "ask")
+        self.assertEqual(runtime.policies, [])
+
+    async def test_permission_switch_cancellation_keeps_execution_until_confirmed(self) -> None:
+        live = _Live(environment=CURRENT, running=True)
+        service, _runtime, catalog = _service(live, _Credentials(CURRENT))
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = service._apply_permission_intent
+
+        async def delayed(*args):
+            entered.set()
+            await release.wait()
+            return await original(*args)
+
+        with patch.object(service, "_apply_permission_intent", delayed):
+            operation = asyncio.create_task(service.set_mode(SESSION_ID, OWNER, "safe_auto"))
+            await entered.wait()
+            service._activities.begin()
+            drained = asyncio.create_task(service._activities.wait_execution_drained())
+            operation.cancel()
+            await asyncio.sleep(0)
+            operation.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(operation.done())
+            self.assertFalse(drained.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await operation
+            await asyncio.wait_for(drained, 1)
+        self.assertEqual(catalog.get(SESSION_ID).policy_id, "safe_auto")
+        self.assertEqual(live.applied_permission_mode, "safe_auto")
+
     async def test_non_live_auto_requires_confirmation_without_persisting(self) -> None:
         live = _Live(environment=CURRENT, running=True)
         service, _runtime, catalog = _service(live, _Credentials(CURRENT))
@@ -694,6 +746,7 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         live.local_socket = Path("/permission-capability.sock")
         live.network_domains = ("scholarseed.damo.alibaba.com",)
         service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+        live.writable_roots = (live.runtime_workdir / "granted",)
         captured = []
         original = live.runtime_session.reconfigure
 
@@ -705,9 +758,13 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         result, status = await service.set_mode(SESSION_ID, OWNER, "safe_auto")
         self.assertEqual(status, 200)
         self.assertFalse(result["deferred"])
+        self.assertEqual(len(captured), 1)
+        self.assertIs(captured[0].mode, RuntimePermissionMode.SAFE_AUTO)
+        self.assertEqual(captured[0].writable_roots, live.writable_roots)
         self.assertEqual(captured[0].local_sockets, (live.local_socket,))
         self.assertEqual(captured[0].network_domains, live.network_domains)
-        self.assertTrue(captured[0].deny_read_roots)
+        # Hard denial is reserved for READ_ONLY; SAFE_AUTO retains native escalation.
+        self.assertEqual(captured[0].deny_read_roots, ())
 
     async def test_interrupt_continuation_requires_interrupted_outcome(self) -> None:
         for outcome, continued in (("interrupted", True), ("completed", False), ("failed", False)):
@@ -724,7 +781,7 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
                     wait_terminal=AsyncMock(return_value=outcome),
                 )
 
-                async def interrupt():
+                async def interrupt(live=live):
                     live.interrupt_generation += 1
                     live.running = False
 
@@ -751,6 +808,154 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 409)
         self.assertNotIn("continuation", result)
         self.assertEqual(live.applied_permission_mode, "ask")
+
+    async def test_detached_admission_reads_current_writable_roots(self) -> None:
+        live = _Live(environment=CURRENT)
+        live.runtime_session = None
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        live.writable_roots = (live.runtime_workdir, live.runtime_workdir / "revoked")
+        service.bind_writable_roots(lambda scope: (scope,))
+        seen = []
+        activate = runtime.ensure_active
+
+        async def capture(candidate, **options):
+            seen.append(candidate.writable_roots)
+            await activate(candidate, **options)
+
+        with patch.object(runtime, "ensure_active", side_effect=capture):
+            await service.prepare_turn(live)
+        self.assertEqual(seen, [(live.runtime_workdir,)])
+
+    async def test_attached_admission_releases_stale_writable_roots(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+        old = live.runtime_session
+        live.writable_roots = (live.runtime_workdir / "revoked",)
+        service.bind_writable_roots(lambda scope: (scope,))
+        await service.prepare_turn(live)
+        self.assertEqual(live.suspensions, 1)
+        self.assertIsNot(live.runtime_session, old)
+        self.assertEqual(live.writable_roots, (live.runtime_workdir,))
+        await service.prepare_turn(live)
+        self.assertEqual(live.suspensions, 1)
+
+    async def test_roots_changed_during_admission_refuse_execution(self) -> None:
+        live = _Live(environment=CURRENT)
+        live.runtime_session = None
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        roots = (live.runtime_workdir, live.runtime_workdir / "external")
+        service.bind_writable_roots(lambda _scope: roots)
+        activate = runtime.ensure_active
+
+        async def revoke_while_waiting(candidate, **options):
+            nonlocal roots
+            await activate(candidate, **options)
+            roots = (live.runtime_workdir,)
+
+        with patch.object(runtime, "ensure_active", side_effect=revoke_while_waiting):
+            with self.assertRaisesRegex(RuntimeError, "session_writable_roots_changed"):
+                await service.prepare_turn(live)
+        self.assertIsNone(live.runtime_session)
+        await service.prepare_turn(live)
+        self.assertEqual(live.writable_roots, roots)
+
+    async def test_authorization_lookup_failure_after_wait_releases_attachment(self) -> None:
+        live = _Live(environment=CURRENT)
+        live.runtime_session = None
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        activate = runtime.ensure_active
+
+        def unavailable(_scope):
+            raise ValueError("authorization unavailable")
+
+        async def remove_project_while_waiting(candidate, **options):
+            await activate(candidate, **options)
+            service.bind_writable_roots(unavailable)
+
+        with patch.object(runtime, "ensure_active", side_effect=remove_project_while_waiting):
+            with self.assertRaisesRegex(ValueError, "authorization unavailable"):
+                await service.prepare_turn(live)
+        self.assertIsNone(live.runtime_session)
+
+    async def test_roots_change_cannot_bypass_failed_suspension(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        service.bind_writable_roots(lambda scope: (scope,))
+        old = live.runtime_session
+        with patch.object(live, "suspend_runtime", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "quiescent session"):
+                await service.prepare_turn(live)
+        self.assertIs(live.runtime_session, old)
+        self.assertEqual(live.writable_roots, ())
+        self.assertEqual(runtime.policies, [])
+
+    async def test_concurrent_root_publication_cannot_escape_final_validation(self) -> None:
+        live = _Live(environment=CURRENT)
+        live.runtime_session = None
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        service.bind_writable_roots(lambda scope: (scope,))
+        activate = runtime.ensure_active
+
+        async def publish_stale_roots(candidate, **options):
+            await activate(candidate, **options)
+            candidate.writable_roots = (candidate.runtime_workdir / "revoked",)
+
+        with patch.object(runtime, "ensure_active", side_effect=publish_stale_roots):
+            with self.assertRaisesRegex(RuntimeError, "session_writable_roots_changed"):
+                await service.prepare_turn(live)
+        self.assertIsNone(live.runtime_session)
+
+    async def test_forgotten_project_cannot_resume_warm_or_cold_session(self) -> None:
+        for warm in (True, False):
+            with self.subTest(warm=warm):
+                live = _Live(environment=CURRENT)
+                service, runtime, catalog = _service(live, _Credentials(CURRENT))
+                live.project_path = live.runtime_workdir
+                catalog.relocate(
+                    SESSION_ID,
+                    OWNER,
+                    runtime_workdir=str(live.runtime_workdir),
+                    project_path=str(live.project_path),
+                    output_root=str(live.runtime_workdir),
+                )
+                if not warm:
+                    service._sessions.clear()
+                response, status = await service._resume(SESSION_ID, OWNER, ACTOR_ID)
+                self.assertEqual(status, 409)
+                self.assertEqual(response["error"], "project_path_not_registered")
+                self.assertIsNotNone(catalog.get(SESSION_ID))
+                self.assertEqual(runtime.policies, [])
+
+    async def test_forgotten_project_cannot_enter_runtime(self) -> None:
+        live = _Live(environment=CURRENT)
+        live.runtime_session = None
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        live.project_path = live.runtime_workdir
+        with self.assertRaisesRegex(ValueError, "project_path_not_registered"):
+            await service.prepare_turn(live)
+        self.assertEqual(runtime.policies, [])
+
+    async def test_project_forgotten_during_admission_releases_attachment(self) -> None:
+        live = _Live(environment=CURRENT)
+        live.runtime_session = None
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        live.project_path = live.runtime_workdir
+        registered = True
+        service._workspaces.register(
+            policy=lambda **_options: True,
+            project_resolver=lambda path: path if registered else None,
+        )
+        activate = runtime.ensure_active
+
+        async def forget_while_waiting(candidate, **options):
+            nonlocal registered
+            await activate(candidate, **options)
+            registered = False
+
+        with patch.object(runtime, "ensure_active", side_effect=forget_while_waiting):
+            with self.assertRaisesRegex(ValueError, "project_path_not_registered"):
+                await service.prepare_turn(live)
+        self.assertIsNone(live.runtime_session)
 
     async def test_detached_settings_only_save_intent(self) -> None:
         live = _Live(environment=CURRENT)
@@ -790,6 +995,84 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog.model_state(SESSION_ID), previous)
         self.assertEqual(live.suspensions, 0)
         self.assertEqual(runtime.model_switches, [])
+
+    async def test_default_model_is_persisted_before_runtime_drain_can_start(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+        service._settings = SettingsService()
+        service._settings.set_runtime_model("previous-default")
+
+        async def start_drain(*_args, **_kwargs):
+            self.assertEqual(service._settings.runtime_model(), "deepseek-v4-pro")
+            service._activities.begin()
+            raise RuntimeError("runtime_host_configuration_conflict")
+
+        with patch.object(service, "prepare_turn", side_effect=start_drain):
+            payload, status = await service.set_model(
+                SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID, remember_default=True
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["model_id"], "deepseek-v4-pro")
+        self.assertEqual(payload["default_model_id"], "deepseek-v4-pro")
+        self.assertEqual(service.model(SESSION_ID)["default_model_id"], "deepseek-v4-pro")
+        self.assertIs(service._activities.snapshot().phase, ActivityPhase.DRAINING)
+        with self.assertRaises(MaintenanceActive):
+            service._activities.enter(ActivityDomain.RUNTIME, root=True)
+
+    async def test_detached_and_busy_selections_can_remember_without_activation(self) -> None:
+        for running in (False, True):
+            live = _Live(environment=CURRENT, running=running)
+            if not running:
+                live.runtime_session = None
+            service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+            service._settings.set_runtime_model("previous-default")
+            with patch.object(service, "prepare_turn", new=AsyncMock()) as prepare:
+                payload, status = await service.set_model(
+                    SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID, remember_default=True
+                )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["default_model_id"], "deepseek-v4-pro")
+            prepare.assert_not_awaited()
+
+    async def test_default_remembering_is_opt_in_and_invalid_intent_cannot_change_it(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, catalog = _service(live, _Credentials(CURRENT))
+        service._settings.set_runtime_model("previous-default")
+        with patch.object(service, "prepare_turn", new=AsyncMock()):
+            payload, status = await service.set_model(
+                SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["default_model_id"], "")
+        previous = catalog.model_state(SESSION_ID)
+        with patch.object(
+            runtime, "selected_model_key", side_effect=SessionModelUnavailableError("unavailable")
+        ):
+            _payload, status = await service.set_model(
+                SESSION_ID, OWNER, "unavailable", actor_id=ACTOR_ID, remember_default=True
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(catalog.model_state(SESSION_ID), previous)
+        self.assertEqual(service._settings.runtime_model(), "previous-default")
+
+    async def test_default_storage_failure_prevents_activation_and_remains_observable(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+        service._settings.set_runtime_model("previous-default")
+        with (
+            patch.object(
+                service._settings, "set_runtime_model", side_effect=PermissionError("denied")
+            ),
+            patch.object(service, "prepare_turn", new=AsyncMock()) as prepare,
+        ):
+            with self.assertRaises(PermissionError):
+                await service.set_model(
+                    SESSION_ID, OWNER, "deepseek-v4-pro", actor_id=ACTOR_ID, remember_default=True
+                )
+        prepare.assert_not_awaited()
+        snapshot = service.model(SESSION_ID)
+        self.assertEqual(snapshot["model_id"], "deepseek-v4-pro")
+        self.assertEqual(snapshot["default_model_id"], "")
 
     async def test_invalid_effort_rejection_preserves_selection_before_persistence(self) -> None:
         live = _Live(environment=CURRENT)
@@ -1013,24 +1296,143 @@ def test_running_session_model_switch_waits_for_idle() -> None:
 
 def test_gateway_writable_roots_reconfigure_permission_intent() -> None:
     print("[11] Gateway 会话更新可写根 → 只走 RuntimeConfigurationIntent")
-    live = LiveSession.__new__(LiveSession)
-    live.runtime_session = _PermissionSession()
-    live.adapter = None
-    live.applied_permission_mode = RuntimePermissionMode.ASK.value
-    live.writable_roots = ()
+    live = _Live(environment=CURRENT)
+    service, _runtime, catalog = _service(live, _Credentials(CURRENT))
     target = (Path(tempfile.mkdtemp(prefix="linked-root-")),)
     live.local_socket = target[0] / "capability.sock"
     live.network_domains = ("scholarseed.damo.alibaba.com",)
-    applied = asyncio.run(live.set_writable_roots(target))
-    check("Gateway 路径确认可写根已生效", applied is True)
+    service.bind_writable_roots(lambda _scope: target)
+    asyncio.run(service.prepare_turn(live))
     check("本地 applied state 与 Runtime intent 一致", live.writable_roots == target)
     check("Runtime session 收到完整可写根", live.runtime_session.writable_roots == target)
     check("更新可写根保留本地能力声明", live.runtime_session.local_sockets == (live.local_socket,))
     check("更新可写根保留域名授权", live.runtime_session.network_domains == live.network_domains)
     live.applied_permission_mode = RuntimePermissionMode.READ_ONLY.value
     live.runtime_session.mode = RuntimePermissionMode.READ_ONLY
-    applied = asyncio.run(live.set_writable_roots(target))
-    check("只读模式不延续外网域名授权", applied and not live.runtime_session.network_domains)
+    catalog.set_policy(live.id, OWNER, RuntimePermissionMode.READ_ONLY.value)
+    live.writable_roots = ()
+    asyncio.run(service.prepare_turn(live))
+    check("只读模式不延续外网域名授权", not live.runtime_session.network_domains)
+
+
+def test_turn_admission_refreshes_roots_after_activation() -> None:
+    async def scenario() -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        roots = (live.runtime_workdir, live.runtime_workdir / "linked.md")
+        service.bind_writable_roots(lambda _scope: roots)
+        await service.prepare_turn(live)
+        assert live.writable_roots == roots
+        assert live.runtime_session.writable_roots == roots
+        original_activate = runtime.ensure_active
+
+        async def revoke_during_activation(target, **options):
+            nonlocal roots
+            await original_activate(target, **options)
+            roots = (live.runtime_workdir,)
+
+        runtime.ensure_active = revoke_during_activation
+        try:
+            await service.prepare_turn(live)
+        except RuntimeError as error:
+            assert str(error) == SESSION_WRITABLE_ROOTS_CHANGED_ERROR
+        else:
+            raise AssertionError("changed roots must invalidate activation")
+        assert live.runtime_session is None
+        runtime.ensure_active = original_activate
+        await service.prepare_turn(live)
+        assert live.writable_roots == roots
+        assert live.runtime_session.writable_roots == roots
+
+    asyncio.run(scenario())
+
+
+def test_project_session_enumeration_does_not_reconfigure() -> None:
+    live = _Live(environment=CURRENT)
+    service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+    live.project_path = live.runtime_workdir
+    live.runtime_session.reconfigure = AsyncMock(
+        side_effect=AssertionError("enumeration must not reconfigure")
+    )
+    peer = _Live(environment=CURRENT, running=True)
+    peer.project_path = live.project_path
+    peer.runtime_workdir = live.runtime_workdir
+    service._sessions[FOREIGN_ID] = peer
+    assert service.project_session_ids(live.project_path) == (SESSION_ID, FOREIGN_ID)
+    assert service.project_session_ids(live.project_path / "other") == ()
+    peer.project_path = live.project_path / "nested-project"
+    assert service.project_session_ids(live.project_path) == (SESSION_ID,)
+    live.runtime_session.reconfigure.assert_not_awaited()
+
+
+def test_roots_refresh_preserves_accepted_permission_mode() -> None:
+    async def scenario() -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, catalog = _service(live, _Credentials(CURRENT))
+        roots = (live.runtime_workdir, live.runtime_workdir / "linked.md")
+        service.bind_writable_roots(lambda _scope: roots)
+        await service.prepare_turn(live)
+        intents = []
+
+        async def accept(request):
+            intents.append(request.permission)
+            return AppliedState(request.revision, "", CommandState.ACCEPTED, scope="next_turn")
+
+        async def change_mode(target, **options):
+            catalog.set_policy(SESSION_ID, OWNER, RuntimePermissionMode.SAFE_AUTO.value)
+
+        live.runtime_session.reconfigure = accept
+        runtime.ensure_active = change_mode
+        await service.prepare_turn(live)
+        assert len(intents) == 1
+        assert intents[0].mode is RuntimePermissionMode.SAFE_AUTO
+        assert intents[0].writable_roots == roots
+        assert live.applied_permission_mode == RuntimePermissionMode.ASK.value
+
+    asyncio.run(scenario())
+
+
+def test_reconstructed_runtime_receives_current_roots() -> None:
+    async def scenario() -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, _catalog = _service(live, _Credentials(CURRENT))
+        live.runtime_session = None
+        live.writable_roots = (live.runtime_workdir / "revoked.md",)
+        roots = (live.runtime_workdir,)
+        service.bind_writable_roots(lambda _scope: roots)
+        activate = runtime.ensure_active
+        received = []
+
+        async def capture(target, **options):
+            received.append(target.writable_roots)
+            await activate(target, **options)
+
+        runtime.ensure_active = capture
+        await service.prepare_turn(live)
+        assert received == [roots]
+        assert live.writable_roots == roots
+
+    asyncio.run(scenario())
+
+
+def test_post_activation_alignment_reports_only_confirmed_mode() -> None:
+    async def scenario() -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, catalog = _service(live, _Credentials(CURRENT))
+        roots = (live.runtime_workdir, live.runtime_workdir / "linked.md")
+        service.bind_writable_roots(lambda _scope: roots)
+
+        await service.prepare_turn(live)
+
+        async def change_during_activation(target, **options):
+            catalog.set_policy(SESSION_ID, OWNER, RuntimePermissionMode.SAFE_AUTO.value)
+
+        runtime.ensure_active = change_during_activation
+        await service.prepare_turn(live)
+        assert live.runtime_session.mode is RuntimePermissionMode.SAFE_AUTO
+        assert live.applied_permission_mode == RuntimePermissionMode.SAFE_AUTO.value
+
+    asyncio.run(scenario())
 
 
 def main() -> int:
@@ -1051,6 +1453,11 @@ def main() -> int:
     test_idle_session_switches_only_its_model_binding()
     test_running_session_model_switch_waits_for_idle()
     test_gateway_writable_roots_reconfigure_permission_intent()
+    test_turn_admission_refreshes_roots_after_activation()
+    test_project_session_enumeration_does_not_reconfigure()
+    test_roots_refresh_preserves_accepted_permission_mode()
+    test_reconstructed_runtime_receives_current_roots()
+    test_post_activation_alignment_reports_only_confirmed_mode()
     print(f"\n{PASS} passed, {FAIL} failed")
     result = unittest.TextTestRunner().run(
         unittest.defaultTestLoader.loadTestsFromTestCase(PermissionActivationTests)

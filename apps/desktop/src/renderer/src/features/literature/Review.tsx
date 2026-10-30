@@ -11,6 +11,7 @@ import {
   AccordionTrigger,
   Alert,
   AlertDescription,
+  AlertTitle,
   Badge,
   Button,
   Card,
@@ -23,7 +24,13 @@ import {
   CollapsibleTrigger,
 } from '../../components/ui'
 import type { ReviewArtifact } from '../../contracts/literature'
-import { parseReview, reviewStatus, REVIEW_VERDICTS } from './projection'
+import {
+  parseReview,
+  reviewNotice,
+  reviewIssueSummary,
+  reviewStatus,
+  REVIEW_VERDICTS,
+} from './projection'
 
 function ReviewCollapsibleTrigger({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
@@ -95,10 +102,8 @@ export function LiteratureReviewCard({
           check.verdict === 'WARN' || check.verdict === 'FAIL' || check.verdict === 'NOT_CHECKED'
       ).length
     : null
-  const complete =
-    review.status === 'generated' &&
-    review.checks.length > 0 &&
-    !review.checks.some((check) => check.verdict === 'FAIL' || check.verdict === 'NOT_CHECKED')
+  const notice = reviewNotice(review)
+  const issueSummary = reviewIssueSummary(review)
   const openArtifact = (artifact: ReviewArtifact): void => {
     const absolute = thread.workdir
       ? `${thread.workdir.replace(/\/$/, '')}/${artifact.path.replace(/^\//, '')}`
@@ -182,11 +187,19 @@ export function LiteratureReviewCard({
           </p>
         </CardContent>
       </Card>
-      {!complete && review.checkpoint === 'result' ? (
+      {notice ? (
         <Alert
           tone="warning"
-          title={t('review.incompleteTitle')}
-          description={t('review.incompleteDescription')}
+          title={
+            notice === 'incomplete'
+              ? t('review.incompleteTitle')
+              : t('review.verificationPendingTitle')
+          }
+          description={
+            notice === 'incomplete'
+              ? t('review.incompleteDescription')
+              : t('review.verificationPendingDescription')
+          }
         />
       ) : null}
       {review.warnings.length > 0 && (
@@ -238,7 +251,7 @@ export function LiteratureReviewCard({
                     </span>
                   </AccordionTrigger>
                   <AccordionContent>
-                    <div className="text-sm font-normal text-[var(--vds-text-secondary)]">
+                    <div className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
                       <p>{section.description || t('review.outlineDetails')}</p>
                       {section.children.map((title, index) => (
                         <p key={index}>{title}</p>
@@ -289,14 +302,17 @@ export function LiteratureReviewCard({
             >
               <div className="grid gap-[var(--vds-space-2)]">
                 {review.citations.map((citation, index) => (
-                  <p className="m-0 text-sm" key={`${citation.title}:${index}`}>
+                  <p
+                    className="m-0 text-[length:var(--vds-font-body-lv2)]"
+                    key={`${citation.title}:${index}`}
+                  >
                     {index + 1}. {citation.title}
                     {citation.authors ? ` · ${citation.authors}` : ''}
                     {citation.year ? ` · ${citation.year}` : ''}
                   </p>
                 ))}
                 {!review.citations.length ? (
-                  <p className="text-sm text-[var(--vds-text-secondary)]">
+                  <p className="text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-secondary)]">
                     {t('review.noCitations')}
                   </p>
                 ) : null}
@@ -349,29 +365,38 @@ export function LiteratureReviewCard({
             ))}
             {!review.checks.length && <p>{t('review.noChecks')}</p>}
           </ReviewCollapsible>
-          {review.issues.length ? (
+          {issueSummary.total ? (
             <ReviewCollapsible
               defaultOpen
-              label={t('review.issuesCount', { count: review.issues.length })}
+              label={t('review.issuesCount', { count: issueSummary.total })}
             >
               {review.issues.map((issue, index) => (
-                <Alert
-                  key={index}
-                  tone="warning"
-                  title={issue.title}
-                  description={[
-                    issue.detail,
-                    issue.paper_ids.length
-                      ? t('review.issuePapers', { papers: issue.paper_ids.join('、') })
-                      : '',
-                    issue.affected_content
-                      ? t('review.issueAffected', { content: issue.affected_content })
-                      : '',
-                  ]
-                    .filter(Boolean)
-                    .join('；')}
-                />
+                <Alert key={index} tone="warning">
+                  <AlertTitle>{issue.title}</AlertTitle>
+                  <AlertDescription truncate={false}>
+                    {[
+                      issue.detail,
+                      issue.paper_ids.length
+                        ? t('review.issuePapers', { papers: issue.paper_ids.join('、') })
+                        : '',
+                      issue.affected_content
+                        ? t('review.issueAffected', { content: issue.affected_content })
+                        : '',
+                    ]
+                      .filter(Boolean)
+                      .join('；')}
+                  </AlertDescription>
+                </Alert>
               ))}
+              {issueSummary.hidden > 0 ? (
+                <p className="text-[length:var(--vds-type-caption-size)] leading-[var(--vds-type-caption-line)] text-[var(--vds-text-secondary)]">
+                  {t('review.moreIssues', {
+                    shown: review.issues.length,
+                    total: issueSummary.total,
+                    count: issueSummary.hidden,
+                  })}
+                </p>
+              ) : null}
             </ReviewCollapsible>
           ) : null}
         </CardContent>

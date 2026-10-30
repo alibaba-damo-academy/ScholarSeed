@@ -28,11 +28,15 @@ import stage_guard
 import state
 import worker
 
-
 ROOT = Path(__file__).resolve().parents[3]
 _PAID_DOWNLOAD_PATH = (
-    ROOT / "skills" / "community" / "precise-literature-search"
-    / "modules" / "paid-download" / "adapter.py"
+    ROOT
+    / "skills"
+    / "community"
+    / "precise-literature-search"
+    / "modules"
+    / "paid-download"
+    / "adapter.py"
 )
 _PAID_DOWNLOAD_SPEC = importlib.util.spec_from_file_location(
     "paid_download_longpath_adapter", _PAID_DOWNLOAD_PATH
@@ -41,8 +45,13 @@ paid_download_adapter = importlib.util.module_from_spec(_PAID_DOWNLOAD_SPEC)
 _PAID_DOWNLOAD_SPEC.loader.exec_module(paid_download_adapter)
 
 _OPEN_DOWNLOAD_PATH = (
-    ROOT / "skills" / "community" / "precise-literature-search"
-    / "modules" / "open-download" / "adapter.py"
+    ROOT
+    / "skills"
+    / "community"
+    / "precise-literature-search"
+    / "modules"
+    / "open-download"
+    / "adapter.py"
 )
 _OPEN_DOWNLOAD_SPEC = importlib.util.spec_from_file_location(
     "open_download_gate_adapter", _OPEN_DOWNLOAD_PATH
@@ -335,8 +344,11 @@ class LongPathDownloadTests(unittest.TestCase):
         paper = {"id": "p1", "title": self.long_title, "doi": "10.0000/fixture"}
         recovered = paid_download_adapter.result_item(
             paper,
-            {"status": "success", "content_type": "pdf",
-             "original_path": str(self.run_dir / "downloads" / "NUL.pdf")},
+            {
+                "status": "success",
+                "content_type": "pdf",
+                "original_path": str(self.run_dir / "downloads" / "NUL.pdf"),
+            },
             self.run_dir,
         )
         self.assertEqual(recovered["status"], "downloaded")
@@ -351,22 +363,35 @@ class LongPathDownloadTests(unittest.TestCase):
         self.assertTrue(filesystem.path_exists(target))
         with filesystem.filesystem_path(target).open("rb") as handle:
             self.assertEqual(handle.read(5), b"%PDF-")
-        self.assertTrue(post_open_gate.verified_manifest_download(
-            {"status": "downloaded", "verified_exists": True, "file_path": relative.as_posix()},
-            self.run_dir,
-        ))
-        self.assertFalse(post_open_gate.verified_manifest_download(
-            {"status": "downloaded", "verified_exists": True, "file_path": "downloads/papers/missing.pdf"},
-            self.run_dir,
-        ))
+        self.assertTrue(
+            post_open_gate.verified_manifest_download(
+                {"status": "downloaded", "verified_exists": True, "file_path": relative.as_posix()},
+                self.run_dir,
+            )
+        )
+        self.assertFalse(
+            post_open_gate.verified_manifest_download(
+                {
+                    "status": "downloaded",
+                    "verified_exists": True,
+                    "file_path": "downloads/papers/missing.pdf",
+                },
+                self.run_dir,
+            )
+        )
         plain = self.run_dir / "downloads" / "papers" / ("plain-" + "b" * 80 + ".txt")
         filesystem.filesystem_path(plain).parent.mkdir(parents=True, exist_ok=True)
         filesystem.filesystem_path(plain).write_bytes(b"not a pdf")
-        self.assertFalse(post_open_gate.verified_manifest_download(
-            {"status": "downloaded", "verified_exists": True,
-             "file_path": plain.relative_to(self.run_dir).as_posix()},
-            self.run_dir,
-        ))
+        self.assertFalse(
+            post_open_gate.verified_manifest_download(
+                {
+                    "status": "downloaded",
+                    "verified_exists": True,
+                    "file_path": plain.relative_to(self.run_dir).as_posix(),
+                },
+                self.run_dir,
+            )
+        )
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows MAX_PATH boundaries")
     def test_paid_adapter_moves_and_ledger_binds_long_path_pdf(self):
@@ -377,9 +402,11 @@ class LongPathDownloadTests(unittest.TestCase):
         destination = self.run_dir / item["file_path"]
         self.assertGreater(len(str(destination)), 260)
         self.assertTrue(filesystem.path_exists(destination))
-        self.assertFalse(filesystem.path_exists(
-            self.run_dir / "downloads" / "paper-dl-work" / "attempt" / "acquired.pdf"
-        ))
+        self.assertFalse(
+            filesystem.path_exists(
+                self.run_dir / "downloads" / "paper-dl-work" / "attempt" / "acquired.pdf"
+            )
+        )
         self.assertTrue(post_open_gate.verified_manifest_download(item, self.run_dir))
         ledger = io_utils.read_json(self.run_dir / "downloads" / "paper-dl-files.json")
         (record,) = ledger["files"].values()
@@ -414,32 +441,46 @@ class LongPathDownloadTests(unittest.TestCase):
     def test_run_lock_acquires_in_long_run_directory(self):
         with browser_pool.run_lock(self.run_dir):
             pass
-        self.assertTrue(filesystem.path_exists(
-            self.run_dir / "downloads" / ".paid-download.lock"
-        ))
+        self.assertTrue(filesystem.path_exists(self.run_dir / "downloads" / ".paid-download.lock"))
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows MAX_PATH boundaries")
     def test_open_download_placeholder_cli_in_long_run_directory(self):
         skill = ROOT / "skills" / "community" / "precise-literature-search"
         metadata_relative = Path("downloads") / "metadata.json"
-        io_utils.atomic_write_json(self.run_dir / metadata_relative, {
-            "run_id": "long-run",
-            "papers": [{"id": "p1", "title": self.long_title, "open_access": "yes"}],
-        })
+        io_utils.atomic_write_json(
+            self.run_dir / metadata_relative,
+            {
+                "run_id": "long-run",
+                "papers": [{"id": "p1", "title": self.long_title, "open_access": "yes"}],
+            },
+        )
         selection_path = self.run_dir / "downloads" / "selection.json"
-        io_utils.atomic_write_json(selection_path, {
-            "run_id": "long-run",
-            "confirmed_by_user": True,
-            "download_open": True,
-            "metadata_path": metadata_relative.as_posix(),
-            "selected_paper_ids": ["p1"],
-        })
+        io_utils.atomic_write_json(
+            selection_path,
+            {
+                "run_id": "long-run",
+                "confirmed_by_user": True,
+                "download_open": True,
+                "metadata_path": metadata_relative.as_posix(),
+                "selected_paper_ids": ["p1"],
+            },
+        )
         output_path = self.run_dir / "downloads" / "open-download-manifest.json"
         completed = subprocess.run(
-            [sys.executable, str(skill / "modules" / "open-download" / "placeholder.py"),
-             "--input", str(selection_path), "--output", str(output_path),
-             "--run-dir", str(self.run_dir)],
-            capture_output=True, text=True, encoding="utf-8", timeout=60,
+            [
+                sys.executable,
+                str(skill / "modules" / "open-download" / "placeholder.py"),
+                "--input",
+                str(selection_path),
+                "--output",
+                str(output_path),
+                "--run-dir",
+                str(self.run_dir),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
         manifest = io_utils.read_json(output_path)
@@ -453,34 +494,58 @@ class LongPathDownloadTests(unittest.TestCase):
     def test_paid_download_placeholder_resume_cli_in_long_run_directory(self):
         skill = ROOT / "skills" / "community" / "precise-literature-search"
         metadata_relative = Path("downloads") / "metadata.json"
-        io_utils.atomic_write_json(self.run_dir / metadata_relative, {
-            "run_id": "long-run",
-            "papers": [{
-                "id": "p1", "title": self.long_title,
-                "open_access": "unknown", "doi": "10.0000/fixture",
-            }],
-        })
+        io_utils.atomic_write_json(
+            self.run_dir / metadata_relative,
+            {
+                "run_id": "long-run",
+                "papers": [
+                    {
+                        "id": "p1",
+                        "title": self.long_title,
+                        "open_access": "unknown",
+                        "doi": "10.0000/fixture",
+                    }
+                ],
+            },
+        )
         selection_path = self.run_dir / "downloads" / "selection.json"
-        io_utils.atomic_write_json(selection_path, {
-            "run_id": "long-run",
-            "confirmed_by_user": True,
-            "download_paid": True,
-            "metadata_path": metadata_relative.as_posix(),
-            "selected_paper_ids": ["p1"],
-        })
+        io_utils.atomic_write_json(
+            selection_path,
+            {
+                "run_id": "long-run",
+                "confirmed_by_user": True,
+                "download_paid": True,
+                "metadata_path": metadata_relative.as_posix(),
+                "selected_paper_ids": ["p1"],
+            },
+        )
         output_path = self.run_dir / "downloads" / "paid-download-manifest.json"
-        command = [sys.executable, str(skill / "modules" / "paid-download" / "placeholder.py"),
-                   "--input", str(selection_path), "--output", str(output_path),
-                   "--run-dir", str(self.run_dir)]
+        command = [
+            sys.executable,
+            str(skill / "modules" / "paid-download" / "placeholder.py"),
+            "--input",
+            str(selection_path),
+            "--output",
+            str(output_path),
+            "--run-dir",
+            str(self.run_dir),
+        ]
         first = subprocess.run(
-            command, capture_output=True, text=True, encoding="utf-8", timeout=60,
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
         )
         self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
         first_manifest = io_utils.read_json(output_path)
         self.assertEqual(first_manifest["status"], "action_required")
         resumed = subprocess.run(
             command + ["--resume"],
-            capture_output=True, text=True, encoding="utf-8", timeout=60,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
         )
         self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
         manifest = io_utils.read_json(output_path)
@@ -503,9 +568,7 @@ class PaperDlLibraryPathTests(unittest.TestCase):
     def test_library_root_is_short_by_construction(self):
         root = paid_download_adapter.paper_dl_library_root()
         self.assertTrue(root.is_absolute())
-        self.assertEqual(
-            root, Path.home().joinpath(*paid_download_adapter.LIBRARY_HOME_PARTS)
-        )
+        self.assertEqual(root, Path.home().joinpath(*paid_download_adapter.LIBRARY_HOME_PARTS))
         self.assertLess(len(str(root)), filesystem.WINDOWS_PATH_BUDGET)
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows path budget")
@@ -515,9 +578,7 @@ class PaperDlLibraryPathTests(unittest.TestCase):
         filler = "d" * (153 - len(str(base)) - 1)
         run_dir = base / filler
         self.assertEqual(len(str(run_dir)), 153)
-        attempt = (
-            run_dir / "downloads" / "paper-dl-logs" / "paper-dl-attempts" / "abc123456789"
-        )
+        attempt = run_dir / "downloads" / "paper-dl-logs" / "paper-dl-attempts" / "abc123456789"
         paid_download_adapter.ensure_paper_dl_paths_fit_budget(storage, attempt)
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows path budget")
@@ -525,9 +586,7 @@ class PaperDlLibraryPathTests(unittest.TestCase):
         storage = paid_download_adapter.paper_dl_library_root()
         base = Path(tempfile.gettempdir()).resolve()
         deep = base / ("n" * 220)
-        attempt = (
-            deep / "downloads" / "paper-dl-logs" / "paper-dl-attempts" / "abc123456789"
-        )
+        attempt = deep / "downloads" / "paper-dl-logs" / "paper-dl-attempts" / "abc123456789"
         with self.assertRaises(ValueError) as ctx:
             paid_download_adapter.ensure_paper_dl_paths_fit_budget(storage, attempt)
         self.assertIn(paid_download_adapter.LONG_PATH_STATE, str(ctx.exception))
@@ -579,8 +638,12 @@ class PostOpenGateRoutingTests(unittest.TestCase):
         self.root = Path(self.directory.name).resolve()
         self.addCleanup(shutil.rmtree, filesystem.filesystem_path(self.root))
         self.gate = (
-            ROOT / "skills" / "community" / "precise-literature-search"
-            / "scripts" / "post_open_gate.py"
+            ROOT
+            / "skills"
+            / "community"
+            / "precise-literature-search"
+            / "scripts"
+            / "post_open_gate.py"
         )
 
     @staticmethod
@@ -675,11 +738,20 @@ class PostOpenGateRoutingTests(unittest.TestCase):
 
     def _run_gate(self, run_dir: Path) -> dict:
         completed = subprocess.run(
-            [sys.executable, str(self.gate),
-             "--run-dir", str(run_dir),
-             "--selection", str(run_dir / "downloads" / "selection.json"),
-             "--manifest", str(run_dir / "downloads" / "manifest.json")],
-            capture_output=True, text=True, encoding="utf-8", timeout=120,
+            [
+                sys.executable,
+                str(self.gate),
+                "--run-dir",
+                str(run_dir),
+                "--selection",
+                str(run_dir / "downloads" / "selection.json"),
+                "--manifest",
+                str(run_dir / "downloads" / "manifest.json"),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
         return json.loads(completed.stdout)
@@ -695,15 +767,19 @@ class PostOpenGateRoutingTests(unittest.TestCase):
     def test_start_paid_download_routes_with_run_relative_paths(self):
         run_dir = self._build_run("auto_delegated", long_run=False)
         self._assert_routed(
-            run_dir, self._run_gate(run_dir),
-            "start_paid_download", "DOWNLOADING_PAID",
+            run_dir,
+            self._run_gate(run_dir),
+            "start_paid_download",
+            "DOWNLOADING_PAID",
         )
 
     def test_confirm_paid_download_routes_with_run_relative_paths(self):
         run_dir = self._build_run("user_explicit", long_run=False)
         self._assert_routed(
-            run_dir, self._run_gate(run_dir),
-            "confirm_paid_download", "PAID_DOWNLOAD_PENDING",
+            run_dir,
+            self._run_gate(run_dir),
+            "confirm_paid_download",
+            "PAID_DOWNLOAD_PENDING",
         )
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows MAX_PATH boundaries")

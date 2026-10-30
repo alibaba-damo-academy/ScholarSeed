@@ -5,6 +5,23 @@ export type AccessFilter = 'all' | 'open' | 'closed'
 export type DecisionFilter = 'all' | 'included' | 'excluded'
 export type ReviewEvidence = 'fulltext' | 'abstract' | 'metadata' | 'unknown'
 const CARD_PRESENTED_REPORT_ORIGINS = new Set(['literature-review', 'precise-search'])
+const SEARCH_WARNING_RULES = [
+  { pattern: /^agentic-search used degraded retrieval \(source_mode=web_only\)$/, key: 'result.warning.webOnly' },
+  { pattern: /^agentic-search used degraded retrieval \(source_mode=/, key: 'result.warning.degraded' },
+  { pattern: /^agentic-search returned a partial result$/, key: 'result.warning.partial' },
+  { pattern: /^search trace unavailable;/, key: 'result.warning.traceUnavailable' },
+  { pattern: /^search abstracts filtered$/, key: 'result.warning.abstractsFiltered' },
+  { pattern: /^supplemental search shortfall$/, key: 'result.warning.shortfall' },
+  { pattern: /^本轮来源或候选池统计未记录，无法核对完整检索过程。$/, key: 'result.warning.statisticsUnavailable' },
+  { pattern: /^检索来源统计未记录。$/, key: 'result.warning.statisticsUnavailable' },
+  { pattern: /^(来源候选数与候选池口径不一致，候选总数无法核对。|候选池统计少于最终保留数量，去重数量无法核对。)$/, key: 'result.warning.statisticsInconsistent' }
+] as const
+
+export function searchWarningKeys(warnings: readonly string[]): (typeof SEARCH_WARNING_RULES[number]['key'] | 'result.warning.limited')[] {
+  return [...new Set(warnings.filter(warning => warning.trim()).map(warning =>
+    SEARCH_WARNING_RULES.find(rule => rule.pattern.test(warning.trim()))?.key ?? 'result.warning.limited'
+  ))]
+}
 
 export function presentedSearchArtifacts(result: {
   origin?: string

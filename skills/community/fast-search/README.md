@@ -1,12 +1,13 @@
 # Fast AI Search
 
 面向搜索栏场景的低延迟学术论文检索。它通过另行安装的 `$web-search` skill 解析潜在论文实体，
-再以 PaperHub 完成一次有界的关键词、题名和参考文献检索，最终返回 5–20 篇论文的
-`metadata.json`。直接查找 arXiv、DOI 或明确题名时，agent 会先声明规范题名
-`best_target` 并把它作为精确 PaperHub title 查询；目标未进入候选池或 Tier 1 时会明确失败，
+再以 PaperHub 完成一次有界的关键词、题名和参考文献检索，最终返回最多 20 篇论文的
+`metadata.json`。直接查找出版社/arXiv 链接、DOI 或明确题名时，agent 在原有网页批次内解析规范题名
+`best_target` 并把它作为精确 PaperHub title 查询；并行核验输入链接/DOI 及原有网页批次中少量重要论文的元数据。
+PaperHub 未召回但可独立核实的论文也能返回；单篇目标保留为 Tier 1 首篇，一篇真实结果也有效。两条路径都无法核实才明确失败，
 不会用一组泛相关论文伪装成功。Tier 1 中依次优先用户查询的显式标识、agent 声明的
-`best_target` 和既有确定性相关性得分；它不会把 Tier 2/3 论文强行提级。这一步不增加
-模型回合，普通主题检索的候选和分层逻辑不变。摘要只在单次 runner 进程内参与相关性
+`best_target` 和既有确定性相关性得分；普通主题检索不改变分层，单篇查找只为身份核实的目标保留首位。这一步不增加
+模型回合，普通主题检索的排序及分层规则不变。摘要只在单次 runner 进程内参与相关性
 计算，不会写入 `metadata.json`、session、round trace 或检索缓存。
 本仓库只提供名为 `fast-search` 的 Veryfast 检索 Skill 及其部署入口，不生成长报告，
 也不会注册或覆盖其他检索 Skill。
@@ -161,13 +162,22 @@ scholarseed-skill-python tools/appserver_quick.py --print-effective-config \
 
 ## 检索源与网络说明
 
-Veryfast 只使用两个逻辑检索源：公网 web 检索和 PaperHub。每个公网检索 batch 必须优先
+Veryfast 使用公网 web 检索和 PaperHub，并对已有论文链接做有界元数据核验。每个公网检索 batch 必须优先
 从独立的 `$web-search` skill 开始，按 official → native → browser 路由执行；偶发但成功的
 runtime native Web Search 可作为兼容结果，失败时必须在同一 turn 回到 `$web-search`。Worker 会把
 两个 skill 显式注入同一 turn，并打开 native provider 与 `workspace-write` 下命令所需
 的联网权限。PaperHub 仍要求机器
 自身能通过直连、代理或 SSH 隧道到达服务，并在 Worker 启动前设置
 `SCHOLARSEED_API_KEY`。详细配置见 [SETUP.md](SETUP.md#paperhub)。
+
+补充核验不增加模型或搜索轮次：最多 4 个已有 DOI/论文链接，使用 Crossref 精确 DOI 记录或
+文章页的学术引用元数据，与 PaperHub 并行、共享 8 秒等待上限。不采信搜索摘要或模型编造的
+作者/日期，不下载 PDF，不落盘论文摘要。核验使用匿名公网 HTTPS，不读取代理凭据、Cookie
+或登录状态；网络不可达时跳过补充路径，已有 PaperHub 结果仍可使用。若 PaperHub 服务失败而已有
+合格核验结果，也允许返回，并记录来源与服务失败情况。
+
+这不是全文获取功能，也不保证任意网站都能解析：没有可核实元数据、页面拦截或超时仍可能失败。
+外部论文沿用时间约束和现有排序；不把预印本与正式版的标识混用。正常检索无需为凑数量添加网页候选。
 
 ## 诊断
 

@@ -90,6 +90,7 @@ class SiteIconFetcher(Protocol):
 
     def fetch_site_icon(self, url: str) -> FetchedImage:
         """Fetch a bounded raster icon for the HTTP(S) site containing `url`."""
+        ...
 
 
 @dataclass(frozen=True)

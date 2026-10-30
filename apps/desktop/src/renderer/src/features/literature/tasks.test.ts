@@ -141,7 +141,7 @@ test('the detail panel reads busy state from the registry, not from local compon
 
   assert.match(source, /useSyncExternalStore\(literatureTasks\.subscribe, literatureTasks\.getSnapshot\)/)
   assert.match(source, /const fetchingArxiv = literatureTasks\.isRunning\(id, 'fulltext'\)/)
-  assert.match(source, /const metadataRunning = literatureTasks\.isRunning\(id, 'metadata'\)/)
+  assert.match(source, /const metadataRunning =\s*literatureTasks\.isRunning\(id, 'metadata'\)/)
   assert.match(source, /literatureTasks\.run\(id, 'fulltext', \(\) => fetchArxivFulltext\(id\)\)/)
   assert.match(source, /literatureTasks\.run\(id, 'metadata', \(\) => fetchPaperMeta\(query\)\)/)
   assert.match(source, /literatureTasks\.attach<Detail>\(id, 'fulltext'\)/)

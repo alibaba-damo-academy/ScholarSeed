@@ -78,6 +78,16 @@
   "refresh": "刷新",
   "retry": "重试",
   "open": "打开",
+  "systemTrash": {
+    "darwin": "废纸篓",
+    "win32": "回收站",
+    "fallback": "回收站"
+  },
+  "restoreAction": {
+    "darwin": "放回原处",
+    "win32": "还原",
+    "fallback": "还原"
+  },
   "avatar": {
     "label": "{{name}} 的头像"
   },
@@ -85,6 +95,7 @@
   "delete": "删除",
   "done": "完成",
   "navigationTabs": {
+    "all": "所有标签页",
     "unsaved": "未保存"
   },
   "markdown": {

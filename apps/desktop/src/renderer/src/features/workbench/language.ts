@@ -4,6 +4,7 @@ import type { languages } from 'monaco-editor/editor/editor.api'
 export const LANGUAGE_BY_SUFFIX: Readonly<Record<string, string>> = Object.freeze({
   c: 'c', cpp: 'cpp', h: 'cpp', css: 'css', html: 'html', htm: 'html',
   java: 'java', js: 'javascript', jsx: 'javascript', json: 'json',
+  lean: 'lean',
   md: 'markdown', markdown: 'markdown', py: 'python', r: 'r', sh: 'shell',
   ts: 'typescript', tsx: 'typescript', yaml: 'yaml', yml: 'yaml', toml: 'toml',
   xml: 'xml', txt: 'plaintext', log: 'plaintext'

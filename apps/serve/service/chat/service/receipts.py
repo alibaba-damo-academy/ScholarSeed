@@ -12,6 +12,7 @@ SEARCH_RECEIPT_MAX_BYTES = 12000
 SEARCH_RECEIPT_MAX_RESULTS = 20
 SEARCH_RECEIPT_STATUSES = frozenset({"completed", "empty"})
 SEARCH_RECEIPT_MAX_PER_TOOL = 4
+SEARCH_RECEIPT_QUERY_CHARACTERS = 512
 
 
 def search_receipts(output: str) -> list[dict]:

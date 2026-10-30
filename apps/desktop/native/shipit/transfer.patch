@@ -1,0 +1,68 @@
+--- a/Squirrel/SQRLUpdater.m
++++ b/Squirrel/SQRLUpdater.m
+@@ -9,6 +9,7 @@
+ #import "SQRLUpdater.h"
+ #import "handoff.h"
+ #import "readinesswait.h"
++#import "binding.h"
+ #import "NSBundle+SQRLVersionExtensions.h"
+ #import "NSError+SQRLVerbosityExtensions.h"
+ #import "NSProcessInfo+SQRLVersionExtensions.h"
+@@ -57,6 +58,7 @@
+ }
+ 
+ @interface SQRLUpdater ()
++@property (nonatomic, strong) SQRLShipItRequest *scholarseedRequest;
+ 
+ @property (atomic, readwrite) SQRLUpdaterState state;
+ 
+@@ -546,7 +548,8 @@
+ 						self.etag = httpResponse.allHeaderFields[@"ETag"];
+ 					}
+ 
+-					return [self unarchiveAndPrepareData:bodyData withName:zipDownloadURL.lastPathComponent intoDirectory:downloadDirectory];
++					if (!SSBindingVerify(SSBindingFromName(update.releaseName), bodyData)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EBADMSG userInfo:nil]];
++                    return [self unarchiveAndPrepareData:bodyData withName:zipDownloadURL.lastPathComponent intoDirectory:downloadDirectory];
+ 				}]
+ 				flatten];
+ 		}]
+@@ -828,7 +831,9 @@
+ 			// app themselves.
+ 			BOOL useUpdateBundleName = [appBundle.sqrl_executableName isEqual:targetBundleURL.lastPathComponent.stringByDeletingPathExtension];
+ 
+-			SQRLShipItRequest *request = [[SQRLShipItRequest alloc] initWithUpdateBundleURL:update.bundle.bundleURL targetBundleURL:targetBundleURL bundleIdentifier:currentApplication.bundleIdentifier launchAfterInstallation:NO useUpdateBundleName:useUpdateBundleName];
++			SQRLShipItRequest *request = [[SQRLShipItRequest alloc] initWithUpdateBundleURL:update.bundle.bundleURL targetBundleURL:targetBundleURL bundleIdentifier:currentApplication.bundleIdentifier launchAfterInstallation:NO useUpdateBundleName:useUpdateBundleName binding:SSBindingFromName(update.update.releaseName) installationAuthorized:NO];
++            if (!SSBindingValid(request.binding)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EINVAL userInfo:nil]];
++            self.scholarseedRequest = request;
+ 			preparedRequest = request;
+             NSError *error = nil;
+             if (!SSReadinessRemove(request.updateBundleURL, &error)) return [RACSignal error:error];
+@@ -836,7 +841,7 @@
+ 		}]
+ 		then:^{
+ 			return [SSSquirrelTiming(@"launch-helper", self.shipItLauncher, NO) then:^{
+-                return SSSquirrelTiming(@"prepare-candidate", SSReadinessWait(preparedRequest.updateBundleURL, preparedRequest.targetBundleURL, SSPreparationTimeout), NO);
++                return SSSquirrelTiming(@"prepare-candidate", SSReadinessWaitBound(preparedRequest.updateBundleURL, preparedRequest.targetBundleURL, preparedRequest.binding, SSPreparationTimeout), NO);
+             }];
+ 		}])
+ 		sqrl_addTransactionWithName:NSLocalizedString(@"Preparing update", nil) description:NSLocalizedString(@"An update for %@ is being prepared. Interrupting the process could corrupt the application.", nil), NSRunningApplication.currentApplication.bundleIdentifier]
+@@ -846,10 +851,16 @@
+ - (RACSignal *)relaunchToInstallUpdate {
+ 	return [[[[[[[[SQRLShipItRequest
+ 		readUsingURL:self.shipItStateURL]
+-		map:^(SQRLShipItRequest *request) {
+-			return [[SQRLShipItRequest alloc] initWithUpdateBundleURL:request.updateBundleURL targetBundleURL:request.targetBundleURL bundleIdentifier:request.bundleIdentifier launchAfterInstallation:YES useUpdateBundleName:request.useUpdateBundleName];
+-		}]
+ 		flattenMap:^(SQRLShipItRequest *request) {
++			SQRLShipItRequest *prepared = self.scholarseedRequest;
++            if (!prepared || !SSBindingRequestMatches(prepared.dictionaryValue, request.dictionaryValue) ||
++                ![prepared.updateBundleURL isEqual:request.updateBundleURL] || ![prepared.targetBundleURL isEqual:request.targetBundleURL] ||
++                ![prepared.bundleIdentifier isEqual:request.bundleIdentifier] || prepared.useUpdateBundleName != request.useUpdateBundleName ||
++                SSReadinessReadBound(request.updateBundleURL, request.targetBundleURL, prepared.binding, NULL) != SSReadinessReady) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
++            return [RACSignal return:[[SQRLShipItRequest alloc] initWithUpdateBundleURL:request.updateBundleURL targetBundleURL:request.targetBundleURL bundleIdentifier:request.bundleIdentifier launchAfterInstallation:YES useUpdateBundleName:request.useUpdateBundleName binding:request.binding installationAuthorized:YES]];
++		}]
++		flattenMap:^(SQRLShipItRequest *request) {
++			if (!request) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
+ 			return [[request
+ 				writeUsingURL:self.shipItStateURL]
+ 				sqrl_addTransactionWithName:NSLocalizedString(@"Preparing to relaunch", nil) description:NSLocalizedString(@"%@ is preparing to relaunch to install an update. Interrupting the process could corrupt the application.", nil), NSRunningApplication.currentApplication.bundleIdentifier];

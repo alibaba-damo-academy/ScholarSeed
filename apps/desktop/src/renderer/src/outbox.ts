@@ -15,8 +15,14 @@ function emptyOutbox(): StoredOutbox {
 
 function readOutbox(): StoredOutbox {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(QUEUE_OUTBOX_STORAGE_KEY) ?? '') as StoredOutbox
-    if (parsed.version !== OUTBOX_VERSION || !parsed.sessions || typeof parsed.sessions !== 'object') {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(QUEUE_OUTBOX_STORAGE_KEY) ?? ''
+    ) as StoredOutbox
+    if (
+      parsed.version !== OUTBOX_VERSION ||
+      !parsed.sessions ||
+      typeof parsed.sessions !== 'object'
+    ) {
       return emptyOutbox()
     }
     return parsed
@@ -36,7 +42,7 @@ function writeOutbox(outbox: StoredOutbox): void {
 function upsert(messages: QueuedMessage[], message: QueuedMessage): QueuedMessage[] {
   return [
     ...messages.filter((item) => item.queuedMessageId !== message.queuedMessageId),
-    message
+    message,
   ].sort((left, right) => left.enqueueSeq - right.enqueueSeq)
 }
 
@@ -59,20 +65,27 @@ export function releaseQueuedOutbox(sessionId: string, queuedMessageId: string):
 
 export function mergeQueuedOutbox(
   sessionId: string,
-  authoritative: QueuedMessage[]
+  authoritative: QueuedMessage[],
+  acknowledge = true,
+  current: QueuedMessage[] = []
 ): QueuedMessage[] {
   const pending = readOutbox().sessions[sessionId] ?? []
   return pending.reduce((messages, message) => {
     if (messages.some((item) => item.queuedMessageId === message.queuedMessageId)) {
-      releaseQueuedOutbox(sessionId, message.queuedMessageId)
+      // Candidate UI restoration may read this projection before native commit.
+      // Retain the durable local row until the workbench can acknowledge it.
+      if (acknowledge) releaseQueuedOutbox(sessionId, message.queuedMessageId)
       return messages
+    }
+    const owned = current.find((item) => item.queuedMessageId === message.queuedMessageId)
+    if (owned?.state === 'submitting' && owned.serverPresent === false) {
+      return upsert(messages, owned)
     }
     return upsert(messages, {
       ...message,
       state: message.state === 'failed' ? 'failed' : 'outcome_unknown',
-      safeErrorCode:
-        message.safeErrorCode || QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED,
-      serverPresent: false
+      safeErrorCode: message.safeErrorCode || QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED,
+      serverPresent: false,
     })
   }, authoritative)
 }

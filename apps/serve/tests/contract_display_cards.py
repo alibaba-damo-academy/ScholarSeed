@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jsonschema import Draft7Validator
 
+from service.assistant.service.nextsteps import NEXT_STEPS_CARD, validate_next_steps_card
 from service.capabilities.service.skills import SkillCatalog
 from service.chat.api.cards import register_card_routes
 from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD
@@ -23,7 +24,6 @@ from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.evidence import SessionTrace
 from service.chat.runtime.live import LiveSession
 from service.chat.service.cards import (
-    DISPLAY_CARD_MAX_PER_TURN,
     DISPLAY_CARD_PATH_UNAVAILABLE,
     CardRegistry,
     DisplayCardError,
@@ -32,15 +32,29 @@ from service.chat.service.cards import (
 )
 from service.chat.service.events import HISTORY_ACTIVITY_EVENT_KINDS, EventService
 from service.cli.bridge import parser
+from service.literature.domain.delivery import (
+    DELIVERY_CARD,
+    delivery_card_slot,
+    validate_delivery_card,
+)
 from service.literature.service.cards import (
     LITERATURE_REFERENCES_CARD,
     validate_references_card,
 )
+from service.literature.service.downloads import (
+    DOWNLOADS_CARD,
+    download_card_slot,
+    validate_download_card,
+)
+from service.literature.service.result import SEARCH_CARD, search_card_slot, validate_search_card
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_TOKEN_HEADER,
     DisplayCard,
     DisplayCardContent,
+)
+from service.platform.vocabulary import (
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_TOKEN_HEADER,
 )
 
 SESSION_ID = "display-card-session"
@@ -305,7 +319,46 @@ class DisplayCardContract(unittest.TestCase):
         self.assertEqual(snapshot[0]["type"], PRODUCT_EVENT_DISPLAY_CARD)
         self.assertEqual(snapshot[0]["data"], first)
 
-    def test_turn_card_count_limit_does_not_charge_idempotent_retry(self) -> None:
+    def test_next_steps_publish_without_creating_a_pending_question(self) -> None:
+        self.registry.register(NEXT_STEPS_CARD, validate_next_steps_card)
+        live, events = self._live()
+        payload = {
+            "title": "Next step",
+            "options": [
+                {"label": "Deep", "description": "Check prior work."},
+                {"label": "Validation", "description": "Design the experiment."},
+            ],
+            "free_text_label": "Other requests",
+            "submit_label": "Send",
+        }
+        activities = Activities()
+        lease = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(lease.close)
+        caller = SimpleNamespace(
+            id=SESSION_ID,
+            bridge_token=BRIDGE_TOKEN,
+            publication_turn_id=TURN_ID,
+            bridge_activity=lease,
+            display_card=live.display_card,
+        )
+        app = FastAPI()
+        register_card_routes(app, lambda _: caller, self.registry, activities=activities)
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/internal/bridge/display-card",
+                headers={BRIDGE_SESSION_HEADER: SESSION_ID, BRIDGE_TOKEN_HEADER: BRIDGE_TOKEN},
+                json={"type": NEXT_STEPS_CARD, "content": {"data": payload}},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        card = response.json()["card"]
+        records = events.replay(SESSION_ID)
+        self.assertEqual([record.kind for record in records], [PRODUCT_EVENT_DISPLAY_CARD])
+        self.assertEqual(card["content"], payload)
+        self.assertEqual(card["type"], NEXT_STEPS_CARD)
+        reopened = ProductEventStore(events.database)
+        self.assertEqual(reopened.replay(SESSION_ID)[0].payload, card)
+
+    def test_turn_accepts_more_than_four_cards_and_keeps_idempotent_retry(self) -> None:
         live, events = self._live()
         first_payload = reference_payload()
         first = asyncio.run(
@@ -322,7 +375,7 @@ class DisplayCardContract(unittest.TestCase):
                 turn_id=TURN_ID,
             )
         )
-        for index in range(1, DISPLAY_CARD_MAX_PER_TURN):
+        for index in range(1, 8):
             payload = reference_payload()
             payload["project"] = f"project-{index}"
             asyncio.run(
@@ -334,16 +387,300 @@ class DisplayCardContract(unittest.TestCase):
             )
         overflow = reference_payload()
         overflow["project"] = "overflow"
-        with self.assertRaisesRegex(DisplayCardError, "display_card_turn_limit_exceeded"):
+        asyncio.run(
+            live.display_card(
+                LITERATURE_REFERENCES_CARD,
+                DisplayCardContent(data=overflow),
+                turn_id=TURN_ID,
+            )
+        )
+        self.assertEqual(first, repeated)
+        self.assertEqual(len(events.replay(SESSION_ID)), 9)
+
+    def test_product_slot_can_return_to_an_earlier_payload_and_replay_latest(self) -> None:
+        self.registry.register("product-slot", dict, direct=False, slot=lambda value: value["slot"])
+        live, events = self._live()
+        first = asyncio.run(
+            live.display_card(
+                "product-slot",
+                DisplayCardContent(
+                    data={
+                        "slot": "run",
+                        "revision": 1,
+                    }
+                ),
+                turn_id=TURN_ID,
+            )
+        )
+        asyncio.run(
+            live.display_card(
+                "product-slot",
+                DisplayCardContent(
+                    data={
+                        "slot": "run",
+                        "revision": 2,
+                    }
+                ),
+                turn_id=TURN_ID,
+            )
+        )
+        third = asyncio.run(
+            live.display_card(
+                "product-slot",
+                DisplayCardContent(
+                    data={
+                        "slot": "run",
+                        "revision": 1,
+                    }
+                ),
+                turn_id=TURN_ID,
+            )
+        )
+        repeated = asyncio.run(
+            live.display_card(
+                "product-slot",
+                DisplayCardContent(
+                    data={
+                        "slot": "run",
+                        "revision": 1,
+                    }
+                ),
+                turn_id=TURN_ID,
+            )
+        )
+        self.assertEqual(len(events.replay(SESSION_ID)), 3)
+        self.assertEqual(events.replay(SESSION_ID)[-1].payload, third)
+        self.assertNotEqual(first["card_id"], third["card_id"])
+        self.assertEqual(third, repeated)
+
+    def test_product_slots_preserve_snapshots_and_reopened_byte_budget(self) -> None:
+        self.registry.register(
+            "product-stage",
+            dict,
+            direct=False,
+            slot=lambda value: value["slot"],
+        )
+        live, events = self._live()
+        for index in range(6):
             asyncio.run(
                 live.display_card(
-                    LITERATURE_REFERENCES_CARD,
-                    DisplayCardContent(data=overflow),
+                    "product-stage",
+                    DisplayCardContent(data={"slot": str(index), "revision": 1}),
                     turn_id=TURN_ID,
                 )
             )
-        self.assertEqual(first, repeated)
-        self.assertEqual(len(events.replay(SESSION_ID)), DISPLAY_CARD_MAX_PER_TURN)
+        for index in range(3):
+            payload = reference_payload()
+            payload["project"] = f"project-{index}"
+            asyncio.run(
+                live.display_card(
+                    LITERATURE_REFERENCES_CARD,
+                    DisplayCardContent(data=payload),
+                    turn_id=TURN_ID,
+                )
+            )
+        live, reopened = self._live()
+        payload = {"slot": "next-round", "revision": 1}
+        first = asyncio.run(
+            live.display_card(
+                "product-stage",
+                DisplayCardContent(data=payload),
+                turn_id=TURN_ID,
+            )
+        )
+        self.assertEqual(
+            first,
+            asyncio.run(
+                live.display_card(
+                    "product-stage",
+                    DisplayCardContent(data=payload),
+                    turn_id=TURN_ID,
+                )
+            ),
+        )
+        overflow = reference_payload()
+        overflow["project"] = "overflow"
+        asyncio.run(
+            live.display_card(
+                LITERATURE_REFERENCES_CARD,
+                DisplayCardContent(data=overflow),
+                turn_id=TURN_ID,
+            )
+        )
+        records = reopened.replay(SESSION_ID)
+        stages = [record for record in records if record.payload["type"] == "product-stage"]
+        self.assertEqual(len(stages), 7)
+        self.assertEqual(len({record.vendor_item_id for record in stages}), len(stages))
+        for index in range(2):
+            asyncio.run(
+                live.display_card(
+                    "product-stage",
+                    DisplayCardContent(
+                        data={"slot": "next-round", "text": "x" * 48_000, "revision": index}
+                    ),
+                    turn_id=TURN_ID,
+                )
+            )
+        with self.assertRaisesRegex(DisplayCardError, "display_card_turn_bytes_exceeded"):
+            asyncio.run(
+                live.display_card(
+                    "product-stage",
+                    DisplayCardContent(
+                        data={"slot": "next-round", "text": "x" * 48_000, "revision": 3}
+                    ),
+                    turn_id=TURN_ID,
+                )
+            )
+        asyncio.run(
+            live.display_card(
+                LITERATURE_REFERENCES_CARD,
+                DisplayCardContent(data=overflow),
+                turn_id="next-user-turn",
+            )
+        )
+
+    def test_literature_rounds_and_delivery_batches_keep_independent_snapshots(self) -> None:
+        for card_type, validator, selector in (
+            (SEARCH_CARD, validate_search_card, search_card_slot),
+            (DOWNLOADS_CARD, validate_download_card, download_card_slot),
+            (DELIVERY_CARD, validate_delivery_card, delivery_card_slot),
+        ):
+            self.registry.register(card_type, validator, direct=False, slot=selector)
+        live, events = self._live()
+        search = {
+            "session_id": SESSION_ID,
+            "run_id": "run",
+            "round": 1,
+            "criteria": [],
+            "status": "success",
+            "sources": [],
+            "candidates": 20,
+            "deduplicated": 20,
+            "retained": 20,
+            "papers": [],
+            "warnings": [],
+        }
+        downloads = {"session_id": SESSION_ID, "run": "run", "project_id": "project", "papers": []}
+        delivery = {
+            "session_id": SESSION_ID,
+            "delivery_id": "batch-one",
+            "project_id": "project",
+            "count": 19,
+        }
+
+        def publish(card_type, value):
+            return asyncio.run(
+                live.display_card(card_type, DisplayCardContent(data=value), turn_id=TURN_ID)
+            )
+
+        first = publish(SEARCH_CARD, search)
+        publish(SEARCH_CARD, {**search, "selection": {"path": "selection.json"}})
+        publish(DOWNLOADS_CARD, downloads)
+        first_delivery = publish(DELIVERY_CARD, delivery)
+        updated_delivery = publish(DELIVERY_CARD, {**delivery, "count": 20})
+        second_delivery = publish(
+            DELIVERY_CARD, {**delivery, "delivery_id": "batch-two", "count": 1}
+        )
+        second = publish(SEARCH_CARD, {**search, "round": 2})
+        publish(SEARCH_CARD, {**search, "round": 2, "selection": {"path": "selection-2.json"}})
+        publish(DOWNLOADS_CARD, {**downloads, "omitted_papers": 1})
+        publish(SEARCH_CARD, search)
+        self.assertNotEqual(first["card_id"], second["card_id"])
+        self.assertNotEqual(first_delivery["card_id"], updated_delivery["card_id"])
+        self.assertNotEqual(updated_delivery["card_id"], second_delivery["card_id"])
+        reopened = ProductEventStore(events.database)
+        records = reopened.replay(SESSION_ID)
+        self.assertEqual(len(records), 10)
+        self.assertEqual(len({record.vendor_item_id for record in records}), 5)
+        self.assertEqual(records[-1].payload["content"], first["content"])
+        search_slots = [
+            record.vendor_item_id for record in records if record.payload["type"] == SEARCH_CARD
+        ]
+        self.assertEqual(search_slots[0], search_slots[1])
+        self.assertNotEqual(search_slots[0], search_slots[2])
+        self.assertEqual(search_slots[0], search_slots[-1])
+        for changed in (
+            {**search, "session_id": "another-session"},
+            {**search, "run_id": "another-run"},
+            {**search, "origin": "agentic-search"},
+        ):
+            self.assertNotEqual(search_card_slot(search), search_card_slot(changed))
+        self.assertNotEqual(
+            delivery_card_slot(delivery),
+            delivery_card_slot({**delivery, "project_id": "other-project"}),
+        )
+
+    def test_product_slot_updates_preserve_cumulative_byte_limit_without_count_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "display_card_slot_requires_product_owner"):
+            self.registry.register("untrusted-slot", dict, slot=lambda value: value["slot"])
+        self.registry.register("product-slot", dict, direct=False, slot=lambda value: value["slot"])
+        live, events = self._live()
+        for index in range(6):
+            asyncio.run(
+                live.display_card(
+                    "product-slot",
+                    DisplayCardContent(
+                        data={
+                            "slot": str(index),
+                            "revision": 1,
+                        }
+                    ),
+                    turn_id=TURN_ID,
+                )
+            )
+        asyncio.run(
+            live.display_card(
+                "product-slot",
+                DisplayCardContent(
+                    data={
+                        "slot": "0",
+                        "revision": 2,
+                    }
+                ),
+                turn_id=TURN_ID,
+            )
+        )
+        asyncio.run(
+            live.display_card(
+                "product-slot",
+                DisplayCardContent(
+                    data={
+                        "slot": "overflow",
+                        "revision": 1,
+                    }
+                ),
+                turn_id=TURN_ID,
+            )
+        )
+        self.assertEqual(len(events.replay(SESSION_ID)), 8)
+        for index in range(2):
+            asyncio.run(
+                live.display_card(
+                    "product-slot",
+                    DisplayCardContent(
+                        data={
+                            "slot": "0",
+                            "revision": index,
+                            "text": "x" * 48_000,
+                        }
+                    ),
+                    turn_id=TURN_ID,
+                )
+            )
+        with self.assertRaisesRegex(DisplayCardError, "display_card_turn_bytes_exceeded"):
+            asyncio.run(
+                live.display_card(
+                    "product-slot",
+                    DisplayCardContent(
+                        data={
+                            "slot": "0",
+                            "revision": 3,
+                            "text": "x" * 48_000,
+                        }
+                    ),
+                    turn_id=TURN_ID,
+                )
+            )
 
     def test_turn_card_byte_budget_is_cumulative(self) -> None:
         live, _events = self._live()
@@ -392,7 +729,13 @@ class DisplayCardContract(unittest.TestCase):
             display_card=display_card,
         )
         app = FastAPI()
-        register_card_routes(app, lambda scope_id: caller if scope_id == SESSION_ID else None)
+        activities = Activities()
+        self.activities = activities
+        caller.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(caller.bridge_activity.close)
+        register_card_routes(
+            app, lambda scope_id: caller if scope_id == SESSION_ID else None, activities=activities
+        )
         headers = {
             BRIDGE_SESSION_HEADER: SESSION_ID,
             BRIDGE_TOKEN_HEADER: BRIDGE_TOKEN,

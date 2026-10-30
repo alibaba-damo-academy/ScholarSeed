@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from io import BytesIO
 from unittest.mock import patch
 
 from pypdf.errors import PdfReadError
+from reportlab.pdfgen.canvas import Canvas
 
 from apps.serve.tests.pdf import PageFixture, TextFixture, build_pdf
 from service.platform.pdf import (
     PDF_ANNOTATIONS_ATTACHMENT,
     pdf_document_info,
     pdf_metadata,
+    pdf_page_body_text,
     pdf_page_layout,
     render_pdf_page,
 )
@@ -18,6 +21,51 @@ from service.workbench.service.extraction import index_identity
 
 
 class PdfEngineContracts(unittest.TestCase):
+    def test_translation_excludes_repeated_decorations_without_reformatting_body(self) -> None:
+        stream = BytesIO()
+        canvas = Canvas(stream, pagesize=(600, 800))
+        for page in range(3):
+            canvas.setFont("Helvetica", 10)
+            canvas.drawString(60, 770, "Repeated preprint header")
+            canvas.drawString(60, 650, f"Body content on page {page}")
+            canvas.saveState()
+            canvas.translate(100, 300)
+            canvas.rotate(30)
+            canvas.setFont("Helvetica", 36)
+            canvas.drawString(0, 0, "REPEATED WATERMARK")
+            canvas.restoreState()
+            canvas.showPage()
+        canvas.save()
+        original = (
+            "Repeated preprint header\nREPEATED WATERMARK\nBody content on page 1\n  Table   123"
+        )
+        self.assertEqual(
+            pdf_page_body_text(stream.getvalue(), 2, original),
+            "Body content on page 1\n  Table   123",
+        )
+        ambiguous = original + "\nRepeated preprint header"
+        self.assertEqual(
+            pdf_page_body_text(stream.getvalue(), 2, ambiguous).count("Repeated preprint header"),
+            2,
+        )
+
+    def test_translation_retains_unique_headers_and_small_rotated_text(self) -> None:
+        stream = BytesIO()
+        canvas = Canvas(stream, pagesize=(600, 800))
+        for page in range(2):
+            canvas.setFont("Helvetica", 10)
+            canvas.drawString(60, 770, f"Unique heading {page}")
+            canvas.drawString(60, 650, "Body text remains intact here")
+            canvas.saveState()
+            canvas.translate(100, 300)
+            canvas.rotate(30)
+            canvas.drawString(0, 0, "Rotated axis label")
+            canvas.restoreState()
+            canvas.showPage()
+        canvas.save()
+        original = "Unique heading 0\nBody text remains intact here\nRotated axis label"
+        self.assertEqual(pdf_page_body_text(stream.getvalue(), 1, original), original)
+
     def test_malformed_xmp_does_not_hide_document_metadata(self) -> None:
         class BrokenXmpReader:
             metadata = {"/Title": "Readable title"}

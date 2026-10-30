@@ -12,7 +12,8 @@ description_zh: >-
   带引用的正文撰写、图表生成，并核验 Markdown 或 PDF 交付物。需要已配置的
   模型后端，新文献检索依赖独立安装的 agentic-search skill。
 metadata:
-  version: "2026.10.7+1"
+  version: "2026.10.30"
+version: "2026.10.30"
 ---
 
 # Literature review — main-agent contract
@@ -25,6 +26,8 @@ metadata:
 
 Run the stage command → read its compact result → take the action for that stage.
 
+- Build every call from its current tool schema, documented request shape and returned identifiers; when the contract is not yet available, obtain it through the documented discovery surface before acting.
+- Preserve each stage command's execution boundary: invoke it directly, keep the call attached until it returns its compact result or decision boundary, and let the stage runner own its internal sequencing.
 - For a needed input shape not covered here, query that command's `--describe-input` before guessing fields: `writing configure/approve`, `outline configure`, `figures plan`, `evidence build`, or `papers import-local`.
 - `--describe-input` returns required fields, supported variants and complete examples without writes or model calls; it is not a routine extra startup step. Use actual IDs and user quotes, never illustrative values.
 - `outline configure --describe-input` also returns the current full outline and selected paper IDs when a workspace is available. Evidence-view options are for concrete exceptions only.
@@ -45,6 +48,14 @@ available. Default full-survey stages, in the user's language:
 3. Generate the outline and resolve publication choices.
 4. Generate text and figures concurrently, then refine the manuscript.
 5. Publish, inspect and deliver.
+
+Treat these main stages as the stable structure of the task. In ScholarSeed,
+read the current structured plan before each progress write and preserve every
+root item's ID, content, order and parent relationship exactly. Use `update` to
+change observed statuses and to add or update detailed child steps; put concrete
+progress such as selected counts, authorization, publication choices and current
+generation work in those children rather than rewriting a root title. Use
+`revise` only when the user's requested scope or deliverables actually change.
 
 | Stage | Commands / work | Result → next action |
 |---|---|---|
@@ -153,6 +164,23 @@ after timeouts or interruptions. Supply this complete delegation:
 - Venue/citation-floor screening belongs to the deterministic adapter. The search subagent implements excluded-topic requirements semantically during discovery; there is no keyword recheck or extra excluded-topic LLM.
 - AS owns its fallback; do not repeat PaperHub checks or ask for tokens after Web fallback.
 
+### Discovery failure is a blocking boundary
+
+Natural-language requests and explicit skill selection follow this same path.
+Main must not replace the searcher/import-search/retrieval_adapt chain with direct
+`scholarseed_bridge search/run`, shell HTTP queries or an improvised paper pool.
+The searcher may use AS's own documented fallback; main does not own a second one.
+
+If discovery, import or retrieval adaptation fails or produces no usable evidence,
+retain its artifacts and report the exact returned error, status_reason and
+next_action, including invocation_id when available. Stop before full-text,
+outline, manuscript or publication stages. Keep discovery blocked in the plan;
+do not mark it completed because retries were exhausted. Resume only after the
+reported prerequisite is resolved through the owning command or the user changes
+the scope. Do not hand-write or publish a replacement review, invent statistics,
+or create success reports to make a result card look complete. A result checkpoint
+may show the retained incomplete state; it is not authorization to bypass stages.
+
 ## 3. Evidence
 
 ### Do
@@ -168,8 +196,9 @@ Send this checkpoint once with only `workspace` and `checkpoint`; do not add a
 manually computed `run_id` or issue a parallel retry while it waits for authorization.
 Keep waiting on that model tool call until it returns. Do not call `request_user_input`,
 construct or relay an authorization question, or poll another tool. When it returns
-`authorization.disposition=authorized`, first write the existing structured plan
-so retrieval is completed and full text / PaperCard is in progress;
+`authorization.disposition=authorized`, read the current structured plan and update
+it with its root items unchanged so retrieval is completed and a full-text /
+PaperCard child step is in progress;
 only after that plan write succeeds may you run `workflow evidence --from fulltext`.
 That workflow continues fulltext → processing → outline generate → review-packet,
 without new model stages, and stops on errors or the outline display boundary. On
@@ -214,6 +243,8 @@ execute the same product checkpoint, never as authorization. Use
 ### Recovery and work owned by scripts
 
 - `fulltext_candidates = 0`: continue using actual supplied abstracts and report the reading-depth limitation, not an unnecessary permission question. Never describe abstract cards as full-text reading.
+- Fulltext acquisition uses the PaperHub document ID with the existing Hub timeout/retry policy, then a known arXiv ID with a 3-second connection limit and a 10-second total fallback budget. Missing IDs or unsuccessful downloads leave the supplied abstract as evidence. Local PDF snapshots retain priority.
+- Table-layout findings are advisory: the parser's extracted sentence text proceeds to LLM paper-card generation. Unreadable sources and other fatal parsing errors remain explicit. Paper cards and other extraction results remain local artifacts.
 - Processing success is enough to proceed, with no card-by-card audit.
 - For named processing errors, use `status --stage processing` and `papers show --ids ...`, correct the reported source/configuration issue, then resume the failed stage.
 - Selected discovery papers already passed abstract eligibility; there is no `papers repair` command or HTML abstract-recovery step.
@@ -232,7 +263,7 @@ response) in exactly this order, even with automatic continuation authorization:
 1. Summarize the user's research request and personalized preferences in 1–2 sentences.
 2. Display `outline_markdown`: hierarchical chapters/subsections with each figure or table ID and caption nested under its owner. No paper lists/counts, descriptions, analytical tasks, rationale, purposes or separate planning tables. Show language only beside non-default chapters, within this packet rather than a separate language-confirmation gate.
 3. After rendering the outline, call the `scholarseed_bridge` model tool with `{"capability":"literature","operation":"review","request":{"workspace":"<workspace returned by task activation>","checkpoint":"outline"}}`. Use the actual activated workspace, not a hand-authored display-card payload.
-4. Follow `confirmation.state`: `auto` or `approved` continues after display; `required` needs a real confirmation; `awaiting_display` uses the product five-minute confirmation below. The outline bridge publishes the confirmation card and waits for its result. Save its returned `confirmation` object unchanged and run `writing review-complete --request FILE` before interpreting the answer. Retain explicit user publication choices and use only usable packet options. Do not make the user choose unchanged settings again.
+4. Follow `confirmation.state`: `auto` or `approved` continues after display; `required` needs a real confirmation; `awaiting_display` uses the product five-minute confirmation below. The outline bridge publishes the confirmation card and waits for its result. Save its returned `confirmation` object unchanged and run `writing review-complete --request FILE` before interpreting the answer. Retain explicit user publication choices and use only usable packet options. Do not make the user choose unchanged settings again. Once the decision is recorded, update the existing structured plan without changing its root items; mark the outline stage from observed state and represent the chosen publication settings in a child step.
 
 For publication choices, display only usable `options.format_labels` and `options.citation_styles[].label` values. Use `publication_display` for the current settings. Each label is the complete user-facing description; do not append explanations, examples, template IDs, compiler details, source names, or metadata fields. The PDF format label already describes its output, so do not separately present its template as another choice.
 
@@ -295,10 +326,12 @@ model is not a revision mechanism.
 - The task supplies a fixed chapter opening at the prompt end (`\section{...}` and label for LaTeX, `## ...` for Markdown); the model returns only raw continuation. Scripts save opening plus continuation under `05_generation/chapters/` and assemble without duplicating headings.
 - Abstracts receive the appropriate opening/closing wrapper; unsectioned components receive no invented heading. No model-authored JSON wrapper or JSON backslash escaping is required.
 - Chapters write planned subheadings, mathematics, citations and native tables; the assembler adds the document template and byline. Figure-owning prose explains the figure and uses `\ref{fig:F1}`; it never writes a placeholder, image path, figure environment, figure caption or label.
+- Every LaTeX chapter receives the template's concise package and mathematical-notation capabilities; Markdown chapters retain their existing context. Indicator notation uses explicitly defined uppercase blackboard-bold symbols supported by the existing templates.
 - Ownership follows the source hierarchy: an asset assigned to chapter `2` may appear in `2` or its subsections; one assigned to `2.2` stays within `2.2`, not sibling `2.3` or another chapter. LaTeX floating to a different PDF page does not change content ownership.
 - The publisher also owns the bibliography heading and entries. Chapters write inline citations only; no manual reference list, `thebibliography` or `bibitem`. Short tables use width-bounded wrapping columns; tables too tall for a page use standalone `longtable` with repeated headers and preserved evidence, not a float or unreadably scaled box.
 - Scripts wait for all chapter calls and the completed figure branch, then assemble `05_generation/full_draft_v1.tex` (or `.md`) with actual figure wrappers and captions.
 - One refinement model receives the entire source, local included text, requirements, outline and evidence; it can repair the full assembled publication source, including templates, headings, formulas and captions.
+- Before refinement, LaTeX v1 receives one isolated compilation pass bounded by 10 seconds. Successful compilation leaves refinement context unchanged; source errors enter that same refinement request with a repair task. A timed-out or unavailable compiler supplies the concise template capabilities and a notation/dependency repair task instead. Final publication still compiles the current v2.
 - LaTeX chapters with planned tables receive a width-bounded authoring contract. Deterministic table layout preflight after v1 assembly adds precise warnings and repair instructions to that refinement request only if a table fails; if all pass, no table-specific instruction or status field is added.
 - The refinement delta uses target/before/after with unique exact matches and no overlapping replacements; no hashes are needed. Applying it produces `05_generation/full_draft_v2.tex` (or `.md`).
 
@@ -320,7 +353,7 @@ or hash-based edit permissions.
 
 - For GB/T 7714 use the explicitly versioned `gbt7714_2025` numeric style. PDF uses the bundled CTAN style; Markdown is a simplified deterministic layout, not submission-grade national-standard typesetting. Do not silently substitute a different edition or an unsupported style.
 - To change citations after delivery, use `writing configure --request <patch.json>` with `{"publication":{"citation_style":"gbt7714_2025"}}`, then `workflow publish` in the same workspace. This synchronizes the existing v2 bibliography style and republishes without redrafting prose. Never hand-write reference entries or replace BibTeX with `thebibliography`/`bibitem` to imitate a requested standard. If the source is already manual, restore its original BibTeX-backed source first.
-- Report `citation_metadata` missing fields by citation key. Do not invent publication place, publisher, pages or access dates, and do not claim complete standard compliance from a successful compile alone. Inspect the bibliography pages when verifying a citation-style change.
+- Report only the missing fields returned by `citation_metadata`, by citation key. Bibliographic `number` (issue) and `pages` are optional output fields: preserve and render supplied values, but do not warn, mark them as pending verification, reduce completeness, or initiate enrichment solely because they are absent. Completeness measures the configured metadata policy, not the presence of every possible bibliographic field. Do not invent publication place, publisher, issue numbers, pages or access dates, and do not claim complete standard compliance from a successful compile alone. Inspect the bibliography pages when verifying a citation-style change.
 
 - Use one entry: `workflow publish`. It checks the current source, compiles/exports it and renders the first PDF page plus actual figure/table pages, including longtable continuation pages. `inspection_scope.pages` maps physical PDF page numbers to asset labels and image paths; `pages_to_read` is the same image list.
 - Check messages describe the current source and bibliography; old outline coverage is advisory, not an editing permission.

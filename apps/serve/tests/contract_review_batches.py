@@ -16,6 +16,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
+from service.platform.activity import Activities
 from service.platform.resources import (
     PendingOrigin,
     ReviewAction,
@@ -66,7 +67,7 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("review batches")
         self.policy = WorkbenchFormatPolicy()
         self.settings = Settings()
@@ -77,9 +78,15 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.recovery = ResourceRecoveryService(self.content, self.retention, self.annotations)
         self.supervisor = ResourceVersionSupervisor(
-            self.content, self.versions, self.policy, self.settings
+            self.content,
+            self.versions,
+            self.policy,
+            self.settings,
+            activities=Activities(),
         )
-        self.delivery = ResourceDeliveryService(self.content, self.versions, self.supervisor)
+        self.delivery = ResourceDeliveryService(
+            self.content, self.versions, self.supervisor, activities=self.supervisor._activities
+        )
         self.batches = ResourceReviewBatchService(self.content, self.versions, self.recovery)
         self.supervisor.bind_preparation(
             ResourceActivation(
@@ -328,7 +335,7 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.paths, ("resources/新建.md",))
         self.assertIs(batch.members[0].origin, PendingOrigin.AGENT)
 
-    async def test_turn_candidate_inventory_excludes_git_repository_files(self) -> None:
+    async def test_turn_candidate_inventory_excludes_git_and_preserves_external_bytes(self) -> None:
         ordinary = Path(self.project.root) / "resources/ordinary.md"
         ordinary.parent.mkdir(parents=True, exist_ok=True)
         ordinary.write_bytes(b"ordinary")
@@ -342,6 +349,20 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         inventory = self.store.turn_inventory("session", "git-inventory")
         self.assertIn("resources/ordinary.md", inventory)
         self.assertNotIn("resources/code/tracked.md", inventory)
+        baselines = self.store.turn_baselines("session", "git-inventory")
+        self.assertEqual(tuple(item.path for item in baselines), ("resources/ordinary.md",))
+
+        await self.delivery.bind_turn("session", "git-inventory", "git-inventory", "generation")
+        ordinary.write_bytes(b"ordinary changed")
+        (repository / "tracked.md").write_bytes(b"tracked changed")
+        for target in (ordinary, repository / "tracked.md"):
+            await self.delivery.record_change(
+                "session", "git-inventory", str(target), "update", generation="generation"
+            )
+        result = await self.delivery.finish_turn("session", "git-inventory", TurnOutcome.COMPLETED)
+        self.assertEqual(result.paths, ("resources/ordinary.md",))
+        self.assertEqual(self.versions.history(self.project.id, "resources/code/tracked.md"), ())
+        self.assertEqual((repository / "tracked.md").read_bytes(), b"tracked changed")
 
     async def test_agent_file_with_later_external_bytes_remains_in_review_batch(self) -> None:
         file_id = self._seed("resources/mixed.md", b"base")

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import PurePath
 
 from service.content.domain.model import ContentError
 from service.paths import PROJECT_DB_RELATIVE
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.content import ContentPort, StableContentCapture
 from service.platform.resources import (
     GIT_VERSION_DISABLED_ERROR,
@@ -77,7 +77,10 @@ class ResourceDeliveryService:
         content: ContentPort,
         versions: ResourceVersionService,
         supervisor: ResourceVersionSupervisor,
+        *,
+        activities: Activities,
     ) -> None:
+        self._activities = activities
         self._content = content
         self._versions = versions
         self._supervisor = supervisor
@@ -158,23 +161,27 @@ class ResourceDeliveryService:
 
     async def begin_turn(self, session_id: str, turn_id: str, workdir: str) -> ResourceTurnContext:
         """Persist stable pre-write bytes before an Agent turn starts."""
-
-        project = self._content.project_for_path(workdir)
-        if project is None:
-            return ResourceTurnContext()
-        await self._supervisor.prepare_project(project.id)
-        self._projects[(session_id, turn_id)] = project.id
-        return await asyncio.to_thread(self._begin, project.id, session_id, turn_id)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project = self._content.project_for_path(workdir)
+            if project is None:
+                return ResourceTurnContext()
+            await self._supervisor.prepare_project(project.id)
+            self._projects[(session_id, turn_id)] = project.id
+            return await self._activities.to_thread(
+                ActivityDomain.RESOURCE, self._begin, project.id, session_id, turn_id
+            )
 
     async def finish_turn(
         self, session_id: str, turn_id: str, outcome: TurnOutcome
     ) -> ReviewCaptureResult:
         """Capture a confirmed terminal exactly once; no terminal auto-creates versions."""
-
-        project_id = self._project_for_turn(session_id, turn_id)
-        if project_id is None:
-            return ReviewCaptureResult()
-        return await asyncio.to_thread(self._finish, project_id, session_id, turn_id, outcome)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project_id = self._project_for_turn(session_id, turn_id)
+            if project_id is None:
+                return ReviewCaptureResult()
+            return await self._activities.to_thread(
+                ActivityDomain.RESOURCE, self._finish, project_id, session_id, turn_id, outcome
+            )
 
     def finalizations(
         self, project_id: str, session_id: str, *, cursor: str | None, limit: int
@@ -188,10 +195,15 @@ class ResourceDeliveryService:
         self, project_id: str, session_id: str, turn_id: str, idempotency_key: str
     ) -> ReviewCaptureResult:
         """User-requested retry of frozen bytes; never turns current disk into an old Delivery."""
-
-        return await asyncio.to_thread(
-            self._retry_finalization, project_id, session_id, turn_id, idempotency_key
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE, root=True):
+            return await self._activities.to_thread(
+                ActivityDomain.RESOURCE,
+                self._retry_finalization,
+                project_id,
+                session_id,
+                turn_id,
+                idempotency_key,
+            )
 
     def _retry_finalization(
         self, project_id: str, session_id: str, turn_id: str, idempotency_key: str
@@ -259,19 +271,24 @@ class ResourceDeliveryService:
         generation: str,
     ) -> None:
         """Persist a runtime FILE_CHANGED hint under the admitted turn fence."""
-
-        binding = await asyncio.to_thread(self._runtime_binding, session_id, turn_id, generation)
-        if binding is None:
-            return
-        project_id, turn_id = binding
-        path = self._content.project_relative(project_id, absolute_path)
-        await asyncio.to_thread(
-            self._store(project_id).record_turn_hint,
-            session_id,
-            turn_id,
-            path,
-            change_kind,
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            binding = await self._activities.to_thread(
+                ActivityDomain.RESOURCE, self._runtime_binding, session_id, turn_id, generation
+            )
+            if binding is None:
+                return
+            project_id, turn_id = binding
+            path = self._content.project_relative(project_id, absolute_path)
+            if not self._versions.reviewable(path):
+                return
+            await self._activities.to_thread(
+                ActivityDomain.RESOURCE,
+                self._store(project_id).record_turn_hint,
+                session_id,
+                turn_id,
+                path,
+                change_kind,
+            )
 
     async def record_tool_call(
         self,
@@ -282,46 +299,58 @@ class ResourceDeliveryService:
         generation: str,
     ) -> None:
         """Persist filename matches from one write-capable ToolCall input."""
-
-        binding = await asyncio.to_thread(self._runtime_binding, session_id, turn_id, generation)
-        if binding is None:
-            return
-        project_id, client_turn_id = binding
-        store = self._store(project_id)
-        serialized = json.dumps(tool_input, ensure_ascii=False, default=str)
-        await asyncio.to_thread(
-            store.record_turn_tool_call,
-            session_id,
-            client_turn_id,
-            serialized,
-        )
-        inventory = await asyncio.to_thread(store.turn_inventory, session_id, client_turn_id)
-        if not inventory:
-            return
-        matched_paths = tuple(
-            path for path in inventory if Path(path).name and Path(path).name in serialized
-        )
-        for path in matched_paths:
-            await asyncio.to_thread(
-                store.record_turn_hint,
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            binding = await self._activities.to_thread(
+                ActivityDomain.RESOURCE, self._runtime_binding, session_id, turn_id, generation
+            )
+            if binding is None:
+                return
+            project_id, client_turn_id = binding
+            store = self._store(project_id)
+            serialized = json.dumps(tool_input, ensure_ascii=False, default=str)
+            await self._activities.to_thread(
+                ActivityDomain.RESOURCE,
+                store.record_turn_tool_call,
                 session_id,
                 client_turn_id,
-                path,
-                TOOL_CALL_CHANGE_KIND,
+                serialized,
             )
+            inventory = await self._activities.to_thread(
+                ActivityDomain.RESOURCE, store.turn_inventory, session_id, client_turn_id
+            )
+            if not inventory:
+                return
+            matched_paths = tuple(
+                path
+                for path in inventory
+                if self._versions.reviewable(path)
+                and PurePath(path).name
+                and PurePath(path).name in serialized
+            )
+            for path in matched_paths:
+                await self._activities.to_thread(
+                    ActivityDomain.RESOURCE,
+                    store.record_turn_hint,
+                    session_id,
+                    client_turn_id,
+                    path,
+                    TOOL_CALL_CHANGE_KIND,
+                )
 
     async def bind_turn(
         self, session_id: str, client_turn_id: str, vendor_turn_id: str, generation: str
     ) -> None:
-        project_id = self._project_for_turn(session_id, client_turn_id)
-        if project_id is not None:
-            await asyncio.to_thread(
-                self._store(project_id).bind_runtime_turn,
-                session_id,
-                client_turn_id,
-                vendor_turn_id,
-                generation,
-            )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project_id = self._project_for_turn(session_id, client_turn_id)
+            if project_id is not None:
+                await self._activities.to_thread(
+                    ActivityDomain.RESOURCE,
+                    self._store(project_id).bind_runtime_turn,
+                    session_id,
+                    client_turn_id,
+                    vendor_turn_id,
+                    generation,
+                )
 
     def _runtime_binding(
         self, session_id: str, vendor_turn_id: str, generation: str
@@ -351,12 +380,15 @@ class ResourceDeliveryService:
                 return ResourceTurnContext(store.turn_model_context(session_id, turn_id))
             self._supervisor.scan_project(project_id)
             eligible_paths = self._supervisor.eligible_paths(project_id)
+            present_paths = self._supervisor.present_paths(project_id)
+            repositories = self._content.repository_roots(project_id, present_paths)
+            initial_paths = tuple(path for path in present_paths if repositories[path] is None)
             self._versions.capture_turn_baselines(
                 project_id,
                 session_id,
                 turn_id,
                 eligible_paths,
-                eligible_paths,
+                initial_paths,
             )
             context = ResourceTurnContext(
                 self._store(project_id).turn_model_context(session_id, turn_id)
@@ -435,7 +467,11 @@ class ResourceDeliveryService:
             )
             return self._publish(project_id, session_id, turn_id, members)
 
-        baselines = self._versions.turn_baselines(project_id, session_id, turn_id)
+        baselines = tuple(
+            baseline
+            for baseline in self._versions.turn_baselines(project_id, session_id, turn_id)
+            if self._versions.reviewable(baseline.path)
+        )
         hinted_paths = store.turn_hints(session_id, turn_id)
         tool_calls = store.turn_tool_calls(session_id, turn_id)
         baseline_by_path = {item.path: item for item in baselines}
@@ -446,6 +482,8 @@ class ResourceDeliveryService:
         final_snapshots: dict[str, tuple[StableContentCapture, str, ObjectDescriptor]] = {}
         removed: dict[str, TurnBaseline] = {}
         for path in final_paths:
+            if not self._versions.reviewable(path):
+                continue
             try:
                 final_snapshots[path] = self._versions.capture_agent(project_id, path)
             except ContentError as exc:
@@ -475,7 +513,7 @@ class ResourceDeliveryService:
 
         prepared: list[DeliverySnapshot] = []
         delivery_id = _identity(DELIVERY_ID_PREFIX, session_id, turn_id)
-        for path, (stable, object_id, descriptor) in final_snapshots.items():
+        for path, (stable, object_id, captured_descriptor) in final_snapshots.items():
             baseline = baseline_by_path.get(path)
             change_kind = "update"
             if baseline is None and (initial_paths is None or path in initial_paths):
@@ -501,7 +539,7 @@ class ResourceDeliveryService:
                     delivery_id,
                     stable,
                     object_id,
-                    descriptor,
+                    captured_descriptor,
                 )
                 identity = store.identity(path)
                 baseline = TurnBaseline(
@@ -540,7 +578,7 @@ class ResourceDeliveryService:
                 delivery_id,
                 stable,
                 object_id,
-                descriptor,
+                captured_descriptor,
                 source_path=baseline.path if change_kind == "move" else None,
             )
             prepared.append(
@@ -651,7 +689,7 @@ class ResourceDeliveryService:
             ChangeAttribution.AGENT
             if any(path in hinted_paths for path in candidate_paths)
             or any(
-                Path(path).name and Path(path).name in tool_call
+                PurePath(path).name and PurePath(path).name in tool_call
                 for path in candidate_paths
                 for tool_call in tool_calls
             )

@@ -14,10 +14,16 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
+import unittest
+from contextlib import closing, contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
+from service.assistant.persistence.store import AssistantStore
+from service.chat.persistence.catalog import SessionCatalogStore
 from service.content.domain.model import (
     IGNORED_NAMES,
     LITERATURE_ROOT_RELATIVE,
@@ -29,7 +35,10 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_FILENAME, PROJECT_DB_RELATIVE, PROJECT_SERVICE_DIRNAME
 from service.persistence import project as project_db
+from service.platform.activity import Activities
 from service.platform.content import RootKind
+from service.resources.persistence.jobs import ImportJobStore
+from service.resources.persistence.version import VersionStore
 
 PASS = 0
 FAIL = 0
@@ -55,14 +64,226 @@ def collect_names(nodes: tuple) -> set[str]:
     return names
 
 
+class InspectionFilesContract(unittest.TestCase):
+    def test_binding_diagnostics_preserve_owner_error_and_classify_only_sidecars(self):
+        class OwnerError(sqlite3.DatabaseError):
+            pass
+
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                database = Path(directory) / "catalog.sqlite3"
+                database.write_bytes(b"main")
+                leaf = Path(str(database) + suffix)
+                if suffix:
+                    leaf.write_bytes(b"sidecar")
+                replacement = Path(directory) / "replacement"
+                replacement.write_bytes(b"new")
+                with self.assertRaises(OwnerError) as caught:
+                    with project_db.database_files(database, error_type=OwnerError):
+                        os.replace(replacement, leaf)
+                self.assertIn("role=" + (suffix or "main"), str(caught.exception))
+                self.assertIn("before=", str(caught.exception))
+                self.assertNotIn(directory, str(caught.exception))
+                self.assertEqual(
+                    isinstance(caught.exception.__cause__, project_db.DatabaseSidecarChangedError),
+                    bool(suffix),
+                )
+
+    def test_owners_reject_unsafe_database_and_sidecars_before_open(self):
+        for owner in (SessionCatalogStore, AssistantStore, ImportJobStore, VersionStore):
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                for kind in ("symlink", "hardlink", "directory"):
+                    with self.subTest(owner=owner.__name__, suffix=suffix, kind=kind):
+                        with tempfile.TemporaryDirectory() as directory:
+                            root = Path(directory)
+                            database, outside = root / "db.sqlite3", root / "outside"
+                            SessionCatalogStore(database)
+                            AssistantStore(database)
+                            ImportJobStore(database)
+                            leaf = Path(str(database) + suffix)
+                            if leaf.exists():
+                                leaf.replace(outside)
+                            else:
+                                outside.write_bytes(b"must preserve external data")
+                            before = outside.read_bytes()
+                            if kind == "symlink":
+                                leaf.symlink_to(outside)
+                            elif kind == "hardlink":
+                                os.link(outside, leaf)
+                            else:
+                                leaf.mkdir()
+                            with patch(
+                                "sqlite3.connect",
+                                side_effect=AssertionError("opened unsafe database"),
+                            ):
+                                with self.assertRaises(sqlite3.DatabaseError):
+                                    owner.inspect_schema(database)
+                            self.assertEqual(outside.read_bytes(), before)
+
+    def test_binding_changes_and_sqlite_sidecar_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "db.sqlite3"
+            for suffix in ("-wal", "-shm", "-journal"):
+                leaf = Path(str(database) + suffix)
+                with (
+                    self.subTest(orphan=suffix),
+                    self.assertRaises(project_db.DatabaseBindingError),
+                ):
+                    with project_db.database_files(database) as present:
+                        self.assertFalse(present)
+                        leaf.write_bytes(b"new orphan")
+                leaf.unlink()
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("CREATE TABLE item (id INTEGER)")
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                leaf = Path(str(database) + suffix)
+                if suffix:
+                    leaf.write_bytes(b"sidecar")
+                replacement = root / "replacement"
+                replacement.write_bytes(b"different identity")
+                with (
+                    self.subTest(replaced=suffix),
+                    self.assertRaises(project_db.DatabaseBindingError),
+                ):
+                    with project_db.database_files(database):
+                        os.replace(replacement, leaf)
+                if suffix:
+                    leaf.unlink()
+            # Normal sidecar appearance/removal is allowed while the main file stays bound.
+            for suffix in ("-wal", "-shm", "-journal"):
+                leaf = Path(str(database) + suffix)
+                with project_db.database_files(database):
+                    leaf.write_bytes(b"sidecar")
+                with project_db.database_files(database):
+                    leaf.unlink()
+
+    def test_live_binding_checks_still_reject_unsafe_files(self):
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            for kind in ("symlink", "hardlink", "directory"):
+                with (
+                    self.subTest(suffix=suffix, kind=kind),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    database = root / "db.sqlite3"
+                    database.write_bytes(b"existing")
+                    outside = root / "outside"
+                    outside.write_bytes(b"preserve")
+                    leaf = Path(str(database) + suffix)
+                    with self.assertRaises(project_db.DatabaseBindingError):
+                        with project_db.database_files(database, stable_sidecars=False):
+                            if not suffix:
+                                leaf.unlink()
+                            if kind == "symlink":
+                                leaf.symlink_to(outside)
+                            elif kind == "hardlink":
+                                os.link(outside, leaf)
+                            else:
+                                leaf.mkdir()
+                    self.assertEqual(outside.read_bytes(), b"preserve")
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "db.sqlite3"
+            replacement = Path(directory) / "replacement"
+            database.write_bytes(b"old")
+            replacement.write_bytes(b"new")
+            with self.assertRaises(project_db.DatabaseBindingError):
+                with project_db.database_files(database, stable_sidecars=False):
+                    os.replace(replacement, database)
+            database.unlink()
+            with self.assertRaises(project_db.DatabaseBindingError):
+                with project_db.database_files(database, stable_sidecars=False):
+                    Path(str(database) + "-wal").write_bytes(b"orphan")
+
+    def test_live_version_check_allows_sqlite_sidecar_rotation(self):
+        from service.resources.persistence import version
+
+        for strict in (False, True):
+            with self.subTest(strict=strict), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                database = root / PROJECT_DB_RELATIVE
+                store = VersionStore(database, root)
+                store.ensure()
+                keeper = project_db.connect(database)
+                self.addCleanup(keeper.close)
+                keeper.execute("SELECT * FROM resources_objects").fetchall()
+                original_reader = project_db.reader
+
+                @contextmanager
+                def rotate_after_close(path):
+                    nonlocal keeper
+                    with original_reader(path) as connection:
+                        yield connection
+                    keeper.close()
+                    # Let SQLite remove and recreate its own WAL/SHM; do not
+                    # replace files manually or fabricate native identities.
+                    keeper = project_db.connect(database)
+                    self.addCleanup(keeper.close)
+                    keeper.execute("SELECT * FROM resources_objects").fetchall()
+
+                try:
+                    with patch.object(version, "reader", rotate_after_close):
+                        if strict:
+                            with self.assertRaises(project_db.DatabaseBindingError):
+                                store.inspect_schema(database)
+                        else:
+                            store.ensure()
+                finally:
+                    keeper.close()
+
+    def test_owners_reject_replacement_after_reader_closed(self):
+        for owner in (SessionCatalogStore, AssistantStore, ImportJobStore):
+            with self.subTest(owner=owner.__name__), tempfile.TemporaryDirectory() as directory:
+                database = Path(directory) / "db.sqlite3"
+                replacement = Path(directory) / "replacement.sqlite3"
+                SessionCatalogStore(database)
+                AssistantStore(database)
+                ImportJobStore(database)
+                replacement.write_bytes(database.read_bytes())
+                original_reader = project_db.reader
+
+                @contextmanager
+                def replace_after_close(
+                    path,
+                    original_reader=original_reader,
+                    replacement=replacement,
+                    database=database,
+                ):
+                    with original_reader(path) as connection:
+                        yield connection
+                    os.replace(replacement, database)
+
+                with patch(owner.__module__ + ".reader", replace_after_close):
+                    with self.assertRaises(project_db.DatabaseBindingError):
+                        owner.inspect_schema(database)
+
+    def test_missing_database_with_sidecars_is_not_empty(self):
+        for owner in (SessionCatalogStore, AssistantStore, ImportJobStore):
+            for suffix in ("-wal", "-shm", "-journal"):
+                with self.subTest(owner=owner.__name__, suffix=suffix):
+                    with tempfile.TemporaryDirectory() as directory:
+                        database = Path(directory) / "missing.sqlite3"
+                        sidecar = Path(str(database) + suffix)
+                        sidecar.write_bytes(b"unrecovered data")
+                        with self.assertRaises(sqlite3.DatabaseError):
+                            owner.inspect_schema(database)
+                        self.assertFalse(database.exists())
+                        self.assertEqual(sidecar.read_bytes(), b"unrecovered data")
+
+
 def main() -> int:
+    result = unittest.TextTestRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromTestCase(InspectionFilesContract)
+    )
+    if not result.wasSuccessful():
+        return 1
     root = Path(tempfile.mkdtemp(prefix="project-database-")).resolve()
     workspace = root / "workspace"
     workspace.mkdir()
 
     catalog = ContentCatalog(root / "content.sqlite3")
     registry = ProjectRegistry(str(workspace), catalog)
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
 
     managed = registry.create("内置项目")
     project_root = Path(managed.root)

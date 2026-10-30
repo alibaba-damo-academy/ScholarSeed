@@ -15,6 +15,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.assets import MARKDOWN_SUFFIX
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.utils import filesystem_error
+from service.platform.activity import Activities
 from service.platform.content import AssetKind
 from service.resources.api.routes import register_resource_routes
 
@@ -29,7 +30,7 @@ class FolderNames(unittest.TestCase):
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
         registry.seed_workspace()
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = self.content.create_project("folder-test")
         self.parent = MANAGED_RESOURCES_ROOT_RELATIVE
 

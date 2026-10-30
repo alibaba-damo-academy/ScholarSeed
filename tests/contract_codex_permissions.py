@@ -22,6 +22,7 @@ from scholarseed_codex.permission import (
     LOCAL_PERMISSION_PROFILE,
     STRICT_CONFIG_OPTION,
     local_socket_permissions,
+    thread_permission_config,
 )
 from scholarseed_runtime.contract.permission import PermissionIntent, RuntimePermissionMode
 
@@ -150,6 +151,32 @@ class DenyReadProjection(unittest.TestCase):
 
 
 class PermissionIntentContract(unittest.TestCase):
+    def test_thread_profiles_are_complete_and_independent_of_host_arguments(self) -> None:
+        for name in PLATFORMS:
+            with self.subTest(platform=name), platform(name):
+                profile, first = thread_permission_config(
+                    WORKSPACE_WRITE, (), network_domains=("first.example.com",)
+                )
+                other_profile, second = thread_permission_config(
+                    READ_ONLY, (), network_domains=("second.example.com",)
+                )
+                self.assertEqual(profile, other_profile)
+                first_definition = first[f"permissions.{profile}"]
+                second_definition = second[f"permissions.{profile}"]
+                self.assertEqual(first_definition["extends"], ":workspace")
+                self.assertEqual(second_definition["extends"], ":read-only")
+                self.assertEqual(
+                    first_definition["network"]["domains"], {"first.example.com": "allow"}
+                )
+                self.assertEqual(
+                    second_definition["network"]["domains"], {"second.example.com": "allow"}
+                )
+                self.assertEqual(second_definition["network"]["unix_sockets"], {})
+                self.assertFalse(first["features.network_proxy.allow_local_binding"])
+                self.assertFalse(
+                    second["features.network_proxy.dangerously_allow_all_unix_sockets"]
+                )
+
     def test_denial_roots_are_neutral_paths_and_default_to_none(self) -> None:
         self.assertEqual(PermissionIntent().deny_read_roots, ())
         root = Path("/tmp/serve/service/literature/files")

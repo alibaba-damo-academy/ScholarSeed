@@ -1,0 +1,629 @@
+[
+  {
+    "id": "D4-SKILL-001",
+    "name": "浏览技能分组并打开目标说明",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。当前技能目录有至少两个不同分组的可见技能；目标技能名称与说明可由现场合法读取核对。",
+    "steps": [
+      "从客户端实际技能页进入技能目录。",
+      "按实际可见分组定位一个目标技能。",
+      "打开该技能的说明或详情。"
+    ],
+    "expected": [
+      "目录可浏览，所开说明对应目标技能身份；尚未观察到页面时保留候选，不从源码推断入口存在。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 SKILL-BROWSE-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "SKILL-BROWSE-01",
+    "revision": 4,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-BROWSE-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "浏览并理解技能说明是基本可发现性，区别于具体搜索数据变体。",
+    "checkIds": [
+      "SKILL-BROWSE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-skill-center",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/skills-system.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/skill-design-detail.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "priorityReview": {
+      "previousPriority": "P3",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "浏览并理解技能说明是基本可发现性，区别于具体搜索数据变体。"
+    },
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": []
+  },
+  {
+    "id": "D4-SKILL-002",
+    "name": "切换另一可见分组定位技能",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。现场确认至少两个可见分组及各自目标技能；不假定分组名称或布局。",
+    "steps": [
+      "在技能页选择与当前不同的实际可见分组。",
+      "定位该组中的已知目标技能并打开说明。"
+    ],
+    "expected": [
+      "目标技能与实际所选分组相符，说明不串到先前分组的其他技能。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 SKILL-BROWSE-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "SKILL-BROWSE-01",
+    "revision": 4,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-BROWSE-01@4",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "按业务分组找到技能是基本导航能力。",
+    "checkIds": [
+      "SKILL-BROWSE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-skill-center",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/skills-system.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "priorityReview": {
+      "previousPriority": "P3",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "按业务分组找到技能是基本导航能力。"
+    },
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": []
+  },
+  {
+    "id": "D4-SKILL-003",
+    "name": "以完整技能名称检索目标",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P3",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。现场先确认技能页存在关键词检索入口，并记录一个实际可见技能的完整名称。",
+    "steps": [
+      "在实际检索入口输入该技能完整名称。",
+      "核对结果并打开目标技能说明。"
+    ],
+    "expected": [
+      "目标技能可被正确定位，打开的是同一技能说明；若检索入口不存在，保留范围缺口而不发明入口。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 SKILL-BROWSE-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "SKILL-BROWSE-01",
+    "revision": 4,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-BROWSE-01@4",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "技能发现是辅助效率能力，不替代核心会话与资料流；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-skill-center",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/skills-system.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "caseRevision": 3
+  },
+  {
+    "id": "D4-SKILL-004",
+    "name": "以部分关键词检索目标",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P3",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。现场确认关键词检索入口；准备实际技能名称中可区分目标的连续关键词。",
+    "steps": [
+      "输入目标名称中的部分关键词。",
+      "核对匹配结果身份并打开目标技能。"
+    ],
+    "expected": [
+      "匹配结果能定位正确技能，说明与目标对应；未观察检索行为前不宣称该能力成立。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 SKILL-BROWSE-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "SKILL-BROWSE-01",
+    "revision": 4,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-BROWSE-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "技能发现是辅助效率能力，不替代核心会话与资料流；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-skill-center",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "caseRevision": 3
+  },
+  {
+    "id": "D4-SKILL-005",
+    "name": "依次打开不同技能不串说明",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。现场已有两个名称和说明明显不同的可见技能。",
+    "steps": [
+      "打开第一个技能的说明并记录其身份。",
+      "返回或切换到第二个技能，打开其说明。"
+    ],
+    "expected": [
+      "第二个说明对应第二个技能，名称及正文不残留为第一个技能的详情。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 SKILL-BROWSE-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "SKILL-BROWSE-01",
+    "revision": 4,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-BROWSE-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "说明与所选技能身份不能串用，属于基本对象正确性。",
+    "checkIds": [
+      "SKILL-BROWSE"
+    ],
+    "evidenceRefs": [],
+    "priorityReview": {
+      "previousPriority": "P3",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "说明与所选技能身份不能串用，属于基本对象正确性。"
+    },
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": []
+  },
+  {
+    "id": "D4-SKILL-006",
+    "name": "无匹配关键词不误显示目标",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P3",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。现场确认关键词检索入口，目录非空，并选定一个不可能出现在现有技能名中的合成关键词。",
+    "steps": [
+      "输入该无匹配关键词。",
+      "观察结果区及实际提供的空态反馈。"
+    ],
+    "expected": [
+      "结果不冒充存在匹配技能，反馈可区分无匹配与加载中；空态具体文案由现场确认，不预设。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 SKILL-BROWSE-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "SKILL-BROWSE-01",
+    "revision": 4,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-BROWSE-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "技能发现是辅助效率能力，不替代核心会话与资料流；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-skill-center",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "caseRevision": 3
+  },
+  {
+    "id": "D4-SKILL-007",
+    "name": "停用技能后选择器不误报为可调用",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "仅在隔离账号状态且停用和恢复均获明确授权时执行；选择可调用内置技能或本轮自建无脚本本地技能，分别记录来源、稳定身份与版本。本轮证据仅为本地技能，内置来源仍待观察。",
+    "steps": [
+      "记录目标技能稳定ID、版本和当前启用状态。",
+      "经正常界面停用该技能，再打开新任务技能选择入口。",
+      "记录可选择及可调用状态提示；结束后按授权恢复启用状态。"
+    ],
+    "expected": [
+      "停用状态与新任务可调用状态一致；不能仅靠中心开关推定模型实际技能调用。",
+      "授权不足停在变更前，保留缺口而不改产品规则。"
+    ],
+    "tag": "探索用例；候选预期；本地来源补证；内置来源未观察",
+    "description": "未绑定唯一业务点，未观察停用分支；不参与默认P0或正式覆盖。 本轮局部补证：本轮仅自建本地技能停用→slash结果0→启用→结果1；内置技能前提未验证，不从详情使用按钮推断可调用。",
+    "businessPointId": "SKILL-ENABLE-01",
+    "revision": 2,
+    "directionIds": [
+      "SKILL-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-amendments",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "停用技能后不得误报可调用，涉及用户执行意愿与准入一致性。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/010-local-skill-disabled.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/043-disabled-skill-slash.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/044-enabled-skill-slash.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/007-local-skill-disabled.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/028-disabled-skill-slash.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/029-enabled-skill-slash.png"
+    ],
+    "caseRevision": 3,
+    "observationScope": "本轮仅自建本地技能停用→slash结果0→启用→结果1；内置技能前提未验证，不从详情使用按钮推断可调用。",
+    "observationSources": [
+      {
+        "sourceBuild": "202610241139",
+        "platform": "macos-arm64",
+        "language": "zh",
+        "snapshotId": "20261024T112333061Z-105872aa",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-amendments",
+        "scope": "本轮仅自建本地技能停用→slash结果0→启用→结果1；内置技能前提未验证，不从详情使用按钮推断可调用。"
+      }
+    ],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "停用技能后不得误报可调用，涉及用户执行意愿与准入一致性。"
+    }
+  },
+  {
+    "id": "D4-SKILL-008",
+    "name": "从技能中心显式选择内置技能完成只读任务",
+    "folder": "Desktop四业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "已登录且内置design-research-validation可调用；模型调用、隔离项目及只读任务已授权，权限模式另核。",
+    "steps": [
+      "从技能中心系统预置打开目标详情，核稳定ID、版本和就绪状态。",
+      "通过使用技能将公开只读任务带入新任务，核对Composer独立技能引用的ID/版本。",
+      "发送一次请求，保存原请求技能引用、同会话实际执行及完整终态结果。",
+      "分别核任务结果和无未授权检索、下载、写入或实验，独立Judge评语义。"
+    ],
+    "expected": [
+      "真实选择、请求与执行均关联指定技能，不以正文提名或enabled开关代替调用。",
+      "完整对话结果回应公开任务；语义质量另经独立评审。",
+      "缺权限或关键证据保留阻塞，不重试到通过。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；表外能力候选",
+    "description": "新增SKILL-INVOKE-01@1；本次明确纳入四域核心P0，仍属探索判据，不计正式发布覆盖。",
+    "businessPointId": "SKILL-INVOKE-01",
+    "revision": 2,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "manual_input_and_runtime_entry",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-INVOKE-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "技能中心是用户指定的第四核心业务域；只浏览不能证明技能主链可用，单次只读调用是最小构建验证",
+    "checkIds": [
+      "SKILL-SELECT",
+      "SKILL-RESULT",
+      "SKILL-BOUNDARY"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-skill-invoke",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/skill-design-detail.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/skill-selected-draft.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/skill-selected-draft.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/skill-complete.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/action-summary.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/trace-events-skill.json"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D6-SKILL-001",
+    "name": "连接器无效URL配置被拒绝并可修正",
+    "folder": "Desktop六业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。只允许未保存的合成配置草稿，不触发STDIO或真实连接。",
+    "steps": [
+      "输入合成名称及not-a-url，点击预览配置。",
+      "记录字段绑定、校验及停留位置。",
+      "纠正为合法格式地址核对可预览，再取消草稿。"
+    ],
+    "expected": [
+      "无效配置收到明确校验且可纠正，不凭校验结果判断真实MCP服务可用。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "停在表单并显示配置无效提示；合法格式可进入JSON，未保存、未触发STDIO。 表外CONNECTOR-01待方向审查；缺独立Check、持久化对照及专用服务。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "CONNECTOR-VALIDATE-01",
+    "revision": 2,
+    "directionIds": [
+      "CONNECTOR-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-conn-validate",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "无效URL输入反馈是可恢复配置异常，真实认证和消费另按P1覆盖。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/002-connector-add.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/003-connector-invalid.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/004-connector-invalid-result.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/001-connector-invalid.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/002-connector-invalid-result.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-CONN-VALIDATE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "仅编辑未保存草稿；禁止真实连接或执行命令。",
+    "assetGaps": [
+      "表外CONNECTOR-01待方向审查；缺独立Check、持久化对照及专用服务。",
+      "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+    ],
+    "priorityReview": {
+      "previousPriority": "P1",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "无效URL输入反馈是可恢复配置异常，真实认证和消费另按P1覆盖。"
+    }
+  },
+  {
+    "id": "D6-SKILL-002",
+    "name": "批量连接器配置预览身份正确且取消不安装",
+    "folder": "Desktop六业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。两项HTTP/SSE合成配置；example.com只作地址格式样本，不是可用服务。",
+    "steps": [
+      "输入两项合成JSON配置并预览。",
+      "核对每项名称、地址及协议。",
+      "关闭预览并取消，核对我的列表及配置前后持久化清单。"
+    ],
+    "expected": [
+      "预览逐项对应输入，未确认保存不形成已安装连接器；不声称JSON/表单双向往返正确。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "预览显示A/B及对应HTTP/SSE地址，取消后我的为空；未采精确持久化前后清单。 表外CONNECTOR-01待方向审查；缺持久化对照、独立Check和真实服务资产。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "CONNECTOR-PREVIEW-01",
+    "revision": 1,
+    "directionIds": [
+      "CONNECTOR-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-conn-preview",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "批量配置可审阅性与取消边界，建议P2。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/005-connector-preview.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/006-connector-cancel-my.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/003-connector-preview.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/004-connector-cancel-my.png"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "INC-CONN-PREVIEW",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "只编辑和取消草稿，不保存、不连接、不安装。",
+    "assetGaps": [
+      "表外CONNECTOR-01待方向审查；缺持久化对照、独立Check和真实服务资产。",
+      "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+    ]
+  },
+  {
+    "id": "D6-SKILL-003",
+    "name": "本地合成技能预览安装后读回来源与版本",
+    "folder": "Desktop六业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。本轮自编无脚本SKILL.md、明确文件摘要；只允许安装该本地合成技能。",
+    "steps": [
+      "通过正常上传入口选择获准SKILL.md，核对名称、说明及正文。",
+      "确认安装并在我添加的定位同一技能。",
+      "记录稳定名称、来源、版本、启用状态及任务Home内文件摘要。"
+    ],
+    "expected": [
+      "安装对象与所选说明一致，来源和版本可核对；不把local版本字符串当作文件SHA摘要。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "安装incremental-observation-20261024，版本local-003b7dbe312a；任务Home文件与源SHA256一致。 表外SKILL-MGMT-01待方向审查；缺可复用合成包、独立Check与跨平台证据；未覆盖ZIP或卸载。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "SKILL-INSTALL-LOCAL-01",
+    "revision": 1,
+    "directionIds": [
+      "SKILL-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-skill-upload",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "用户技能供给关键链路，建议P1。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/007-local-skill-preview.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/008-local-skill-installed.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/009-local-skill-detail.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/005-local-skill-preview.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/006-local-skill-installed.png"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "INC-SKILL-UPLOAD",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "只安装本轮无脚本本地技能，不安装第三方资产。",
+    "assetGaps": [
+      "表外SKILL-MGMT-01待方向审查；缺可复用合成包、独立Check与跨平台证据；未覆盖ZIP或卸载。",
+      "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+    ]
+  },
+  {
+    "id": "D6-SKILL-004",
+    "name": "本地安装技能显式选择后进入真实回合",
+    "folder": "Desktop六业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。本轮合成技能已安装启用；一次只读请求及独立评审预算另获授权。本地来源变体不替代原P0内置技能前提。",
+    "steps": [
+      "通过slash筛选并显式选择本地技能，记录稳定身份及版本引用。",
+      "在提交前启动原请求采集，仅发送一次获准请求。",
+      "核对同一session/turn、技能版本、完成结果及边界；语义部分交独立Judge。"
+    ],
+    "expected": [
+      "选择、请求、技能上下文与执行结果同身份；不以一句命中短语证明语义质量或未越权。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "UI引用local-003b7dbe312a并完成回复本地合成技能观察；session bf99e6df77bf4385898de1891c607eb5、turn 01a16dd1-9efd-75e3-a7d8-18844c2965fe。原请求观察因URL构造器不可用失败，没有重发。 缺原请求完整投影、独立Judge及冻结执行资产；不得借用内置技能Check计本地变体已就绪。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "SKILL-INVOKE-01",
+    "revision": 2,
+    "directionIds": [
+      "SKILL-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SKILL-INVOKE-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "本地技能来源和入口变体，建议P1，不改变内置技能P0。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/044-enabled-skill-slash.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/045-local-skill-selected.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/046-local-skill-original-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/048-local-skill-result.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/049-local-skill-turn-identities.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/050-final-request-identities.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/029-enabled-skill-slash.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/030-local-skill-result-project-restored.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-SKILL-LOCAL-TURN",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "mixed",
+    "permissionsAndSideEffects": "一次真实模型请求，需本轮预算；无第三方安装。",
+    "assetGaps": [
+      "缺原请求完整投影、独立Judge及冻结执行资产；不得借用内置技能Check计本地变体已就绪。",
+      "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+    ],
+    "variantOf": "D4-SKILL-008",
+    "variantScope": "仅覆盖本条声明的来源/前提变体，不替代原主用例；既有点位P0及原Check不变。"
+  },
+  {
+    "id": "D6-SKILL-005",
+    "name": "获准连接器认证连通后进入可见工具并被任务消费",
+    "folder": "Desktop六业务域/技能中心",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。专用合成服务、认证授权和隔离配置已核；API/OAuth/STDIO分别保留前提变体。",
+    "steps": [
+      "核来源、权限、传输及认证前提，缺任一项停止对应分支。",
+      "按真实入口配置并核认证、连接及可见工具状态。",
+      "仅用合成输入执行获准只读工具任务，关联回合与服务结果；不因连通即判质量。"
+    ],
+    "expected": [
+      "认证、连通、工具可见和任务消费分别成立，不泄露凭据或越权访问。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-CONNECTOR-AUTH，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "CONNECTOR-AUTH-01",
+    "revision": 1,
+    "directionIds": [
+      "CONNECTOR-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-connector-auth",
+    "observationStatus": "entry_observed",
+    "observationScope": "E017–018/S04：7项市场，Zotero详情标STDIO/APIKey；E027：MCP为0且HTTP/Stdio表单可见。已观察入口；真实连接未建",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "外部工具接入的核心链路P1；校验和预览不能替代真实接入。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/017-connectors-root-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/018-connector-detail-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/027-mcp-settings-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/004-connector-detail.png"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "BROAD-CONNECTOR-AUTH",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "mixed",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；缺专用服务/令牌、第三方安装排除；不读取真实密钥；G0+授权服务、认证分支及连接/消费资产。市场与手填暂归同一候选，避免重复建点",
+    "assetGaps": [
+      "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+      "缺专用服务/令牌、第三方安装排除；不读取真实密钥；G0+授权服务、认证分支及连接/消费资产。市场与手填暂归同一候选，避免重复建点"
+    ]
+  }
+]

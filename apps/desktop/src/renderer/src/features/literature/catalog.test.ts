@@ -1,7 +1,58 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { catalogue } from './catalog.ts'
+
+test('download batch navigation clears stale state and preserves its scope while refining', () => {
+  catalogue.scope(null)
+  catalogue.query({ q: 'old search' })
+  catalogue.focus('old-paper')
+  catalogue.select('old-paper', true)
+  catalogue.downloads('session', 'run', null, ['shown'])
+  assert.equal(catalogue.getSnapshot().query.q, undefined)
+  assert.equal(catalogue.getSnapshot().focusedId, null)
+  assert.deepEqual(catalogue.getSnapshot().selected, [])
+  assert.deepEqual(catalogue.getSnapshot().items, [])
+  assert.equal(catalogue.getSnapshot().itemsReady, false)
+  catalogue.query({ q: 'Transformer', sort: 'title' })
+  assert.equal(catalogue.getSnapshot().query.download_run, 'run')
+  assert.deepEqual(catalogue.getSnapshot().query.exclude_paper_id, ['shown'])
+  catalogue.navigate({ recent: true })
+  assert.equal(catalogue.getSnapshot().query.download_session_id, undefined)
+  assert.equal(catalogue.getSnapshot().query.recent, true)
+})
+
+test('switching download batches replaces project, exclusions, and selection', () => {
+  catalogue.downloads('session-a', 'run-a', 'project-a', ['shown-a'])
+  catalogue.select('batch-a-paper', true)
+  catalogue.downloads('session-b', 'run-b', 'project-b', ['shown-b'])
+  assert.equal(catalogue.getSnapshot().projectId, 'project-b')
+  assert.equal(catalogue.getSnapshot().query.project_id, 'project-b')
+  assert.equal(catalogue.getSnapshot().query.download_session_id, 'session-b')
+  assert.equal(catalogue.getSnapshot().query.download_run, 'run-b')
+  assert.deepEqual(catalogue.getSnapshot().query.exclude_paper_id, ['shown-b'])
+  assert.deepEqual(catalogue.getSnapshot().selected, [])
+  catalogue.scope(null)
+  catalogue.navigate()
+})
+
+test('fulltext admission invalidates the visible catalogue, not only the legacy store', () => {
+  const source = readFileSync(new URL('./Delivery.tsx', import.meta.url), 'utf8')
+  assert.match(source, /paper\.library === 'saved'\)\) catalogue\.reload\(\)/)
+  for (const projectId of [null, 'delivery-project']) {
+    catalogue.scope(projectId)
+    catalogue.query({ q: 'retained filter' })
+    catalogue.items([])
+    const before = catalogue.getSnapshot().reload
+    catalogue.reload()
+    assert.equal(catalogue.getSnapshot().reload, before + 1)
+    assert.equal(catalogue.itemsFresh(), false)
+    assert.equal(catalogue.getSnapshot().projectId, projectId)
+    assert.equal(catalogue.getSnapshot().query.q, 'retained filter')
+  }
+  catalogue.scope(null)
+})
 
 test('overview and project catalogue keep filters without pagination state', () => {
   for (const projectId of [null, 'single-page-project']) {
@@ -73,10 +124,14 @@ test('panel refresh does not request a literature list reload', () => {
 const PANEL_SNAPSHOT = {
   counts: { all: 1, recent: 1, without_collection: 0, unread: 0, without_fulltext: 0 },
   facets: { collections: [], tags: [], item_types: [], publications: [], years: [] },
-  projects: []
+  projects: [],
 } as never
 const OVERVIEW_COUNTS = {
-  all: 193, recent: 0, without_collection: 0, unread: 0, without_fulltext: 0
+  all: 193,
+  recent: 0,
+  without_collection: 0,
+  unread: 0,
+  without_fulltext: 0,
 }
 
 test('scope remount keeps cached rows for instant paint but revalidates them', () => {
@@ -120,7 +175,7 @@ test('literature mutations expire the home overview counts cache', () => {
   for (const mutate of [
     () => catalogue.reload(),
     () => catalogue.reloadPanel(),
-    () => catalogue.imported({ q: undefined })
+    () => catalogue.imported({ q: undefined }),
   ]) {
     catalogue.cacheOverviewCounts(OVERVIEW_COUNTS)
     assert.equal(catalogue.overviewCountsFresh(), true)

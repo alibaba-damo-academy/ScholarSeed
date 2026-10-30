@@ -22,12 +22,14 @@ import asyncio
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from typing import Callable
 
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
+from service.platform.activity import Activities
 from service.platform.resources import RestorePolicy, VersionOrigin
 from service.resources.persistence.objects import CasEntryKind, CasStore
 from service.resources.service.activation import ResourceActivation
@@ -104,7 +106,7 @@ class _ResourceFixture:
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("GC 恢复对象")
         self.target = Path(self.project.root) / "resources" / "notes.md"
         self.target.parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +120,7 @@ class _ResourceFixture:
         self.recovery = ResourceRecoveryService(self.content, self.retention, self.annotations)
 
     def seal(self, text: str):
-        self.target.write_text(text, encoding="utf-8")
+        self.target.write_bytes(text.encode("utf-8"))
         return self.versions.seal(self.project.id, "resources/notes.md", VersionOrigin.USER).version
 
     def database(self) -> str:
@@ -157,7 +159,7 @@ class RestoreMemberGcContract(unittest.TestCase):
 
         before_object = pinned.object_id
         assert before_object is not None
-        with sqlite3.connect(fixture.database()) as connection:
+        with closing(sqlite3.connect(fixture.database())) as connection:
             restore_states = [
                 str(row[0]) for row in connection.execute("SELECT state FROM resources_restores")
             ]
@@ -194,7 +196,11 @@ class ActivationGcResilienceContract(unittest.IsolatedAsyncioTestCase):
         self.fixture = _ResourceFixture(self.temporary)
         self.fixture.seal("stable bytes\n")
         self.supervisor = ResourceVersionSupervisor(
-            self.fixture.content, self.fixture.versions, self.fixture.formats, self.fixture.settings
+            self.fixture.content,
+            self.fixture.versions,
+            self.fixture.formats,
+            self.fixture.settings,
+            activities=Activities(),
         )
 
     async def asyncTearDown(self) -> None:
@@ -203,7 +209,12 @@ class ActivationGcResilienceContract(unittest.IsolatedAsyncioTestCase):
 
     async def test_gc_failure_does_not_block_project_activation(self) -> None:
         fixture = self.fixture
-        deliveries = ResourceDeliveryService(fixture.content, fixture.versions, self.supervisor)
+        deliveries = ResourceDeliveryService(
+            fixture.content,
+            fixture.versions,
+            self.supervisor,
+            activities=self.supervisor._activities,
+        )
         self.supervisor.bind_preparation(
             ResourceActivation(
                 fixture.content,

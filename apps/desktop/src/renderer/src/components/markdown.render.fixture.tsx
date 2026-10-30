@@ -14,13 +14,14 @@ import { Markdown } from './primitive/Markdown'
 import { sourceOffsetRect } from './markdown/source'
 import { CitationSources, WebCitationLink } from '../features/assistant/Citations'
 import { Summary } from '../features/workbench/pdf/Summary'
+import { answerProjectSource, projectSource } from '../features/assistant/sources'
 
 Object.assign(window, { sourceOffsetRect })
 
 const localization = createLocalization(
   'zh',
   { zh: { assistant: zhAssistant, ui: zhUi }, en: { assistant: enAssistant, ui: enUi } },
-  { report: () => undefined }
+  { report: () => undefined, escapeValue: false }
 )
 
 const source = [
@@ -77,6 +78,8 @@ const citationSource = [
 ].join('\n')
 
 const claimStart = source.indexOf('postgres')
+const encodedCitationUrl =
+  'https://example.com/%E4%B8%AD%E6%96%87?q=%E6%9D%A5%E6%BA%90#%E7%89%87%E6%AE%B5'
 const wrappedWebSource =
   '网页来源（[新华网](https://example.com/source)、[银联](https://example.com/unionpay)）'
 const tildeSource = '气温：24~33℃；次日 23~31℃。\n\n标准：~~已取消~~。\n\n代码：`24~33℃`。'
@@ -215,9 +218,9 @@ function Fixture() {
           source={{
             kind: 'searched',
             number: 1,
-            title: 'https://example.com/source',
-            url: 'https://example.com/source',
-            citation_urls: ['https://example.com/source'],
+            title: encodedCitationUrl,
+            url: encodedCitationUrl,
+            citation_urls: [encodedCitationUrl],
             search_kind: 'web',
             search_id: 'fixture',
           }}
@@ -225,12 +228,13 @@ function Fixture() {
       </div>
       <div data-testid="named-title-citation">
         <WebCitationLink
+          named
           source={{
             kind: 'searched',
             number: 2,
-            title: '原始页面标题',
-            url: 'https://example.com/named',
-            citation_urls: ['https://example.com/named'],
+            title: '原始页面标题 100% %E4%B8%AD',
+            url: encodedCitationUrl,
+            citation_urls: [encodedCitationUrl],
             search_kind: 'web',
             search_id: 'fixture',
           }}
@@ -274,8 +278,17 @@ function Fixture() {
               kind: 'searched',
               number: 1,
               title: '已引用页面',
-              url: 'https://example.com/cited',
-              citation_urls: ['https://example.com/cited'],
+              url: 'https://example.com/cited/%E4%B8%AD%E6%96%87',
+              citation_urls: ['https://example.com/cited/%E4%B8%AD%E6%96%87'],
+              search_kind: 'web',
+              search_id: 'search',
+            },
+            {
+              kind: 'searched',
+              number: 2,
+              title: encodedCitationUrl,
+              url: encodedCitationUrl,
+              citation_urls: [encodedCitationUrl],
               search_kind: 'web',
               search_id: 'search',
             },
@@ -288,6 +301,73 @@ function Fixture() {
           answerId="empty-answer"
           text="普通回答"
           answerSources={[]}
+        />
+      </div>
+      <div data-testid="coverage-source-list">
+        <CitationSources
+          sessionId="fixture"
+          answerId="coverage-answer"
+          text="有依据的事实。尚未找到依据的事实。"
+          coverage={{
+            status: 'partial',
+            unresolved: ['尚未找到依据的事实。'],
+            unread_sources: 14,
+          }}
+          answerSources={[
+            {
+              kind: 'searched',
+              number: 1,
+              title: '有依据的来源',
+              url: 'https://example.com/evidence',
+              citation_urls: ['https://example.com/evidence'],
+              search_kind: 'web',
+              search_id: 'search',
+            },
+          ]}
+        />
+      </div>
+      {(['reviewed', 'unavailable', 'interrupted'] as const).map((status) => (
+        <div key={status} data-testid={`coverage-${status}-list`}>
+          <CitationSources
+            sessionId="fixture"
+            answerId={`coverage-${status}-answer`}
+            text="终态核验的回答。未关联的终态原文。"
+            coverage={{
+              status,
+              unresolved: ['未关联的终态原文。'],
+              ...(status === 'reviewed' ? { unread_sources: 3 } : {}),
+            }}
+            answerSources={[
+              {
+                kind: 'searched',
+                number: 1,
+                title: `终态来源 ${status}`,
+                url: `https://example.com/${status}`,
+                citation_urls: [`https://example.com/${status}`],
+                search_kind: 'web',
+                search_id: 'search',
+              },
+            ]}
+          />
+        </div>
+      ))}
+      <div data-testid="stale-source-list">
+        <CitationSources
+          sessionId="fixture-stale"
+          answerId="stale-answer"
+          text="刷新失败的回答[1](scholarseed-cite:stale)"
+          coverage={{ status: 'reviewed' }}
+          answerSources={[
+            {
+              kind: 'searched',
+              number: 1,
+              title: '保留的来源',
+              url: 'https://example.com/stale',
+              citation_urls: ['https://example.com/stale'],
+              search_kind: 'web',
+              search_id: 'search',
+            },
+          ]}
         />
       </div>
       <div data-testid="citation-content">
@@ -380,6 +460,10 @@ function Fixture() {
             </span>
           )}
         />
+      </div>
+      <div data-testid="publisher-citation-boundary">
+        <Markdown text={'出版方：https://aclanthology.org/2024.eacl-demo.16/[3]'} />
+        <Markdown text={'出版方：https://aclanthology.org/2024.eacl-demo.16/[3'} citationPending />
       </div>
       <div data-testid="url-and-reference">
         <Markdown
@@ -512,6 +596,64 @@ function Fixture() {
           )}
         />
       </div>
+      <div data-testid="project-source-markdown">
+        <Markdown
+          text="[Project file](/api/resource/raw?project=project&path=resources%2Fa.md) [Foreign file](/api/resource/raw?project=foreign&path=resources%2Fa.md)"
+          renderSourceLink={(href, children) =>
+            projectSource(href, 'project') ? (
+              <Button
+                onClick={() => {
+                  document.body.dataset.openedProjectSource = href
+                }}
+              >
+                {children}
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
+      <div data-testid="local-project-source-markdown">
+        <Markdown
+          sourceMapped
+          text={[
+            '来源：resources/项目A/calibration.md#L5（项目资源）',
+            '`D:\\work space\\项目A\\resources\\项目A\\calibration.md`',
+            '`resources/中文目录 空格/note.txt`',
+            '[编码来源](resources/%E9%A1%B9%E7%9B%AEA/calibration.md#L3)',
+            '`D:\\other\\resources\\项目A\\calibration.md`',
+            '```text\nresources/项目A/calibration.md\n```',
+          ].join('\n\n')}
+          renderSourceLink={(href, children) => {
+            const source = answerProjectSource(
+              href,
+              { id: 'project', path: 'D:\\work space\\项目A' },
+              ['resources/项目A/calibration.md', 'resources/中文目录 空格/note.txt'].map(
+                (path) => ({
+                  id: path,
+                  kind: 'file',
+                  title: path,
+                  reference: {
+                    id: path,
+                    type: 'assistant_context',
+                    kind: 'resource',
+                    sourceId: path,
+                    title: path,
+                  },
+                })
+              )
+            )
+            return source?.kind === 'resource' ? (
+              <Button
+                onClick={() => {
+                  document.body.dataset.openedLocalProjectSource = source.path
+                }}
+              >
+                {children}
+              </Button>
+            ) : undefined
+          }}
+        />
+      </div>
       <div data-testid="session-file-markdown">
         <Markdown
           text={
@@ -529,9 +671,13 @@ function Fixture() {
           contribution: { text: '**研究贡献**' },
           claims: [{ text: '**关键结论**', evidence: [{ page: 5, quote: 'source text' }] }],
           method: { text: '**方法**' },
-          limitations: { text: '1. **依赖LLM生成质量**：需要核查。\n2. **超参数敏感性**：需要调优。' },
+          limitations: {
+            text: '1. **依赖LLM生成质量**：需要核查。\n2. **超参数敏感性**：需要调优。',
+          },
         }}
-        onSource={(page, text) => { document.body.dataset.summarySource = `${page}:${text}` }}
+        onSource={(page, text) => {
+          document.body.dataset.summarySource = `${page}:${text}`
+        }}
       />
       <Button onClick={() => void localization.changeLanguage('en')}>Switch to English</Button>
       <Button onClick={() => void localization.changeLanguage('zh')}>Switch to Chinese</Button>

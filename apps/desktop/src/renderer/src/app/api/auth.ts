@@ -1,4 +1,5 @@
 import { getJson, postJson } from './client.ts'
+import { AUTH_ME_PATH } from '../../../../requests.ts'
 
 export interface AuthStatus {
   enabled: boolean
@@ -21,7 +22,7 @@ export async function getAuthStatus(): Promise<AuthStatus | null> {
 }
 
 export async function getAuthMe(): Promise<AuthUser | null> {
-  return getJson<AuthUser>('/api/auth/me')
+  return getJson<AuthUser>(AUTH_ME_PATH)
 }
 
 export async function postAuthLogout(): Promise<unknown> {

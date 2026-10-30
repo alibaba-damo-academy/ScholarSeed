@@ -9,7 +9,7 @@ import { useDocumentWorkspace } from '../../features/workbench/workspace'
 import { IconButton } from '../ui'
 import { cx } from '../ui/utils'
 import { IconFont } from './Iconfont'
-import { fileIconForName } from './FileIcon'
+import { FileFormatIcon } from './FileIcon'
 
 type FileReference = Extract<ComposerReference, { type: 'file' }>
 type DirectoryReference = Extract<ComposerReference, { type: 'directory' }>
@@ -19,7 +19,7 @@ const ATTACHMENTS_CLASS_NAME = 'contents'
 const ATTACHMENT_ITEM_CLASS_NAME =
   'group/attachment relative box-border max-w-full shrink-0 pb-[var(--vds-space-1)] pr-[var(--vds-space-1)]'
 const ATTACHMENT_ACTIONS_CLASS_NAME =
-  'absolute right-1 top-0 z-[var(--vds-z-local-control)] pointer-events-none opacity-0 transition-opacity duration-150 group-hover/attachment:pointer-events-auto group-hover/attachment:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100'
+  'absolute right-[var(--vds-space-1)] top-0 z-[var(--vds-z-local-control)] pointer-events-none opacity-0 transition-opacity duration-150 group-hover/attachment:pointer-events-auto group-hover/attachment:opacity-[var(--vds-opacity-full)] focus-within:pointer-events-auto focus-within:opacity-[var(--vds-opacity-full)] has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-[var(--vds-opacity-full)]'
 const ATTACHMENT_CARD_CLASS_NAME =
   'relative inline-flex box-border h-[28px] max-w-full items-center gap-[8px] rounded-[8px] border border-solid border-[var(--vds-divider-default)] bg-[var(--vds-other-overlay-1)] px-[8px] py-[4px] text-left font-[inherit] text-[inherit]'
 const ATTACHMENT_CARD_CLICKABLE_CLASS_NAME = 'cursor-pointer'
@@ -28,8 +28,7 @@ const ATTACHMENT_CARD_OPEN_CLASS_NAME =
   'border border-[var(--brand-ink)] bg-[color-mix(in_srgb,var(--active-bg)_68%,var(--bg-2))] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--brand-ink)_16%,transparent)]'
 const ATTACHMENT_ICON_CLASS_NAME =
   'inline-flex size-3 shrink-0 items-center justify-center overflow-hidden rounded-[2px] text-[var(--vds-text-8)]'
-const ATTACHMENT_COPY_CLASS_NAME =
-  'flex min-w-0 items-center gap-[var(--vds-space-2)]'
+const ATTACHMENT_COPY_CLASS_NAME = 'flex min-w-0 items-center gap-[var(--vds-space-2)]'
 const ATTACHMENT_NAME_CLASS_NAME =
   'flex min-w-0 overflow-hidden text-[14px] font-[var(--vds-fw-medium)] leading-[20px] text-[var(--vds-text-8)]'
 const ATTACHMENT_REMOVE_CLASS_NAME =
@@ -49,7 +48,7 @@ function attachmentPreviewTarget(ref: FileReference): FilePreviewTarget {
     absolutePath: ref.path,
     title: ref.title || ref.id,
     size: ref.size,
-    source: ref.previewSource
+    source: ref.previewSource,
   }
 }
 
@@ -57,7 +56,7 @@ export function ComposerAttachments({
   refs,
   onRemove,
   onOpen,
-  renderActions
+  renderActions,
 }: {
   refs: ComposerReference[]
   onRemove?: (index: number) => void
@@ -81,10 +80,13 @@ export function ComposerAttachments({
     <div className={ATTACHMENTS_CLASS_NAME}>
       {localRefs.map(({ ref, index }) => {
         const name = fileName(ref)
-        const open = onOpen && ref.type === 'file'
-          ? (): void => onOpen(attachmentPreviewTarget(ref))
-          : undefined
-        const previewOpen = openPreviewPaths.has(ref.path)
+        const open =
+          onOpen && ref.type === 'file'
+            ? (): void => onOpen(attachmentPreviewTarget(ref))
+            : undefined
+        const previewOpen = openPreviewPaths.has(
+          ref.type === 'file' ? (ref.previewSource?.path ?? ref.path) : ref.path
+        )
         return (
           <div
             key={ref.type + ref.id}
@@ -97,16 +99,13 @@ export function ComposerAttachments({
                 ATTACHMENT_CARD_CLASS_NAME,
                 onRemove ? 'pr-[8px]' : undefined,
                 renderActions ? 'pr-6' : undefined,
-                open
-                  ? ATTACHMENT_CARD_CLICKABLE_CLASS_NAME
-                  : ATTACHMENT_CARD_IDLE_CLASS_NAME,
+                open ? ATTACHMENT_CARD_CLICKABLE_CLASS_NAME : ATTACHMENT_CARD_IDLE_CLASS_NAME,
                 previewOpen ? ATTACHMENT_CARD_OPEN_CLASS_NAME : undefined
               )}
               title={ref.title}
               onClick={open}
               onKeyDown={(event) => {
-                if (!open || (event.key !== 'Enter' && event.key !== ' '))
-                  return
+                if (!open || (event.key !== 'Enter' && event.key !== ' ')) return
                 event.preventDefault()
                 open()
               }}
@@ -114,10 +113,11 @@ export function ComposerAttachments({
               tabIndex={open ? 0 : undefined}
             >
               <div className={ATTACHMENT_ICON_CLASS_NAME}>
-                {React.createElement(ref.type === 'directory' ? Folder : fileIconForName(ref.title || ref.id), {
-                  size: 16,
-                  strokeWidth: 1.8
-                })}
+                {ref.type === 'directory' ? (
+                  <Folder size={16} strokeWidth={1.8} />
+                ) : (
+                  <FileFormatIcon name={ref.title || ref.id} size={16} strokeWidth={1.8} />
+                )}
               </div>
               <div className={ATTACHMENT_COPY_CLASS_NAME}>
                 <div className={ATTACHMENT_NAME_CLASS_NAME}>
@@ -147,9 +147,7 @@ export function ComposerAttachments({
               )}
             </div>
             {renderActions && ref.type === 'file' && (
-              <div className={ATTACHMENT_ACTIONS_CLASS_NAME}>
-                {renderActions(ref)}
-              </div>
+              <div className={ATTACHMENT_ACTIONS_CLASS_NAME}>{renderActions(ref)}</div>
             )}
           </div>
         )

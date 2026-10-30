@@ -45,6 +45,7 @@ class FormatRegistration:
     versionable: bool = False
     readonly: bool = False
     artifact_editable: bool = False
+    reviewable: bool = True
 
 
 class ContentKind(str, Enum):
@@ -71,8 +72,8 @@ FORMAT_BY_SUFFIX: dict[str, FormatRegistration] = {
     ".md": FormatRegistration(ViewerKind.MARKDOWN, versionable=True),
     ".markdown": FormatRegistration(ViewerKind.MARKDOWN, versionable=True),
     ".txt": FormatRegistration(ViewerKind.CODE, versionable=True),
-    ".pdf": FormatRegistration(ViewerKind.PDF, versionable=True),
-    ".csv": FormatRegistration(ViewerKind.SPREADSHEET, versionable=True, readonly=True),
+    ".pdf": FormatRegistration(ViewerKind.PDF, versionable=True, reviewable=False),
+    ".csv": FormatRegistration(ViewerKind.SPREADSHEET, versionable=True),
     ".tsv": FormatRegistration(ViewerKind.TABLE, versionable=True),
     ".json": FormatRegistration(ViewerKind.CODE, versionable=True),
     ".jsonl": FormatRegistration(ViewerKind.CODE, versionable=True),
@@ -80,6 +81,7 @@ FORMAT_BY_SUFFIX: dict[str, FormatRegistration] = {
     ".yml": FormatRegistration(ViewerKind.CODE, versionable=True),
     ".py": FormatRegistration(ViewerKind.CODE, versionable=True),
     ".r": FormatRegistration(ViewerKind.CODE, versionable=True),
+    ".lean": FormatRegistration(ViewerKind.CODE, versionable=True),
     ".java": FormatRegistration(ViewerKind.CODE, versionable=True),
     ".c": FormatRegistration(ViewerKind.CODE, versionable=True),
     ".cpp": FormatRegistration(ViewerKind.CODE, versionable=True),
@@ -282,6 +284,10 @@ class WorkbenchFormatPolicy(ResourceFormatPolicy):
 
     def diffable(self, path: str) -> bool:
         return capabilities_for(path).can_diff
+
+    def reviewable(self, path: str) -> bool:
+        registration = format_for(path)
+        return registration.reviewable if registration is not None else True
 
     def project(self, path: str, payload: bytes) -> DocumentFormatProjection:
         """Project any source bytes through the one Workbench format registry."""

@@ -6,7 +6,7 @@ import {
   isUpdateEntryVisible,
   updateEntryBadgeOf,
   useUpdateAnnouncement,
-  useUpdateState
+  useUpdateState,
 } from '../../features/updates/state'
 import { IconButton, Popover, PopoverContent, PopoverTrigger, ProgressBar, Tooltip } from '../ui'
 import { IconFont } from '../primitive'
@@ -27,8 +27,8 @@ import { UpdatePanel } from './UpdatePanel'
 // 双重投影，overflow-hidden 还会把浮窗的 elevation 投影切掉。POPOVER 基座自带
 // w-max / max-w-320 / gap / p-1 / 底色 / 投影，逐项用 important 盖掉。
 const ENTRY_POPOVER_CLASS_NAME = [
-  'no-drag !z-[calc(var(--vds-z-tooltip)+1)]',
-  '!max-w-none !gap-0 !p-0 !border-0 !bg-transparent !shadow-none'
+  'no-drag !z-[var(--vds-z-update-entry-panel)]',
+  '!max-w-none !gap-0 !p-0 !border-0 !bg-transparent !shadow-none',
 ].join(' ')
 const ENTRY_BUTTON_CLASS_NAME = 'no-drag relative flex-none overflow-hidden'
 // 图片按图标槽尺寸铺满（槽位 = --vds-icon-button-glyph），槽位自带居中，
@@ -36,10 +36,10 @@ const ENTRY_BUTTON_CLASS_NAME = 'no-drag relative flex-none overflow-hidden'
 const ENTRY_GLYPH_CLASS_NAME = 'size-full object-contain'
 const ENTRY_DOT_CLASS_NAME =
   'absolute right-[var(--vds-update-ready-dot-offset)] top-[var(--vds-update-ready-dot-offset)] size-[var(--vds-update-ready-dot-size)] rounded-[var(--vds-radius-circle)] border-[length:var(--vds-update-ready-dot-border)] border-solid border-[var(--vds-bg-white-default)] bg-[var(--vds-error-bg-default)]'
-const ENTRY_BADGE_CLASS_NAME = 'absolute right-[var(--vds-update-entry-badge-offset)] top-[var(--vds-update-entry-badge-offset)] grid size-[var(--vds-update-entry-badge-size)] place-items-center rounded-[var(--vds-radius-circle)] leading-none'
+const ENTRY_BADGE_CLASS_NAME =
+  'absolute right-[var(--vds-update-entry-badge-offset)] top-[var(--vds-update-entry-badge-offset)] grid size-[var(--vds-update-entry-badge-size)] place-items-center rounded-[var(--vds-radius-circle)] leading-none [--vds-icon-button-glyph:var(--vds-update-entry-badge-size)]'
 const ENTRY_WARNING_CLASS_NAME = `${ENTRY_BADGE_CLASS_NAME} bg-[var(--vds-surface-raised)] text-[var(--vds-error-bg-default)]`
 const ENTRY_READY_CLASS_NAME = `${ENTRY_BADGE_CLASS_NAME} bg-[var(--vds-surface-raised)] text-[var(--vds-success-bg-default)]`
-const ENTRY_BADGE_GLYPH_STYLE = { fontSize: 'var(--vds-update-entry-badge-size)', lineHeight: '1' }
 
 export function UpdateEntry(): React.JSX.Element | null {
   const { t } = useTranslation('components')
@@ -58,7 +58,7 @@ export function UpdateEntry(): React.JSX.Element | null {
   const percent = state?.percent ?? 0
   const downloading = phase === 'downloading' || phase === 'verifying'
   // 与浮窗同一份判据：安装失败时相位停在 ready，入口不能继续报「待重启」的正常态。
-  const badge = updateEntryBadgeOf(state, announcement.pending)
+  const badge = updateEntryBadgeOf(state, announcement.unread)
   const failed = badge === 'warning'
   const label = downloading
     ? t('update.entryPercent', { percent })
@@ -85,23 +85,54 @@ export function UpdateEntry(): React.JSX.Element | null {
               onClick={announcement.acknowledge}
               icon={
                 <>
-                  {downloading
-                    ? <ProgressBar shape="circle" className="size-full" value={percent} indeterminate={phase === 'verifying'} label={label} />
-                    : <img alt="" className={ENTRY_GLYPH_CLASS_NAME} src={rocketGlyph} />}
-                  {badge === 'unread' && <span aria-hidden="true" data-testid="update-entry-unread" className={ENTRY_DOT_CLASS_NAME} />}
-                  {badge === 'warning' && <span aria-hidden="true" data-testid="update-entry-warning" className={ENTRY_WARNING_CLASS_NAME}>
-                    <IconFont type="icon-fill-status-warning" style={ENTRY_BADGE_GLYPH_STYLE} />
-                  </span>}
-                  {badge === 'ready' && <span aria-hidden="true" data-testid="update-entry-ready" className={ENTRY_READY_CLASS_NAME}>
-                    <IconFont type="icon-chart-up-circle" style={ENTRY_BADGE_GLYPH_STYLE} />
-                  </span>}
+                  {downloading ? (
+                    <ProgressBar
+                      shape="circle"
+                      className="size-full"
+                      value={percent}
+                      indeterminate={phase === 'verifying'}
+                      label={label}
+                    />
+                  ) : (
+                    <img alt="" className={ENTRY_GLYPH_CLASS_NAME} src={rocketGlyph} />
+                  )}
+                  {badge === 'unread' && (
+                    <span
+                      aria-hidden="true"
+                      data-testid="update-entry-unread"
+                      className={ENTRY_DOT_CLASS_NAME}
+                    />
+                  )}
+                  {badge === 'warning' && (
+                    <span
+                      aria-hidden="true"
+                      data-testid="update-entry-warning"
+                      className={ENTRY_WARNING_CLASS_NAME}
+                    >
+                      <IconFont type="icon-fill-status-warning" />
+                    </span>
+                  )}
+                  {badge === 'ready' && (
+                    <span
+                      aria-hidden="true"
+                      data-testid="update-entry-ready"
+                      className={ENTRY_READY_CLASS_NAME}
+                    >
+                      <IconFont type="icon-chart-up-circle" />
+                    </span>
+                  )}
                 </>
               }
             />
           </Tooltip>
         </PopoverTrigger>
         {/* 浮窗在按钮右侧、底部与按钮底部对齐（side=right + align=end）。 */}
-        <PopoverContent align="end" className={ENTRY_POPOVER_CLASS_NAME} side="right" onClickCapture={announcement.acknowledge}>
+        <PopoverContent
+          align="end"
+          className={ENTRY_POPOVER_CLASS_NAME}
+          side="right"
+          onClickCapture={announcement.acknowledge}
+        >
           <UpdatePanel onDismiss={close} />
         </PopoverContent>
       </Popover>

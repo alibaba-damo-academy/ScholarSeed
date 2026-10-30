@@ -8,5 +8,5 @@ test('file-only history reuses snapshot save and review operations without an ed
   assert.match(source, /sealResourceSnapshot/)
   assert.match(source, /snapshotSaveMessage/)
   assert.match(source, /if \(session\)/)
-  assert.match(source, /decideResourceReview\(project, path/)
+  assert.match(source, /decideResourceReview\(\s*project,\s*path/)
 })

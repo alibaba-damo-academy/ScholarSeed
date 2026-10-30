@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -42,7 +43,11 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from service.literature.schema import PublicationType
-from service.literature.service.arxiv import ArxivDownloadError, normalize_arxiv_id
+from service.literature.service.arxiv import (
+    ARXIV_DOI_PREFIX,
+    ArxivDownloadError,
+    normalize_arxiv_id,
+)
 from service.literature.service.bibliography import (
     DOI,
     HTTP_BAD_GATEWAY,
@@ -57,6 +62,10 @@ from service.literature.service.bibliography import (
     BibliographyError,
 )
 from service.literature.service.metadata import AUTHOR_SEPARATOR
+from service.literature.service.transport import (
+    PLAIN_TOTAL_TIMEOUT_SECONDS,
+    plain_data_timeout,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,8 +165,6 @@ FIELD_PAGES = "pages"
 
 DOI_RESOLVER_ROOT = "https://doi.org/"
 ARXIV_ABS_ROOT = "https://arxiv.org/abs/"
-# arXiv 自己注册 DOI 的前缀; 预印本上只有这个前缀的 DOI 才值得写进库。
-ARXIV_DOI_PREFIX = "10.48550/"
 PREPRINT_TYPES = frozenset({"preprint"})
 PAGE_SEPARATOR = "-"
 ABSTRACT_LEADING_LABEL = re.compile(r"^\s*abstract\s*[:.\-]\s*", re.IGNORECASE)
@@ -380,7 +387,7 @@ def normalize(work: Mapping[str, Any]) -> dict[str, Any]:
 async def search_by_title(
     title: str,
     *,
-    timeout: float,
+    timeout: float = PLAIN_TOTAL_TIMEOUT_SECONDS,
     transport: httpx.AsyncBaseTransport | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -388,16 +395,27 @@ async def search_by_title(
 
     只有「HTTP 200 + results 非空 + 首条有标题」才算命中; 0 条是 404 NOT_FOUND (用户
     能行动: 去补 DOI/arXiv), 429 保真成 QUOTA_EXHAUSTED, 其余形状与传输问题折成 502。
+
+    ``timeout`` 是这一次外呼的 **总** 预算; connect / read 两个相位固定由
+    ``plain_data_timeout()`` 给, 因为 OpenAlex 的 work JSON 是普通数据。
     """
 
     url = resolve_search_url(environ)
     try:
         async with httpx.AsyncClient(
-            timeout=timeout, follow_redirects=FOLLOW_REDIRECTS, transport=transport
+            timeout=plain_data_timeout(),
+            follow_redirects=FOLLOW_REDIRECTS,
+            transport=transport,
         ) as client:
-            response = await client.get(
-                url, params=_params(title, environ), headers={"User-Agent": USER_AGENT}
-            )
+            # connect/read 由 httpx 执行, total 只能由调用方执行 —— httpx 没有总时钟。
+            async with asyncio.timeout(timeout):
+                response = await client.get(
+                    url, params=_params(title, environ), headers={"User-Agent": USER_AGENT}
+                )
+    except TimeoutError as error:
+        # 超时与「没回应」同类: 用户能采取的行动一样, 折进既有的网络失败码。
+        LOGGER.warning("openalex timed out: total=%s", timeout)
+        raise BibliographyError(NETWORK_FAILED, HTTP_BAD_GATEWAY) from error
     except httpx.HTTPError as error:
         LOGGER.warning("openalex unreachable: %s", type(error).__name__)
         raise BibliographyError(NETWORK_FAILED, HTTP_BAD_GATEWAY) from error

@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { chromium, expect, type Browser } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer, transformWithEsbuild, type Plugin } from 'vite'
+import { transformWithEsbuild, type Plugin } from 'vite'
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const PROBE_PATH = '/__selection_probe'
@@ -79,7 +82,7 @@ const modules: Record<string, string> = {
       <button onClick={() => updateSelection('revision')}>Change revision</button>
       <SelectionActionHost />
     </>)
-  `
+  `,
 }
 const MODULE_KEYS = Object.keys(modules)
 
@@ -96,21 +99,43 @@ function probePlugin(): Plugin {
       if (id === 'selection-probe-workspace') return moduleId('./workspace')
       if (id === ENTRY || (importer?.includes(HOST_SUFFIX) && id in modules)) return moduleId(id)
     },
-    load(id) { if (id.startsWith(VIRTUAL_PREFIX)) return modules[MODULE_KEYS[Number(id.slice(VIRTUAL_PREFIX.length, -VIRTUAL_SUFFIX.length))]] },
-    transform(code, id) { if (id.startsWith(VIRTUAL_PREFIX)) return transformWithEsbuild(code, 'selection-probe.tsx', { loader: 'tsx', jsx: 'automatic', tsconfigRaw: {} }) },
+    load(id) {
+      if (id.startsWith(VIRTUAL_PREFIX))
+        return modules[MODULE_KEYS[Number(id.slice(VIRTUAL_PREFIX.length, -VIRTUAL_SUFFIX.length))]]
+    },
+    transform(code, id) {
+      if (id.startsWith(VIRTUAL_PREFIX))
+        return transformWithEsbuild(code, 'selection-probe.tsx', {
+          loader: 'tsx',
+          jsx: 'automatic',
+          tsconfigRaw: {},
+        })
+    },
     configureServer(server) {
       server.middlewares.use(PROBE_PATH, (_request, response, next) => {
-        server.transformIndexHtml(PROBE_PATH, `<!doctype html><html><body><div id="root"></div><script type="module" src="/@id/__x00__selection-probe:${MODULE_KEYS.indexOf(ENTRY)}${VIRTUAL_SUFFIX}"></script></body></html>`)
-          .then(html => { response.setHeader('Content-Type', 'text/html'); response.end(html) }).catch(next)
+        server
+          .transformIndexHtml(
+            PROBE_PATH,
+            `<!doctype html><html><body><div id="root"></div><script type="module" src="/@id/__x00__selection-probe:${MODULE_KEYS.indexOf(ENTRY)}${VIRTUAL_SUFFIX}"></script></body></html>`
+          )
+          .then((html) => {
+            response.setHeader('Content-Type', 'text/html')
+            response.end(html)
+          })
+          .catch(next)
       })
-    }
+    },
   }
 }
 
 async function verifyPinnedSuggestion(action: string): Promise<void> {
-  const server = await createServer({ configFile: false, root: ROOT_DIR, plugins: [probePlugin(), react()],
-    cacheDir: path.join(ROOT_DIR, 'node_modules/.vite-tests', `selection-${process.pid}`),
-    server: { host: '127.0.0.1', port: 0 } })
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT_DIR,
+    plugins: [probePlugin(), react()],
+    cacheKey: 'selection',
+    server: { host: '127.0.0.1', port: 0 },
+  })
   let browser: Browser | undefined
   try {
     await server.listen()
@@ -118,14 +143,19 @@ async function verifyPinnedSuggestion(action: string): Promise<void> {
     const page = await browser.newPage()
     page.setDefaultTimeout(INTERACTION_TIMEOUT_MS)
     const errors: string[] = []
-    page.on('pageerror', error => errors.push(error.message))
-    page.on('console', message => { if (message.type() === 'error') console.error(message.text()) })
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('console', (message) => {
+      if (message.type() === 'error') console.error(message.text())
+    })
     await page.goto(new URL(PROBE_PATH, server.resolvedUrls!.local[0]).href)
     const suggestion = page.getByTestId('suggestion')
-    await page.getByRole('button', { name: `selection.${action}`, exact: true }).click().catch(async error => {
-      console.error({ errors, body: await page.locator('body').innerText() })
-      throw error
-    })
+    await page
+      .getByRole('button', { name: `selection.${action}`, exact: true })
+      .click()
+      .catch(async (error) => {
+        console.error({ errors, body: await page.locator('body').innerText() })
+        throw error
+      })
     await suggestion.getByRole('button', { name: 'Generate', exact: true }).click()
     await suggestion.getByRole('button', { name: 'Pin', exact: true }).click()
     const instance = await suggestion.getAttribute('data-instance')
@@ -153,7 +183,8 @@ async function verifyPinnedSuggestion(action: string): Promise<void> {
     for (const boundary of ['Blank', 'Switch tab', 'Change revision']) {
       await page.getByRole('button', { name: 'Reselect', exact: true }).click()
       await page.getByRole('button', { name: `selection.${action}`, exact: true }).click()
-      if (boundary !== 'Blank') await suggestion.getByRole('button', { name: 'Pin', exact: true }).click()
+      if (boundary !== 'Blank')
+        await suggestion.getByRole('button', { name: 'Pin', exact: true }).click()
       await page.getByRole('button', { name: boundary, exact: true }).click()
       await expect(suggestion).toHaveCount(0)
     }
@@ -165,5 +196,6 @@ async function verifyPinnedSuggestion(action: string): Promise<void> {
 }
 
 for (const action of ['explain', 'translate']) {
-  test(`pinned ${action} preserves its mounted request and result across selection detach and reattach`, () => verifyPinnedSuggestion(action))
+  test(`pinned ${action} preserves its mounted request and result across selection detach and reattach`, () =>
+    verifyPinnedSuggestion(action))
 }

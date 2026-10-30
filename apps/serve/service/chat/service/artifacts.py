@@ -10,7 +10,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, BinaryIO
 
 from service.chat.constants import (
@@ -36,7 +36,7 @@ from service.platform.content import (
     ContentPort,
     VerifiedArtifactContent,
 )
-from service.platform.files import guess_media_type
+from service.platform.files import export_file_name, guess_media_type
 from service.platform.limits import DOCUMENT_PREVIEW_MAX_BYTES
 from service.platform.storage import NOFOLLOW, NONBLOCK, open_directory, preserve_mode
 from service.platform.workbench import DocumentFormatPort
@@ -53,6 +53,8 @@ ARTIFACT_INTEGRITY_MISMATCH = "session_artifact_integrity_mismatch"
 ARTIFACT_TOO_LARGE = "session_artifact_too_large"
 ARTIFACT_REVISION_CONFLICT = "session_artifact_revision_conflict"
 ARTIFACT_EDIT_UNAVAILABLE = "session_artifact_edit_unavailable"
+ARTIFACT_PATH_AMBIGUOUS = "session_artifact_path_ambiguous"
+ARTIFACT_PUBLICATION_REQUIRED = "session_artifact_publication_required"
 ARTIFACT_REVISION_PREFIX = "sha256:"
 ARTIFACT_EDIT_EVENT_KEY_PREFIX = "artifact-edit"
 HASH_BOUND_ARTIFACT_SOURCES = frozenset(
@@ -163,7 +165,53 @@ class ArtifactService:
                 raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH)
         if expected_sha256 and sha256(raw).hexdigest() != expected_sha256:
             raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
-        return raw, Path(record.original_path).name
+        return raw, export_file_name(Path(record.original_path).name, record.mime_type, raw)
+
+    def published_artifact_id(
+        self,
+        session_id: str,
+        workdir: Path,
+        *,
+        artifact_id: str | None = None,
+        path: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> str:
+        if artifact_id is not None:
+            record = self._record(session_id, artifact_id)
+            if record.status is not ArtifactStatus.PUBLISHED:
+                raise ArtifactReadError(ARTIFACT_PUBLICATION_REQUIRED)
+            return artifact_id
+        if path is None:
+            raise ArtifactReadError(ARTIFACT_NOT_FOUND)
+        relative = Path(path.replace("\\", "/"))
+        if (
+            relative.is_absolute()
+            or PureWindowsPath(path).drive
+            or ".." in relative.parts
+            or "\x00" in path
+        ):
+            raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
+        root = workdir.resolve()
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root):
+            raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
+        candidates = tuple(
+            record
+            for record in current_artifact_records(self._artifacts.list_session(session_id))
+            if record.status is ArtifactStatus.PUBLISHED
+            and Path(record.canonical_path).resolve() == target
+        )
+        if not candidates:
+            raise ArtifactReadError(ARTIFACT_NOT_FOUND)
+        if expected_sha256 is not None:
+            candidates = tuple(
+                record for record in candidates if record.content_sha256 == expected_sha256
+            )
+            if not candidates:
+                raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
+        if len(candidates) != 1:
+            raise ArtifactReadError(ARTIFACT_PATH_AMBIGUOUS)
+        return artifact_identity(candidates[0])
 
     def export_document_bytes(
         self, session_id: str, artifact_id: str, expected_sha256: str | None = None
@@ -174,7 +222,7 @@ class ArtifactService:
             return self.export_bytes(session_id, artifact_id, expected_sha256)
         if expected_sha256 and sha256(draft).hexdigest() != expected_sha256:
             raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
-        return draft, Path(record.original_path).name
+        return draft, export_file_name(Path(record.original_path).name, record.mime_type, draft)
 
     def _record(self, session_id: str, artifact_id: str) -> SessionArtifactRecord:
         records = current_artifact_records(self._artifacts.list_session(session_id))

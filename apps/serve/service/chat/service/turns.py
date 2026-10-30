@@ -10,23 +10,27 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
-from scholarseed_runtime.contract.command import CommandState
+from scholarseed_runtime.contract.command import CommandState, SubmissionRetryProof
 from scholarseed_runtime.contract.event import RuntimeEventKind
 from scholarseed_runtime.contract.history import TurnStatus
-from scholarseed_runtime.contract.incident import RuntimeRetryability
+from scholarseed_runtime.contract.incident import RUNTIME_TURN_NOT_SUBMITTED, RuntimeRetryability
 from scholarseed_runtime.contract.input import (
     CollaborationMode,
     InputItem,
     InputKind,
     TurnInput,
 )
+from scholarseed_runtime.contract.provider import RuntimeOpenNotAppliedError
 from scholarseed_runtime.contract.resource import RESOURCE_CANCELLED, ResourceReceipt
+from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
 from scholarseed_runtime.gateway.driver import (
     RuntimeCommandError,
+    RuntimeTurnNotSubmittedError,
     RuntimeTurnOutcome,
     RuntimeTurnResult,
 )
 from service.chat.constants import (
+    AUTOMATIC_CRASH_RETRY,
     CANCELLED_MESSAGE_CONTEXT_HEADER,
     PRODUCT_EVENT_MESSAGE_QUEUED,
     PRODUCT_EVENT_MESSAGE_REMOVED,
@@ -46,20 +50,25 @@ from service.chat.constants import (
     PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
     PRODUCT_REFERENCE_SKILL,
-    PRODUCT_TURN_OUTCOME_UNKNOWN,
     QUEUED_ASSISTANT_REFERENCES,
     QUEUED_DISPLAY_TEXT,
     QUEUED_REFERENCES,
     RUNTIME_CAPABILITY_UNAVAILABLE,
+    SESSION_ARCHIVED_ERROR,
     SESSION_TERMINATED,
     TURN_OUTCOME_UNCONFIRMED,
+    USER_MESSAGE_ORIGIN_RECOVERY,
     USER_MESSAGE_ORIGIN_STEER,
+    USER_MESSAGE_ORIGIN_TURN,
 )
 from service.chat.persistence.catalog import (
+    QUEUE_PURPOSE_RECOVERY,
+    QUEUE_PURPOSE_TURN,
     QUEUE_SUBMITTABLE_STATES,
     PendingTurnSettlement,
     QueuedMessageRecord,
     QueuedMessageState,
+    ReplacementState,
     SessionCatalogStore,
     SessionQueueCapacityError,
     SessionStateConflictError,
@@ -79,14 +88,37 @@ from service.chat.runtime.live import (
     LiveSession,
 )
 from service.chat.runtime.projection import queued_message_payload
+from service.chat.runtime.reconfiguration import RECONFIGURATION_STALE
+from service.chat.service.recovery import (
+    RECOVERY_CLAIMED,
+    RECOVERY_CONTEXT,
+    RECOVERY_DISPLAY,
+    RECOVERY_INPUT,
+    RECOVERY_SOURCE,
+    RECOVERY_STALE,
+    RecoveryAction,
+    RecoveryCheckpoint,
+    RecoveryService,
+    recovery_key,
+)
+from service.chat.service.titles import SessionTitles
 from service.content.domain.model import ContentReadPermissionError
 from service.identity.service.skill_credentials import CredentialAdmissionError
+from service.platform.activity import (
+    Activities,
+    ActivityDomain,
+    ActivityLease,
+    ActivityPhase,
+    MaintenanceActive,
+)
 from service.platform.context import (
     AssistantContextFailure,
     AssistantContextFailureKind,
     AssistantTurnContext,
     AssistantTurnContextSource,
     AssistantTurnFinalization,
+    ContextOrigin,
+    ContextResolutionState,
     MessageReferencePayload,
     ProductTaskType,
 )
@@ -102,6 +134,13 @@ TURN_INPUT_INVALID = "turn_input_invalid"
 TURN_ALREADY_RUNNING = "turn_already_running"
 CONTINUATION_ORIGIN_STALE = "continuation_origin_stale"
 CONTINUE_TURN_ID = "continue_turn_id"
+RECOVERABLE_TURN_EVENTS = frozenset({PRODUCT_EVENT_TURN_FAILED, PRODUCT_EVENT_TURN_UNKNOWN})
+INTERRUPTED_TURN_CONTEXT = (
+    "The previous turn was interrupted and some operations may already have completed. "
+    "Inspect the conversation history and existing results before continuing unfinished work. "
+    "Do not blindly replay prior operations. If an external operation cannot be verified, "
+    "explain the uncertainty and ask before repeating a potentially irreversible action."
+)
 RECOVERY_BOUNDARY_EVENTS = (
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_TURN_COMPLETED,
@@ -136,10 +175,10 @@ TURN_SETTLEMENT_OUTCOMES = {
     RuntimeEventKind.TURN_INTERRUPTED: RuntimeTurnOutcome.INTERRUPTED,
     RuntimeEventKind.TURN_UNKNOWN: RuntimeTurnOutcome.UNKNOWN,
 }
-RESOURCE_REVIEW_REQUIRED = "resource_review_required"
 PREVIOUS_TURN_PENDING_HIL = "previous_turn_pending_hil"
 PREVIOUS_TURN_BACKGROUND_ACTIVE = "previous_turn_background_active"
 PREVIOUS_TURN_ACTIVITY_UNAVAILABLE = "previous_turn_activity_unavailable"
+PREVIOUS_TURN_SETTLING = "previous_turn_settling"
 SESSION_NOT_LIVE = "session_not_live"
 QUEUED_MESSAGE_NOT_SENDABLE = "queued_message_not_sendable"
 QUEUED_MESSAGE_CONFLICT = "queued_message_conflict"
@@ -155,7 +194,6 @@ TURN_RESULT_SAFE_ERRORS = ACTIVATION_SAFE_ERRORS | frozenset(
         QUEUED_MESSAGE_NOT_SENDABLE,
         RESOURCE_BASELINE_FAILED,
         RESOURCE_BASELINE_PERMISSION_DENIED,
-        RESOURCE_REVIEW_REQUIRED,
         SESSION_MODEL_SWITCH_FAILED,
         CredentialAdmissionError.code,
         ASSISTANT_CONTEXT_UNAVAILABLE,
@@ -185,10 +223,6 @@ class TurnPreparation(Protocol):
     ) -> None: ...
 
 
-class ResourceReviewAdmission(Protocol):
-    def has_open_for_workdir(self, workdir: str) -> bool: ...
-
-
 @dataclass(frozen=True)
 class TurnResult:
     turn_id: str
@@ -214,21 +248,35 @@ class TurnService:
         self,
         sessions: dict[str, LiveSession],
         logger: Any,
+        *,
+        activities: Activities,
         prepare: TurnPreparation | None = None,
         context_source: AssistantTurnContextSource | None = None,
         deliveries: ResourceDeliveryService | None = None,
-        review_batches: ResourceReviewAdmission | None = None,
         catalog: SessionCatalogStore | None = None,
         events: ProductEventStore | None = None,
     ) -> None:
         self._sessions = sessions
+        self._activities = activities
+        self._queue_waiters: dict[str, asyncio.Task[None]] = {}
+        self._closed = False
         self._logger = logger
         self._prepare = prepare
         self._context_source = context_source
         self._deliveries = deliveries
-        self._review_batches = review_batches
         self._catalog = catalog
         self._events = events
+        self.recovery = (
+            RecoveryService(sessions, events, activities, logger, self._enqueue_recovery)
+            if events is not None and catalog is not None
+            else None
+        )
+        if self.recovery is not None:
+            self.recovery.bind_completion(self._complete_recovered_context)
+        self._titles: SessionTitles | None = None
+
+    def bind_titles(self, titles: SessionTitles) -> None:
+        self._titles = titles
 
     def bind_context_source(self, source: AssistantTurnContextSource) -> None:
         """在应用组合阶段绑定唯一的产品上下文来源。"""
@@ -236,6 +284,88 @@ class TurnService:
         if self._context_source is not None and self._context_source is not source:
             raise RuntimeError("turn context source is already bound")
         self._context_source = source
+
+    async def aclose(self) -> None:
+        self._closed = True
+        if self._titles is not None:
+            await self._titles.aclose()
+        if self.recovery is not None:
+            await self.recovery.aclose()
+        waiters = tuple(self._queue_waiters.values())
+        for task in waiters:
+            task.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+        self._queue_waiters.clear()
+
+    async def _enqueue_recovery(
+        self, live: LiveSession, checkpoint: RecoveryCheckpoint, generation: str
+    ) -> None:
+        recovery = self.recovery
+        if recovery is None or self._events is None or self._closed:
+            return
+        async with live.lifecycle_lock:
+            if not await recovery.eligible(live, checkpoint):
+                return
+            if self._events.by_key(
+                live.id, recovery_key(checkpoint.client_id, RECOVERY_CLAIMED, checkpoint.epoch)
+            ):
+                return
+            rows = live.catalog.queued_messages(live.id)
+            if any(
+                row.queued_message_id != checkpoint.client_id
+                or row.native_turn_id not in ("", None, checkpoint.native_turn_id)
+                or row.state is not QueuedMessageState.OUTCOME_UNKNOWN
+                for row in rows
+            ):
+                return
+            original = live.catalog.queued_message(live.id, checkpoint.client_id)
+            if original is None or original.state is not QueuedMessageState.OUTCOME_UNKNOWN:
+                return
+            request_id = uuid.uuid5(uuid.NAMESPACE_OID, f"{live.id}:{checkpoint.client_id}").hex
+            await recovery.claim(live, checkpoint, generation)
+            body = {
+                **original.body,
+                "client_user_message_id": request_id,
+                "queued_message_id": request_id,
+                RECOVERY_SOURCE: recovery.source(checkpoint, generation),
+            }
+            if checkpoint.action is RecoveryAction.CONTINUE:
+                body["input"] = [{"type": InputKind.TEXT.value, "text": RECOVERY_INPUT}]
+            payload, _status = await self._enqueue(
+                live, body, submission_mode=SubmissionMode.DIRECT, purpose=QUEUE_PURPOSE_RECOVERY
+            )
+            if payload.get("ok"):
+                if not await recovery.eligible(live, checkpoint) or not await recovery.authorize(
+                    live, checkpoint
+                ):
+                    return
+                if not await recovery.eligible(live, checkpoint):
+                    return
+                if getattr(live, "active_product_turn_id", "") == checkpoint.client_id:
+                    if not await live.release_product_turn(checkpoint.client_id):
+                        return
+                if not await recovery.eligible(live, checkpoint):
+                    return
+                if not await live.persistence.run(
+                    live.catalog.remove_reconciled_unknown_message,
+                    live.id,
+                    checkpoint.client_id,
+                    int(original.operation_seq or 0),
+                ):
+                    return
+                await live.publish(
+                    PRODUCT_EVENT_MESSAGE_REMOVED,
+                    {"queued_message_id": checkpoint.client_id, "reason": AUTOMATIC_CRASH_RETRY},
+                    turn_id=checkpoint.client_id,
+                    idempotency_key=recovery_key(
+                        checkpoint.client_id, AUTOMATIC_CRASH_RETRY, checkpoint.epoch
+                    ),
+                )
+                if await recovery.current(live, body[RECOVERY_SOURCE]):
+                    self._schedule_locked(live, request_id)
+
+    async def _recovery_current(self, live: LiveSession, source: object) -> bool:
+        return self.recovery is not None and await self.recovery.current(live, source)
 
     async def post(
         self,
@@ -245,89 +375,187 @@ class TurnService:
         side: bool,
         expected_submission_id: str = "",
         expected_interrupt_generation: int | None = None,
+        continuation_activity: ActivityLease | None = None,
         expected_permission_mode: str = "",
+        expected_model_id: str = "",
+        prepared_activity: bool = False,
     ) -> tuple[dict[str, Any], int]:
-        live = self._sessions.get(session_id)
-        if live is None:
-            return {"ok": False, "error": "session_not_live"}, HTTP_NOT_FOUND
-        if side:
-            return await self._steer(live, body)
-        task: asyncio.Task[TurnResult] | None = None
-        async with live.lifecycle_lock:
-            if CONTINUE_TURN_ID in body:
-                failed_turn_id = body[CONTINUE_TURN_ID]
-                boundaries = (
-                    tuple(
-                        event
-                        for kind in RECOVERY_BOUNDARY_EVENTS
-                        if (event := self._events.latest_kind(session_id, kind)) is not None
+        if continuation_activity is not None and (side or not expected_submission_id):
+            raise ValueError("continuation activity requires a guarded product continuation")
+        lease = (
+            self._activities.continue_from(continuation_activity, ActivityDomain.TURN)
+            if continuation_activity is not None
+            else self._activities.enter(ActivityDomain.TURN, root=not prepared_activity)
+        )
+        with lease:
+            record = self._catalog.get(session_id) if self._catalog is not None else None
+            if record is not None and record.archived:
+                return {"ok": False, "error": SESSION_ARCHIVED_ERROR}, HTTP_CONFLICT
+            live = self._sessions.get(session_id)
+            if live is None:
+                return {"ok": False, "error": "session_not_live"}, HTTP_NOT_FOUND
+            if live.closing:
+                return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
+            if side:
+                return await self._steer(live, body)
+            if (
+                CONTINUE_TURN_ID in body
+                and live.runtime_session is None
+                and self._prepare is not None
+            ):
+
+                async def on_recovery_wait(_receipt: ResourceReceipt, _deadline: float) -> None:
+                    return None
+
+                try:
+                    await self._prepare(
+                        live,
+                        request_id=str(body.get("client_user_message_id") or ""),
+                        deadline=None,
+                        on_wait=on_recovery_wait,
                     )
-                    if self._events is not None
-                    else ()
-                )
-                latest = max(boundaries, key=lambda event: event.product_seq, default=None)
-                if (
-                    not isinstance(failed_turn_id, str)
-                    or not failed_turn_id
+                except Exception:
+                    return {"ok": False, "error": PREVIOUS_TURN_ACTIVITY_UNAVAILABLE}, HTTP_CONFLICT
+            task: asyncio.Task[TurnResult] | None = None
+            async with live.lifecycle_lock:
+                if live.closing:
+                    return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
+                unknown_turn_id = ""
+                if CONTINUE_TURN_ID in body:
+                    failed_turn_id = body[CONTINUE_TURN_ID]
+                    continuation_id = str(body.get("client_user_message_id") or "")
+                    existing = live.catalog.queued_message(live.id, continuation_id)
+                    if (
+                        existing is not None
+                        and existing.body.get(CONTINUE_TURN_ID) == failed_turn_id
+                        and not live.ledger.has_unknown_outcome
+                    ):
+                        payload, status = await self._enqueue(
+                            live, body, submission_mode=existing.submission_mode
+                        )
+                        if payload.get("ok"):
+                            self._schedule_locked(live, continuation_id)
+                        return payload, status
+                    boundaries = (
+                        tuple(
+                            event
+                            for kind in RECOVERY_BOUNDARY_EVENTS
+                            if (event := self._events.latest_kind(session_id, kind)) is not None
+                        )
+                        if self._events is not None
+                        else ()
+                    )
+                    latest = max(boundaries, key=lambda event: event.product_seq, default=None)
+                    if (
+                        not isinstance(failed_turn_id, str)
+                        or not failed_turn_id
+                        or live.running
+                        or any(
+                            not (
+                                queued.state is QueuedMessageState.OUTCOME_UNKNOWN
+                                and failed_turn_id
+                                in (queued.queued_message_id, queued.native_turn_id)
+                            )
+                            and not (
+                                queued.queued_message_id == continuation_id
+                                and queued.body.get(CONTINUE_TURN_ID) == failed_turn_id
+                            )
+                            for queued in live.catalog.queued_messages(live.id)
+                        )
+                        or latest is None
+                        or latest.kind not in RECOVERABLE_TURN_EVENTS
+                        or latest.vendor_turn_id != failed_turn_id
+                    ):
+                        return {"ok": False, "error": CONTINUATION_ORIGIN_STALE}, HTTP_CONFLICT
+                    if latest.kind == PRODUCT_EVENT_TURN_UNKNOWN:
+                        uncertainties = live.ledger.uncertainty_snapshot()
+                        if (
+                            len(uncertainties) != 1
+                            or uncertainties[0]["correlation_id"] != failed_turn_id
+                        ):
+                            return {"ok": False, "error": TURN_OUTCOME_UNCONFIRMED}, HTTP_CONFLICT
+                        if live.runtime_session is None:
+                            return {
+                                "ok": False,
+                                "error": PREVIOUS_TURN_ACTIVITY_UNAVAILABLE,
+                            }, HTTP_CONFLICT
+                        try:
+                            activity = await live.runtime_session.activity()
+                        except Exception:
+                            return {
+                                "ok": False,
+                                "error": PREVIOUS_TURN_ACTIVITY_UNAVAILABLE,
+                            }, HTTP_CONFLICT
+                        if not activity.idle:
+                            return {
+                                "ok": False,
+                                "error": self._previous_turn_error(activity.blockers),
+                            }, HTTP_CONFLICT
+                        unknown_turn_id = failed_turn_id
+                if expected_submission_id and (
+                    live.last_submission_id != expected_submission_id
                     or live.running
                     or live.catalog.queued_messages(live.id)
-                    or latest is None
-                    or latest.kind != PRODUCT_EVENT_TURN_FAILED
-                    or latest.vendor_turn_id != failed_turn_id
+                    or (
+                        expected_permission_mode
+                        and (
+                            (record := live.catalog.get(session_id)) is None
+                            or record.policy_id != expected_permission_mode
+                        )
+                    )
+                    or (
+                        expected_interrupt_generation is not None
+                        and live.interrupt_generation != expected_interrupt_generation
+                    )
                 ):
                     return {"ok": False, "error": CONTINUATION_ORIGIN_STALE}, HTTP_CONFLICT
-            if expected_submission_id and (
-                live.last_submission_id != expected_submission_id
-                or live.running
-                or live.catalog.queued_messages(live.id)
-                or (
-                    expected_permission_mode
-                    and (
-                        (record := live.catalog.get(session_id)) is None
-                        or record.policy_id != expected_permission_mode
-                    )
+                if self._sessions.get(session_id) is not live:
+                    return {"ok": False, "error": SESSION_NOT_LIVE}, HTTP_NOT_FOUND
+                if live.interrupting:
+                    return {"ok": False, "error": TURN_INTERRUPTING}, HTTP_CONFLICT
+                admission_error = await self._settlement_admission_error(
+                    live, allow_queue=True, confirmed_unknown_turn_id=unknown_turn_id
                 )
-                or (
-                    expected_interrupt_generation is not None
-                    and live.interrupt_generation != expected_interrupt_generation
+                if admission_error:
+                    return {"ok": False, "error": admission_error}, HTTP_CONFLICT
+                if not live.running:
+                    blockers = await live.previous_turn_blockers()
+                    if blockers:
+                        live.trace_resource("turn_admission_blocked", blockers=list(blockers))
+                        error = self._previous_turn_error(blockers)
+                        return {"ok": False, "error": error}, HTTP_CONFLICT
+                submission_mode = (
+                    SubmissionMode.QUEUED
+                    if live.running
+                    or (live.catalog.queued_messages(live.id) and not unknown_turn_id)
+                    else SubmissionMode.DIRECT
                 )
-            ):
-                return {"ok": False, "error": CONTINUATION_ORIGIN_STALE}, HTTP_CONFLICT
-            if self._sessions.get(session_id) is not live:
-                return {"ok": False, "error": SESSION_NOT_LIVE}, HTTP_NOT_FOUND
-            if live.interrupting:
-                return {"ok": False, "error": TURN_INTERRUPTING}, HTTP_CONFLICT
-            if live.terminating or live.terminated:
-                return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
-            if live.ledger.has_unknown_outcome or live.catalog.pending_turn_settlement(live.id):
-                return {"ok": False, "error": TURN_OUTCOME_UNCONFIRMED}, HTTP_CONFLICT
-            if not live.running and self._has_open_review(live):
-                return {"ok": False, "error": RESOURCE_REVIEW_REQUIRED}, HTTP_CONFLICT
-            if not live.running:
-                blockers = await live.previous_turn_blockers()
-                if blockers:
-                    live.trace_resource("turn_admission_blocked", blockers=list(blockers))
-                    error = self._previous_turn_error(blockers)
-                    return {"ok": False, "error": error}, HTTP_CONFLICT
-            submission_mode = (
-                SubmissionMode.QUEUED
-                if live.running or live.catalog.queued_messages(live.id)
-                else SubmissionMode.DIRECT
-            )
-            payload, status = await self._enqueue(live, body, submission_mode=submission_mode)
-            if payload.get("ok"):
-                scheduled = self._schedule_locked(live, str(payload["queued_message_id"]))
-                if live.waiting_request_id == payload.get("queued_message_id"):
-                    task = scheduled
-        if task is not None and bool(body.get("wait")):
-            result = await asyncio.shield(task)
-            result_payload = self._result_payload(result)
-            result_payload.update(
-                accepted=True,
-                disposition=str(payload["disposition"]),
-            )
-            return result_payload, HTTP_ACCEPTED
-        return payload, status
+                if (
+                    expected_model_id
+                    and live.catalog.model_state(live.id).selected_model_id != expected_model_id
+                ):
+                    return {
+                        "ok": False,
+                        "error": RECONFIGURATION_STALE,
+                        "preparation_error": True,
+                    }, HTTP_CONFLICT
+                payload, status = await self._enqueue(live, body, submission_mode=submission_mode)
+                if payload.get("ok"):
+                    if unknown_turn_id:
+                        await self._confirm_queued_unknown_locked(live, unknown_turn_id)
+                        await live.ledger.confirm_unknown_turn(unknown_turn_id)
+                    scheduled = self._schedule_locked(live, str(payload["queued_message_id"]))
+                    if live.waiting_request_id == payload.get("queued_message_id"):
+                        task = scheduled
+            if task is not None and bool(body.get("wait")):
+                result = await asyncio.shield(task)
+                result_payload = self._result_payload(result)
+                result_payload.update(
+                    accepted=True,
+                    disposition=str(payload["disposition"]),
+                )
+                return result_payload, HTTP_ACCEPTED
+            return payload, status
 
     @staticmethod
     def _previous_turn_error(blockers: tuple[str, ...]) -> str:
@@ -336,6 +564,37 @@ class TurnService:
         if RUNTIME_ACTIVITY_UNAVAILABLE_BLOCKER in blockers:
             return PREVIOUS_TURN_ACTIVITY_UNAVAILABLE
         return PREVIOUS_TURN_BACKGROUND_ACTIVE
+
+    async def _settlement_admission_error(
+        self,
+        live: LiveSession,
+        *,
+        allow_queue: bool = False,
+        confirmed_unknown_turn_id: str = "",
+    ) -> str | None:
+        if live.ledger.has_unknown_outcome and not confirmed_unknown_turn_id:
+            return TURN_OUTCOME_UNCONFIRMED
+        pending = live.catalog.pending_turn_settlement(live.id)
+        if pending is None:
+            return None
+        if pending.event.kind is RuntimeEventKind.TURN_UNKNOWN:
+            return TURN_OUTCOME_UNCONFIRMED
+        if allow_queue and live.running and not pending.recovery_blocked:
+            return None
+        if live.pending_hil_snapshot():
+            return PREVIOUS_TURN_PENDING_HIL
+        session = live.runtime_session
+        if session is None:
+            return PREVIOUS_TURN_ACTIVITY_UNAVAILABLE
+        try:
+            activity = await session.activity()
+        except Exception:
+            return PREVIOUS_TURN_ACTIVITY_UNAVAILABLE
+        if not activity.execution_tree_complete:
+            return PREVIOUS_TURN_ACTIVITY_UNAVAILABLE
+        if activity.execution_tree_blockers:
+            return self._previous_turn_error(activity.execution_tree_blockers)
+        return PREVIOUS_TURN_SETTLING
 
     def _schedule_locked(
         self, live: LiveSession, selected_id: str = "", *, retry_failed: bool = False
@@ -346,8 +605,7 @@ class TurnService:
             self._sessions.get(live.id) is not live
             or live.running
             or live.interrupting
-            or live.terminating
-            or live.terminated
+            or live.closing
             or live.ledger.has_unknown_outcome
             or live.catalog.pending_turn_settlement(live.id) is not None
             or (live.resource_task is not None and not live.resource_task.done())
@@ -371,9 +629,14 @@ class TurnService:
         )
         if queued is None or queued.state not in allowed:
             return None
+        if retry_failed and queued.state is QueuedMessageState.FAILED:
+            live.catalog.authorize_replacement_retry(live.id, queued.queued_message_id)
         live.waiting_request_id = queued.queued_message_id
-        task = asyncio.create_task(self._prepare_queued(live, queued.queued_message_id))
+        task = self._activities.spawn(
+            ActivityDomain.TURN, lambda: self._prepare_queued(live, queued.queued_message_id)
+        )
         live.resource_task = task
+        live.submission_tasks.add(task)
         task.add_done_callback(
             lambda done: self._finish_resource_task(live, queued.queued_message_id, done)
         )
@@ -385,6 +648,7 @@ class TurnService:
         queued = live.catalog.queued_message(live.id, request_id)
         if queued is None:
             return TurnResult(request_id, TurnStatus.FAILED, error=QUEUED_MESSAGE_NOT_SENDABLE)
+        recovery_cancelled = False
 
         async def on_wait(_receipt: ResourceReceipt, deadline: float) -> None:
             async with live.lifecycle_lock:
@@ -409,13 +673,15 @@ class TurnService:
                     on_wait=on_wait,
                 )
             async with live.lifecycle_lock:
-                if (
-                    self._sessions.get(live.id) is not live
-                    or live.interrupting
-                    or live.terminating
-                    or live.terminated
-                ):
+                if self._sessions.get(live.id) is not live or live.interrupting or live.closing:
                     raise asyncio.CancelledError
+                recovery = None
+                if queued.purpose == QUEUE_PURPOSE_RECOVERY:
+                    recovery = queued.body.get(RECOVERY_SOURCE)
+                    if not await self._recovery_current(live, recovery):
+                        recovery_cancelled = True
+                        await self._fail_queued(live, request_id, RECOVERY_STALE, unknown=False)
+                        return TurnResult(request_id, TurnStatus.INTERRUPTED, error=RECOVERY_STALE)
                 blockers = await live.previous_turn_blockers()
                 if blockers:
                     live.trace_resource("turn_admission_blocked", blockers=list(blockers))
@@ -438,7 +704,9 @@ class TurnService:
                     queued_message_payload(submitting),
                     idempotency_key=f"queue:{request_id}:submitted:{submitting.operation_seq}",
                 )
-                payload, _status, task = await self._admit_turn_locked(live, submitting.body)
+                payload, _status, task = await self._admit_turn_locked(
+                    live, submitting.body, recovery=recovery
+                )
                 if task is None:
                     error = str(payload.get("error") or RUNTIME_TURN_FAILED)
                     await self._fail_queued(
@@ -470,6 +738,22 @@ class TurnService:
                     else SESSION_MODEL_SWITCH_FAILED
                 )
             )
+            if isinstance(exc, RuntimeOpenNotAppliedError):
+                replacement = live.catalog.replacement(live.id)
+                if (
+                    replacement is not None
+                    and replacement["state"] is ReplacementState.NOT_APPLIED
+                    and replacement["command_id"] == request_id
+                    and replacement.get("reservation_id") == exc.reservation_id
+                ):
+                    error = RUNTIME_TURN_NOT_SUBMITTED
+            startup_error = getattr(exc, "safe_error", None)
+            if (
+                error != RUNTIME_TURN_NOT_SUBMITTED
+                and isinstance(startup_error, str)
+                and startup_error in SANDBOX_STARTUP_ERRORS
+            ):
+                error = startup_error
             self._logger.error(
                 error,
                 extra={"session_id": live.id, "failure_type": type(exc).__name__},
@@ -484,10 +768,13 @@ class TurnService:
             return TurnResult(request_id, TurnStatus.FAILED, error=error)
         finally:
             self._clear_resource_task(live, request_id)
+            if recovery_cancelled:
+                self._defer_queue(live)
 
     def _finish_resource_task(
         self, live: LiveSession, request_id: str, task: asyncio.Task[TurnResult]
     ) -> None:
+        live.submission_tasks.discard(task)
         # A task cancelled before its first step never enters its coroutine's finally.
         queued = live.catalog.queued_message(live.id, request_id)
         if queued is not None and queued.state is QueuedMessageState.CANCELLED:
@@ -511,7 +798,8 @@ class TurnService:
         unknown: bool,
         safe_error_details: Mapping[str, str] | None = None,
     ) -> None:
-        live.catalog.fail_queued_submission(
+        await live.persistence.run(
+            live.catalog.fail_queued_submission,
             live.id,
             request_id,
             unknown=unknown,
@@ -539,25 +827,17 @@ class TurnService:
             idempotency_key=f"queue:{request_id}:failure:{failed.updated_at}",
         )
 
-    def _has_open_review(self, live: LiveSession) -> bool:
-        return (
-            self._review_batches is not None
-            and live.project_path is not None
-            and self._review_batches.has_open_for_workdir(str(live.project_path))
-        )
-
     async def _admit_turn_locked(
         self,
         live: LiveSession,
         body: Mapping[str, Any],
+        *,
+        recovery: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int, asyncio.Task[TurnResult] | None]:
         """Admit one new turn while the caller owns ``lifecycle_lock``."""
 
-        if self._has_open_review(live):
-            return {"ok": False, "error": RESOURCE_REVIEW_REQUIRED}, HTTP_CONFLICT, None
-
         try:
-            admission = await self._typed_input(live, body)
+            admission = await self._typed_input(live, body, allow_context_only=True)
         except ValueError as exc:
             return (
                 {
@@ -578,7 +858,9 @@ class TurnService:
                 None,
             )
         try:
-            context_result = self._freeze_context(live, body, admission)
+            context_result = self._freeze_context(live, body, admission, recovery=recovery)
+            if not isinstance(context_result, tuple):
+                self._require_turn_content(live, admission, context_result)
         except ValueError as exc:
             return (
                 {
@@ -650,6 +932,24 @@ class TurnService:
                     ),
                 ),
             )
+        if CONTINUE_TURN_ID in body or recovery is not None:
+            admission = replace(
+                admission,
+                turn_input=replace(
+                    admission.turn_input,
+                    items=(
+                        InputItem(
+                            InputKind.TEXT,
+                            text=(
+                                RECOVERY_CONTEXT
+                                if recovery is not None
+                                else INTERRUPTED_TURN_CONTEXT
+                            ),
+                        ),
+                        *admission.turn_input.items,
+                    ),
+                ),
+            )
         live.trace_turn_input(
             admission.turn_input,
             user_text=admission.display_text,
@@ -658,15 +958,47 @@ class TurnService:
             assistant_snapshot_id=admission.assistant_snapshot_id,
             assistant_context_revision=admission.assistant_context_revision,
         )
-        await live.adopt_user_title(admission.display_text, turn_id=client_turn_id)
+        title_request = (
+            self._titles.prepare(
+                live,
+                admission.display_text,
+                turn_id=client_turn_id,
+                references=admission.references,
+            )
+            if self._titles is not None and recovery is None
+            else None
+        )
+        if recovery is not None:
+            await live.refresh_skills()
+            fence = await self.recovery.admission(live, recovery, client_turn_id)
+            if fence is None:
+                return {"ok": False, "error": RECOVERY_STALE}, HTTP_CONFLICT, None
+            admission = replace(
+                admission, turn_input=replace(admission.turn_input, admission=fence)
+            )
+        replacement = live.catalog.replacement(live.id)
+        reuse_admitted = bool(
+            replacement is not None
+            and replacement["state"] is ReplacementState.BOUND
+            and replacement.get("manual_retry")
+            and replacement["command_id"] == client_turn_id
+        )
         await live.record_user_history(
-            admission.display_text,
+            RECOVERY_DISPLAY if recovery is not None else admission.display_text,
             references=admission.references,
             turn_id=client_turn_id,
             item_id=client_turn_id,
             assistant_snapshot_id=admission.assistant_snapshot_id,
             assistant_context_revision=admission.assistant_context_revision,
+            origin=(
+                USER_MESSAGE_ORIGIN_RECOVERY if recovery is not None else USER_MESSAGE_ORIGIN_TURN
+            ),
+            reuse_admitted=reuse_admitted,
         )
+        if self.recovery is not None:
+            await self.recovery.begin(
+                live, client_turn_id, automatic=recovery is not None, manual=reuse_admitted
+            )
         live.last_submission_id = client_turn_id
         live.active_assistant_snapshot_id = admission.assistant_snapshot_id
         live.active_assistant_revision = admission.assistant_context_revision
@@ -674,8 +1006,12 @@ class TurnService:
         live.active_task_lease = None
         live.product_turn_generation += 1
         live.active_turn_started_at = time.time()
-        task = asyncio.create_task(self._execute(live, admission.turn_input))
+        task = self._activities.spawn(
+            ActivityDomain.TURN, lambda: self._execute(live, admission.turn_input)
+        )
         live.current_task = task
+        if title_request is not None and self._titles is not None:
+            self._titles.start(live, title_request)
         return {"ok": True, "turn_id": client_turn_id}, HTTP_ACCEPTED, task
 
     async def _enqueue(
@@ -684,9 +1020,12 @@ class TurnService:
         body: Mapping[str, Any],
         *,
         submission_mode: SubmissionMode,
+        purpose: str = QUEUE_PURPOSE_TURN,
     ) -> tuple[dict[str, Any], int]:
         try:
-            admission = await self._typed_input(live, body, validate_skill_inventory=False)
+            admission = await self._typed_input(
+                live, body, validate_skill_inventory=False, allow_context_only=True
+            )
         except ValueError as exc:
             return {
                 "ok": False,
@@ -721,7 +1060,14 @@ class TurnService:
                 return {"ok": False, "error": QUEUED_MESSAGE_CONFLICT}, HTTP_CONFLICT
             return self._queue_receipt(live, existing), HTTP_ACCEPTED
         try:
-            context = self._freeze_queued_context(live, body, admission)
+            context = self._freeze_queued_context(
+                live,
+                body,
+                admission,
+                recovery=body.get(RECOVERY_SOURCE) if purpose == QUEUE_PURPOSE_RECOVERY else None,
+            )
+            if not isinstance(context, tuple):
+                self._require_turn_content(live, admission, context)
         except ValueError as exc:
             return {
                 "ok": False,
@@ -734,7 +1080,9 @@ class TurnService:
             queued_body[QUEUED_ASSISTANT_SNAPSHOT_ID] = context.snapshot.snapshot_id
             queued_body["assistant_context_revision"] = context.snapshot.selection_revision
             queued_body[QUEUED_ASSISTANT_REFERENCES] = list(context.surface_refs)
-        queued_body[QUEUED_DISPLAY_TEXT] = admission.display_text
+        queued_body[QUEUED_DISPLAY_TEXT] = (
+            RECOVERY_DISPLAY if purpose == QUEUE_PURPOSE_RECOVERY else admission.display_text
+        )
         queued_body[QUEUED_REFERENCES] = list(admission.references)
         try:
             record = live.catalog.enqueue_message(
@@ -742,6 +1090,7 @@ class TurnService:
                 queued_message_id,
                 queued_body,
                 submission_mode=submission_mode,
+                purpose=purpose,
             )
         except SessionQueueCapacityError:
             self._release_queued_context(live, admission.turn_input.client_user_message_id)
@@ -888,9 +1237,7 @@ class TurnService:
             if self._context_source is not None:
                 self._context_source.finalize(
                     session_id=session_id,
-                    client_turn_id=str(
-                        queued.body.get("client_user_message_id") or queued.queued_message_id
-                    ),
+                    client_turn_id=str(self._context_owner(session_id, queued.queued_message_id)),
                     outcome=AssistantTurnFinalization.DISCARDED,
                 )
             if not live.catalog.delete_queued_message(session_id, queued.queued_message_id):
@@ -913,42 +1260,43 @@ class TurnService:
         queued_message_id: str,
     ) -> tuple[dict[str, Any], int]:
         """Start one selected queued message as a new turn while the session is idle."""
-
-        live = self._sessions.get(session_id)
-        if live is None:
-            return {"ok": False, "error": "session_not_live"}, HTTP_NOT_FOUND
-        async with live.lifecycle_lock:
-            if self._sessions.get(session_id) is not live:
+        with self._activities.enter(ActivityDomain.TURN, root=True):
+            live = self._sessions.get(session_id)
+            if live is None:
                 return {"ok": False, "error": "session_not_live"}, HTTP_NOT_FOUND
-            if live.interrupting:
-                return {"ok": False, "error": TURN_INTERRUPTING}, HTTP_CONFLICT
-            if live.ledger.has_unknown_outcome or live.catalog.pending_turn_settlement(live.id):
-                return {"ok": False, "error": TURN_OUTCOME_UNCONFIRMED}, HTTP_CONFLICT
-            if live.running:
-                return {"ok": False, "error": TURN_ALREADY_RUNNING}, HTTP_CONFLICT
-            if live.terminating or live.terminated:
-                return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
-            queued = live.catalog.queued_message(session_id, queued_message_id)
-            if (
-                live.waiting_request_id == queued_message_id
-                and live.resource_task is not None
-                and not live.resource_task.done()
-            ):
-                if queued is not None and queued.state in (
-                    QueuedMessageState.QUEUED,
-                    QueuedMessageState.WAITING_RESOURCES,
-                    QueuedMessageState.FAILED,
+            async with live.lifecycle_lock:
+                if self._sessions.get(session_id) is not live:
+                    return {"ok": False, "error": "session_not_live"}, HTTP_NOT_FOUND
+                if live.interrupting:
+                    return {"ok": False, "error": TURN_INTERRUPTING}, HTTP_CONFLICT
+                admission_error = await self._settlement_admission_error(live)
+                if admission_error:
+                    return {"ok": False, "error": admission_error}, HTTP_CONFLICT
+                if live.running:
+                    return {"ok": False, "error": TURN_ALREADY_RUNNING}, HTTP_CONFLICT
+                if live.closing:
+                    return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
+                queued = live.catalog.queued_message(session_id, queued_message_id)
+                if (
+                    live.waiting_request_id == queued_message_id
+                    and live.resource_task is not None
+                    and not live.resource_task.done()
                 ):
-                    return self._queue_receipt(live, queued), HTTP_ACCEPTED
-            if queued is None:
-                return {"ok": False, "error": QUEUED_MESSAGE_NOT_SENDABLE}, HTTP_CONFLICT
-            task = self._schedule_locked(live, queued_message_id, retry_failed=True)
-            if task is None:
-                return {
-                    "ok": False,
-                    "error": QUEUED_MESSAGE_NOT_SENDABLE,
-                }, HTTP_CONFLICT
-            return self._queue_receipt(live, queued), HTTP_ACCEPTED
+                    if queued is not None and queued.state in (
+                        QueuedMessageState.QUEUED,
+                        QueuedMessageState.WAITING_RESOURCES,
+                        QueuedMessageState.FAILED,
+                    ):
+                        return self._queue_receipt(live, queued), HTTP_ACCEPTED
+                if queued is None:
+                    return {"ok": False, "error": QUEUED_MESSAGE_NOT_SENDABLE}, HTTP_CONFLICT
+                task = self._schedule_locked(live, queued_message_id, retry_failed=True)
+                if task is None:
+                    return {
+                        "ok": False,
+                        "error": QUEUED_MESSAGE_NOT_SENDABLE,
+                    }, HTTP_CONFLICT
+                return self._queue_receipt(live, queued), HTTP_ACCEPTED
 
     async def _steer(
         self,
@@ -961,12 +1309,13 @@ class TurnService:
                 "ok": False,
                 "error": "queued_message_id_required",
             }, HTTP_BAD_REQUEST
-        if live.terminating or live.terminated:
+        if live.closing:
             return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
         if live.interrupting:
             return {"ok": False, "error": TURN_INTERRUPTING}, HTTP_CONFLICT
-        if live.ledger.has_unknown_outcome or live.catalog.pending_turn_settlement(live.id):
-            return {"ok": False, "error": TURN_OUTCOME_UNCONFIRMED}, HTTP_CONFLICT
+        admission_error = await self._settlement_admission_error(live)
+        if admission_error:
+            return {"ok": False, "error": admission_error}, HTTP_CONFLICT
         if not live.running:
             return {"ok": False, "error": TURN_NOT_RUNNING}, HTTP_CONFLICT
         if live.runtime_session is None:
@@ -1052,32 +1401,35 @@ class TurnService:
         if live is None:
             return
         async with live.lifecycle_lock:
-            for queued in live.catalog.queued_messages(session_id):
-                if queued.state is not QueuedMessageState.OUTCOME_UNKNOWN or turn_id not in (
-                    queued.queued_message_id,
-                    queued.native_turn_id,
-                ):
-                    continue
-                if self._context_source is not None:
-                    # Consume first so a failed cleanup leaves the durable request retryable.
-                    self._context_source.finalize(
-                        session_id=session_id,
-                        client_turn_id=queued.queued_message_id,
-                        outcome=AssistantTurnFinalization.DISCARDED,
-                    )
-                if not live.catalog.remove_reconciled_unknown_message(
-                    session_id, queued.queued_message_id, int(queued.operation_seq or 0)
-                ):
-                    continue
-                await live.publish(
-                    PRODUCT_EVENT_MESSAGE_REMOVED,
-                    {
-                        "queued_message_id": queued.queued_message_id,
-                        "reason": "confirmed_without_replay",
-                    },
-                    turn_id=turn_id,
-                    idempotency_key=f"queue:{queued.queued_message_id}:confirmed-without-replay",
+            await self._confirm_queued_unknown_locked(live, turn_id)
+
+    async def _confirm_queued_unknown_locked(self, live: LiveSession, turn_id: str) -> None:
+        session_id = live.id
+        for queued in live.catalog.queued_messages(session_id):
+            if queued.state is not QueuedMessageState.OUTCOME_UNKNOWN or turn_id not in (
+                queued.queued_message_id,
+                queued.native_turn_id,
+            ):
+                continue
+            if self._context_source is not None:
+                self._context_source.finalize(
+                    session_id=session_id,
+                    client_turn_id=self._context_owner(session_id, queued.queued_message_id),
+                    outcome=AssistantTurnFinalization.DISCARDED,
                 )
+            if not live.catalog.remove_reconciled_unknown_message(
+                session_id, queued.queued_message_id, int(queued.operation_seq or 0)
+            ):
+                continue
+            await live.publish(
+                PRODUCT_EVENT_MESSAGE_REMOVED,
+                {
+                    "queued_message_id": queued.queued_message_id,
+                    "reason": "confirmed_without_replay",
+                },
+                turn_id=turn_id,
+                idempotency_key=f"queue:{queued.queued_message_id}:confirmed-without-replay",
+            )
 
     async def _submit_steer(
         self,
@@ -1135,7 +1487,8 @@ class TurnService:
                 extra={"session_id": live.id, "failure_type": type(exc).__name__},
             )
             if retryability_value == RuntimeRetryability.UNKNOWN_OUTCOME.value:
-                live.catalog.fail_queued_submission(
+                await live.persistence.run(
+                    live.catalog.fail_queued_submission,
                     live.id,
                     queued_message_id,
                     unknown=True,
@@ -1171,7 +1524,8 @@ class TurnService:
         await live.bind_user_history(client_turn_id, vendor_turn_id=turn_id)
         self._release_queued_context(live, client_turn_id)
         if not live.catalog.remove_queued_message(live.id, queued_message_id):
-            live.catalog.fail_queued_submission(
+            await live.persistence.run(
+                live.catalog.fail_queued_submission,
                 live.id,
                 queued_message_id,
                 unknown=True,
@@ -1208,7 +1562,8 @@ class TurnService:
         }, HTTP_ACCEPTED
 
     async def _reject_steer(self, live: LiveSession, queued: Any, safe_error: str) -> None:
-        live.catalog.fail_queued_submission(
+        await live.persistence.run(
+            live.catalog.fail_queued_submission,
             live.id,
             queued.queued_message_id,
             unknown=False,
@@ -1227,6 +1582,8 @@ class TurnService:
         live: LiveSession,
         body: Mapping[str, Any],
         admission: TurnAdmission,
+        *,
+        recovery: Mapping[str, Any] | None = None,
     ) -> AssistantTurnContext | tuple[dict[str, Any], int] | None:
         if self._context_source is None:
             if body.get("assistant_context_revision") is not None:
@@ -1239,9 +1596,15 @@ class TurnService:
         if snapshot_id:
             result = self._context_source.resume_queued(
                 session_id=live.id,
-                client_turn_id=admission.turn_input.client_user_message_id,
+                client_turn_id=(
+                    str(recovery["client_id"])
+                    if recovery is not None
+                    else admission.turn_input.client_user_message_id
+                ),
                 snapshot_id=snapshot_id,
-                question=admission.display_text,
+                question=(
+                    str(recovery["question"]) if recovery is not None else admission.display_text
+                ),
             )
         else:
             revision = self._expected_context_revision(body)
@@ -1285,6 +1648,8 @@ class TurnService:
         live: LiveSession,
         body: Mapping[str, Any],
         admission: TurnAdmission,
+        *,
+        recovery: object = None,
     ) -> AssistantTurnContext | tuple[dict[str, Any], int] | None:
         if self._context_source is None:
             if body.get("assistant_context_revision") is not None:
@@ -1293,6 +1658,9 @@ class TurnService:
                     "error": ASSISTANT_CONTEXT_UNAVAILABLE,
                 }, HTTP_CONFLICT
             return None
+        snapshot_id = str(body.get(QUEUED_ASSISTANT_SNAPSHOT_ID) or "")
+        if isinstance(recovery, Mapping) and snapshot_id:
+            return self._freeze_context(live, body, admission, recovery=recovery)
         revision = self._expected_context_revision(body)
         active_document = body.get("active_document")
         result = self._context_source.freeze_queued(
@@ -1365,6 +1733,34 @@ class TurnService:
     def _discard_queued_context(self, live: LiveSession, client_turn_id: str) -> None:
         self._finalize_context(live.id, client_turn_id, AssistantTurnFinalization.DISCARDED)
 
+    def _require_turn_content(
+        self,
+        live: LiveSession,
+        admission: TurnAdmission,
+        context: AssistantTurnContext | None,
+    ) -> None:
+        if admission.turn_input.items:
+            return
+        if (
+            context is not None
+            and context.model_context
+            and any(
+                item.ref.origin is ContextOrigin.EXPLICIT
+                and (
+                    item.state is ContextResolutionState.READY
+                    or (
+                        item.state is ContextResolutionState.TRUNCATED
+                        and bool(item.excerpt_text or item.model_locator)
+                    )
+                )
+                for item in context.snapshot.items
+            )
+        ):
+            return
+        if context is not None:
+            self._release_queued_context(live, admission.turn_input.client_user_message_id)
+        raise ValueError(TURN_INPUT_REQUIRED)
+
     @staticmethod
     def _with_context(
         admission: TurnAdmission,
@@ -1410,9 +1806,10 @@ class TurnService:
         body: Mapping[str, Any],
         *,
         validate_skill_inventory: bool = True,
+        allow_context_only: bool = False,
     ) -> TurnAdmission:
         raw_items = body.get("input")
-        if not isinstance(raw_items, list) or not raw_items:
+        if not isinstance(raw_items, list) or (not raw_items and not allow_context_only):
             raise ValueError(TURN_INPUT_REQUIRED)
         items: list[InputItem] = []
         display_parts: list[str] = []
@@ -1574,22 +1971,173 @@ class TurnService:
         live: LiveSession,
         turn_input: TurnInput,
     ) -> TurnResult:
+        with self._activities.enter(ActivityDomain.TURN) as activity:
+            live.turn_activity = activity
+            try:
+                return await self._execute_turn(live, turn_input)
+            finally:
+                if live.turn_activity is activity:
+                    live.turn_activity = None
+
+    async def _execute_turn(
+        self,
+        live: LiveSession,
+        turn_input: TurnInput,
+    ) -> TurnResult:
         should_drain = False
         runtime_result: RuntimeTurnResult | None = None
         interrupt_generation = live.interrupt_generation
+
+        def intent() -> tuple[object, ...]:
+            record = live.catalog.get(live.id)
+            model = live.catalog.model_state(live.id)
+            return (
+                live.model_id,
+                live.user_id,
+                live.runtime_workdir,
+                live.project_path,
+                live.output_root,
+                live.writable_roots,
+                tuple(sorted(live.process_environment.items())),
+                record.policy_id if record is not None else None,
+                model.selected_model_id,
+                model.selected_reasoning_effort,
+                model.selected_thinking,
+                self._activities.snapshot().maintenance_revision,
+            )
+
+        original_intent = intent()
+
+        async def authorize_retry(proof: SubmissionRetryProof) -> Callable[[], bool]:
+            runtime = live.runtime_session
+            queued = live.catalog.queued_message(live.id, turn_input.client_user_message_id)
+            if (
+                runtime is None
+                or runtime.binding != proof.binding
+                or proof.command_id != turn_input.client_user_message_id
+                or queued is None
+                or queued.state is not QueuedMessageState.SUBMITTING
+                or queued.native_turn_id
+                or intent() != original_intent
+                or live.interrupt_generation != interrupt_generation
+            ):
+                raise RuntimeError(RECOVERY_STALE)
+
+            def recovery_current() -> bool:
+                return True
+
+            if self.recovery is not None:
+                recovery_current = await self.recovery.retry_unsubmitted(live, proof)
+            operation_seq = queued.operation_seq
+
+            def current() -> bool:
+                current_queued = live.catalog.queued_message(live.id, proof.command_id)
+                return (
+                    not self._closed
+                    and self._sessions.get(live.id) is live
+                    and live.runtime_session is runtime
+                    and runtime.binding == proof.binding
+                    and intent() == original_intent
+                    and live.interrupt_generation == interrupt_generation
+                    and not live.terminating
+                    and not live.terminated
+                    and not live.pending_hil_snapshot()
+                    and not live.ledger.uncertainty_snapshot()
+                    and self._activities.snapshot().phase is ActivityPhase.OPEN
+                    and current_queued is not None
+                    and current_queued.state is QueuedMessageState.SUBMITTING
+                    and current_queued.operation_seq == operation_seq
+                    and not current_queued.native_turn_id
+                    and recovery_current()
+                )
+
+            return current
+
+        live.submission_retry_authorizer = authorize_retry
         try:
-            async with live.turn_lock:
-                runtime_result = await live.run_runtime(turn_input)
+            replaced = False
+            frozen_request = None
+            while True:
+                try:
+                    async with live.turn_lock:
+                        runtime_result = (
+                            await live.run_runtime(turn_input)
+                            if frozen_request is None
+                            else await live.run_runtime(turn_input, frozen_request=frozen_request)
+                        )
+                    break
+                except RuntimeTurnNotSubmittedError as error:
+                    if (
+                        replaced
+                        or live.recover_empty is None
+                        or turn_input.admission is not None
+                        or error.request is None
+                        or live.interrupt_generation != interrupt_generation
+                        or error.proof.command_id != turn_input.client_user_message_id
+                    ):
+                        raise
+                    replaced = True
+                    try:
+                        fence = await live.recover_empty(error.proof)
+                    except RuntimeOpenNotAppliedError:
+                        replacement = live.catalog.replacement(live.id)
+                        if (
+                            replacement is None
+                            or replacement["proof_id"] != error.proof.proof_id
+                            or replacement["state"] is not ReplacementState.NOT_APPLIED
+                        ):
+                            raise
+                        runtime_result = RuntimeTurnResult(
+                            turn_input.client_user_message_id,
+                            "",
+                            RuntimeTurnOutcome.FAILED,
+                            safe_error=RUNTIME_TURN_NOT_SUBMITTED,
+                        )
+                        break
+                    if live.interrupt_generation != interrupt_generation:
+                        raise
+                    if self.recovery is not None:
+                        recovery_current = await self.recovery.replace_unsubmitted(
+                            live, error.proof
+                        )
+                        attachment_current = fence.current
+
+                        def current_attachment(
+                            attachment_current: Callable[[], bool] = attachment_current,
+                            recovery_current: Callable[[], bool] = recovery_current,
+                        ) -> bool:
+                            return attachment_current() and recovery_current()
+
+                        fence = replace(fence, current=current_attachment)
+                    turn_input = replace(
+                        turn_input,
+                        admission=fence,
+                        submission_deadline=error.proof.submission_deadline,
+                        submission_attempts=error.proof.submission_attempts,
+                    )
+                    frozen_request = error.request
             settled = await self._settle_pending_turn(live, turn_input.client_user_message_id)
             native_turn_id = (
                 settled.native_turn_id
                 if settled is not None
                 else runtime_result.native_turn_id or runtime_result.command_id
             )
-            await live.bind_user_history(
-                turn_input.client_user_message_id,
-                vendor_turn_id=native_turn_id,
+            not_submitted = (
+                runtime_result.outcome is RuntimeTurnOutcome.FAILED
+                and runtime_result.safe_error == RUNTIME_TURN_NOT_SUBMITTED
+                and not runtime_result.native_turn_id
             )
+            if not_submitted:
+                await live.ledger.record_turn_failure(
+                    turn_input.client_user_message_id,
+                    code=RUNTIME_TURN_NOT_SUBMITTED,
+                    message="Agent runtime turn was not submitted",
+                )
+            else:
+                await live.bind_user_history(
+                    turn_input.client_user_message_id,
+                    vendor_turn_id=native_turn_id,
+                )
             outcome = (
                 RuntimeTurnOutcome.INTERRUPTED
                 if live.interrupt_generation != interrupt_generation
@@ -1612,7 +2160,11 @@ class TurnService:
                 error=(
                     runtime_result.safe_error
                     if settled is None or settled.event.kind is RuntimeEventKind.TURN_UNKNOWN
-                    else str(settled.event.payload.get("safe_error") or "")
+                    else (
+                        str(settled.event.payload.get("safe_error") or "")
+                        if isinstance(settled.event.payload, dict)
+                        else ""
+                    )
                 ),
             )
             self._finalize_context(
@@ -1627,16 +2179,10 @@ class TurnService:
                 runtime_outcome=outcome,
                 event_turn_id=result.turn_id,
             )
-            if outcome is RuntimeTurnOutcome.UNKNOWN:
-                await self._fail_queued(
-                    live,
-                    turn_input.client_user_message_id,
-                    TURN_OUTCOME_UNCONFIRMED,
-                    unknown=True,
-                )
-            else:
-                await self._complete_queued(live, turn_input.client_user_message_id)
-            live.catalog.clear_turn_settlement(live.id, result.turn_id)
+            await self._settle_queued_outcome(
+                live, turn_input.client_user_message_id, outcome, result.error
+            )
+            await live.persistence.run(live.catalog.clear_turn_settlement, live.id, result.turn_id)
             should_drain = outcome is RuntimeTurnOutcome.COMPLETED
             return result
         except asyncio.CancelledError:
@@ -1750,6 +2296,7 @@ class TurnService:
             )
             return result
         finally:
+            live.submission_retry_authorizer = None
             live.active_assistant_snapshot_id = ""
             live.active_assistant_revision = None
             live.clear_task_lease()
@@ -1777,21 +2324,21 @@ class TurnService:
                 raise SessionStateConflictError("pending turn settlement identity mismatch")
             session = live.runtime_session
             if session is None:
-                live.catalog.mark_turn_recovery_blocked(live.id, True)
+                await live.persistence.run(live.catalog.mark_turn_recovery_blocked, live.id, True)
                 return None
             try:
                 activity = await session.activity()
             except Exception:
-                live.catalog.mark_turn_recovery_blocked(live.id, True)
                 self._logger.warning(
                     "turn_settlement_activity_unavailable session_id=%s",
                     live.id,
                     exc_info=True,
                 )
             else:
-                live.catalog.mark_turn_recovery_blocked(
-                    live.id, not activity.execution_tree_complete
-                )
+                if activity.execution_tree_complete:
+                    await live.persistence.run(
+                        live.catalog.mark_turn_recovery_blocked, live.id, False
+                    )
                 has_pending_hil = bool(live.pending_hil_snapshot())
                 current_activity = (
                     activity.execution_tree_complete,
@@ -1801,12 +2348,13 @@ class TurnService:
                 if current_activity != last_activity:
                     self._logger.info(
                         "turn_settlement_activity session_id=%s native_turn_id=%s "
-                        "complete=%s blockers=%s pending_hil=%s",
+                        "complete=%s blockers=%s pending_hil=%s activity_blockers=%s",
                         live.id,
                         pending.native_turn_id,
                         current_activity[0],
                         current_activity[1],
                         current_activity[2],
+                        activity.blockers,
                     )
                     last_activity = current_activity
                 if activity.execution_tree_idle and not has_pending_hil:
@@ -1816,20 +2364,33 @@ class TurnService:
         return None
 
     def resume_pending_settlement(self, live: LiveSession) -> None:
+        if self._closed or live.closing:
+            return
         pending = live.catalog.pending_turn_settlement(live.id)
         if pending is None:
             return
         live.active_product_turn_id = pending.client_turn_id
-        live.ledger.activate_turn(pending.native_turn_id)
-        task = asyncio.create_task(self._recover_pending_settlement(live))
+        task = self._activities.spawn(
+            ActivityDomain.SETTLEMENT, lambda: self._recover_pending_settlement(live)
+        )
         live.current_task = task
 
     async def _recover_pending_settlement(self, live: LiveSession) -> None:
+        with self._activities.enter(ActivityDomain.SETTLEMENT) as activity:
+            live.turn_activity = activity
+            try:
+                await self._recover_settlement(live)
+            finally:
+                if live.turn_activity is activity:
+                    live.turn_activity = None
+
+    async def _recover_settlement(self, live: LiveSession) -> None:
         pending = live.catalog.pending_turn_settlement(live.id)
         if pending is None:
             return
         should_drain = False
         try:
+            await live.ledger.activate_turn(pending.native_turn_id)
             while not live.terminating and not live.terminated:
                 try:
                     settled = await self._settle_pending_turn(live, pending.client_turn_id)
@@ -1851,16 +2412,19 @@ class TurnService:
                         runtime_outcome=outcome,
                         event_turn_id=pending.native_turn_id,
                     )
-                    if outcome is RuntimeTurnOutcome.UNKNOWN:
-                        await self._fail_queued(
-                            live,
-                            pending.client_turn_id,
-                            TURN_OUTCOME_UNCONFIRMED,
-                            unknown=True,
-                        )
-                    else:
-                        await self._complete_queued(live, pending.client_turn_id)
-                    live.catalog.clear_turn_settlement(live.id, pending.native_turn_id)
+                    await self._settle_queued_outcome(
+                        live,
+                        pending.client_turn_id,
+                        outcome,
+                        (
+                            str(pending.event.payload.get("safe_error") or "")
+                            if isinstance(pending.event.payload, Mapping)
+                            else ""
+                        ),
+                    )
+                    await live.persistence.run(
+                        live.catalog.clear_turn_settlement, live.id, pending.native_turn_id
+                    )
                     should_drain = outcome is RuntimeTurnOutcome.COMPLETED
                     return
                 except Exception:
@@ -1876,8 +2440,18 @@ class TurnService:
             if should_drain:
                 asyncio.create_task(self._drain_next(live))
 
+    async def _settle_queued_outcome(
+        self, live: LiveSession, request_id: str, outcome: RuntimeTurnOutcome, safe_error: str
+    ) -> None:
+        if outcome is RuntimeTurnOutcome.UNKNOWN:
+            await self._fail_queued(live, request_id, TURN_OUTCOME_UNCONFIRMED, unknown=True)
+        elif outcome is RuntimeTurnOutcome.FAILED and safe_error == RUNTIME_TURN_NOT_SUBMITTED:
+            await self._fail_queued(live, request_id, RUNTIME_TURN_NOT_SUBMITTED, unknown=False)
+        else:
+            await self._complete_queued(live, request_id)
+
     async def _complete_queued(self, live: LiveSession, request_id: str) -> None:
-        if live.catalog.complete_queued_message(live.id, request_id):
+        if await live.persistence.run(live.catalog.complete_queued_message, live.id, request_id):
             await live.publish(
                 PRODUCT_EVENT_MESSAGE_REMOVED,
                 {"queued_message_id": request_id, "reason": "completed"},
@@ -1935,8 +2509,42 @@ class TurnService:
             )
 
     async def _drain_next(self, live: LiveSession) -> None:
+        if self._closed or live.closing:
+            return
         async with live.lifecycle_lock:
-            self._schedule_locked(live)
+            try:
+                with self._activities.enter(ActivityDomain.TURN, root=True):
+                    self._schedule_locked(live)
+                    return
+            except MaintenanceActive:
+                self._defer_queue(live)
+
+    def _defer_queue(self, live: LiveSession) -> None:
+        if live.id in self._queue_waiters or self._closed:
+            return
+        task = asyncio.create_task(self._resume_queue(live))
+        self._queue_waiters[live.id] = task
+
+        def finished(done: asyncio.Task[None]) -> None:
+            if self._queue_waiters.get(live.id) is done:
+                self._queue_waiters.pop(live.id, None)
+            if not done.cancelled() and done.exception() is not None:
+                self._logger.error("queued turn resume failed session_id=%s", live.id)
+
+        task.add_done_callback(finished)
+
+    async def _resume_queue(self, live: LiveSession) -> None:
+        # This is a dormant queue watcher, not executing work. Control requests
+        # must return while paused instead of waiting for maintenance to finish.
+        while not self._closed and not live.closing:
+            await self._activities.wait_open()
+            async with live.lifecycle_lock:
+                try:
+                    with self._activities.enter(ActivityDomain.TURN, root=True):
+                        self._schedule_locked(live)
+                        return
+                except MaintenanceActive:
+                    continue
 
     @staticmethod
     def _context_outcome(
@@ -1959,7 +2567,7 @@ class TurnService:
         try:
             self._context_source.finalize(
                 session_id=session_id,
-                client_turn_id=client_turn_id,
+                client_turn_id=self._context_owner(session_id, client_turn_id),
                 outcome=outcome,
             )
         except Exception as exc:  # noqa: BLE001 - turn outcome must not be rewritten by cleanup
@@ -1972,6 +2580,26 @@ class TurnService:
                     "failure_type": type(exc).__name__,
                 },
                 exc_info=True,
+            )
+
+    def _context_owner(self, session_id: str, client_turn_id: str) -> str:
+        queued = (
+            self._catalog.queued_message(session_id, client_turn_id)
+            if self._catalog is not None
+            else None
+        )
+        if queued is not None and queued.purpose == QUEUE_PURPOSE_RECOVERY:
+            source = queued.body.get(RECOVERY_SOURCE)
+            if isinstance(source, Mapping) and isinstance(source.get("client_id"), str):
+                return source["client_id"]
+        return client_turn_id
+
+    def _complete_recovered_context(self, live: LiveSession, client_id: str) -> None:
+        if self._context_source is not None:
+            self._context_source.finalize(
+                session_id=live.id,
+                client_turn_id=self._context_owner(live.id, client_id),
+                outcome=AssistantTurnFinalization.ACCEPTED,
             )
 
     @staticmethod

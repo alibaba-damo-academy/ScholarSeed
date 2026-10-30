@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -17,8 +18,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-_HOME = Path(tempfile.mkdtemp(prefix="rp-auth-home-"))
+_HOME = Path(tempfile.mkdtemp(prefix="rp-auth-home-")).resolve()
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
+os.environ["SCHOLARSEED_DEFAULT_WORKSPACE"] = str(_HOME / "cases")
 
 from tests._isolate import isolate_research_db  # noqa: E402  (隔离先于 first-party import)
 
@@ -27,6 +29,7 @@ _RESEARCH_DB = isolate_research_db()
 import service.identity.persistence.tokens as token_store  # noqa: E402
 import service.identity.persistence.users as user_store  # noqa: E402
 from service.bootstrap import create_app  # noqa: E402
+from service.identity.persistence.store import load_auth_data  # noqa: E402
 from service.identity.utils import HOST_PROCESS_HEADER, HOST_PROCESS_KEY_ENV  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -40,6 +43,63 @@ def check(name: str, cond: bool, detail: str = "") -> None:
     else:
         FAIL += 1
         print(f"  ✗ {name}  {detail}")
+
+
+def test_strict_store() -> None:
+    print("[0] 账号格式错误不能退化为空存储")
+    path = _HOME / "auth.json"
+    check("缺失账号文件不创建内容", not user_store.has_users() and not path.exists())
+    malformed = [
+        b"{",
+        b"\xff",
+        b"[]",
+        b"{}",
+        b'{"users":{},"tokens":[]}',
+        b'{"users":[],"tokens":null}',
+        b'{"users":[1],"tokens":[]}',
+        b'{"users":[],"tokens":["invalid"]}',
+    ]
+    for index, original in enumerate(malformed):
+        for name, operation in (
+            ("load", load_auth_data),
+            ("users", user_store.has_users),
+            ("create", lambda: user_store.create_user("new@test.dev", "secret1")),
+            ("issue", lambda: token_store.issue_token("fixture-user")),
+        ):
+            path.write_bytes(original)
+            rejected = False
+            try:
+                operation()
+            except ValueError:
+                rejected = True
+            except (TypeError, KeyError, AttributeError):
+                pass
+            check(f"格式 {index} {name} 拒绝且保留字节", rejected and path.read_bytes() == original)
+    path.unlink()
+    path.mkdir()
+    try:
+        for name, operation in (("load", load_auth_data), ("users", user_store.has_users)):
+            rejected = False
+            try:
+                operation()
+            except OSError:
+                rejected = True
+            check(f"不可读账号路径 {name} 传播 IO 错误", rejected and path.is_dir())
+    finally:
+        path.rmdir()
+    original = {"users": [], "tokens": [], "future": {"preserve": [1, 2]}}
+    path.write_text(json.dumps(original), encoding="utf-8")
+    user = user_store.create_user("preserve@test.dev", "secret1")
+    token = token_store.issue_token(user["user_id"])
+    check(
+        "用户与 token 写入保留未知字段",
+        json.loads(path.read_text())["future"] == original["future"],
+    )
+    check(
+        "实际用户与 token 可读回",
+        (token_store.verify_token(token) or {}).get("user_id") == user["user_id"],
+    )
+    path.unlink()
 
 
 def test_store() -> None:
@@ -156,6 +216,7 @@ def test_auto() -> None:
 
 
 def main() -> int:
+    test_strict_store()
     test_store()
     test_http()
     test_disabled()

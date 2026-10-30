@@ -14,6 +14,11 @@ from enum import Enum
 
 MAX_IMPORT_BYTES = 1024 * 1024 * 1024
 
+#: 单批题录上限, 导入与导出共用同一个口径。
+#: 超限一律报错 (导入 ``too_many_records`` / 导出 ``EXPORT_TOO_MANY_ITEMS``),
+#: 不做静默裁剪: 用户勾选了 3000 条却只拿到 2000 条, 比失败更难发现。
+MAX_BATCH_RECORDS = 2000
+
 LIBRARY_INVALID = "literature_library_invalid"
 COLLECTION_NOT_FOUND = "COLLECTION_NOT_FOUND"
 COLLECTION_PARENT_INVALID = "COLLECTION_PARENT_INVALID"
@@ -26,6 +31,11 @@ NOTE_BODY_REQUIRED = "literature_note_body_required"
 NOTE_NOT_FOUND = "literature_note_not_found"
 NOTE_TITLE_REQUIRED = "literature_note_title_required"
 NOTE_VERSION_CONFLICT = "literature_note_version_conflict"
+TAXONOMY_NOT_FOUND = "literature_taxonomy_not_found"
+TAXONOMY_CONFLICT = "literature_taxonomy_conflict"
+TAXONOMY_REVISION_CONFLICT = "literature_taxonomy_revision_conflict"
+TAXONOMY_PROJECT_REQUIRED = "literature_taxonomy_project_required"
+TAXONOMY_ITEM_UNAVAILABLE = "literature_taxonomy_item_unavailable"
 
 
 class FulltextState(str, Enum):

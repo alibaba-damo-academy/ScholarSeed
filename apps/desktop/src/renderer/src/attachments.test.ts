@@ -35,6 +35,21 @@ test('clipboardImageFiles 只提取剪贴板中的图片文件', () => {
   )
 })
 
+test('clipboardImageFiles preserves multiple image formats and clipboard order', () => {
+  const screenshot = png('screenshot.png', 1)
+  const photo = new File(['jpeg'], 'photo.jpg', { type: 'image/jpeg' })
+  const webImage = new File(['webp'], 'copied.webp', { type: 'image/webp' })
+  const items = {
+    0: { kind: 'file', type: screenshot.type, getAsFile: () => screenshot },
+    1: { kind: 'string', type: 'text/html', getAsFile: () => null },
+    2: { kind: 'file', type: photo.type, getAsFile: () => photo },
+    3: { kind: 'file', type: webImage.type, getAsFile: () => webImage },
+    length: 4
+  }
+  assert.deepEqual(clipboardImageFiles(items), [screenshot, photo, webImage])
+  assert.deepEqual(clipboardImageFiles({ length: 0 }), [])
+})
+
 test('feedbackImageRoom 为自动截图保留一个名额', () => {
   assert.equal(feedbackImageRoom(0, false, 5), 5)
   assert.equal(feedbackImageRoom(0, true, 5), 4)

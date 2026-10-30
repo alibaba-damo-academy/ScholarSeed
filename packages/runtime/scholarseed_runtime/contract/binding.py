@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from scholarseed_runtime.contract.capability import CapabilitySet
+from scholarseed_runtime.contract.capability import CapabilitySet, RuntimeCapabilityName
+from scholarseed_runtime.contract.inventory import SkillPolicy
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,8 @@ class RuntimeBinding:
     opaque_session_ref: str
     capabilities: CapabilitySet
     profile: str = ""
+    optional_capabilities: tuple[RuntimeCapabilityName, ...] = ()
+    skill_policy: SkillPolicy = SkillPolicy.INHERIT
 
 
 __all__ = ["RuntimeBinding"]

@@ -7,6 +7,7 @@ from citation_styles import style_ids
 from task_contract import VERBATIM_MATCH_PERCENT, VERBATIM_MATCH_THRESHOLD
 
 ROOT=Path(__file__).resolve().parents[1]
+INTERNAL_ERROR_CODE = "INTERNAL_ERROR"
 OPERATIONS=('writing.configure','writing.approve','outline.configure',
             'figures.plan','evidence.build','papers.import-local',
             'writing.review-complete','writing.review-start','writing.review-status','writing.review-wait','writing.review-response','writing.review-timeout')
@@ -167,6 +168,10 @@ def describe_input(operation,workspace=None):
 def input_error(operation,error):
     """Keep errors small: only the named field/example plus a discovery command."""
     message=str(error)
+    if isinstance(error, KeyError):
+        return {'status': 'FAILED', 'code': INTERNAL_ERROR_CODE, 'message': message,
+                'error_type': type(error).__name__,
+                'next_action': 'Preserve the current input and publication settings. Stop and report this internal skill error; do not substitute another citation style.'}
     result={'status':'FAILED','code':'INPUT_INVALID','message':message}
     if hasattr(error,'report'):result.update(error.report())
     if isinstance(error,BlockingIOError):

@@ -41,6 +41,7 @@ export type ShortcutMessageKey =
   | 'codeIndent'
   | 'codeOutdent'
   | 'pdfFind'
+  | 'pdfUndo'
   | 'pdfFindNext'
   | 'pdfFindPrevious'
   | 'pdfPreviousPage'
@@ -90,6 +91,7 @@ export type ShortcutCommandId =
   | 'code.indent'
   | 'code.outdent'
   | 'pdf.find'
+  | 'pdf.undo'
   | 'pdf.findNext'
   | 'pdf.findPrevious'
   | 'pdf.previousPage'
@@ -183,6 +185,7 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   { id: 'code.indent', messageKey: 'codeIndent', scope: 'code', when: 'code.editable', bindings: binding('Tab', UNMODIFIED) },
   { id: 'code.outdent', messageKey: 'codeOutdent', scope: 'code', when: 'code.editable', bindings: binding('Tab', SHIFT) },
   { id: 'pdf.find', messageKey: 'pdfFind', scope: 'pdf', when: 'pdf.open', bindings: binding('f') },
+  { id: 'pdf.undo', messageKey: 'pdfUndo', scope: 'pdf', when: 'pdf.open', bindings: binding('z') },
   { id: 'pdf.findNext', messageKey: 'pdfFindNext', scope: 'pdf', when: 'pdf.open', bindings: binding('Enter', UNMODIFIED) },
   { id: 'pdf.findPrevious', messageKey: 'pdfFindPrevious', scope: 'pdf', when: 'pdf.open', bindings: binding('Enter', SHIFT) },
   { id: 'pdf.previousPage', messageKey: 'pdfPreviousPage', scope: 'pdf', when: 'pdf.open', bindings: binding('PageUp', UNMODIFIED) },

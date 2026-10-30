@@ -1,7 +1,8 @@
+import { createReadyProject } from './projects'
 import { createHash } from 'crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join, relative } from 'path'
-import { expect, type Page } from '@playwright/test'
+import { basename, dirname, join, relative } from 'path'
+import { expect, type Locator, type Page } from '@playwright/test'
 import { PDFDocument, PDFName, PDFString, StandardFonts } from 'pdf-lib'
 import { apiBase, enterWorkbenchShell } from './electron'
 import type { RuntimePaths } from './runtime'
@@ -65,9 +66,7 @@ function addThreeLevelOutline(pdf: PDFDocument): void {
 
 export async function seedProject(page: Page, runtime: RuntimePaths): Promise<string> {
   page.setDefaultTimeout(ACTION_TIMEOUT_MS)
-  const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name: PROJECT_NAME } })
-  expect(response.ok(), await response.text()).toBe(true)
-  const project = await response.json() as { root: string }
+  const project = await createReadyProject(page, PROJECT_NAME)
   expect(relative(runtime.workspace, project.root).startsWith('..')).toBe(false)
   const resources = join(project.root, 'resources')
   mkdirSync(resources, { recursive: true })
@@ -116,6 +115,122 @@ export async function seedProject(page: Page, runtime: RuntimePaths): Promise<st
   return resources
 }
 
+/** v1 受理面的上传 MIME。后端按扩展名挑解析器, MIME 只作声明。 */
+const BIBLIOGRAPHY_MIME = 'application/x-bibtex'
+const PDF_MIME = 'application/pdf'
+
+/** v1 受理面：把本机 .bib/.ris 上传进项目文献库，按上传顺序返回新条目 id。
+ *
+ * 旧 `/api/literature/import` 收的是**服务端路径**，v1 的 `imports/bibliography`
+ * 收的是 multipart 字节，所以读取发生在 Node 侧、每个文件一次请求。
+ */
+export async function importBibliography(
+  page: Page,
+  projectId: string,
+  sources: string[]
+): Promise<string[]> {
+  const base = await apiBase(page)
+  const identifiers: string[] = []
+  for (const source of sources) {
+    const response = await page.request.post(
+      `${base}/api/v1/imports/bibliography?project_id=${encodeURIComponent(projectId)}`,
+      {
+        multipart: {
+          files: { name: basename(source), mimeType: BIBLIOGRAPHY_MIME, buffer: readFileSync(source) }
+        }
+      }
+    )
+    expect(response.ok(), await response.text()).toBe(true)
+    const payload = (await response.json()) as { items: Array<{ id: string }> }
+    identifiers.push(...payload.items.map((item) => item.id))
+  }
+  return identifiers
+}
+
+/** v1 受理面：把本机 PDF 上传成一条带主附件的文献，返回新条目 id。 */
+export async function importPdf(page: Page, projectId: string, source: string): Promise<string> {
+  const base = await apiBase(page)
+  const response = await page.request.post(
+    `${base}/api/v1/imports/pdf?project_id=${encodeURIComponent(projectId)}`,
+    {
+      multipart: {
+        file: { name: basename(source), mimeType: PDF_MIME, buffer: readFileSync(source) }
+      }
+    }
+  )
+  expect(response.ok(), await response.text()).toBe(true)
+  return ((await response.json()) as { id: string }).id
+}
+
+export async function openSeededLiteraturePdf(page: Page, runtime: RuntimePaths): Promise<{
+  document: Locator; sourceText: string; secondCommentText: string
+}> {
+  const resources = await seedProject(page, runtime)
+  const base = await apiBase(page)
+  const listing = await page.request.get(`${base}/api/content/projects`)
+  expect(listing.ok(), await listing.text()).toBe(true)
+  const project = (await listing.json() as { projects: Array<{ id: string; root: string }> })
+    .projects.find(candidate => candidate.root === dirname(resources))
+  expect(project).toBeTruthy()
+  await importPdf(page, project!.id, join(resources, PDF_NAME))
+  const sourceText = 'Needle marker 1 searchable selectable text.'
+  const secondCommentText = 'Second independent annotation'
+  const literatureList = await page.request.get(`${base}/api/v1/literatures?project_id=${encodeURIComponent(project!.id)}`)
+  expect(literatureList.ok(), await literatureList.text()).toBe(true)
+  const literature = (await literatureList.json() as { items: Array<{ id: string; title: string }> }).items
+    .find((candidate) => candidate.title.includes('acceptance'))
+  expect(literature).toBeTruthy()
+  const detailResponse = await page.request.get(
+    `${base}/api/v1/literatures/${literature!.id}?project_id=${encodeURIComponent(project!.id)}`
+  )
+  expect(detailResponse.ok(), await detailResponse.text()).toBe(true)
+  const detail = await detailResponse.json() as { primary_attachment: { id: string } }
+  const recordsRoute = `${base}/api/v1/literatures/${literature!.id}/attachments/${detail.primary_attachment.id}/records`
+  const initialRecords = await page.request.get(recordsRoute)
+  expect(initialRecords.ok(), await initialRecords.text()).toBe(true)
+  const initial = await initialRecords.json() as { record_revision: string; source_revision: string }
+  const saved = await page.request.put(recordsRoute, {
+    headers: { 'Content-Type': 'application/json', 'If-Match': `"${initial.record_revision}"` },
+    data: {
+      expected_source_revision: initial.source_revision,
+      records: {
+        schema_version: 1,
+        marks: [
+          {
+            id: 'literature-copy-mark-first', style: 'highlight', color: 'yellow', page: 1,
+            quads: [[0.1, 0.1, 0.4, 0.2]], text: sourceText,
+            anchor_state: 'anchored', created_at: 1, updated_at: 1
+          },
+          {
+            id: 'literature-copy-mark-second', style: 'highlight', color: 'yellow', page: 1,
+            quads: [[0.1, 0.1, 0.4, 0.2]], text: sourceText,
+            anchor_state: 'anchored', created_at: 2, updated_at: 2
+          }
+        ],
+        comments: [
+          { id: 'literature-copy-comment-first', mark_id: 'literature-copy-mark-first', body: NOTE_TEXT, created_at: 1 },
+          { id: 'literature-copy-comment-second', mark_id: 'literature-copy-mark-second', body: secondCommentText, created_at: 2 }
+        ],
+        notes: []
+      }
+    }
+  })
+  expect(saved.ok(), await saved.text()).toBe(true)
+
+  await page.reload()
+  await enterWorkbenchShell(page)
+  await page.getByTestId('topbar-project').click()
+  await page.getByTestId('project-menu-literature').click()
+  const literatureRow = page.locator('.lit-row').filter({ hasText: 'acceptance' }).first()
+  await page.screenshot({ path: join(runtime.artifacts, 'literature-list-before-selection.png') })
+  await expect(literatureRow).toBeVisible()
+  await literatureRow.click()
+  await page.getByRole('button', { name: '打开', exact: true }).first().click()
+
+  const document = page.locator('[data-testid="pdf-document"]:visible')
+  return { document, sourceText, secondCommentText }
+}
+
 export async function seedLongPdf(resources: string): Promise<void> {
   const pdf = await PDFDocument.create()
   const font = await pdf.embedFont(StandardFonts.Helvetica)
@@ -146,6 +261,7 @@ export function fileDigest(path: string): string {
 export async function selectPdfText(page: Page, pageNumber = 1): Promise<string> {
   const text = page.getByTestId(`pdf-page-${pageNumber}`).locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
   await expect(text).toBeVisible()
+  await text.scrollIntoViewIfNeeded()
   const box = await text.boundingBox()
   if (!box) throw new Error('PDF text layer has no visible bounds')
   await page.mouse.move(box.x + 1, box.y + box.height / 2)

@@ -27,7 +27,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Switch
+  Switch,
 } from '../ui'
 
 // Preferences.tsx — 语言 / 外观两个高频偏好的**唯一**控件实现。
@@ -45,16 +45,22 @@ const LABEL_CLASS_NAME = 'flex flex-none items-center gap-[8px] text-[12px] text
 const PREFERENCE_ICON_SIZE = 15
 const LANGUAGE_VALUE_CLASS_NAME = 'ml-auto flex-none text-[var(--vds-text-tertiary)]'
 const LANGUAGE_COMPACT_VALUE_CLASS_NAME = 'flex-none text-[var(--vds-text-primary)]'
-const LANGUAGE_COMPACT_CHEVRON_CLASS_NAME = 'ml-[2px] flex-none text-[var(--vds-text-primary)]'
-const LANGUAGE_POPOVER_CLASS_NAME = 'z-[calc(var(--vds-z-popover)+1)] gap-0'
-const LANGUAGE_POPOVER_STYLE = { transform: 'translate(226px, -42px)' } as const
-const LANGUAGE_OPTION_CLASS_NAME = 'flex h-9 w-full items-center justify-start gap-2 rounded-[8px] border-0 bg-transparent p-2 text-left text-[14px] font-[var(--vds-fw-normal)] leading-5 text-[var(--vds-text-primary)] shadow-none hover:bg-[var(--vds-surface-hover)] hover:text-[var(--vds-text-primary)]'
-const LANGUAGE_OPTION_ACTIVE_CLASS_NAME = 'bg-[var(--vds-surface-hover)] text-[var(--vds-text-primary)]'
-const LANGUAGE_OPTION_MARK_CLASS_NAME = 'w-5 flex-none text-center text-[14px] text-[var(--vds-text-secondary)]'
-const LANGUAGE_COMPACT_POPOVER_CLASS_NAME = 'no-drag z-[calc(var(--vds-z-popover)+1)] min-w-[128px] gap-[2px] rounded-[14px] border-0 bg-white p-[6px] shadow-[0_14px_40px_rgba(0,0,0,0.14)]'
-const LANGUAGE_COMPACT_OPTION_CLASS_NAME = 'flex !h-[32px] min-h-[32px] w-full items-center justify-start gap-[10px] rounded-[8px] border-0 bg-transparent !px-[10px] !py-0 text-left text-[14px] font-[var(--vds-fw-medium)] leading-5 text-[var(--vds-text-primary)] shadow-none hover:bg-[var(--vds-surface-hover)] focus-visible:shadow-none'
+const LANGUAGE_COMPACT_CHEVRON_CLASS_NAME =
+  'ml-[var(--vds-space-half)] flex-none text-[var(--vds-text-primary)]'
+const LANGUAGE_POPOVER_CLASS_NAME = 'z-[var(--vds-z-preferences-language-menu)] gap-0'
+const LANGUAGE_OPTION_CLASS_NAME =
+  'flex h-[var(--vds-control-height-md)] w-full items-center justify-start gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border-0 bg-transparent p-[var(--vds-space-2)] text-left text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-5 text-[var(--vds-text-primary)] shadow-none hover:bg-[var(--vds-surface-hover)] hover:text-[var(--vds-text-primary)]'
+const LANGUAGE_OPTION_ACTIVE_CLASS_NAME =
+  'bg-[var(--vds-surface-hover)] text-[var(--vds-text-primary)]'
+const LANGUAGE_OPTION_MARK_CLASS_NAME =
+  'w-5 flex-none text-center text-[14px] text-[var(--vds-text-secondary)]'
+const LANGUAGE_COMPACT_POPOVER_CLASS_NAME =
+  'no-drag z-[var(--vds-z-preferences-language-menu)] min-w-[var(--vds-language-menu-min-width)] gap-[var(--vds-space-half)] rounded-[var(--vds-language-menu-radius)] border-0 bg-white p-[calc(var(--vds-space-3)/2)] shadow-[var(--vds-language-menu-shadow)]'
+const LANGUAGE_COMPACT_OPTION_CLASS_NAME =
+  'flex !h-[var(--vds-control-height-md)] min-h-[var(--vds-control-height-md)] w-full items-center justify-start gap-[calc(var(--vds-space-5)/2)] rounded-[var(--vds-radius-4)] border-0 bg-transparent !px-[calc(var(--vds-space-5)/2)] !py-0 text-left text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-primary)] shadow-none hover:bg-[var(--vds-surface-hover)] focus-visible:shadow-none'
 const LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME = 'bg-[var(--vds-other-overlay-1)]'
-const LANGUAGE_COMPACT_OPTION_MARK_CLASS_NAME = 'w-[18px] shrink-0 text-center text-[13px] font-[var(--vds-fw-medium)] leading-5 text-[var(--vds-text-secondary)]'
+const LANGUAGE_COMPACT_OPTION_MARK_CLASS_NAME =
+  'w-[var(--vds-icon-9)] shrink-0 text-center text-[length:var(--vds-language-menu-mark-font-size)] font-[var(--vds-fw-medium)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-secondary)]'
 const LANGUAGE_COMPACT_POPOVER_STYLE = { transform: 'translateX(-12px)' } as const
 
 export function LanguageSwitchDialog(): React.JSX.Element {
@@ -75,13 +81,15 @@ export function LanguageSwitchDialog(): React.JSX.Element {
             <AlertDialogTitle>{t('languageSwitch.title')}</AlertDialogTitle>
             <AlertDialogDescription>
               {failure
-                ? t(failure === 'save'
-                  ? 'languageSwitch.saveFailed'
-                  : 'languageSwitch.preferencesFailed')
+                ? t(
+                    failure === 'save'
+                      ? 'languageSwitch.saveFailed'
+                      : 'languageSwitch.preferencesFailed'
+                  )
                 : t('languageSwitch.description', {
-                  count: pending?.dirtyCount ?? 0,
-                  language: pending ? LOCALES[pending.target].label : ''
-                })}
+                    count: pending?.dirtyCount ?? 0,
+                    language: pending ? LOCALES[pending.target].label : '',
+                  })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -95,9 +103,7 @@ export function LanguageSwitchDialog(): React.JSX.Element {
                 void act.confirmLanguageSwitch()
               }}
             >
-              {pending?.saving
-                ? t('languageSwitch.saving')
-                : t('languageSwitch.confirm')}
+              {pending?.saving ? t('languageSwitch.saving') : t('languageSwitch.confirm')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -112,7 +118,7 @@ export function LanguagePopoverControl({
   showChevron = false,
   showIcon = true,
   showLabel = true,
-  variant = 'menu'
+  variant = 'menu',
 }: {
   className: string
   iconSize?: number
@@ -151,12 +157,10 @@ export function LanguagePopoverControl({
           variant="ghost"
         >
           {showIcon && <Globe size={iconSize} strokeWidth={1.75} />}
-          {showLabel && <span>{t('preferences.language')}</span>}
+          {showLabel && <span className="min-w-0 truncate">{t('preferences.language')}</span>}
           <span
             className={
-              variant === 'compact'
-                ? LANGUAGE_COMPACT_VALUE_CLASS_NAME
-                : LANGUAGE_VALUE_CLASS_NAME
+              variant === 'compact' ? LANGUAGE_COMPACT_VALUE_CLASS_NAME : LANGUAGE_VALUE_CLASS_NAME
             }
           >
             {currentLabel}
@@ -169,15 +173,20 @@ export function LanguagePopoverControl({
         </Button>
       </PopoverTrigger>
       <PopoverContent
-        className={variant === 'compact' ? LANGUAGE_COMPACT_POPOVER_CLASS_NAME : LANGUAGE_POPOVER_CLASS_NAME}
-        style={variant === 'compact' ? LANGUAGE_COMPACT_POPOVER_STYLE : LANGUAGE_POPOVER_STYLE}
+        className={
+          variant === 'compact' ? LANGUAGE_COMPACT_POPOVER_CLASS_NAME : LANGUAGE_POPOVER_CLASS_NAME
+        }
+        side={variant === 'compact' ? 'auto' : 'right'}
+        style={variant === 'compact' ? LANGUAGE_COMPACT_POPOVER_STYLE : undefined}
       >
         <Button
           type="button"
           aria-pressed={state.lang === 'zh'}
-          className={variant === 'compact'
-            ? `${LANGUAGE_COMPACT_OPTION_CLASS_NAME} ${state.lang === 'zh' ? LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME : ''}`
-            : `${LANGUAGE_OPTION_CLASS_NAME} ${state.lang === 'zh' ? LANGUAGE_OPTION_ACTIVE_CLASS_NAME : ''}`}
+          className={
+            variant === 'compact'
+              ? `${LANGUAGE_COMPACT_OPTION_CLASS_NAME} ${state.lang === 'zh' ? LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME : ''}`
+              : `${LANGUAGE_OPTION_CLASS_NAME} ${state.lang === 'zh' ? LANGUAGE_OPTION_ACTIVE_CLASS_NAME : ''}`
+          }
           size="content"
           variant="ghost"
           onPointerDown={(event) => handleLanguagePointerDown(event, 'zh')}
@@ -195,9 +204,11 @@ export function LanguagePopoverControl({
         <Button
           type="button"
           aria-pressed={state.lang === 'en'}
-          className={variant === 'compact'
-            ? `${LANGUAGE_COMPACT_OPTION_CLASS_NAME} ${state.lang === 'en' ? LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME : ''}`
-            : `${LANGUAGE_OPTION_CLASS_NAME} ${state.lang === 'en' ? LANGUAGE_OPTION_ACTIVE_CLASS_NAME : ''}`}
+          className={
+            variant === 'compact'
+              ? `${LANGUAGE_COMPACT_OPTION_CLASS_NAME} ${state.lang === 'en' ? LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME : ''}`
+              : `${LANGUAGE_OPTION_CLASS_NAME} ${state.lang === 'en' ? LANGUAGE_OPTION_ACTIVE_CLASS_NAME : ''}`
+          }
           size="content"
           variant="ghost"
           onPointerDown={(event) => handleLanguagePointerDown(event, 'en')}
@@ -217,7 +228,9 @@ export function LanguagePopoverControl({
   )
 }
 
-export function PreferenceControls({ showAppearance = true }: { showAppearance?: boolean } = {}): React.JSX.Element {
+export function PreferenceControls({
+  showAppearance = true,
+}: { showAppearance?: boolean } = {}): React.JSX.Element {
   const { state, act } = useApp()
   const { t } = useTranslation('components')
   return (
@@ -227,10 +240,7 @@ export function PreferenceControls({ showAppearance = true }: { showAppearance?:
           <Globe size={PREFERENCE_ICON_SIZE} strokeWidth={1.75} />
           {t('preferences.language')}
         </span>
-        <Select
-          value={state.lang}
-          onValueChange={(value) => act.setLang(value as Lang)}
-        >
+        <Select value={state.lang} onValueChange={(value) => act.setLang(value as Lang)}>
           <SelectTrigger aria-label={t('preferences.language')}>
             <SelectValue />
           </SelectTrigger>
@@ -246,10 +256,7 @@ export function PreferenceControls({ showAppearance = true }: { showAppearance?:
             <Palette size={PREFERENCE_ICON_SIZE} strokeWidth={1.75} />
             {t('preferences.appearance')}
           </span>
-          <Select
-            value={state.theme}
-            onValueChange={(value) => act.setTheme(value as Theme)}
-          >
+          <Select value={state.theme} onValueChange={(value) => act.setTheme(value as Theme)}>
             <SelectTrigger aria-label={t('preferences.appearance')}>
               <SelectValue />
             </SelectTrigger>

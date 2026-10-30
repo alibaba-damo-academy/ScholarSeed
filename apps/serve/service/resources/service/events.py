@@ -46,6 +46,17 @@ class ResourceVersionEvent(str, Enum):
     GC_FAILED = "resources.versions.gc.failed"
 
 
+class ResourceSearchEvent(str, Enum):
+    STARTED = "resources.search.started"
+    CREDENTIAL_READY = "resources.search.credential.ready"
+    REQUESTED = "resources.search.official.requested"
+    RECEIVED = "resources.search.official.received"
+    COMPLETED = "resources.search.completed"
+    CANCELLED = "resources.search.cancelled"
+    RESULT_READY = "resources.search.result.ready"
+    CLEANUP_COMPLETED = "resources.search.cleanup.completed"
+
+
 TRACE_COMPONENT = "service:resources"
 TRACE_NAMESPACE = f"{PRODUCT_SLUG}-resources"
 TRACE_SUFFIX = ".jsonl"
@@ -66,11 +77,13 @@ TRACE_EVENTS = frozenset(
         ResourceVersionEvent.RESTORE_RECOVERED,
         ResourceVersionEvent.RESTORE_CONFLICT,
     )
-)
+) | frozenset(ResourceSearchEvent)
 _trace_lock = Lock()
 
 
-def emit(logger: logging.Logger, event: ResourceVersionEvent, **fields: object) -> None:
+def emit(
+    logger: logging.Logger, event: ResourceVersionEvent | ResourceSearchEvent, **fields: object
+) -> None:
     """Publish one structured event without content-bearing fields."""
 
     logger.info(event.value, extra=fields)
@@ -79,7 +92,12 @@ def emit(logger: logging.Logger, event: ResourceVersionEvent, **fields: object) 
     project_id = str(fields.get("project_id") or "")
     project_key = sha256(project_id.encode(TRACE_ENCODING)).hexdigest()
     path = TRACE_DIR / f"{TRACE_NAMESPACE}-{project_key}{TRACE_SUFFIX}"
-    correlation = fields.get("review_id") or fields.get("transaction_id") or project_key
+    correlation = (
+        fields.get("search_id")
+        or fields.get("review_id")
+        or fields.get("transaction_id")
+        or project_key
+    )
     try:
         with _trace_lock, EvidenceWriter(path) as writer:
             writer.emit(

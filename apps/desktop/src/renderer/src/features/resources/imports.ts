@@ -3,7 +3,7 @@ import type { TFunction } from 'i18next'
 import {
   taskTitleText,
   type ProductTask,
-  type ProductTaskPresentation
+  type ProductTaskPresentation,
 } from '../../contracts/tasks.ts'
 
 interface ResourceImportSourcePayload {
@@ -57,14 +57,13 @@ const toImportTask = (job: ResourceImportJobPayload): ProductTask => {
     name: result.source_name ?? job.source_names[result.source_index] ?? '',
     status: result.status,
     error: result.error,
-    retryable:
-      result.retryable ?? (result.status === 'failed' || result.status === 'cancelled')
+    retryable: result.retryable ?? (result.status === 'failed' || result.status === 'cancelled'),
   }))
   const resultSummary = {
     total: results.length,
     succeeded: results.filter((result) => result.status === 'succeeded').length,
     failed: results.filter((result) => result.status === 'failed').length,
-    cancelled: results.filter((result) => result.status === 'cancelled').length
+    cancelled: results.filter((result) => result.status === 'cancelled').length,
   }
   const summary = results.length > 0 ? resultSummary : (job.source_summary ?? resultSummary)
   return {
@@ -78,7 +77,7 @@ const toImportTask = (job: ResourceImportJobPayload): ProductTask => {
     outcome: {
       available: results.length === job.source_names.length,
       ...summary,
-      results
+      results,
     },
     status: job.status,
     phase: job.phase,
@@ -93,7 +92,7 @@ const toImportTask = (job: ResourceImportJobPayload): ProductTask => {
     eventSeq: job.event_seq,
     error: job.error,
     createdAt: job.created_at,
-    updatedAt: job.updated_at
+    updatedAt: job.updated_at,
   }
 }
 
@@ -111,7 +110,7 @@ const RESOURCE_IMPORT_ERROR_KEYS = {
   storage_io_failed: 'resourceImport.errors.storageIoFailed',
   resource_import_interrupted: 'resourceImport.errors.interrupted',
   resource_import_failed: 'resourceImport.errors.importFailed',
-  resource_import_partial: 'resourceImport.errors.partial'
+  resource_import_partial: 'resourceImport.errors.partial',
 } as const
 
 const resourceImportError = (error: string, t: TFunction<'tasks'>): string => {
@@ -131,17 +130,18 @@ export function presentResourceImportTask(
     task.status === 'partial' ||
     task.status === 'failed' ||
     task.status === 'cancelled'
-  const detail = task.outcome.available && terminal
-    ? t(
-        copy ? 'resourceImport.summary.copy' : 'resourceImport.summary.link',
-        { succeeded: task.outcome.succeeded, failed: notImported }
-      )
-    : task.totalItems > 0
-      ? t('resourceImport.progressItems', {
-          completed: task.completedItems,
-          total: task.totalItems
+  const detail =
+    task.outcome.available && terminal
+      ? t(copy ? 'resourceImport.summary.copy' : 'resourceImport.summary.link', {
+          succeeded: task.outcome.succeeded,
+          failed: notImported,
         })
-      : t('progress.preparing')
+      : task.totalItems > 0
+        ? t('resourceImport.progressItems', {
+            completed: task.completedItems,
+            total: task.totalItems,
+          })
+        : t('progress.preparing')
   return {
     title,
     detail,
@@ -154,8 +154,8 @@ export function presentResourceImportTask(
         reason:
           result.status === 'cancelled'
             ? t('resourceImport.errors.cancelled')
-            : resourceImportError(result.error, t)
-      }))
+            : resourceImportError(result.error, t),
+      })),
   }
 }
 
@@ -203,25 +203,26 @@ export function watchResourceImportTask(
           seq: number
           data: Partial<ResourceImportJobPayload>
         }
+        if (!Number.isSafeInteger(event.seq) || event.seq <= task.eventSeq) return
         task = toImportTask({
           id: task.id,
           project_id: task.projectId,
           mode: task.operation === 'copy' ? 'copy' : 'link',
-          status: task.status === 'settling' ? 'running' : task.status,
+          status: task.status,
           phase: task.phase,
           source_names: task.sourceNames,
           source_summary: {
             total: task.outcome.total,
             succeeded: task.outcome.succeeded,
             failed: task.outcome.failed,
-            cancelled: task.outcome.cancelled
+            cancelled: task.outcome.cancelled,
           },
           source_results: task.outcome.results.map((result) => ({
             source_index: result.index,
             source_name: result.name,
             status: result.status,
             error: result.error,
-            retryable: result.retryable
+            retryable: result.retryable,
           })),
           scan_discovered_items: task.discoveredItems,
           completed_items: task.completedItems,
@@ -231,11 +232,11 @@ export function watchResourceImportTask(
           version_discovered_items: task.versionDiscoveredItems,
           version_completed_items: task.versionCompletedItems,
           version_total_items: task.versionTotalItems,
-          event_seq: event.seq,
           error: task.error,
           created_at: task.createdAt,
           updated_at: task.updatedAt,
-          ...event.data
+          ...event.data,
+          event_seq: event.seq,
         })
         callbacks.onTask(task)
         if (isTerminalProductTask(task)) {
@@ -286,13 +287,14 @@ export async function createResourceImport(
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        'Idempotency-Key': crypto.randomUUID()
+        'Idempotency-Key': crypto.randomUUID(),
       },
-      body: JSON.stringify({ mode, sources, target_dir: targetDir, project: project ?? null })
+      body: JSON.stringify({ mode, sources, target_dir: targetDir, project: project ?? null }),
     })
-    const payload = (await response.json().catch(() => null)) as
-      | { detail?: string; job?: ResourceImportJobPayload }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string
+      job?: ResourceImportJobPayload
+    } | null
     if (!response.ok) return { ok: false, error: payload?.detail ?? `http_${response.status}` }
     const task = payload?.job ? toImportTask(payload.job) : undefined
     if (task) importTaskListeners.forEach((listener) => listener(task))
@@ -317,9 +319,10 @@ async function mutateResourceImportTask(
     `${base()}/api/resource/import-jobs/${encodeURIComponent(taskId)}/${action}`,
     { method: 'POST', credentials: 'include' }
   )
-  const payload = (await response.json().catch(() => null)) as
-    | { detail?: string; job?: ResourceImportJobPayload }
-    | null
+  const payload = (await response.json().catch(() => null)) as {
+    detail?: string
+    job?: ResourceImportJobPayload
+  } | null
   if (!response.ok || !payload?.job) {
     throw new Error(payload?.detail ?? `http_${response.status}`)
   }

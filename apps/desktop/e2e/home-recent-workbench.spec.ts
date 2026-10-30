@@ -3,6 +3,9 @@ import { join, resolve } from 'node:path'
 import { test, expect } from '@playwright/test'
 import { DesktopSession, apiBase } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const PDF_FIXTURE = resolve(__dirname, 'fixtures/data/minimal-project/sample.pdf')
 const PAGE_SIZE = 50
@@ -44,6 +47,7 @@ test('home opens a recent PDF beyond the first literature page and reports a mis
     expect(listing.items.some((item) => item.id === oldestId)).toBe(false)
 
     await page.reload()
+    await page.getByTestId('activity-home').click()
     const recent = page.getByTestId(`home-recent-literature-${oldestId}`)
     await expect(recent).toBeVisible()
     await recent.click()

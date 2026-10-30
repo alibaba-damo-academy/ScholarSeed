@@ -82,7 +82,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--query", required=True)
     parser.add_argument("--limit", type=official.bounded_integer, default=official.DEFAULT_LIMIT)
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--bridge-response")
     parser.add_argument("--artifact-path", type=bounded_artifact_path, default=OUTPUT_PATH)
+    parser.add_argument(
+        "--result-policy",
+        choices=(browser.ResultPolicy.RESOURCE_SESSION.value,),
+        default=browser.ResultPolicy.RESOURCE_SESSION.value,
+    )
     return parser.parse_args(argv)
 
 
@@ -91,9 +97,18 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         return official.search(
             official.parse_args(["--query", args.query, "--limit", str(args.limit)])
         )
-    browser_args = ["--query", args.query, "--limit", str(args.limit)]
+    browser_args = [
+        "--query",
+        args.query,
+        "--limit",
+        str(args.limit),
+        "--result-policy",
+        args.result_policy,
+    ]
     if args.headless:
         browser_args.append("--headless")
+    if args.bridge_response:
+        browser_args.extend(["--bridge-response", args.bridge_response])
     return browser.search(browser.parse_args(browser_args))
 
 
@@ -118,6 +133,7 @@ def write_result(payload: dict[str, Any], *, artifact_path: str = OUTPUT_PATH) -
         error_code=error.get("code") if isinstance(error, dict) else None,
         candidate_count=len(candidates) if isinstance(candidates, list) else 0,
         artifact_bytes=len(serialized.encode(JSON_ENCODING)),
+        capture=payload.get("capture"),
     )
     if payload.get("status") in SUCCESS_RESULT_STATUSES:
         print(source_receipt(payload), flush=True)

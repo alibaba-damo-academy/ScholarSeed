@@ -3,7 +3,14 @@
 import hashlib
 import json
 
-from service.inference.source import SOURCE_FIELD, SOURCE_UNAVAILABLE, accepts_source, attach_source
+from service.inference.source import (
+    SOURCE_FIELD,
+    SOURCE_UNAVAILABLE,
+    ContentSource,
+    SourceReference,
+    accepts_source,
+    attach_source,
+)
 
 DESTINATIONS = ("https://gateway.example/v1",)
 
@@ -18,6 +25,19 @@ def main() -> int:
     assert SOURCE_FIELD not in body
     assert result["input"] == body["input"]
     assert result[SOURCE_FIELD]["text"] == "question"
+    reference = SourceReference(kind="file", identity="attachment-digest")
+    source = ContentSource(text="", references=(reference,))
+    assert source.has_content
+    attachment = attach_source(
+        body, session_id="s", turn_id="t", text=source.text, references=source.references
+    )
+    assert attachment[SOURCE_FIELD]["text"] == ""
+    assert attachment[SOURCE_FIELD]["references"] == [
+        {"kind": "file", "identity": "attachment-digest"}
+    ]
+    assert attachment["input"] == body["input"]
+    assert attachment[SOURCE_FIELD]["request_sha256"] == result[SOURCE_FIELD]["request_sha256"]
+    assert not ContentSource(text=" \n").has_content
     try:
         attach_source(body, session_id="s", turn_id="t", text="")
     except ValueError as error:

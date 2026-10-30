@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
+from citation_styles import style_labels
 from confirmation import (
     APPLYING_TIMEOUT,
     APPROVED,
@@ -295,22 +296,7 @@ def apply_timeout(ws, packet_id):
             parts = ["PDF" if choice["format"] == "latex_pdf" else "Markdown"]
             if choice["format"] == "latex_pdf":
                 parts.append(choice["template"] + (" 模板" if chinese else " template"))
-            styles = (
-                {
-                    "numeric": "数字引用",
-                    "author_year": "作者—年份引用",
-                    "ieee": "IEEE 引用",
-                    "acm": "ACM 引用",
-                }
-                if chinese
-                else {
-                    "numeric": "numeric citations",
-                    "author_year": "author-year citations",
-                    "ieee": "IEEE citations",
-                    "acm": "ACM citations",
-                }
-            )
-            parts.append(styles[choice["citation_style"]])
+            parts.append(style_labels(choice["citation_style"], expected["request"].get("language"))["timeout"])
             settings = ("、" if chinese else ", ").join(parts)
             notice = (
                 "已等待 5 分钟，尚未收到回复。我已按此前展示的推荐设置继续："

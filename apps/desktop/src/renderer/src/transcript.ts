@@ -1,19 +1,30 @@
 // transcript.ts — server history projection shared by session resume and rewind.
 
-import type { HistoryMessageReference, HistoryResult, HistoryTurn, ProductEvent } from './api'
 import type {
-  ConvItem,
-  ModelRun,
-  DisplayCardData,
-  MessageReference,
-  SessionArtifact,
-  SubagentProgress,
-  TurnOwned,
-} from './model'
-import type { AssistantContextRef } from './contracts/assistant'
+  HistoryMessageReference,
+  HistoryResult,
+  HistoryTurn,
+  ProductEvent,
+  TurnActivitySnapshot,
+} from './api'
+import {
+  isTurnBoundary,
+  type ConvItem,
+  type ModelRun,
+  type DisplayCardData,
+  type MessageReference,
+  type SessionArtifact,
+  type SubagentProgress,
+  type TurnOwned,
+  type Thread,
+} from './model.ts'
+import { pendingAssistantContextRefs, type AssistantContextRef } from './contracts/assistant.ts'
 import type { DisplayCardSupersessionPosition } from './contracts/features'
+import { feedback } from './contracts/feedback.ts'
 import { describeTurnFailure, sameTurnFailureMessage } from './failures.ts'
 import {
+  browserApprovalResolution,
+  browserHistoryApprovalResolution,
   projectHilCard,
   hilEventResolution,
   hilTimestamp,
@@ -24,6 +35,21 @@ import {
 const LEGACY_PREVIEW_DELIVERY_ID_PREFIX = 'legacy-preview'
 const STREAM_IDENTITY_SEPARATOR = '::'
 const EVENT_SECONDS_TO_MILLISECONDS = 1000
+const USER_INTERRUPTED_PRESENTATION = {
+  tone: 'experience' as const,
+  hideIcon: true,
+  displayMessage: feedback('components', 'stream.stopped'),
+}
+const TURN_INTERRUPTED_PRESENTATIONS: Record<
+  string,
+  Pick<Extract<ConvItem, { kind: 'status' }>, 'tone' | 'hideIcon' | 'displayMessage'>
+> = {
+  process_exit: {
+    tone: 'tension',
+    hideIcon: false,
+    displayMessage: feedback('components', 'stream.runtimeInterrupted'),
+  },
+}
 const ARTIFACT_FAILURE_KEYS = {
   artifact_publish_file_not_found: 'artifactFailure.missing',
   artifact_snapshot_source_changed: 'artifactFailure.changed',
@@ -49,6 +75,24 @@ export function projectArtifactFailure(
   })
 }
 const STEER_MESSAGE_LABEL = '已用于当前任务'
+
+function recoveryStatus(
+  identity: TurnOwned,
+  cancelled: boolean
+): Extract<ConvItem, { kind: 'status' }> {
+  return {
+    kind: 'status',
+    turnBoundary: true,
+    text: '',
+    tone: 'experience',
+    displayMessage: feedback(
+      'components',
+      cancelled ? 'stream.automaticRecoveryCancelled' : 'stream.automaticRecovery'
+    ),
+    retainOnHistoryRefresh: true,
+    ...identity,
+  }
+}
 
 function eventTimestampMs(event: ProductEvent): number {
   return event.ts * EVENT_SECONDS_TO_MILLISECONDS
@@ -364,29 +408,31 @@ export function projectAssistantContextRefs(
   refs: readonly AssistantContextRef[],
   submittedRefIds: readonly string[]
 ): MessageReference[] {
-  return refs
-    .filter((ref) => !submittedRefIds.includes(ref.ref_id))
-    .map((ref): MessageReference => ({
-      type: 'assistant_context',
-      id: ref.ref_id,
-      title: ref.label,
-      kind: ref.kind,
-      sourceId: ref.source_id,
-      ...(ref.label_fallback ? { label_fallback: ref.label_fallback } : {}),
-      ...(ref.selection_source_label != null
-        ? { selection_source_label: ref.selection_source_label }
-        : {}),
-      ...(ref.source_revision != null ? { sourceRevision: ref.source_revision } : {}),
-      ...(ref.anchor
-        ? {
-            anchor: {
-              ...(ref.anchor.document_id ? { documentId: ref.anchor.document_id } : {}),
-              previewText: ref.anchor.preview_text,
-              locator: ref.anchor.locator,
-            },
-          }
-        : {}),
-    }))
+  return pendingAssistantContextRefs(refs, submittedRefIds).map((ref): MessageReference => ({
+    type: 'assistant_context',
+    id: ref.ref_id,
+    title: ref.label,
+    kind: ref.kind,
+    sourceId: ref.source_id,
+    ...(ref.label_fallback ? { label_fallback: ref.label_fallback } : {}),
+    ...(ref.selection_source_label != null
+      ? { selection_source_label: ref.selection_source_label }
+      : {}),
+    ...(ref.source_revision != null ? { sourceRevision: ref.source_revision } : {}),
+    ...(ref.anchor
+      ? {
+          anchor: {
+            ...(ref.anchor.document_id ? { documentId: ref.anchor.document_id } : {}),
+            previewText: ref.anchor.preview_text,
+            locator: ref.anchor.locator,
+          },
+        }
+      : {}),
+  }))
+}
+
+export function isUserHistoryTurn(turn: Pick<HistoryTurn, 'kind' | 'role'>): boolean {
+  return turn.kind === 'user' || (turn.kind === 'text' && turn.role === 'user')
 }
 
 /** Rebuild server transcript turns into Desktop conversation items. */
@@ -418,7 +464,11 @@ export function projectHistory(turns: HistoryTurn[]): ConvItem[] {
         exitCode: turn.exit_code,
         ...identity,
       })
-    } else if (turn.kind === 'user' || (turn.kind === 'text' && turn.role === 'user')) {
+    } else if (isUserHistoryTurn(turn)) {
+      if (turn.origin === 'recovery') {
+        out.push(recoveryStatus(identity, turn.status === 'cancelled'))
+        continue
+      }
       out.push({
         kind: 'user',
         text,
@@ -494,6 +544,27 @@ export function upsertUserMessageEvent(
   items: ConvItem[],
   event: Extract<ProductEvent, { type: 'user_message' }>
 ): ConvItem[] {
+  if (event.data.origin === 'recovery') {
+    const itemId = event.item_id || event.data.client_turn_id
+    const status = recoveryStatus(
+      {
+        itemId,
+        turnId: event.turn_id || event.data.client_turn_id,
+        eventSeq: event.seq,
+      },
+      event.data.binding === 'cancelled'
+    )
+    const index = items.findIndex((item) => item.itemId === itemId)
+    if (index < 0) return insertTurnRuntimeItem(items, { ...status, bindingSeq: event.seq })
+    const previous = items[index]
+    if (previous.kind !== 'status') return items
+    if ((previous.bindingSeq ?? previous.eventSeq ?? -1) > event.seq) return items
+    return items.map((item, position) =>
+      position === index
+        ? { ...status, eventSeq: previous.eventSeq ?? event.seq, bindingSeq: event.seq }
+        : item
+    )
+  }
   const refs = projectMessageReferences(event.data.refs)
   const index = items.findIndex(
     (item) =>
@@ -604,18 +675,38 @@ export function resolveHilItem(
 }
 
 export function insertTurnRuntimeItem(items: ConvItem[], runtimeItem: ConvItem): ConvItem[] {
+  if (runtimeItem.kind === 'status' && runtimeItem.turnBoundary && runtimeItem.turnId) {
+    const ownedIndex = items.findIndex((item) => item.turnId === runtimeItem.turnId)
+    if (ownedIndex >= 0)
+      return [...items.slice(0, ownedIndex), runtimeItem, ...items.slice(ownedIndex)]
+  }
+  if (runtimeItem.eventSeq !== undefined) {
+    let nextIndex = items.findIndex(
+      (item) => item.eventSeq !== undefined && item.eventSeq > runtimeItem.eventSeq!
+    )
+    if (nextIndex >= 0) {
+      const ownedIndex = runtimeItem.turnId
+        ? items.findIndex((item) => item.turnId === runtimeItem.turnId)
+        : -1
+      if (ownedIndex >= 0) {
+        const ownBoundaryIndex = items.findIndex(
+          (item) => item.turnId === runtimeItem.turnId && isTurnBoundary(item)
+        )
+        const boundaryIndex = items.findIndex(
+          (item, index) =>
+            index > ownedIndex && item.turnId !== runtimeItem.turnId && isTurnBoundary(item)
+        )
+        if (boundaryIndex >= 0) nextIndex = Math.min(nextIndex, boundaryIndex)
+        if (ownBoundaryIndex >= 0 && !(runtimeItem.kind === 'status' && runtimeItem.turnBoundary)) {
+          nextIndex = Math.max(nextIndex, ownBoundaryIndex + 1)
+        }
+      }
+      return [...items.slice(0, nextIndex), runtimeItem, ...items.slice(nextIndex)]
+    }
+  }
   if (!runtimeItem.turnId) return [...items, runtimeItem]
 
   if (runtimeItem.eventSeq !== undefined) {
-    const nextIndex = items.findIndex(
-      (item) =>
-        item.turnId === runtimeItem.turnId &&
-        item.eventSeq !== undefined &&
-        item.eventSeq > runtimeItem.eventSeq!
-    )
-    if (nextIndex >= 0) {
-      return [...items.slice(0, nextIndex), runtimeItem, ...items.slice(nextIndex)]
-    }
     for (let index = items.length - 1; index >= 0; index -= 1) {
       const item = items[index]
       if (item.turnId === runtimeItem.turnId && item.eventSeq !== undefined) {
@@ -1272,17 +1363,47 @@ function activityIdentity(item: ConvItem): string | undefined {
   return undefined
 }
 
-export function settleInterruptedTools(
+export function settleInterruptedActivities(
   items: ConvItem[],
   turnId: string | undefined,
   completedAt: number
 ): ConvItem[] {
   if (!turnId) return items
-  return items.map((item) =>
-    item.kind === 'tool' && item.turnId === turnId && item.status === 'running'
-      ? { ...item, status: 'cancelled', completedAt }
-      : item
+  return items.map((item) => {
+    if (item.turnId !== turnId) return item
+    if (item.kind !== 'tool' && item.kind !== 'native_activity') return item
+    if (item.status !== 'running') return item
+    if (item.kind === 'tool') return { ...item, status: 'cancelled', completedAt }
+    if (item.kind === 'native_activity') return { ...item, status: 'error', completedAt }
+    return item
+  })
+}
+
+export function projectTurnInterruption(
+  items: ConvItem[],
+  event: Extract<ProductEvent, { type: 'turn_interrupted' }>
+): ConvItem[] {
+  const settled = settleInterruptedActivities(items, event.turn_id, eventTimestampMs(event))
+  if (
+    settled.some(
+      (item) =>
+        item.kind === 'status' && item.turnId === event.turn_id && item.eventSeq === event.seq
+    )
   )
+    return settled
+  const reason = event.data.reason ?? ''
+  const presentation = Object.prototype.hasOwnProperty.call(TURN_INTERRUPTED_PRESENTATIONS, reason)
+    ? TURN_INTERRUPTED_PRESENTATIONS[reason]
+    : USER_INTERRUPTED_PRESENTATION
+  return insertTurnRuntimeItem(settled, {
+    kind: 'status',
+    text: '',
+    ...presentation,
+    retainOnHistoryRefresh: true,
+    turnId: event.turn_id,
+    itemId: event.item_id,
+    eventSeq: event.seq,
+  })
 }
 
 /** Restore message and activity items in the durable product-event order. */
@@ -1327,6 +1448,21 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
               event.data.state,
               event.data.resolved_at ?? event.ts
             ),
+            ...(event.data.kind === 'browser_approval'
+              ? {
+                  resolvedMessage: browserApprovalResolution(
+                    event.data.decision,
+                    event.data.reason
+                  ),
+                }
+              : event.data.kind === 'browser_history_approval'
+                ? {
+                    resolvedMessage: browserHistoryApprovalResolution(
+                      event.data.decision,
+                      event.data.reason
+                    ),
+                  }
+                : {}),
             answers: event.data.answers,
             decisionScope: event.data.decision_scope,
             hilState: event.data.state,
@@ -1335,20 +1471,42 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
         )
       }
       if (event.type === 'turn_interrupted') {
-        return settleInterruptedTools(conversation, event.turn_id, eventTimestampMs(event))
+        return projectTurnInterruption(conversation, event)
+      }
+      if (event.type === 'turn_unknown' || event.type === 'turn_reconciled') {
+        return settleInterruptedActivities(
+          conversation,
+          event.type === 'turn_reconciled' ? event.data.turn_id || event.turn_id : event.turn_id,
+          eventTimestampMs(event)
+        )
       }
       if (event.type === 'turn_failed') {
         const failure = describeTurnFailure(event.data)
-        if (
-          conversation.some(
-            (item) =>
-              item.kind === 'error' &&
-              item.turnId === event.turn_id &&
-              sameTurnFailureMessage(item, failure)
-          )
+        const settled = settleInterruptedActivities(
+          conversation,
+          event.turn_id,
+          eventTimestampMs(event)
         )
-          return conversation
-        return insertTurnRuntimeItem(conversation, {
+        const existingIndex = settled.findIndex(
+          (item) =>
+            item.kind === 'error' &&
+            item.turnId === event.turn_id &&
+            sameTurnFailureMessage(item, failure)
+        )
+        if (existingIndex >= 0) {
+          const existing = settled[existingIndex]
+          if (existing.kind === 'error' && failure.failure?.kind === 'auth') {
+            const updated = [...settled]
+            updated[existingIndex] = {
+              ...existing,
+              ...failure,
+              actionState: existing.actionState ?? failure.actionState,
+            }
+            return updated
+          }
+          return settled
+        }
+        return insertTurnRuntimeItem(settled, {
           ...failure,
           turnId: event.turn_id,
           eventSeq: event.seq,
@@ -1440,13 +1598,18 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
 
 type DisplayCardEvent = Extract<ProductEvent, { type: 'display_card' }>
 
-export function projectDisplayCardEvent(items: ConvItem[], event: DisplayCardEvent): ConvItem[] {
+export function projectDisplayCardEvent(
+  items: ConvItem[],
+  event: DisplayCardEvent,
+  presentationSource: 'live' | 'history' = 'history'
+): ConvItem[] {
   const projected: ConvItem = {
     kind: 'display_card',
     card: {
       cardId: event.data.card_id,
       type: event.data.type,
       content: event.data.content,
+      presentationSource,
     },
     turnId: event.turn_id,
     itemId: event.item_id,
@@ -1514,6 +1677,7 @@ export function bindSubmittedTurn(
 
 function isRuntimeTranscriptItem(item: ConvItem): boolean {
   return (
+    (item.kind === 'user' && Boolean(item.itemId) && !item.turnId) ||
     item.kind === 'thinking' ||
     item.kind === 'tool' ||
     item.kind === 'web_search' ||
@@ -1565,6 +1729,12 @@ function insertBeforeDurableAnchor(
   anchor: ConvItem | undefined
 ): ConvItem[] {
   if (items.some((item) => sameDurableAnchor(item, runtimeItem))) return items
+  if (
+    (runtimeItem.eventSeq !== undefined &&
+      items.some((item) => item.eventSeq !== undefined && item.eventSeq > runtimeItem.eventSeq!)) ||
+    (runtimeItem.turnId && items.some((item) => item.turnId === runtimeItem.turnId))
+  )
+    return insertTurnRuntimeItem(items, runtimeItem)
   if (anchor) {
     const index = items.findIndex((item) => sameDurableAnchor(item, anchor))
     if (index >= 0) return [...items.slice(0, index), runtimeItem, ...items.slice(index)]
@@ -1600,10 +1770,20 @@ export function projectHistoryWithRuntime(turns: HistoryTurn[], current: ConvIte
     if (!isRuntimeTranscriptItem(item)) return []
     const nextDurable = current
       .slice(index + 1)
-      .find((candidate) => !isRuntimeTranscriptItem(candidate))
+      .find((candidate) => !isRuntimeTranscriptItem(candidate) || isTurnBoundary(candidate))
     return [{ item, nextDurable }]
   })
-  const projected = projectHistory(turns)
+  const projected = projectHistory(turns).map((item) => {
+    if (item.kind !== 'status' || !item.turnBoundary) return item
+    const previous = current.find((candidate) => sameDurableAnchor(candidate, item))
+    return previous?.eventSeq === undefined
+      ? item
+      : {
+          ...item,
+          eventSeq: previous.eventSeq,
+          ...(previous.kind === 'status' ? { bindingSeq: previous.bindingSeq } : {}),
+        }
+  })
   // The idle refresh can race App Server's durable thread snapshot. Product
   // events are already ordered and item-addressed, so a snapshot that omits an
   // assistant item seen live is older evidence and must never delete it. A
@@ -1638,6 +1818,27 @@ export function projectHistoryWithRuntime(turns: HistoryTurn[], current: ConvIte
   )
 }
 
+export function snapshotTurnActivity(
+  snapshots: TurnActivitySnapshot[]
+): Pick<Thread, 'turnOutcomes' | 'turnTimings'> {
+  const turnOutcomes: NonNullable<Thread['turnOutcomes']> = {}
+  const turnTimings: NonNullable<Thread['turnTimings']> = {}
+  for (const snapshot of snapshots) {
+    if (!snapshot.turn_id || !Number.isFinite(snapshot.started_at)) continue
+    turnTimings[snapshot.turn_id] = {
+      startedAt: snapshot.started_at * EVENT_SECONDS_TO_MILLISECONDS,
+      completedAt: Number.isFinite(snapshot.completed_at)
+        ? (snapshot.completed_at as number) * EVENT_SECONDS_TO_MILLISECONDS
+        : undefined,
+    }
+    if (snapshot.outcome) {
+      turnOutcomes[snapshot.turn_id] =
+        snapshot.outcome === 'unknown_outcome' ? 'unknown' : snapshot.outcome
+    }
+  }
+  return { turnOutcomes, turnTimings }
+}
+
 /** Project one authoritative history response for both initial display and resume refresh. */
 export function projectHistorySnapshot(history: HistoryResult, current: ConvItem[]): ConvItem[] {
   const completedTurnIds = history.turn_activity.flatMap((turn) =>
@@ -1646,11 +1847,22 @@ export function projectHistorySnapshot(history: HistoryResult, current: ConvItem
   const conversation = history.turns.length
     ? projectHistoryWithRuntime(history.turns, current)
     : current
+  const activities = projectActivityEvents(conversation, history.activity_events)
+  const settled = history.turn_activity.reduce(
+    (items, turn) =>
+      turn.outcome === 'unknown_outcome' ||
+      turn.outcome === 'interrupted' ||
+      turn.outcome === 'failed'
+        ? settleInterruptedActivities(
+            items,
+            turn.turn_id,
+            (turn.completed_at ?? turn.started_at) * EVENT_SECONDS_TO_MILLISECONDS
+          )
+        : items,
+    activities
+  )
   return placeFinalAssistantLast(
-    projectArtifactSnapshot(
-      projectActivityEvents(conversation, history.activity_events),
-      history.artifacts
-    ),
+    projectArtifactSnapshot(settled, history.artifacts),
     completedTurnIds
   )
 }

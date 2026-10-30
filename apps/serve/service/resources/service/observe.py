@@ -15,6 +15,7 @@ from typing import Callable
 from pathspec import GitIgnoreSpec
 
 from service.content.domain.model import ROOT_UNAVAILABLE_ERROR, ContentError
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.content import (
     ContentPort,
     ContentWriteReceipt,
@@ -33,7 +34,8 @@ from service.platform.resources import (
     ResourceVersionSettings,
 )
 from service.resources.domain.jobs import VersionInitializationProgress
-from service.resources.domain.policy import AdmissionPolicy, VersionMode
+from service.resources.domain.policy import AdmissionPolicy, VersionMode, VersionPolicyInputs
+from service.resources.persistence.version import InitialVersionPlan
 from service.resources.service.events import ResourceVersionEvent, emit
 from service.resources.service.history import ResourceVersionError, ResourceVersionService
 
@@ -92,7 +94,11 @@ class ResourceVersionSupervisor:
         versions: ResourceVersionService,
         formats: ResourceFormatPolicy,
         settings: ResourceVersionSettings,
+        *,
+        activities: Activities,
     ) -> None:
+        self._activities = activities
+        self._resume_tasks: dict[str, asyncio.Task[None]] = {}
         self._content = content
         self._versions = versions
         self._formats = formats
@@ -110,6 +116,7 @@ class ResourceVersionSupervisor:
         self._prepared: set[str] = set()
         self._prepare_locks: dict[str, asyncio.Lock] = {}
         self._registry_task: asyncio.Task[None] | None = None
+        self._registry_wait: asyncio.Task[None] | None = None
         self._stopping = False
 
     def bind_preparation(self, preparation: ResourceProjectPreparation) -> None:
@@ -150,6 +157,7 @@ class ResourceVersionSupervisor:
     def schedule_scan(self, project_id: str) -> None:
         """Coalesce background discovery requested by real resource activity."""
 
+        self._activities.require_workbench()
         if self._stopping:
             return
         project_id = self._content.project(project_id).id
@@ -168,7 +176,15 @@ class ResourceVersionSupervisor:
                     raise
                 await self._retire(project_id)
 
-    def reconcile_linked_root(self, project_id: str, mount_path: str) -> None:
+    def reconcile_linked_root(
+        self,
+        project_id: str,
+        mount_path: str,
+        *,
+        observed_at_ms: int | None = None,
+        recovery_attempt: str | None = None,
+        recovery_operation: str | None = None,
+    ) -> None:
         """Initialize one linked file or observe restored identities below a root.
 
         A revoked root leaves its version history intact.  When that root is
@@ -180,62 +196,99 @@ class ResourceVersionSupervisor:
         Directory discovery remains asynchronous because it may contain many files.
         """
 
-        project = self._content.project(project_id)
-        root = mount_path.rstrip("/")
-        if not root:
-            return
-        managed = tuple(
-            path
-            for path in self._versions.tracked_paths(project.id)
-            if path == root or path.startswith(f"{root}/")
+        supplied = (
+            observed_at_ms is not None,
+            recovery_attempt is not None,
+            recovery_operation is not None,
         )
-        with self._versions.writer(project.id):
-            for path in managed:
-                self._versions.observe(project.id, path)
-            if root in managed or self._content.is_directory(project.id, root):
+        if any(supplied) and not all(supplied):
+            raise ValueError("resource authorization recovery requires its complete scope")
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project = self._content.project(project_id)
+            root = mount_path.rstrip("/")
+            if not root:
                 return
-            entries = self._entries(project.id)
-            if self._management_state(project.id, root, entries) is ManagementState.MANAGED:
-                self._versions.ensure_initial(project.id, root)
+            recovery = (
+                InitialVersionPlan.for_recovery(
+                    recovery_attempt, recovery_operation, project.id, root, now_ms=observed_at_ms
+                )
+                if recovery_attempt is not None
+                and recovery_operation is not None
+                and observed_at_ms is not None
+                else None
+            )
+            managed = tuple(
+                path
+                for path in self._versions.tracked_paths(project.id)
+                if path == root or path.startswith(f"{root}/")
+            )
+            with self._versions.writer(project.id):
+                for path in managed:
+                    self._versions.observe(project.id, path, now_ms=observed_at_ms)
+                if root in managed or self._content.is_directory(project.id, root):
+                    return
+                entries = self._entries(project.id)
+                if self._management_state(project.id, root, entries) is ManagementState.MANAGED:
+                    self._versions.ensure_initial(project.id, root, recovery=recovery)
 
     async def prepare_project(self, project_id: str) -> None:
         """Recover one availability cycle exactly once before file access."""
 
-        project = await asyncio.to_thread(self._content.project, project_id)
-        if not project.available:
-            await self._deactivate(project.id)
-            raise ContentError(ROOT_UNAVAILABLE_ERROR)
-        if project.id in self._prepared:
-            return
-        preparation = self._preparation
-        if preparation is None:
-            raise RuntimeError(PREPARATION_UNBOUND_ERROR)
-        lock = self._prepare_locks.setdefault(project.id, asyncio.Lock())
-        async with lock:
+        self._activities.require_workbench()
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project = await self._activities.to_thread(
+                ActivityDomain.RESOURCE, self._content.project, project_id
+            )
+            if not project.available:
+                await self._deactivate(project.id)
+                raise ContentError(ROOT_UNAVAILABLE_ERROR)
             if project.id in self._prepared:
                 return
-            await asyncio.to_thread(preparation.prepare, project.id)
-            refreshed = await asyncio.to_thread(self._content.project, project.id)
-            if not refreshed.available:
-                raise ContentError(ROOT_UNAVAILABLE_ERROR)
-            self._prepared.add(project.id)
+            preparation = self._preparation
+            if preparation is None:
+                raise RuntimeError(PREPARATION_UNBOUND_ERROR)
+            lock = self._prepare_locks.setdefault(project.id, asyncio.Lock())
+            async with lock:
+                if project.id in self._prepared:
+                    return
+                await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, preparation.prepare, project.id
+                )
+                refreshed = await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, self._content.project, project.id
+                )
+                if not refreshed.available:
+                    raise ContentError(ROOT_UNAVAILABLE_ERROR)
+                self._prepared.add(project.id)
 
     async def activate_project(self, project_id: str) -> None:
         """Prepare and observe one project selected by a real product action."""
 
-        await self.prepare_project(project_id)
-        project = await asyncio.to_thread(self._content.project, project_id)
-        await self._content.refresh_events(project.id)
-        stream = self._streams.get(project.id)
-        if stream is None or stream.done():
-            self._streams[project.id] = asyncio.create_task(self._consume(project.id))
-            self._reconcile.add(project.id)
-        self.schedule_scan(project.id)
+        self._activities.require_workbench()
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            await self.prepare_project(project_id)
+            project = await self._activities.to_thread(
+                ActivityDomain.RESOURCE, self._content.project, project_id
+            )
+            await self._content.refresh_events(project.id)
+            stream = self._streams.get(project.id)
+            if stream is None or stream.done():
+                self._streams[project.id] = asyncio.create_task(self._consume(project.id))
+                self._reconcile.add(project.id)
+            self.schedule_scan(project.id)
 
     async def aclose(self) -> None:
         """Finish or cancel discovery and stop the owned content event hub."""
 
         self._stopping = True
+        if self._registry_wait is not None:
+            # Wake only the idle gate/timer, never an in-flight registry disk call.
+            self._registry_wait.cancel()
+        resumers = tuple(self._resume_tasks.values())
+        for task in resumers:
+            task.cancel()
+        await asyncio.gather(*resumers, return_exceptions=True)
+        self._resume_tasks.clear()
         if self._registry_task is not None:
             # Registry recovery also uses to_thread; let the active call finish.
             await asyncio.gather(self._registry_task, return_exceptions=True)
@@ -263,7 +316,9 @@ class ResourceVersionSupervisor:
         )
         for project_id in active:
             try:
-                project = await asyncio.to_thread(self._content.project, project_id)
+                project = await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, self._content.project, project_id
+                )
             except ContentError as exc:
                 if exc.code != UNKNOWN_PROJECT_ERROR:
                     raise
@@ -293,13 +348,28 @@ class ResourceVersionSupervisor:
         await self._deactivate(project_id)
         self._prepare_locks.pop(project_id, None)
 
+    async def _wait_registry_refresh(self) -> None:
+        await self._activities.wait_open()
+        await asyncio.sleep(PROJECT_REFRESH_SECONDS)
+
     async def _refresh_registry(self) -> None:
         while not self._stopping:
-            await asyncio.sleep(PROJECT_REFRESH_SECONDS)
+            self._registry_wait = asyncio.create_task(self._wait_registry_refresh())
+            try:
+                await self._registry_wait
+            except asyncio.CancelledError:
+                if self._stopping:
+                    return
+                raise
+            finally:
+                self._registry_wait = None
             if self._stopping:
                 return
             try:
-                await self._refresh_active_projects()
+                with self._activities.enter(ActivityDomain.RESOURCE, root=True):
+                    await self._refresh_active_projects()
+            except MaintenanceActive:
+                continue
             except Exception:
                 _log.exception("resource_version_registry_refresh_failed")
 
@@ -329,10 +399,27 @@ class ResourceVersionSupervisor:
             _log.exception("resource_version_subscription_failed", extra={"project_id": project_id})
 
     def _schedule(self, project_id: str) -> None:
-        if project_id not in self._tasks and not self._stopping:
-            self._tasks[project_id] = asyncio.create_task(self._drain(project_id))
+        if project_id in self._tasks or self._stopping:
+            return
+        try:
+            self._tasks[project_id] = self._activities.spawn(
+                ActivityDomain.RESOURCE, lambda: self._drain(project_id), root=True
+            )
+        except MaintenanceActive:
+            if project_id not in self._resume_tasks:
+                task = asyncio.create_task(self._resume_scan(project_id))
+                self._resume_tasks[project_id] = task
+
+    async def _resume_scan(self, project_id: str) -> None:
+        try:
+            await self._activities.wait_open()
+        finally:
+            self._resume_tasks.pop(project_id, None)
+        if not self._stopping:
+            self._schedule(project_id)
 
     async def _drain(self, project_id: str) -> None:
+        processed = False
         try:
             try:
                 await self.activate_project(project_id)
@@ -352,18 +439,19 @@ class ResourceVersionSupervisor:
                     "resource_project_activation_failed", extra={"project_id": project_id}
                 )
                 return
-            while not self._stopping and (
-                project_id in self._discover or self._dirty.get(project_id)
-            ):
+            if not self._stopping and (project_id in self._discover or self._dirty.get(project_id)):
                 await asyncio.sleep(OBSERVATION_DEBOUNCE_SECONDS)
                 if self._stopping:
-                    break
+                    return
                 paths = self._dirty.pop(project_id, set())
                 reconcile = project_id in self._reconcile
                 self._discover.discard(project_id)
                 self._reconcile.discard(project_id)
                 try:
-                    await asyncio.to_thread(self._process, project_id, paths, reconcile)
+                    await self._activities.to_thread(
+                        ActivityDomain.RESOURCE, self._process, project_id, paths, reconcile
+                    )
+                    processed = True
                 except ContentError as exc:
                     if exc.code == UNKNOWN_PROJECT_ERROR:
                         await self._retire(project_id)
@@ -380,8 +468,11 @@ class ResourceVersionSupervisor:
                     )
         finally:
             self._tasks.pop(project_id, None)
+            if processed and (project_id in self._discover or self._dirty.get(project_id)):
+                self._schedule(project_id)
 
     def _process(self, project_id: str, paths: set[str], reconcile: bool) -> None:
+        self._activities.require_workbench()
         with self._versions.writer(project_id):
             previous = self._eligible_cache.get(project_id)
             self.scan_project(project_id)
@@ -404,22 +495,32 @@ class ResourceVersionSupervisor:
     def observe_path(self, project_id: str, path: str) -> bool:
         """Apply ignore/format policy before an explicit-open observation."""
 
-        entries = self._entries(project_id)
-        state = self._management_state(project_id, path, entries)
-        return state is ManagementState.MANAGED and self._versions.observe(project_id, path)
+        self._activities.require_workbench()
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            entries = self._entries(project_id)
+            state = self._management_state(project_id, path, entries)
+            return state is ManagementState.MANAGED and self._versions.observe(project_id, path)
 
     def capability(self, project_id: str, path: str) -> ResourceCapability:
         """Project the live eligibility policy without duplicating it in clients."""
 
-        selected = (path,)
-        projected = self.capability_states(project_id, selected)[path]
-        if projected.managed and projected.management_state is ManagementState.MANAGED:
-            self._versions.observe(project_id, path)
+        # This getter observes disk revisions and may create CAS spool files or
+        # advance WorkingHead. It is not a read-only warmup endpoint.
+        self._activities.require_workbench()
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            selected = (path,)
             projected = self.capability_states(project_id, selected)[path]
-        if projected.managed:
-            return projected
-        live = self._versions.capability(project_id, path)
-        return replace(projected, disk_revision=live.disk_revision)
+            if projected.managed and projected.management_state is ManagementState.MANAGED:
+                self._versions.observe(project_id, path)
+                projected = self.capability_states(project_id, selected)[path]
+            if projected.managed and projected.management_state is not ManagementState.MANAGED:
+                return projected
+            live = self._versions.capability(project_id, path)
+            return (
+                replace(projected, disk_revision=live.disk_revision, drifted=live.drifted)
+                if projected.managed
+                else replace(projected, disk_revision=live.disk_revision)
+            )
 
     def capability_states(
         self,
@@ -435,10 +536,11 @@ class ResourceVersionSupervisor:
             return {}
         entries = self._content.resource_entries(project_id, selected)
         by_path = {entry.path: entry for entry in entries}
-        resource_root = self._content.root(project_id, RootKind.RESOURCES).path
+        resource_root = self._content.root_path(project_id, RootKind.RESOURCES)
         repository_states = repositories or self._content.repository_roots(project_id, selected)
         persisted = self._versions.capability_states(project_id, selected)
         manual_states = self._versions.manual_admitted_states(project_id, selected)
+        policy = self._policy()
         projected: dict[str, ResourceCapability] = {}
         for path in selected:
             base = persisted.get(
@@ -449,7 +551,7 @@ class ResourceVersionSupervisor:
                     can_version=True,
                     can_diff=False,
                     can_preview_history=False,
-                    max_size_bytes=self.max_size_bytes(),
+                    max_size_bytes=policy.max_size_bytes,
                     management_state=ManagementState.MANAGED,
                 ),
             )
@@ -461,6 +563,7 @@ class ResourceVersionSupervisor:
                     resource_root,
                     repository_states,
                     manual_admitted=manual_states.get(path, False),
+                    policy=policy,
                 )
                 if entry is not None
                 else ManagementState.MANAGED if base.managed else ManagementState.UNAVAILABLE
@@ -470,7 +573,7 @@ class ResourceVersionSupervisor:
             projected[path] = replace(
                 base,
                 can_version=state is ManagementState.MANAGED,
-                max_size_bytes=self.max_size_bytes(),
+                max_size_bytes=policy.max_size_bytes,
                 management_state=state,
                 pending=None if state is ManagementState.GIT else base.pending,
                 drifted=False if state is ManagementState.GIT else base.drifted,
@@ -481,57 +584,59 @@ class ResourceVersionSupervisor:
     def scan_project(self, project_id: str) -> ScanOutcome:
         """Seal only never-managed eligible files; existing history is observation-only."""
 
-        started = perf_counter()
-        self._scanning.add(project_id)
-        emit(_log, ResourceVersionEvent.SCAN_STARTED, project_id=project_id)
-        try:
-            entries = self._entries(project_id)
-            emit(
-                _log,
-                ResourceVersionEvent.SCAN_PROGRESS,
-                project_id=project_id,
-                visited=len(entries),
-            )
-            eligible, ignored, oversized, unsupported = self._eligible(project_id, entries)
-            versioned = self._versions.versioned_paths(project_id)
-            created = failed = 0
-            for path in eligible:
-                if path in versioned:
-                    continue
-                try:
-                    result = self._versions.ensure_initial(project_id, path)
-                except (ContentError, OSError):
-                    failed += 1
-                else:
-                    created += int(result is not None and not result.unchanged)
-            self._eligible_cache[project_id] = set(eligible)
-            outcome = ScanOutcome(
-                visited=len(entries),
-                managed=len(eligible),
-                created=created,
-                ignored=ignored,
-                oversized=oversized,
-                unsupported=unsupported,
-                failed=failed,
-            )
-            self._scan_outcomes[project_id] = outcome
-            emit(
-                _log,
-                ResourceVersionEvent.SCAN_COMPLETED,
-                project_id=project_id,
-                duration_ms=round((perf_counter() - started) * 1000),
-                result_code=ScanStatus.IDLE.value,
-                visited_files=outcome.visited,
-                managed_files=outcome.managed,
-                created_files=outcome.created,
-                ignored_files=outcome.ignored,
-                oversized_files=outcome.oversized,
-                unsupported_files=outcome.unsupported,
-                failed_files=outcome.failed,
-            )
-            return outcome
-        finally:
-            self._scanning.discard(project_id)
+        self._activities.require_workbench()
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            started = perf_counter()
+            self._scanning.add(project_id)
+            emit(_log, ResourceVersionEvent.SCAN_STARTED, project_id=project_id)
+            try:
+                entries = self._entries(project_id)
+                emit(
+                    _log,
+                    ResourceVersionEvent.SCAN_PROGRESS,
+                    project_id=project_id,
+                    visited=len(entries),
+                )
+                eligible, ignored, oversized, unsupported = self._eligible(project_id, entries)
+                versioned = self._versions.versioned_paths(project_id)
+                created = failed = 0
+                for path in eligible:
+                    if path in versioned:
+                        continue
+                    try:
+                        result = self._versions.ensure_initial(project_id, path)
+                    except (ContentError, OSError):
+                        failed += 1
+                    else:
+                        created += int(result is not None and not result.unchanged)
+                self._eligible_cache[project_id] = set(eligible)
+                outcome = ScanOutcome(
+                    visited=len(entries),
+                    managed=len(eligible),
+                    created=created,
+                    ignored=ignored,
+                    oversized=oversized,
+                    unsupported=unsupported,
+                    failed=failed,
+                )
+                self._scan_outcomes[project_id] = outcome
+                emit(
+                    _log,
+                    ResourceVersionEvent.SCAN_COMPLETED,
+                    project_id=project_id,
+                    duration_ms=round((perf_counter() - started) * 1000),
+                    result_code=ScanStatus.IDLE.value,
+                    visited_files=outcome.visited,
+                    managed_files=outcome.managed,
+                    created_files=outcome.created,
+                    ignored_files=outcome.ignored,
+                    oversized_files=outcome.oversized,
+                    unsupported_files=outcome.unsupported,
+                    failed_files=outcome.failed,
+                )
+                return outcome
+            finally:
+                self._scanning.discard(project_id)
 
     def initialize_paths(
         self,
@@ -540,6 +645,8 @@ class ResourceVersionSupervisor:
         observer: Callable[[VersionInitializationProgress], None] | None = None,
     ) -> ScanOutcome:
         """Initialize only imported paths while reusing the authoritative policy."""
+
+        self._activities.require_workbench()
 
         def matches(entry: ResourceEntry) -> bool:
             return any(
@@ -636,6 +743,13 @@ class ResourceVersionSupervisor:
         return eligible
 
     @contextmanager
+    def relocation_scope(self, project_id: str):
+        """Hold the existing project writer across disk and identity relocation."""
+
+        with self._versions.writer(project_id):
+            yield
+
+    @contextmanager
     def import_scope(self, project_id: str):
         """Reuse one eligibility scan for the lifetime of a COPY import batch."""
 
@@ -656,7 +770,11 @@ class ResourceVersionSupervisor:
     def record_changes(self, project_id: str, paths: tuple[str, ...]) -> None:
         """Filter product writes through ignore policy before advancing WorkingHead."""
 
-        eligible = set(self.eligible_paths(project_id))
+        if not paths:
+            return
+        eligible = set(
+            self._eligible(project_id, self._content.scan_resources(project_id, paths=paths))[0]
+        )
         selected = [
             candidate
             for candidate in eligible
@@ -678,14 +796,16 @@ class ResourceVersionSupervisor:
 
         managed = self._versions.managed_paths(project_id)
         pairs = tuple(
-            (path, f"{target}{path[len(source):]}")
+            (path, f"{target}{path[len(source) :]}")
             for path in managed
             if path == source or path.startswith(f"{source}/")
         )
         self._versions.record_moves(project_id, pairs)
         eligible = tuple(
             path
-            for path in self.eligible_paths(project_id)
+            for path in self._eligible(
+                project_id, self._content.scan_resources(project_id, paths=(target,))
+            )[0]
             if path == target or path.startswith(f"{target}/")
         )
         self._versions.record_changes(project_id, eligible)
@@ -741,7 +861,7 @@ class ResourceVersionSupervisor:
         except ResourceVersionError as exc:
             raise ContentError(exc.code) from exc
         if target is None:
-            root = self._content.root(project_id, RootKind.RESOURCES).path
+            root = self._content.root_path(project_id, RootKind.RESOURCES)
             target = self._content.destination(project_id, root, name).path
         if len(content) > self.max_size_bytes():
             raise ContentError("file_too_large")
@@ -761,7 +881,7 @@ class ResourceVersionSupervisor:
 
     def _inside_version_root(self, project_id: str, path: str) -> bool:
         roots = (
-            self._content.root(project_id, RootKind.RESOURCES).path,
+            self._content.root_path(project_id, RootKind.RESOURCES),
             *(root.mount_path for root in self._content.external_roots(project_id)),
         )
         return any(not root or path == root or path.startswith(f"{root}/") for root in roots)
@@ -769,14 +889,25 @@ class ResourceVersionSupervisor:
     def _eligible(
         self, project_id: str, entries: tuple[ResourceEntry, ...]
     ) -> tuple[tuple[str, ...], int, int, int]:
-        resource_root = self._content.root(project_id, RootKind.RESOURCES).path
+        resource_root = self._content.root_path(project_id, RootKind.RESOURCES)
         eligible: list[str] = []
         ignored = oversized = unsupported = 0
         repositories = self._content.repository_roots(
             project_id, tuple(entry.path for entry in entries)
         )
+        manual = self._versions.manual_admitted_states(
+            project_id, tuple(entry.path for entry in entries)
+        )
+        policy = self._policy()
         for entry in entries:
-            state = self._classify(project_id, entry, resource_root, repositories)
+            state = self._classify(
+                project_id,
+                entry,
+                resource_root,
+                repositories,
+                manual_admitted=manual.get(entry.path, False),
+                policy=policy,
+            )
             if state is ManagementState.IGNORED:
                 ignored += 1
                 continue
@@ -802,7 +933,7 @@ class ResourceVersionSupervisor:
         entry = next((candidate for candidate in entries if candidate.path == path), None)
         if entry is None:
             return ManagementState.MANAGED if managed else ManagementState.UNAVAILABLE
-        resource_root = self._content.root(project_id, RootKind.RESOURCES).path
+        resource_root = self._content.root_path(project_id, RootKind.RESOURCES)
         return self._classify(project_id, entry, resource_root)
 
     def _classify(
@@ -813,6 +944,7 @@ class ResourceVersionSupervisor:
         repositories: dict[str, str | None] | None = None,
         *,
         manual_admitted: bool | None = None,
+        policy: VersionPolicyInputs | None = None,
     ) -> ManagementState:
         roots = (
             repositories
@@ -827,17 +959,18 @@ class ResourceVersionSupervisor:
             if manual_admitted is None
             else manual_admitted
         )
-        if entry.size > self.max_size_bytes():
-            return ManagementState.OVERSIZED
-        if self._settings.version_migration_required():
-            return ManagementState.MANAGED if manual else ManagementState.MIGRATION_REQUIRED
-        policy = AdmissionPolicy(
+        return (policy or self._policy()).classify(
+            relative, entry.size, manual=manual, default_patterns=self.common_version_patterns()
+        )
+
+    def _policy(self) -> VersionPolicyInputs:
+        return VersionPolicyInputs(
             VersionMode(self._settings.version_mode()),
-            self.version_include_patterns(),
+            self._settings.version_include_patterns(),
             self._settings.version_ignore_patterns(),
             self.max_size_bytes(),
+            self._settings.version_migration_required(),
         )
-        return policy.classify(relative, entry.size, manual=manual)
 
     def admission_state(self, project_id: str, path: str) -> ManagementState:
         """Shared eligibility gate for mutation capture and manual admission."""
@@ -884,7 +1017,10 @@ class ResourceVersionSupervisor:
                         lines = self._content.read_text(project.id, entry.path).splitlines()
                         parent = str(PurePosixPath(entry.path).parent)
                         nested.append(
-                            (root if parent == "." else parent, GitIgnoreSpec.from_lines(lines))
+                            (
+                                root if parent == "." else parent,
+                                GitIgnoreSpec.from_lines(lines),
+                            )
                         )
             for entry in entries:
                 if (

@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, BinaryIO, Iterator, Mapping
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
-from starlette.status import HTTP_404_NOT_FOUND
+from starlette.status import HTTP_404_NOT_FOUND, HTTP_422_UNPROCESSABLE_CONTENT
 
 from scholarseed_runtime.contract.input import InputKind
+from scholarseed_runtime.contract.resource import (
+    RESOURCE_HOST_CONFIGURATION_CONFLICT,
+    RESOURCE_HOST_CONTEXT_REQUIRED,
+)
 from service.chat.constants import (
     RUNTIME_CAPABILITY_UNAVAILABLE,
+    SESSION_ARCHIVED_ERROR,
     SESSION_LIST_PROJECT_REQUIRED_ERROR,
     SESSION_LIST_PROJECT_UNEXPECTED_ERROR,
+    SESSION_NOT_FOUND_CODE,
     SESSION_NOT_FOUND_ERROR,
 )
 from service.chat.persistence.catalog import (
@@ -22,8 +29,16 @@ from service.chat.persistence.catalog import (
     SessionListScope,
     SessionPrincipal,
 )
+from service.chat.runtime.reconfiguration import (
+    PREPARATION_INVALID,
+    RECONFIGURATION_NOT_FOUND,
+    PreparationError,
+)
 from service.chat.schema import (
+    RuntimePreparationRequest,
+    SessionArchiveRequest,
     SessionModelRequest,
+    SessionPinRequest,
     SessionRenameRequest,
     thinking_from_payload,
 )
@@ -41,14 +56,23 @@ from service.chat.service.artifacts import (
 from service.chat.service.events import EventService
 from service.chat.service.sessions import (
     MCP_DIRECT_APPROVAL_REQUIRED,
+    SESSION_LIST_MAX_LIMIT,
     SESSION_PERMISSION_CONTINUATION_TEXT,
     PermissionApplication,
     SessionService,
 )
 from service.chat.service.turns import TurnService
+from service.chat.utils import SESSION_LIST_CURSOR_INVALID, parse_session_list_cursor
 from service.identity.service.skill_credentials import SkillCredentialService
-from service.identity.utils import bearer_or_cookie, request_owner_id, request_user_id
+from service.identity.utils import (
+    bearer_or_cookie,
+    request_owner_id,
+    request_user_id,
+    require_host_process,
+)
+from service.platform.activity import ActivityDomain
 from service.platform.limits import ATTACHMENT_MAX_BYTES, UPLOAD_CHUNK_BYTES
+from service.platform.passive_events import passive_events
 
 HTTP_OK = 200
 HTTP_CONFLICT = 409
@@ -58,6 +82,7 @@ HTTP_FORBIDDEN = 403
 HTTP_PAYLOAD_TOO_LARGE = 413
 HTTP_PRECONDITION_FAILED = 412
 HTTP_PRECONDITION_REQUIRED = 428
+HTTP_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 ARTIFACT_EDITABLE_HEADER = "X-ScholarSeed-Artifact-Editable"
 MCP_CONTROL_FAILED = "mcp_control_failed"
 PERMISSION_CONTINUATION_CONTEXT_FIELDS = (
@@ -134,7 +159,10 @@ def mount_session_routes(
 
     @app.exception_handler(SessionAccessError)
     async def session_access_error(_request: Request, _error: SessionAccessError) -> JSONResponse:
-        return JSONResponse({"detail": SESSION_NOT_FOUND_ERROR}, status_code=HTTP_404_NOT_FOUND)
+        return JSONResponse(
+            {"detail": SESSION_NOT_FOUND_ERROR, "code": SESSION_NOT_FOUND_CODE},
+            status_code=HTTP_404_NOT_FOUND,
+        )
 
     def principal(user_id: str) -> SessionPrincipal:
         return SessionPrincipal(user_id=user_id)
@@ -143,20 +171,70 @@ def mount_session_routes(
         return principal(request_owner_id(request))
 
     def require_session_access(session_id: str, request: Request) -> None:
-        try:
-            sessions.require_access(session_id, request_principal(request))
-        except SessionAccessError as error:
-            raise HTTPException(HTTP_404_NOT_FOUND, SESSION_NOT_FOUND_ERROR) from error
+        sessions.require_access(session_id, request_principal(request))
 
-    def align_session_metering_identity(session_id: str, request: Request) -> None:
-        # 归属身份可能被收敛到机器级, 所以这里取真实账号: 桌面端切号后, 老会话仍留在内存里
-        # 并继续按开会话时那个账号取出站 token, 网关会对每次模型调用回 401。
-        sessions.align_metering_identity(session_id, request_user_id(request))
+    async def align_session_metering_identity(session_id: str, request: Request) -> None:
+        if request.method in HTTP_SAFE_METHODS:
+            return
+        deleting_session = (
+            request.method == "DELETE"
+            and request.scope["route"].path == "/api/serve/sessions/{session_id}"
+        )
+        if not deleting_session and sessions.is_readonly(session_id):
+            raise HTTPException(HTTP_CONFLICT, SESSION_ARCHIVED_ERROR)
+        actor_id = str(getattr(request.state, "user_id", "") or "").strip()
+        if actor_id:
+            try:
+                await sessions.align_metering_identity(session_id, actor_id)
+            except (RuntimeError, ValueError) as error:
+                reason = str(getattr(error, "safe_error", "") or error)
+                if reason == RESOURCE_HOST_CONFIGURATION_CONFLICT:
+                    raise HTTPException(HTTP_CONFLICT, reason) from None
+                raise HTTPException(503, RESOURCE_HOST_CONTEXT_REQUIRED) from None
 
     session_guard = [
         Depends(require_session_access),
         Depends(align_session_metering_identity),
     ]
+
+    @app.exception_handler(PreparationError)
+    async def preparation_error(_request: Request, error: PreparationError) -> JSONResponse:
+        return JSONResponse(
+            {"ok": False, "error": str(error), "preparation_error": True},
+            status_code=HTTP_CONFLICT,
+        )
+
+    @app.post("/api/serve/runtime/prepare")
+    async def prepare_runtime(body: RuntimePreparationRequest, request: Request) -> Any:
+        try:
+            return sessions.prepare_model(
+                body.model_id,
+                actor_id=request_user_id(request),
+                request_id=body.request_id,
+                service_instance_id=body.service_instance_id,
+                persist_default=body.persist_default,
+            )
+        except (ValueError, RuntimeError) as error:
+            return JSONResponse({"ok": False, "error": str(error)}, status_code=HTTP_CONFLICT)
+
+    @app.get("/api/serve/runtime/prepare/{request_id}")
+    def runtime_preparation_status(request_id: str, request: Request) -> Any:
+        try:
+            return sessions.preparation_status(request_id, actor_id=request_user_id(request))
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": RECONFIGURATION_NOT_FOUND}, status_code=HTTP_404_NOT_FOUND
+            )
+
+    @app.get(
+        "/api/serve/sessions/{session_id}/navigation",
+        dependencies=[Depends(require_session_access)],
+    )
+    def navigation(session_id: str, request: Request) -> Any:
+        # The service enforces ownership; restoring navigation must not realign
+        # credentials, activate the runtime, or repair persisted session state.
+        payload, status = sessions.navigation(session_id, request_principal(request))
+        return _result(payload, status)
 
     async def open_live_session(body: Mapping[str, Any], principal_id: str) -> dict[str, Any]:
         payload, _status = await sessions.open(
@@ -177,7 +255,7 @@ def mount_session_routes(
     async def delete_owned_session(
         *, session_id: str, principal_id: str
     ) -> tuple[dict[str, Any], int]:
-        return await sessions.delete(session_id, principal(principal_id))
+        return await sessions.delete(session_id, principal(principal_id), actor_id=principal_id)
 
     async def update_live_session_skills(
         session_id: str,
@@ -225,11 +303,20 @@ def mount_session_routes(
         scope: SessionListScope = SessionListScope.ALL,
         project_path: str | None = None,
         query: str | None = None,
+        cursor: str = "",
+        archived: bool = False,
+        include_last_agent_reply: bool = False,
     ) -> dict[str, Any]:
         if scope is SessionListScope.PROJECT and not str(project_path or "").strip():
             raise HTTPException(422, SESSION_LIST_PROJECT_REQUIRED_ERROR)
         if scope is not SessionListScope.PROJECT and project_path is not None:
             raise HTTPException(422, SESSION_LIST_PROJECT_UNEXPECTED_ERROR)
+        try:
+            parse_session_list_cursor(cursor)
+        except ValueError as error:
+            raise HTTPException(
+                HTTP_422_UNPROCESSABLE_CONTENT, SESSION_LIST_CURSOR_INVALID
+            ) from error
         return await sessions.list(
             limit,
             request_principal(request),
@@ -237,6 +324,9 @@ def mount_session_routes(
             project_path=project_path,
             query=query,
             history=events.portable_history,
+            cursor=cursor,
+            archived=archived,
+            include_last_agent_reply=include_last_agent_reply,
         )
 
     @app.get("/api/serve/interactions/pending")
@@ -254,18 +344,45 @@ def mount_session_routes(
             actor_id,
             bearer_or_cookie(request),
         )
-        payload, status = await sessions.open(
-            await _json(request),
-            owner,
-            actor_id=actor_id,
-            skill_environment=skill_environment,
+        body = await _json(request)
+        prepare = body.pop("prepare_runtime", False)
+        instance_id = body.pop("service_instance_id", "")
+        if not isinstance(prepare, bool) or (
+            prepare
+            and (
+                not isinstance(body.get("model_id"), str)
+                or not body["model_id"]
+                or not isinstance(instance_id, str)
+                or not instance_id
+                or body.get("resume_session_id")
+            )
+        ):
+            return JSONResponse(
+                {"ok": False, "error": PREPARATION_INVALID}, status_code=HTTP_BAD_REQUEST
+            )
+        admission = (
+            sessions.model_admission(
+                body["model_id"],
+                actor_id=actor_id,
+                domain=ActivityDomain.RUNTIME,
+                service_instance_id=instance_id,
+            )
+            if prepare
+            else nullcontext()
         )
+        async with admission:
+            payload, status = await sessions.open(
+                body,
+                owner,
+                actor_id=actor_id,
+                skill_environment=skill_environment,
+            )
         return _result(payload, status)
 
     @app.get("/api/serve/sessions/{session_id}/events", dependencies=session_guard)
-    def session_events(session_id: str, from_seq: int = 0) -> StreamingResponse:
+    def session_events(session_id: str, request: Request, from_seq: int = 0) -> StreamingResponse:
         return StreamingResponse(
-            events.open(session_id, from_seq),
+            passive_events(events.open(session_id, from_seq), request.app.state.activities),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -279,10 +396,33 @@ def mount_session_routes(
         payload, status = await sessions.terminate(session_id)
         return _result(payload, status)
 
-    @app.post("/api/serve/sessions/{session_id}/turns", dependencies=session_guard)
+    @app.post(
+        "/api/serve/sessions/{session_id}/turns", dependencies=[Depends(require_session_access)]
+    )
     async def post_turn(session_id: str, request: Request) -> Any:
         # 凭据检查归 prepare_turn 的实际执行准入；排队消息出队时也必须重新检查。
-        payload, status = await turns.post(session_id, await _json(request), side=False)
+        body = await _json(request)
+        model_id = body.pop("expected_model_id", None)
+        instance_id = body.pop("service_instance_id", None)
+        if (model_id is not None and (not isinstance(model_id, str) or not model_id)) or (
+            instance_id is not None and (not isinstance(instance_id, str) or not instance_id)
+        ):
+            raise PreparationError(PREPARATION_INVALID)
+        model_id = model_id or sessions.model(session_id)["model_id"]
+        async with sessions.turn_admission(
+            session_id,
+            request_principal(request),
+            actor_id=request_user_id(request),
+            model_id=model_id,
+            service_instance_id=instance_id,
+        ):
+            payload, status = await turns.post(
+                session_id,
+                body,
+                side=False,
+                expected_model_id=model_id,
+                prepared_activity=True,
+            )
         return _result(payload, status)
 
     # 登录成功后、以及打开账号设置页时由客户端各调一次: 确保这把凭据已经存在, 好让设置页
@@ -352,8 +492,13 @@ def mount_session_routes(
         return {"ok": True, "references": references}
 
     @app.get("/api/serve/sessions/{session_id}/files", dependencies=session_guard)
-    def session_files(session_id: str, path: str = Query(default="")) -> dict[str, Any]:
-        return sessions.files(session_id, path)
+    def session_files(
+        session_id: str,
+        path: str = Query(default=""),
+        offset: int = Query(default=0, ge=0),
+        outputs_only: bool = False,
+    ) -> dict[str, Any]:
+        return sessions.files(session_id, path, offset, outputs_only=outputs_only)
 
     @app.get("/api/serve/sessions/{session_id}/files/content", dependencies=session_guard)
     def session_file_content(session_id: str, path: str = Query(...)) -> dict[str, Any]:
@@ -641,6 +786,8 @@ def mount_session_routes(
 
     @app.post("/api/serve/sessions/{session_id}/hil/{request_id}", dependencies=session_guard)
     async def respond_hil(session_id: str, request_id: str, request: Request) -> Any:
+        if sessions.requires_host_for_hil(request_id):
+            require_host_process(request)
         payload, status = await sessions.respond_hil(session_id, request_id, await _json(request))
         return _result(payload, status)
 
@@ -676,7 +823,9 @@ def mount_session_routes(
 
     @app.delete("/api/serve/sessions/{session_id}", dependencies=session_guard)
     async def delete_session(session_id: str, request: Request) -> Any:
-        payload, status = await sessions.delete(session_id, request_principal(request))
+        payload, status = await sessions.delete(
+            session_id, request_principal(request), actor_id=request_user_id(request)
+        )
         return _result(payload, status)
 
     @app.patch("/api/serve/sessions/{session_id}", dependencies=session_guard)
@@ -687,6 +836,65 @@ def mount_session_routes(
     ) -> Any:
         payload, status = await sessions.rename(session_id, body.title, request_principal(request))
         return _result(payload, status)
+
+    @app.put(
+        "/api/serve/sessions/{session_id}/archive",
+        dependencies=[Depends(require_session_access)],
+    )
+    async def set_session_archived(
+        session_id: str, body: SessionArchiveRequest, request: Request
+    ) -> Any:
+        payload, status = await sessions.set_archived(
+            session_id,
+            body.archived,
+            request_principal(request),
+            actor_id=request_user_id(request),
+        )
+        return _result(payload, status)
+
+    @app.put("/api/serve/sessions/{session_id}/pin", dependencies=session_guard)
+    def set_session_pinned(
+        session_id: str,
+        body: SessionPinRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        return sessions.set_pinned(session_id, body.pinned, request_principal(request))
+
+    @app.get("/api/serve/task-files")
+    async def task_files(
+        request: Request,
+        project_path: str,
+        cursor: str = "",
+        limit: int = Query(default=SESSION_LIST_MAX_LIMIT, ge=1, le=SESSION_LIST_MAX_LIMIT),
+    ) -> dict[str, Any]:
+        try:
+            parse_session_list_cursor(cursor)
+        except ValueError as error:
+            raise HTTPException(
+                HTTP_422_UNPROCESSABLE_CONTENT, SESSION_LIST_CURSOR_INVALID
+            ) from error
+        payload = await sessions.list(
+            limit,
+            request_principal(request),
+            scope=SessionListScope.PROJECT,
+            project_path=project_path,
+            cursor=cursor,
+        )
+        entries = []
+        for session in payload["sessions"]:
+            try:
+                listing = await request.app.state.activities.to_thread(
+                    ActivityDomain.RESOURCE,
+                    sessions.files,
+                    session["session_id"],
+                    outputs_only=True,
+                )
+            except (HTTPException, OSError, ValueError):
+                entries.append({"session": session, "files": None})
+                continue
+            if listing["has_files"]:
+                entries.append({"session": session, "files": listing})
+        return {"entries": entries, "next_cursor": payload.get("next_cursor")}
 
     @app.get("/api/serve/history/{session_id}", dependencies=session_guard)
     def history(session_id: str) -> dict[str, Any]:
@@ -699,6 +907,28 @@ def mount_session_routes(
     @app.get("/api/serve/sessions/{session_id}/mode", dependencies=session_guard)
     def get_mode(session_id: str) -> dict[str, Any]:
         return sessions.mode(session_id)
+
+    @app.get(
+        "/api/serve/sessions/{session_id}/runtime/reconfigure",
+        dependencies=[Depends(require_session_access)],
+    )
+    def current_reconfiguration(session_id: str, request: Request) -> Any:
+        current = sessions.current_reconfiguration(session_id, actor_id=request_user_id(request))
+        return current if current is not None else Response(status_code=204)
+
+    @app.get(
+        "/api/serve/sessions/{session_id}/runtime/reconfigure/{request_id}",
+        dependencies=[Depends(require_session_access)],
+    )
+    def reconfiguration_status(session_id: str, request_id: str, request: Request) -> Any:
+        try:
+            return sessions.reconfiguration_status(
+                session_id, request_id, actor_id=request_user_id(request)
+            )
+        except ValueError:
+            return JSONResponse(
+                {"error": RECONFIGURATION_NOT_FOUND}, status_code=HTTP_404_NOT_FOUND
+            )
 
     @app.get("/api/serve/sessions/{session_id}/model", dependencies=session_guard)
     def get_model(session_id: str) -> dict[str, Any]:
@@ -720,44 +950,55 @@ def mount_session_routes(
             body.model_id,
             reasoning_effort=body.reasoning_effort,
             thinking=thinking,
+            remember_default=body.remember_default,
             actor_id=request_user_id(request),
         )
         return _result(payload, status)
 
     @app.post("/api/serve/sessions/{session_id}/mode", dependencies=session_guard)
     async def set_mode(session_id: str, request: Request) -> Any:
-        body = await _json(request)
-        payload, status = await sessions.set_mode(
-            session_id,
-            request_principal(request),
-            str(body.get("mode") or ""),
-            application=str(body.get("application") or PermissionApplication.AUTO.value),
-        )
-        continuation = payload.pop("continuation", None)
-        if status == HTTP_OK and continuation:
-            context = body.get("continuation_context")
-            context = context if isinstance(context, Mapping) else {}
-            result, result_status = await turns.post(
-                session_id,
-                {
-                    "input": [
-                        {"type": InputKind.TEXT.value, "text": SESSION_PERMISSION_CONTINUATION_TEXT}
-                    ],
-                    **{
-                        key: context[key]
-                        for key in PERMISSION_CONTINUATION_CONTEXT_FIELDS
-                        if key in context
-                    },
-                },
-                side=False,
-                expected_submission_id=continuation["submission_id"],
-                expected_interrupt_generation=continuation["interrupt_generation"],
-                expected_permission_mode=str(payload["mode"]),
-            )
-            payload["continued"] = bool(result.get("ok"))
-            if result_status >= HTTP_BAD_REQUEST:
-                return _result({**payload, **result}, result_status)
-        return _result(payload, status)
+        activities = request.app.state.activities
+        with activities.enter(ActivityDomain.RUNTIME, root=True) as activity:
+            body = await _json(request)
+
+            async def change_mode() -> Any:
+                payload, status = await sessions.set_mode(
+                    session_id,
+                    request_principal(request),
+                    str(body.get("mode") or ""),
+                    application=str(body.get("application") or PermissionApplication.AUTO.value),
+                )
+                continuation = payload.pop("continuation", None)
+                if status == HTTP_OK and continuation:
+                    context = body.get("continuation_context")
+                    context = context if isinstance(context, Mapping) else {}
+                    result, result_status = await turns.post(
+                        session_id,
+                        {
+                            "input": [
+                                {
+                                    "type": InputKind.TEXT.value,
+                                    "text": SESSION_PERMISSION_CONTINUATION_TEXT,
+                                }
+                            ],
+                            **{
+                                key: context[key]
+                                for key in PERMISSION_CONTINUATION_CONTEXT_FIELDS
+                                if key in context
+                            },
+                        },
+                        side=False,
+                        expected_submission_id=continuation["submission_id"],
+                        expected_interrupt_generation=continuation["interrupt_generation"],
+                        expected_permission_mode=str(payload["mode"]),
+                        continuation_activity=activity,
+                    )
+                    payload["continued"] = bool(result.get("ok"))
+                    if result_status >= HTTP_BAD_REQUEST:
+                        return _result({**payload, **result}, result_status)
+                return _result(payload, status)
+
+            return await activities.finish(ActivityDomain.RUNTIME, change_mode)
 
     @app.api_route(
         "/api/serve/sessions/{session_id}/command",

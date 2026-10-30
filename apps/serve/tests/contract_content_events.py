@@ -23,6 +23,7 @@ from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.events import MAX_BATCH_EVENTS, WATCHFILES_AVAILABLE
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.content import EventSource, FileEventKind, RootKind
 
 PASS = 0
@@ -77,7 +78,7 @@ async def run() -> None:
     catalog = ContentCatalog(database)
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     project = content.create_project("事件契约")
     library = Path(project.root) / MANAGED_RESOURCES_ROOT_RELATIVE
     linked_file = root / "关联单文件.md"

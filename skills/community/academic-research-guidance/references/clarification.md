@@ -1,7 +1,5 @@
 ## Research Intent Clarification & Routing
 
-For precise literature retrieval, read and follow the `precise-literature-search` skill's clarification and confirmation contract instead of the general clarification loop.
-
 Keep internal classification, clarification judgments, and routing reasoning private. Do not expose internal labels such as `precise` or the open-item list. This does not suppress user-facing explanations of evidence limits, execution modes (including Quick/Grounded), costs, or confirmations required by the selected task skill.
 
 Given a research request, first inspect relevant content in any files the

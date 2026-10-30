@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -87,8 +89,12 @@ def _locked_source_compiles_exactly() -> None:
         check("exact locked skill collection", frozenset(result.skills) == EXPECTED_SKILLS)
         check("standard skill pack", validate_bundled_skills(target, expected=EXPECTED_SKILLS).ok)
         check(
-            "executable mode restored",
-            (target / "example/scripts/run").stat().st_mode & 0o777 == 0o755,
+            "installed permissions restored for the host platform",
+            (
+                bool((target / "example/scripts/run").stat().st_mode & stat.S_IWRITE)
+                if os.name == "nt"
+                else (target / "example/scripts/run").stat().st_mode & 0o777 == 0o755
+            ),
         )
         metadata = json.loads((target / "example/.scholarseed.json").read_bytes())
         check(
@@ -550,9 +556,9 @@ def _source_verification_checks_payloads() -> None:
         leaked = verify_bundled_skill_sources(lock, zip_cache, target)
         check("逐文件校验拦截多余资产", not leaked.ok, str(leaked.errors))
         unexpected.unlink()
-        config_path.chmod(0o644)
+        config_path.chmod(0o444 if os.name == "nt" else 0o644)
         changed_mode = verify_bundled_skill_sources(lock, zip_cache, target)
-        check("missing executable permission rejected", not changed_mode.ok)
+        check("changed host permissions rejected", not changed_mode.ok)
         config_path.chmod(0o755)
         cache = target / "example" / "__pycache__"
         cache.mkdir()

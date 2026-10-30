@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from service.assistant.api.routes import register_assistant_routes
 from service.assistant.persistence.store import (
     AnswerAnnotationOverlapError,
     AnswerAnnotationRevisionConflictError,
@@ -127,6 +132,48 @@ class AssistantAnnotationContract(unittest.TestCase):
             comment=comment,
             enqueue=True,
         )
+
+    def test_answer_annotation_round_trips_with_file_context(self) -> None:
+        self.create()
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = AssistantService(self.store)
+        register_assistant_routes(app)
+        client = TestClient(app)
+        endpoint = f"/api/assistant/sessions/{SESSION_ID}/context"
+        selection = client.get(endpoint).json()
+        note = selection["refs"][0]
+        body = {
+            "expected_revision": selection["revision"],
+            "project_policy": selection["project_policy"],
+            "search_scope": selection["search_scope"],
+            "refs": [note, {"kind": "file", "source_id": "evidence.md", "label": "evidence.md"}],
+        }
+        accepted = client.patch(endpoint, json=body)
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        refreshed = client.get(endpoint).json()
+        self.assertEqual(refreshed["refs"][0], note)
+        body["expected_revision"] = refreshed["revision"]
+        body["refs"] = list(reversed(refreshed["refs"]))
+        saved = client.patch(endpoint, json=body)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        body["expected_revision"] = saved.json()["revision"]
+        for field, value in (
+            ("answer_id", ""),
+            ("start_utf16", -1),
+            ("end_utf16", 1),
+            ("end_utf16", 0),
+            ("kind", "unknown"),
+        ):
+            with self.subTest(field=field):
+                invalid = deepcopy(body)
+                invalid["refs"][1]["anchor"]["locator"][field] = value
+                self.assertEqual(client.patch(endpoint, json=invalid).status_code, 422)
+        changed = deepcopy(body)
+        changed["refs"][1]["anchor"]["locator"]["answer_id"] = "item:other"
+        self.assertEqual(client.patch(endpoint, json=changed).status_code, 409)
+        self.assertEqual(client.get(endpoint).json()["refs"], saved.json()["refs"])
 
     def test_product_answer_identity_uses_final_cumulative_snapshot(self) -> None:
         events = ProductEventStore(self.database)

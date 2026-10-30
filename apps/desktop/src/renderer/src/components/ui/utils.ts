@@ -4,18 +4,17 @@ export function cx(...values: Array<false | null | string | undefined>): string 
 
 const OVERRIDABLE_CLASS_GROUPS = [
   /^!?w-/,
+  /^!?max-h-/,
+  /^!?min-h-/,
   /^!?gap(?:-[xy])?-/,
-  /^!?flex-(wrap|nowrap|wrap-reverse)$/
+  /^!?flex-(wrap|nowrap|wrap-reverse)$/,
 ]
 
 function classGroup(value: string): number {
   return OVERRIDABLE_CLASS_GROUPS.findIndex((pattern) => pattern.test(value))
 }
 
-export function cxWithOverrides(
-  defaults: string,
-  className?: false | null | string
-): string {
+export function cxWithOverrides(defaults: string, className?: false | null | string): string {
   if (!className) return defaults
 
   const overrideGroups = new Set(

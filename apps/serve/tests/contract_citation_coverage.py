@@ -7,18 +7,26 @@ import json
 import socket
 import threading
 import unittest
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
-from service.chat.service.coverage import CitationCoverage, bind_claims, merge_review
+from service.chat.service.coverage import (
+    MAX_EVIDENCE_QUOTE_CHARACTERS,
+    CitationCoverage,
+    bind_claims,
+    merge_review,
+)
+from service.chat.service.models import SessionModelUnavailableError
 from service.chat.service.receipts import SEARCH_RECEIPT_PREFIX, search_receipts
 from service.chat.service.sources import answer_sources
-from service.inference.transport import SUBSCRIPTION_BILLING, InferenceProvider
+from service.inference.transport import TOOL_FREE_UNSUPPORTED, InferenceProvider
 from service.platform.citations import WebEvidencePage
 from service.platform.inference import (
     ModelInvocationLimits,
     ModelInvocationRequest,
+    ModelInvocationResult,
     ModelInvocationStatus,
 )
 from service.resources.service.fetcher import HtmlFetcher, PageFetchError, _PageText, _Response
@@ -166,23 +174,112 @@ class CoverageContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["coverage"]["unresolved"], ["明日有雪。"])
         self.assertEqual(projection()["sources"], [])
 
-    def test_fabricated_source_evidence_or_answer_is_rejected(self) -> None:
-        for original, replacement in (("杭州小雨。", "杭州暴雨。"), ('"0"', '"9"')):
+    def test_invalid_binding_does_not_discard_valid_claim(self) -> None:
+        document = json.loads(output())
+        document["claims"][1]["bindings"] = [{"source_id": "0", "evidence_quote": "明日有雪。"}]
+        result = bind_claims(ANSWER, projection(), {"0": PAGE}, json.dumps(document))
+        self.assertEqual(result["coverage"]["status"], "partial")
+        self.assertEqual(result["coverage"]["associated_claims"], 1)
+        self.assertEqual(result["coverage"]["reviewed_claims"], 2)
+        self.assertEqual(result["coverage"]["unresolved"], ["明日有雪。"])
+        self.assertEqual(result["coverage"]["rejected_bindings"], {"quote_mismatch": 1})
+        self.assertEqual(result["sources"][0]["evidence"][0]["quote"], "杭州小雨。")
+        self.assertEqual(projection()["sources"], [])
+
+    def test_invalid_binding_is_isolated_in_either_order_within_claim(self) -> None:
+        invalid = {"source_id": "0", "evidence_quote": "杭州小雨" + "！"}
+        valid = {"source_id": "0", "evidence_quote": "杭州小雨。"}
+        for bindings in ([invalid, valid], [valid, invalid]):
+            document = json.loads(output())
+            document["claims"][0]["bindings"] = bindings
+            document["claims"][1]["kind"] = "advice"
+            result = bind_claims(ANSWER, projection(), {"0": PAGE}, json.dumps(document))
+            self.assertEqual(result["coverage"]["status"], "partial")
+            self.assertEqual(result["coverage"]["unresolved"], [])
+            self.assertEqual(result["coverage"]["associated_claims"], 1)
+            self.assertEqual(len(result["sources"][0]["evidence"]), 1)
+
+    def test_all_invalid_bindings_are_unavailable_without_promoting_sources(self) -> None:
+        cases = (
+            (None, "invalid_binding"),
+            ({"source_id": [], "evidence_quote": "杭州小雨。"}, "unknown_source"),
+            ({"source_id": "9", "evidence_quote": "杭州小雨。"}, "unknown_source"),
+            ({"source_id": "0", "evidence_quote": []}, "invalid_quote"),
+            ({"source_id": "0", "evidence_quote": "  "}, "invalid_quote"),
+            (
+                {"source_id": "0", "evidence_quote": "雨" * (MAX_EVIDENCE_QUOTE_CHARACTERS + 1)},
+                "quote_too_long",
+            ),
+            ({"source_id": "0", "evidence_quote": "杭州暴雨。"}, "quote_mismatch"),
+        )
+        for binding, reason in cases:
+            with self.subTest(reason=reason, binding=binding):
+                document = json.loads(output())
+                document["claims"][0]["bindings"] = [binding]
+                result = bind_claims(ANSWER, projection(), {"0": PAGE}, json.dumps(document))
+                self.assertEqual(result["coverage"]["status"], "unavailable")
+                self.assertEqual(result["coverage"]["rejected_bindings"], {reason: 1})
+                self.assertEqual(result["coverage"]["associated_claims"], 0)
+                self.assertEqual(result["sources"], [])
+        result = bind_claims(ANSWER, projection(), {}, output())
+        self.assertEqual(result["coverage"]["rejected_bindings"], {"page_unavailable": 1})
+
+    def test_invalid_answer_structure_is_still_rejected(self) -> None:
+        document = json.loads(output())
+        for claims in ([], document["claims"][:1], document["claims"] * 2):
             with self.assertRaises(ValueError):
-                bind_claims(
-                    ANSWER,
-                    projection(),
-                    {"0": PAGE},
-                    (
-                        output().replace(original, replacement)
-                        if original.startswith('"')
-                        else output().replace(
-                            json.dumps(original)[1:-1], json.dumps(replacement)[1:-1]
-                        )
-                    ),
-                )
+                bind_claims(ANSWER, projection(), {"0": PAGE}, json.dumps({"claims": claims}))
+        document["claims"][0]["answer_id"] = "9"
+        with self.assertRaisesRegex(ValueError, "incomplete_review_segments"):
+            bind_claims(ANSWER, projection(), {"0": PAGE}, json.dumps(document))
         with self.assertRaises(ValueError):
             bind_claims(ANSWER, projection(), {"0": PAGE}, '{"claims": []}')
+
+    def test_valid_review_without_rejections_keeps_reviewed_status(self) -> None:
+        document = json.loads(output())
+        document["claims"][1]["kind"] = "advice"
+        result = bind_claims(ANSWER, projection(), {"0": PAGE}, json.dumps(document))
+        self.assertEqual(result["coverage"]["status"], "reviewed")
+        self.assertNotIn("rejected_bindings", result["coverage"])
+
+    async def test_review_logs_rejection_counts_without_quote_and_keeps_status(self) -> None:
+        for keep_valid in (True, False):
+            with self.subTest(keep_valid=keep_valid):
+                document = json.loads(output())
+                document["claims"][1]["bindings"] = [
+                    {"source_id": "0", "evidence_quote": "明日有雪。"}
+                ]
+                if not keep_valid:
+                    document["claims"][0]["bindings"] = []
+                declared = projection()
+                declared["search_sources"].append({"url": "https://example.com/missing"})
+                reader = Mock(fetch_page=AsyncMock(side_effect=[PAGE, PageFetchError("blocked")]))
+                model = Mock(
+                    invoke=AsyncMock(
+                        return_value=ModelInvocationResult(
+                            "review",
+                            ModelInvocationStatus.COMPLETED,
+                            output_text=json.dumps(document),
+                        )
+                    )
+                )
+                with self.assertLogs("service.chat.service.coverage", level="WARNING") as logs:
+                    result = await CitationCoverage(reader, model, lambda *_: True).review(
+                        ANSWER,
+                        declared,
+                        invocation_id="review",
+                        owner_id="owner",
+                        project_id="project",
+                        model_key="model",
+                    )
+                self.assertEqual(
+                    result["coverage"]["status"], "partial" if keep_valid else "unavailable"
+                )
+                self.assertEqual(result["coverage"]["unread_sources"], 1)
+                self.assertEqual(len(result["sources"]), int(keep_valid))
+                self.assertIn("quote_mismatch", " ".join(logs.output))
+                self.assertIn("invocation_id=review", " ".join(logs.output))
+                self.assertNotIn("明日有雪", " ".join(logs.output))
 
     def test_late_native_source_and_review_both_survive_merge(self) -> None:
         reviewed = bind_claims(ANSWER, projection(), {"0": PAGE}, output())
@@ -251,9 +348,14 @@ class CoverageContract(unittest.IsolatedAsyncioTestCase):
 
     async def test_subscription_does_not_spawn_unrestricted_temporary_agent(self) -> None:
         models = Mock()
-        models.inference_connection.return_value = {"billing": SUBSCRIPTION_BILLING}
-        temporary = Mock(invoke=AsyncMock())
-        result = await InferenceProvider(models, temporary).invoke(
+
+        @asynccontextmanager
+        async def unsupported(*args, **kwargs):
+            raise SessionModelUnavailableError(TOOL_FREE_UNSUPPORTED)
+            yield
+
+        models.inference = unsupported
+        result = await InferenceProvider(models).invoke(
             ModelInvocationRequest(
                 "review",
                 "owner",
@@ -268,7 +370,6 @@ class CoverageContract(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status, ModelInvocationStatus.FAILED)
         self.assertEqual(result.error_code, "tool_free_generation_unsupported")
-        temporary.invoke.assert_not_called()
 
 
 class PageContract(unittest.IsolatedAsyncioTestCase):

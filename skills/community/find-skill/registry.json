@@ -1,0 +1,10 @@
+{
+  "slug": "find-skill",
+  "authors": ["iflytek/skillhub"],
+  "source": {
+    "kind": "adapted",
+    "repository_url": "https://github.com/iflytek/skillhub",
+    "path": "web/src/docs/skill.md",
+    "revision": "deployed-sha256:bc4971211c0c3e98b2e35bdd6a94056118fe6b28167638d3b14db5a51dd37d8b"
+  }
+}

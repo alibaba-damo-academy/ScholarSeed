@@ -12,7 +12,7 @@ description_zh: >-
   学术证据分析，覆盖自然科学、工程、人文与社会科学。澄清未明确的科研意图并衔接
   专项科研技能；不用于没有科研目标的普通编程、写作、文件管理或产品操作。
 metadata:
-  version: "2026.9.29"
+  version: "2026.10.8"
 ---
 
 # Academic Research Guidance — 科研任务指导
@@ -23,17 +23,12 @@ materials and prior answers before deciding anything is missing.
 
 ## Choose the appropriate depth
 
-- For precise literature retrieval, read and follow the
-  `precise-literature-search` skill's clarification and confirmation contract
-  **before** any general clarification loop. Do not run both loops or bypass its
-  mandatory start confirmation.
-- For research tasks needing intent clarification or selection among specialized
-  capabilities, read [Research intent clarification and routing](references/clarification.md).
+- For every request handled by this skill, first read and follow the complete
+  [Research intent clarification and routing](references/clarification.md).
+  Apply its five judgments before deciding whether clarification is needed
+  or proceeding with the task.
   A fully specified request requires no extra questions. Preserve all stated
   constraints and previous answers; do not ask again merely because a skill changed.
-- For a clear research concept explanation or other explicit deliverable not
-  covered by a specialized skill, answer directly. Do not force literature
-  retrieval, a multi-stage workflow, or clarification simply because it is research.
 - Before presenting key research conclusions, read
   [Research conclusions and evidence](references/evidence.md).
   Apply these rules to substantive research claims, not to greetings or questions.

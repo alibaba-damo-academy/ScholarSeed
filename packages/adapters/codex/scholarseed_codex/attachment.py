@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from scholarseed_codex.protocol.session import CodexSessionEventObserver, CodexSessionOpenRequest
 from scholarseed_codex.protocol.state import CodexThreadAttachmentState, McpNotificationHandler
@@ -22,8 +22,11 @@ class ThreadAttachment:
     model: str = ""
     history: tuple[HistoryEntry, ...] = ()
     mcp_handler: McpNotificationHandler | None = None
+    mcp_invalidate: Callable[[], None] | None = field(default=None, repr=False)
     attachment_state: CodexThreadAttachmentState = CodexThreadAttachmentState.ATTACHING
     attached_generation: int = 0
+    absent_generation: int = 0
+    fresh_generation: int = 0
     registration_epoch: int = 0
     last_incident_id: str = ""
     last_resume_failure: str = ""

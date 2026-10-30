@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { ConvItem } from './model.ts'
-import type { ProductEvent } from './api.ts'
+import type { HistoryResult, ProductEvent } from './api.ts'
+import { feedback } from './contracts/feedback.ts'
 import type { AssistantContextRef } from './contracts/assistant.ts'
 import {
   appendOptimisticUserMessage,
+  isUserHistoryTurn,
   bindSubmittedTurn,
+  insertTurnRuntimeItem,
   latestDisplayCardItems,
   projectActivityEvents,
   projectReasoningEvent,
@@ -15,6 +18,7 @@ import {
   projectArtifactFailure,
   projectHistory,
   projectHistorySnapshot,
+  projectTurnInterruption,
   projectHistoryWithRuntime,
   projectDisplayCardEvent,
   projectReviewReadyEvent,
@@ -28,29 +32,64 @@ import {
   projectWebSearchEvent,
   removeOptimisticUserMessage,
   resolveHilItem,
-  settleInterruptedTools,
+  settleInterruptedActivities,
   streamItemIdentity,
   upsertUserMessageEvent,
   upsertConversationArtifact,
 } from './transcript.ts'
 
-test('command exit code survives history projection and durable activity replay', () => {
-  const history = projectHistory([{
-    kind: 'tool', tool: 'bash', item_id: 'command-1', status: 'error',
-    input: { command: "rg 'absent' notes.md" }, output: '', exit_code: 1,
-  }])
-  assert.equal(history[0].kind === 'tool' ? history[0].exitCode : undefined, 1)
+test('user history identity accepts native user records and text records without reclassifying assistant or tools', () => {
+  for (const turn of [{ kind: 'user' }, { kind: 'text', role: 'user' }]) {
+    assert.equal(isUserHistoryTurn(turn), true)
+    assert.equal(projectHistory([{ ...turn, text: 'history identity' }])[0].kind, 'user')
+  }
+  for (const turn of [
+    { kind: 'text', role: 'assistant' },
+    { kind: 'tool', role: 'user' },
+    { kind: 'thinking' },
+  ])
+    assert.equal(isUserHistoryTurn(turn), false)
+})
 
-  const replayed = projectActivityEvents([], [
+test('command exit code survives history projection and durable activity replay', () => {
+  const history = projectHistory([
     {
-      v: 2, seq: 1, ts: 1, type: 'tool_started', session_id: 'session', turn_id: 'turn', item_id: 'command-1',
-      data: { tool_id: 'command-1', name: 'bash', input: { command: "rg 'absent' notes.md" } },
-    },
-    {
-      v: 2, seq: 2, ts: 2, type: 'tool_completed', session_id: 'session', turn_id: 'turn', item_id: 'command-1',
-      data: { tool_id: 'command-1', name: 'bash', output: '', success: false, exit_code: 1 },
+      kind: 'tool',
+      tool: 'bash',
+      item_id: 'command-1',
+      status: 'error',
+      input: { command: "rg 'absent' notes.md" },
+      output: '',
+      exit_code: 1,
     },
   ])
+  assert.equal(history[0].kind === 'tool' ? history[0].exitCode : undefined, 1)
+
+  const replayed = projectActivityEvents(
+    [],
+    [
+      {
+        v: 2,
+        seq: 1,
+        ts: 1,
+        type: 'tool_started',
+        session_id: 'session',
+        turn_id: 'turn',
+        item_id: 'command-1',
+        data: { tool_id: 'command-1', name: 'bash', input: { command: "rg 'absent' notes.md" } },
+      },
+      {
+        v: 2,
+        seq: 2,
+        ts: 2,
+        type: 'tool_completed',
+        session_id: 'session',
+        turn_id: 'turn',
+        item_id: 'command-1',
+        data: { tool_id: 'command-1', name: 'bash', output: '', success: false, exit_code: 1 },
+      },
+    ]
+  )
   assert.equal(replayed[0].kind === 'tool' ? replayed[0].exitCode : undefined, 1)
 })
 
@@ -513,6 +552,30 @@ test('keeps distinct display cards in one turn and de-duplicates replay', () => 
     ['agent', 'display_card', 'display_card']
   )
   assert.equal(replayed.filter((item) => item.kind === 'display_card').length, 2)
+})
+
+test('delivery replay is distinguishable from a fresh live event without changing durable card identity', () => {
+  const event = {
+    v: 2 as const,
+    seq: 19,
+    ts: 4,
+    type: 'display_card' as const,
+    session_id: 'session',
+    turn_id: 'turn',
+    data: {
+      card_id: 'delivery-card',
+      type: 'literature-delivery',
+      content: { delivery_id: 'batch' },
+    },
+  }
+  const live = projectDisplayCardEvent([], event, 'live')[0]
+  const history = projectDisplayCardEvent([], event)[0]
+  assert.equal(live.kind === 'display_card' && live.card.presentationSource, 'live')
+  assert.equal(history.kind === 'display_card' && history.card.presentationSource, 'history')
+  assert.equal(
+    live.kind === 'display_card' && live.card.cardId,
+    history.kind === 'display_card' && history.card.cardId
+  )
 })
 
 test('projects the latest feature-owned card snapshot without deleting durable history', () => {
@@ -1035,8 +1098,13 @@ test('keeps commentary in the thinking stream and final answers in the agent str
 
 test('migrates one live assistant item when its authoritative phase arrives', () => {
   const turnId = 'turn-late-phase'
-  let live = projectStreamDelta([], 'agent', '正在检查。', turnId, 'message-1', true, 7)
-  live = projectStreamDelta(live, 'thinking', '正在检查。', turnId, 'message-1', true, 8)
+  let live = projectStreamDelta([], 'agent', '正在', turnId, 'message-1', true, 7)
+  assert.equal(live.length, 1)
+  assert.equal(live[0].kind === 'agent' ? live[0].text : null, '正在')
+  live = projectStreamDelta(live, 'agent', '正在检查。', turnId, 'message-1', true, 8)
+  assert.equal(live.length, 1)
+  assert.equal(live[0].kind === 'agent' ? live[0].text : null, '正在检查。')
+  live = projectStreamDelta(live, 'thinking', '正在检查。', turnId, 'message-1', true, 9)
 
   assert.deepEqual(live, [
     {
@@ -1048,6 +1116,225 @@ test('migrates one live assistant item when its authoritative phase arrives', ()
       commentary: true,
     },
   ])
+})
+
+test('replayed activity stays before the next ordinary or recovery turn boundary', () => {
+  for (const boundary of [
+    { kind: 'user', text: 'second', turnId: 'second' },
+    { kind: 'status', text: 'recovery', turnId: 'second', turnBoundary: true },
+  ] as ConvItem[]) {
+    const first: ConvItem = { kind: 'user', text: 'first', turnId: 'first' }
+    const answer: ConvItem = { kind: 'agent', text: 'answer', turnId: 'first', eventSeq: 10 }
+    const second: ConvItem = {
+      kind: 'agent',
+      text: 'second answer',
+      turnId: 'second',
+      eventSeq: 20,
+    }
+    const activity: ConvItem = { kind: 'status', text: 'activity', turnId: 'first', eventSeq: 15 }
+    assert.deepEqual(insertTurnRuntimeItem([first, answer, boundary, second], activity), [
+      first,
+      answer,
+      activity,
+      boundary,
+      second,
+    ])
+  }
+})
+
+test('recovery keeps its admission boundary when native content precedes bound acknowledgement', () => {
+  const admitted: Extract<ProductEvent, { type: 'user_message' }> = {
+    v: 2,
+    seq: 43,
+    ts: 43,
+    type: 'user_message',
+    session_id: 'session',
+    item_id: 'automatic',
+    turn_id: 'client',
+    data: {
+      text: 'internal',
+      refs: [],
+      client_turn_id: 'client',
+      origin: 'recovery',
+      binding: 'admitted',
+    },
+  }
+  const bound: typeof admitted = {
+    ...admitted,
+    seq: 47,
+    turn_id: 'native',
+    data: { ...admitted.data, binding: 'bound' },
+  }
+  const reasoning: ConvItem = {
+    kind: 'thinking',
+    text: 'thinking',
+    turnId: 'native',
+    itemId: 'reasoning',
+    eventSeq: 45,
+  }
+  const history: HistoryResult['turns'] = [
+    { kind: 'user', text: 'task', turn_id: 'original', item_id: 'original' },
+    { kind: 'user', text: 'internal', origin: 'recovery', turn_id: 'native', item_id: 'automatic' },
+  ]
+  for (const initial of [upsertUserMessageEvent([], admitted), []]) {
+    const current = upsertUserMessageEvent([...initial, reasoning], bound)
+    const marker = current.find((item) => item.itemId === 'automatic')
+    assert.equal(marker?.eventSeq, initial.length ? 43 : 47)
+    assert.equal(marker?.kind === 'status' && marker.bindingSeq, 47)
+    assert.ok(current.indexOf(marker!) < current.indexOf(reasoning))
+    const stale = upsertUserMessageEvent(current, admitted)
+    assert.equal(stale.find((item) => item.itemId === 'automatic')?.turnId, 'native')
+    const restored = projectHistoryWithRuntime(history, stale)
+    assert.ok(
+      restored.findIndex((item) => item.itemId === 'automatic') < restored.indexOf(reasoning)
+    )
+    assert.deepEqual(projectHistoryWithRuntime(history, restored), restored)
+  }
+})
+
+test('automatic continuation is a stable system status in live, history and cancelled projections', () => {
+  const event: Extract<ProductEvent, { type: 'user_message' }> = {
+    v: 2,
+    seq: 2,
+    ts: 2,
+    type: 'user_message',
+    session_id: 'session',
+    item_id: 'automatic',
+    data: {
+      text: 'internal instruction',
+      refs: [],
+      client_turn_id: 'automatic',
+      origin: 'recovery',
+      binding: 'admitted',
+    },
+  }
+  const original: ConvItem = { kind: 'user', text: 'original task', itemId: 'original' }
+  let items = upsertUserMessageEvent([original], event)
+  items = upsertUserMessageEvent(items, {
+    ...event,
+    seq: 3,
+    turn_id: 'native',
+    data: { ...event.data, binding: 'bound' },
+  })
+  assert.equal(items.length, 2)
+  assert.deepEqual(items[0], original)
+  assert.equal(items[1].kind, 'status')
+  assert.equal(items[1].text, '')
+  assert.equal(items[1].turnId, 'native')
+  assert.deepEqual(
+    items[1].kind === 'status' && items[1].displayMessage,
+    feedback('components', 'stream.automaticRecovery')
+  )
+  const restored = projectHistoryWithRuntime(
+    [
+      {
+        kind: 'user',
+        origin: 'recovery',
+        text: 'internal instruction',
+        turn_id: 'native',
+        item_id: 'automatic',
+      },
+    ],
+    items
+  )
+  assert.equal(restored.filter((item) => item.itemId === 'automatic').length, 1)
+  assert.equal(restored.find((item) => item.itemId === 'automatic')?.kind, 'status')
+  const cancelled = upsertUserMessageEvent([], {
+    ...event,
+    data: { ...event.data, binding: 'cancelled' },
+  })
+  assert.deepEqual(
+    cancelled[0].kind === 'status' && cancelled[0].displayMessage,
+    feedback('components', 'stream.automaticRecoveryCancelled')
+  )
+  const cancelledHistory = projectHistory([
+    {
+      kind: 'user',
+      origin: 'recovery',
+      text: 'internal instruction',
+      status: 'cancelled',
+      item_id: 'automatic',
+    },
+  ])
+  assert.equal(cancelledHistory[0].kind, 'status')
+})
+
+test('recovery is a retained turn boundary for old failures in both clean and polluted history order', () => {
+  const turns: HistoryResult['turns'] = [
+    { kind: 'user', text: 'task', turn_id: 'original', item_id: 'user' },
+    {
+      kind: 'user',
+      text: 'internal',
+      origin: 'recovery',
+      turn_id: 'successor',
+      item_id: 'automatic',
+    },
+    { kind: 'thinking', text: 'plan', turn_id: 'successor', item_id: 'thinking' },
+    { kind: 'text', text: 'preamble', turn_id: 'successor', item_id: 'preamble' },
+    {
+      kind: 'tool',
+      tool: 'read',
+      status: 'done',
+      output: 'proof',
+      turn_id: 'successor',
+      item_id: 'read',
+    },
+    { kind: 'text', text: 'answer', turn_id: 'successor', item_id: 'answer' },
+  ]
+  const native = projectHistory(turns)
+  const automatic = { ...native[1], eventSeq: 47 }
+  const error: ConvItem = {
+    kind: 'error',
+    title: 'unknown',
+    message: 'unknown',
+    action: '',
+    turnId: 'original',
+    eventSeq: 36,
+  }
+  const process: ConvItem = {
+    kind: 'status',
+    text: 'recovered',
+    incidentId: 'incident',
+    eventSeq: 35,
+    retainOnHistoryRefresh: true,
+  }
+  const interrupted: ConvItem = {
+    kind: 'status',
+    text: 'interrupted',
+    turnId: 'original',
+    eventSeq: 38,
+    retainOnHistoryRefresh: true,
+  }
+  const history: HistoryResult = {
+    turns,
+    todos: [],
+    todo_turn_id: null,
+    artifacts: [],
+    activity_events: [],
+    turn_activity: [],
+  }
+  const sequences = [
+    [native[0], process, error, interrupted, automatic, ...native.slice(2)],
+    [native[0], automatic, ...native.slice(2, 4), error, interrupted, process, ...native.slice(4)],
+  ]
+  for (const current of sequences) {
+    const restored = projectHistorySnapshot(history, current)
+    const boundary = restored.findIndex((item) => item.itemId === 'automatic')
+    assert.equal(restored[boundary].kind === 'status' && restored[boundary].turnBoundary, true)
+    assert.equal(restored.filter((item) => item.itemId === 'automatic').length, 1)
+    for (const old of [process, error, interrupted]) {
+      assert.ok(restored.indexOf(old) < boundary)
+      assert.ok(restored.indexOf(old) >= 0)
+    }
+    assert.ok(restored.findIndex((item) => item.itemId === 'thinking') > boundary)
+    assert.ok(restored.findIndex((item) => item.itemId === 'read') > boundary)
+    assert.deepEqual(projectHistorySnapshot(history, restored), restored)
+  }
+  const partial = projectHistoryWithRuntime([turns[0]], [native[0], process, automatic])
+  assert.equal(partial.filter((item) => item.itemId === 'automatic').length, 1)
+  const caughtUp = projectHistorySnapshot(history, partial)
+  assert.equal(caughtUp.filter((item) => item.itemId === 'automatic').length, 1)
+  assert.ok(caughtUp.indexOf(process) < caughtUp.findIndex((item) => item.itemId === 'automatic'))
 })
 
 test('uses the latest explicit phase when restoring cumulative assistant events', () => {
@@ -2503,6 +2790,141 @@ test('keeps an interrupted turn status below its replayed tool activity', () => 
   )
 })
 
+test('interruption notice survives cold history recovery and repeated refresh', () => {
+  const history: HistoryResult = {
+    turns: [{ kind: 'user' as const, text: 'stop the command', turn_id: 'stopped' }],
+    todos: [],
+    todo_turn_id: null,
+    artifacts: [],
+    activity_events: [
+      {
+        v: 2,
+        seq: 1,
+        ts: 1,
+        type: 'tool_started',
+        session_id: 'session',
+        turn_id: 'stopped',
+        data: { tool_id: 'command', name: 'shell' },
+      },
+      {
+        v: 2,
+        seq: 2,
+        ts: 2,
+        type: 'turn_interrupted',
+        session_id: 'session',
+        turn_id: 'stopped',
+        item_id: 'interruption',
+        data: {},
+      },
+    ],
+    turn_activity: [
+      { turn_id: 'stopped', started_at: 1, completed_at: 2, outcome: 'interrupted' as const },
+    ],
+  }
+  const restored = projectHistorySnapshot(history, [])
+  assert.deepEqual(
+    restored.map((item) => item.kind),
+    ['user', 'tool', 'status']
+  )
+  const notice = restored.find((item) => item.kind === 'status')
+  assert.equal(notice?.kind === 'status' ? notice.hideIcon : undefined, true)
+  assert.deepEqual(
+    notice?.kind === 'status' ? notice.displayMessage : undefined,
+    feedback('components', 'stream.stopped')
+  )
+  assert.equal(notice?.eventSeq, 2)
+  assert.equal(notice?.itemId, 'interruption')
+  assert.deepEqual(projectHistorySnapshot(history, restored), restored)
+  assert.deepEqual(projectHistorySnapshot(history, []), restored)
+})
+
+test('interruption replay retains one live notice and preserves later turn order', () => {
+  const event: ProductEvent = {
+    v: 2,
+    seq: 3,
+    ts: 3,
+    type: 'turn_interrupted',
+    session_id: 'session',
+    turn_id: 'stopped',
+    data: {},
+  }
+  const liveNotice: ConvItem = {
+    kind: 'status',
+    text: '用户主动停止了该任务',
+    hideIcon: true,
+    retainOnHistoryRefresh: true,
+    turnId: 'stopped',
+    eventSeq: 3,
+  }
+  const nextTurn: ConvItem = { kind: 'user', text: 'next task', turnId: 'next', eventSeq: 4 }
+  const current: ConvItem[] = [
+    { kind: 'user', text: 'stop', turnId: 'stopped', eventSeq: 1 },
+    liveNotice,
+    nextTurn,
+  ]
+  assert.deepEqual(projectActivityEvents(current, [event, event]), current)
+  const cold = projectActivityEvents([current[0], nextTurn], [event, event])
+  assert.deepEqual(
+    cold.map((item) => item.kind),
+    ['user', 'status', 'user']
+  )
+  assert.equal(cold[1].turnId, 'stopped')
+  assert.equal(cold[2], nextTurn)
+})
+
+test('interruption notice distinguishes process exit from a user stop', () => {
+  const event: ProductEvent = {
+    v: 2,
+    seq: 1,
+    ts: 1,
+    type: 'turn_interrupted',
+    session_id: 'session',
+    turn_id: 'exited',
+    data: { reason: 'process_exit' },
+  }
+  const rows = projectActivityEvents([], [event])
+  assert.equal(rows.length, 1)
+  const notice = rows[0]
+  assert.equal(notice.kind, 'status')
+  if (notice.kind !== 'status') return
+  assert.equal(notice.hideIcon, false)
+  assert.equal(notice.tone, 'tension')
+  assert.deepEqual(notice.displayMessage, feedback('components', 'stream.runtimeInterrupted'))
+  assert.deepEqual(projectActivityEvents(rows, [event]), rows)
+})
+
+test('interruption projection is shared by live and history without marking other outcomes stopped', () => {
+  const event: ProductEvent = {
+    v: 2,
+    seq: 1,
+    ts: 1,
+    type: 'turn_interrupted',
+    session_id: 'session',
+    turn_id: 'stopped',
+    data: { reason: '__proto__' },
+  }
+  const live = projectTurnInterruption([], event)
+  assert.deepEqual(projectActivityEvents([], [event]), live)
+  assert.deepEqual(projectActivityEvents(live, [event]), live)
+  assert.deepEqual(
+    live[0]?.kind === 'status' ? live[0].displayMessage : undefined,
+    feedback('components', 'stream.stopped')
+  )
+  const unknown: ProductEvent = {
+    v: 2,
+    seq: 2,
+    ts: 2,
+    type: 'turn_unknown',
+    session_id: 'session',
+    turn_id: 'unknown',
+    data: { message: 'agent_runtime_exit' },
+  }
+  assert.equal(
+    projectActivityEvents([], [unknown]).some((item) => item.kind === 'status'),
+    false
+  )
+})
+
 test('an interrupted turn cancels only its unfinished tools in live and replayed activity', () => {
   const interrupted: ConvItem = {
     kind: 'tool',
@@ -2518,7 +2940,7 @@ test('an interrupted turn cancels only its unfinished tools in live and replayed
     status: 'running',
     turnId: 'other',
   }
-  const settled = settleInterruptedTools([interrupted, other], 'interrupted', 3000)
+  const settled = settleInterruptedActivities([interrupted, other], 'interrupted', 3000)
   assert.equal(settled[0]?.kind === 'tool' ? settled[0].status : undefined, 'cancelled')
   assert.equal(settled[0]?.kind === 'tool' ? settled[0].completedAt : undefined, 3000)
   assert.equal(settled[1], other)
@@ -2553,6 +2975,152 @@ test('an interrupted turn cancels only its unfinished tools in live and replayed
     replayed.find((item) => item.kind === 'tool' && item.toolId === 'other-tool'),
     other
   )
+})
+
+test('an unknown turn settles its running command and native approval in durable replay', () => {
+  const events: ProductEvent[] = [
+    {
+      v: 2,
+      seq: 1,
+      ts: 1,
+      type: 'tool_started',
+      session_id: 'session',
+      turn_id: 'unknown',
+      data: { tool_id: 'command', name: 'shell' },
+    },
+    {
+      v: 2,
+      seq: 2,
+      ts: 2,
+      type: 'native_activity_started',
+      session_id: 'session',
+      turn_id: 'unknown',
+      data: {
+        activity_id: 'review',
+        activity_type: 'approval_review',
+        category: 'mode',
+        status: 'running',
+        details: {},
+      },
+    },
+    {
+      v: 2,
+      seq: 3,
+      ts: 3,
+      type: 'turn_unknown',
+      session_id: 'session',
+      turn_id: 'unknown',
+      data: { message: 'agent_runtime_exit' },
+    },
+  ]
+  const other: ConvItem = {
+    kind: 'tool',
+    toolId: 'other',
+    name: 'shell',
+    status: 'running',
+    turnId: 'other',
+  }
+  const rows = projectActivityEvents([other], events)
+  const command = rows.find((item) => item.kind === 'tool' && item.toolId === 'command')
+  const review = rows.find(
+    (item) => item.kind === 'native_activity' && item.activityId === 'review'
+  )
+  assert.equal(command?.kind === 'tool' ? command.status : undefined, 'cancelled')
+  assert.equal(command?.completedAt, 3000)
+  assert.equal(review?.kind === 'native_activity' ? review.status : undefined, 'error')
+  assert.equal(review?.completedAt, 3000)
+  assert.equal(
+    rows.find((item) => item.kind === 'tool' && item.toolId === 'other'),
+    other
+  )
+})
+
+test('history terminal outcome settles activities when the activity snapshot omits turn_unknown', () => {
+  const turnId = 'unknown'
+  const restored = projectHistorySnapshot(
+    {
+      turns: [],
+      todos: [],
+      todo_turn_id: null,
+      artifacts: [],
+      activity_events: [
+        {
+          v: 2,
+          seq: 1,
+          ts: 1,
+          type: 'tool_started',
+          session_id: 'session',
+          turn_id: turnId,
+          data: { tool_id: 'command', name: 'shell' },
+        },
+        {
+          v: 2,
+          seq: 2,
+          ts: 2,
+          type: 'native_activity_started',
+          session_id: 'session',
+          turn_id: turnId,
+          data: {
+            activity_id: 'review',
+            activity_type: 'approval_review',
+            category: 'mode',
+            status: 'running',
+            details: {},
+          },
+        },
+      ],
+      turn_activity: [
+        { turn_id: turnId, started_at: 1, completed_at: 3, outcome: 'unknown_outcome' },
+      ],
+    },
+    []
+  )
+  assert.equal(restored.find((item) => item.kind === 'tool')?.status, 'cancelled')
+  assert.equal(restored.find((item) => item.kind === 'native_activity')?.status, 'error')
+})
+
+test('terminal reconciliation preserves completed activities and only settles its own turn', () => {
+  const completed: ConvItem = {
+    kind: 'native_activity',
+    activityId: 'approved',
+    activityType: 'approval_review',
+    category: 'mode',
+    status: 'done',
+    nativeStatus: 'approved',
+    details: {},
+    turnId: 'unknown',
+    completedAt: 2000,
+  }
+  const other: ConvItem = {
+    kind: 'native_activity',
+    activityId: 'other',
+    activityType: 'approval_review',
+    category: 'mode',
+    status: 'running',
+    nativeStatus: 'running',
+    details: {},
+    turnId: 'other',
+  }
+  const rows = projectActivityEvents(
+    [completed, other],
+    [
+      {
+        v: 2,
+        seq: 1,
+        ts: 3,
+        type: 'turn_reconciled',
+        session_id: 'session',
+        turn_id: 'unknown',
+        data: {
+          turn_id: 'unknown',
+          resolution: 'user_confirmed_continue',
+          outcome: 'unknown_outcome',
+        },
+      },
+    ]
+  )
+  assert.equal(rows[0], completed)
+  assert.equal(rows[1], other)
 })
 
 test('keeps an abandoned permission turn before the next completed turn', () => {

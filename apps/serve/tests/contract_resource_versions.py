@@ -1,4 +1,4 @@
-"""Resource version ledger contracts backed by a real project and SQLite file."""
+"""Resource version ledger contracts; directory-command HTTP composition is tested separately."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from service.content.api.routes import register_content_routes
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
+from service.platform.activity import Activities
 from service.platform.resources import (
     VERSION_MAX_BYTES,
     ResourceVersionReadError,
@@ -26,7 +26,7 @@ from service.resources.api.routes import register_resource_routes
 from service.resources.api.versions import register_version_routes
 from service.resources.domain.jobs import VersionInitializationProgress
 from service.resources.domain.version import DiskObservation, ObservationState
-from service.resources.persistence.version import VersionStore
+from service.resources.persistence.version import InitialVersionPlan, VersionStore
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
 from service.resources.service.history import ResourceVersionService
@@ -88,7 +88,7 @@ def main() -> int:
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         project = registry.create("版本项目")
         target = Path(project.root) / "resources" / "notes.md"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -98,10 +98,14 @@ def main() -> int:
         retention = ResourceRetentionService(content, settings)
         annotations = PdfRecordStore(content)
         versions = ResourceVersionService(content, retention, formats, annotations)
-        supervisor = ResourceVersionSupervisor(content, versions, formats, settings)
+        supervisor = ResourceVersionSupervisor(
+            content, versions, formats, settings, activities=Activities()
+        )
         versions.bind_admission_policy(supervisor)
         recovery = ResourceRecoveryService(content, retention, annotations)
-        deliveries = ResourceDeliveryService(content, versions, supervisor)
+        deliveries = ResourceDeliveryService(
+            content, versions, supervisor, activities=supervisor._activities
+        )
         supervisor.bind_preparation(
             ResourceActivation(
                 content,
@@ -117,7 +121,6 @@ def main() -> int:
         app.state.resource_versions = versions
         app.state.resource_recovery = recovery
         app.state.resource_version_supervisor = supervisor
-        register_content_routes(app)
         register_resource_routes(app)
         register_version_routes(app)
         register_workbench_routes(app)
@@ -425,7 +428,11 @@ def main() -> int:
             content, retention, formats, annotations
         )
         rebuilt_supervisor = ResourceVersionSupervisor(
-            content, app.state.resource_versions, formats, settings
+            content,
+            app.state.resource_versions,
+            formats,
+            settings,
+            activities=Activities(),
         )
         rebuilt_supervisor.bind_preparation(
             ResourceActivation(
@@ -626,7 +633,9 @@ def main() -> int:
             external.text,
         )
         versions = ResourceVersionService(content, retention, formats, annotations)
-        supervisor = ResourceVersionSupervisor(content, versions, formats, settings)
+        supervisor = ResourceVersionSupervisor(
+            content, versions, formats, settings, activities=Activities()
+        )
         app.state.resource_versions = versions
         app.state.resource_version_supervisor = supervisor
         with patch.object(
@@ -786,22 +795,38 @@ def main() -> int:
 
         first_link_source = root / "first-linked.json"
         first_link_source.write_bytes(b'{"linked": true}\n')
-        first_link_response = client.post(
-            "/api/content/roots",
-            json={
-                "project": project.id,
-                "source": str(first_link_source),
-                "mount": "first-linked.json",
-            },
+        first_link_response = content.authorize_root(
+            project.id, str(first_link_source), "first-linked.json"
+        )
+        initial_plan = InitialVersionPlan.for_recovery(
+            "a" * 64,
+            "first-link-authorization",
+            project.id,
+            first_link_response.mount_path,
+            now_ms=1234000,
+        )
+        supervisor.reconcile_linked_root(
+            project.id,
+            first_link_response.mount_path,
+            observed_at_ms=initial_plan.now_ms,
+            recovery_attempt="a" * 64,
+            recovery_operation="first-link-authorization",
         )
         first_link_capability = versions.capability(project.id, "resources/first-linked.json")
         check(
             "root authorization creates a new linked file's initial version before returning",
-            first_link_response.status_code == 200
+            bool(first_link_response.root_id)
             and first_link_capability.managed
             and not first_link_capability.drifted
             and len(versions.history(project.id, "resources/first-linked.json")) == 1,
-            first_link_response.text,
+            str(first_link_response),
+        )
+        first_link_version = versions.history(project.id, first_link_response.mount_path)[0]
+        check(
+            "authorization recovery uses the exact first-version plan and frozen clock",
+            first_link_version.id == initial_plan.version_id
+            and first_link_version.file_id == initial_plan.file_id
+            and first_link_version.created_at_ms == initial_plan.now_ms,
         )
 
         relinked_source = root / "relinked.md"
@@ -816,42 +841,30 @@ def main() -> int:
             and versions.capability(project.id, relinked.mount_path).pending is not None
             and len(versions.history(project.id, relinked.mount_path)) == 1,
         )
-        restored_response = client.post(
-            "/api/content/roots",
-            json={
-                "project": project.id,
-                "source": str(relinked_source),
-                "mount": "relinked.md",
-            },
-        )
+        restored_response = content.authorize_root(project.id, str(relinked_source), "relinked.md")
+        supervisor.reconcile_linked_root(project.id, restored_response.mount_path)
         check(
             "root authorization reconciles an unchanged restored file before returning",
-            restored_response.status_code == 200
+            bool(restored_response.root_id)
             and not versions.capability(project.id, relinked.mount_path).drifted
             and versions.history(project.id, relinked.mount_path)[0].id == relinked_v1.id,
-            restored_response.text,
+            str(restored_response),
         )
 
         content.revoke_root(relinked.root_id)
         versions.observe(project.id, relinked.mount_path)
         relinked_source.write_bytes(b"changed while detached\n")
-        changed_response = client.post(
-            "/api/content/roots",
-            json={
-                "project": project.id,
-                "source": str(relinked_source),
-                "mount": "relinked.md",
-            },
-        )
+        changed_response = content.authorize_root(project.id, str(relinked_source), "relinked.md")
+        supervisor.reconcile_linked_root(project.id, changed_response.mount_path)
         check(
             "root authorization captures detached changes as pending without sealing",
-            changed_response.status_code == 200
+            bool(changed_response.root_id)
             and not versions.capability(project.id, relinked.mount_path).drifted
             and versions.capability(project.id, relinked.mount_path).pending is not None
             and versions.capability(project.id, relinked.mount_path).disk_revision
             == content.revision(b"changed while detached\n")
             and len(versions.history(project.id, relinked.mount_path)) == 1,
-            changed_response.text,
+            str(changed_response),
         )
 
         relinked_directory = root / "relinked-directory"
@@ -871,23 +884,19 @@ def main() -> int:
         versions.observe(project.id, unchanged_path)
         versions.observe(project.id, changed_path)
         changed_child.write_bytes(b"changed while directory detached\n")
-        directory_response = client.post(
-            "/api/content/roots",
-            json={
-                "project": project.id,
-                "source": str(relinked_directory),
-                "mount": "relinked-directory",
-            },
+        directory_response = content.authorize_root(
+            project.id, str(relinked_directory), "relinked-directory"
         )
+        supervisor.reconcile_linked_root(project.id, directory_response.mount_path)
         check(
             "root authorization reconciles every existing identity below a restored directory",
-            directory_response.status_code == 200
+            bool(directory_response.root_id)
             and not versions.capability(project.id, unchanged_path).drifted
             and not versions.capability(project.id, changed_path).drifted
             and versions.capability(project.id, changed_path).pending is not None
             and len(versions.history(project.id, changed_path)) == 1
             and len(versions.history(project.id, unchanged_path)) == 1,
-            directory_response.text,
+            str(directory_response),
         )
 
         collision = Path(project.root) / "resources" / "linked.pdf"

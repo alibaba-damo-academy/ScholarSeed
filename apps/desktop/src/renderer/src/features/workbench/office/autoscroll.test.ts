@@ -15,7 +15,11 @@ interface AutoscrollPolicy {
   MAXIMUM_SPEED_PX_PER_FRAME: number
   SELECTION_COLUMN_STEP_PX: number
   SELECTION_LINE_STEP_PX: number
-  velocity: (point: { x: number; y: number }, bounds: Bounds, bottomInset?: number) => { x: number; y: number }
+  velocity: (
+    point: { x: number; y: number },
+    bounds: Bounds,
+    bottomInset?: number
+  ) => { x: number; y: number }
   create: (options: {
     bottomInset?: () => number
     element: Record<string, unknown>
@@ -37,10 +41,11 @@ function policy(): AutoscrollPolicy {
 test('Writer selection autoscroll stays idle inside the workspace', () => {
   const subject = policy()
   assert.deepEqual(
-    JSON.parse(JSON.stringify(subject.velocity(
-      { x: 400, y: 300 },
-      { left: 0, top: 0, right: 800, bottom: 600 }
-    ))),
+    JSON.parse(
+      JSON.stringify(
+        subject.velocity({ x: 400, y: 300 }, { left: 0, top: 0, right: 800, bottom: 600 })
+      )
+    ),
     { x: 0, y: 0 }
   )
 })
@@ -91,8 +96,13 @@ test('Writer controller starts scrolling before the pointer leaves the canvas', 
   }
   const context = {
     WheelEvent: TestWheelEvent,
-    cancelAnimationFrame: (frame: number) => { callbacks.delete(frame) },
-    requestAnimationFrame: (callback: () => void) => { callbacks.set(++sequence, callback); return sequence },
+    cancelAnimationFrame: (frame: number) => {
+      callbacks.delete(frame)
+    },
+    requestAnimationFrame: (callback: () => void) => {
+      callbacks.set(++sequence, callback)
+      return sequence
+    },
   }
   runInNewContext(readFileSync(new URL('./autoscroll.js', import.meta.url), 'utf8'), context)
   const subject = (context as unknown as { ScholarSeedOfficeAutoscroll: AutoscrollPolicy })
@@ -100,7 +110,10 @@ test('Writer controller starts scrolling before the pointer leaves the canvas', 
   const controller = subject.create({
     bottomInset: () => subject.SELECTION_LINE_STEP_PX,
     element: {
-      dispatchEvent: (event: { deltaY?: number }) => { dispatched.push(event); return true },
+      dispatchEvent: (event: { deltaY?: number }) => {
+        dispatched.push(event)
+        return true
+      },
       getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600 }),
       setPointerCapture: () => {},
     },
@@ -133,8 +146,13 @@ test('Writer selection autoscroll keeps only the latest pointer position', () =>
   let sequence = 0
   const context = {
     WheelEvent: class {},
-    cancelAnimationFrame: (frame: number) => { callbacks.delete(frame) },
-    requestAnimationFrame: (callback: () => void) => { callbacks.set(++sequence, callback); return sequence },
+    cancelAnimationFrame: (frame: number) => {
+      callbacks.delete(frame)
+    },
+    requestAnimationFrame: (callback: () => void) => {
+      callbacks.set(++sequence, callback)
+      return sequence
+    },
   }
   runInNewContext(readFileSync(new URL('./autoscroll.js', import.meta.url), 'utf8'), context)
   const subject = (context as unknown as { ScholarSeedOfficeAutoscroll: AutoscrollPolicy })
@@ -145,7 +163,10 @@ test('Writer selection autoscroll keeps only the latest pointer position', () =>
       getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600 }),
       setPointerCapture: () => {},
     },
-    onSelectionFrame: (speed) => { selectionFrames.push(speed); return false },
+    onSelectionFrame: (speed) => {
+      selectionFrames.push(speed)
+      return false
+    },
   })
 
   controller.start({ pointerId: 7, clientX: 400, clientY: 300 })
@@ -181,8 +202,14 @@ test('Writer alternates accepted selection updates with canvas scroll frames', (
   }
   const context = {
     WheelEvent: TestWheelEvent,
-    cancelAnimationFrame: (frame: number) => { cancelled.push(frame); callbacks.delete(frame) },
-    requestAnimationFrame: (callback: () => void) => { callbacks.set(++sequence, callback); return sequence },
+    cancelAnimationFrame: (frame: number) => {
+      cancelled.push(frame)
+      callbacks.delete(frame)
+    },
+    requestAnimationFrame: (callback: () => void) => {
+      callbacks.set(++sequence, callback)
+      return sequence
+    },
   }
   runInNewContext(readFileSync(new URL('./autoscroll.js', import.meta.url), 'utf8'), context)
   const subject = (context as unknown as { ScholarSeedOfficeAutoscroll: AutoscrollPolicy })
@@ -197,8 +224,14 @@ test('Writer alternates accepted selection updates with canvas scroll frames', (
       },
       getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600 }),
       hasPointerCapture: (pointerId: number) => capturedPointers.has(pointerId),
-      releasePointerCapture: (pointerId: number) => { released.push(pointerId); capturedPointers.delete(pointerId) },
-      setPointerCapture: (pointerId: number) => { captured.push(pointerId); capturedPointers.add(pointerId) },
+      releasePointerCapture: (pointerId: number) => {
+        released.push(pointerId)
+        capturedPointers.delete(pointerId)
+      },
+      setPointerCapture: (pointerId: number) => {
+        captured.push(pointerId)
+        capturedPointers.add(pointerId)
+      },
     },
     onSelectionFrame: (speed) => {
       order.push('selection')
@@ -239,7 +272,10 @@ test('Office frame runs Writer autoscroll as a serial one-line transaction', () 
   const worker = readFileSync(new URL('./office-thread.js', import.meta.url), 'utf8')
 
   assert.match(source, /ScholarSeedOfficeAutoscroll\.create/)
-  assert.match(source, /bottomInset:\(\)=>selectionAutoscrollKind==='writer'\?ScholarSeedOfficeAutoscroll\.SELECTION_LINE_STEP_PX:0/)
+  assert.match(
+    source,
+    /bottomInset:\(\)=>selectionAutoscrollKind==='writer'\?ScholarSeedOfficeAutoscroll\.SELECTION_LINE_STEP_PX:0/
+  )
   assert.match(source, /autoscrollKind\(filename\)/)
   assert.match(source, /documentKind===selectionAutoscrollKind/)
   assert.match(source, /event\.isPrimary&&event\.button===primaryPointerButton/)
@@ -252,24 +288,53 @@ test('Office frame runs Writer autoscroll as a serial one-line transaction', () 
   assert.match(source, /writerAutoscrollTargetY/)
   assert.match(source, /function scheduleWriterPointerSelection\(\)/)
   assert.match(source, /requestWriterAutoscroll\(\{x:0,y:Math\.sign\(distance\)\},false\)/)
-  assert.match(source, /if\(writerAutoscrollShouldScroll\)dispatchWriterLineScroll\(writerAutoscrollDirectionY\)/)
-  assert.match(source, /dispatchWriterLineScroll\(writerAutoscrollDirectionY\);\s*port\?\.postMessage\(\{cmd:selectionAutoscrollCommitCommand,requestId\}\)/)
-  assert.match(source, /writerAutoscrollNextAt=performance\.now\(\)\+ScholarSeedOfficeAutoscroll\.SELECTION_LINE_INTERVAL_MS/)
+  assert.doesNotMatch(source, /dispatchWriterLineScroll/)
+  assert.match(source, /port\?\.postMessage\(\{cmd:selectionAutoscrollCommitCommand,requestId\}\)/)
+  assert.match(
+    source,
+    /writerAutoscrollNextAt=performance\.now\(\)\+ScholarSeedOfficeAutoscroll\.SELECTION_LINE_INTERVAL_MS/
+  )
   assert.match(source, /performance\.now\(\)<writerAutoscrollNextAt/)
-  assert.match(source, /for\(const type of \['mousedown','mouseup','click'\]\)canvas\.dispatchEvent\(new MouseEvent/)
-  assert.match(source, /message\.cmd===selectionAutoscrollReadyCommand[\s\S]*writerAutoscrollCommitFrame=requestAnimationFrame\(\(\)=>commitWriterAutoscroll\(message\.requestId\)\)/)
-  assert.match(source, /message\.cmd===selectionAutoscrollAppliedCommand[\s\S]*paintWriterAutoscroll\(message\.requestId\)/)
-  assert.match(source, /writerAutoscrollPaintFrame=requestAnimationFrame\(\(\)=>finishWriterAutoscroll\(requestId\)\)/)
-  assert.match(source, /function finishWriterAutoscroll\(requestId\)[\s\S]*writerAutoscrollPendingRequest=0/)
-  assert.match(source, /cancelAnimationFrame\(writerAutoscrollCommitFrame\);cancelAnimationFrame\(writerAutoscrollPaintFrame\)/)
+  assert.match(
+    source,
+    /message\.cmd===selectionAutoscrollReadyCommand[\s\S]*writerAutoscrollCommitFrame=requestAnimationFrame\(\(\)=>commitWriterAutoscroll\(message\.requestId\)\)/
+  )
+  assert.match(
+    source,
+    /message\.cmd===selectionAutoscrollAppliedCommand[\s\S]*paintWriterAutoscroll\(message\.requestId\)/
+  )
+  assert.match(
+    source,
+    /writerAutoscrollPaintFrame=requestAnimationFrame\(\(\)=>finishWriterAutoscroll\(requestId\)\)/
+  )
+  assert.match(
+    source,
+    /function finishWriterAutoscroll\(requestId\)[\s\S]*writerAutoscrollPendingRequest=0/
+  )
+  assert.match(
+    source,
+    /cancelAnimationFrame\(writerAutoscrollCommitFrame\);cancelAnimationFrame\(writerAutoscrollPaintFrame\)/
+  )
   assert.doesNotMatch(source, /dispatchWriterAutoscroll/)
-  assert.match(source, /selectionDragging&&message\.requestId===writerAutoscrollPendingRequest&&!writerAutoscrollCommitFrame/)
-  assert.match(source, /selectionAutoscrollKind==='writer'\)return advanceWriterAutoscroll\(speed\)/)
+  assert.match(
+    source,
+    /selectionDragging&&message\.requestId===writerAutoscrollPendingRequest&&!writerAutoscrollCommitFrame/
+  )
+  assert.match(
+    source,
+    /selectionAutoscrollKind==='writer'\)return advanceWriterAutoscroll\(speed\)/
+  )
   assert.match(source, /message\.cmd===selectionAutoscrollAppliedCommand/)
-  assert.doesNotMatch(source, /writerFrameDistance|writerAutoscrollDistance|writerAutoscrollSelectionApplied/)
+  assert.doesNotMatch(
+    source,
+    /writerFrameDistance|writerAutoscrollDistance|writerAutoscrollSelectionApplied/
+  )
   assert.match(source, /const edgeActive=selectionAutoscroll\.move\(event\)/)
   assert.match(source, /event\.preventDefault\(\);event\.stopImmediatePropagation\(\)/)
-  assert.match(source, /if\(selectionAutoscrollKind==='writer'\)updateWriterPointerSelection\(event,edgeActive\)/)
+  assert.match(
+    source,
+    /if\(selectionAutoscrollKind==='writer'\)updateWriterPointerSelection\(event,edgeActive\)/
+  )
   assert.match(source, /if\(speed\.x\|\|speed\.y\|\|writerAutoscrollEngaged\)/)
   assert.match(source, /document\.addEventListener\('mousemove',suppressWriterEdgeMousemove,true\)/)
   assert.match(source, /selectionAutoscroll\.stop\(event\)/)
@@ -278,9 +343,18 @@ test('Office frame runs Writer autoscroll as a serial one-line transaction', () 
   assert.match(source, /selectionAutoscroll\.destroy\(\)/)
   assert.match(worker, /function prepareWriterAutoscroll\(message\)/)
   assert.match(worker, /let writerAutoscrollCursor/)
-  assert.match(worker, /writerAutoscrollCursor \?\?= readonlyWriterSelectionCursor\(controller, Math\.sign\(vertical \|\| horizontal\)\)/)
-  assert.match(worker, /selectionDragging = Boolean\(event\.data\.active\)\s*writerAutoscrollCursor = undefined/)
-  assert.match(worker, /pendingWriterAutoscroll = \{ requestId: message\.requestId, cursor, horizontal, vertical \}/)
+  assert.match(
+    worker,
+    /writerAutoscrollCursor \?\?= readonlyWriterSelectionCursor\(controller, Math\.sign\(vertical \|\| horizontal\)\)/
+  )
+  assert.match(
+    worker,
+    /selectionDragging = Boolean\(event\.data\.active\)\s*writerAutoscrollCursor = undefined/
+  )
+  assert.match(
+    worker,
+    /pendingWriterAutoscroll = \{ requestId: message\.requestId, cursor, horizontal, vertical \}/
+  )
   assert.match(worker, /pending\.cursor\.goDown\(SELECTION_STEP_COUNT, true\)/)
   assert.doesNotMatch(worker, /WRITER_SELECTION_COMMANDS/)
 })

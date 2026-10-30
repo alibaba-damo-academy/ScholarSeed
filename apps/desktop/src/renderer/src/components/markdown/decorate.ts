@@ -11,8 +11,8 @@ import {
   streamingReferenceEnd,
   streamingReferenceStart,
   type MarkdownCitationReference,
-} from './citations'
-import { encodedBoundaries, sourceLeaf, type SourceLeaf } from './source'
+} from './citations.ts'
+import { encodedBoundaries, sourceLeaf, type SourceLeaf } from './source.ts'
 
 const CITATION_PARENTHESES = new Map([
   ['(', ')'],
@@ -28,6 +28,10 @@ const INLINE_REFERENCE_GAP = /^[\t ]*$/
 const CITATION_STYLE_TAGS = new Set(['strong', 'em'])
 const CITATION_TABLE_CONTAINERS = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr'])
 const CITATION_TABLE_CELLS = new Set(['td', 'th'])
+const SOURCE_LINK_EXCLUDED_TAGS = new Set(['a', 'pre', 'script', 'style'])
+const SOURCE_PATH =
+  /(?:[a-z]:[\\/]|\/|(?<![\p{L}\p{N}_.-])(?:\.\/?[\\/])?[\p{L}\p{N}_.-]+[\\/])[^\s<>"'`，。；！？、（）()[\]{}]+/giu
+const SOURCE_PATH_PUNCTUATION = /[.,;!?]+$/
 
 const SOURCE_START = 'dataMdSourceStart'
 const SOURCE_END = 'dataMdSourceEnd'
@@ -59,6 +63,7 @@ interface DecorationOptions {
   citationPending?: boolean
   evidence: EvidenceAnnotation[]
   answers: MarkdownAnswerAnnotation[]
+  isSourceLink?: (href: string) => boolean
 }
 
 interface Range {
@@ -700,6 +705,67 @@ function decorateLeaf(node: Text, leaf: SourceLeaf, options: DecorationOptions):
   return decorated
 }
 
+function markSourceLinks(
+  parent: Root | Element,
+  parents: Element[],
+  options: DecorationOptions,
+  cache: OffsetCache
+): void {
+  const accepts = options.isSourceLink
+  if (!accepts) return
+  const next: ElementContent[] = []
+  for (const child of parent.children) {
+    if (child.type === 'element') {
+      const classes = child.properties.className
+      if (
+        SOURCE_LINK_EXCLUDED_TAGS.has(child.tagName) ||
+        (Array.isArray(classes) && classes.some((value) => String(value).includes('math')))
+      ) {
+        next.push(child)
+        continue
+      }
+      if (child.tagName === 'code') {
+        const value =
+          child.children.length === 1 && child.children[0].type === 'text'
+            ? child.children[0].value
+            : null
+        next.push(
+          value && accepts(value)
+            ? { ...element('a', { href: value }, [child]), position: child.position }
+            : child
+        )
+        continue
+      }
+      markSourceLinks(child, [...parents, child], options, cache)
+      next.push(child)
+      continue
+    }
+    if (child.type !== 'text') {
+      if (child.type !== 'doctype') next.push(child)
+      continue
+    }
+    const leaf = mappedLeaf(options.source, child, parents, cache)
+    if (!leaf) {
+      next.push(child)
+      continue
+    }
+    let cursor = 0
+    for (const match of child.value.matchAll(SOURCE_PATH)) {
+      const href = match[0].replace(SOURCE_PATH_PUNCTUATION, '')
+      if (!accepts(href)) continue
+      if (match.index > cursor)
+        next.push(citationTextSlice(child, options.source, leaf, cursor, match.index))
+      const end = match.index + href.length
+      const label = citationTextSlice(child, options.source, leaf, match.index, end)
+      next.push({ ...element('a', { href }, [label]), position: label.position })
+      cursor = end
+    }
+    if (cursor < child.value.length)
+      next.push(citationTextSlice(child, options.source, leaf, cursor, child.value.length))
+  }
+  parent.children = next
+}
+
 function transformChildren(
   parent: Root | Element,
   parents: Element[],
@@ -763,6 +829,7 @@ export function rehypeScholarSeedDecorations(
           ) === index
       )
       if (occurrences.length) markNativeCitations(tree, [], options, cache, [...occurrences])
+      markSourceLinks(tree, [], options, cache)
       transformChildren(tree, [], options, cache)
     }
 }

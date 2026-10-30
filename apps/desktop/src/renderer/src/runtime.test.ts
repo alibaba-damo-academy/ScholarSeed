@@ -1,14 +1,23 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { createInstance } from 'i18next'
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import ts from 'typescript'
 import zh from '../../localization/locales/zh/conversation.json' with { type: 'json' }
 import en from '../../localization/locales/en/conversation.json' with { type: 'json' }
 import componentsZh from '../../localization/locales/zh/components.json' with { type: 'json' }
 import componentsEn from '../../localization/locales/en/components.json' with { type: 'json' }
 import { DirectiveStreamHarness } from './directive.ts'
-import { describeTurnFailure, formatTurnFailure, sameTurnFailureMessage } from './failures.ts'
-import { projectStreamDelta } from './transcript.ts'
+import {
+  describeTurnFailure,
+  formatTurnFailure,
+  isRecoverableTurnFailure,
+  sameTurnFailureMessage,
+} from './failures.ts'
+import { projectHistoryWithRuntime, projectStreamDelta } from './transcript.ts'
 
 import {
   classifyHilResponseFailure,
@@ -20,9 +29,12 @@ import {
   sessionCatalogHttpFailure,
   serviceErrorDetail,
   type RuntimeIncidentData,
-  type UncertainOperationSnapshot
+  type UncertainOperationSnapshot,
 } from './api.ts'
 import {
+  projectResumeRunState,
+  projectBackendAvailability,
+  recoveredTurnOutcome,
   applyRuntimeIncident,
   blocksRuntimePreflight,
   catalogRunStateIsCurrent,
@@ -45,9 +57,140 @@ import {
   reportTurnUnknown,
   reportTurnReconciled,
   sessionResumeStatusItem,
-  shouldRetrySessionResume
+  shouldRetrySessionResume,
 } from './runtime.ts'
-import type { RuntimeStatusMessage, Thread } from './model.ts'
+import type { ConvItem, QueuedMessage, RuntimeStatusMessage, Thread } from './model.ts'
+import { mergeQueuedOutbox, releaseQueuedOutbox, retainQueuedOutbox } from './outbox.ts'
+import { optimisticQueuedMessage, shouldPresentQueuedMessage } from './queue.ts'
+
+test('known workbench identity survives only a verified same-instance accepted drain', () => {
+  const current = { backendReady: true, workbenchReady: true, serviceInstanceId: 'instance' }
+  const accepted = { state: 'accepted' as const, service_instance_id: 'instance' }
+  assert.deepEqual(projectBackendAvailability(current, null, accepted), current)
+  const unavailable = { backendReady: false, workbenchReady: false, serviceInstanceId: null }
+  for (const reconfiguration of [
+    null,
+    { ...accepted, service_instance_id: 'other' },
+    ...([null, 'applied', 'rejected', 'restart_required', 'unsupported'] as const).map((state) => ({
+      ...accepted,
+      state,
+    })),
+  ] as const) {
+    assert.deepEqual(projectBackendAvailability(current, null, reconfiguration), unavailable)
+  }
+  for (const previous of [
+    unavailable,
+    { ...current, backendReady: false },
+    { ...current, workbenchReady: false },
+    { ...current, serviceInstanceId: null },
+  ]) {
+    assert.deepEqual(projectBackendAvailability(previous, null, accepted), unavailable)
+  }
+  const failed = { ok: false, runtime_id: 'codex' as const, workbench_ready: false }
+  assert.deepEqual(projectBackendAvailability(current, failed, accepted), unavailable)
+  const replacement = {
+    ...failed,
+    ok: true,
+    workbench_ready: true,
+    service_instance_id: 'replacement',
+  }
+  assert.deepEqual(projectBackendAvailability(current, replacement, accepted), {
+    backendReady: true,
+    workbenchReady: true,
+    serviceInstanceId: 'replacement',
+  })
+})
+
+test('late maintenance observations cannot retain a replaced or invalidated shell identity', () => {
+  const old = { state: 'accepted' as const, service_instance_id: 'old' }
+  for (const current of [
+    { backendReady: true, workbenchReady: true, serviceInstanceId: 'new' },
+    { backendReady: false, workbenchReady: false, serviceInstanceId: 'old' },
+  ]) {
+    assert.deepEqual(projectBackendAvailability(current, null, old), {
+      backendReady: false,
+      workbenchReady: false,
+      serviceInstanceId: null,
+    })
+  }
+})
+
+test(
+  'the real App health effect preserves only a currently verified maintenance identity',
+  { timeout: 5000 },
+  async () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    const syntax = ts.createSourceFile(
+      'App.tsx',
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX
+    )
+    const effects: ts.CallExpression[] = []
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.getText(syntax) === 'useEffect' &&
+        node.arguments[0]?.getText(syntax).includes('await getBackendHealth()')
+      )
+        effects.push(node)
+      ts.forEachChild(node, visit)
+    }
+    visit(syntax)
+    assert.equal(effects.length, 1)
+    const script = ts.transpileModule(effects[0].getText(syntax), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText
+    const ready = { backendReady: true, workbenchReady: true, serviceInstanceId: 'instance' }
+    for (const replacement of [false, true]) {
+      let snapshot = { ...ready }
+      let release: (value: { state: 'accepted'; service_instance_id: string }) => void = () =>
+        undefined
+      let entered = (): void => undefined
+      const observation = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const pending = new Promise<{ state: 'accepted'; service_instance_id: string }>((resolve) => {
+        release = resolve
+      })
+      let scheduled = 0
+      runInNewContext(script, {
+        useEffect: (effect: () => void) => effect(),
+        startup: { phase: 'ready', generation: 1 },
+        STARTUP_PHASE: { ready: 'ready' },
+        getSnapshot: () => snapshot,
+        getBackendHealth: async () => null,
+        getSharedRuntimeReconfiguration: () => {
+          entered()
+          return pending
+        },
+        projectBackendAvailability,
+        set: (patch: typeof ready | ((current: typeof ready) => typeof ready)) => {
+          snapshot = { ...snapshot, ...(typeof patch === 'function' ? patch(snapshot) : patch) }
+        },
+        setTimeout: (_callback: unknown, duration: number) => {
+          scheduled = duration
+          return 0
+        },
+        clearTimeout: () => undefined,
+        HEALTH_REFRESH_MS: 30000,
+        HEALTH_RETRY_MS: 1500,
+      })
+      await observation
+      if (replacement) snapshot = { ...ready, serviceInstanceId: 'replacement' }
+      release({ state: 'accepted', service_instance_id: 'instance' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      assert.deepEqual(
+        snapshot,
+        replacement
+          ? { backendReady: false, workbenchReady: false, serviceInstanceId: null }
+          : ready
+      )
+      assert.equal(scheduled, 1500)
+    }
+  }
+)
 
 test('turn recovery waits for the authoritative session to stop running', () => {
   assert.equal(canOfferTurnRecovery({ running: true, status: 'failed' }), false)
@@ -63,11 +206,120 @@ test('failed turn recovery expires after subsequent turns and blocks pending sub
   assert.equal(canContinueFailedTurn(current, failure), true)
   assert.equal(canContinueFailedTurn({ ...current, running: true }, failure), false)
   assert.equal(canContinueFailedTurn(current, { ...failure, actionState: 'submitting' }), false)
-  assert.equal(canContinueFailedTurn(current, { ...failure, actionState: 'outcome_unknown' }), false)
-  const replayed: Thread = { ...current, status: 'done', conversation: [failure, { kind: 'user', text: '继续', turnId: 'next-turn' }] }
+  assert.equal(
+    canContinueFailedTurn(current, { ...failure, actionState: 'outcome_unknown' }),
+    false
+  )
+  const replayed: Thread = {
+    ...current,
+    status: 'done',
+    conversation: [failure, { kind: 'user', text: '继续', turnId: 'next-turn' }],
+  }
   assert.equal(canContinueFailedTurn(replayed, failure), false)
-  assert.equal(canContinueFailedTurn({ ...current, conversation: replayed.conversation }, failure), false)
+  assert.equal(
+    canContinueFailedTurn({ ...current, conversation: replayed.conversation }, failure),
+    false
+  )
   assert.equal(canContinueFailedTurn(current, { ...failure, turnId: undefined }), false)
+})
+
+test('recoverable provider continuation obeys authoritative thread and submission guards', () => {
+  const failure = {
+    ...describeTurnFailure({ code: 'codex_provider_failed', retryable: true }),
+    turnId: 'failed-turn',
+  }
+  const current: Thread = {
+    ...thread(),
+    running: false,
+    status: 'failed',
+    conversation: [failure],
+    turnOutcomes: { 'failed-turn': 'failed' },
+  }
+  assert.equal(canContinueFailedTurn(current, failure), true)
+  for (const update of [
+    { running: true },
+    { status: 'running' as const },
+    { status: 'waiting' as const },
+    { recoveryPending: true },
+    { terminated: true },
+    { turnOutcomes: { 'failed-turn': 'completed' as const } },
+    {
+      conversation: [failure, { kind: 'agent' as const, text: 'new response', turnId: 'new-turn' }],
+    },
+  ]) {
+    assert.equal(
+      canContinueFailedTurn({ ...current, ...update }, failure),
+      false,
+      JSON.stringify(update)
+    )
+  }
+  for (const actionState of ['submitting', 'outcome_unknown'] as const) {
+    assert.equal(canContinueFailedTurn(current, { ...failure, actionState }), false, actionState)
+  }
+  for (const state of [
+    'queued',
+    'waiting_resources',
+    'submitting',
+    'outcome_unknown',
+    'failed',
+  ] as const) {
+    const queued: QueuedMessage = {
+      queuedMessageId: 'queued-message',
+      enqueueSeq: 1,
+      state,
+      submissionMode: 'queued',
+      text: 'next instruction',
+      input: [],
+      assistantReferences: [],
+    }
+    assert.equal(
+      canContinueFailedTurn({ ...current, queuedMessages: [queued] }, failure),
+      state === 'failed',
+      state
+    )
+  }
+  assert.equal(canContinueFailedTurn(current, { ...failure, turnId: undefined }), false)
+  assert.equal(canContinueFailedTurn(current, { ...failure, runtimeAction: undefined }), false)
+  assert.equal(canContinueFailedTurn({ ...current, conversation: [] }, failure), false)
+})
+
+test('unknown turn continuation blocks pending recovery and subsequent messages', () => {
+  const interrupted = {
+    kind: 'error' as const,
+    title: 'Interrupted',
+    message: 'Interrupted',
+    action: 'Continue',
+    runtimeAction: 'confirm_turn_unknown' as const,
+    turnId: 'interrupted-turn',
+    actionState: 'idle' as const,
+  }
+  const current: Thread = {
+    ...thread(),
+    running: false,
+    status: 'done',
+    conversation: [interrupted],
+  }
+  assert.equal(canContinueFailedTurn(current, interrupted), true)
+  assert.equal(canContinueFailedTurn({ ...current, recoveryPending: true }, interrupted), false)
+  assert.equal(
+    canContinueFailedTurn(current, { ...interrupted, actionState: 'outcome_unknown' }),
+    false
+  )
+  assert.equal(canContinueFailedTurn(current, { ...interrupted, actionState: 'submitting' }), false)
+  assert.equal(canContinueFailedTurn({ ...current, running: true }, interrupted), false)
+  assert.equal(
+    canContinueFailedTurn(
+      {
+        ...current,
+        conversation: [
+          ...current.conversation,
+          { kind: 'user', text: 'new instruction', turnId: 'new-turn' },
+        ],
+      },
+      interrupted
+    ),
+    false
+  )
 })
 
 test('catalog state cannot revive a turn after a newer terminal event', () => {
@@ -83,9 +335,14 @@ test('session recovery restores running state while a child is still active', ()
   const recovered = {
     ...initial,
     ...projectSessionRecovery(initial, {
-      sessionId: 'session-1', running: true, activeTurnId: 'native-turn',
-      unknownOutcome: false, pendingHil: [], uncertainOperations: [], timestamp: 1
-    })
+      sessionId: 'session-1',
+      running: true,
+      activeTurnId: 'native-turn',
+      unknownOutcome: false,
+      pendingHil: [],
+      uncertainOperations: [],
+      timestamp: 1,
+    }),
   }
   assert.equal(recovered.running, true)
   assert.equal(recovered.status, 'running')
@@ -93,28 +350,80 @@ test('session recovery restores running state while a child is still active', ()
   assert.equal(canOfferTurnRecovery(recovered), false)
 })
 
+for (const kind of ['permission', 'user_input']) {
+  test(`session recovery restores waiting for an existing ${kind} card`, () => {
+    const snapshot = {
+      sessionId: 'session-1',
+      running: true,
+      activeTurnId: 'native-turn',
+      unknownOutcome: false,
+      pendingHil: [{ request_id: 'pending-request', kind, turn_id: 'native-turn' }],
+      uncertainOperations: [],
+      timestamp: 1_700_000_000_000,
+    }
+    const initial = thread()
+    const first = { ...initial, ...projectSessionRecovery(initial, snapshot) }
+    const reopened: Thread = { ...first, status: 'running' }
+    const recovered = { ...reopened, ...projectSessionRecovery(reopened, snapshot) }
+    assert.equal(recovered.running, true)
+    assert.equal(recovered.status, 'waiting')
+    assert.equal(recovered.turnOutcomes?.['native-turn'], 'running')
+    assert.equal(recovered.conversation, first.conversation)
+    assert.equal(recovered.conversation.filter((item) => item.kind === 'hil').length, 1)
+    assert.deepEqual({ ...recovered, ...projectSessionRecovery(recovered, snapshot) }, recovered)
+  })
+}
+
 test('recovering product authorization does not revive its completed turn', () => {
-  const initial: Thread = { ...thread(), running: false, status: 'done', turnOutcomes: { turn: 'completed' } }
+  const initial: Thread = {
+    ...thread(),
+    running: false,
+    status: 'done',
+    turnOutcomes: { turn: 'completed' },
+  }
   const snapshot = {
-    sessionId: 'session-1', running: false, activeTurnId: null, unknownOutcome: false,
-    pendingHil: [{ request_id: 'product', kind: 'question', lifetime: 'session' as const, turn_id: 'turn' }],
-    uncertainOperations: [], timestamp: 1_700_000_000_000
+    sessionId: 'session-1',
+    running: false,
+    activeTurnId: null,
+    unknownOutcome: false,
+    pendingHil: [
+      { request_id: 'product', kind: 'question', lifetime: 'session' as const, turn_id: 'turn' },
+    ],
+    uncertainOperations: [],
+    timestamp: 1_700_000_000_000,
   }
   const once = { ...initial, ...projectSessionRecovery(initial, snapshot) }
   const twice = { ...once, ...projectSessionRecovery(once, snapshot) }
   assert.equal(twice.running, false)
   assert.equal(twice.status, 'done')
   assert.equal(twice.turnOutcomes?.turn, 'completed')
-  assert.equal(twice.conversation.filter(item => item.kind === 'hil').length, 1)
+  assert.equal(twice.conversation.filter((item) => item.kind === 'hil').length, 1)
 })
 
 test('message snapshots remain cumulative exactly once through directive and transcript projection', () => {
   const stream = new DirectiveStreamHarness()
-  let rows = projectStreamDelta([], 'thinking', stream.append('item', '我', true), 'turn', 'item', true)
-  rows = projectStreamDelta(rows, 'thinking', stream.append('item', '我会计算。', true), 'turn', 'item', true)
+  let rows = projectStreamDelta(
+    [],
+    'thinking',
+    stream.append('item', '我', true),
+    'turn',
+    'item',
+    true
+  )
+  rows = projectStreamDelta(
+    rows,
+    'thinking',
+    stream.append('item', '我会计算。', true),
+    'turn',
+    'item',
+    true
+  )
   assert.equal(rows.length, 1)
   assert.equal(rows[0].kind === 'thinking' ? rows[0].text : null, '我会计算。')
-  assert.equal(stream.append('item', '我会计算。\n::scholarseed-preview{file="a.py"}', true), '我会计算。')
+  assert.equal(
+    stream.append('item', '我会计算。\n::scholarseed-preview{file="a.py"}', true),
+    '我会计算。'
+  )
 })
 
 test('authoritative completed snapshots shorten and clear the same message without duplication', () => {
@@ -141,7 +450,7 @@ test('desktop accepts only complete ProductEvent v2 envelopes', () => {
     ts: 1,
     type: 'message_delta',
     session_id: 'session-1',
-    data: { delta: 'ok' }
+    data: { delta: 'ok' },
   }
   assert.equal(isProductEventEnvelope(current), true)
   assert.equal(isProductEventEnvelope({ ...current, v: 1 }), false)
@@ -150,17 +459,41 @@ test('desktop accepts only complete ProductEvent v2 envelopes', () => {
 })
 
 test('permission failures distinguish connection from runtime failures', () => {
-  assert.match(permissionModeFailure({ ok: false, error: 'session_permission_switch_requires_hil_resolution' }), /处理当前审批/)
-  assert.match(permissionModeFailure({ ok: false, error: 'permission_mode_connection_failed' }), /无法连接/)
-  assert.equal(permissionModeFailure({ ok: false, error: 'session_permission_switch_failed', detail: 'Codex 拒绝恢复会话。' }), '权限模式切换未成功，请检查运行时连接后重试。')
-  assert.doesNotMatch(permissionModeFailure({ ok: false, error: 'session_permission_policy_immutable' }), /运行中/)
+  assert.match(
+    permissionModeFailure({
+      ok: false,
+      error: 'session_permission_switch_requires_hil_resolution',
+    }),
+    /处理当前审批/
+  )
+  assert.match(
+    permissionModeFailure({ ok: false, error: 'permission_mode_connection_failed' }),
+    /无法连接/
+  )
+  assert.equal(
+    permissionModeFailure({
+      ok: false,
+      error: 'session_permission_switch_failed',
+      detail: 'Codex 拒绝恢复会话。',
+    }),
+    '权限模式切换未成功，请检查运行时连接后重试。'
+  )
+  assert.doesNotMatch(
+    permissionModeFailure({ ok: false, error: 'session_permission_policy_immutable' }),
+    /运行中/
+  )
   assert.doesNotMatch(permissionModeFailure({ ok: false }), /运行中/)
 })
 
 test('turn failures map stable provider codes to actionable product guidance', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
-  const display = (item: ReturnType<typeof describeTurnFailure>) => formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const display = (item: ReturnType<typeof describeTurnFailure>) =>
+    formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
   const policy = describeTurnFailure({ code: 'CONTENT_SAFETY_BLOCKED', retryable: true })
   assert.equal(display(policy).message, '本次内容未通过安全审核，请修改后重试。')
   assert.equal(display(policy).action, display(policy).message)
@@ -169,15 +502,16 @@ test('turn failures map stable provider codes to actionable product guidance', a
   const quota = describeTurnFailure({
     code: 'insufficient_quota',
     message: 'You exceeded your current quota.',
-    retryable: true
+    retryable: true,
   })
   assert.equal(display(quota).title, '回答生成失败')
   assert.match(display(quota).action, /剩余积分/)
   assert.equal(quota.runtimeAction, undefined)
 
   const allocationQuota = describeTurnFailure({
-    message: 'id:1\nevent:error\n:HTTP_STATUS/429\ndata:{"request_id":"private","code":"Throttling.AllocationQuota","message":"Allocated quota exceeded. https://private.example"}',
-    retryable: true
+    message:
+      'id:1\nevent:error\n:HTTP_STATUS/429\ndata:{"request_id":"private","code":"Throttling.AllocationQuota","message":"Allocated quota exceeded. https://private.example"}',
+    retryable: true,
   })
   assert.equal(display(allocationQuota).message, '模型分配额度已用完。')
   assert.doesNotMatch(JSON.stringify(allocationQuota), /private|HTTP_STATUS|event:error/)
@@ -186,7 +520,7 @@ test('turn failures map stable provider codes to actionable product guidance', a
   const rateLimit = describeTurnFailure({
     code: 'rate_limit_exceeded',
     message: 'Please retry later.',
-    retryable: true
+    retryable: true,
   })
   assert.match(display(rateLimit).message, /请求过于频繁/)
   assert.equal(rateLimit.runtimeAction, 'continue_turn')
@@ -194,18 +528,18 @@ test('turn failures map stable provider codes to actionable product guidance', a
   const auth = describeTurnFailure({
     code: 'runtime_not_authenticated',
     message: 'unauthorized',
-    retryable: false
+    retryable: false,
   })
   assert.match(display(auth).action, /登录/)
-  assert.equal(auth.runtimeAction, undefined)
+  assert.equal(auth.runtimeAction, 'continue_turn')
 
   const codeWins = describeTurnFailure({
     code: 'runtime_not_authenticated',
     message: 'You exceeded your current quota.',
-    retryable: true
+    retryable: true,
   })
   assert.match(display(codeWins).message, /认证失败/)
-  assert.equal(codeWins.runtimeAction, undefined)
+  assert.equal(codeWins.runtimeAction, 'continue_turn')
 
   const untyped = describeTurnFailure({ message: 'backend unavailable' })
   assert.equal(untyped.runtimeAction, undefined)
@@ -213,7 +547,7 @@ test('turn failures map stable provider codes to actionable product guidance', a
     code: 'service_unavailable',
     message: 'The model provider is temporarily unavailable.',
     retryable: true,
-    automatic_retry_attempts: 3
+    automatic_retry_attempts: 3,
   })
   assert.equal(exhausted.failure?.kind, 'unavailable')
   assert.equal(exhausted.failure?.automaticRetryAttempts, 3)
@@ -222,7 +556,7 @@ test('turn failures map stable provider codes to actionable product guidance', a
   const overloaded = describeTurnFailure({
     code: 'server_is_overloaded',
     message: 'The model provider is temporarily unavailable.',
-    retryable: true
+    retryable: true,
   })
   assert.equal(overloaded.failure?.kind, 'overloaded')
   assert.equal(display(overloaded).message, '上游模型服务返回过载。')
@@ -230,9 +564,14 @@ test('turn failures map stable provider codes to actionable product guidance', a
   assert.equal(overloaded.runtimeAction, 'continue_turn')
   assert.equal(describeTurnFailure({ code: 'overloaded' }).failure?.kind, 'overloaded')
   assert.equal(describeTurnFailure({ code: 'server_error' }).failure?.kind, 'unavailable')
-  assert.equal(describeTurnFailure({ message: 'server_is_overloaded' }).failure?.kind, 'unavailable')
+  assert.equal(
+    describeTurnFailure({ message: 'server_is_overloaded' }).failure?.kind,
+    'unavailable'
+  )
   const retriedOverload = describeTurnFailure({
-    code: 'server_is_overloaded', retryable: true, automatic_retry_attempts: 3
+    code: 'server_is_overloaded',
+    retryable: true,
+    automatic_retry_attempts: 3,
   })
   assert.equal(display(retriedOverload).message, '上游模型服务返回过载，自动尝试 3 次后仍未恢复。')
   assert.equal(sameTurnFailureMessage(overloaded, retriedOverload), true)
@@ -241,10 +580,19 @@ test('turn failures map stable provider codes to actionable product guidance', a
   assert.equal(display(quota).title, 'Answer generation failed')
   assert.equal(display(quota).message, 'The allocated model quota has been exhausted.')
   assert.equal(display(overloaded).message, 'The upstream model service reported overload.')
-  assert.equal(display(retriedOverload).message, 'The upstream model service reported overload and remains unavailable after 3 automatic attempts.')
+  assert.equal(
+    display(retriedOverload).message,
+    'The upstream model service reported overload and remains unavailable after 3 automatic attempts.'
+  )
   assert.equal(sameTurnFailureMessage(quota, allocationQuota), true)
   assert.equal(sameTurnFailureMessage(quota, rateLimit), false)
-  assert.equal(sameTurnFailureMessage({ kind: 'error', title: '旧标题', action: '旧建议', message: '模型分配额度已用完。' }, quota), true)
+  assert.equal(
+    sameTurnFailureMessage(
+      { kind: 'error', title: '旧标题', action: '旧建议', message: '模型分配额度已用完。' },
+      quota
+    ),
+    true
+  )
   const raw = describeTurnFailure({ message: 'opaque diagnostic /user/file' })
   assert.equal(raw.message, 'opaque diagnostic /user/file')
   assert.equal(display(raw).message, en.failure.unknown.message)
@@ -254,12 +602,17 @@ test('turn failures map stable provider codes to actionable product guidance', a
 
 test('credit balance exhaustion maps to a dedicated credits card without retry', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
-  const display = (item: ReturnType<typeof describeTurnFailure>) => formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const display = (item: ReturnType<typeof describeTurnFailure>) =>
+    formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
   const credits = describeTurnFailure({
     code: 'credit_balance_exhausted',
     message: 'The account credit balance is exhausted.',
-    retryable: true
+    retryable: true,
   })
   assert.equal(credits.failure?.kind, 'credits')
   assert.equal(display(credits).title, '回答生成失败')
@@ -268,29 +621,37 @@ test('credit balance exhaustion maps to a dedicated credits card without retry',
   // 余额只能靠补充恢复：即使上游标了 retryable，积分卡也不给重试动作。
   assert.equal(credits.runtimeAction, undefined)
   await locale.changeLanguage('en')
-  assert.equal(display(credits).message, 'Your credit balance is exhausted, so generation has stopped.')
+  assert.equal(
+    display(credits).message,
+    'Your credit balance is exhausted, so generation has stopped.'
+  )
 })
 
 test('classified turn failures keep a distinct reason for the card to surface', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
-  const display = (item: ReturnType<typeof describeTurnFailure>) => formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const display = (item: ReturnType<typeof describeTurnFailure>) =>
+    formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
 
   // 适配器 _AUTH_CODES 里有这个码，渲染层曾漏登记，于是塌缩成 unknown 并只剩英文脱敏原文。
   const bridge = describeTurnFailure({
     code: 'model_bridge_credential_required',
     message: 'The model provider authentication failed.',
-    retryable: false
+    retryable: false,
   })
   assert.equal(bridge.failure?.kind, 'auth')
   assert.equal(display(bridge).message, '模型服务认证失败。')
-  assert.equal(display(bridge).action, '请检查登录或模型凭证。')
+  assert.equal(display(bridge).action, zh.failure.auth.action)
 
   // 限流是原因句最要紧的一条：action 只说「已保留」，看不出是限流。
   const rateLimit = describeTurnFailure({
     code: 'rate_limit_exceeded',
     message: 'The model provider rate limit was reached.',
-    retryable: true
+    retryable: true,
   })
   assert.equal(display(rateLimit).message, '模型请求过于频繁，请稍后再试。')
   assert.notEqual(display(rateLimit).action, display(rateLimit).message)
@@ -299,7 +660,7 @@ test('classified turn failures keep a distinct reason for the card to surface', 
   const unregistered = describeTurnFailure({
     code: 'codex_provider_failed',
     message: 'The model provider rejected the request.',
-    retryable: true
+    retryable: true,
   })
   assert.equal(unregistered.failure?.kind, 'unknown')
   assert.equal(unregistered.message, 'The model provider rejected the request.')
@@ -321,14 +682,135 @@ test('the turn failure card uses a compact description and retry action', () => 
   assert.doesNotMatch(card, /data-testid="turn-failure-(?:reason|action)"/)
 })
 
-test('exhausted automatic retries reuse the compact continuation notice', () => {
+test('recoverable failures reuse the compact continuation notice and interrupted action', () => {
   const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
-  const notice = stream.indexOf('data-testid="turn-retry-exhausted-notice"')
+  const notice = stream.indexOf('data-testid="turn-recoverable-notice"')
   const card = stream.indexOf('data-testid="turn-failure-card"')
   assert.notEqual(notice, -1)
   assert.notEqual(card, -1)
   assert.ok(notice < card)
   assert.match(stream.slice(notice, card), /data-testid="turn-continue"/)
+  assert.match(stream.slice(notice, card), /t\('stream\.continueInterrupted'\)/)
+})
+
+test('recoverable notice JSX renders localized messages, pending buttons and bound continuation', async () => {
+  const source = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const syntax = ts.createSourceFile(
+    'Stream.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const branches: ts.IfStatement[] = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isIfStatement(node) && node.expression.getText(syntax) === 'recoverableFailure')
+      branches.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(branches.length, 1)
+  const script = ts.transpileModule(`(() => { ${branches[0].getText(syntax)} return null })()`, {
+    compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: {
+      zh: { conversation: zh, components: componentsZh },
+      en: { conversation: en, components: componentsEn },
+    },
+  })
+  for (const language of ['zh', 'en']) {
+    await locale.changeLanguage(language)
+    const conversation = locale.getFixedT(null, 'conversation')
+    const componentsTranslation = locale.getFixedT(null, 'components')
+    for (const code of [
+      'codex_provider_failed',
+      'service_unavailable',
+      'overloaded',
+      'rate_limit_exceeded',
+    ]) {
+      for (const attempts of [undefined, 3]) {
+        for (const actionState of ['idle', 'submitting', 'outcome_unknown'] as const) {
+          const item = {
+            ...describeTurnFailure({ code, retryable: true, automatic_retry_attempts: attempts }),
+            actionState,
+            turnId: 'failed-turn',
+          }
+          for (const recoveryAvailable of [false, true]) {
+            let button: { disabled: boolean; onClick: () => void } | undefined
+            let continued: ConvItem | undefined
+            const element = runInNewContext(script, {
+              React,
+              item,
+              conversation,
+              t: componentsTranslation,
+              failureText: formatTurnFailure(item, conversation),
+              recoverableFailure: isRecoverableTurnFailure(item),
+              recoveryAvailable,
+              continuing: actionState === 'submitting',
+              continueUnknown: actionState === 'outcome_unknown',
+              aiThinking: '',
+              IconFont: () => null,
+              Spinner: () => null,
+              Button: (props: {
+                children: React.ReactNode
+                disabled: boolean
+                onClick: () => void
+              }) => {
+                button = props
+                return React.createElement('button', { disabled: props.disabled }, props.children)
+              },
+              onContinue: (failure: ConvItem) => {
+                continued = failure
+              },
+            })
+            const html = renderToStaticMarkup(element)
+            assert.ok(html.includes('data-testid="turn-recoverable-notice"'))
+            assert.equal(html.includes('turn-failure-card'), false)
+            const message =
+              item.failure?.kind === 'unknown'
+                ? conversation('failure.interrupted.message')
+                : formatTurnFailure(item, conversation).message
+            assert.ok(html.includes(message), `${language}: ${code}: ${attempts}: ${actionState}`)
+            assert.equal(Boolean(button), recoveryAvailable)
+            if (button) {
+              assert.equal(button.disabled, actionState !== 'idle')
+              assert.ok(
+                html.includes(
+                  componentsTranslation(
+                    actionState === 'outcome_unknown'
+                      ? 'stream.continuePending'
+                      : 'stream.continueInterrupted'
+                  )
+                )
+              )
+              if (!button.disabled) {
+                button.onClick()
+                assert.equal(continued, item)
+              }
+            }
+          }
+        }
+      }
+    }
+    for (const code of [
+      'invalid_api_key',
+      'insufficient_quota',
+      'credit_balance_exhausted',
+      'bad_request',
+      'unsupported_model',
+      'content_policy_violation',
+    ]) {
+      const item = describeTurnFailure({ code, retryable: true })
+      assert.equal(
+        runInNewContext(script, { recoverableFailure: isRecoverableTurnFailure(item) }),
+        null
+      )
+    }
+  }
 })
 
 test('assistant copy action appears only after the turn stops running', () => {
@@ -338,22 +820,33 @@ test('assistant copy action appears only after the turn stops running', () => {
 })
 
 test('queued send failures use product copy instead of raw service errors', () => {
-  const composer = readFileSync(new URL('./components/business/Composer.tsx', import.meta.url), 'utf8')
+  const composer = readFileSync(
+    new URL('./components/business/Composer.tsx', import.meta.url),
+    'utf8'
+  )
   const pendingFailure = composer.indexOf("feedback('components', 'composer.pendingFailed'")
   assert.notEqual(pendingFailure, -1)
   assert.match(composer.slice(pendingFailure, pendingFailure + 500), /queuedMessageErrorText/)
-  assert.doesNotMatch(composer.slice(pendingFailure, pendingFailure + 500), /String\(result\?\.error\)/)
+  assert.doesNotMatch(
+    composer.slice(pendingFailure, pendingFailure + 500),
+    /String\(result\?\.error\)/
+  )
 })
 
 test('unsupported model rejection maps to a model_config card without retry', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
-  const display = (item: ReturnType<typeof describeTurnFailure>) => formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const display = (item: ReturnType<typeof describeTurnFailure>) =>
+    formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
   // 工单 87102385：上游 InvalidParameter（"Unsupported model"）经 bridge 恢复后到达产品面。
   const modelConfig = describeTurnFailure({
     code: 'InvalidParameter',
     message: "Unsupported model: 'minimax-m2.1'",
-    retryable: true
+    retryable: true,
   })
   assert.equal(modelConfig.failure?.kind, 'model_config')
   assert.equal(display(modelConfig).title, '回答生成失败')
@@ -373,24 +866,47 @@ test('session catalog distinguishes a failed payload from an authoritative empty
   assert.deepEqual(parseSessionCatalog({ sessions: [] }), [])
   assert.deepEqual(parseSessionCatalogResult({ sessions: [], total: 5 }), {
     sessions: [],
-    total: 5
+    total: 5,
   })
   assert.deepEqual(parseSessionCatalogResult({ sessions: [] }), {
     sessions: [],
-    total: 0
+    total: 0,
   })
+  assert.deepEqual(parseSessionCatalogResult({ sessions: [], next_cursor: 'next' }), {
+    sessions: [],
+    total: 0,
+    next_cursor: 'next',
+  })
+  assert.equal(parseSessionCatalogResult({ sessions: [], next_cursor: 42 }), null)
+})
+
+test('catalog cursors accept continuation and explicit exhaustion without offset state', () => {
+  for (const cursor of [-1, 0, 30, 1.5, {}, []]) {
+    assert.equal(parseSessionCatalogResult({ sessions: [], next_cursor: cursor }), null)
+  }
+  assert.deepEqual(parseSessionCatalogResult({ sessions: [], next_cursor: null }), {
+    sessions: [],
+    total: 0,
+    next_cursor: null,
+  })
+  assert.deepEqual(parseSessionCatalogResult({ sessions: [], next_cursor: 'next-page' }), {
+    sessions: [],
+    total: 0,
+    next_cursor: 'next-page',
+  })
+  assert.deepEqual(parseSessionCatalogResult({ sessions: [] }), { sessions: [], total: 0 })
 })
 
 test('session catalog HTTP failures distinguish retryable service outages', () => {
   assert.deepEqual(sessionCatalogHttpFailure(503), {
     kind: 'http',
     retryable: true,
-    status: 503
+    status: 503,
   })
   assert.deepEqual(sessionCatalogHttpFailure(401), {
     kind: 'http',
     retryable: false,
-    status: 401
+    status: 401,
   })
 })
 
@@ -400,7 +916,7 @@ function thread(): Thread {
     title: '长会话',
     conversation: [],
     sessionId: 'session-1',
-    lastSeq: 0
+    lastSeq: 0,
   }
 }
 
@@ -415,7 +931,7 @@ function incident(state: RuntimeIncidentData['state']): RuntimeIncidentData {
     safe_error: 'agent_runtime_exit',
     process_generation: 2,
     attempt: state === 'recovered' ? 2 : 1,
-    max_attempts: 5
+    max_attempts: 5,
   }
 }
 
@@ -445,9 +961,9 @@ function uncertain(
             request_id: correlationId,
             kind: 'permission',
             title: '需要确认',
-            body: '安全展示内容'
-          }
-        })
+            body: '安全展示内容',
+          },
+        }),
   }
 }
 
@@ -456,7 +972,7 @@ test('one runtime incident updates one transcript item through recovery', () => 
   const retrying = { ...initial, ...reportRuntimeIncident(initial, incident('retrying'), 'turn-1') }
   const recovered = {
     ...retrying,
-    ...reportRuntimeIncident(retrying, incident('recovered'), 'turn-1')
+    ...reportRuntimeIncident(retrying, incident('recovered'), 'turn-1'),
   }
 
   assert.equal(recovered.conversation.length, 1)
@@ -477,20 +993,21 @@ test('process incident drives one readiness truth without blocking inspectable r
   assert.equal(detected?.version, 'codex-cli 0.147.0')
   assert.equal(blocksRuntimePreflight(detected), false)
 
-  const recovered = projectRuntimeIncidentReadiness(
-    detected,
-    { ...incident('recovered'), scope: 'process', process_generation: 2 }
-  )
+  const recovered = projectRuntimeIncidentReadiness(detected, {
+    ...incident('recovered'),
+    scope: 'process',
+    process_generation: 2,
+  })
   assert.equal(recovered?.ready, true)
   assert.equal(recovered?.process_state, 'ready')
   assert.equal(recovered?.process_generation, 2)
   assert.equal(recovered?.code, undefined)
   assert.equal(blocksRuntimePreflight(recovered), false)
 
-  const failed = projectRuntimeIncidentReadiness(
-    detected,
-    { ...incident('failed'), scope: 'process' }
-  )
+  const failed = projectRuntimeIncidentReadiness(detected, {
+    ...incident('failed'),
+    scope: 'process',
+  })
   assert.equal(failed?.process_state, 'unavailable')
   assert.equal(blocksRuntimePreflight(failed), true)
 })
@@ -514,7 +1031,7 @@ test('readiness admission separates an unloaded probe from a two-second restart'
 test('session readiness outranks the runtime-wide probe for that session', () => {
   const restarting: Thread = {
     ...thread(),
-    readiness: { ready: false, process_state: 'recovering' }
+    readiness: { ready: false, process_state: 'recovering' },
   }
   assert.deepEqual(effectiveReadiness(restarting, { ready: true }), restarting.readiness)
   assert.equal(readinessAdmission(restarting, { ready: true }), 'transient')
@@ -529,12 +1046,12 @@ test('a process incident reaches only the session that owns it', () => {
   const state = {
     threads: {
       a: { ...thread(), id: 'a', readiness: { ready: true, process_state: 'ready' } },
-      b: { ...thread(), id: 'b', readiness: { ready: true, process_state: 'ready' } }
-    }
+      b: { ...thread(), id: 'b', readiness: { ready: true, process_state: 'ready' } },
+    },
   }
   const next = applyRuntimeIncident(state, 'a', {
     data: { ...incident('detected'), scope: 'process' },
-    turn_id: 'turn-1'
+    turn_id: 'turn-1',
   })
 
   assert.equal(next.threads.a.readiness?.ready, false)
@@ -549,21 +1066,39 @@ test('a process incident reaches only the session that owns it', () => {
 
 test('a runtime incident outside process scope leaves session readiness untouched', () => {
   const state = {
-    threads: { a: { ...thread(), id: 'a', readiness: { ready: true, process_state: 'ready' } } }
+    threads: { a: { ...thread(), id: 'a', readiness: { ready: true, process_state: 'ready' } } },
   }
   const next = applyRuntimeIncident(state, 'a', {
     data: { ...incident('detected'), scope: 'turn' },
-    turn_id: 'turn-1'
+    turn_id: 'turn-1',
   })
 
   assert.deepEqual(next.threads.a.readiness, { ready: true, process_state: 'ready' })
   assert.equal(next.threads.a.conversation.length, 1)
-  assert.equal(applyRuntimeIncident(state, null, {
-    data: { ...incident('detected'), scope: 'process' }
-  }), state)
-  assert.equal(applyRuntimeIncident(state, 'missing', {
-    data: { ...incident('detected'), scope: 'process' }
-  }), state)
+  assert.equal(
+    applyRuntimeIncident(state, null, {
+      data: { ...incident('detected'), scope: 'process' },
+    }),
+    state
+  )
+  assert.equal(
+    applyRuntimeIncident(state, 'missing', {
+      data: { ...incident('detected'), scope: 'process' },
+    }),
+    state
+  )
+})
+
+test('unassociated process incidents retain public event order without borrowing a turn', () => {
+  const state = { threads: { a: { ...thread(), id: 'a' } } }
+  const next = applyRuntimeIncident(state, 'a', {
+    seq: 35,
+    data: { ...incident('recovered'), scope: 'process' },
+  })
+  const notice = next.threads.a.conversation.at(-1)
+  assert.equal(notice?.kind, 'status')
+  assert.equal(notice?.eventSeq, 35)
+  assert.equal(notice?.turnId, undefined)
 })
 
 test('SSE transport recovery is separate from Codex runtime incidents', () => {
@@ -572,11 +1107,30 @@ test('SSE transport recovery is separate from Codex runtime incidents', () => {
   const recovered = { ...retrying, ...reportTransportState(retrying, 'live') }
 
   assert.equal(recovered.transportState, 'live')
-  assert.equal(recovered.conversation.length, 1)
+  assert.equal(retrying.conversation.length, 1)
   assert.deepEqual(
-    recovered.conversation[0]?.kind === 'status' ? recovered.conversation[0].text : '',
-    { key: 'runtime.transportRecovered' }
+    retrying.conversation[0]?.kind === 'status' ? retrying.conversation[0].text : '',
+    { key: 'runtime.transportRetrying' }
   )
+  assert.equal(recovered.conversation.length, 0)
+})
+
+test('live transport removes stale recovery notices without removing other conversation items', () => {
+  const initial = thread()
+  const retrying = { ...initial, ...reportTransportState(initial, 'retrying') }
+  const transportNotice = retrying.conversation[0]
+  assert.ok(transportNotice?.kind === 'status')
+  const unrelated: Thread['conversation'][number] = {
+    kind: 'status',
+    text: { key: 'runtime.recovered' },
+    tone: 'experience',
+  }
+  const restored: Thread = {
+    ...initial,
+    conversation: [unrelated, { ...transportNotice, text: { key: 'runtime.transportRecovered' } }],
+  }
+  const recovered = reportTransportState(restored, 'live')
+  assert.deepEqual(recovered.conversation, [unrelated])
 })
 
 test('process recovery alone keeps an unresolved ambiguous submission actionable', () => {
@@ -588,9 +1142,9 @@ test('process recovery alone keeps an unresolved ambiguous submission actionable
         title: '上次任务已中断',
         message: '未确认',
         action: '先检查',
-        incidentId: 'incident-1'
-      }
-    ]
+        incidentId: 'incident-1',
+      },
+    ],
   }
   const processRecovered = {
     ...initial,
@@ -598,65 +1152,94 @@ test('process recovery alone keeps an unresolved ambiguous submission actionable
       initial,
       { ...incident('recovered'), incident_id: 'process-incident' },
       'turn-1'
-    )
+    ),
   }
 
-  assert.equal(processRecovered.conversation.some((item) => item.kind === 'error'), true)
+  assert.equal(
+    processRecovered.conversation.some((item) => item.kind === 'error'),
+    true
+  )
 
   const reconciled = {
     ...processRecovered,
-    ...reportRuntimeIncident(processRecovered, incident('recovered'), 'turn-1')
+    ...reportRuntimeIncident(processRecovered, incident('recovered'), 'turn-1'),
   }
 
-  assert.equal(reconciled.conversation.some((item) => item.kind === 'error'), false)
-  assert.equal(reconciled.conversation.some(
-    (item) => item.kind === 'status' && item.incidentId === 'incident-1'
-  ), true)
+  assert.equal(
+    reconciled.conversation.some((item) => item.kind === 'error'),
+    false
+  )
+  assert.equal(
+    reconciled.conversation.some(
+      (item) => item.kind === 'status' && item.incidentId === 'incident-1'
+    ),
+    true
+  )
 })
 
 test('session resume classification uses HTTP and typed Service fields, never message regexes', () => {
-  assert.equal(classifySessionResumeFailure({
-    status: 404,
-    error: '任意本地化提示',
-    detail: '任意本地化提示',
-    code: 'session_not_found'
-  }).terminal, true)
-  assert.equal(classifySessionResumeFailure({
-    status: 503,
-    error: 'harness_runtime_not_ready',
-    detail: 'harness_runtime_not_ready',
-    code: 'harness_runtime_not_ready',
-    runtimeReadiness: { ready: false, code: 'unauthenticated', action: 'login' }
-  }).terminal, true)
-  assert.equal(classifySessionResumeFailure({
-    status: 503,
-    error: 'harness_runtime_not_ready',
-    detail: 'harness_runtime_not_ready',
-    code: 'harness_runtime_not_ready',
-    runtimeReadiness: { ready: false, code: 'error', action: 'retry' }
-  }).terminal, false)
-  assert.equal(classifySessionResumeFailure({
-    status: 500,
-    error: 'harness_session_resume_failed',
-    detail: '当前模型已下线',
-    code: 'session_model_unavailable'
-  }).terminal, true)
-  assert.equal(classifySessionResumeFailure({
-    status: 500,
-    error: '会话不存在 forbidden invalid',
-    detail: '会话不存在 forbidden invalid'
-  }).terminal, false)
+  assert.equal(
+    classifySessionResumeFailure({
+      status: 404,
+      error: '任意本地化提示',
+      detail: '任意本地化提示',
+      code: 'session_not_found',
+    }).terminal,
+    true
+  )
+  assert.equal(
+    classifySessionResumeFailure({
+      status: 503,
+      error: 'harness_runtime_not_ready',
+      detail: 'harness_runtime_not_ready',
+      code: 'harness_runtime_not_ready',
+      runtimeReadiness: { ready: false, code: 'unauthenticated', action: 'login' },
+    }).terminal,
+    true
+  )
+  assert.equal(
+    classifySessionResumeFailure({
+      status: 503,
+      error: 'harness_runtime_not_ready',
+      detail: 'harness_runtime_not_ready',
+      code: 'harness_runtime_not_ready',
+      runtimeReadiness: { ready: false, code: 'error', action: 'retry' },
+    }).terminal,
+    false
+  )
+  assert.equal(
+    classifySessionResumeFailure({
+      status: 500,
+      error: 'harness_session_resume_failed',
+      detail: '当前模型已下线',
+      code: 'session_model_unavailable',
+    }).terminal,
+    true
+  )
+  assert.equal(
+    classifySessionResumeFailure({
+      status: 500,
+      error: '会话不存在 forbidden invalid',
+      detail: '会话不存在 forbidden invalid',
+    }).terminal,
+    false
+  )
 })
 
 test('service errors preserve the specific failure code over the operation envelope', async () => {
-  const failure = await serviceErrorDetail(new Response(JSON.stringify({
-    error: 'harness_session_resume_failed',
-    code: 'session_model_unavailable',
-    detail: '当前模型已下线'
-  }), {
-    status: 500,
-    headers: { 'content-type': 'application/json' }
-  }))
+  const failure = await serviceErrorDetail(
+    new Response(
+      JSON.stringify({
+        error: 'harness_session_resume_failed',
+        code: 'session_model_unavailable',
+        detail: '当前模型已下线',
+      }),
+      {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      }
+    )
+  )
 
   assert.equal(failure.code, 'session_model_unavailable')
   assert.equal(failure.message, '当前模型已下线')
@@ -667,30 +1250,42 @@ test('session resume stops at five attempts and exposes a real reconnect action'
     status: 500,
     error: 'harness_session_resume_failed',
     detail: 'harness_session_resume_failed',
-    code: 'harness_session_resume_failed'
+    code: 'harness_session_resume_failed',
   })
 
   assert.equal(shouldRetrySessionResume(retryable, 4, 5), true)
   assert.equal(shouldRetrySessionResume(retryable, 5, 5), false)
   assert.equal(shouldRetrySessionResume({ ...retryable, terminal: true }, 1, 5), false)
-  assert.deepEqual(
-    sessionResumeStatusItem('session-1', '恢复已停止', 'tension', true),
-    {
-      kind: 'status',
-      text: '恢复已停止',
-      tone: 'tension',
-      incidentId: 'session-resume:session-1',
-      runtimeAction: 'retry_session_resume',
-      actionSessionId: 'session-1'
-    }
-  )
+  assert.deepEqual(sessionResumeStatusItem('session-1', '恢复已停止', 'tension', true), {
+    kind: 'status',
+    text: '恢复已停止',
+    tone: 'tension',
+    incidentId: 'session-resume:session-1',
+    runtimeAction: 'retry_session_resume',
+    actionSessionId: 'session-1',
+  })
+})
+
+test('session recovery blocking takes precedence over running and waiting', () => {
+  for (const state of ['running', 'waiting'] as const) {
+    const blocked = projectSessionState({
+      state,
+      runtime_id: 'codex',
+      recovery_blocked: true,
+      recovery_pending: true,
+    })
+    assert.equal(blocked.running, false)
+    assert.equal(blocked.status, 'failed')
+    assert.equal(blocked.recoveryBlocked, true)
+    assert.equal(blocked.recoveryPending, true)
+  }
 })
 
 test('a late typed running state restores the UI running projection', () => {
   const stopped: Thread = { ...thread(), running: false, status: 'done' }
   const running = {
     ...stopped,
-    ...projectSessionState({ state: 'running', runtime_id: 'codex', reason: 'late turn/start' })
+    ...projectSessionState({ state: 'running', runtime_id: 'codex', reason: 'late turn/start' }),
   }
 
   assert.equal(running.runtimeId, 'codex')
@@ -700,7 +1295,11 @@ test('a late typed running state restores the UI running projection', () => {
 
 test('native binding changes independently of the starting running flag', () => {
   const starting = projectSessionState({ state: 'starting', runtime_id: 'codex' })
-  const bound = projectSessionState({ state: 'running', runtime_id: 'codex', active_turn_id: 'native-turn' })
+  const bound = projectSessionState({
+    state: 'running',
+    runtime_id: 'codex',
+    active_turn_id: 'native-turn',
+  })
   assert.equal(starting.running, true)
   assert.equal(bound.running, true)
   assert.equal(starting.activeTurnId, null)
@@ -709,7 +1308,11 @@ test('native binding changes independently of the starting running flag', () => 
 })
 
 test('permission confirmation follows backend scope rather than hardcoded mode pairs', () => {
-  const mode = { mode: 'ask', modes: ['ask', 'safe_auto', 'bypassPermissions'], current_turn_modes: ['safe_auto'] }
+  const mode = {
+    mode: 'ask',
+    modes: ['ask', 'safe_auto', 'bypassPermissions'],
+    current_turn_modes: ['safe_auto'],
+  }
   assert.equal(permissionModeNeedsConfirmation(mode, 'safe_auto', true), false)
   assert.equal(permissionModeNeedsConfirmation(mode, 'bypassPermissions', true), true)
   assert.equal(permissionModeNeedsConfirmation(mode, 'bypassPermissions', false), false)
@@ -717,21 +1320,50 @@ test('permission confirmation follows backend scope rather than hardcoded mode p
 })
 
 test('only an explicit next-turn choice displays deferred mode text', () => {
-  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: '', deferred: false }), false)
-  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: 'ask', deferred: true }), false)
-  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: 'ask', deferred: true, next_turn_selected: true }), true)
-  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: 'safe_auto', deferred: false, next_turn_selected: true }), false)
+  assert.equal(
+    permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: '', deferred: false }),
+    false
+  )
+  assert.equal(
+    permissionModeShowsNextTurn({
+      mode: 'safe_auto',
+      modes: [],
+      active_mode: 'ask',
+      deferred: true,
+    }),
+    false
+  )
+  assert.equal(
+    permissionModeShowsNextTurn({
+      mode: 'safe_auto',
+      modes: [],
+      active_mode: 'ask',
+      deferred: true,
+      next_turn_selected: true,
+    }),
+    true
+  )
+  assert.equal(
+    permissionModeShowsNextTurn({
+      mode: 'safe_auto',
+      modes: [],
+      active_mode: 'safe_auto',
+      deferred: false,
+      next_turn_selected: true,
+    }),
+    false
+  )
 })
 
 test('native start activates a thread that previously had only a resource wait', () => {
   const waiting = {
     running: false,
     status: 'dormant' as const,
-    queuedMessages: [{ queuedMessageId: 'waiting-1', state: 'waiting_resources' as const }]
+    queuedMessages: [{ queuedMessageId: 'waiting-1', state: 'waiting_resources' as const }],
   }
   const started = {
     ...waiting,
-    ...projectSessionState({ state: 'running', runtime_id: 'codex' })
+    ...projectSessionState({ state: 'running', runtime_id: 'codex' }),
   }
   assert.equal(started.running, true)
   assert.equal(started.status, 'running')
@@ -749,7 +1381,7 @@ test('unknown HIL and dynamic-tool responses disable only their owned card', () 
           hilKind: 'permission',
           hilState: 'failed',
           turnId: 'turn-1',
-          itemId: 'item-owned'
+          itemId: 'item-owned',
         },
         {
           kind: 'hil',
@@ -757,26 +1389,31 @@ test('unknown HIL and dynamic-tool responses disable only their owned card', () 
           hilKind: 'permission',
           hilState: 'pending',
           turnId: 'turn-1',
-          itemId: 'item-other'
-        }
-      ]
+          itemId: 'item-other',
+        },
+      ],
     }
     const updated = {
       ...initial,
-      ...reportRuntimeIncident(initial, {
-        incident_id: `incident-${rpcMethod}`,
-        scope: 'turn',
-        state: 'failed',
-        kind: 'transport_lost',
-        strategy: 'none',
-        retryability: 'unknown_outcome',
-        safe_error: 'runtime_transport_lost',
-        process_generation: 3,
-        attempt: 1,
-        max_attempts: 1,
-        rpc_method: rpcMethod,
-        ambiguous_commit: true
-      }, 'turn-1', 'item-owned')
+      ...reportRuntimeIncident(
+        initial,
+        {
+          incident_id: `incident-${rpcMethod}`,
+          scope: 'turn',
+          state: 'failed',
+          kind: 'transport_lost',
+          strategy: 'none',
+          retryability: 'unknown_outcome',
+          safe_error: 'runtime_transport_lost',
+          process_generation: 3,
+          attempt: 1,
+          max_attempts: 1,
+          rpc_method: rpcMethod,
+          ambiguous_commit: true,
+        },
+        'turn-1',
+        'item-owned'
+      ),
     }
     const owned = updated.conversation.find(
       (item) => item.kind === 'hil' && item.itemId === 'item-owned'
@@ -786,7 +1423,7 @@ test('unknown HIL and dynamic-tool responses disable only their owned card', () 
     )
 
     assert.equal(owned?.kind === 'hil' ? owned.hilState : '', 'unknown')
-    assert.match(owned?.kind === 'hil' ? owned.submissionError ?? '' : '', /检查当前会话与产物/)
+    assert.match(owned?.kind === 'hil' ? (owned.submissionError ?? '') : '', /检查当前会话与产物/)
     assert.equal(other?.kind === 'hil' ? other.hilState : '', 'pending')
   }
 })
@@ -794,33 +1431,49 @@ test('unknown HIL and dynamic-tool responses disable only their owned card', () 
 test('typed operation state correlates unknown outcome by HIL request id', () => {
   const initial: Thread = {
     ...thread(),
-    conversation: [{
-      kind: 'hil',
-      requestId: 'request-typed',
-      hilKind: 'permission',
-      hilState: 'submitting',
-      turnId: 'turn-typed',
-      itemId: 'item-typed'
-    }]
+    conversation: [
+      {
+        kind: 'hil',
+        requestId: 'request-typed',
+        hilKind: 'permission',
+        hilState: 'submitting',
+        turnId: 'turn-typed',
+        itemId: 'item-typed',
+      },
+    ],
   }
   const updated = {
     ...initial,
-    ...reportOperationState(initial, {
-      kind: 'tool_response',
-      correlation_id: 'request-typed',
-      state: 'unknown',
-      retryable: false,
-      execution_count: 1
-    }, 'turn-typed', 'item-typed')
+    ...reportOperationState(
+      initial,
+      {
+        kind: 'tool_response',
+        correlation_id: 'request-typed',
+        state: 'unknown',
+        retryable: false,
+        execution_count: 1,
+      },
+      'turn-typed',
+      'item-typed'
+    ),
   }
 
   const card = updated.conversation[0]
   assert.equal(card?.kind === 'hil' ? card.hilState : '', 'unknown')
-  assert.match(card?.kind === 'hil' ? card.submissionError ?? '' : '', /不会重新提交/)
+  assert.match(card?.kind === 'hil' ? (card.submissionError ?? '') : '', /不会重新提交/)
   assert.equal(card?.kind === 'hil' ? card.submissionErrorMessage : undefined, 'outcomeUnknown')
-  const stale = reportOperationState(updated, {
-    kind: 'tool_response', correlation_id: 'request-typed', state: 'stale', retryable: false, execution_count: 1
-  }, 'turn-typed', 'item-typed').conversation?.[0]
+  const stale = reportOperationState(
+    updated,
+    {
+      kind: 'tool_response',
+      correlation_id: 'request-typed',
+      state: 'stale',
+      retryable: false,
+      execution_count: 1,
+    },
+    'turn-typed',
+    'item-typed'
+  ).conversation?.[0]
   assert.equal(stale?.kind === 'hil' ? stale.submissionError : null, undefined)
   assert.equal(stale?.kind === 'hil' ? stale.submissionErrorMessage : null, undefined)
   assert.deepEqual(stale?.kind === 'hil' ? stale.resolvedMessage : null, { kind: 'stale' })
@@ -839,17 +1492,19 @@ test('turn reconciliation removes the interruption notice without changing the u
     running: false,
     status: 'abandon',
     turnOutcomes: { 'turn-unknown': 'unknown' },
-    conversation: [{
-      kind: 'error',
-      title: '上次任务已中断',
-      message: 'unknown',
-      action: '继续对话',
-      runtimeAction: 'confirm_turn_unknown',
-      actionSessionId: 'session-1',
-      actionTurnId: 'turn-unknown',
-      actionState: 'submitting',
-      turnId: 'turn-unknown'
-    }]
+    conversation: [
+      {
+        kind: 'error',
+        title: '上次任务已中断',
+        message: 'unknown',
+        action: '继续对话',
+        runtimeAction: 'confirm_turn_unknown',
+        actionSessionId: 'session-1',
+        actionTurnId: 'turn-unknown',
+        actionState: 'submitting',
+        turnId: 'turn-unknown',
+      },
+    ],
   }
   const updated = { ...initial, ...reportTurnReconciled(initial, 'turn-unknown') }
 
@@ -869,7 +1524,7 @@ test('session open validates and allow-lists the typed recovery snapshot', () =>
   const rawHil = {
     ...hil.hil,
     command: 'must-not-cross-the-snapshot-edge',
-    response: 'must-not-cross-the-snapshot-edge'
+    response: 'must-not-cross-the-snapshot-edge',
   }
   const parsed = parseOpenSessionResponse({
     session_id: 'session-1',
@@ -882,7 +1537,7 @@ test('session open validates and allow-lists the typed recovery snapshot', () =>
     unknown_outcome: true,
     active_turn_id: null,
     last_turn_id: 'turn-unknown',
-    last_turn_status: 'unknown_outcome'
+    last_turn_status: 'unknown_outcome',
   })
 
   assert.equal('error' in parsed, false)
@@ -896,6 +1551,102 @@ test('session open validates and allow-lists the typed recovery snapshot', () =>
   assert.equal('response' in (safeHil ?? {}), false)
 })
 
+for (const kind of ['user_input', 'permission', 'command_approval']) {
+  test(`session open restores a waiting turn with pending ${kind}`, () => {
+    const pendingHil = [
+      {
+        request_id: 'request-hil',
+        kind,
+        turn_id: 'turn-waiting',
+        item_id: 'item-hil',
+        questions:
+          kind === 'user_input'
+            ? [
+                {
+                  id: 'scope',
+                  header: 'Scope',
+                  question: 'Select the scope',
+                  options: [{ label: 'Narrow' }, { label: 'Broad' }],
+                },
+              ]
+            : undefined,
+        options: kind !== 'user_input' ? [{ id: 'accept', label: 'Allow once' }] : undefined,
+      },
+    ]
+    const snapshot = {
+      session_id: 'session-1',
+      running: true,
+      uncertain_operations: [],
+      unknown_outcome: false,
+      active_turn_id: 'turn-waiting',
+      last_turn_id: 'turn-waiting',
+      last_turn_status: 'waiting',
+      pending_hil: pendingHil,
+    }
+    const parsed = parseOpenSessionResponse(snapshot)
+    assert.ok(!('error' in parsed))
+    assert.equal(parsed.last_turn_status, 'waiting')
+    assert.equal(recoveredTurnOutcome(parsed.last_turn_status), 'running')
+    assert.equal(parsed.running, true)
+    assert.equal(parsed.active_turn_id, 'turn-waiting')
+    assert.deepEqual(parsed.pending_hil, pendingHil)
+    const recovered = {
+      ...thread(),
+      ...projectSessionRecovery(thread(), {
+        sessionId: parsed.session_id,
+        running: parsed.running,
+        activeTurnId: parsed.active_turn_id,
+        unknownOutcome: parsed.unknown_outcome,
+        pendingHil: parsed.pending_hil ?? [],
+        uncertainOperations: parsed.uncertain_operations,
+        timestamp: 1_700_000_000_000,
+      }),
+    }
+    assert.equal(recovered.running, true)
+    assert.equal(recovered.status, 'waiting')
+    assert.equal(recovered.turnOutcomes?.['turn-waiting'], 'running')
+    assert.equal(recovered.conversation.filter((item) => item.kind === 'hil').length, 1)
+    const restoredHil = recovered.conversation.find((item) => item.kind === 'hil')
+    assert.ok(restoredHil?.kind === 'hil')
+    assert.equal(restoredHil.requestId, 'request-hil')
+    assert.equal(restoredHil.hilState, 'pending')
+    assert.equal(restoredHil.turnId, 'turn-waiting')
+    assert.equal(restoredHil.itemId, 'item-hil')
+  })
+}
+
+for (const status of [
+  'running',
+  'completed',
+  'failed',
+  'interrupted',
+  'unknown_outcome',
+  'unknown_confirmed',
+]) {
+  test(`session open preserves the existing turn status ${status}`, () => {
+    const parsed = parseOpenSessionResponse({
+      session_id: 'session-1',
+      running: status === 'running',
+      uncertain_operations: [],
+      unknown_outcome: false,
+      active_turn_id: status === 'running' ? 'turn-1' : null,
+      last_turn_id: 'turn-1',
+      last_turn_status: status,
+    })
+    assert.ok(!('error' in parsed))
+    assert.equal(parsed.last_turn_status, status)
+    assert.ok(parsed.last_turn_status)
+    assert.equal(
+      recoveredTurnOutcome(parsed.last_turn_status),
+      status === 'unknown_outcome'
+        ? 'unknown'
+        : status === 'unknown_confirmed'
+          ? 'completed'
+          : status
+    )
+  })
+}
+
 test('session open fails closed on inconsistent or retryable recovery operations', () => {
   const turn = uncertain('turn', 'unknown', 'turn-unknown')
   for (const operation of [
@@ -903,15 +1654,15 @@ test('session open fails closed on inconsistent or retryable recovery operations
     { ...turn, retryable: true },
     {
       ...uncertain('hil_response', 'unknown', 'request-hil'),
-      hil: { request_id: 'wrong-request', kind: 'permission' }
-    }
+      hil: { request_id: 'wrong-request', kind: 'permission' },
+    },
   ]) {
     const parsed = parseOpenSessionResponse({
       session_id: 'session-1',
       running: false,
       uncertain_operations: [operation],
       unknown_outcome: operation.kind === 'turn',
-      active_turn_id: null
+      active_turn_id: null,
     })
     assert.equal('error' in parsed ? parsed.code : '', 'invalid_session_recovery_snapshot')
   }
@@ -920,14 +1671,24 @@ test('session open fails closed on inconsistent or retryable recovery operations
     running: false,
     uncertain_operations: [turn],
     unknown_outcome: false,
-    active_turn_id: null
+    active_turn_id: null,
   })
-  assert.equal('error' in hiddenUnknown ? hiddenUnknown.code : '', 'invalid_session_recovery_snapshot')
+  assert.equal(
+    'error' in hiddenUnknown ? hiddenUnknown.code : '',
+    'invalid_session_recovery_snapshot'
+  )
 
   for (const invalidTerminal of [
     { last_turn_id: 'turn-1', last_turn_status: 'invented' },
     { last_turn_id: 'turn-1', last_turn_status: null },
-    { last_turn_id: null, last_turn_status: 'failed' }
+    { last_turn_id: null, last_turn_status: 'failed' },
+    { last_turn_id: null, last_turn_status: 'waiting' },
+    {
+      running: false,
+      active_turn_id: 'turn-1',
+      last_turn_id: 'turn-1',
+      last_turn_status: 'waiting',
+    },
   ]) {
     const parsed = parseOpenSessionResponse({
       session_id: 'session-1',
@@ -935,7 +1696,7 @@ test('session open fails closed on inconsistent or retryable recovery operations
       uncertain_operations: [],
       unknown_outcome: false,
       active_turn_id: null,
-      ...invalidTerminal
+      ...invalidTerminal,
     })
     assert.equal('error' in parsed ? parsed.code : '', 'invalid_session_recovery_snapshot')
   }
@@ -948,26 +1709,28 @@ test('Electron reload projects unknown TURN and HIL once without replaying a req
     running: false,
     activeTurnId: null,
     unknownOutcome: true,
-    pendingHil: [{
-      request_id: 'request-tool',
-      kind: 'permission',
-      turn_id: 'turn-hil',
-      item_id: 'item-request-tool'
-    }],
+    pendingHil: [
+      {
+        request_id: 'request-tool',
+        kind: 'permission',
+        turn_id: 'turn-hil',
+        item_id: 'item-request-tool',
+      },
+    ],
     uncertainOperations: [
       uncertain('tool_response', 'unknown', 'request-tool'),
-      uncertain('turn', 'unknown', 'turn-unknown', 'agent_runtime_exit')
+      uncertain('turn', 'unknown', 'turn-unknown', 'agent_runtime_exit'),
     ],
-    timestamp: 1_700_000_000_000
+    timestamp: 1_700_000_000_000,
   }
   const once = { ...initial, ...projectSessionRecovery(initial, snapshot) }
   const twice = { ...once, ...projectSessionRecovery(once, snapshot) }
-  const unknownTurns = twice.conversation.filter((item) => (
-    item.kind === 'error' && item.runtimeAction === 'confirm_turn_unknown'
-  ))
-  const unknownHil = twice.conversation.filter((item) => (
-    item.kind === 'hil' && item.hilState === 'unknown'
-  ))
+  const unknownTurns = twice.conversation.filter(
+    (item) => item.kind === 'error' && item.runtimeAction === 'confirm_turn_unknown'
+  )
+  const unknownHil = twice.conversation.filter(
+    (item) => item.kind === 'hil' && item.hilState === 'unknown'
+  )
 
   assert.deepEqual(twice, once)
   assert.equal(once.running, false)
@@ -975,22 +1738,33 @@ test('Electron reload projects unknown TURN and HIL once without replaying a req
   assert.equal(unknownTurns.length, 1)
   assert.equal(unknownHil.length, 1)
   assert.equal(unknownTurns[0]?.kind === 'error' ? unknownTurns[0].actionState : '', 'idle')
-  assert.equal(unknownTurns[0]?.kind === 'error' ? unknownTurns[0].turnUnknown?.reason : '', 'processExit')
-  assert.match(unknownHil[0]?.kind === 'hil' ? unknownHil[0].submissionError ?? '' : '', /不会重新提交/)
-  assert.equal(twice.conversation.some((item) => item.kind === 'user'), false)
+  assert.equal(
+    unknownTurns[0]?.kind === 'error' ? unknownTurns[0].turnUnknown?.reason : '',
+    'processExit'
+  )
+  assert.match(
+    unknownHil[0]?.kind === 'hil' ? (unknownHil[0].submissionError ?? '') : '',
+    /不会重新提交/
+  )
+  assert.equal(
+    twice.conversation.some((item) => item.kind === 'user'),
+    false
+  )
 })
 
 test('Serve restart projects stale operation terminally and preserves exact card ownership', () => {
   const initial: Thread = {
     ...thread(),
-    conversation: [{
-      kind: 'hil',
-      requestId: 'request-stale',
-      hilKind: 'permission',
-      hilState: 'pending',
-      turnId: 'turn-hil',
-      itemId: 'item-request-stale'
-    }]
+    conversation: [
+      {
+        kind: 'hil',
+        requestId: 'request-stale',
+        hilKind: 'permission',
+        hilState: 'pending',
+        turnId: 'turn-hil',
+        itemId: 'item-request-stale',
+      },
+    ],
   }
   const operation = uncertain('hil_response', 'stale', 'request-stale')
   const snapshot = {
@@ -1000,17 +1774,14 @@ test('Serve restart projects stale operation terminally and preserves exact card
     unknownOutcome: false,
     pendingHil: [],
     uncertainOperations: [operation],
-    timestamp: 1_700_000_000_000
+    timestamp: 1_700_000_000_000,
   }
   const recovered = { ...initial, ...projectSessionRecovery(initial, snapshot) }
   const card = recovered.conversation[0]
 
   assert.equal(card?.kind === 'hil' ? card.hilState : '', 'stale')
   assert.equal(card?.kind === 'hil' ? card.resolved : '', '请求已过期')
-  assert.deepEqual(
-    { ...recovered, ...projectSessionRecovery(recovered, snapshot) },
-    recovered
-  )
+  assert.deepEqual({ ...recovered, ...projectSessionRecovery(recovered, snapshot) }, recovered)
 })
 
 test('active_turn_id restores running ownership and a late TURN_UNKNOWN stays idempotent', () => {
@@ -1024,27 +1795,71 @@ test('active_turn_id restores running ownership and a late TURN_UNKNOWN stays id
       unknownOutcome: false,
       pendingHil: [],
       uncertainOperations: [],
-      timestamp: 1_700_000_000_000
-    })
+      timestamp: 1_700_000_000_000,
+    }),
   }
   assert.equal(running.turnOutcomes?.['turn-running'], 'running')
 
   const once = {
     ...running,
-    ...reportTurnUnknown(running, { sessionId: 'session-1', turnId: 'turn-running' })
+    ...reportTurnUnknown(running, { sessionId: 'session-1', turnId: 'turn-running' }),
   }
   const twice = {
     ...once,
-    ...reportTurnUnknown(once, { sessionId: 'session-1', turnId: 'turn-running' })
+    ...reportTurnUnknown(once, { sessionId: 'session-1', turnId: 'turn-running' }),
   }
   assert.equal(twice.conversation.filter((item) => item.kind === 'error').length, 1)
   assert.equal(twice.turnOutcomes?.['turn-running'], 'unknown')
 })
 
+test('unknown turn clears running command and native review without altering another turn', () => {
+  const active: Thread = {
+    ...thread(),
+    running: true,
+    status: 'running',
+    conversation: [
+      { kind: 'tool', toolId: 'command', name: 'shell', status: 'running', turnId: 'turn-unknown' },
+      {
+        kind: 'native_activity',
+        activityId: 'review',
+        activityType: 'approval_review',
+        category: 'mode',
+        status: 'running',
+        nativeStatus: 'running',
+        details: {},
+        turnId: 'turn-unknown',
+      },
+      { kind: 'tool', toolId: 'other', name: 'shell', status: 'running', turnId: 'other' },
+    ],
+  }
+  const updated = {
+    ...active,
+    ...reportTurnUnknown(active, { sessionId: 'session-1', turnId: 'turn-unknown' }),
+  }
+  assert.equal(
+    updated.conversation[0]?.kind === 'tool' ? updated.conversation[0].status : undefined,
+    'cancelled'
+  )
+  assert.equal(
+    updated.conversation[1]?.kind === 'native_activity'
+      ? updated.conversation[1].status
+      : undefined,
+    'error'
+  )
+  assert.equal(
+    updated.conversation.find((item) => item.kind === 'tool' && item.toolId === 'other'),
+    active.conversation[2]
+  )
+})
 
 test('the same runtime status redraws in either language without changing its diagnostic identity', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, defaultNS: 'conversation', resources: { zh: { conversation: zh }, en: { conversation: en } } })
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    defaultNS: 'conversation',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
   const original = thread()
   const update = reportRuntimeIncident(original, incident('retrying'), 'turn-localization')
   const status = update.conversation?.find((item) => item.kind === 'status')
@@ -1052,77 +1867,148 @@ test('the same runtime status redraws in either language without changing its di
   const before = JSON.stringify(status)
   assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /正在恢复/)
   await locale.changeLanguage('en')
-  assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /Recovering/)
+  assert.match(
+    formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')),
+    /Recovering/
+  )
   assert.equal(JSON.stringify(status), before)
   for (const reason of ['Vendor 原始 diagnostic', '__proto__', 'toString']) {
-    assert.equal(formatRuntimeStatus({ key: 'runtime.failed', reason }, locale.getFixedT(null, 'conversation')), en.runtime.failed)
+    assert.equal(
+      formatRuntimeStatus(
+        { key: 'runtime.failed', reason },
+        locale.getFixedT(null, 'conversation')
+      ),
+      en.runtime.failed
+    )
   }
-  assert.equal(formatRuntimeStatus({ key: 'runtime.recovered', reason: 'codex_provider_recovered' }, locale.getFixedT(null, 'conversation')), en.runtime.recovered)
+  assert.equal(
+    formatRuntimeStatus(
+      { key: 'runtime.recovered', reason: 'codex_provider_recovered' },
+      locale.getFixedT(null, 'conversation')
+    ),
+    en.runtime.recovered
+  )
 })
 
 test('repeated tool loop incident explains the stop in both languages', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, defaultNS: 'conversation', resources: { zh: { conversation: zh }, en: { conversation: en } } })
-  const update = reportRuntimeIncident(thread(), {
-    ...incident('detected'),
-    scope: 'turn',
-    kind: 'repeated_tool_loop',
-    safe_error: 'codex_repeated_tool_loop'
-  }, 'turn-loop')
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    defaultNS: 'conversation',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const update = reportRuntimeIncident(
+    thread(),
+    {
+      ...incident('detected'),
+      scope: 'turn',
+      kind: 'repeated_tool_loop',
+      safe_error: 'codex_repeated_tool_loop',
+    },
+    'turn-loop'
+  )
   const status = update.conversation?.find((item) => item.kind === 'status')
   assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
-  assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /重复|连续/)
+  assert.match(
+    formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')),
+    /重复|连续/
+  )
   await locale.changeLanguage('en')
   assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /repeated/)
 })
 
 test('provider retries are not presented as agent connection recovery', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, defaultNS: 'conversation', resources: { zh: { conversation: zh }, en: { conversation: en } } })
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    defaultNS: 'conversation',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
   const providerRetry = {
     ...incident('retrying'),
     scope: 'provider' as const,
     kind: 'provider_retry' as const,
     strategy: 'vendor_retry' as const,
     safe_error: 'The model provider rejected the request.',
-    max_attempts: 0
+    max_attempts: 0,
   }
   const update = reportRuntimeIncident(thread(), providerRetry, 'turn-provider')
   const status = update.conversation?.find((item) => item.kind === 'status')
   assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
-  assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /^模型服务正在重试/)
-  assert.doesNotMatch(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /连接中断/)
+  assert.match(
+    formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')),
+    /^模型服务正在重试/
+  )
+  assert.doesNotMatch(
+    formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')),
+    /连接中断/
+  )
 })
-
 
 test('resume status retains retry action ownership and renders parameters after language changes', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'en', fallbackLng: false, defaultNS: 'conversation', resources: { zh: { conversation: zh }, en: { conversation: en } } })
-  const message: RuntimeStatusMessage = { key: 'resume.retrying', attempt: 2, maximum: 4, reason: 'Vendor diagnostic' }
+  await locale.init({
+    lng: 'en',
+    fallbackLng: false,
+    defaultNS: 'conversation',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const message: RuntimeStatusMessage = {
+    key: 'resume.retrying',
+    attempt: 2,
+    maximum: 4,
+    reason: 'Vendor diagnostic',
+  }
   const notice = sessionResumeStatusItem('session-resume-i18n', message, 'tension', true)
   assert.equal(notice.runtimeAction, 'retry_session_resume')
   assert.equal(notice.actionSessionId, 'session-resume-i18n')
   assert.equal(notice.text, message)
-  assert.equal(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), 'The session cannot be resumed yet. Retrying (2/4)')
+  assert.equal(
+    formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')),
+    'The session cannot be resumed yet. Retrying (2/4)'
+  )
   await locale.changeLanguage('zh')
-  assert.equal(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), '会话暂时无法恢复，正在重试（2/4）')
+  assert.equal(
+    formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')),
+    '会话暂时无法恢复，正在重试（2/4）'
+  )
   assert.equal(notice.text, message)
 })
 
 test('resume request reasons translate on redraw without changing vendor diagnostics', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', resources: { zh: { conversation: zh }, en: { conversation: en } } })
-  const message = { key: 'resume.stopped' as const, reason: { key: 'request.invalidRecovery' as const } }
-  assert.match(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), /避免重复提交/)
+  await locale.init({
+    lng: 'zh',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const message = {
+    key: 'resume.stopped' as const,
+    reason: { key: 'request.invalidRecovery' as const },
+  }
+  assert.match(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), /不会自动重放/)
   await locale.changeLanguage('en')
-  assert.match(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), /prevent duplicate submissions/)
-  assert.match(formatRuntimeStatus({ key: 'resume.stopped', reason: { key: 'request.timeout' } }, locale.getFixedT(null, 'conversation')), /timed out/)
+  assert.match(
+    formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')),
+    /will not automatically replay/
+  )
+  assert.match(
+    formatRuntimeStatus(
+      { key: 'resume.stopped', reason: { key: 'request.timeout' } },
+      locale.getFixedT(null, 'conversation')
+    ),
+    /timed out/
+  )
 })
-
 
 test('application status descriptors can be redrawn in either language', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', resources: { zh: { conversation: zh }, en: { conversation: en } }, defaultNS: 'conversation' })
+  await locale.init({
+    lng: 'zh',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+    defaultNS: 'conversation',
+  })
   const t = locale.getFixedT(null, 'conversation')
   const compacted = { key: 'context.compacted' } as const
   const missing = { key: 'artifactFailure.missing' } as const
@@ -1130,39 +2016,186 @@ test('application status descriptors can be redrawn in either language', async (
   assert.equal(formatRuntimeStatus(missing, t), '文件不存在，未能展示产物。')
   await locale.changeLanguage('en')
   assert.equal(formatRuntimeStatus(compacted, t), 'Context compacted. Continuing execution.')
-  assert.equal(formatRuntimeStatus(missing, t), 'The file does not exist, so the artifact could not be displayed.')
+  assert.equal(
+    formatRuntimeStatus(missing, t),
+    'The file does not exist, so the artifact could not be displayed.'
+  )
   assert.deepEqual(compacted, { key: 'context.compacted' })
 })
 
-
 test('ambiguous turn application text switches language while raw diagnostics and confirmation semantics remain intact', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, interpolation: { escapeValue: false }, resources: {
-    zh: { conversation: zh, components: componentsZh }, en: { conversation: en, components: componentsEn }
-  } })
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    interpolation: { escapeValue: false },
+    resources: {
+      zh: { conversation: zh, components: componentsZh },
+      en: { conversation: en, components: componentsEn },
+    },
+  })
   const t = locale.getFixedT(null, 'conversation')
   for (const [message, reason] of [
-    [undefined, 'unconfirmed'], ['runtime_rpc_timeout', 'timeout'],
-    ['runtime_transport_lost', 'transportLost'], ['agent_runtime_exit', 'processExit']
+    [undefined, 'unconfirmed'],
+    ['runtime_rpc_timeout', 'timeout'],
+    ['runtime_transport_lost', 'transportLost'],
+    ['agent_runtime_exit', 'processExit'],
   ] as const) {
-    const updated = { ...thread(), ...reportTurnUnknown(thread(), { sessionId: 'session-1', turnId: 'turn', message }) }
-    const card = updated.conversation.find(item => item.kind === 'error')
+    const updated = {
+      ...thread(),
+      ...reportTurnUnknown(thread(), { sessionId: 'session-1', turnId: 'turn', message }),
+    }
+    const card = updated.conversation.find((item) => item.kind === 'error')
     assert.ok(card?.kind === 'error')
     assert.equal(card.runtimeAction, 'confirm_turn_unknown')
     assert.equal(card.actionState, 'idle')
     const canonical = { title: card.title, message: card.message, action: card.action }
     await locale.changeLanguage('en')
     assert.deepEqual(formatTurnUnknown(card, t), {
-      title: en.turnUnknown.title, message: en.turnUnknown.reason[reason], action: en.turnUnknown.action
+      title: en.turnUnknown.title,
+      message: en.turnUnknown.reason[reason],
+      action: en.turnUnknown.action,
     })
     assert.deepEqual({ title: card.title, message: card.message, action: card.action }, canonical)
     const reconciled = { ...updated, ...reportTurnReconciled(updated, 'turn') }
-    assert.equal(reconciled.conversation.some(item => item.kind === 'error'), false)
+    assert.equal(
+      reconciled.conversation.some((item) => item.kind === 'error'),
+      false
+    )
   }
   const diagnostic = 'vendor_outcome_unknown'
-  const raw = reportTurnUnknown(thread(), { sessionId: 'session-1', turnId: 'raw', message: diagnostic }).conversation?.find(item => item.kind === 'error')
+  const raw = reportTurnUnknown(thread(), {
+    sessionId: 'session-1',
+    turnId: 'raw',
+    message: diagnostic,
+  }).conversation?.find((item) => item.kind === 'error')
   assert.ok(raw?.kind === 'error')
   assert.equal(formatTurnUnknown(raw, t).message, en.turnUnknown.reason.unconfirmed)
   assert.equal(formatRuntimeStatus({ key: 'runtime.closed' }, t), en.runtime.closed)
   assert.equal(t('hil.invalidRequest'), en.hil.invalidRequest)
+})
+test('failed session recovery never invents a terminal outcome after retries stop', () => {
+  const running = { running: true, status: 'running' as const }
+  const retry = projectResumeRunState(running)
+  assert.deepEqual(retry, running)
+  assert.notEqual(retry.running, false)
+  assert.deepEqual(projectResumeRunState(retry), running)
+  for (const status of ['waiting', 'failed', 'done'] as const) {
+    const previous = { running: status === 'waiting', status }
+    assert.deepEqual(projectResumeRunState(previous), previous)
+  }
+})
+
+test('invalid recovery snapshots retry within budget without replaying the running turn', () => {
+  const failure = classifySessionResumeFailure(parseOpenSessionResponse({}))
+  const running = { running: true, status: 'waiting' as const }
+  assert.equal(failure.terminal, false)
+  for (const attempt of [1, 2, 3, 4]) {
+    assert.equal(shouldRetrySessionResume(failure, attempt, 5), true)
+  }
+  assert.equal(shouldRetrySessionResume(failure, 5, 5), false)
+  assert.deepEqual(projectResumeRunState(running), running)
+  assert.equal(
+    sessionResumeStatusItem('session-1', 'Reconnect', 'tension', true).runtimeAction,
+    'retry_session_resume'
+  )
+})
+
+test('continuation submits through direct presentation instead of the queue placeholder', () => {
+  const source = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const syntax = ts.createSourceFile(
+    'Stream.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const submissions: ts.CallExpression[] = []
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'optimisticQueuedMessage'
+    )
+      submissions.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(submissions.length, 1)
+  assert.equal(submissions[0].arguments[5]?.getText(syntax), "'direct'")
+})
+
+test('history refresh preserves a pending direct user bubble and binds it only once', () => {
+  const pending = { kind: 'user' as const, text: '继续', itemId: 'pending-client' }
+  const previous = {
+    kind: 'user' as const,
+    role: 'user',
+    text: '旧任务',
+    turn_id: 'previous-turn',
+    item_id: 'previous-client',
+  }
+  const refreshed = projectHistoryWithRuntime(
+    [previous],
+    [{ kind: 'user', text: '旧任务', turnId: 'previous-turn', itemId: 'previous-client' }, pending]
+  )
+  assert.deepEqual(refreshed.at(-1), pending)
+  const bound = projectHistoryWithRuntime(
+    [
+      previous,
+      {
+        kind: 'user',
+        role: 'user',
+        text: '继续',
+        turn_id: 'continued-turn',
+        item_id: 'pending-client',
+      },
+    ],
+    refreshed
+  )
+  assert.equal(bound.filter((item) => item.itemId === 'pending-client').length, 1)
+  assert.equal(bound.at(-1)?.turnId, 'continued-turn')
+})
+
+test('live snapshot refresh keeps an in-flight direct submission while restart remains uncertain', (context) => {
+  const values = new Map<string, string>()
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  context.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+      },
+    },
+  })
+  const pending = optimisticQueuedMessage(
+    [],
+    'pending-direct',
+    [{ type: 'text', text: '继续' }],
+    [],
+    undefined,
+    'direct'
+  )
+  retainQueuedOutbox('snapshot-session', pending)
+  const live = mergeQueuedOutbox('snapshot-session', [], true, [pending])
+  assert.equal(live[0].state, 'submitting')
+  assert.equal(shouldPresentQueuedMessage(live[0], []), false)
+  const restarted = mergeQueuedOutbox('snapshot-session', [])
+  assert.equal(restarted[0].state, 'outcome_unknown')
+  assert.equal(shouldPresentQueuedMessage(restarted[0], []), true)
+  const authoritative = {
+    ...pending,
+    state: 'queued' as const,
+    submissionMode: 'queued' as const,
+    serverPresent: true,
+  }
+  assert.deepEqual(mergeQueuedOutbox('snapshot-session', [authoritative], true, [pending]), [
+    authoritative,
+  ])
+  assert.equal(shouldPresentQueuedMessage(authoritative, []), true)
+  releaseQueuedOutbox('snapshot-session', 'pending-direct')
 })

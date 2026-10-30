@@ -1,0 +1,30 @@
+{
+  "source_archive": {
+    "url": "https://mirrors.aliyun.com/CTAN/systems/texlive/Source/texlive-20260301-source.tar.xz",
+    "sha256": "32ea827edd3fb80a682ffbdf95d7ba6139ff074516e660c8923260fc82f5e0f0",
+    "filename": "texlive-20260301-source.tar.xz"
+  },
+  "recipe_archive": {
+    "url": "https://mirrors.aliyun.com/CTAN/systems/texlive/Source/windows-src2025.tar.xz",
+    "sha256": "03a459270e842e60046b6d617f047e998e41f52c6164c9940f5b75e16f60d1a1",
+    "filename": "windows-src2025.tar.xz"
+  },
+  "generated_inputs": {
+    "ktx/texk/kpathsea/c-auto.h": "6dd4edbf3cfab34baeb1762b8653563e40bf9a805bddee3f43044737eae31202",
+    "ktx/texk/kpathsea/paths.h": "f2d323ec966b0b1cebb3bc26b1a9f199416531c98b98f885d670eaa15b0ad549",
+    "ktx/texk/kpathsea/dirent.c": "7769085056030d7317484dda57a11f1a9e6b378dd44bb7b49a9cf94d5e6e0143",
+    "ktx/texk/kpathsea/dirent.h": "4631540ccf1e72122017ac3fb17baf275c0b221086b1016f556c3fb2d91e5fe5",
+    "ktx/texk/kpathsea/kpathsea.h": "98475726b7bf53117540a011901f769977b78b843327c541e013fe287d7114d6",
+    "ktx/texk/kpathsea/kpathsealibw64.dll.manifest": "4bb79dcea0a901f7d9eac5aa05728ae92acb42e0cb22e5dd14134f4421a3d8df"
+  },
+  "extra_header": {
+    "path": "ktx/libs/gd/msinttypes/inttypes.h",
+    "sha256": "909d5232e4fbb1f024240a80c467f04eb8ac59c93fe4d9e9f87bdf2afae49d19"
+  },
+  "original_progname_sha256": "c4b9058dabd0147760c884d631b57b116ad7dfa6cdfc7cbda4c5119de2870745",
+  "patched_progname_sha256": "65896814c179d00f70c1fefc4485eebc880f7a1946f7e9a26de7adf98a9d37ee",
+  "compiler_sha256": "dc30732c00642f33be2c7e2ad42c78d5e9b6f5c980555a755ad6462da300f7be",
+  "linker_sha256": "40069f4a86381d0552f80993ff4e89d64cf298e5e908fb29d8219f607a467fd3",
+  "manifest_tool_sha256": "52eca387e031bbc76234a74243a1af20cacb597f385d92297bd10c6595649b1e",
+  "reference_dll_sha256": "15cf439229281d38ab208b7598e20b3b248c1738e60d0bf2af80f01905ee7b8a"
+}

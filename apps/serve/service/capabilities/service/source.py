@@ -18,16 +18,19 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import stat
+import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import uuid4
 
-from service.capabilities.service.install import (
-    SKILL_MANIFEST_NAME,
-    parse_skill_frontmatter,
-)
+from service.capabilities.domain import SKILL_MANIFEST_NAME
+from service.capabilities.service.install import parse_skill_frontmatter
 from service.capabilities.service.manifest import atomic_write
 from service.capabilities.service.package import (
     MAX_FILE_BYTES,
@@ -57,6 +60,7 @@ from service.capabilities.service.skills import (
     SKILL_INVOCATION_PROFILES_KEY,
     SKILL_PRODUCT_METADATA_FILE,
 )
+from service.platform.storage import filesystem_path
 
 # 开源仓库内技能源码根：<repo>/skills/community。
 # service/capabilities/service/source.py -> service/capabilities/service
@@ -66,8 +70,12 @@ COMMUNITY_SKILLS_DIR = REPO_ROOT / "skills" / "community"
 SKILLS_LOCK_FILE = REPO_ROOT / "skills" / "skills.lock.json"
 PRODUCT_DEFAULTS_DIR = Path(__file__).resolve().parents[1] / "defaults"
 
+WINDOWS_PLATFORM = "win32"
+PACK_STAGING_PREFIX = "scholarseed-skill-pack-"
+
 LOCK_PROTOCOL_VERSION = 2
 LOCK_SOURCE = "repository"
+BUNDLED_INVENTORY_KEY = "inventory"
 SKILL_PACK_ORIGIN_SOURCE = "repository"
 COMMUNITY_NAMESPACE = "scholarseed"
 DEFAULT_SKILL_VERSION = "0.0.0"
@@ -121,11 +129,13 @@ def _included(path: Path, root: Path) -> bool:
 def skill_source_files(directory: Path) -> tuple[SkillSourceFile, ...]:
     """列出一个技能源码目录里参与打包的全部文件（稳定排序）。"""
 
-    root = directory.resolve()
+    root = filesystem_path(directory).resolve()
     rows: list[SkillSourceFile] = []
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        if path.is_symlink():
+        if path.is_symlink() or path.is_junction():
             raise SkillPackError(f"技能源码不得包含符号链接: {path.relative_to(root)}")
+        if not path.is_file() and not path.is_dir():
+            raise SkillPackError(f"技能源码不得包含特殊文件: {path.relative_to(root)}")
         if not path.is_file() or not _included(path, root):
             continue
         rows.append(
@@ -146,7 +156,7 @@ def _product_default_files(
 ) -> tuple[SkillSourceFile, ...]:
     """Return product-owned runtime defaults without changing skill source trees."""
 
-    root = (defaults or PRODUCT_DEFAULTS_DIR).expanduser().resolve() / name
+    root = filesystem_path((defaults or PRODUCT_DEFAULTS_DIR).expanduser()).resolve() / name
     if not root.is_dir():
         return ()
     source_paths = {row.relative for row in source_files}
@@ -174,7 +184,7 @@ def _effective_files(
 def discover_source_skills(source: Path = COMMUNITY_SKILLS_DIR) -> tuple[str, ...]:
     """发现源码根下的技能目录。空目录是构建缺陷，显式失败而不是产出空包。"""
 
-    root = source.expanduser().resolve()
+    root = filesystem_path(source.expanduser()).resolve()
     if not root.is_dir():
         raise SkillPackError(f"技能源码根不存在: {root}")
     names = tuple(
@@ -269,7 +279,7 @@ def source_lock(source: Path = COMMUNITY_SKILLS_DIR) -> dict[str, Any]:
     与产物比对。
     """
 
-    root = source.expanduser().resolve()
+    root = filesystem_path(source.expanduser()).resolve()
     rows: list[dict[str, Any]] = []
     for name in discover_source_skills(root):
         directory = root / name
@@ -367,7 +377,7 @@ def load_source_lock(path: Path) -> dict[str, Any]:
     """Load the lock format generated from ``skills/community``."""
 
     try:
-        value = json.loads(path.read_bytes())
+        value = json.loads(filesystem_path(path.expanduser()).read_bytes())
     except (OSError, json.JSONDecodeError) as exc:
         raise SkillPackError("invalid repository skill lock") from exc
     if not isinstance(value, dict):
@@ -380,6 +390,7 @@ def write_source_lock(
 ) -> Path:
     """把源码 lock 原子写入磁盘，供打包期冻结与产物比对使用。"""
 
+    destination = filesystem_path(destination.expanduser())
     atomic_write(destination, json_bytes(source_lock(source)))
     return destination.expanduser().resolve()
 
@@ -395,11 +406,43 @@ def product_metadata_from_source(directory: Path, row: Mapping[str, Any]) -> byt
         "blurb": _skill_blurb(frontmatter),
         "icon": SKILL_PACK_ICON,
         "payload_sha256": row["payload_sha256"],
+        BUNDLED_INVENTORY_KEY: {
+            "protocol_version": LOCK_PROTOCOL_VERSION,
+            "source": LOCK_SOURCE,
+            "namespace": COMMUNITY_NAMESPACE,
+            "skills": [dict(row)],
+        },
     }
     invocation = _invocation_policy(frontmatter)
     if invocation:
         payload[SKILL_INVOCATION_METADATA_KEY] = invocation
     return json_bytes(payload)
+
+
+def verify_compiled_skill(directory: Path) -> Mapping[str, Any]:
+    """Authorize exact compiled bytes against their build-frozen source inventory."""
+    directory = filesystem_path(directory)
+    if directory.is_symlink() or directory.is_junction():
+        raise SkillPackError("bundled skill directory cannot be a link")
+    metadata = json.loads((directory / SKILL_PRODUCT_METADATA_FILE).read_bytes())
+    inventory = metadata.get(BUNDLED_INVENTORY_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(inventory, dict):
+        raise SkillPackError("bundled skill inventory unavailable; rebuild the product pack")
+    rows = validate_source_lock(inventory)["skills"]
+    if len(rows) != 1:
+        raise SkillPackError("bundled skill inventory identity differs")
+    row: Mapping[str, Any] = rows[0]
+    if (
+        row["slug"] != directory.name
+        or row["version"] != metadata.get("version")
+        or row["payload_sha256"] != metadata.get("payload_sha256")
+    ):
+        raise SkillPackError("bundled skill inventory identity differs")
+    expected = [(item["path"], item["size"], item["sha256"]) for item in row["files"]]
+    actual = [(item.relative, item.size, item.sha256) for item in skill_source_files(directory)]
+    if actual != expected:
+        raise SkillPackError("bundled skill integrity mismatch")
+    return row
 
 
 def _copy_payload(origin: Path, destination: Path, files: tuple[SkillSourceFile, ...]) -> None:
@@ -414,10 +457,28 @@ def _copy_payload(origin: Path, destination: Path, files: tuple[SkillSourceFile,
 
 
 def _copy_product_defaults(name: str, destination: Path) -> None:
-    origin = PRODUCT_DEFAULTS_DIR / name
+    origin = filesystem_path(PRODUCT_DEFAULTS_DIR.expanduser()) / name
     if not origin.is_dir():
         return
     _copy_payload(origin, destination, skill_source_files(origin))
+
+
+@contextmanager
+def _pack_staging(parent: Path) -> Iterator[Path]:
+    if sys.platform != WINDOWS_PLATFORM:
+        with tempfile.TemporaryDirectory(prefix=PACK_STAGING_PREFIX, dir=parent) as temporary:
+            yield Path(temporary)
+        return
+    # Python's Windows 0700 temporary directories create a private DACL. A
+    # rename preserves that ACL on descendants, and chmod cannot restore it.
+    # This build staging contains public skill assets: inherit the destination
+    # parent's policy at creation, without changing any existing object's ACL.
+    temporary = parent / f"{PACK_STAGING_PREFIX}{uuid4().hex}"
+    temporary.mkdir(mode=DIRECTORY_MODE)
+    try:
+        yield temporary
+    finally:
+        shutil.rmtree(temporary)
 
 
 def compile_source_skills(
@@ -426,9 +487,10 @@ def compile_source_skills(
 ) -> SkillPackBuild:
     """从仓库内源码原子编译技能 pack。全程离线，无 Skillhub、无 ZIP 缓存。"""
 
-    root = source.expanduser().resolve()
-    target_root = target.expanduser().resolve()
-    if target.expanduser().is_symlink():
+    root = filesystem_path(source.expanduser()).resolve()
+    target = filesystem_path(target.expanduser())
+    target_root = target.resolve()
+    if target.is_symlink():
         raise SkillPackError("技能 pack 目标不能是符号链接")
     if root == target_root or target_root in root.parents:
         raise SkillPackError("技能源码不能位于将被替换的目标目录内")
@@ -443,10 +505,8 @@ def compile_source_skills(
     lock = source_lock(root)
     names = frozenset(row["slug"] for row in lock["skills"])
     target_root.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix="scholarseed-skill-pack-", dir=target_root.parent
-    ) as temporary:
-        pack = Path(temporary) / target_root.name
+    with _pack_staging(target_root.parent) as temporary:
+        pack = temporary / target_root.name
         pack.mkdir()
         for row in lock["skills"]:
             origin = root / row["slug"]
@@ -461,7 +521,7 @@ def compile_source_skills(
         validation = validate_bundled_skills(pack, expected=names)
         if not validation.ok:
             raise SkillPackError(str(dict(validation.errors)))
-        previous = Path(temporary) / "previous"
+        previous = temporary / "previous"
         if target_root.exists():
             target_root.rename(previous)
         try:
@@ -484,8 +544,8 @@ def verify_source_pack(
 ) -> tuple[bool, tuple[str, ...]]:
     """逐字节/大小/权限比对已安装 pack 与仓库内源码。返回 (是否一致, 差异列表)。"""
 
-    root = source.expanduser().resolve()
-    target_root = target.expanduser().resolve()
+    root = filesystem_path(source.expanduser()).resolve()
+    target_root = filesystem_path(target.expanduser()).resolve()
     problems: list[str] = []
     lock = source_lock(root)
     expected_names = {row["slug"] for row in lock["skills"]}
@@ -538,10 +598,11 @@ def verify_source_pack(
 def verify_source_locked_pack(lock_path: Path, target: Path) -> SkillPackValidation:
     """Verify an installed pack using only its frozen repository-source lock."""
 
-    if target.expanduser().is_symlink():
+    target = filesystem_path(target.expanduser())
+    if target.is_symlink():
         raise SkillPackError("技能 pack 目标不能是符号链接")
     lock = load_source_lock(lock_path)
-    root = target.expanduser().resolve()
+    root = filesystem_path(target.expanduser().resolve())
     validation = validate_bundled_skills(
         root, expected=frozenset(row["slug"] for row in lock["skills"])
     )
@@ -599,6 +660,7 @@ __all__ = [
     "load_source_lock",
     "product_metadata_from_source",
     "skill_source_files",
+    "verify_compiled_skill",
     "source_lock",
     "validate_source_lock",
     "verify_source_locked_pack",

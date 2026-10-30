@@ -1,11 +1,29 @@
-import type { ButtonHTMLAttributes, HTMLAttributes, KeyboardEvent, MouseEvent, ReactElement, ReactNode } from 'react'
-import { cloneElement, createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useId, useMemo, useState } from 'react'
+import type {
+  ButtonHTMLAttributes,
+  HTMLAttributes,
+  KeyboardEvent,
+  MouseEvent,
+  ReactElement,
+  ReactNode,
+} from 'react'
+import {
+  cloneElement,
+  createContext,
+  forwardRef,
+  isValidElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from 'react'
 
 import {
   collapsibleClassName,
   collapsibleContentClassName,
   collapsibleStyleClassName,
-  collapsibleTriggerClassName
+  collapsibleTriggerClassName,
 } from './classes'
 import { cx } from './utils'
 
@@ -43,7 +61,16 @@ export type CollapsibleContentProps = HTMLAttributes<HTMLDivElement>
 
 export const Collapsible = forwardRef<HTMLDivElement, CollapsibleProps>(
   (
-    { animated = false, children, className, defaultOpen = false, disabled = false, onOpenChange, open, ...props },
+    {
+      animated = false,
+      children,
+      className,
+      defaultOpen = false,
+      disabled = false,
+      onOpenChange,
+      open,
+      ...props
+    },
     ref
   ) => {
     const generatedId = useId()
@@ -60,7 +87,7 @@ export const Collapsible = forwardRef<HTMLDivElement, CollapsibleProps>(
           if (disabled) return
           if (open === undefined) setUncontrolledOpen(nextOpen)
           onOpenChange?.(nextOpen)
-        }
+        },
       }),
       [animated, currentOpen, disabled, generatedId, onOpenChange, open]
     )
@@ -68,7 +95,11 @@ export const Collapsible = forwardRef<HTMLDivElement, CollapsibleProps>(
     return (
       <CollapsibleContext.Provider value={context}>
         <div
-          className={cx(collapsibleClassName({ className, open: currentOpen }), collapsibleStyleClassName(), animated && '!gap-0')}
+          className={cx(
+            collapsibleClassName({ className, open: currentOpen }),
+            collapsibleStyleClassName(),
+            animated && '!gap-0'
+          )}
           data-state={currentOpen ? 'open' : 'closed'}
           ref={ref}
           {...props}
@@ -83,7 +114,19 @@ export const Collapsible = forwardRef<HTMLDivElement, CollapsibleProps>(
 Collapsible.displayName = 'Collapsible'
 
 export const CollapsibleTrigger = forwardRef<HTMLButtonElement, CollapsibleTriggerProps>(
-  ({ asChild = false, children, className, disabled, onClick, onKeyDown, type = 'button', ...props }, ref) => {
+  (
+    {
+      asChild = false,
+      children,
+      className,
+      disabled,
+      onClick,
+      onKeyDown,
+      type = 'button',
+      ...props
+    },
+    ref
+  ) => {
     const context = useCollapsibleContext('CollapsibleTrigger')
     const isDisabled = context.disabled || disabled
 
@@ -110,7 +153,7 @@ export const CollapsibleTrigger = forwardRef<HTMLButtonElement, CollapsibleTrigg
         if (!event.defaultPrevented) toggle()
       },
       onKeyDown: handleKeyDown,
-      ...props
+      ...props,
     }
 
     if (asChild && isValidElement(children)) {
@@ -118,11 +161,15 @@ export const CollapsibleTrigger = forwardRef<HTMLButtonElement, CollapsibleTrigg
       return cloneElement(child, {
         ...triggerStateProps,
         className: cx(child.props.className, triggerStateProps.className),
-        disabled: child.props.disabled || triggerStateProps.disabled
+        disabled: child.props.disabled || triggerStateProps.disabled,
       })
     }
 
-    return <button ref={ref} type={type} {...triggerStateProps}>{children}</button>
+    return (
+      <button ref={ref} type={type} {...triggerStateProps}>
+        {children}
+      </button>
+    )
   }
 )
 
@@ -132,16 +179,21 @@ export const CollapsibleContent = forwardRef<HTMLDivElement, CollapsibleContentP
   ({ children, className, ...props }, ref) => {
     const context = useCollapsibleContext('CollapsibleContent')
     const [expanded, setExpanded] = useState(false)
-    const contentRef = useCallback((element: HTMLDivElement | null) => {
-      if (element) {
-        if (!context.open && element.contains(document.activeElement)) {
-          element.parentElement?.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(context.contentId)}"]`)?.focus()
+    const contentRef = useCallback(
+      (element: HTMLDivElement | null) => {
+        if (element) {
+          if (!context.open && element.contains(document.activeElement)) {
+            element.parentElement
+              ?.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(context.contentId)}"]`)
+              ?.focus()
+          }
+          element.inert = !context.open
         }
-        element.inert = !context.open
-      }
-      if (typeof ref === 'function') ref(element)
-      else if (ref) ref.current = element
-    }, [context.contentId, context.open, ref])
+        if (typeof ref === 'function') ref(element)
+        else if (ref) ref.current = element
+      },
+      [context.contentId, context.open, ref]
+    )
 
     useEffect(() => {
       if (!context.animated) return
@@ -155,7 +207,9 @@ export const CollapsibleContent = forwardRef<HTMLDivElement, CollapsibleContentP
           {...props}
           className={cx(
             'grid min-w-0 transition-[grid-template-rows,opacity] duration-[var(--vds-duration-normal)] ease-[var(--vds-ease-standard)] motion-reduce:transition-none',
-            expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+            expanded
+              ? 'grid-rows-[1fr] opacity-[var(--vds-opacity-full)]'
+              : 'grid-rows-[0fr] opacity-0'
           )}
           data-state={context.open ? 'open' : 'closed'}
           aria-hidden={!context.open}

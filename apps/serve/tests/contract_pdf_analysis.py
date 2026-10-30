@@ -32,8 +32,9 @@ from service.inference.transport import (
 )
 from service.literature.api.analysis import preparation_failure_detail, register_analysis_routes
 from service.literature.persistence.analysis import AnalysisStore
-from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.analysis import (
+    CONTEXT_CHARS,
+    MAX_PDF_BYTES,
     ActionKind,
     AnalysisError,
     AnalysisErrorCode,
@@ -51,11 +52,14 @@ from service.literature.service.analysis import (
     selection_context,
     selection_page_context,
     selection_prompt,
+    split_translation_segment,
     validate_result,
     verify_evidence,
     verify_translation_coverage,
+    visual_context,
 )
 from service.literature.service.preview import project_preview
+from service.platform.activity import Activities
 from service.platform.citations import LITERATURE_STORAGE, PdfPageContent
 from service.platform.inference import (
     ModelAttachment,
@@ -72,9 +76,91 @@ from service.settings.catalog import DEEPRD_GATEWAY_RESPONSES_URL
 from service.workbench.service.extraction import extract
 
 GATEWAY_MODEL = "qwen3.8-max"
+TASK_TEST_TIMEOUT_SECONDS = 2
 
 
 class PdfAnalysisContracts(unittest.TestCase):
+    def test_visual_context_prioritizes_nearby_caption_with_bounded_input(self):
+        document = pdf_fixture.open()
+        document.new_page().insert_text((72, 72), "Page text")
+        layout = pdf_page_layout(document.tobytes(), 1)
+        document.close()
+        distant = PdfTextBlock("unrelated " * CONTEXT_CHARS, PdfRect(0, 0, 500, 30))
+        caption = PdfTextBlock("Figure 1: important caption", PdfRect(50, 450, 500, 475))
+        layout = replace(layout, blocks=(distant, caption))
+        context = visual_context(layout, PdfRect(50, 200, 500, 440))
+        self.assertLessEqual(len(context), CONTEXT_CHARS)
+        self.assertIn(caption.text, context)
+        self.assertLess(context.index("unrelated"), context.index("Figure 1"))
+
+    def test_visual_actions_only_parse_the_target_page_of_large_pdfs(self):
+        document = pdf_fixture.open()
+        for text in ("Unrelated first page", "Figure 1: selected chart", "Unrelated last page"):
+            page = document.new_page()
+            page.insert_text((72, 72), text)
+        payload = document.tobytes() + b"\n%" + b"x" * MAX_PDF_BYTES
+        document.close()
+        repository = Mock()
+        repository.get.return_value = Mock(title="Large paper")
+        pdf = Mock()
+        pdf.read.return_value = (payload, "application/pdf")
+        for kind in (ActionKind.FIGURE, ActionKind.FORMULA_LATEX):
+            with (
+                self.subTest(kind=kind),
+                patch(
+                    "service.literature.service.analysis.pdf_document_text",
+                    side_effect=AssertionError("Visual actions must not extract the document"),
+                ),
+                patch(
+                    "service.literature.service.analysis.pdf_page_layout", wraps=pdf_page_layout
+                ) as layout,
+            ):
+                prepared = prepare(
+                    AnalysisRequest(
+                        literature_id="paper",
+                        model_key="vision",
+                        kind=kind,
+                        page=2,
+                        rect=(0.05, 0.05, 0.5, 0.3),
+                        client_action_id="visual",
+                        client_attempt_id="attempt",
+                    ),
+                    repository,
+                    pdf,
+                )
+                layout.assert_called_once_with(payload, 2)
+                self.assertEqual(prepared.pages, ())
+                self.assertEqual(prepared.page_count, 3)
+                body = json.loads(prepared.compiled.input_text)
+                self.assertEqual(body["page_count"], 3)
+                self.assertIn("selected chart", body["context"])
+                self.assertNotIn("Unrelated", body["context"])
+                self.assertNotIn("document_pages", body)
+                self.assertEqual(len(prepared.compiled.attachments), 1)
+
+    def test_document_file_limit_and_input_budget_have_distinct_codes(self):
+        repository = Mock()
+        repository.get.return_value = Mock(title="Paper")
+        pdf = Mock()
+        pdf.read.return_value = (b"x" * (MAX_PDF_BYTES + 1), "application/pdf")
+        request = AnalysisRequest(
+            literature_id="paper",
+            model_key="model",
+            kind=ActionKind.INTERPRETATION,
+            client_action_id="document",
+            client_attempt_id="attempt",
+        )
+        with self.assertRaises(AnalysisError) as failure:
+            prepare(request, repository, pdf)
+        self.assertEqual(failure.exception.code.value, "pdf_ai_file_too_large")
+        document = pdf_fixture.open()
+        document.new_page().insert_text((72, 72), "Paper text")
+        pdf.read.return_value = (document.tobytes(), "application/pdf")
+        document.close()
+        with self.assertRaises(AnalysisError) as failure:
+            prepare(request, repository, pdf, max_interpretation_chars=1)
+        self.assertEqual(failure.exception.code.value, "pdf_ai_input_too_large")
+
     def test_interpretation_preview_projects_partial_sections_without_unverified_evidence(self):
         request = AnalysisRequest(
             literature_id="paper",
@@ -481,6 +567,8 @@ class PdfAnalysisContracts(unittest.TestCase):
         )
         self.assertEqual(translation.compiled.attachments, ())
         self.assertEqual(interpretation.compiled.attachments, ())
+        self.assertEqual(translation.pages, ("", "Second page"))
+        self.assertEqual(interpretation.pages, ("First page", "Second page"))
 
     def test_interpretation_uses_model_window_up_to_five_hundred_thousand_chars(self):
         self.assertEqual(interpretation_input_limit(1_000_000), 500_000)
@@ -647,9 +735,41 @@ class PdfAnalysisContracts(unittest.TestCase):
             verify_translation_coverage(blocks, source)
         self.assertEqual(failure.exception.code, AnalysisErrorCode.TRANSLATION_CONTENT_MISSING)
         blocks.append(
-            {"source_text": "A complete closing paragraph.", "translated_text": "完整结尾。"}
+            {
+                "source_text": "A complete closing paragraph.",
+                "translated_text": "完整结尾。",
+            }
         )
         verify_translation_coverage(blocks, source)
+
+    def test_incomplete_translation_segment_splits_without_losing_source(self):
+        source = "A complete research sentence with a citation (Smith, 2024). " * 24
+        request = AnalysisRequest(
+            literature_id="paper",
+            model_key="selected",
+            kind=ActionKind.TRANSLATION,
+            client_action_id="action",
+            client_attempt_id="attempt",
+        )
+        segment = CompiledAssistantAction(
+            "literature.document_translation.segment",
+            "v6",
+            "instructions",
+            json.dumps({"document_pages": [{"page": 4, "text": source}]}),
+        )
+        children = split_translation_segment(request, segment)
+        self.assertEqual(len(children), 2)
+        self.assertEqual(
+            "".join(
+                json.loads(child.input_text)["document_pages"][0]["text"] for child in children
+            ),
+            source,
+        )
+        short_segment = replace(
+            segment,
+            input_text=json.dumps({"document_pages": [{"page": 4, "text": source[:500]}]}),
+        )
+        self.assertIsNone(split_translation_segment(request, short_segment))
 
     def test_personal_prompt_only_changes_selection_actions_and_keeps_policy(self):
         for kind in ActionKind:
@@ -669,6 +789,45 @@ class PdfAnalysisContracts(unittest.TestCase):
                 "Use domain terminology." in custom,
                 kind in (ActionKind.WORD_TRANSLATION, ActionKind.EXPLANATION, ActionKind.FIGURE),
             )
+
+    def test_selection_explanation_preserves_design_evidence_and_constraints(self):
+        sources = (
+            "Retrieval was measured only once, after four weeks, without a control group.",
+            "Retrieval was measured before and after four weeks, without a control group.",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                document = pdf_fixture.open()
+                page = document.new_page()
+                page.insert_text((72, 72), source)
+                payload = document.tobytes()
+                document.close()
+                repository = Mock()
+                repository.get.return_value = Mock(title="Study")
+                pdf = Mock()
+                pdf.read.return_value = (payload, "application/pdf")
+                prepared = prepare(
+                    AnalysisRequest(
+                        literature_id="paper",
+                        model_key="model",
+                        kind=ActionKind.EXPLANATION,
+                        text=source,
+                        instruction="Explain the study design and limitations.",
+                        client_action_id="action",
+                        client_attempt_id="attempt",
+                    ),
+                    repository,
+                    pdf,
+                )
+                compiled = prepared.compiled
+                self.assertIsNotNone(compiled)
+                self.assertEqual(compiled.prompt_version, "pdf-explanation/v1")
+                self.assertEqual(json.loads(compiled.input_text)["selected_text"], source)
+                self.assertIn("Explain the study design and limitations.", compiled.instructions)
+                self.assertIn("测量时点和次数", compiled.instructions)
+                self.assertIn("明确支持前后测", compiled.instructions)
+                self.assertIn("自检", compiled.instructions)
+                self.assertTrue(compiled.json_output)
 
     def test_selection_context_keeps_wrapped_selection_and_neighbors(self):
         source = (
@@ -950,7 +1109,8 @@ class PdfAnalysisContracts(unittest.TestCase):
             chat_body(request, connection, {})["messages"][1]["content"][1]["file"]["file_data"],
             "data:application/pdf;base64,YWJj",
         )
-        self.assertNotIn("tools", chat_body(request, connection, {}))
+        self.assertEqual(chat_body(request, connection, {})["tools"], [])
+        self.assertEqual(chat_body(request, connection, {})["tool_choice"], "none")
 
     def test_gateway_inference_provenance_uses_compiled_input(self):
         request = ModelInvocationRequest(
@@ -1075,7 +1235,393 @@ class PdfAnalysisContracts(unittest.TestCase):
                 self.assertIsNone(store.read_segment(*changed))
 
 
+class QueuedTranslationContracts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        repository = Mock(database=Path(directory.name) / "literature.sqlite3")
+        self.tasks = AssistantInvocationStore(Path(directory.name) / "invocations.sqlite3")
+        models = Mock()
+        models.inference_connection.return_value = {}
+        source = b"stable source"
+        revision = hashlib.sha256(source).hexdigest()
+        self.started = asyncio.Queue()
+        self.releases = {}
+        self.failures = set()
+        self.attempts = set()
+        self.result_store = AnalysisStore(repository.database)
+        self.revision = revision
+
+        def prepared(payload, *args, **kwargs):
+            compiled = CompiledAssistantAction(
+                "literature.document_translation.segment",
+                "v6",
+                "instructions",
+                json.dumps({"document_pages": [{"page": payload.page, "text": "Page text."}]}),
+            )
+            return PreparedAnalysis(
+                request=payload,
+                revision=revision,
+                title="Paper",
+                pages=("Page text.", "Page text."),
+                compiled=compiled,
+            )
+
+        async def complete(**kwargs):
+            attempt_id = kwargs["client_attempt_id"]
+            compiled = kwargs["compiled"]
+            record = AssistantInvocationRecord(
+                invocation_id=f"invocation-{attempt_id}",
+                owner_id="owner",
+                client_action_id=kwargs["client_action_id"],
+                client_attempt_id=attempt_id,
+                retry_of_attempt_id=None,
+                kind=compiled.purpose,
+                request_hash=f"request-{attempt_id}",
+                project_id="",
+                source_id="paper",
+                source_revision=revision,
+                prompt_version=compiled.prompt_version,
+                status=ModelInvocationStatus.RUNNING,
+                target_language="zh-CN",
+                model_key="selected",
+                output_text="",
+            )
+            self.tasks.claim(record)
+            self.releases[attempt_id] = asyncio.Event()
+            await self.started.put(attempt_id)
+            await self.releases[attempt_id].wait()
+            if attempt_id in self.failures:
+                failed = replace(
+                    record,
+                    status=ModelInvocationStatus.FAILED,
+                    error_code=AnalysisErrorCode.GENERATION_FAILED.value,
+                )
+                self.tasks.save(failed)
+                return failed
+            page = json.loads(compiled.input_text)["document_pages"][0]["page"]
+            return replace(
+                record,
+                status=ModelInvocationStatus.COMPLETED,
+                output_text=json.dumps(
+                    {
+                        "source_language": "en",
+                        "target_language": "zh-CN",
+                        "pages": [
+                            {
+                                "page": page,
+                                "blocks": [
+                                    {"source_text": "Page text.", "translated_text": "译文。"}
+                                ],
+                            }
+                        ],
+                    }
+                ),
+            )
+
+        self.actions = Mock(invoke_compiled=AsyncMock(side_effect=complete), cancel=AsyncMock())
+        app = FastAPI()
+        for target, kwargs in (
+            ("LiteratureRepository", {"return_value": repository}),
+            ("request_user_id", {"return_value": "owner"}),
+            ("prepare", {"side_effect": prepared}),
+            ("read_source", {"return_value": (source, "Paper")}),
+        ):
+            patcher = patch(f"service.literature.api.analysis.{target}", **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.activities = Activities()
+        register_analysis_routes(
+            app,
+            activities=self.activities,
+            actions=self.actions,
+            tasks=self.tasks,
+            models=models,
+            pdf=Mock(),
+        )
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+        self.addAsyncCleanup(self.client.aclose)
+
+    async def submit(self, attempt, page=1, kind=ActionKind.TRANSLATION):
+        self.attempts.add(attempt)
+        request = AnalysisRequest(
+            literature_id="paper",
+            model_key="selected",
+            kind=kind,
+            page=page,
+            client_action_id=f"action-{attempt}",
+            client_attempt_id=attempt,
+        )
+        return await self.client.post(
+            "/api/literature/ai/tasks", json=request.model_dump(mode="json")
+        )
+
+    async def asyncTearDown(self):
+        for attempt in self.attempts:
+            await self.client.post(f"/api/literature/ai/tasks/{attempt}/cancel")
+
+    async def started_attempt(self):
+        return await asyncio.wait_for(self.started.get(), TASK_TEST_TIMEOUT_SECONDS)
+
+    async def terminal(self, attempt):
+        async with asyncio.timeout(TASK_TEST_TIMEOUT_SECONDS):
+            while True:
+                state = (await self.client.get(f"/api/literature/ai/tasks/{attempt}")).json()
+                if state["status"] not in ("pending", "running"):
+                    return state
+                await asyncio.sleep(0)
+
+    async def test_busy_translation_waits_then_completes_without_duplicate_generation(self):
+        self.assertEqual((await self.submit("first")).status_code, 202)
+        self.assertEqual(await self.started_attempt(), "first")
+        for _ in range(2):
+            queued = await self.submit("second", page=2)
+            self.assertEqual(queued.status_code, 202)
+            self.assertEqual(queued.json()["status"], "pending")
+        self.assertEqual(self.actions.invoke_compiled.await_count, 1)
+        self.releases["first"].set()
+        self.assertEqual(await self.started_attempt(), "second")
+        self.assertEqual((await self.terminal("first"))["status"], "completed")
+        self.releases["second"].set()
+        self.assertEqual((await self.terminal("second"))["status"], "completed")
+        self.assertEqual(self.actions.invoke_compiled.await_count, 2)
+        stored = self.result_store.read("paper", self.revision)["document_translation"]
+        self.assertEqual([page["page"] for page in stored["pages"]], [1, 2])
+
+    async def test_preparing_attempt_can_be_queried_and_cancelled_without_generation(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        original = self.activities.to_thread
+
+        async def delayed(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await original(*args, **kwargs)
+
+        with patch.object(self.activities, "to_thread", side_effect=delayed):
+            submission = asyncio.create_task(self.submit("preparing"))
+            try:
+                await asyncio.wait_for(entered.wait(), TASK_TEST_TIMEOUT_SECONDS)
+                state = await self.client.get("/api/literature/ai/tasks/preparing")
+                self.assertEqual(state.json()["status"], "pending")
+                duplicate = await self.submit("preparing")
+                self.assertEqual(duplicate.json()["status"], "pending")
+                cancelled = await self.client.post("/api/literature/ai/tasks/preparing/cancel")
+                self.assertEqual(cancelled.json()["status"], "cancelled")
+            finally:
+                release.set()
+                response = await submission
+        self.assertEqual(response.json()["status"], "cancelled")
+        self.actions.invoke_compiled.assert_not_awaited()
+
+    async def test_cancelling_queued_translation_does_not_release_the_active_slot(self):
+        await self.submit("first")
+        self.assertEqual(await self.started_attempt(), "first")
+        await self.submit("cancelled", page=2)
+        await self.submit("replacement", page=2)
+        response = await self.client.post("/api/literature/ai/tasks/cancelled/cancel")
+        self.assertEqual(response.json()["status"], "cancelled")
+        self.assertEqual(self.actions.invoke_compiled.await_count, 1)
+        self.releases["first"].set()
+        self.assertEqual(await self.started_attempt(), "replacement")
+        self.releases["replacement"].set()
+        self.assertEqual((await self.terminal("replacement"))["status"], "completed")
+        self.assertEqual((await self.terminal("cancelled"))["status"], "cancelled")
+        self.actions.cancel.assert_not_awaited()
+
+    async def test_failed_generation_still_reports_failure_and_allows_waiting_translation(self):
+        self.failures.add("first")
+        await self.submit("first")
+        self.assertEqual(await self.started_attempt(), "first")
+        await self.submit("second", page=2)
+        self.releases["first"].set()
+        self.assertEqual(await self.started_attempt(), "second")
+        failure = await self.terminal("first")
+        self.assertEqual(failure["status"], "failed")
+        self.assertEqual(failure["error_code"], AnalysisErrorCode.GENERATION_FAILED.value)
+        self.releases["second"].set()
+        self.assertEqual((await self.terminal("second"))["status"], "completed")
+
+    async def test_cancelling_active_translation_automatically_starts_the_waiter(self):
+        await self.submit("first")
+        self.assertEqual(await self.started_attempt(), "first")
+        await self.submit("second")
+        response = await self.client.post("/api/literature/ai/tasks/first/cancel")
+        self.assertEqual(response.json()["status"], "cancelled")
+        self.assertEqual(await self.started_attempt(), "second")
+        self.releases["second"].set()
+        self.assertEqual((await self.terminal("second"))["status"], "completed")
+
+    async def test_queued_translation_retains_update_drain_until_all_work_settles(self):
+        await self.submit("first")
+        self.assertEqual(await self.started_attempt(), "first")
+        await self.submit("second", page=2)
+        generation = self.activities.begin()
+        self.assertFalse(self.activities.seal(generation))
+        rejected = await self.submit("new", page=1)
+        self.assertEqual(rejected.status_code, 503)
+        self.releases["first"].set()
+        self.assertEqual(await self.started_attempt(), "second")
+        self.assertFalse(self.activities.seal(generation))
+        self.releases["second"].set()
+        self.assertEqual((await self.terminal("second"))["status"], "completed")
+        async with asyncio.timeout(TASK_TEST_TIMEOUT_SECONDS):
+            while self.activities.snapshot().counts:
+                await asyncio.sleep(0)
+        self.assertTrue(self.activities.seal(generation))
+
+    async def test_other_analysis_actions_keep_the_existing_busy_policy(self):
+        await self.submit("first", kind=ActionKind.EXPLANATION)
+        self.assertEqual(await self.started_attempt(), "first")
+        response = await self.submit("second", kind=ActionKind.EXPLANATION)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["code"], AnalysisErrorCode.OPERATION_BUSY.value)
+        await self.client.post("/api/literature/ai/tasks/first/cancel")
+        self.assertEqual((await self.terminal("first"))["status"], "cancelled")
+
+
 class StreamingContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_translation_leaf_recovery_is_bounded_and_preserves_completed_segments(self):
+        for segmented, failures in ((False, 1), (True, 1), (False, 10)):
+            with self.subTest(segmented=segmented, failures=failures):
+                with tempfile.TemporaryDirectory() as directory:
+                    repository = Mock(database=Path(directory) / "literature.sqlite3")
+                    tasks = AssistantInvocationStore(Path(directory) / "invocations.sqlite3")
+                    models = Mock()
+                    models.inference_connection.return_value = {}
+                    source = b"stable source"
+                    revision = hashlib.sha256(source).hexdigest()
+                    parts = ("Opening paragraph.", "Short final paragraph.")
+                    selected = parts if segmented else parts[1:]
+                    attempts = []
+                    failed = 0
+
+                    def prepared(payload, *args, **kwargs):
+                        compiled = tuple(
+                            CompiledAssistantAction(
+                                "literature.document_translation.segment",
+                                "v6",
+                                "instructions",
+                                json.dumps({"document_pages": [{"page": 1, "text": part}]}),
+                            )
+                            for part in selected
+                        )
+                        return PreparedAnalysis(
+                            request=payload,
+                            revision=revision,
+                            title="Paper",
+                            pages=("".join(selected),),
+                            compiled=None if segmented else compiled[0],
+                            translation_segments=compiled if segmented else (),
+                        )
+
+                    async def complete(**kwargs):
+                        nonlocal failed
+                        compiled = kwargs["compiled"]
+                        part = json.loads(compiled.input_text)["document_pages"][0]["text"]
+                        attempt = kwargs["client_attempt_id"]
+                        attempts.append((attempt, part))
+                        blocks = [{"source_text": part, "translated_text": "完整译文"}]
+                        if part == parts[1] and failed < failures:
+                            failed += 1
+                            if segmented:
+                                blocks[0]["translated_text"] = ""
+                            else:
+                                blocks = []
+                        record = AssistantInvocationRecord(
+                            invocation_id=f"invocation-{attempt}",
+                            owner_id="owner",
+                            client_action_id=kwargs["client_action_id"],
+                            client_attempt_id=attempt,
+                            retry_of_attempt_id=None,
+                            kind=compiled.purpose,
+                            request_hash=f"request-{attempt}",
+                            project_id="",
+                            source_id="paper",
+                            source_revision=revision,
+                            prompt_version=compiled.prompt_version,
+                            status=ModelInvocationStatus.COMPLETED,
+                            target_language="zh-CN",
+                            model_key="selected",
+                            output_text=json.dumps(
+                                {
+                                    "source_language": "en",
+                                    "target_language": "zh-CN",
+                                    "pages": [{"page": 1, "blocks": blocks}],
+                                }
+                            ),
+                        )
+                        tasks.claim(record)
+                        return record
+
+                    actions = Mock(invoke_compiled=AsyncMock(side_effect=complete))
+                    app = FastAPI()
+                    with (
+                        patch(
+                            "service.literature.api.analysis.LiteratureRepository",
+                            return_value=repository,
+                        ),
+                        patch(
+                            "service.literature.api.analysis.request_user_id", return_value="owner"
+                        ),
+                        patch("service.literature.api.analysis.prepare", side_effect=prepared),
+                        patch(
+                            "service.literature.api.analysis.read_source",
+                            return_value=(source, "Paper"),
+                        ),
+                    ):
+                        register_analysis_routes(
+                            app,
+                            actions=actions,
+                            tasks=tasks,
+                            models=models,
+                            pdf=Mock(),
+                            activities=Activities(),
+                        )
+                        async with httpx.AsyncClient(
+                            transport=httpx.ASGITransport(app=app), base_url="http://test"
+                        ) as client:
+                            request = AnalysisRequest(
+                                literature_id="paper",
+                                model_key="selected",
+                                kind=ActionKind.TRANSLATION,
+                                page=1,
+                                client_action_id="action",
+                                client_attempt_id="attempt",
+                            )
+                            response = await client.post(
+                                "/api/literature/ai/tasks", json=request.model_dump(mode="json")
+                            )
+                            self.assertEqual(response.status_code, 202)
+                            for _ in range(100):
+                                await asyncio.sleep(0.01)
+                                state = (
+                                    await client.get("/api/literature/ai/tasks/attempt")
+                                ).json()
+                                if state["status"] in ("completed", "failed"):
+                                    break
+                            expected = "failed" if failures > 2 else "completed"
+                            self.assertEqual(state["status"], expected)
+                            self.assertEqual(
+                                tasks.get_attempt("attempt", "owner").status.value, expected
+                            )
+                            self.assertEqual(len(attempts), min(failures + 1, 3) + int(segmented))
+                            self.assertEqual(
+                                len({attempt for attempt, _ in attempts}), len(attempts)
+                            )
+                            if segmented:
+                                self.assertEqual(sum(part == parts[0] for _, part in attempts), 1)
+                            if expected == "completed":
+                                self.assertEqual(
+                                    "".join(
+                                        block["source_text"]
+                                        for block in state["result"]["pages"][0]["blocks"]
+                                    ),
+                                    "".join(selected),
+                                )
+
     async def test_segmented_translation_publishes_one_complete_page_under_root_attempt(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "literature.sqlite3"
@@ -1167,7 +1713,12 @@ class StreamingContracts(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 register_analysis_routes(
-                    app, actions=actions, tasks=tasks, models=models, pdf=Mock()
+                    app,
+                    activities=Activities(),
+                    actions=actions,
+                    tasks=tasks,
+                    models=models,
+                    pdf=Mock(),
                 )
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1203,6 +1754,143 @@ class StreamingContracts(unittest.IsolatedAsyncioTestCase):
                     terminal = json.loads(stream.text.removeprefix("data: ").strip())
                     self.assertEqual(terminal["status"], "completed")
                     self.assertNotIn("preview", terminal)
+
+    async def test_incomplete_translation_segment_retries_smaller_parts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Mock(database=Path(directory) / "literature.sqlite3")
+            tasks = AssistantInvocationStore(Path(directory) / "invocations.sqlite3")
+            models = Mock()
+            models.inference_connection.return_value = {}
+            source = b"stable source"
+            first = "A complete opening paragraph."
+            second = "A research sentence with citations and methods. " * 24
+            revision = hashlib.sha256(source).hexdigest()
+
+            def prepared(payload, *args, **kwargs):
+                compiled = tuple(
+                    CompiledAssistantAction(
+                        "literature.document_translation.segment",
+                        "v6",
+                        "instructions",
+                        json.dumps({"document_pages": [{"page": 4, "text": part}]}),
+                    )
+                    for part in (first, second)
+                )
+                return PreparedAnalysis(
+                    request=payload,
+                    revision=revision,
+                    title="Paper",
+                    pages=("", "", "", first + second),
+                    compiled=None,
+                    translation_segments=compiled,
+                )
+
+            async def complete(**kwargs):
+                attempt_id = kwargs["client_attempt_id"]
+                compiled = kwargs["compiled"]
+                part = json.loads(compiled.input_text)["document_pages"][0]["text"]
+                translated_source = (
+                    part[: len(part) // 4] if attempt_id == "attempt:translation:2" else part
+                )
+                output = {
+                    "source_language": "en",
+                    "target_language": "zh-CN",
+                    "pages": [
+                        {
+                            "page": 4,
+                            "blocks": [
+                                {
+                                    "source_text": translated_source,
+                                    "translated_text": "完整译文",
+                                }
+                            ],
+                        }
+                    ],
+                }
+                record = AssistantInvocationRecord(
+                    invocation_id=f"invocation-{attempt_id}",
+                    owner_id="owner",
+                    client_action_id=kwargs["client_action_id"],
+                    client_attempt_id=attempt_id,
+                    retry_of_attempt_id=None,
+                    kind=compiled.purpose,
+                    request_hash=f"request-{attempt_id}",
+                    project_id="",
+                    source_id="paper",
+                    source_revision=revision,
+                    prompt_version=compiled.prompt_version,
+                    status=ModelInvocationStatus.COMPLETED,
+                    target_language="zh-CN",
+                    model_key="selected",
+                    output_text=json.dumps(output),
+                )
+                tasks.claim(record)
+                return record
+
+            actions = Mock(invoke_compiled=AsyncMock(side_effect=complete))
+            app = FastAPI()
+            with (
+                patch(
+                    "service.literature.api.analysis.LiteratureRepository", return_value=repository
+                ),
+                patch("service.literature.api.analysis.request_user_id", return_value="owner"),
+                patch("service.literature.api.analysis.prepare", side_effect=prepared),
+                patch(
+                    "service.literature.api.analysis.read_source", return_value=(source, "Paper")
+                ),
+            ):
+                register_analysis_routes(
+                    app,
+                    actions=actions,
+                    tasks=tasks,
+                    models=models,
+                    pdf=Mock(),
+                    activities=Activities(),
+                )
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    request = AnalysisRequest(
+                        literature_id="paper",
+                        model_key="selected",
+                        kind=ActionKind.TRANSLATION,
+                        page=4,
+                        client_action_id="action",
+                        client_attempt_id="attempt",
+                    )
+                    response = await client.post(
+                        "/api/literature/ai/tasks", json=request.model_dump(mode="json")
+                    )
+                    self.assertEqual(response.status_code, 202)
+                    for _ in range(50):
+                        await asyncio.sleep(0.01)
+                        state = (await client.get("/api/literature/ai/tasks/attempt")).json()
+                        if state["status"] in ("completed", "failed"):
+                            break
+                    self.assertEqual(state["status"], "completed")
+                    self.assertEqual(
+                        "".join(
+                            block["source_text"] for block in state["result"]["pages"][0]["blocks"]
+                        ),
+                        first + second,
+                    )
+                    self.assertEqual(actions.invoke_compiled.await_count, 4)
+                    self.assertEqual(
+                        [
+                            call.kwargs["client_attempt_id"]
+                            for call in actions.invoke_compiled.await_args_list
+                        ],
+                        [
+                            "attempt",
+                            "attempt:translation:2",
+                            "attempt:translation:2L",
+                            "attempt:translation:2R",
+                        ],
+                    )
+                    self.assertEqual(
+                        tasks.get_attempt("attempt", "owner").status,
+                        ModelInvocationStatus.COMPLETED,
+                    )
 
     async def test_segmented_interpretation_reuses_cached_segments_before_final_synthesis(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1321,6 +2009,7 @@ class StreamingContracts(unittest.IsolatedAsyncioTestCase):
             ):
                 register_analysis_routes(
                     app,
+                    activities=Activities(),
                     actions=actions,
                     tasks=tasks,
                     models=models,

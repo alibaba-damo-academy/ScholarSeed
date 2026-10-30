@@ -17,6 +17,8 @@ from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE
 from citation_identity import authoring_view, normalize_citations
 from platform_io import file_lock
 from bibliography_contract import inspect_bibliography
+from templates import LATEX_AUTHORING_GUIDANCE
+from manuscript_publication import precompile
 from abstract_contract import (ABSTRACT_GUIDANCE, ABSTRACT_CHAPTER_GUIDANCE,
                                ABSTRACT_REPAIR_GUIDANCE, inspect_abstracts)
 
@@ -144,12 +146,15 @@ def chapter_asset_contract(packet):
 
 def chapter_system(packet):
     if packet.get('chapter_kind') == 'abstract':
-        return TASK_GUIDANCE + '\n' + ABSTRACT_GUIDANCE + '\n' + ABSTRACT_CHAPTER_GUIDANCE
-    if not packet.get('shared_tables'):
-        return CHAPTER_SYSTEM
-    guidance = (TABLE_AUTHORING_GUIDANCE_LATEX if packet.get('output_format') == 'latex_pdf'
-                else TABLE_AUTHORING_GUIDANCE_MARKDOWN)
-    return CHAPTER_SYSTEM + '\n' + guidance
+        sections = [TASK_GUIDANCE, ABSTRACT_GUIDANCE, ABSTRACT_CHAPTER_GUIDANCE]
+    else:
+        sections = [TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE, CHAPTER_GUIDANCE]
+    if packet.get('output_format') == 'latex_pdf':
+        sections.insert(1, LATEX_AUTHORING_GUIDANCE)
+    if packet.get('shared_tables') and packet.get('chapter_kind') != 'abstract':
+        sections.append(TABLE_AUTHORING_GUIDANCE_LATEX if packet.get('output_format') == 'latex_pdf'
+                        else TABLE_AUTHORING_GUIDANCE_MARKDOWN)
+    return '\n'.join(sections)
 
 
 def chapter_messages(packet, cite_keys=None):
@@ -373,6 +378,20 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         if table_report['issues']:
             request_packet['table_layout_warnings']=table_report['issues']
             refine_guidance += '\n' + TABLE_REPAIR_GUIDANCE
+        request_packet.pop('compilation_diagnostics', None)
+        request_packet.pop('publication_requirements', None)
+        if suffix == 'tex' and not (gen/'refine.response.txt').exists():
+            compilation = await asyncio.to_thread(precompile, ws, v1)
+            save(gen/'_status/compilation_precheck.json', compilation)
+            if compilation['status'] == 'FAILED':
+                request_packet['compilation_diagnostics'] = {
+                    'errors': compilation['errors'],
+                    'task': 'Repair the reported LaTeX source errors in the supplied document while preserving its mathematical meaning and existing content.',
+                }
+            elif compilation['status'] != 'SUCCESS':
+                request_packet['publication_requirements'] = (
+                    LATEX_AUTHORING_GUIDANCE + '\nEnsure the complete document uses these template facilities and repair inconsistent mathematical notation and dependencies.'
+                )
         save(packet_path,request_packet)
         response=gen/'refine.response.txt';delta_path=gen/'delta.json'
         if not response.exists():

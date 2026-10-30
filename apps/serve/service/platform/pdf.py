@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
+import math
+import os
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from io import BytesIO
+from statistics import median
+from tempfile import TemporaryFile
 from typing import Any
 
 import pdfplumber
-import pypdfium2
-import pypdfium2.raw as pdfium
 from PIL import Image
 from pypdf import PasswordType, PdfReader
 from pypdf.errors import PdfReadError
@@ -28,11 +35,38 @@ NORMALIZED_COORDINATE_MINIMUM = 0.0
 NORMALIZED_COORDINATE_MAXIMUM = 1.0
 PDF_VISUAL_LINE_MINIMUM_OVERLAP_RATIO = 0.5
 PDF_LAYOUT_PARAMETERS = {"boxes_flow": 0.5, "detect_vertical": True}
+PDF_MARGIN_RATIO = 0.1
+PDF_REPEATED_TEXT_MINIMUM_CHARS = 8
+PDF_WATERMARK_MINIMUM_ANGLE = 15
+PDF_WATERMARK_MAXIMUM_ANGLE = 75
+PDF_WATERMARK_SIZE_RATIO = 2
 PDF_TEXT_BOX_OBJECT = "textboxhorizontal"
 PDF_VERTICAL_TEXT_BOX_OBJECT = "textboxvertical"
 PDF_TEXT_LINE_OBJECT = "textlinehorizontal"
 PDF_VERTICAL_TEXT_LINE_OBJECT = "textlinevertical"
-PDF_IMAGE_OBJECT_TYPE = int(getattr(pdfium, "FPDF_PAGEOBJ_IMAGE"))
+PDF_WORKER_MODULE = "service.platform.pdfium"
+PDF_WORKER_TIMEOUT_SECONDS = 180
+PDF_WORKER_MAXIMUM_OUTPUT_BYTES = 64 * 1024 * 1024
+PDF_WORKER_MAXIMUM_INPUT_BYTES = 100_000_000
+PDF_WORKER_MAXIMUM_STDERR_BYTES = 4096
+PDF_WORKER_MAXIMUM_ATTEMPTS = 2
+PDF_WORKER_WINDOWS_EXCEPTION_MINIMUM = 0x80000000
+PDF_WORKER_OPERATION_OPTION = "--operation"
+PDF_WORKER_PARAMETERS_OPTION = "--parameters"
+PDF_WORKER_ENV_KEYS = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL", "PYTHONPATH")
+
+
+class PdfNativeOperation(StrEnum):
+    INFO = "info"
+    TEXT = "text"
+    IMAGES = "images"
+    RENDER = "render"
+
+
+def pdf_worker_crashed(returncode: int) -> bool:
+    return returncode < 0 or returncode >= PDF_WORKER_WINDOWS_EXCEPTION_MINIMUM
+
+
 MAXIMUM_SELECTION_CHARS = 36_000
 TEXT_SHAPE_HASH_KEY = "text_shape_hash"
 HASH_PREFIX_LENGTH = len(REVISION_PREFIX)
@@ -165,13 +199,83 @@ def _reader(payload: bytes) -> tuple[PdfReader, bool]:
 
 
 def pdf_document_info(payload: bytes) -> PdfDocumentInfo:
-    reader, encrypted = _reader(payload)
-    try:
-        with pypdfium2.PdfDocument(payload, password="") as document:
-            page_count = len(document)
-    except Exception as error:
-        raise PdfDocumentError("pdf_document_invalid") from error
+    _reader_object, encrypted = _reader(payload)
+    page_count = _native_pdf(payload, PdfNativeOperation.INFO)
+    if isinstance(page_count, bool) or not isinstance(page_count, int) or page_count < 1:
+        raise PdfDocumentError("pdf_worker_invalid_output")
     return PdfDocumentInfo(page_count=page_count, encrypted=encrypted)
+
+
+def _native_pdf(payload: bytes, operation: PdfNativeOperation, **parameters: Any) -> Any:
+    if len(payload) > PDF_WORKER_MAXIMUM_INPUT_BYTES:
+        raise PdfDocumentError("pdf_document_too_large")
+    command = [
+        sys.executable,
+        "-B",
+        "-m",
+        PDF_WORKER_MODULE,
+        PDF_WORKER_OPERATION_OPTION,
+        operation.value,
+        PDF_WORKER_PARAMETERS_OPTION,
+        json.dumps(parameters, allow_nan=False),
+    ]
+    for attempt in range(PDF_WORKER_MAXIMUM_ATTEMPTS):
+        with TemporaryFile() as output_file, TemporaryFile() as error_file:
+            try:
+                with subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=output_file,
+                    stderr=error_file,
+                    env={
+                        name: os.environ[name] for name in PDF_WORKER_ENV_KEYS if name in os.environ
+                    },
+                ) as process:
+                    try:
+                        process.communicate(payload, timeout=PDF_WORKER_TIMEOUT_SECONDS)
+                    except subprocess.TimeoutExpired as error:
+                        process.kill()
+                        process.communicate()
+                        raise PdfDocumentError("pdf_worker_timeout") from error
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait()
+                    returncode = process.returncode
+                output_file.seek(0)
+                output = output_file.read(PDF_WORKER_MAXIMUM_OUTPUT_BYTES + 1)
+                error_file.seek(0, 2)
+                error_file.seek(max(0, error_file.tell() - PDF_WORKER_MAXIMUM_STDERR_BYTES))
+                diagnostic = error_file.read().decode(UTF8_ENCODING, errors="replace")
+            except OSError as error:
+                raise PdfDocumentError("pdf_worker_unavailable") from error
+        if pdf_worker_crashed(returncode):
+            _log.warning(
+                "PDF native worker crashed: operation=%s attempt=%s returncode=%s stderr=%s",
+                operation.value,
+                attempt + 1,
+                returncode,
+                diagnostic,
+            )
+            if attempt + 1 < PDF_WORKER_MAXIMUM_ATTEMPTS:
+                continue
+            raise PdfDocumentError("pdf_worker_crashed")
+        if len(output) > PDF_WORKER_MAXIMUM_OUTPUT_BYTES:
+            raise PdfDocumentError("pdf_worker_output_too_large")
+        try:
+            response = json.loads(output)
+        except (ValueError, UnicodeDecodeError) as error:
+            raise PdfDocumentError("pdf_worker_invalid_output") from error
+        if not isinstance(response, dict):
+            raise PdfDocumentError("pdf_worker_invalid_output")
+        if response.get("ok") is False and isinstance(response.get("error"), str):
+            if response["error"] == "pdf_password_required":
+                raise PdfPasswordError(response["error"])
+            raise PdfDocumentError(response["error"])
+        if returncode or response.get("ok") is not True or "result" not in response:
+            raise PdfDocumentError("pdf_worker_invalid_output")
+        return response["result"]
+    raise PdfDocumentError("pdf_worker_crashed")
 
 
 def _metadata_text(value: object) -> str:
@@ -203,6 +307,80 @@ def _rect(item: Mapping[str, Any]) -> PdfRect:
         float(item.get("x1", 0.0)),
         float(item.get("bottom", 0.0)),
     )
+
+
+def _decoration_candidates(page) -> set[tuple[str, str]]:
+    candidates: set[tuple[str, str]] = set()
+    sizes = [float(char["size"]) for char in page.chars if char.get("text", "").strip()]
+    if not sizes:
+        return candidates
+    body_size = median(sizes)
+    watermark = []
+    for char in page.chars:
+        matrix = char.get("matrix", (1, 0, 0, 1, 0, 0))
+        angle = abs(math.degrees(math.atan2(matrix[1], matrix[0]))) % 180
+        angle = min(angle, 180 - angle)
+        if (
+            PDF_WATERMARK_MINIMUM_ANGLE <= angle <= PDF_WATERMARK_MAXIMUM_ANGLE
+            and float(char["size"]) >= body_size * PDF_WATERMARK_SIZE_RATIO
+        ):
+            watermark.append(char)
+    text = "".join(char["text"] for char in watermark)
+    signature = "".join(text.split()).casefold()
+    if len(signature) >= PDF_REPEATED_TEXT_MINIMUM_CHARS:
+        candidates.add(("watermark", signature))
+    for line in page.extract_text_lines(return_chars=True):
+        edge = (
+            "header"
+            if line["bottom"] <= page.height * PDF_MARGIN_RATIO
+            else "footer" if line["top"] >= page.height * (1 - PDF_MARGIN_RATIO) else ""
+        )
+        signature = "".join(line["text"].split()).casefold()
+        if edge and len(signature) >= PDF_REPEATED_TEXT_MINIMUM_CHARS:
+            candidates.add((edge, signature))
+    return candidates
+
+
+def pdf_page_body_text(payload: bytes, page_number: int, original_text: str) -> str:
+    """Exclude repeated marginal text and large diagonal watermarks from a page."""
+    try:
+        with pdfplumber.open(BytesIO(payload)) as document:
+            if not 1 <= page_number <= len(document.pages):
+                raise PdfDocumentError("pdf_page_invalid")
+            page = document.pages[page_number - 1]
+            candidates = _decoration_candidates(page)
+            if not candidates:
+                return original_text
+            repeated = set()
+            for neighbor in (page_number - 2, page_number):
+                if 0 <= neighbor < len(document.pages):
+                    repeated.update(_decoration_candidates(document.pages[neighbor]))
+            positions = []
+            normalized = []
+            for position, character in enumerate(original_text):
+                if not character.isspace():
+                    folded = character.casefold()
+                    normalized.extend(folded)
+                    positions.extend([position] * len(folded))
+            normalized_text = "".join(normalized)
+            ranges = []
+            for _, signature in candidates & repeated:
+                start = normalized_text.find(signature)
+                if start >= 0 and normalized_text.find(signature, start + 1) < 0:
+                    ranges.append((positions[start], positions[start + len(signature) - 1] + 1))
+            merged = []
+            for start, end in sorted(ranges):
+                if merged and start <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+                else:
+                    merged.append((start, end))
+            for start, end in reversed(merged):
+                original_text = original_text[:start] + original_text[end:]
+            return original_text.strip()
+    except PdfDocumentError:
+        raise
+    except Exception as error:
+        raise PdfDocumentError("pdf_document_invalid") from error
 
 
 def pdf_page_layout(payload: bytes, page_number: int) -> PdfPageLayout:
@@ -273,35 +451,22 @@ def pdf_page_layout(payload: bytes, page_number: int) -> PdfPageLayout:
         raise PdfDocumentError("pdf_document_invalid") from error
 
 
-def pdf_document_text(payload: bytes) -> tuple[str, ...]:
-    info = pdf_document_info(payload)
-    try:
-        with pypdfium2.PdfDocument(payload, password="") as document:
-            return tuple(
-                document[index].get_textpage().get_text_bounded().replace("\r\n", "\n")
-                for index in range(info.page_count)
-            )
-    except Exception as error:
-        raise PdfDocumentError("pdf_text_unavailable") from error
+def pdf_document_text(payload: bytes, page_numbers: Sequence[int] | None = None) -> tuple[str, ...]:
+    _reader(payload)
+    result = _native_pdf(payload, PdfNativeOperation.TEXT, page_numbers=page_numbers)
+    if not isinstance(result, list) or not all(isinstance(page, str) for page in result):
+        raise PdfDocumentError("pdf_worker_invalid_output")
+    return tuple(result)
 
 
-def pdf_image_bounds(payload: bytes) -> tuple[tuple[PdfRect, ...], ...]:
+def pdf_image_bounds(
+    payload: bytes, page_numbers: Sequence[int] | None = None
+) -> tuple[tuple[PdfRect, ...], ...]:
+    result = _native_pdf(payload, PdfNativeOperation.IMAGES, page_numbers=page_numbers)
     try:
-        with pypdfium2.PdfDocument(payload, password="") as document:
-            pages = []
-            for page in document:
-                page.set_rotation(0)
-                _width, height = page.get_size()
-                pages.append(
-                    tuple(
-                        PdfRect(x0, height - y1, x1, height - y0)
-                        for image in page.get_objects(filter=(PDF_IMAGE_OBJECT_TYPE,))
-                        for x0, y0, x1, y1 in (image.get_bounds(),)
-                    )
-                )
-            return tuple(pages)
-    except Exception as error:
-        raise PdfDocumentError("pdf_objects_unavailable") from error
+        return tuple(tuple(PdfRect(*bounds) for bounds in page) for page in result)
+    except (TypeError, ValueError) as error:
+        raise PdfDocumentError("pdf_worker_invalid_output") from error
 
 
 def render_pdf_page(
@@ -314,12 +479,13 @@ def render_pdf_page(
     if page_number < 1 or scale <= 0:
         raise PdfDocumentError("pdf_render_invalid")
     try:
-        with pypdfium2.PdfDocument(payload, password="") as document:
-            if page_number > len(document):
-                raise PdfDocumentError("pdf_page_invalid")
-            page = document[page_number - 1]
-            bitmap = page.render(scale=scale)
-            image = bitmap.to_pil().convert("RGB")
+        result = _native_pdf(
+            payload, PdfNativeOperation.RENDER, page_number=page_number, scale=scale
+        )
+        if not isinstance(result, str):
+            raise PdfDocumentError("pdf_worker_invalid_output")
+        with Image.open(BytesIO(base64.b64decode(result, validate=True))) as rendered:
+            image = rendered.convert("RGB")
         if crop is not None:
             image = image.crop(
                 (

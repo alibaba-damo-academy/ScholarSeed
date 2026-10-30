@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,14 +14,13 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from apps.serve.tests import pdf as pdf_fixture
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.cutover import cutover_pdf_records
 from service.literature.api.reading import register_reading_routes
 from service.literature.persistence import files as literature_files
 from service.literature.persistence.reading import AttachmentRecordCatalog
-from service.literature.persistence.store import LiteratureRepository
+from service.literature.persistence.store import LiteratureRepository, inspect_schema
 from service.literature.schema import (
     BINARY_MEDIA_TYPE,
     PDF_MEDIA_TYPE,
@@ -29,6 +29,7 @@ from service.literature.schema import (
 )
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.pdf import LiteraturePdf
+from service.platform.activity import Activities
 from service.platform.content import RootKind
 from service.platform.records import (
     EMPTY_RECORDS,
@@ -40,6 +41,7 @@ from service.platform.records import (
 from service.workbench.domain.model import WorkbenchFormatPolicy
 from service.workbench.persistence.records import PdfRecordCatalog
 from service.workbench.service.records import PdfRecordStore
+from tests import pdf as pdf_fixture
 
 
 def _stage_attachment(
@@ -273,10 +275,10 @@ def test_startup_cutover_preserves_catalogue_and_removes_obsolete_records() -> N
         pdf_asset_id TEXT NOT NULL DEFAULT '',created_at REAL NOT NULL,updated_at REAL NOT NULL,
         version INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE literature_attachments(
-        id TEXT PRIMARY KEY,literature_id TEXT NOT NULL REFERENCES literature_items(id),
+        id TEXT PRIMARY KEY,literature_id TEXT NOT NULL REFERENCES literature_items(id) ON DELETE CASCADE,
         name TEXT NOT NULL,path TEXT NOT NULL DEFAULT '',asset_id TEXT NOT NULL DEFAULT '',
         kind TEXT NOT NULL DEFAULT 'file',created_at REAL NOT NULL);
-        CREATE TABLE literature_marks(id TEXT PRIMARY KEY,attachment_id TEXT,text TEXT,page INTEGER,
+        CREATE TABLE literature_marks(id TEXT PRIMARY KEY,attachment_id TEXT NOT NULL REFERENCES literature_attachments(id) ON DELETE CASCADE,text TEXT NOT NULL,page INTEGER,
         created_at REAL NOT NULL);
         CREATE TABLE literature_reading_records(literature_id TEXT PRIMARY KEY,payload TEXT NOT NULL);
         CREATE TABLE literature_attachment_records(
@@ -295,7 +297,7 @@ def test_startup_cutover_preserves_catalogue_and_removes_obsolete_records() -> N
     connection.executescript("""CREATE TABLE content_asset(asset_id TEXT PRIMARY KEY);
         INSERT INTO content_asset VALUES('asset');
         CREATE TABLE workbench_pdf_record(
-        asset_id TEXT PRIMARY KEY,payload BLOB NOT NULL,revision TEXT NOT NULL,updated_at REAL NOT NULL);
+        asset_id TEXT PRIMARY KEY REFERENCES content_asset(asset_id),payload BLOB NOT NULL,revision TEXT NOT NULL,updated_at REAL NOT NULL);
         INSERT INTO workbench_pdf_record VALUES('asset','{}','old',1);""")
     connection.close()
 
@@ -303,7 +305,10 @@ def test_startup_cutover_preserves_catalogue_and_removes_obsolete_records() -> N
 
     assert len(backups) == 2
     assert all(path.exists() for path in backups)
-    with sqlite3.connect(literature) as current:
+    assert inspect_schema(literature).needs_write  # Remaining library tables are absent.
+    assert LiteratureRepository(literature).get("paper").title == "Preserved paper"
+    assert not inspect_schema(literature).needs_write
+    with closing(sqlite3.connect(literature)) as current, current:
         tables = {
             row[0] for row in current.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
@@ -321,7 +326,7 @@ def test_startup_cutover_preserves_catalogue_and_removes_obsolete_records() -> N
         assert (
             current.execute("SELECT count(*) FROM literature_attachment_records").fetchone()[0] == 0
         )
-    with sqlite3.connect(project) as current:
+    with closing(sqlite3.connect(project)) as current, current:
         assert {row[1] for row in current.execute("PRAGMA table_info(workbench_pdf_record)")} == {
             "asset_id",
             "record_revision",
@@ -336,7 +341,9 @@ def test_explicit_copy_creates_independent_project_owner_and_optional_snapshot()
     root = Path(tempfile.mkdtemp())
     content_catalog = ContentCatalog(root / "content.sqlite3")
     content = ContentService(
-        ProjectRegistry(str(root / "projects"), content_catalog), content_catalog
+        ProjectRegistry(str(root / "projects"), content_catalog),
+        content_catalog,
+        activities=Activities(),
     )
     target_project = content.create_project("Copy")
     with pdf_fixture.open() as document:
@@ -448,7 +455,9 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
     root = Path(tempfile.mkdtemp())
     content_catalog = ContentCatalog(root / "content.sqlite3")
     content = ContentService(
-        ProjectRegistry(str(root / "projects"), content_catalog), content_catalog
+        ProjectRegistry(str(root / "projects"), content_catalog),
+        content_catalog,
+        activities=Activities(),
     )
     project = content.create_project("Roundtrip")
     path = Path(content.resolve(project.id, "roundtrip.pdf"))
@@ -541,7 +550,9 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
 def test_invalid_embedded_records_initialize_an_empty_snapshot_without_blocking() -> None:
     root = Path(tempfile.mkdtemp())
     catalog = ContentCatalog(root / "content.sqlite3")
-    content = ContentService(ProjectRegistry(str(root / "projects"), catalog), catalog)
+    content = ContentService(
+        ProjectRegistry(str(root / "projects"), catalog), catalog, activities=Activities()
+    )
     project = content.create_project("Invalid")
     store_catalog = PdfRecordCatalog(content)
     store = PdfRecordStore(content, store_catalog)

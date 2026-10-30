@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from threading import Thread
-from typing import Callable, Iterator
+from typing import Awaitable, Callable, Iterator
 from unittest.mock import patch
 
 import httpx
@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from scholarseed_runtime.contract.model import ModelThinking, ModelWireProtocol
+from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
 from service.chat.service.completions import (
     BRIDGE_REGISTRATION_TTL_SECONDS,
     CHAT_COMPLETIONS_REQUEST_TARGET_BYTES,
@@ -32,19 +32,24 @@ from service.chat.service.completions import (
     MODEL_BRIDGE_CREDENTIAL_REQUIRED,
     MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED,
     MODEL_BRIDGE_ROUTE_PREFIX,
+    UPSTREAM_RETRY_MAX_DELAY_SECONDS,
     CompletionBridge,
+    CompletionCall,
     _fit_inline_images,
     _json_size,
     _redacted_endpoint,
     _responses_usage,
+    _upstream_retry_delay,
     chat_stream_to_responses,
     mount_completion_bridge,
     responses_to_chat_request,
 )
-from service.chat.service.models import _codex_provider
+from service.chat.service.models import SessionModelSpec, _codex_provider
+from service.chat.service.namespaces import NamespaceTools
 from service.chat.service.rejections import (
     TRANSIENT_PROVIDER_FAILURE_CODE,
     TRANSIENT_PROVIDER_FAILURE_MESSAGE,
+    terminal_provider_failure,
 )
 from service.chat.service.streams import (
     SSE_BUFFER_LIMIT,
@@ -60,7 +65,8 @@ from service.identity.service.account_token import (
     AccountTokenHolder,
 )
 from service.identity.service.auth import AuthService
-from service.inference.source import SOURCE_UNAVAILABLE
+from service.inference.source import SOURCE_UNAVAILABLE, ContentSource, SourceReference
+from service.platform.activity import Activities  # noqa: E402
 from service.settings.catalog import (
     DEEPRD_GATEWAY_BASE_URL,
     apply_model_to_config,
@@ -93,6 +99,7 @@ def forward_contract(
     source_endpoints: tuple[str, ...] = (),
     send_exc: BaseException | tuple[BaseException | None, ...] | None = None,
     source_text: str = "用户原文",
+    source_references: tuple[SourceReference, ...] = (),
     api_key: str = "contract-key",
     token_provider: Callable[[str], str] | None = None,
     owner_id: str = "",
@@ -101,6 +108,8 @@ def forward_contract(
     raise_server_exceptions: bool = True,
     diagnostics: list[tuple[str, dict]] | None = None,
     sources: list[tuple[str, str, dict]] | None = None,
+    credential_resolver: Callable[[str, str], Awaitable[ModelCredential]] | None = None,
+    credential_revocation_handler: Callable[[str, str, int, str], str] | None = None,
 ):
     """Exercise the public bridge route against a deterministic upstream transport."""
     captured: list[httpx.Request] = []
@@ -135,7 +144,7 @@ def forward_contract(
     bridge = CompletionBridge(
         "http://127.0.0.1:8770",
         source_endpoints=source_endpoints,
-        source_text=lambda _session, _turn: source_text,
+        content_source=lambda _session, _turn: ContentSource(source_text, source_references),
         on_sources=observe_sources if sources is not None else None,
         on_diagnostic=(
             (lambda session, fields: diagnostics.append((session, dict(fields))))
@@ -160,6 +169,9 @@ def forward_contract(
         turn_id_provider=turn_id_provider,
         token_provider=token_provider,
         owner_id=owner_id,
+        connection_id="contract-connection" if credential_resolver is not None else "",
+        credential_resolver=credential_resolver,
+        credential_revocation_handler=credential_revocation_handler,
     )
     mount_completion_bridge(app, bridge)
     client_type = httpx.AsyncClient
@@ -388,6 +400,162 @@ def test_native_errors_and_nonstream_responses_are_preserved() -> None:
     )
 
 
+def test_http_rejections_publish_known_codes_before_finished_diagnostic() -> None:
+    cases = (
+        (401, "invalid_api_key", False),
+        (400, "InvalidParameter", False),
+        (400, "bad_request", False),
+        (400, "CONTENT_SAFETY_BLOCKED", False),
+        (402, "credit_balance_exhausted", True),
+        (429, "insufficient_quota", False),
+    )
+
+    async def resolve(_owner: str, _connection: str) -> ModelCredential:
+        return ModelCredential(api_key="contract-key")
+
+    close_call = CompletionCall._close
+    for native, resolver in ((False, None), (True, None), (False, resolve), (True, resolve)):
+        for status, code, detail in cases:
+            envelope = (
+                {"detail": {"error": code, "message": "private upstream detail"}}
+                if detail
+                else {"error": {"code": code, "message": "private upstream detail"}}
+            )
+            diagnostics: list[tuple[str, dict]] = []
+            closed_codes: list[str] = []
+
+            async def observe_close(
+                call: CompletionCall, captured_codes: list[str] = closed_codes
+            ) -> None:
+                captured_codes.append(call.diagnostic.http_error_code)
+                await close_call(call)
+
+            payload = {"model": "alias", "input": "hello", "stream": False}
+            with patch.object(CompletionCall, "_close", new=observe_close):
+                response, captured = forward_contract(
+                    payload,
+                    json.dumps(envelope).encode(),
+                    status=status,
+                    wire_protocol=(
+                        ModelWireProtocol.RESPONSES
+                        if native
+                        else ModelWireProtocol.CHAT_COMPLETIONS
+                    ),
+                    diagnostics=diagnostics,
+                    owner_id="contract-owner" if resolver is not None else "",
+                    credential_resolver=resolver,
+                )
+            label = f"HTTP {status} {code} native={native} resolver={resolver is not None}"
+            check(f"{label} is not retried", response.status_code == status and len(captured) == 1)
+            check(
+                f"{label} records rejection before upstream close",
+                closed_codes == [code],
+                str(closed_codes),
+            )
+            finished = [fields for _, fields in diagnostics if fields.get("phase") == "finished"]
+            check(f"{label} emits exactly one finished snapshot", len(finished) == 1)
+            if not finished:
+                continue
+            fields = finished[0]
+            check(
+                f"{label} records rejection before the close diagnostic callback",
+                fields.get("http_error_code") == code,
+                str(fields.get("http_error_code")),
+            )
+            recovered = terminal_provider_failure(fields)
+            check(
+                f"{label} recovers terminal semantics at the diagnostic boundary",
+                recovered.get("error_code") == code
+                and recovered.get("retryability") == "terminal"
+                and recovered.get("provider_http_status") == status,
+                str(recovered),
+            )
+            check(
+                f"{label} never releases the raw upstream message",
+                "private upstream detail" not in json.dumps(recovered),
+            )
+
+
+def test_http_credential_revocation_precedes_provider_authentication_diagnostic() -> None:
+    async def resolve(_owner: str, _connection: str) -> ModelCredential:
+        return ModelCredential(api_key="contract-key")
+
+    close_call = CompletionCall._close
+    for native in (False, True):
+        for revoked_code in ("oauth_reauth_required", "unregistered_revocation_code"):
+            diagnostics: list[tuple[str, dict]] = []
+            closed_codes: list[str] = []
+            closed_revocation_counts: list[int] = []
+            revocations: list[tuple[str, str, int, str]] = []
+
+            def revoke(
+                owner: str,
+                connection: str,
+                status: int,
+                code: str,
+                captured_revocations: list[tuple[str, str, int, str]] = revocations,
+                captured_code: str = revoked_code,
+            ) -> str:
+                captured_revocations.append((owner, connection, status, code))
+                return captured_code
+
+            async def observe_close(
+                call: CompletionCall,
+                captured_codes: list[str] = closed_codes,
+                captured_counts: list[int] = closed_revocation_counts,
+                captured_revocations: list[tuple[str, str, int, str]] = revocations,
+            ) -> None:
+                captured_codes.append(call.diagnostic.http_error_code)
+                captured_counts.append(len(captured_revocations))
+                await close_call(call)
+
+            with patch.object(CompletionCall, "_close", new=observe_close):
+                response, _ = forward_contract(
+                    {"model": "alias", "input": "hello", "stream": False},
+                    b'{"error":{"code":"authentication_error","message":"private upstream detail"}}',
+                    status=401,
+                    wire_protocol=(
+                        ModelWireProtocol.RESPONSES
+                        if native
+                        else ModelWireProtocol.CHAT_COMPLETIONS
+                    ),
+                    diagnostics=diagnostics,
+                    owner_id="contract-owner",
+                    credential_resolver=resolve,
+                    credential_revocation_handler=revoke,
+                )
+            label = f"revocation {revoked_code} native={native}"
+            check(
+                f"{label} invokes the credential owner exactly once",
+                revocations
+                == [("contract-owner", "contract-connection", 401, "authentication_error")],
+            )
+            check(
+                f"{label} invokes the credential owner before close callback",
+                closed_revocation_counts == [1],
+                str(closed_revocation_counts),
+            )
+            check(
+                f"{label} never stores an unregistered diagnostic code before close",
+                closed_codes == [""],
+                str(closed_codes),
+            )
+            fields = diagnostics[-1][1]
+            check(
+                f"{label} does not fall back to the ordinary authentication diagnostic",
+                fields.get("http_error_code") == "",
+                str(fields.get("http_error_code")),
+            )
+            check(
+                f"{label} preserves the existing reauthentication envelope",
+                response.json()["error"]["code"] == revoked_code,
+            )
+            check(
+                f"{label} does not release unregistered provider semantics",
+                terminal_provider_failure(fields) == {},
+            )
+
+
 def test_internal_unstructured_rate_limit_retries_before_returning() -> None:
     payload = {
         "model": "alias",
@@ -437,6 +605,61 @@ def test_internal_unstructured_rate_limit_retries_before_returning() -> None:
         and len(captured) == 1,
         f"status={response.status_code} calls={len(captured)} body={response.text}",
     )
+
+    for token_provider in (None, lambda _owner: "account.token"):
+        with patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
+            response, captured = forward_contract(
+                payload,
+                success,
+                token_provider=token_provider,
+                owner_id="account-owner",
+                upstream_responses=(
+                    (429, b'{"error":{"code":429}}', {"Retry-After": "0"}),
+                    (200, success, {}),
+                ),
+            )
+        check(
+            "structured rate limits recover for internal and third-party models",
+            response.status_code == 200 and len(captured) == 2,
+        )
+
+    diagnostics = []
+    response, captured = forward_contract(
+        payload,
+        success,
+        upstream_responses=((429, b'{"error":{"code":429}}', {"Retry-After": "3600"}),),
+        diagnostics=diagnostics,
+    )
+    check(
+        "long Retry-After is not shortened into a premature retry",
+        response.status_code == 429 and len(captured) == 1,
+    )
+    recovered = terminal_provider_failure(diagnostics[-1][1])
+    check(
+        "unretried 429 still retains rate limit attribution",
+        recovered.get("error_code") == "rate_limit_exceeded"
+        and "automatic_retry_attempts" not in recovered,
+    )
+    for header, expected in (("2", 2.0), ("0", 0.0), ("inf", None)):
+        check(
+            "Retry-After delta respects the bounded wait policy",
+            _upstream_retry_delay(httpx.Response(429, headers={"Retry-After": header}), 1)
+            == expected,
+        )
+    with patch("service.chat.service.completions.time.time", return_value=0):
+        check(
+            "Retry-After HTTP dates are honored",
+            _upstream_retry_delay(
+                httpx.Response(429, headers={"Retry-After": "Thu, 01 Jan 1970 00:00:02 GMT"}), 1
+            )
+            == 2.0,
+        )
+    for header in ("invalid", "NaN", "-1"):
+        delay = _upstream_retry_delay(httpx.Response(429, headers={"Retry-After": header}), 1)
+        check(
+            "invalid delay falls back to bounded backoff",
+            0 <= delay <= UPSTREAM_RETRY_MAX_DELAY_SECONDS,
+        )
 
 
 def test_transient_server_failures_retry_for_all_bridge_upstreams() -> None:
@@ -1637,6 +1860,7 @@ def test_transport_failure_is_attributable() -> None:
         "tools": [{"type": "web_search"}],
     }
     code = errno_module.ECONNRESET
+    name = errno_module.errorcode[code]
     text = os.strerror(code)
     sever = httpx.ReadError("secret-upstream-url-and-token")
     sever.__cause__ = ConnectionResetError(code, "secret-reset-detail")
@@ -1687,7 +1911,7 @@ def test_transport_failure_is_attributable() -> None:
     )
     check(
         "log surfaces the errno that the empty detail hid",
-        f"errno={code}" in message and "errno_name=ECONNRESET" in message and text in message,
+        f"errno={code}" in message and f"errno_name={name}" in message and text in message,
         message,
     )
     check(
@@ -1703,7 +1927,7 @@ def test_transport_failure_is_attributable() -> None:
         and emitted.get("transport_cause_chain") == "ReadError>ConnectionResetError"
         and emitted.get("transport_root_type") == "ConnectionResetError"
         and emitted.get("transport_errno") == code
-        and emitted.get("transport_errno_name") == "ECONNRESET",
+        and emitted.get("transport_errno_name") == name,
         str(emitted),
     )
     serialized = json.dumps(diagnostics)
@@ -1752,6 +1976,241 @@ def test_chat_protocol_rejects_native_tools_before_upstream() -> None:
             and not requests,
             f"status={response.status_code} calls={len(requests)}",
         )
+
+
+def test_bridge_projects_upstream_search_capability() -> None:
+    for wire, endpoint, expected in (
+        (ModelWireProtocol.CHAT_COMPLETIONS, CHAT_ENDPOINT, False),
+        (ModelWireProtocol.RESPONSES, RESPONSES_ENDPOINT, None),
+    ):
+        config = {
+            "base_url": "https://gateway.example/v1",
+            "call_url": endpoint,
+            "wire_api": wire.value,
+        }
+        bridge = CompletionBridge("http://127.0.0.1:8770")
+        provider, environment = _codex_provider(config, bridge, reasoning_effort="")
+        spec = SessionModelSpec(
+            key="selected-model",
+            model_name="selected-model",
+            config=config,
+            billing="personal",
+            codex_provider=provider,
+            process_environment=environment,
+        )
+        intent, _ = spec.runtime_model()
+        assert intent.transport.wire_protocol is ModelWireProtocol.RESPONSES
+        assert intent.capabilities.native_web_search is expected
+        assert next(iter(bridge._upstreams.values())).wire_protocol is wire
+
+
+def test_namespaced_chat_tools_roundtrip() -> None:
+    declarations = [
+        {
+            "type": "namespace",
+            "name": namespace,
+            "description": f"{namespace} tools",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "inspect",
+                    "description": "Inspect a file",
+                    "parameters": {"type": "object", "properties": {}},
+                    "strict": True,
+                }
+            ],
+        }
+        for namespace in ("files", "projects")
+    ]
+    payload = {
+        "model": "alias",
+        "stream": False,
+        "input": "Inspect",
+        "tools": declarations,
+        "tool_choice": {"type": "function", "namespace": "files", "name": "inspect"},
+    }
+    body = json.dumps(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call-inspect",
+                                "type": "function",
+                                "function": {"name": "files__inspect", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+    ).encode()
+    response, requests = forward_contract(
+        payload, body, wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS
+    )
+    assert response.status_code == 200, response.content
+    forwarded = json.loads(requests[0].content)
+    assert [tool["function"]["name"] for tool in forwarded["tools"]] == [
+        "files__inspect",
+        "projects__inspect",
+    ]
+    assert (
+        forwarded["tools"][0]["function"]["parameters"] == declarations[0]["tools"][0]["parameters"]
+    )
+    assert forwarded["tools"][0]["function"]["strict"] is True
+    assert forwarded["tool_choice"] == {"type": "function", "function": {"name": "files__inspect"}}
+    call = response.json()["output"][0]
+    assert (call["namespace"], call["name"], call["call_id"]) == (
+        "files",
+        "inspect",
+        "call-inspect",
+    )
+    continuation = {
+        **payload,
+        "input": [
+            call,
+            {"type": "function_call_output", "call_id": call["call_id"], "output": "file contents"},
+        ],
+    }
+    _, continued = forward_contract(
+        continuation,
+        b'{"choices":[{"message":{"content":"done"}}]}',
+        wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS,
+    )
+    history = json.loads(continued[0].content)["messages"]
+    assert history[0]["tool_calls"][0]["function"]["name"] == "files__inspect"
+    assert history[1] == {
+        "role": "tool",
+        "tool_call_id": "call-inspect",
+        "content": "file contents",
+    }
+    assert payload["tools"] == declarations
+    assert "namespace" in payload["tool_choice"]
+
+
+def test_namespaced_chat_stream_restores_tool_identity() -> None:
+    payload = {
+        "model": "alias",
+        "stream": True,
+        "input": "Read a file",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "functions",
+                "tools": [
+                    {"type": "function", "name": "exec_command", "parameters": {"type": "object"}}
+                ],
+            }
+        ],
+    }
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-read",
+                                "function": {"name": "functions__exec_", "arguments": "{"},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"name": "command", "arguments": "}"}}
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+    ]
+    body = b"".join(b"data: " + json.dumps(chunk).encode() + b"\n\n" for chunk in chunks)
+    response, requests = forward_contract(
+        payload, body, wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS
+    )
+    assert response.status_code == 200, response.content
+    assert (
+        json.loads(requests[0].content)["tools"][0]["function"]["name"] == "functions__exec_command"
+    )
+    events = [
+        json.loads(line[6:])
+        for line in response.content.decode().splitlines()
+        if line.startswith("data: {")
+    ]
+    call = next(event["item"] for event in events if event["type"] == "response.output_item.done")
+    assert (call["namespace"], call["name"], call["call_id"], call["arguments"]) == (
+        "functions",
+        "exec_command",
+        "call-read",
+        "{}",
+    )
+
+
+def test_invalid_chat_namespaces_fail_before_upstream() -> None:
+    declaration = {"type": "function", "name": "inspect", "parameters": {"type": "object"}}
+    cases = [
+        [{"type": "namespace", "name": "files", "tools": "invalid"}],
+        [{"type": "namespace", "name": "", "tools": [declaration]}],
+        [{"type": "namespace", "name": "files", "tools": [{"type": "custom", "name": "inspect"}]}],
+        [{"type": "namespace", "name": "files", "tools": [declaration, declaration]}],
+        [
+            {"type": "namespace", "name": "files", "tools": [declaration]},
+            {**declaration, "name": "files__inspect"},
+        ],
+    ]
+    for declarations in cases:
+        response, requests = forward_contract(
+            {"model": "alias", "stream": False, "input": "Hello", "tools": declarations},
+            b'{"choices":[]}',
+            wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS,
+        )
+        assert response.status_code == 400
+        assert not requests
+
+
+def test_namespace_aliases_are_bounded_and_stable() -> None:
+    namespace = "long-namespace-" * 8
+    declaration = {
+        "type": "namespace",
+        "name": namespace,
+        "tools": [{"type": "function", "name": "inspect", "parameters": {"type": "object"}}],
+    }
+    payload = {
+        "tools": [declaration],
+        "input": [
+            {
+                "type": "function_call",
+                "namespace": namespace,
+                "name": "inspect",
+                "call_id": "old-call",
+                "arguments": "{}",
+            }
+        ],
+    }
+    projected, identities = NamespaceTools.project(payload)
+    alias = projected["tools"][0]["name"]
+    assert len(alias) <= 64
+    assert all(character.isalnum() or character in "_-" for character in alias)
+    assert projected["input"][0]["name"] == alias
+    assert NamespaceTools.project(payload)[0] == projected
+    restored = identities.restore({"name": alias, "call_id": "new-call", "arguments": "{}"})
+    assert restored == {
+        "name": "inspect",
+        "namespace": namespace,
+        "call_id": "new-call",
+        "arguments": "{}",
+    }
+    assert "namespace" in payload["input"][0]
 
 
 def test_function_only_calls_keep_chat_conversion() -> None:
@@ -2237,6 +2696,7 @@ def test_model_bridge_owns_authentication() -> None:
         enabled=True,
         service=AuthService(),
         independently_authenticated_prefixes=(MODEL_BRIDGE_ROUTE_PREFIX,),
+        activities=Activities(),
     )
     client = TestClient(app)
     bridge_response = client.post(
@@ -2592,6 +3052,8 @@ def test_reasoning_tokens_are_not_erased() -> None:
 
 def main() -> int:
     test_credential_diagnostics_exclude_secrets()
+    test_http_rejections_publish_known_codes_before_finished_diagnostic()
+    test_http_credential_revocation_precedes_provider_authentication_diagnostic()
     source_payload = {"model": "alias", "input": "系统上下文和用户原文", "stream": False}
     for destinations in ((), ("https://gateway.example/v1",)):
         response, requests = forward_contract(
@@ -2627,6 +3089,28 @@ def main() -> int:
         empty_source_response.json()["error"]["code"] == SOURCE_UNAVAILABLE,
     )
     check("empty source never reaches gateway", not empty_source_requests)
+    attachment_response, attachment_requests = forward_contract(
+        source_payload,
+        b'{"choices":[{"message":{"content":"ok"}}]}',
+        source_endpoints=("https://gateway.example/v1",),
+        source_text="",
+        source_references=(SourceReference(kind="file", identity="attachment-digest"),),
+        turn_id_provider=lambda _session: "turn-source",
+    )
+    attachment_sent = json.loads(attachment_requests[0].content)
+    check("attachment source admitted", attachment_response.status_code == 200)
+    check(
+        "attachment keeps empty original text",
+        attachment_sent["scholarseed_content_source"]["text"] == "",
+    )
+    check(
+        "attachment source has references",
+        len(attachment_sent["scholarseed_content_source"]["references"]) == 1,
+    )
+    check(
+        "attachment leaves prompt unchanged",
+        attachment_sent["messages"][0]["content"] == source_payload["input"],
+    )
     missing_credential_response, missing_credential_requests = forward_contract(
         source_payload,
         b"{}",
@@ -2754,6 +3238,11 @@ def main() -> int:
     test_transport_failure_is_attributable()
     test_function_only_calls_keep_chat_conversion()
     test_chat_protocol_rejects_native_tools_before_upstream()
+    test_namespaced_chat_tools_roundtrip()
+    test_bridge_projects_upstream_search_capability()
+    test_namespaced_chat_stream_restores_tool_identity()
+    test_invalid_chat_namespaces_fail_before_upstream()
+    test_namespace_aliases_are_bounded_and_stable()
     test_streamed_provider_error_becomes_failed_response()
     test_json_answer_remains_a_successful_answer()
     test_normal_stream_keeps_deltas_and_complete_message()

@@ -10,21 +10,22 @@ import tomllib
 from pathlib import Path
 
 from service.capabilities.service.package import PACKAGE_MANIFEST
+from service.capabilities.service.source import source_lock
 
 PASS = 0
 FAIL = 0
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # 开源布局: 产品发行包(含技能依赖声明)在 apps/serve; 根 pyproject 只是 workspace 编排器。
 PYPROJECT = REPO_ROOT / "apps" / "serve" / "pyproject.toml"
-WORKSPACE_SCRIPT = REPO_ROOT / "scripts" / "workspace.cjs"
-BUNDLE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "bundle.cjs"
+WORKSPACE_SCRIPT = REPO_ROOT / "scripts" / "shared" / "workspace.cjs"
+BUNDLE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "bundle.cjs"
 SKILL_PYTHON_RUNTIME = REPO_ROOT / "apps" / "desktop" / "runtime" / "python.cjs"
-BUILD_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "build.cjs"
+BUILD_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "build.cjs"
 DEPENDENCIES = (
     REPO_ROOT / "apps" / "serve" / "service" / "capabilities" / "service" / "dependencies.py"
 )
 BACKEND_SOURCE = REPO_ROOT / "apps" / "desktop" / "src" / "main" / "backend.ts"
-# 依赖政策有两份声明: registry.json 是构建期政策(scripts/dependencies.py 校验它进 desktop
+# 依赖政策有两份声明: registry.json 是构建期政策(scripts/shared/dependencies.py 校验它进 desktop
 # 闭包), 技能清单是 provision/verify 真正读取的那份(dependencies.py:_inputs)。两者必须逐字
 # 一致, 否则"评审过的政策"与"实际被供给的依赖"会静默分叉。
 SKILL_REGISTRY = REPO_ROOT / "skills" / "registry.json"
@@ -116,7 +117,13 @@ def _registry_and_package_manifests_agree() -> None:
         not sorted(set(manifests) - set(policy)),
         str(sorted(set(manifests) - set(policy))),
     )
+    versions = {row["slug"]: row["version"] for row in source_lock(COMMUNITY_SKILLS)["skills"]}
     for slug in sorted(set(policy) & set(manifests)):
+        check(
+            f"{slug} 源码与打包清单版本一致",
+            manifests[slug].get("version") == versions[slug],
+            f"source={versions[slug]} manifest={manifests[slug].get('version')}",
+        )
         declared = policy[slug]
         supplied = manifests[slug].get("dependencies", {})
         check(
@@ -137,7 +144,8 @@ def _builds_install_into_product_python() -> None:
         and "service.cli.skills" not in workspace,
     )
     check(
-        "DMG 使用实际产品 Python 的统一依赖入口", "'service.cli.prebundle', '--provision'" in build
+        "DMG 使用实际产品 Python 的统一依赖入口",
+        re.search(r"'service\.cli\.prebundle',\s*'--provision'", build) is not None,
     )
     check(
         "wheel 不进行第二次依赖解析且同版重装",
@@ -179,7 +187,7 @@ def _runtime_uses_one_interpreter() -> None:
     for name in (
         "skillBin",
         "hookBin",
-        "pythonExecutableDirectory",
+        "...pythonDirectories",
         "codexExecutableDirectory",
         "texliveExecutableDirectory",
     ):
@@ -205,8 +213,15 @@ def _runtime_uses_one_interpreter() -> None:
     )
     check(
         "paid-download 使用活动解释器模块入口",
-        '[sys.executable, "-m", PAPER_DL_MODULE]' in adapter
-        and 'PAPER_DL_MODULE = "paper_dl"' in adapter,
+        any(
+            isinstance(node, ast.List)
+            and ast.dump(node, include_attributes=False)
+            == ast.dump(
+                ast.parse('[sys.executable, "-m", "paper_dl"]', mode="eval").body,
+                include_attributes=False,
+            )
+            for node in ast.walk(ast.parse(adapter))
+        ),
     )
 
 
@@ -269,7 +284,7 @@ def _bundled_toolchain_is_staged_and_proved() -> None:
     check("打包在校验归档摘要后解压随包工具链", "stageVerifiedTexlive(" in bundle)
     check(
         "provision 收到随包工具链根目录",
-        "'--toolchain-root', context.texlive.binDirectory" in build,
+        re.search(r"'--toolchain-root',\s*context\.texlive\.binDirectory", build) is not None,
     )
     check("打包期编译技能真实前导作为 oracle", "smoke_publication.py" in build)
 

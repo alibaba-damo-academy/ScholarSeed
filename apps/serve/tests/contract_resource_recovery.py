@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.resources import RestorePolicy, TurnOutcome, VersionOrigin
 from service.resources.api.versions import register_version_routes
 from service.resources.service.activation import ResourceActivation
@@ -73,7 +74,7 @@ async def exercise() -> None:
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         project = registry.create("恢复项目")
         resources = Path(project.root) / "resources"
         clean = resources / "clean.md"
@@ -85,8 +86,12 @@ async def exercise() -> None:
         retention = ResourceRetentionService(content, settings)
         annotations = PdfRecordStore(content)
         versions = ResourceVersionService(content, retention, WorkbenchFormatPolicy(), annotations)
-        supervisor = ResourceVersionSupervisor(content, versions, WorkbenchFormatPolicy(), settings)
-        deliveries = ResourceDeliveryService(content, versions, supervisor)
+        supervisor = ResourceVersionSupervisor(
+            content, versions, WorkbenchFormatPolicy(), settings, activities=Activities()
+        )
+        deliveries = ResourceDeliveryService(
+            content, versions, supervisor, activities=supervisor._activities
+        )
         recovery = ResourceRecoveryService(content, retention, annotations)
         supervisor.bind_preparation(
             ResourceActivation(
@@ -275,7 +280,7 @@ async def exercise() -> None:
         )
         original_file.unlink()
         interrupted_preview = recovery.preview_version(project.id, original.id)
-        with patch.object(content, "remove_bytes", side_effect=SimulatedProcessExit):
+        with patch.object(content, "apply_stream", side_effect=SimulatedProcessExit):
             try:
                 recovery.restore_version(
                     project.id,
@@ -287,8 +292,9 @@ async def exercise() -> None:
             except SimulatedProcessExit:
                 pass
         check(
-            "interrupted path restore preserves source until target is materialized",
-            original_file.exists() and renamed_file.exists(),
+            "interrupted path restore preserves current bytes at the journaled target",
+            original_file.read_text(encoding="utf-8") == "keep current bytes\n"
+            and not renamed_file.exists(),
         )
         recovered = ResourceRecoveryService(content, retention, annotations).restore_version(
             project.id,
@@ -401,6 +407,7 @@ async def exercise() -> None:
         check(
             "Delivery rollback restores a moved PDF and its stable records",
             pdf_before.is_file()
+            and pdf_before.read_bytes() == b"%PDF-1.4\nannotated move\n"
             and not pdf_after.exists()
             and restored_pdf_records.record_target.subject_id
             == empty_pdf_annotations.record_target.subject_id
@@ -413,6 +420,58 @@ async def exercise() -> None:
                 f"{empty_pdf_annotations.record_target.subject_id} "
                 f"comments={restored_pdf_records.records['comments']}"
             ),
+        )
+
+        pdf_version = versions.history(project.id, "resources/pdf-before.pdf")[0]
+        renamed_pdf = content.rename(project.id, "resources/pdf-before.pdf", "pdf-edited.pdf")
+        current_pdf = content.snapshot(project.id, renamed_pdf.path)
+        edited_pdf_bytes = b"%PDF-1.4\nmodified after move\n"
+        content.apply_bytes(
+            project.id,
+            renamed_pdf.path,
+            edited_pdf_bytes,
+            current_pdf.revision,
+            force=False,
+            mode_bits=None,
+            notify=False,
+        )
+        versions.seal(project.id, renamed_pdf.path, VersionOrigin.USER)
+        pdf_restore_preview = recovery.preview_version(project.id, pdf_version.id)
+        edited_pdf = resources / "pdf-edited.pdf"
+        pdf_inode = edited_pdf.stat().st_ino
+        with patch.object(content, "apply_stream", side_effect=SimulatedProcessExit):
+            try:
+                recovery.restore_version(
+                    project.id,
+                    pdf_version.id,
+                    RestorePolicy.STRICT,
+                    pdf_restore_preview.preflight_token,
+                    "pdf-name-interrupted",
+                )
+            except SimulatedProcessExit:
+                pass
+        check(
+            "interrupted PDF restore keeps the same asset and current bytes before replacement",
+            not edited_pdf.exists()
+            and pdf_before.stat().st_ino == pdf_inode
+            and pdf_before.read_bytes() == edited_pdf_bytes
+            and content.identify(project.id, "resources/pdf-before.pdf").asset.asset_id
+            == empty_pdf_annotations.record_target.subject_id,
+        )
+        ResourceRecoveryService(content, retention, annotations).restore_version(
+            project.id,
+            pdf_version.id,
+            RestorePolicy.STRICT,
+            pdf_restore_preview.preflight_token,
+            "pdf-name-interrupted",
+        )
+        restored_pdf = annotations.snapshot(project.id, "resources/pdf-before.pdf")
+        check(
+            "restarted PDF restore replaces bytes while preserving its annotation identity",
+            pdf_before.read_bytes() == b"%PDF-1.4\nannotated move\n"
+            and restored_pdf.record_target.subject_id
+            == empty_pdf_annotations.record_target.subject_id
+            and restored_pdf.records["comments"] == pdf_records(4, "restore the path")["comments"],
         )
 
         created_pdf = resources / "created.pdf"

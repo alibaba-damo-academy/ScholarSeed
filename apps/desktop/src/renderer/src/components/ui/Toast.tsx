@@ -1,17 +1,9 @@
 import { useTranslation } from 'react-i18next'
 import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from 'react'
-import {
-  forwardRef,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { forwardRef, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
-import { IconFont } from '../primitive'
+import { IconFont } from '../primitive/Iconfont'
 import { toastClassName, toastStyleClassName } from './classes'
 import { ToastContext } from './toastContext'
 import { cx } from './utils'
@@ -72,7 +64,7 @@ const TOAST_ICON_BY_TONE: Record<ToastTone, string> = {
   error: 'fill-status-error',
   info: 'fill-status-tips',
   success: 'fill-status-success',
-  warning: 'fill-status-warning'
+  warning: 'fill-status-warning',
 }
 const TOASTER_STYLE_CLASS_NAME = [
   'fixed left-1/2 -translate-x-1/2 z-[var(--vds-toast-z-index)] block w-[min(var(--vds-toast-width),calc(100%-var(--vds-toast-viewport-gap)*2))]',
@@ -81,7 +73,7 @@ const TOASTER_STYLE_CLASS_NAME = [
   '[&.vds-toaster--top-right]:top-[var(--vds-toast-viewport-top-offset)]',
   '[&.vds-toaster--top-left]:top-[var(--vds-toast-viewport-top-offset)]',
   '[&.vds-toaster--bottom-right]:bottom-[var(--vds-toast-viewport-gap)]',
-  '[&.vds-toaster--bottom-left]:bottom-[var(--vds-toast-viewport-gap)]'
+  '[&.vds-toaster--bottom-left]:bottom-[var(--vds-toast-viewport-gap)]',
 ].join(' ')
 // icon 与标题首行顶对齐: 不加额外 margin, 直接随行顶排列。
 const TOAST_ICON_CLASS_NAME =
@@ -90,7 +82,7 @@ const TOAST_ICON_TONE_CLASS_NAMES: Record<ToastTone, string> = {
   error: 'text-[var(--vds-error-bg-default)]',
   info: 'text-[var(--vds-notice-bg-default)]',
   success: 'text-[var(--vds-success-bg-default)]',
-  warning: 'text-[var(--vds-warning-bg-default)]'
+  warning: 'text-[var(--vds-warning-bg-default)]',
 }
 const TOAST_BODY_CLASS_NAME = 'vds-toast__body grid min-w-0 gap-[var(--vds-toast-text-gap)]'
 const TOAST_TITLE_CLASS_NAME =
@@ -104,7 +96,7 @@ const TOAST_ACTION_CLASS_NAME =
 // (12px padding 行顶)齐平。字形尺寸经 IconFont style 内联下发,
 // 覆盖无层级 .iconfont 基础类的 16px(Tailwind v4 层内 utilities 压不过它)。
 const TOAST_CLOSE_CLASS_NAME =
-  'vds-toast__close absolute top-[4px] right-[var(--vds-space-2)] inline-grid place-items-center [width:var(--vds-toast-close-size)] [height:var(--vds-toast-close-size)] [padding:0] [border:0] [border-radius:var(--vds-radius-3)] [background:transparent] [color:var(--vds-text-tertiary)] [line-height:1] cursor-pointer hover:[background:var(--vds-surface-hover)] hover:[color:var(--vds-text-primary)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
+  'vds-toast__close absolute top-[var(--vds-space-1)] right-[var(--vds-space-2)] inline-grid place-items-center [width:var(--vds-toast-close-size)] [height:var(--vds-toast-close-size)] [padding:0] [border:0] [border-radius:var(--vds-radius-3)] [background:transparent] [color:var(--vds-text-tertiary)] [line-height:1] cursor-pointer hover:[background:var(--vds-surface-hover)] hover:[color:var(--vds-text-primary)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
 const TOAST_CLOSE_GLYPH_STYLE = { fontSize: 'var(--vds-icon-7)' }
 // 带关闭按钮时正文预留右侧空间, 避免文本钻到按钮下方。
 const TOAST_CLOSEABLE_PADDING_CLASS_NAME =
@@ -118,8 +110,13 @@ function toastIdentity(toast: ToastInput): string | undefined {
   if (toast.dedupeKey !== undefined) return JSON.stringify(['key', toast.dedupeKey])
   if (toast.tone !== 'error') return undefined
   const content = [toast.title, toast.description]
-  if (!content.some(value => typeof value === 'string' && value.length > 0)) return undefined
-  if (!content.every(value => value == null || typeof value === 'string' || typeof value === 'number')) return undefined
+  if (!content.some((value) => typeof value === 'string' && value.length > 0)) return undefined
+  if (
+    !content.every(
+      (value) => value == null || typeof value === 'string' || typeof value === 'number'
+    )
+  )
+    return undefined
   return JSON.stringify(['error', toast.duration === false, ...content])
 }
 
@@ -134,25 +131,30 @@ export function ToastProvider({ children, defaultToasts = [] }: ToastProviderPro
   const toastsRef = useRef(toasts)
 
   const dismiss = useCallback((id: string) => {
-    toastsRef.current = toastsRef.current.filter(toast => toast.id !== id)
+    toastsRef.current = toastsRef.current.filter((toast) => toast.id !== id)
     setToasts(toastsRef.current)
   }, [])
 
   const toast = useCallback((nextToast: ToastInput) => {
     const identity = toastIdentity(nextToast)
-    const existing = toastsRef.current.find(current => nextToast.id !== undefined
-      ? current.id === nextToast.id
-      : identity !== undefined && toastIdentity(current) === identity)
+    const existing = toastsRef.current.find((current) =>
+      nextToast.id !== undefined
+        ? current.id === nextToast.id
+        : identity !== undefined && toastIdentity(current) === identity
+    )
     const id = existing?.id ?? nextToast.id ?? createToastId()
     const updated = { ...nextToast, id, revision: (existing?.revision ?? 0) + 1 }
     toastsRef.current = existing
-      ? toastsRef.current.map(current => current.id === id ? updated : current)
+      ? toastsRef.current.map((current) => (current.id === id ? updated : current))
       : [...toastsRef.current, updated]
     setToasts(toastsRef.current)
     return id
   }, [])
 
-  const value = useMemo<ToastContextValue>(() => ({ dismiss, toast, toasts }), [dismiss, toast, toasts])
+  const value = useMemo<ToastContextValue>(
+    () => ({ dismiss, toast, toasts }),
+    [dismiss, toast, toasts]
+  )
 
   return <ToastContext.Provider value={value}>{children}</ToastContext.Provider>
 }
@@ -188,7 +190,12 @@ export const Toaster = forwardRef<HTMLOListElement, ToasterProps>(
     const viewport = (
       <ol
         aria-live={ariaLive}
-        className={cx('vds-toaster', `vds-toaster--${placement}`, TOASTER_STYLE_CLASS_NAME, className)}
+        className={cx(
+          'vds-toaster',
+          `vds-toaster--${placement}`,
+          TOASTER_STYLE_CLASS_NAME,
+          className
+        )}
         ref={ref}
         role="region"
         {...props}
@@ -295,11 +302,19 @@ export const Toast = forwardRef<HTMLLIElement, ToastProps>(
           onBlurCapture?.(event)
         }}
       >
-        <IconFont aria-hidden="true" className={cx(TOAST_ICON_CLASS_NAME, TOAST_ICON_TONE_CLASS_NAMES[tone])} type={TOAST_ICON_BY_TONE[tone]} />
+        <IconFont
+          aria-hidden="true"
+          className={cx(TOAST_ICON_CLASS_NAME, TOAST_ICON_TONE_CLASS_NAMES[tone])}
+          type={TOAST_ICON_BY_TONE[tone]}
+        />
         <div className={TOAST_BODY_CLASS_NAME}>
           {title ? <div className={TOAST_TITLE_CLASS_NAME}>{title}</div> : null}
-          {description ? <div className={cx('vds-toast__description', TOAST_TEXT_CLASS_NAME)}>{description}</div> : null}
-          {children ? <div className={cx('vds-toast__content', TOAST_TEXT_CLASS_NAME)}>{children}</div> : null}
+          {description ? (
+            <div className={cx('vds-toast__description', TOAST_TEXT_CLASS_NAME)}>{description}</div>
+          ) : null}
+          {children ? (
+            <div className={cx('vds-toast__content', TOAST_TEXT_CLASS_NAME)}>{children}</div>
+          ) : null}
           {action ? <div className={TOAST_ACTION_CLASS_NAME}>{action}</div> : null}
         </div>
         {id && onDismiss ? (
@@ -314,7 +329,11 @@ export const Toast = forwardRef<HTMLLIElement, ToastProps>(
               onDismiss(id)
             }}
           >
-            <IconFont aria-hidden="true" style={TOAST_CLOSE_GLYPH_STYLE} type="line-operation-close" />
+            <IconFont
+              aria-hidden="true"
+              style={TOAST_CLOSE_GLYPH_STYLE}
+              type="line-operation-close"
+            />
           </button>
         ) : null}
       </li>

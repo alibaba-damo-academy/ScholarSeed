@@ -94,7 +94,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"seq":3', frames[-1])
 
     async def test_idle_live_stream_emits_a_valid_sse_heartbeat(self) -> None:
-        live = SimpleNamespace(subscribers=[])
+        live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())
         service = EventService({SESSION_ID: live}, self.events, self.logger)  # type: ignore[dict-item]
         stream = service.open(SESSION_ID, 0)
         try:
@@ -104,6 +104,9 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
             ):
                 frame = await anext(stream)
             self.assertEqual(frame, SSE_HEARTBEAT_FRAME)
+            self.assertIn("event: heartbeat\n", frame)
+            self.assertIn("data: {}\n\n", frame)
+            self.assertNotIn("id:", frame)
         finally:
             await stream.aclose()
         self.assertEqual(live.subscribers, [])
@@ -121,7 +124,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_live_wakeup_drains_unbroadcast_events_before_notified_event(self) -> None:
-        live = SimpleNamespace(subscribers=[])
+        live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())
         service = EventService({SESSION_ID: live}, self.events, self.logger)  # type: ignore[dict-item]
         stream = service.open(SESSION_ID, 0)
         try:
@@ -150,7 +153,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
             await stream.aclose()
 
     async def test_slow_subscriber_is_bounded_and_forced_to_replay(self) -> None:
-        live = SimpleNamespace(subscribers=[])
+        live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())
         service = EventService({SESSION_ID: live}, self.events, self.logger)  # type: ignore[dict-item]
         stream = service.open(SESSION_ID, 0)
         with (

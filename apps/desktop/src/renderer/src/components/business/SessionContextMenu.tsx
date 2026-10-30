@@ -1,9 +1,8 @@
 import type { SessionTitleFallback } from '../../session'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
+import { Archive, Pencil, Trash2 } from 'lucide-react'
 
-import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
-import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import {
   ContextMenu,
@@ -15,15 +14,12 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuTrigger
+  DropdownMenuTrigger,
 } from '../ui'
 
 // SessionContextMenu.tsx — 会话行右键菜单 (PRD 2.1.8 ④)。
 //   所有会话保持创建时的范围，只提供重命名和删除。
 
-const MENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} w-[176px] text-xs`
-const MENU_ITEM_CLASS_NAME = 'text-xs text-[var(--text-2)] hover:bg-[var(--active-bg)] hover:text-[var(--active-text)]'
-const DANGER_ITEM_CLASS_NAME = 'text-xs text-[var(--c-tension)] hover:bg-[color-mix(in_srgb,var(--c-tension)_12%,transparent)] hover:text-[var(--c-tension)]'
 const MENU_ITEM_TEXT_CLASS_NAME = 'flex-1'
 
 export interface SessionContextMenuTarget {
@@ -42,21 +38,23 @@ type MenuParts = {
 const contextParts: MenuParts = {
   Content: ContextMenuContent,
   Item: ContextMenuItem,
-  Separator: ContextMenuSeparator
+  Separator: ContextMenuSeparator,
 }
 
 const dropdownParts: MenuParts = {
   Content: DropdownMenuContent,
   Item: DropdownMenuItem,
-  Separator: DropdownMenuSeparator
+  Separator: DropdownMenuSeparator,
 }
 
 function SessionMenuContent({
   target,
-  parts
+  parts,
+  layoutActions,
 }: {
   parts: MenuParts
   target: SessionContextMenuTarget
+  layoutActions?: React.ReactNode
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { set } = useApp()
@@ -64,23 +62,51 @@ function SessionMenuContent({
 
   const handleRename = (): void => {
     set({
-      sessionRename: { sessionId: target.sessionId, originalTitle: target.title }
+      sessionRename: {
+        sessionId: target.sessionId,
+        originalTitle: target.title,
+        ...(layoutActions ? { mode: 'dialog' as const } : {}),
+      },
     })
   }
 
   const handleDelete = (): void => {
-    set({ confirmDelete: { label: target.title, title_fallback: target.title_fallback, sessionId: target.sessionId } })
+    set({
+      confirmDelete: {
+        label: target.title,
+        title_fallback: target.title_fallback,
+        sessionId: target.sessionId,
+      },
+    })
   }
 
   return (
-    <Content className={MENU_CLASS_NAME} data-testid="session-context-menu">
-      <Item className={MENU_ITEM_CLASS_NAME} data-testid="session-rename-menu" onSelect={handleRename}>
-        <Icon name="edit-square" size={13} />
+    <Content align={layoutActions ? 'end' : undefined} data-testid="session-context-menu">
+      <Item disabled={!target.sessionId} data-testid="session-rename-menu" onSelect={handleRename}>
+        <Pencil />
         <span className={MENU_ITEM_TEXT_CLASS_NAME}>{t('sessionMenu.rename')}</span>
       </Item>
+      {layoutActions}
       <Separator />
-      <Item className={DANGER_ITEM_CLASS_NAME} data-testid="session-delete-menu" onSelect={handleDelete}>
-        <Icon name="close" size={13} />
+      {target.inProject && (
+        <Item
+          disabled={!target.sessionId}
+          data-testid="session-archive-menu"
+          onSelect={() =>
+            set({ sessionArchive: { sessionId: target.sessionId, title: target.title } })
+          }
+        >
+          <Archive />
+          <span className={MENU_ITEM_TEXT_CLASS_NAME}>{t('taskArchive.archive')}</span>
+        </Item>
+      )}
+      <Item
+        disabled={!target.sessionId}
+        destructive
+        data-testid="session-delete-menu"
+        onSelect={handleDelete}
+      >
+        <Trash2 />
         <span className={MENU_ITEM_TEXT_CLASS_NAME}>{t('sessionMenu.delete')}</span>
       </Item>
     </Content>
@@ -91,12 +117,14 @@ function SessionMenu({
   children,
   mode,
   onOpenChange,
-  target
+  target,
+  layoutActions,
 }: {
   children: React.ReactNode
   mode: 'context' | 'dropdown'
   onOpenChange?: (open: boolean) => void
   target: SessionContextMenuTarget
+  layoutActions?: React.ReactNode
 }): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
 
@@ -105,19 +133,18 @@ function SessionMenu({
     onOpenChange?.(nextOpen)
   }
 
-  const menu = mode === 'context'
-    ? (
-        <ContextMenu open={open} onOpenChange={updateOpen}>
-          <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-          <SessionMenuContent parts={contextParts} target={target} />
-        </ContextMenu>
-      )
-    : (
-        <DropdownMenu open={open} onOpenChange={updateOpen}>
-          <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-          <SessionMenuContent parts={dropdownParts} target={target} />
-        </DropdownMenu>
-      )
+  const menu =
+    mode === 'context' ? (
+      <ContextMenu open={open} onOpenChange={updateOpen}>
+        <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+        <SessionMenuContent parts={contextParts} target={target} />
+      </ContextMenu>
+    ) : (
+      <DropdownMenu open={open} onOpenChange={updateOpen}>
+        <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+        <SessionMenuContent parts={dropdownParts} target={target} layoutActions={layoutActions} />
+      </DropdownMenu>
+    )
 
   return menu
 }
@@ -125,7 +152,7 @@ function SessionMenu({
 export function SessionContextMenu({
   children,
   onOpenChange,
-  target
+  target,
 }: {
   children: React.ReactNode
   onOpenChange?: (open: boolean) => void
@@ -141,14 +168,21 @@ export function SessionContextMenu({
 export function SessionDropdownMenu({
   children,
   onOpenChange,
-  target
+  target,
+  layoutActions,
 }: {
   children: React.ReactNode
   onOpenChange?: (open: boolean) => void
   target: SessionContextMenuTarget
+  layoutActions?: React.ReactNode
 }): React.JSX.Element {
   return (
-    <SessionMenu mode="dropdown" onOpenChange={onOpenChange} target={target}>
+    <SessionMenu
+      mode="dropdown"
+      onOpenChange={onOpenChange}
+      target={target}
+      layoutActions={layoutActions}
+    >
       {children}
     </SessionMenu>
   )

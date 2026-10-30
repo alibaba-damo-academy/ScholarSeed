@@ -1,4 +1,5 @@
 import type { ConvItem, DisplayCardData, SubagentProgress, TurnOutcome } from './model'
+import { artifactIsOutput } from './model.ts'
 
 export type ActivityItem = Extract<
   ConvItem,
@@ -7,6 +8,50 @@ export type ActivityItem = Extract<
   }
 >
 export type ArtifactItem = Extract<ConvItem, { kind: 'artifact' }>
+
+type NativeActivity = Extract<ConvItem, { kind: 'native_activity' }>
+
+const COLLABORATION_OPERATIONS = {
+  spawn_agent: 'spawn',
+  spawnAgent: 'spawn',
+  wait: 'wait',
+  wait_agent: 'wait',
+  waitAgent: 'wait',
+} as const
+
+export function collaborationStatusKey(item: NativeActivity) {
+  if (item.activityType !== 'agent_collaboration') return undefined
+  if (item.status === 'error') return 'subagent.call.failed' as const
+  const operation = String(item.details.operation ?? '')
+  const kind = COLLABORATION_OPERATIONS[operation as keyof typeof COLLABORATION_OPERATIONS]
+  if (item.status === 'running') {
+    if (kind === 'spawn') return 'subagent.call.spawning' as const
+    if (kind === 'wait') return 'subagent.call.waiting' as const
+    return 'subagent.call.running' as const
+  }
+  if (kind === 'spawn') return 'subagent.call.spawned' as const
+  if (kind === 'wait') return 'subagent.call.waited' as const
+  return 'subagent.call.ended' as const
+}
+
+export function subagentIdentities(items: readonly ConvItem[]): Map<string, string | number> {
+  const identities = new Map<string, string | number>()
+  const agents = items.filter(
+    (item): item is NativeActivity =>
+      item.kind === 'native_activity' && item.activityType === 'subagent_activity'
+  )
+  for (const item of agents) {
+    if (!identities.has(item.activityId)) identities.set(item.activityId, identities.size + 1)
+    const name = [item.details.display_name, item.details.agent_path].find(
+      (value): value is string =>
+        typeof value === 'string' &&
+        Boolean(value.trim()) &&
+        value.trim().toLowerCase() !== 'subagent'
+    )
+    if (name) identities.set(item.activityId, name.trim())
+  }
+  return identities
+}
 
 export function subagentActivityItem(
   progress: SubagentProgress,
@@ -84,6 +129,7 @@ const LEGACY_TURN_IDENTITY = 'legacy'
 
 export interface AnswerInteractionCapabilities {
   citationEnabled: boolean
+  forkEnabled: boolean
   selectionEnabled: boolean
 }
 
@@ -96,54 +142,13 @@ export function answerInteractionCapabilities(
 ): AnswerInteractionCapabilities {
   return {
     citationEnabled: outcome !== 'running',
+    forkEnabled: false,
     selectionEnabled: true,
   }
 }
 
-/**
- * User-facing published file kinds admitted to the generic Agent artifact card.
- *
- * Working files, runtime state, typed-card payloads and unknown machine formats
- * remain available in the durable artifact index but do not become conversation
- * UI merely because the Agent wrote a file.
- */
-export const ARTIFACT_CARD_SUFFIXES: ReadonlySet<string> = new Set([
-  'c',
-  'cpp',
-  'csv',
-  'doc',
-  'docx',
-  'gif',
-  'h',
-  'java',
-  'jpeg',
-  'jpg',
-  'js',
-  'markdown',
-  'md',
-  'pdf',
-  'png',
-  'py',
-  'r',
-  'sh',
-  'svg',
-  'ts',
-  'tsx',
-  'txt',
-  'webp',
-  'xls',
-  'xlsx',
-])
-
 export function artifactCardVisible(artifact: ArtifactItem['artifact']): boolean {
-  if (!artifact.publication_id) return false
-  if (artifact.role !== 'final' && artifact.role !== 'supporting') return false
-  // Empty files (e.g. redirected stderr of a quiet subprocess) carry no result to open.
-  if (artifact.size === 0) return false
-  const name = artifact.name.split(/[\\/]/).pop() ?? ''
-  const separator = name.lastIndexOf('.')
-  if (separator < 0 || separator === name.length - 1) return false
-  return ARTIFACT_CARD_SUFFIXES.has(name.slice(separator + 1).toLocaleLowerCase())
+  return artifactIsOutput(artifact)
 }
 
 /** Resolve the card from turn truth; individual tool errors never fail a turn. */
@@ -194,9 +199,10 @@ export function workingIndicatorVisible(
   busy: boolean,
   admitting: boolean,
   pendingHilCount: number,
-  hasVisibleProgress = false
+  hasVisibleProgress = false,
+  recoveryBlocked = false
 ): boolean {
-  return (busy || admitting) && pendingHilCount === 0 && !hasVisibleProgress
+  return !recoveryBlocked && (busy || admitting) && pendingHilCount === 0 && !hasVisibleProgress
 }
 
 function isGroupedActivity(item: ConvItem): item is ActivityItem {
@@ -239,10 +245,42 @@ function artifactOrder(item: ArtifactItem): number {
   return item.artifact.source_event_seq ?? item.artifact.updated_at ?? 0
 }
 
+/** Keep publication snapshots intact; only collapse their presentation within a turn. */
+export function artifactVersionGroups(items: readonly ArtifactItem[]): ArtifactItem[][] {
+  const groups = new Map<string, ArtifactItem[]>()
+  for (const item of items) {
+    const path = item.artifact.path
+      .replace(/\\/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/\/{2,}/g, '/')
+    const key = JSON.stringify(
+      item.turnId && path ? [item.turnId, path] : [item.turnId, path, item.artifact.artifact_id]
+    )
+    const group = groups.get(key) ?? []
+    group.push(item)
+    groups.set(key, group)
+  }
+  return [...groups.values()].map((group) => {
+    const ordered = group
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => artifactOrder(b.item) - artifactOrder(a.item) || b.index - a.index)
+    const seen = new Set<string>()
+    return ordered.flatMap(({ item }) => {
+      const revision = item.artifact.sha256 || item.artifact.artifact_id
+      if (seen.has(revision)) return []
+      seen.add(revision)
+      return [item]
+    })
+  })
+}
+
 export function activityRows(
   items: ConvItem[],
-  outcomes?: Record<string, TurnOutcome>
+  outcomes?: Record<string, TurnOutcome>,
+  postDeliveryCardTypes: ReadonlySet<string> = new Set()
 ): ActivityRow[] {
+  const postDeliveryCard = (item: ConvItem): boolean =>
+    item.kind === 'display_card' && postDeliveryCardTypes.has(item.card.type)
   const artifactDeferred = (item: ArtifactItem): boolean =>
     Boolean(item.turnId && outcomes?.[item.turnId] === 'running')
   const reviewPaths = new Map<string, Set<string>>()
@@ -281,6 +319,8 @@ export function activityRows(
   const rows: ActivityRow[] = []
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
+    if (postDeliveryCard(item) && (!item.turnId || outcomes?.[item.turnId] !== 'completed'))
+      continue
     if (item.kind === 'artifact' && artifactDeferred(item)) continue
     if (item.kind === 'artifact' && (!artifactCardVisible(item.artifact) || reviewedArtifact(item)))
       continue
@@ -343,6 +383,29 @@ export function activityRows(
       }
     }
     rows.splice(insertion < 0 ? previous : insertion + 1, 0, artifactRow)
+  }
+  // Completion suggestions follow the entire delivery, including its file cards.
+  // Keep them inside their own turn when replay includes later user messages.
+  const postDeliveryRows = rows.filter((row) => row.kind === 'item' && postDeliveryCard(row.item))
+  for (const row of postDeliveryRows) rows.splice(rows.indexOf(row), 1)
+  for (const row of postDeliveryRows) {
+    const turnId = rowTurnId(row)
+    let anchor = -1
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      if (rowTurnId(rows[index]) === turnId) {
+        anchor = index
+        break
+      }
+    }
+    if (anchor >= 0) rows.splice(anchor + 1, 0, row)
+    else {
+      // A card-only turn has no delivery anchor; preserve its chronological position.
+      const sourceIndex = row.kind === 'item' ? items.indexOf(row.item) : -1
+      const following = rows.findIndex(
+        (candidate) => candidate.kind === 'item' && items.indexOf(candidate.item) > sourceIndex
+      )
+      rows.splice(following < 0 ? rows.length : following, 0, row)
+    }
   }
   // A terminal failure is the turn's bottom-line outcome. Retry diagnostics can
   // reach the renderer before the last reasoning/activity rows, but their event

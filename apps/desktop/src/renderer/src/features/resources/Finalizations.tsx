@@ -147,7 +147,12 @@ export function Finalizations({
           <ul>
             {entry.paths.map((path) => (
               <li key={path}>
-                <Button variant="ghost" size="sm" onClick={() => void inspect(path)}>
+                <Button
+                  variant="ghost"
+                  size="content"
+                  className="max-w-full min-w-0 !whitespace-normal text-left [overflow-wrap:anywhere]"
+                  onClick={() => void inspect(path)}
+                >
                   {path}
                 </Button>
               </li>

@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { forwardRef, useState } from 'react'
 
-import { IconFont } from '../primitive'
+import { IconFont } from '../primitive/Iconfont'
 import {
   switchCheckedDecorClassName,
   switchClassName,

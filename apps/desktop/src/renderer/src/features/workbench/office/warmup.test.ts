@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import './local-fonts.test.cjs'
 
 import {
   INITIAL_OFFICE_WARMUP_STATUS,
@@ -12,20 +13,17 @@ import {
   officeWarmupProgress,
   officeWarmupRetryDelay,
   parseOfficeWarmupStatus,
-  type OfficeWarmupStatus
+  type OfficeWarmupStatus,
 } from './progress.ts'
 
-const runtimeSource = readFileSync(
-  new URL('./runtime.tsx', import.meta.url),
-  'utf8'
-)
+const runtimeSource = readFileSync(new URL('./runtime.tsx', import.meta.url), 'utf8')
 
 test('font reading progress accounts for every catalog entry', () => {
   const status: OfficeWarmupStatus = {
     stage: 'reading',
     done: 37,
     total: 100,
-    loadedBytes: 4_096
+    loadedBytes: 4_096,
   }
   assert.equal(officeWarmupProgress(status), 37)
 })
@@ -36,7 +34,7 @@ test('runtime readiness completes the progress bar', () => {
       stage: 'ready',
       done: 0,
       total: 0,
-      loadedBytes: 0
+      loadedBytes: 0,
     }),
     100
   )
@@ -48,7 +46,7 @@ test('catalog and runtime initialization remain indeterminate', () => {
       stage: 'catalog',
       done: 0,
       total: 0,
-      loadedBytes: 0
+      loadedBytes: 0,
     }),
     null
   )
@@ -57,7 +55,7 @@ test('catalog and runtime initialization remain indeterminate', () => {
       stage: 'runtime',
       done: 0,
       total: 0,
-      loadedBytes: 0
+      loadedBytes: 0,
     }),
     null
   )
@@ -66,11 +64,11 @@ test('catalog and runtime initialization remain indeterminate', () => {
 test('Office recovery feedback is mounted in the document anchor, not a notification', () => {
   assert.doesNotMatch(runtimeSource, /import.*OfficeWarmup|<OfficeWarmup\b/)
   assert.match(runtimeSource, /visible && bounds && hasDocument && !documentReady/)
-  assert.match(runtimeSource, /<OfficeLoading recovery=\{recovery\}/)
+  assert.match(runtimeSource, /<OfficeLoading\s+recovery=\{recovery\}/)
 })
 
 test('automatic retry rebuilds the WASM frame and retains failure diagnostics', () => {
-  assert.match(runtimeSource, /setFrameEpoch\(epoch => epoch \+ 1\)/)
+  assert.match(runtimeSource, /setFrameEpoch\((?:epoch|\(epoch\)) => epoch \+ 1\)/)
   assert.match(runtimeSource, /updateRecovery\(\{ type: 'retry' \}\)/)
   assert.match(runtimeSource, /OFFICE_WARMUP_RECOVERY_WINDOW_MS/)
   assert.match(runtimeSource, /stage: 'warmup-timeout'/)
@@ -80,18 +78,21 @@ test('automatic retry rebuilds the WASM frame and retains failure diagnostics', 
 })
 
 test('warmup distinguishes failure causes from diagnostic detail', () => {
-  assert.deepEqual(parseOfficeWarmupStatus({
-    stage: 'error',
-    error: 'font-permission',
-    detail: 'NotAllowedError: Permission denied'
-  }), {
-    stage: 'error',
-    done: 0,
-    total: 0,
-    loadedBytes: 0,
-    error: 'font-permission',
-    detail: 'NotAllowedError: Permission denied'
-  })
+  assert.deepEqual(
+    parseOfficeWarmupStatus({
+      stage: 'error',
+      error: 'font-permission',
+      detail: 'NotAllowedError: Permission denied',
+    }),
+    {
+      stage: 'error',
+      done: 0,
+      total: 0,
+      loadedBytes: 0,
+      error: 'font-permission',
+      detail: 'NotAllowedError: Permission denied',
+    }
+  )
   assert.equal(
     parseOfficeWarmupStatus({ stage: 'error', error: 'vendor-private-error' })?.error,
     'runtime-execution'
@@ -106,22 +107,22 @@ test('recoverable warmup failures retry silently three times with patient backof
   const runtimeFailure: OfficeWarmupStatus = {
     ...INITIAL_OFFICE_WARMUP_STATUS,
     stage: 'error',
-    error: 'runtime-assets'
+    error: 'runtime-assets',
   }
   const catalogFailure: OfficeWarmupStatus = {
     ...INITIAL_OFFICE_WARMUP_STATUS,
     stage: 'error',
-    error: 'font-catalog'
+    error: 'font-catalog',
   }
   const fontReadFailure: OfficeWarmupStatus = {
     ...INITIAL_OFFICE_WARMUP_STATUS,
     stage: 'error',
-    error: 'font-read'
+    error: 'font-read',
   }
   const permissionFailure: OfficeWarmupStatus = {
     ...INITIAL_OFFICE_WARMUP_STATUS,
     stage: 'error',
-    error: 'font-permission'
+    error: 'font-permission',
   }
 
   assert.deepEqual(OFFICE_WARMUP_RETRY_DELAYS_MS, [15_000, 45_000, 120_000])
@@ -139,6 +140,12 @@ test('slow guidance starts after one minute without converting progress into fai
 
   assert.equal(isOfficeWarmupSlow(runtime, OFFICE_WARMUP_SLOW_THRESHOLD_MS - 1), false)
   assert.equal(isOfficeWarmupSlow(runtime, OFFICE_WARMUP_SLOW_THRESHOLD_MS), true)
-  assert.equal(isOfficeWarmupSlow({ ...runtime, stage: 'ready' }, OFFICE_WARMUP_SLOW_THRESHOLD_MS), false)
-  assert.equal(isOfficeWarmupSlow({ ...runtime, stage: 'error' }, OFFICE_WARMUP_SLOW_THRESHOLD_MS), false)
+  assert.equal(
+    isOfficeWarmupSlow({ ...runtime, stage: 'ready' }, OFFICE_WARMUP_SLOW_THRESHOLD_MS),
+    false
+  )
+  assert.equal(
+    isOfficeWarmupSlow({ ...runtime, stage: 'error' }, OFFICE_WARMUP_SLOW_THRESHOLD_MS),
+    false
+  )
 })

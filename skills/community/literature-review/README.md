@@ -11,6 +11,28 @@
 main直接编辑v2及其依赖文件，统一运行 `workflow publish`。JSON格式要求适用于
 任务包、大纲和delta，不适用于原生章节输出；这些检查不等于科学质量审查。
 
+全文获取优先使用 PaperHub 文档 ID，保留其既有超时、重试与代理策略；失败后仅在已有
+arXiv ID 时尝试 arXiv，连接限时 3 秒、单篇降级总预算 10 秒（含并发等待），否则使用
+已有摘要。本地 PDF 优先。表格布局发现仅作为解析报告中的提示，提取文本继续进入
+LLM paper card 生成；空文本、损坏文件等失败仍明确报告。提取结果保存在本地。
+
+PDF 在布局解析前先用轻量文本探测正文边界（最多探测200页）。独立参考文献标题需有
+文献条目佐证，补充材料封面需有明确标题；目录和普通正文提及不作为边界。确认边界时
+保留边界所在整页，允许少量引用随正文进入后续提取，避免丢失同页正文。候选正文不超过
+40页时全部解析，超过40页时仅解析前20页和后20页；未确认边界时对整份PDF使用同一预算，
+包括超过200页的文档。原文件不变，原始页码继续用于证据定位。选择页码、边界和探测异常
+只写本地解析诊断，不新增主agent确认、裁剪通知或降级提示。
+
+图、表和公式的布局边界告警不拒绝成功提取的文本；仅有这些布局告警且提取到非空文本时返回OK。损坏文件、
+不安全压缩包和无可提取文本仍保持失败。LaTeX数学分隔符按转义奇偶顺序扫描，未闭合
+公式不触发回溯搜索。
+
+LaTeX 章节使用现有模板的一份简短能力说明，涵盖已加载宏包、数学记号与字体。
+指标函数使用明确给出定义的双线大写符号。v1 在现有一次 refine 前进行最多 10 秒的
+单次预编译：成功时不增加 refine 上下文，源码错误作为修复输入，超时或工具不可用时
+使用同一份模板能力说明和修复要求。预编译输出位于 `_internal/compilation_precheck/`，
+不覆盖正文或交付物，也不替代 v2 的最终出版编译。
+
 ## 运行要求
 
 ### 框架runtime与独立运行
@@ -136,7 +158,7 @@ Web-only、摘要缺失、检索数量不足和追踪缺失会显式报告降级
 
 ## 五分钟离线冒烟测试
 
-PDF 回归测试使用 ReportLab 生成真实测试文件，先运行 `scholarseed-skill-python -m pip install -r requirements-test.txt`；运行时不需要 ReportLab。
+PDF 回归测试使用 ReportLab 生成真实测试文件，在独立测试环境中先运行 `python -m pip install -r requirements-test.txt`；运行时不需要 ReportLab。不要向产品 Python 安装测试依赖。
 
 这个测试不调用 PaperHub、模型或图片接口，用于确认压缩包、Python 环境、CLI、引用资产和 workspace 初始化正常：
 
@@ -149,8 +171,8 @@ scholarseed-skill-python scripts/test_model_config_env.py
 ./scripts/slr init \
   --workspace ../slr-smoke \
   --intent "综述 2021–2026 年检索增强生成在企业知识库问答中的方法、评测与可靠性进展，并保留更早的奠基工作。"
-scholarseed-skill-python -m json.tool ../slr-smoke/01_input/query.json
-scholarseed-skill-python -m json.tool ../slr-smoke/01_input/writing_request.json
+python -m json.tool ../slr-smoke/01_input/query.json
+python -m json.tool ../slr-smoke/01_input/writing_request.json
 ```
 
 如果机器有 TeX，再运行：
@@ -431,7 +453,7 @@ ScholarSeed 的大纲 checkpoint 会追加产品确认卡，询问是否按大�
 返回的 confirmation 原样交给 `writing review-complete --request FILE`，不再并行启动
 shell 轮询。修改不等于批准；取消不自动继续。独立宿主仍可使用原有显式等待命令。
 
-本次选择性合入上游 2026.09.22.2 的大纲五分钟确认与出版文案，产品版本为 2026.9.22+2。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用根目录 `npm run install:python` 与 prebundle。
+本次选择性合入上游 2026.09.22.2 的大纲五分钟确认与出版文案，产品版本为 2026.9.22+2。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用 `pnpm ops pre install python` 与 prebundle。
 
 | 行为 | macOS | Windows |
 |---|---|---|

@@ -3,6 +3,14 @@
   "source": "https://cdn.zetaoffice.net/zetaoffice_latest/",
   "source_last_modified": "2025-05-13T15:18:14Z",
   "files": {
+    "fontcache.js": {
+      "bytes": 88346,
+      "sha256": "264bb3c5f9b759573d95830a04149a08cb2b6d2229822eaef595b6e5bf0d472e"
+    },
+    "fontcache.wasm": {
+      "bytes": 1055855,
+      "sha256": "a1abdc451681eca2b88e779316aa2bde80afee6a3db3ee3c7bfdc24fb23bdfa0"
+    },
     "locales.data": {
       "bytes": 3793352,
       "sha256": "e4a7ef658c850e6298623f7d13b77cad24e2c91b761705ae6f8fcafd305b8f6b"

@@ -20,7 +20,7 @@ import logging
 import time
 import uuid
 from dataclasses import asdict, replace
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from service.assistant.persistence.store import (
@@ -120,14 +120,13 @@ def protect_answer(markdown: str, complete: bool) -> str:
     return markdown[:-pending] if pending else markdown
 
 
-MAXIMUM_CONTEXT_REFS = 32
 MAXIMUM_REF_LABEL_CHARS = 256
 MAXIMUM_SOURCE_ID_CHARS = 2_048
 # 单条和总量同时限额：避免一份长文档吃掉全部上下文，使后续引用失效。
 # 截断是确定性的，同一份快照能够稳定复现模型实际读取的材料。
 MAXIMUM_ITEM_CHARS = 20_000
 MAXIMUM_MODEL_CONTEXT_CHARS = 60_000
-MAXIMUM_PROVIDER_ITEMS = 64
+DEFAULT_PROVIDER_ITEM_BUDGET = 64
 CAPABILITY_UNAVAILABLE_REASON = "upstream_port_unavailable"
 PROJECT_BINDING_UNAVAILABLE_REASON = "project_binding_port_unavailable"
 PROVIDER_EMPTY_RESULT_REASON = "provider_returned_no_items"
@@ -510,8 +509,6 @@ class AssistantService:
                 )
                 for source_id in selected_ids
             )
-            if len(selection.refs) + len(selected_refs) > MAXIMUM_PROVIDER_ITEMS:
-                raise AssistantContextError("selected literature exceeds context limit")
             selected_selection = replace(selection, refs=selected_refs)
             items = (
                 (
@@ -603,6 +600,7 @@ class AssistantService:
     ) -> tuple[AssistantTurnItem, ...]:
         resolved: list[AssistantTurnItem] = []
         remaining = MAXIMUM_MODEL_CONTEXT_CHARS
+        item_budget = max(DEFAULT_PROVIDER_ITEM_BUDGET, len(selection.refs))
         for ref_index, ref in enumerate(selection.refs):
             provider = self._providers.get(ref.kind)
             if provider is None:
@@ -627,9 +625,7 @@ class AssistantService:
                         # 一对多 Provider 只能使用剩余配额，不能把后续显式引用挤掉。
                         max_items=max(
                             1,
-                            MAXIMUM_PROVIDER_ITEMS
-                            - len(resolved)
-                            - (len(selection.refs) - ref_index - 1),
+                            item_budget - len(resolved) - (len(selection.refs) - ref_index - 1),
                         ),
                     ),
                 )
@@ -664,7 +660,7 @@ class AssistantService:
                 )
                 continue
             for source in resolution.items:
-                if len(resolved) >= MAXIMUM_PROVIDER_ITEMS:
+                if len(resolved) >= item_budget:
                     break
                 excerpt = (
                     source.text[: min(MAXIMUM_ITEM_CHARS, remaining)]
@@ -846,6 +842,13 @@ class AssistantService:
                 # 出现 [/evidence] 或 Assistant footer 也无法改变结构边界。
                 "content": item.excerpt_text if item.state in READABLE_CONTEXT_STATES else "",
             }
+            if item.ref.project_id:
+                rendered["project_id"] = item.ref.project_id
+                rendered["read_tool"] = "scholarseed_bridge resource read"
+                rendered["read_request"] = {
+                    "project_id": item.ref.project_id,
+                    "path": item.ref.source_id,
+                }
             if item.authority is ContextAuthority.USER_FEEDBACK:
                 feedback_index += 1
                 rendered[USER_FEEDBACK_INDEX_FIELD] = feedback_index
@@ -911,6 +914,7 @@ class AssistantService:
                     "kind": item.ref.kind.value,
                     "source_id": item.ref.source_id,
                     "source_revision": item.ref.source_revision,
+                    **({"project_id": item.ref.project_id} if item.ref.project_id else {}),
                     "label": item.ref.label,
                     "label_fallback": item.ref.label_fallback,
                     "selection_source_label": item.ref.selection_source_label,
@@ -973,7 +977,7 @@ class AssistantService:
 
     @staticmethod
     def _selected_literature_ids(value: tuple[str, ...]) -> tuple[str, ...]:
-        if not isinstance(value, (tuple, list)) or len(value) > MAXIMUM_PROVIDER_ITEMS:
+        if not isinstance(value, (tuple, list)):
             raise AssistantContextError("invalid selected literature")
         if any(
             not isinstance(item, str) or not item or len(item) > MAXIMUM_SOURCE_ID_CHARS
@@ -1076,6 +1080,7 @@ class AssistantService:
                     key: value
                     for key, value in asdict(ref).items()
                     if key not in ("label_fallback", "selection_source_label")
+                    and (key != "project_id" or value is not None)
                 }
                 for ref in selection.refs
             ],
@@ -1104,13 +1109,20 @@ class AssistantService:
 
     @staticmethod
     def _validate_refs(refs: tuple[ContextRef, ...]) -> None:
-        if len(refs) > MAXIMUM_CONTEXT_REFS:
-            raise ValueError("assistant context has too many refs")
         seen: set[str] = set()
         for ref in refs:
             if not ref.ref_id or ref.ref_id in seen:
                 raise ValueError("assistant context ref id must be non-empty and unique")
             seen.add(ref.ref_id)
+            if ref.project_id is not None and (
+                not ref.project_id.strip()
+                or ref.kind is not ContextRefKind.FILE
+                or ref.origin is not ContextOrigin.EXPLICIT
+                or ref.anchor is not None
+                or PurePosixPath(ref.source_id).is_absolute()
+                or "\\" in ref.source_id
+            ):
+                raise ValueError("project-scoped context requires an explicit relative file")
             if not ref.source_id or len(ref.source_id) > MAXIMUM_SOURCE_ID_CHARS:
                 raise ValueError("assistant context source id is invalid")
             if ref.label_fallback is not None and not isinstance(
@@ -1135,7 +1147,7 @@ class AssistantService:
                 ContextRefKind.RESOURCE,
             ):
                 source = PurePosixPath(ref.source_id)
-                absolute = source.is_absolute() or Path(ref.source_id).is_absolute()
+                absolute = source.is_absolute() or PurePath(ref.source_id).is_absolute()
                 if ".." in source.parts or (absolute and ref.kind is not ContextRefKind.FILE):
                     raise ValueError("assistant file source id must be project-relative")
 

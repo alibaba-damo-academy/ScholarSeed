@@ -33,6 +33,7 @@ import {
 import { relativeSessionFilePath } from '../markdown/links'
 import { prepareMarkdownSource, prepareMathSource, visibleMarkdownText } from '../markdown/source'
 import { remarkAnswerMath } from '../markdown/math'
+import { createMarkdownParseCache } from '../markdown/parser'
 
 export { visibleMarkdownText }
 export type { MarkdownAnswerAnnotation }
@@ -423,6 +424,7 @@ interface MarkdownRenderOptions {
   ) => React.ReactNode
   onOpenSessionFile?: (path: string) => void
   renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
+  renderSourceLink?: (href: string, children: React.ReactNode) => React.ReactNode
 }
 const MarkdownRenderContext = React.createContext<MarkdownRenderOptions>({
   evidence: new Map(),
@@ -516,7 +518,7 @@ function markdownComponents(): Components {
       )
     },
     a: ({ node: _node, href, children, ...props }) => {
-      const { renderCitation, onOpenSessionFile, renderSessionFileLink } =
+      const { renderCitation, onOpenSessionFile, renderSessionFileLink, renderSourceLink } =
         React.useContext(MarkdownRenderContext)
       if (_node?.properties[CITATION_PENDING]) return <PendingCitation />
       if (renderCitation && href && _node?.properties[CITATION_MARKER]) {
@@ -527,6 +529,8 @@ function markdownComponents(): Components {
           if (citation !== undefined && citation !== null) return <>{citation}</>
         }
       }
+      const source = href ? renderSourceLink?.(href, children) : undefined
+      if (source !== undefined && source !== null) return <>{source}</>
       const url = safeExternalUrl(href ?? '')
       const filePath =
         (onOpenSessionFile || renderSessionFileLink) && href ? relativeSessionFilePath(href) : null
@@ -616,6 +620,7 @@ export function Markdown({
   renderCitation,
   onOpenSessionFile,
   renderSessionFileLink,
+  renderSourceLink,
   citationUrls = EMPTY_CITATION_URLS,
   citationReferences = EMPTY_CITATION_REFERENCES,
   citationOccurrences = EMPTY_CITATION_OCCURRENCES,
@@ -637,12 +642,14 @@ export function Markdown({
   ) => React.ReactNode
   onOpenSessionFile?: (path: string) => void
   renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
+  renderSourceLink?: (href: string, children: React.ReactNode) => React.ReactNode
   citationUrls?: string[]
   citationReferences?: MarkdownCitationReference[]
   citationOccurrences?: MarkdownCitationOccurrence[]
   citationPending?: boolean
 }): React.JSX.Element {
   const renderMath = math ?? texMath
+  const parseCache = React.useMemo(() => createMarkdownParseCache(), [renderMath])
   const source = String(text || '')
   const preparedSource = prepareMarkdownSource(source)
   const renderedSource = renderMath ? prepareMathSource(preparedSource) : preparedSource
@@ -663,6 +670,7 @@ export function Markdown({
       renderCitation,
       onOpenSessionFile,
       renderSessionFileLink,
+      renderSourceLink,
     }),
     [
       answersById,
@@ -671,6 +679,7 @@ export function Markdown({
       renderCitation,
       onOpenSessionFile,
       renderSessionFileLink,
+      renderSourceLink,
     ]
   )
   const decoration = React.useMemo(
@@ -684,6 +693,7 @@ export function Markdown({
         citationReferences,
         citationOccurrences,
         citationPending,
+        isSourceLink: renderSourceLink ? (href) => renderSourceLink(href, null) != null : undefined,
       }),
     [
       answerAnnotations,
@@ -694,6 +704,7 @@ export function Markdown({
       evidence,
       source,
       sourceMapped,
+      renderSourceLink,
     ]
   )
   return (
@@ -704,16 +715,18 @@ export function Markdown({
           rehypePlugins={renderMath ? [decoration, rehypeKatex] : [decoration]}
           remarkPlugins={
             renderMath
-              ? [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, remarkAnswerMath]
-              : [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks]
+              ? [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, remarkAnswerMath, parseCache]
+              : [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, parseCache]
           }
           skipHtml
-          urlTransform={(url) =>
-            renderCitation && (isCitationUrl(url) || citationUrlSet.has(url))
+          urlTransform={(url, key) =>
+            key === 'href' && renderSourceLink?.(url, null) != null
               ? url
-              : (onOpenSessionFile || renderSessionFileLink) && relativeSessionFilePath(url)
+              : renderCitation && (isCitationUrl(url) || citationUrlSet.has(url))
                 ? url
-                : safeExternalUrl(url)
+                : (onOpenSessionFile || renderSessionFileLink) && relativeSessionFilePath(url)
+                  ? url
+                  : safeExternalUrl(url)
           }
         >
           {renderedSource}

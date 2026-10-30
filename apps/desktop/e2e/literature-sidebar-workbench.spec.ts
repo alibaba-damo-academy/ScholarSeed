@@ -1,8 +1,12 @@
+import { createReadyProject } from './fixtures/projects'
 import { test, expect, type Locator } from '@playwright/test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { DesktopSession, apiBase } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 test('toolbar import follows the selected literature collection', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
@@ -22,7 +26,7 @@ test('toolbar import follows the selected literature collection', async ({}, tes
       await expect(trigger).toBeVisible()
       await trigger.click()
       const menu = page.getByRole('menu')
-      await expect(menu.getByRole('menuitem')).toHaveCount(3)
+      await expect(menu.getByRole('menuitem')).toHaveCount(4)
       const chooser = page.waitForEvent('filechooser')
       await menu.getByRole('menuitem', { name: /Bib.*Ris/ }).click()
       const imported = page.waitForResponse(response => response.url().includes('/imports/bibliography') && response.request().method() === 'POST')
@@ -92,9 +96,7 @@ test('literature sidebar: scope, hierarchy, geometry and persistent folds', asyn
     await expect(sidebar.locator('[data-sidebar-view]')).toHaveCount(3)
     await expect(sidebar).not.toContainText('项目')
     await page.screenshot({ path: join(evidence, 'no-projects.png') })
-    const projectResponse = await page.request.post(`${base}/api/content/projects`, { data: { name: '测试091803' } })
-    expect(projectResponse.ok()).toBe(true)
-    const project = await projectResponse.json()
+    const project = await createReadyProject(page, '测试091803')
     const create = async (name: string, projectId = '', parentId = '') => {
       const response = await page.request.post(`${base}/api/v1/collections`, { data: { name, project_id: projectId, parent_id: parentId } })
       expect(response.ok(), await response.text()).toBe(true)

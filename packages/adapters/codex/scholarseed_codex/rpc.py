@@ -3,20 +3,40 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, AsyncIterable, AsyncIterator, Callable, Mapping
 
-from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.diagnostic import RPC_REJECTED_ERROR, native_diagnostic, rpc_failure
+from scholarseed_codex.protocol.state import RPC_METHOD_NOT_FOUND, AppServerError
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 
 LOGGER = logging.getLogger(__name__)
-RPC_REJECTION_REASONS = {"already has an active writer": "thread_writer_busy"}
+MAX_PENDING_RPC_REQUESTS = 1024
+RPC_DIAGNOSTIC_CHANNEL = "rpc"
 
 
 class FramingError(StrEnum):
     MALFORMED_JSON = "malformed_json"
     NON_OBJECT_MESSAGE = "non_object_message"
+
+
+class RpcSubmissionState(StrEnum):
+    NOT_SUBMITTED = "not_submitted"
+    UNKNOWN = "unknown"
+    ACCEPTED = "accepted"
+
+
+@dataclass
+class RpcSubmission:
+    state: RpcSubmissionState = RpcSubmissionState.NOT_SUBMITTED
+    on_attempt: Callable[[], None] | None = None
+
+    def attempt(self) -> None:
+        if self.on_attempt is not None:
+            self.on_attempt()
+        if self.state is RpcSubmissionState.NOT_SUBMITTED:
+            self.state = RpcSubmissionState.UNKNOWN
 
 
 async def read_messages(
@@ -54,7 +74,15 @@ class JsonLineWriter:
         if generation == self._generation:
             self._stream = None
 
-    async def write(self, message: Mapping[str, Any], *, generation: int) -> None:
+    async def write(
+        self,
+        message: Mapping[str, Any],
+        *,
+        generation: int,
+        on_written: Callable[[], None] | None = None,
+        before_write: Callable[[], None] | None = None,
+        on_write_attempt: Callable[[], None] | None = None,
+    ) -> None:
         stream = self._stream
         if generation != self._generation or stream is None or stream.is_closing():
             raise AppServerError(
@@ -71,7 +99,13 @@ class JsonLineWriter:
                     generation=generation,
                 )
             try:
+                if before_write is not None:
+                    before_write()
+                if on_write_attempt is not None:
+                    on_write_attempt()
                 stream.write(encoded)
+                if on_written is not None:
+                    on_written()
                 await stream.drain()
             except (BrokenPipeError, ConnectionError, OSError) as exc:
                 raise AppServerError(
@@ -89,59 +123,142 @@ class PendingRpc:
     method: str
     started_at: float
     written: bool = False
+    abandoned: bool = False
+    settled: bool = False
+    thread_id: str = ""
+    submission: RpcSubmission = field(default_factory=RpcSubmission)
+
+    def mark_written(self) -> None:
+        self.written = True
 
 
 class PendingRequests:
-    def __init__(self) -> None:
+    def __init__(self, *, capacity: int = MAX_PENDING_RPC_REQUESTS) -> None:
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity <= 0:
+            raise ValueError("RPC capacity must be a positive integer")
+        self._capacity = capacity
         self._next_id = 0
         self._pending: dict[int, PendingRpc] = {}
 
-    def begin(self, generation: int, method: str) -> tuple[int, PendingRpc]:
+    def begin(
+        self,
+        generation: int,
+        method: str,
+        *,
+        thread_id: str = "",
+        submission: RpcSubmission | None = None,
+    ) -> tuple[int, PendingRpc]:
+        if len(self._pending) >= self._capacity:
+            raise AppServerError(
+                "Native request capacity exhausted",
+                safe_error="runtime_rpc_capacity_exhausted",
+                method=method,
+                generation=generation,
+            )
         loop = asyncio.get_running_loop()
         self._next_id += 1
-        pending = PendingRpc(loop.create_future(), generation, method, loop.time())
+        pending = PendingRpc(
+            loop.create_future(),
+            generation,
+            method,
+            loop.time(),
+            thread_id=thread_id,
+            submission=submission if submission is not None else RpcSubmission(),
+        )
         self._pending[self._next_id] = pending
         return self._next_id, pending
 
-    def resolve(self, message: Mapping[str, Any], generation: int) -> None:
+    def resolve(
+        self, message: Mapping[str, Any], generation: int, *, pid: int | None = None
+    ) -> None:
         request_id = message.get("id")
         pending = self._pending.get(int(str(request_id))) if str(request_id).isdigit() else None
-        if pending is None or pending.generation != generation or pending.future.done():
+        if pending is None or pending.generation != generation:
+            return
+        pending.settled = True
+        if pending.abandoned:
+            self._pending.pop(int(str(request_id)))
+            return
+        if pending.future.done():
             return
         error = message.get("error")
         if isinstance(error, Mapping):
             raw_code = error.get("code")
-            code = str(raw_code) if isinstance(raw_code, int) else "unknown"
+            if (
+                type(raw_code) is int
+                and raw_code == RPC_METHOD_NOT_FOUND
+                and pending.submission.state is not RpcSubmissionState.ACCEPTED
+            ):
+                pending.submission.state = RpcSubmissionState.NOT_SUBMITTED
+            code = str(raw_code) if type(raw_code) is int else "unknown"
+            raw_message = error.get("message")
+            safe_error = rpc_failure(pending.method, pending.thread_id, raw_code, raw_message)
+            diagnostic = native_diagnostic(
+                RPC_DIAGNOSTIC_CHANNEL, raw_message if isinstance(raw_message, str) else ""
+            )
+            latency_ms = max(
+                0, int((asyncio.get_running_loop().time() - pending.started_at) * 1000)
+            )
             LOGGER.warning(
-                "codex_rpc_rejected method=%s code=%s reason=%s",
+                "codex_rpc_rejected method=%s code=%s request_id=%s generation=%s pid=%s "
+                "latency_ms=%s %s",
                 pending.method,
                 code,
-                next(
-                    (
-                        reason
-                        for marker, reason in RPC_REJECTION_REASONS.items()
-                        if marker in str(error.get("message") or "")
-                    ),
-                    "unspecified",
-                ),
+                request_id,
+                generation,
+                pid,
+                latency_ms,
+                diagnostic.summary,
             )
             pending.future.set_exception(
                 AppServerError(
-                    f"App Server request failed (code={code})",
-                    safe_error="runtime_rpc_rejected",
+                    f"App Server request failed (code={code}; {diagnostic.summary})",
+                    safe_error=safe_error,
                     method=pending.method,
                     generation=generation,
-                    rpc_code=raw_code if isinstance(raw_code, int) else None,
+                    rpc_code=raw_code if type(raw_code) is int else None,
+                    retryability=(
+                        RuntimeRetryability.USER_RETRYABLE
+                        if safe_error == RPC_REJECTED_ERROR
+                        else RuntimeRetryability.TERMINAL
+                    ),
                 )
             )
         else:
+            pending.submission.state = RpcSubmissionState.ACCEPTED
             result = message.get("result")
             pending.future.set_result(dict(result) if isinstance(result, Mapping) else {})
 
     def discard(self, request_id: int) -> None:
-        pending = self._pending.pop(request_id, None)
-        if pending is not None and not pending.future.done():
+        pending = self._pending.get(request_id)
+        if pending is None:
+            return
+        if pending.abandoned:
+            return
+        if (
+            pending.written or pending.submission.state is not RpcSubmissionState.NOT_SUBMITTED
+        ) and not pending.settled:
+            pending.abandoned = True
+            if pending.future.done() and not pending.future.cancelled():
+                pending.future.exception()
+            else:
+                pending.future.cancel()
+            return
+        self._pending.pop(request_id)
+        if not pending.future.done():
             pending.future.cancel()
+        elif not pending.future.cancelled():
+            pending.future.exception()
+
+    def unsettled(self, generation: int) -> bool:
+        return any(
+            pending.generation == generation
+            and (
+                pending.written or pending.submission.state is not RpcSubmissionState.NOT_SUBMITTED
+            )
+            and not pending.settled
+            for pending in self._pending.values()
+        )
 
     def fail(self, error: AppServerError, *, generation: int | None = None) -> None:
         for pending in tuple(self._pending.values()):
@@ -149,6 +266,14 @@ class PendingRequests:
                 continue
             if not pending.future.done():
                 pending.future.set_exception(error)
+
+    def retire(self, generation: int) -> None:
+        for request_id, pending in tuple(self._pending.items()):
+            if pending.generation != generation:
+                continue
+            pending.settled = True
+            if pending.abandoned:
+                self._pending.pop(request_id)
 
     def close(self, error: AppServerError) -> None:
         self.fail(error)

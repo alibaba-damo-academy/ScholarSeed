@@ -1,7 +1,8 @@
 import { Onboarding } from '../contracts/onboarding'
+import { FEEDBACK_RECORDER_START_EVENT } from '../../../feedback'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { BookOpenText, Folders, House, LibraryBig, ListTodo } from 'lucide-react'
+import { Blocks, Box, LibraryBig } from 'lucide-react'
 
 import { accountDisplayText } from '../account'
 import { featureRegistry } from '../app/composition'
@@ -10,66 +11,48 @@ import {
   AccountMenu,
   openCloudPage,
   useAccountIdentity,
-  useAccountLogout
+  useAccountLogout,
 } from '../components/business/AccountMenu'
 import { Feedback } from '../components/business/Feedback'
 import { TaskCenter } from '../components/business/Tasks'
 import { useTaskCenter } from '../components/business/taskCenterContext'
 import { UpdateEntry } from '../components/business/UpdateEntry'
-import {
-  Button,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-  Tooltip
-} from '../components/ui'
-import { cx } from '../components/ui'
+import { IconFont } from '../components/primitive/Iconfont'
+import { Button, Popover, PopoverContent, PopoverTrigger, Tooltip } from '../components/ui'
+import { cx, navigationRailButtonClassName } from '../components/ui'
 import { Icon } from '../icons'
-import { hasProjectScope, useApp } from '../store'
+import { useApp } from '../store'
 
 const MENU_ICON_SIZE = 16
 /**
- * 首页空间入口由 Shell 自己贡献：它不属于任何业务 Feature（原型 home space
- * 的房子图标），且必须排在所有 Feature 条目之前。
+ * 首页空间入口由 Shell 自己贡献：它不属于任何业务 Feature，
+ * 且必须排在所有 Feature 条目之前。
  */
 const HOME_ACTIVITY_ITEM: ActivityItem = {
   key: 'home',
-  label: (i18n, { hasProject }) => i18n.getFixedT(null, 'shell')(
-    hasProject ? 'navigation.returnHome' : 'navigation.projects'
-  ),
+  label: (i18n) => i18n.getFixedT(null, 'layout')('projects'),
   icon: 'home',
-  order: 0
+  order: 0,
 }
 /** 首页空间只保留全局面条目：无项目上下文的图标表达不了「进入某个项目」。 */
-const HOME_SPACE_KEYS = ['home', 'literature']
+const HOME_SPACE_KEYS = ['home', 'literature', 'skills']
 const ACTIVITY_ICON_BY_KEY: Partial<Record<string, React.JSX.Element>> = {
-  home: <House size={MENU_ICON_SIZE} strokeWidth={1.45} />,
+  home: <Box size={MENU_ICON_SIZE} strokeWidth={1.45} />,
+  skills: <Blocks size={MENU_ICON_SIZE} />,
   literature: <LibraryBig size={MENU_ICON_SIZE} strokeWidth={1.45} />,
-  resource: <Folders size={MENU_ICON_SIZE} strokeWidth={1.45} />
 }
-const activityIconFor = (
-  key: string,
-  icon: ActivityItem['icon'],
-  hasProject: boolean
-): React.JSX.Element => {
-  if (key === 'literature' && hasProject) {
-    return <BookOpenText size={MENU_ICON_SIZE} strokeWidth={1.45} />
-  }
-  return ACTIVITY_ICON_BY_KEY[key] ?? (
-    <Icon name={icon} size={MENU_ICON_SIZE} sw={1.45} />
-  )
+const activityIconFor = (key: string, icon: ActivityItem['icon']): React.JSX.Element => {
+  return ACTIVITY_ICON_BY_KEY[key] ?? <Icon name={icon} size={MENU_ICON_SIZE} sw={1.45} />
 }
 // 活动栏层级用 --vds-z-rail 而不是 elevated: 头像菜单要向右溢出栏宽浮在模块面板
 // 之上, 同层级下 DOM 在后的面板会盖住本栏子元素; 但必须留在浮层带 (60 起) 之下,
 // 否则项目切换弹层/全局搜索遮罩会被本栏盖住。见 design/zindex.css 的不变量注释。
 const ACTIVITY_RAIL_CLASS_NAME =
-  'vds-activity-rail relative z-[var(--vds-z-rail)] has-[.vds-tooltip--open]:z-[var(--vds-z-tooltip)] box-border flex w-14 flex-none flex-col items-center gap-2 border-r border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] px-2 py-6'
+  'vds-activity-rail relative z-[var(--vds-z-rail)] has-[.vds-tooltip--open]:z-[var(--vds-z-tooltip)] box-border flex w-[var(--vds-layout-rail-width)] flex-none flex-col items-center gap-[var(--vds-space-2)] border-r border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] py-[var(--vds-space-4)]'
 const ACTIVITY_RAIL_MAIN_CLASS_NAME =
-  'grid content-start justify-items-center gap-2'
-const ACTIVITY_RAIL_FOOTER_CLASS_NAME =
-  'mt-auto grid justify-items-center gap-2'
-const ACTIVITY_BUTTON_CLASS_NAME =
-  'vds-activity-btn relative grid size-10 place-items-center rounded-[8px] border border-transparent text-[var(--vds-text-tertiary)] transition-[background-color,border-color,color,opacity] duration-150 ease-[var(--vds-ease-standard)] hover:bg-[var(--vds-bg-gray-hover-transparent)] hover:text-[var(--vds-brand-text-primary)] disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-[var(--vds-text-tertiary)]'
+  'grid content-start justify-items-center gap-[var(--vds-space-2)]'
+const ACTIVITY_RAIL_FOOTER_CLASS_NAME = 'mt-auto grid justify-items-center gap-[var(--vds-space-2)]'
+const ACTIVITY_BUTTON_CLASS_NAME = navigationRailButtonClassName
 // 选中态字色加 important: 基类 text-[var(--vds-text-tertiary)] 在编译后样式表中排在
 // text-[var(--vds-brand-text-primary)] 之后, 同特异性下会压掉选中态字色, 导致选中图标
 // 仍是灰色而 hover 是品牌色; 两者必须一致(取 hover 的品牌色)。
@@ -78,11 +61,7 @@ const ACTIVITY_BUTTON_ACTIVE_CLASS_NAME =
 const ACTIVITY_AVATAR_CLASS_NAME =
   'grid size-[30px] place-items-center rounded-[var(--vds-radius-circle)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] text-[13px] font-[var(--vds-fw-semibold)] leading-none text-[var(--vds-brand-text-primary)] shadow-[0_0_0_2px_var(--vds-bg-gray-default)] transition-[border-color,box-shadow] duration-150 ease-[var(--vds-ease-standard)] hover:border-[var(--vds-brand-bg-default)] hover:shadow-[0_0_0_3px_var(--vds-brand-light-bg-hover)]'
 
-const avatarText = (name: string): string =>
-  Array.from(name)
-    .slice(0, 1)
-    .join('')
-    .toUpperCase()
+const avatarText = (name: string): string => Array.from(name).slice(0, 1).join('').toUpperCase()
 
 /**
  * 左侧活动栏：视图切换 + 任务中心 + 头像入口。
@@ -114,61 +93,43 @@ export function ActivityRail(): React.JSX.Element {
   const { t, i18n } = useTranslation('shell')
   const { t: ui } = useTranslation('ui')
   const { t: accountText } = useTranslation('account')
-  const scoped = hasProjectScope(state)
-  const { user, profile, cloudBase } = useAccountIdentity(state.backendReady)
-  const { busy: logoutBusy, error: logoutError, logout } = useAccountLogout()
   const {
-    activeCount,
-    open: taskCenterOpen,
-    setOpen: setTaskCenterOpen
-  } = useTaskCenter()
+    user,
+    profile,
+    cloudBase,
+    revision: identityRevision,
+  } = useAccountIdentity(state.backendReady)
+  const {
+    busy: logoutBusy,
+    error: logoutError,
+    logout,
+  } = useAccountLogout(`${identityRevision}:${user?.user_id ?? ''}`)
+  const accountTrigger = React.useRef<HTMLButtonElement | null>(null)
+  const { activeCount, open: taskCenterOpen, setOpen: setTaskCenterOpen } = useTaskCenter()
 
   const displayName = accountDisplayText(user, profile, accountText)
 
-  const homeSpace = state.mainView === 'home'
-  const projectLiterature = state.mainView === 'literature' && Boolean(state.homeSelectedProjectId)
-  const contributed = homeSpace
-    ? featureRegistry.activityItems.filter((view) =>
-        HOME_SPACE_KEYS.includes(view.key)
-      )
-    : featureRegistry.activityItems.filter(
-        (view) => (!view.hiddenIn?.includes(state.mainView) || projectLiterature) && (view.requiresProject === true ? scoped : true)
-      )
-  const items = [HOME_ACTIVITY_ITEM, ...contributed]
-    .sort((left, right) => left.order - right.order)
+  const contributed = featureRegistry.activityItems.filter((view) =>
+    HOME_SPACE_KEYS.includes(view.key)
+  )
+  const items = [HOME_ACTIVITY_ITEM, ...contributed].sort((left, right) => left.order - right.order)
   // 原型在项目空间里用一条短分隔线把全局面条目与项目模块条目分开。
-  const dividerBefore = homeSpace
-    ? null
-    : (
-      items.find(
-        (view) => view.requiresProject === true
-      )?.key ?? null
-    )
 
   return (
     <>
-      <nav
-        className={ACTIVITY_RAIL_CLASS_NAME}
-        aria-label={ui('navigation.modules')}
-      >
+      <nav className={ACTIVITY_RAIL_CLASS_NAME} aria-label={ui('navigation.modules')}>
         <div className={ACTIVITY_RAIL_MAIN_CLASS_NAME}>
           {items.map((view) => {
-            const label = view.label(i18n, { hasProject: Boolean(state.homeSelectedProjectId) })
-            const blocked = view.requiresProject === true && !scoped
+            const label = view.label(i18n, { hasProject: false })
             // 禁用时不画选中态：mainView 虽然仍停在这个视图，但它的面板已经隐藏、
             // 中央是品牌空态 —— 高亮加左侧指示条会让人以为它可点。
-            const current = state.mainView === view.key && !blocked
+            const current =
+              view.key === 'home'
+                ? state.mainView === 'home' || Boolean(state.homeSelectedProjectId)
+                : state.mainView === view.key
             return (
               <React.Fragment key={view.key}>
-                {view.key === dividerBefore && (
-                  <span className="vds-rail-div" aria-hidden />
-                )}
-                <Tooltip
-                  content={
-                    blocked ? t('chrome.requiresProject', { label }) : label
-                  }
-                  side="right"
-                >
+                <Tooltip content={label} side="right">
                   <Button
                     unstyled
                     className={cx(
@@ -179,14 +140,13 @@ export function ActivityRail(): React.JSX.Element {
                     aria-current={current}
                     data-testid={`activity-${view.key}`}
                     data-ob={`activity-${view.key}`}
-                    disabled={blocked}
-                    onClick={() => act.openWorkbenchView(view.key, { preserveProject: true })}
+                    onClick={() =>
+                      view.key === 'home'
+                        ? act.openProjectCenter()
+                        : act.openWorkbenchView(view.key)
+                    }
                   >
-                    {activityIconFor(
-                      view.key,
-                      view.icon,
-                      Boolean(state.homeSelectedProjectId)
-                    )}
+                    {activityIconFor(view.key, view.icon)}
                   </Button>
                 </Tooltip>
               </React.Fragment>
@@ -197,16 +157,21 @@ export function ActivityRail(): React.JSX.Element {
         <div className={ACTIVITY_RAIL_FOOTER_CLASS_NAME}>
           {/* PRD 第 1 条：更新入口在通知与头像之上；未发现新版本时它自己返回 null。 */}
           <UpdateEntry />
+          <div data-feedback-entry-host className="no-drag flex items-center justify-center" />
           <Popover open={taskCenterOpen} onOpenChange={setTaskCenterOpen}>
             <PopoverTrigger asChild>
               <Tooltip content={t('chrome.taskCenter')} side="right">
                 <Button
                   unstyled
                   className={ACTIVITY_BUTTON_CLASS_NAME}
-                  aria-label={activeCount ? t('chrome.taskCenterCount', { count: activeCount }) : t('chrome.taskCenter')}
+                  aria-label={
+                    activeCount
+                      ? t('chrome.taskCenterCount', { count: activeCount })
+                      : t('chrome.taskCenter')
+                  }
                   data-testid="activity-tasks"
                 >
-                  <ListTodo size={MENU_ICON_SIZE} strokeWidth={1.45} />
+                  <IconFont type="icon-line-tool-bell" />
                   {activeCount ? (
                     <span className="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-[var(--vds-error-bg-default)] px-1 text-[9px] leading-4 text-white">
                       {activeCount}
@@ -216,7 +181,7 @@ export function ActivityRail(): React.JSX.Element {
               </Tooltip>
             </PopoverTrigger>
             {/* z 高于 tooltip：同 UpdateEntry，栏在 tooltip 打开时抬到 --vds-z-tooltip 会盖住本弹层。 */}
-            <PopoverContent className="no-drag !z-[calc(var(--vds-z-tooltip)+1)] !w-full p-0">
+            <PopoverContent className="no-drag !z-[var(--vds-z-update-entry-panel)] !w-[var(--vds-message-center-width)] !max-w-[var(--vds-popover-available-width)] overflow-hidden !rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] !bg-[var(--vds-bg-gray-default)] !p-0 !shadow-[var(--vds-shadow-2-center)]">
               <TaskCenter />
             </PopoverContent>
           </Popover>
@@ -230,57 +195,49 @@ export function ActivityRail(): React.JSX.Element {
             <PopoverTrigger asChild>
               <Button
                 unstyled
-                className={ACTIVITY_AVATAR_CLASS_NAME}
+                className={cx(ACTIVITY_AVATAR_CLASS_NAME, 'mt-[var(--vds-space-2)]')}
                 aria-label={ui('avatar.label', { name: displayName })}
                 data-testid="activity-account"
+                ref={accountTrigger}
               >
                 {/* 已登录 = 颜色底色 + 昵称字符 (PRD ②)；未登录 = 通用人形图标，不是品牌字。 */}
-                {user ? (
-                  avatarText(displayName)
-                ) : (
-                  <Icon name="user" size={15} />
-                )}
+                {user ? avatarText(displayName) : <Icon name="user" size={15} />}
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="no-drag z-[var(--vds-z-popover)] !w-[220px]">
-              <AccountMenu
-                user={user}
-                profile={profile}
-                cloudBase={cloudBase}
-                className=""
-                embedded
-                logoutBusy={logoutBusy}
-                logoutError={logoutError}
-                onLogin={() => {
-                  // 登录层与反馈弹窗同理是独立表面: 先收菜单再开。
-                  closeMenus()
-                  set({ loginOpen: true })
-                }}
-                onLogout={() => void logout()}
-                onOpenProfile={() => {
-                  closeMenus()
-                  openCloudPage('profile')
-                }}
-                onOpenCredits={(anchor) => {
-                  closeMenus()
-                  openCloudPage('credits', anchor)
-                }}
-                onGuide={() => {
-                  // 与设置入口共用引导中心。
-                  closeMenus()
-                  Onboarding.openCenter()
-                }}
-                onFeedback={() => {
-                  // 弹窗是独立表面: 先收菜单, 再由 openFeedback 在弹窗挂载前抓当前窗口截图。
-                  closeMenus()
-                  void act.openFeedback()
-                }}
-                onSettings={() => {
-                  closeMenus()
-                  act.openSettings('preferences')
-                }}
-              />
-            </PopoverContent>
+            <AccountMenu
+              user={user}
+              profile={profile}
+              cloudBase={cloudBase}
+              identityRevision={identityRevision}
+              open={state.accountMenuOpen}
+              trigger={accountTrigger}
+              onClose={closeMenus}
+              logoutBusy={logoutBusy}
+              logoutError={logoutError}
+              onLogin={() => {
+                // 登录层与反馈弹窗同理是独立表面: 先收菜单再开。
+                closeMenus()
+                set({ loginOpen: true })
+              }}
+              onLogout={logout}
+              onOpenProfile={() => {
+                closeMenus()
+                openCloudPage('profile')
+              }}
+              onOpenCredits={(anchor) => {
+                closeMenus()
+                openCloudPage('credits', anchor)
+              }}
+              onGuide={() => {
+                // 与设置入口共用引导中心。
+                closeMenus()
+                Onboarding.openCenter()
+              }}
+              onSettings={() => {
+                closeMenus()
+                act.openSettings('preferences')
+              }}
+            />
           </Popover>
         </div>
       </nav>
@@ -291,6 +248,10 @@ export function ActivityRail(): React.JSX.Element {
           sessionId={state.activeSession}
           autoScreenshot={state.feedbackScreenshot}
           onClose={() => set({ feedbackOpen: false, feedbackScreenshot: null })}
+          onRecord={() => {
+            set({ feedbackOpen: false, feedbackScreenshot: null })
+            window.dispatchEvent(new Event(FEEDBACK_RECORDER_START_EVENT))
+          }}
         />
       )}
     </>

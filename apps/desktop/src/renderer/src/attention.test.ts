@@ -1,48 +1,60 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { attentionRequest, matchingAttentionAnchors, sessionNeedsAttention } from './attention.ts'
 
-import type { SessionNode } from './model.ts'
-import { notificationIntents, sessionNeedsAttention } from './attention.ts'
-
-const session = (id: string, status: SessionNode['status'], activityAt = 10): SessionNode => ({
-  id,
-  title: `任务 ${id}`,
-  status,
-  activityAt
+test('attention depends on unread reminders rather than task business status', () => {
+  assert.equal(sessionNeedsAttention(0), false)
+  assert.equal(sessionNeedsAttention(1), true)
+  assert.equal(sessionNeedsAttention(3), true)
 })
 
-test('session attention separates actionable waiting and unread terminal sessions', () => {
-  assert.equal(sessionNeedsAttention(session('waiting', 'waiting'), 99), true)
-  assert.equal(sessionNeedsAttention(session('done', 'done'), 9), true)
-  assert.equal(sessionNeedsAttention(session('done', 'done'), 10), false)
-  assert.equal(sessionNeedsAttention(session('meta', 'dormant', 99), 0), false)
+test('notification can reveal a non-first blocking request without resolving another request', () => {
+  const requests = [{ requestId: 'first' }, { requestId: 'second' }]
+  assert.equal(attentionRequest(requests, 'second'), requests[1])
+  assert.equal(attentionRequest(requests, 'resolved'), requests[0])
+  assert.equal(attentionRequest([], 'second'), undefined)
+  assert.equal(requests.length, 2)
 })
 
-test('notification intents cover waiting and terminal transitions once', () => {
-  const intents = notificationIntents(
-    { a: 'running', b: 'waiting', c: 'done' },
-    [session('a', 'waiting'), session('b', 'done'), session('c', 'done')],
-    null,
-    false
-  )
-  assert.deepEqual(intents.map((intent) => [intent.sessionId, intent.terminal]), [
-    ['a', false],
-    ['b', true]
-  ])
+test('completion targets the final assistant, never the first prompt', () => {
+  const anchors = [
+    { messageTurnId: 'round', messageItemId: 'user', messageKind: 'user' },
+    { messageTurnId: 'round', messageItemId: 'partial', messageKind: 'agent' },
+    { messageTurnId: 'round', messageItemId: 'final', messageKind: 'agent' },
+  ]
+  assert.deepEqual(matchingAttentionAnchors(anchors, { turnId: 'round', kind: 'completed' }), [anchors[2]])
+  assert.deepEqual(matchingAttentionAnchors(anchors, { turnId: 'round' }), [anchors[0]])
 })
 
-test('focused active session suppresses its own notification', () => {
-  assert.deepEqual(
-    notificationIntents({ a: 'running' }, [session('a', 'done')], 'a', true),
-    []
-  )
+test('failure ignores partial assistant anchor and waits for the failure explanation', () => {
+  const partial = { messageTurnId: 'round', messageItemId: 'partial', messageKind: 'agent' }
+  const failure = { messageTurnId: 'round', messageKind: 'error' }
+  const focus = { turnId: 'round', itemId: 'partial', kind: 'failed' as const }
+  assert.deepEqual(matchingAttentionAnchors([partial], focus), [])
+  assert.deepEqual(matchingAttentionAnchors([partial, failure], focus), [failure])
 })
 
-test('notification intent keeps user titles and stable message keys until delivery', () => {
-  const sessions = [{ ...session('a', 'done'), title: '研究 project' }, { ...session('b', 'failed'), title: '' }]
-  const intents = notificationIntents({ a: 'running', b: 'running' }, sessions, null, false)
-  assert.equal(intents[0].title, '研究 project')
-  assert.equal(intents[1].title, '')
-  assert.deepEqual(intents.map(intent => intent.bodyKey), ['notifications.done', 'notifications.failed'])
-  assert.deepEqual(notificationIntents({ a: 'done', b: 'failed' }, sessions, null, false), [])
+test('a new user request wins over stale message anchors and unmatched requests do not fall back', () => {
+  const anchors = [
+    { interactionRequestId: 'old' },
+    { interactionRequestId: 'new' },
+    { messageTurnId: 'round', messageItemId: 'final', messageKind: 'agent' },
+  ]
+  assert.deepEqual(matchingAttentionAnchors(anchors, { requestId: 'new', itemId: 'final' }), [anchors[1]])
+  assert.deepEqual(matchingAttentionAnchors(anchors, { requestId: 'missing', itemId: 'final' }), [])
+})
+
+test('blocked recovery targets only its session recovery surface, not partial output or old errors', () => {
+  const anchors = [
+    { messageTurnId: 'round', messageKind: 'error' },
+    { recoverySessionId: 'other-session', recoveryIncidentId: 'incident' },
+    { recoverySessionId: 'session', recoveryIncidentId: 'incident' },
+    { recoverySessionId: 'session', recoveryIncidentId: 'new-incident' },
+  ]
+  assert.deepEqual(matchingAttentionAnchors(anchors, {
+    sessionId: 'session', turnId: 'round', kind: 'recovery', incidentId: 'incident',
+  }), [anchors[2]])
+  assert.deepEqual(matchingAttentionAnchors(anchors, {
+    sessionId: 'session', kind: 'recovery', incidentId: 'unknown',
+  }), [])
 })

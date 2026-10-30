@@ -1,11 +1,10 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { CircleAlert, CircleDashed, Pause, type LucideIcon } from 'lucide-react'
+import { ChevronRight, CircleAlert, CircleDashed, type LucideIcon } from 'lucide-react'
 import type { ParseKeys } from 'i18next'
 
 import aiThinking from '../../assets/ai-thinking.gif'
 import { streamingTextClassName } from '../../design/motion'
-import { Icon } from '../../icons'
 import { IconFont } from '../primitive/Iconfont'
 import { activeThread, useApp } from '../../store'
 import type { Thread } from '../../model'
@@ -13,9 +12,9 @@ import {
   displayTodos,
   isLatestUserTurn,
   planElapsedMilliseconds,
+  planSkillEstimate,
   planStatus,
-  stepElapsedMilliseconds,
-  UNKNOWN_STEP_DURATION,
+  stepDisplayMilliseconds,
   type TodoDisplayItem,
   type TodoDisplayStatus,
   todoProgress,
@@ -31,8 +30,10 @@ import {
   CollapsibleTrigger,
   EllipsisText,
   Spinner,
+  Tooltip,
 } from '../ui'
 import { planDurationLabel } from './duration'
+import { TaskPausedIcon } from './TaskStatus'
 
 const ELAPSED_TICK_MS = 1_000
 const MILLISECONDS_PER_SECOND = 1_000
@@ -112,7 +113,7 @@ function StatusMark({
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const presentation = STATUS_PRESENTATION[status]
-  const LucideMark = paused ? Pause : presentation.lucide
+  const LucideMark = presentation.lucide
   const color =
     tone === 'danger'
       ? 'text-[var(--vds-error-text-primary)]'
@@ -123,11 +124,13 @@ function StatusMark({
     /* min-h-[1lh]: iconfont 字形靠行盒撑高(18/22px), svg 没有行盒会缩成图标自身高度,
        在 items-start 的行里顶边对齐显得偏高; 用自身行高兜底后与右侧文字首行居中对齐。 */
     <span
-      className={`inline-grid min-h-[1lh] shrink-0 place-items-center font-medium ${color}`}
+      className={`inline-grid min-h-[var(--vds-todo-status-mark-min-height)] shrink-0 place-items-center font-[var(--vds-fw-medium)] ${color}`}
       data-testid={`todo-mark-${status}`}
       aria-label={paused ? t('todo.summary.interrupted') : t(presentation.messageKey)}
     >
-      {status === 'running' ? (
+      {paused ? (
+        <TaskPausedIcon />
+      ) : status === 'running' ? (
         <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
       ) : LucideMark ? (
         /* .iconfont 全局 16px, lucide 图标用同一档 icon-8 token 才能与其余状态字形等大。 */
@@ -153,8 +156,8 @@ function Row({
   isLast?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('components')
-  const elapsed = stepElapsedMilliseconds(thread, item, now)
-  const duration = elapsed === null ? UNKNOWN_STEP_DURATION : planDurationLabel(elapsed)
+  const elapsed = stepDisplayMilliseconds(thread, item, now)
+  const duration = elapsed === null ? null : planDurationLabel(elapsed)
   const pendingDependencies =
     item.status === 'todo'
       ? items.filter(
@@ -172,7 +175,7 @@ function Row({
         {!isLast ? (
           <span
             aria-hidden="true"
-            className="absolute left-[calc(50%_-_1px)] top-[calc(1lh+var(--vds-space-1))] -bottom-[var(--vds-space-3)] border-l border-solid border-[var(--vds-border-default)]"
+            className="absolute left-[calc(50%_-_var(--vds-border-width-1))] top-[calc(1lh+var(--vds-space-1))] -bottom-[var(--vds-space-3)] border-l border-solid border-[var(--vds-border-default)]"
           />
         ) : null}
       </span>
@@ -187,13 +190,22 @@ function Row({
           >
             {item.status === 'running' && item.activeForm ? item.activeForm : item.content}
           </span>
-          <span
-            className="shrink-0 whitespace-nowrap text-[var(--vds-text-tertiary)] tabular-nums"
-            data-testid="todo-step-elapsed"
-            aria-label={t('todo.stepElapsed', { duration })}
-          >
-            {duration}
-          </span>
+          {duration !== null ? (
+            <Tooltip
+              content={t(item.children?.length ? 'todo.stepAccumulated' : 'todo.stepExecution')}
+            >
+              <span
+                className="shrink-0 whitespace-nowrap text-[var(--vds-text-tertiary)] tabular-nums"
+                data-testid="todo-step-elapsed"
+                aria-label={t(
+                  item.children?.length ? 'todo.stepAccumulatedElapsed' : 'todo.stepElapsed',
+                  { duration }
+                )}
+              >
+                {duration}
+              </span>
+            </Tooltip>
+          ) : null}
         </div>
         {pendingDependencies.length > 0 && (
           <span className="block text-[var(--text-3)]">
@@ -203,7 +215,9 @@ function Row({
           </span>
         )}
         {item.status === 'unrequested' && (
-          <Badge size="sm" tone="neutral" className="mt-[var(--vds-space-1)]">{t('todo.status.unrequestedBadge')}</Badge>
+          <Badge size="sm" tone="neutral" className="mt-[var(--vds-space-1)]">
+            {t('todo.status.unrequestedBadge')}
+          </Badge>
         )}
         {item.children?.length ? (
           <Collapsible
@@ -214,8 +228,8 @@ function Row({
               className="group flex w-full !justify-start gap-[var(--vds-space-1)] !rounded-none !border-0 !bg-transparent ![padding:0_var(--vds-space-4)] text-left text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)] hover:![background:var(--vds-other-overlay-1)]"
               data-testid="todo-subplan-toggle"
             >
-              <span className="shrink-0 transition-transform group-data-[state=open]:rotate-180">
-                <Icon name="chevron-down" size={13} sw={1.8} />
+              <span className="shrink-0 transition-transform [[data-state=open]>&]:rotate-90">
+                <ChevronRight size={13} strokeWidth={1.8} aria-hidden="true" />
               </span>
               <span>
                 {t('todo.subplanProgress', {
@@ -275,29 +289,7 @@ export function TodoPanel({
   const [now, setNow] = React.useState(Date.now())
   const continuingRef = React.useRef(false)
   const [continuing, setContinuing] = React.useState(false)
-  const estimatedSkillEvent = [...thread.conversation]
-    .reverse()
-    .find(
-      (item) =>
-        item.kind === 'skill' &&
-        item.estimate &&
-        item.turnId &&
-        thread.turnOutcomes?.[item.turnId] === 'running'
-    )
-  const estimatedSkillReference = [...thread.conversation].reverse().flatMap((item) =>
-    item.kind === 'user' && item.turnId && thread.turnOutcomes?.[item.turnId] === 'running'
-      ? (item.refs ?? [])
-          .filter((reference) => reference.type === 'skill' && reference.estimate)
-          .map((reference) => ({
-            turnId: item.turnId,
-            estimate: reference.estimate,
-          }))
-      : []
-  )[0]
-  const estimatedSkill =
-    estimatedSkillEvent?.kind === 'skill'
-      ? { turnId: estimatedSkillEvent.turnId, estimate: estimatedSkillEvent.estimate }
-      : estimatedSkillReference
+  const estimatedSkill = planSkillEstimate(thread)
   const activePlanTurnId =
     thread.todoTurnId && thread.turnOutcomes?.[thread.todoTurnId] === 'running'
       ? thread.todoTurnId
@@ -376,7 +368,9 @@ export function TodoPanel({
               lower: estimateMinutes(estimate.lowerSeconds),
               upper: estimateMinutes(estimate.upperSeconds),
             })
-      : ''
+      : planRunning && elapsedSeconds !== null && elapsedSeconds >= SECONDS_PER_MINUTE
+        ? t('todo.estimate.unavailable')
+        : ''
   const estimateTitle = estimate
     ? t('todo.estimate.basis', {
         source:
@@ -459,13 +453,13 @@ export function TodoPanel({
               ref={toggleRef}
               variant="ghost"
               size="content"
-              className="group !flex flex-1 !shrink min-w-0 !justify-start gap-[var(--vds-space-2)] !border-0 !px-[var(--vds-space-1)] !py-[var(--vds-space-1)] text-left"
+              className="group !flex flex-1 !shrink min-w-0 flex-wrap !justify-start gap-[var(--vds-space-2)] !border-0 !px-[var(--vds-space-1)] !py-[var(--vds-space-1)] text-left"
               data-testid="todo-toggle"
             >
-              <span className="shrink-0 transition-transform group-data-[state=open]:rotate-180">
-                <Icon name="chevron-down" size={13} sw={1.8} />
-              </span>
               <span className="flex shrink-0 items-center gap-[var(--vds-space-2)]">
+                <span className="shrink-0 transition-transform group-data-[state=open]:rotate-90">
+                  <ChevronRight size={13} strokeWidth={1.8} aria-hidden="true" />
+                </span>
                 <span
                   className={`shrink-0 font-medium ${planRunning ? streamingTextClassName : ''}`}
                 >

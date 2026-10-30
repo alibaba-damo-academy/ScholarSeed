@@ -40,6 +40,7 @@ from service.identity.service.skill_credentials import (  # noqa: E402
     SkillCredentialService,
 )
 from service.identity.utils import HOST_PROCESS_KEY_ENV  # noqa: E402
+from service.platform.activity import Activities  # noqa: E402
 
 PASS, FAIL = 0, 0
 
@@ -65,7 +66,7 @@ def _build_app(*, enabled: bool, mode: str) -> FastAPI:
     app = FastAPI()
     holder = AccountTokenHolder()
     app.state.account_tokens = holder
-    register_auth(app, enabled=enabled, mode=mode, account_tokens=holder)
+    register_auth(app, enabled=enabled, mode=mode, account_tokens=holder, activities=Activities())
 
     @app.get(PROTECTED)
     def protected(request: Request) -> Dict[str, Any]:
@@ -173,7 +174,7 @@ def mode_resolution_single_source() -> None:
 
 def skill_snapshot_clear() -> None:
     print("[5] 技能凭据快照随切换清空")
-    service = SkillCredentialService(base_url="http://127.0.0.1:1")
+    service = SkillCredentialService(base_url="http://127.0.0.1:1", activities=Activities())
     service._tokens["u-1"] = "ssk-test"  # pylint: disable=protected-access
     revision = service.revision
     service.clear_credentials()

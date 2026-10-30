@@ -20,9 +20,10 @@ Supply one tested runtime during installation. The runtime reports PDFs through
 All skill copies share the user-level browser pool at `~/.paper-dl/browser-pool/`.
 Set `PAPER_DL_BROWSER_POOL_DIR` consistently to override it, outside every run.
 `PAPER_DL_CHROME_EXECUTABLE` selects Chrome or Edge. Unsupported `PAPER_DL_CDP_ENDPOINT`,
-`PAPER_DL_CDP_PROFILE` and disabled-auto-launch settings are rejected. Other
+`PAPER_DL_CDP_PROFILE`, `PAPER_DL_PROFILE` and disabled-auto-launch settings are rejected. Other
 settings are `PAPER_DL_CONFIG`, `PAPER_DL_EMAIL`, `PAPER_DL_PAPER_TIMEOUT` and
-`PAPER_DL_BATCH_TIMEOUT`; `PAPER_DL_PROFILE` applies only to autodev. Credentials,
+`PAPER_DL_BATCH_TIMEOUT`; use `PAPER_DL_PROFILE_TEMPLATE` for an offline login
+template in either mode. Credentials,
 cookies and tokens must not enter tracked configuration or run artifacts.
 
 On macOS and Windows, automatic discovery prefers Chrome, then Edge, then
@@ -31,7 +32,7 @@ Invalid overrides and startup failures are errors, not fallback triggers.
 Edge uses `<pool>/slot-N/edge-profile`, separate from Chrome login data.
 The three slots remain shared. Paused runs retain their original browser,
 endpoint and profile even if configuration or installed browsers change.
-This applies to interactive downloads; `autodev` retains its headless runtime.
+This applies to both interactive and `autodev` downloads.
 
 | Behavior | macOS | Windows |
 | --- | --- | --- |
@@ -40,7 +41,7 @@ This applies to interactive downloads; `autodev` retains its headless runtime.
 | Profiles/templates | Separate Edge profile and template per pool | Same isolation, with existing private Windows ACL handling |
 | Ownership | Registered process group and loopback CDP | Existing Job/process ownership and loopback CDP |
 
-Interactive execution needs process inspection, private profile writes and
+Both execution modes need process inspection, private profile writes and
 loopback access. Use the host's normal filesystem/process permissions; no integration hook is needed.
 
 ## Owned browser lifecycle
@@ -52,7 +53,9 @@ verifies the owned child's CDP stderr announcement against the endpoint;
 an external process winning the bind race is not accepted. Other stderr is
 discarded. The runtime connects with
 `--connect-cdp … --no-headless --keep-open --no-zotero` and disconnects without
-taking browser ownership. `autodev` runs outside this pool.
+taking browser ownership. Unattended mode adds `--autodev` to the same CDP
+connection; login/CAPTCHA/manual-solve items are skipped without pausing.
+It never launches the downloader's headless Chromium runtime.
 
 Run, allocation and slot-execution locks protect ownership. A lease ID and
 resolved run path reject stale resume/release attempts. Supervisors acknowledge

@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from docx import Document
+from docx.enum.section import WD_SECTION_START
+from docx.parts.hdrftr import FooterPart, HeaderPart
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -34,6 +37,7 @@ from service.chat.service.context import SessionContextProvider
 from service.chat.service.history import HistoryService
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.context import ContentContextProvider
+from service.content.service.extract import decode_docx
 from service.content.service.port import ContentService, ProjectRegistry
 from service.literature.api.reading import register_reading_routes
 from service.literature.persistence import files as literature_files
@@ -48,6 +52,7 @@ from service.literature.schema import (
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.context import LiteratureContextProvider
 from service.literature.service.pdf import LiteraturePdf
+from service.platform.activity import Activities
 from service.platform.context import (
     AssistantContextBudget,
     AssistantContextResolveRequest,
@@ -61,6 +66,13 @@ from service.platform.context import (
     SelectionAnchor,
 )
 from service.workbench.domain.model import WorkbenchFormatPolicy
+from service.workbench.domain.selection import (
+    SelectionDraftEvidence,
+    SelectionEvidenceError,
+    SelectionEvidenceMode,
+    SelectionEvidenceReference,
+)
+from service.workbench.service.context import SelectionContextProvider
 
 SESSION_ID = "context-provider-session"
 
@@ -69,7 +81,150 @@ def _selection_hash(text: str) -> str:
     return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
 
 
+class ContentExtractionContract(unittest.TestCase):
+    def test_docx_extraction_does_not_create_missing_headers_or_footers(self) -> None:
+        document = Document()
+        document.add_paragraph("body evidence")
+        output = BytesIO()
+        document.save(output)
+        package = document.part.package
+        assert package is not None
+        original_parts = tuple(part.partname for part in package.parts)
+
+        with patch("service.content.service.extract.Document", return_value=document):
+            self.assertEqual(decode_docx(output.getvalue()), "body evidence")
+
+        self.assertEqual(tuple(part.partname for part in package.parts), original_parts)
+
+    def test_docx_extraction_preserves_existing_and_inherited_header_footer_variants(self) -> None:
+        document = Document()
+        document.add_paragraph("body evidence")
+        section = document.sections[0]
+        containers = (
+            section.header,
+            section.first_page_header,
+            section.even_page_header,
+            section.footer,
+            section.first_page_footer,
+            section.even_page_footer,
+        )
+        expected = ["body evidence"]
+        for index, container in enumerate(containers):
+            text = f"variant evidence {index}"
+            container.paragraphs[0].text = text
+            expected.append(text)
+        document.add_section(WD_SECTION_START.NEW_PAGE)
+        final_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+        final_section.header.is_linked_to_previous = False
+        final_section.header.paragraphs[0].text = "independent header"
+        expected.append("independent header")
+        output = BytesIO()
+        document.save(output)
+
+        self.assertEqual(decode_docx(output.getvalue()).splitlines(), expected)
+
+
 class ContentContextProviderContract(unittest.TestCase):
+    def test_csv_draft_action_retains_literal_values_and_validates_evidence(self) -> None:
+        payload = b"id,value\r\n001,1e3\r\n"
+        path = Path(self.project.root) / "draft.csv"
+        path.write_bytes(payload)
+        revision = _selection_hash(payload.decode())
+        selected = "0002\t2e3"
+        reference = SelectionEvidenceReference(
+            self.project.id,
+            "draft.csv",
+            revision,
+            "calc",
+            _selection_hash(selected),
+            {"kind": "calc", "sheet": "draft", "range": "A2:B2"},
+        )
+        draft = SelectionDraftEvidence(1, selected, selected, _selection_hash(selected))
+        provider = SelectionContextProvider(self.content)
+        verified = provider.resolve_action(reference, draft)
+        self.assertEqual(verified.mode, SelectionEvidenceMode.DRAFT)
+        self.assertEqual(verified.selected_text, selected)
+        self.assertTrue(verified.can_edit)
+        self.assertEqual(path.read_bytes(), payload, "draft resolution never writes the source")
+        for invalid in (
+            replace(draft, change_version=0),
+            replace(draft, selected_text_hash="sha256:invalid"),
+            replace(draft, context_text="different context"),
+        ):
+            with self.assertRaisesRegex(SelectionEvidenceError, "selection_stale"):
+                provider.resolve_action(reference, invalid)
+        with self.assertRaisesRegex(SelectionEvidenceError, "selection_stale"):
+            provider.resolve_action(replace(reference, source_revision="sha256:stale"), draft)
+        with self.assertRaisesRegex(SelectionEvidenceError, "selection_unsupported"):
+            provider.resolve_action(
+                replace(reference, locator={**reference.locator, "content_mode": "reference"}),
+                draft,
+            )
+        invalid_payload = b'column,"unterminated'
+        (Path(self.project.root) / "unsafe.csv").write_bytes(invalid_payload)
+        with self.assertRaisesRegex(SelectionEvidenceError, "selection_unsupported"):
+            provider.resolve_action(
+                replace(
+                    reference,
+                    source_id="unsafe.csv",
+                    source_revision="sha256:" + hashlib.sha256(invalid_payload).hexdigest(),
+                ),
+                draft,
+            )
+        with self.assertRaisesRegex(SelectionEvidenceError, "selection_unsupported"):
+            provider.resolve_action(
+                replace(reference, locator={"kind": "calc", "sheet": "draft", "range": "A0:B2"}),
+                draft,
+            )
+        output = BytesIO()
+        workbook = Workbook()
+        workbook.active.append(["001", "1e3"])
+        workbook.save(output)
+        (Path(self.project.root) / "readonly.xlsx").write_bytes(output.getvalue())
+        with self.assertRaisesRegex(SelectionEvidenceError, "selection_unsupported"):
+            provider.resolve_action(
+                replace(
+                    reference,
+                    source_id="readonly.xlsx",
+                    source_revision="sha256:" + hashlib.sha256(output.getvalue()).hexdigest(),
+                ),
+                draft,
+            )
+
+    def test_literature_csv_open_and_put_remain_readonly(self) -> None:
+        literature_id = "paper-readonly-csv"
+        self.literature_repository.save(LiteratureItem(id=literature_id, title="CSV"))
+        payload = b"id,value\r\n001,1e3\r\n"
+        attachment = self.stage_attachment(literature_id, "evidence.csv", payload)
+        app = FastAPI()
+        attachments = LiteratureAttachmentContent(self.literature_repository)
+        register_reading_routes(
+            app,
+            self.literature_repository,
+            attachments,
+            LiteraturePdf(self.literature_repository),
+            WorkbenchFormatPolicy(),
+        )
+        route = f"/api/v1/literatures/{literature_id}/attachments/{attachment['id']}"
+        with TestClient(app) as client:
+            opened = client.get(f"{route}/open")
+            self.assertEqual(opened.status_code, 200, opened.text)
+            self.assertFalse(opened.json()["capabilities"]["can_edit"])
+            self.assertFalse(opened.json()["capabilities"]["can_save"])
+            self.assertTrue(opened.json()["capabilities"]["can_select"])
+            denied = client.put(
+                f"{route}/content",
+                content=b"id,value\n002,2e3\n",
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "If-Match": f'"{attachment["revision"]}"',
+                },
+            )
+            self.assertEqual(denied.status_code, 415, denied.text)
+            self.assertEqual(
+                attachments.read_attachment(literature_id, attachment["id"])[0], payload
+            )
+
     def test_literature_range_snapshot_is_materialized_when_added(self) -> None:
         literature_id = "paper-range-snapshot"
         self.literature_repository.save(LiteratureItem(id=literature_id, title="Range"))
@@ -106,7 +261,7 @@ class ContentContextProviderContract(unittest.TestCase):
         if project is None:
             raise AssertionError("test project was not registered")
         self.project = project
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.provider = ContentContextProvider(self.content)
         self.literature_database = root / "literature.sqlite3"
         self.literature_repository = LiteratureRepository(self.literature_database)
@@ -198,6 +353,38 @@ class ContentContextProviderContract(unittest.TestCase):
                 ref=ref,
                 budget=AssistantContextBudget(max_chars=60_000, max_items=64),
             )
+        )
+
+    def test_docx_reference_freezes_without_loading_missing_default_templates(self) -> None:
+        document = Document()
+        document.add_paragraph("attached document evidence")
+        path = Path(self.project.root) / "evidence.docx"
+        document.save(str(path))
+        selection = self.assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(self.ref(ContextRefKind.FILE, path.name),),
+        )
+
+        with (
+            patch.object(HeaderPart, "new", side_effect=OSError("default template unavailable")),
+            patch.object(FooterPart, "new", side_effect=OSError("default template unavailable")),
+        ):
+            result = self.assistant.freeze(
+                session_id=SESSION_ID,
+                client_turn_id="docx-reference-turn",
+                expected_revision=selection.revision,
+                question="Read the attached document",
+            )
+
+        self.assertIsNone(result.failure)
+        self.assertIsNotNone(result.context)
+        assert result.context is not None
+        self.assertEqual(result.context.snapshot.items[0].state, ContextResolutionState.READY)
+        self.assertEqual(
+            result.context.snapshot.items[0].excerpt_text, "attached document evidence"
         )
 
     def test_file_reads_real_content_and_freezes_revision(self) -> None:
@@ -364,6 +551,42 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertIn("sample\tvalue\nalpha\t7", xlsx_result.items[0].text)
         self.assertIn("[Sheet: Parameters]", xlsx_result.items[0].text)
         self.assertIn("learning_rate\t0.1", xlsx_result.items[0].text)
+
+    def test_global_session_freezes_and_restores_an_explicit_project_file(self) -> None:
+        self.content.write_text(self.project.id, "results.csv", "node,score\nalpha,7\n")
+        store = AssistantStore(self.session_catalog.database)
+        assistant = AssistantService(
+            store,
+            project_for_session=lambda _session_id: None,
+            providers={ContextRefKind.FILE: self.provider},
+        )
+        reference = replace(
+            self.ref(ContextRefKind.FILE, "results.csv"),
+            project_id=self.project.id,
+            origin=ContextOrigin.EXPLICIT,
+        )
+        selection = assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(reference,),
+        )
+        self.assertEqual(store.selection(SESSION_ID).refs[0].project_id, self.project.id)
+        result = assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="global-project-file",
+            expected_revision=selection.revision,
+            question="Read the CSV",
+        )
+        self.assertIsNone(result.failure)
+        assert result.context is not None
+        snapshot = store.snapshot_by_id(SESSION_ID, result.context.snapshot.snapshot_id)
+        assert snapshot is not None
+        self.assertIsNone(snapshot.project_id)
+        self.assertEqual(snapshot.items[0].ref.project_id, self.project.id)
+        self.assertIn("alpha\t7", snapshot.items[0].excerpt_text)
+        self.assertIn('"project_id":', result.context.model_context)
 
     def test_directory_returns_one_scope_without_reading_children(self) -> None:
         self.content.write_text(self.project.id, "folder/b.md", "second")
@@ -798,6 +1021,50 @@ class ContentContextProviderContract(unittest.TestCase):
             question="Summarize this paper",
         )
         self.assertIsNotNone(resumed.context)
+
+    def test_large_explicit_and_selected_literature_sets_keep_every_scope(self) -> None:
+        for explicit_count, selected_count in ((40, 0), (80, 0), (0, 100), (40, 40)):
+            with self.subTest(explicit=explicit_count, selected=selected_count):
+                explicit_ids = tuple(f"explicit-{index}" for index in range(explicit_count))
+                selected_ids = tuple(f"selected-{index}" for index in range(selected_count))
+                for source_id in (*explicit_ids, *selected_ids):
+                    self.literature_repository.save(
+                        LiteratureItem(id=source_id, title=source_id), self.project.id
+                    )
+                selection = self.assistant.replace_selection(
+                    session_id=SESSION_ID,
+                    expected_revision=self.assistant.selection(SESSION_ID).revision,
+                    project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+                    search_scope=SearchScope.DISABLED,
+                    refs=tuple(
+                        ContextRef(
+                            ref_id=source_id,
+                            kind=ContextRefKind.LITERATURE,
+                            source_id=source_id,
+                            label=source_id,
+                        )
+                        for source_id in explicit_ids
+                    ),
+                )
+                for metadata_only in (False, True):
+                    arguments = dict(
+                        session_id=SESSION_ID,
+                        client_turn_id=f"large-{explicit_count}-{selected_count}-{metadata_only}",
+                        expected_revision=selection.revision,
+                        question="Compare all selected papers",
+                        metadata_only=metadata_only,
+                        selected_literature_ids=selected_ids,
+                    )
+                    result = self.assistant.freeze(**arguments)
+                    self.assertIsNone(result.failure)
+                    assert result.context is not None
+                    expected_ids = [*explicit_ids, *selected_ids]
+                    self.assertEqual(
+                        [item.ref.source_id for item in result.context.snapshot.items], expected_ids
+                    )
+                    card = json.loads(result.context.model_context.splitlines()[1])
+                    self.assertEqual([scope["source_id"] for scope in card["scopes"]], expected_ids)
+                    self.assertEqual(self.assistant.freeze(**arguments).context, result.context)
 
     def test_selected_literatures_are_turn_scoped_tool_sources(self) -> None:
         for literature_id in ("selected-first", "selected-second"):

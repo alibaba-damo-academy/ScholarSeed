@@ -10,14 +10,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 from fastapi.responses import StreamingResponse
 
-from scholarseed_runtime.contract import DeliveryClass, RuntimeEvent, RuntimeEventKind
-from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome
 from service.assistant.api.stream import action_stream as selection_stream
 from service.assistant.persistence.invocations import AssistantInvocationStore
 from service.assistant.service.actions import AssistantActionService, CompiledAssistantAction
-from service.chat.service.inference import AgentOneShotProvider
+from service.inference.transport import RESPONSES_PROTOCOL, receive
+from service.platform.activity import Activities
 from service.platform.inference import (
     ModelInvocationEvent,
     ModelInvocationEventKind,
@@ -100,60 +100,37 @@ class SelectionStreamContract(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(stream.aclose(), timeout=2)
         cancel.assert_awaited_once_with(invocation_id="id", owner_id="owner")
 
-    async def test_provider_only_streams_final_assistant_and_keeps_large_text(self):
+    async def test_provider_only_streams_output_text_and_keeps_large_text(self):
         observed = []
         text = "中文" * 2000
-
-        async def invoke_once(**kwargs):
-            observer = kwargs["observer"]
-            for index, (role, phase, value) in enumerate(
-                (
-                    ("reasoning", "", "secret"),
-                    ("assistant", "commentary", "planning"),
-                    ("assistant", "final_answer", text),
-                )
-            ):
-                await observer(
-                    RuntimeEvent(
-                        schema_version=1,
-                        event_id=str(index),
-                        runtime_id="test",
-                        product_session_id="id",
-                        native_session_id="native",
-                        process_generation=1,
-                        sequence=index,
-                        kind=RuntimeEventKind.CONTENT_DELTA,
-                        delivery=DeliveryClass.COALESCIBLE,
-                        observed_at="now",
-                        payload={"role": role, "phase": phase, "text": value},
-                    )
-                )
-            return SimpleNamespace(
-                model_key="model",
-                turn=SimpleNamespace(
-                    outcome=RuntimeTurnOutcome.COMPLETED,
-                    final_text=text,
-                    input_tokens=1,
-                    output_tokens=1,
-                    native_turn_id="turn",
-                ),
-            )
+        events = [
+            {"type": "response.reasoning_summary_text.delta", "delta": "secret"},
+            {"type": "response.output_text.delta", "delta": text},
+            {
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": text}]}
+                    ],
+                },
+            },
+        ]
 
         async def observe(event):
             observed.append(event)
 
-        provider = AgentOneShotProvider(
-            SimpleNamespace(invoke_once=invoke_once),
-            SimpleNamespace(runtime_executable=lambda: "codex"),
-            AsyncMock(return_value={}),
-        )
-        result = await provider.invoke(
-            ModelInvocationRequest(
+        payload = await receive(
+            httpx.Response(
+                200, text="".join("data: " + json.dumps(event) + "\n\n" for event in events)
+            ),
+            RESPONSES_PROTOCOL,
+            request=ModelInvocationRequest(
                 invocation_id="id",
                 owner_id="owner",
                 project_id="project",
                 purpose="translate",
-                model_key="",
+                model_key="model",
                 instructions="translate",
                 input_text="input",
                 limits=ModelInvocationLimits(100, 100),
@@ -161,7 +138,7 @@ class SelectionStreamContract(unittest.IsolatedAsyncioTestCase):
             observer=observe,
         )
         self.assertEqual([event.text for event in observed], [text])
-        self.assertEqual(result.output_text, text)
+        self.assertEqual(payload["output"][0]["content"][0]["text"], text)
 
     async def test_early_stop_is_owned_latched_and_replay_does_not_invoke(self):
         reached_start = asyncio.Event()
@@ -191,7 +168,9 @@ class SelectionStreamContract(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             provider = Provider()
             service = AssistantActionService(
-                AssistantInvocationStore(Path(directory) / "actions.db"), model=provider
+                AssistantInvocationStore(Path(directory) / "actions.db"),
+                activities=Activities(),
+                model=provider,
             )
 
             async def observe(event):

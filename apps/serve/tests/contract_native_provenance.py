@@ -12,8 +12,6 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from contract_completion_bridge import forward_contract
-
 from scholarseed_runtime.contract.event import DeliveryClass, RuntimeEvent, RuntimeEventKind
 from scholarseed_runtime.contract.model import ModelWireProtocol
 from service.chat.constants import (
@@ -33,6 +31,8 @@ from service.chat.service.provenance import (
     response_provenance,
     text_revision,
 )
+
+from .contract_completion_bridge import forward_contract
 
 
 def citation(**overrides: object) -> dict:

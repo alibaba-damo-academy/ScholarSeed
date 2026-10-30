@@ -1,5 +1,11 @@
 export { ComposerAttachments } from './Attachments'
-export { fileIconForName } from './FileIcon'
-export { default, IconFont, MissingIcon, type IconFontProps, type MissingIconProps } from './Iconfont'
+export { fileIconForName, FileFormatIcon } from './FileIcon'
+export {
+  default,
+  IconFont,
+  MissingIcon,
+  type IconFontProps,
+  type MissingIconProps,
+} from './Iconfont'
 export { Markdown, visibleMarkdownText, type MarkdownAnswerAnnotation } from './Markdown'
 export { InlineProgress, Progress, type ProgressSurface } from './Progress'

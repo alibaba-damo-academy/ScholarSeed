@@ -1,4 +1,4 @@
 interface:
-  display_name: "Precise Literature Search"
+  display_name: "精准文献检索"
   short_description: "Find papers, read full texts, and write cited reports"
   default_prompt: "Use $precise-literature-search to find papers relevant to my research question, review the candidates with me, and summarize selected full texts with citations."

@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import test from 'node:test'
 
-import { decideResourceReviewBatch, fetchResourceReviewBatchForPath, hasDirtyReviewEditor } from './api.ts'
+import { decideResourceReviewBatch, fetchResourceReviewBatchForPath } from './api.ts'
 
 import { openReviewTab, parseReviewTab, reviewTab } from '../workbench/tabs.ts'
 
@@ -19,6 +19,10 @@ const sharedDiffSource = readFileSync(new URL('../workbench/Diff.tsx', import.me
 const liveSource = readFileSync(new URL('../../live.ts', import.meta.url), 'utf8')
 const composerSource = readFileSync(
   new URL('../../components/business/Composer.tsx', import.meta.url),
+  'utf8'
+)
+const streamSource = readFileSync(
+  new URL('../../components/business/Stream.tsx', import.meta.url),
   'utf8'
 )
 const resourcePanelSource = readFileSync(new URL('./ResourcePanel.tsx', import.meta.url), 'utf8')
@@ -64,7 +68,7 @@ test('batch API sends revised bytes only with the explicit commit request', asyn
   }
 })
 
-test('turn admission probes unfinished members from open and failed batches', async () => {
+test('review navigation still finds pending members in failed batches', async () => {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window
   globalThis.window = {
@@ -91,13 +95,8 @@ test('turn admission probes unfinished members from open and failed batches', as
     })
   }
   try {
-    const dirty = await hasDirtyReviewEditor(
-      'project-id',
-      '/project/path',
-      (project, fileId, paths) =>
-        project === '/project/path' && fileId === 'file-1' && paths[0] === 'notes.txt'
-    )
-    assert.equal(dirty, true)
+    const batch = await fetchResourceReviewBatchForPath('project-id', 'notes.txt')
+    assert.equal(batch?.id, 'batch-1')
     assert.deepEqual(requestedStates.sort(), ['applying', 'failed', 'open'])
     assert.deepEqual(requestedProjects, ['project-id', 'project-id', 'project-id'])
   } finally {
@@ -222,7 +221,7 @@ test('review card refreshes from the durable batch and replaces pending controls
   assert.match(cardSource, /lineCounts\(base, candidate\)/)
   assert.match(cardSource, /current\.revision !== member\.candidate_revision/)
   assert.match(cardSource, /data-testid=\{`review-card-open-\$\{review\.batchId\}`\}/)
-  assert.match(composerSource, /data-testid="composer-review-admission"/)
+  assert.doesNotMatch(composerSource, /composer-review-admission/)
 })
 
 test('review UI stages editable decisions and commits only after all files are decided', () => {
@@ -286,10 +285,12 @@ test('review UI stages editable decisions and commits only after all files are d
   )
 })
 
-test('a new turn never accepts unfinished review batches without a user decision', () => {
-  assert.match(composerSource, /unfinishedReviewBatches/)
-  assert.match(composerSource, /data-testid="composer-review-admission"/)
-  assert.match(composerSource, /act\.openResourceReview/)
+test('conversation admission neither waits for nor decides resource reviews', () => {
+  assert.doesNotMatch(
+    composerSource,
+    /unfinishedReviewBatches|composer-review-admission|fetchResourceReviewBatches|hasDirtyReviewEditor/
+  )
+  assert.doesNotMatch(streamSource, /hasDirtyReviewEditor|foreground\.reviewUnsaved/)
   assert.doesNotMatch(composerSource, /acceptReviewBatches/)
   assert.doesNotMatch(composerSource, /decideResourceReviewBatch/)
 })

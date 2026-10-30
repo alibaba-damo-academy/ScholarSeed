@@ -2,11 +2,13 @@ import type { createFormatters } from '../../../../localization/format'
 import {
   isAttachmentAvailable,
   type LiteratureAttachmentSummary,
-  type LiteratureSummary
+  type LiteratureSummary,
 } from '../../contracts/literature.ts'
 
 /** 首页「最近打开」只展示三条，更多历史回文献库看。 */
 export const RECENT_LITERATURE_DISPLAY_LIMIT = 3
+
+const TEXT_ICON_KIND = 'txt'
 
 /** 比展示数多取几条：条目被删除、或没有可打开的附件时仍能补齐三行。 */
 export const RECENT_LITERATURE_RESOLVE_LIMIT = 5
@@ -27,10 +29,13 @@ export async function openRecentLiterature(
   actions: RecentLiteratureActions,
   id: string
 ): Promise<'opened' | 'item_unavailable' | 'attachment_unavailable'> {
-  if (!await actions.openLiteratureItem(id, GLOBAL_LITERATURE_PROJECT_ID)) return 'item_unavailable'
-  return await actions.openLiteratureAttachment(id, undefined, undefined, {
-    projectId: GLOBAL_LITERATURE_PROJECT_ID
-  }) ? 'opened' : 'attachment_unavailable'
+  if (!(await actions.openLiteratureItem(id, GLOBAL_LITERATURE_PROJECT_ID)))
+    return 'item_unavailable'
+  return (await actions.openLiteratureAttachment(id, undefined, undefined, {
+    projectId: GLOBAL_LITERATURE_PROJECT_ID,
+  }))
+    ? 'opened'
+    : 'attachment_unavailable'
 }
 
 const TEXT_ATTACHMENT_EXTENSIONS = new Set(['md', 'markdown', 'txt', 'text'])
@@ -52,16 +57,53 @@ export type RecentLiteratureIconKind =
 
 const ICON_KIND_BY_EXTENSION: Record<string, RecentLiteratureIconKind> = {
   pdf: 'pdf',
-  doc: 'word', docx: 'word', rtf: 'word',
-  xls: 'xls', xlsx: 'xls', csv: 'xls',
-  ppt: 'ppt', pptx: 'ppt',
-  md: 'txt', markdown: 'txt', txt: 'txt', text: 'txt',
-  html: 'html', htm: 'html',
-  png: 'img', jpg: 'img', jpeg: 'img', gif: 'img', webp: 'img', svg: 'img', bmp: 'img',
-  mp4: 'video', mov: 'video', avi: 'video', mkv: 'video', webm: 'video',
-  mp3: 'music', wav: 'music', flac: 'music', m4a: 'music', ogg: 'music',
-  zip: 'zip', rar: 'zip', '7z': 'zip', tar: 'zip', gz: 'zip',
-  py: 'tsx', js: 'tsx', ts: 'tsx', tsx: 'tsx', jsx: 'tsx', json: 'tsx', java: 'tsx', c: 'tsx', cpp: 'tsx', go: 'tsx', rs: 'tsx'
+  doc: 'word',
+  docx: 'word',
+  rtf: 'word',
+  xls: 'xls',
+  xlsx: 'xls',
+  csv: 'xls',
+  ppt: 'ppt',
+  pptx: 'ppt',
+  md: 'txt',
+  markdown: 'txt',
+  txt: 'txt',
+  text: TEXT_ICON_KIND,
+  html: 'html',
+  htm: 'html',
+  png: 'img',
+  jpg: 'img',
+  jpeg: 'img',
+  gif: 'img',
+  webp: 'img',
+  svg: 'img',
+  bmp: 'img',
+  mp4: 'video',
+  mov: 'video',
+  avi: 'video',
+  mkv: 'video',
+  webm: 'video',
+  mp3: 'music',
+  wav: 'music',
+  flac: 'music',
+  m4a: 'music',
+  ogg: 'music',
+  zip: 'zip',
+  rar: 'zip',
+  '7z': 'zip',
+  tar: 'zip',
+  gz: 'zip',
+  py: 'tsx',
+  js: 'tsx',
+  ts: 'tsx',
+  tsx: 'tsx',
+  jsx: 'tsx',
+  json: 'tsx',
+  java: 'tsx',
+  c: 'tsx',
+  cpp: 'tsx',
+  go: 'tsx',
+  rs: 'tsx',
 }
 
 /**
@@ -102,7 +144,8 @@ export function openedLiteratureIconKind(item: LiteratureSummary): RecentLiterat
   const extension = dot >= 0 ? attachment.name.slice(dot + 1).toLowerCase() : ''
   const byExtension = ICON_KIND_BY_EXTENSION[extension]
   if (byExtension) return byExtension
-  if (attachment.media_type.startsWith('text/') || TEXT_ATTACHMENT_EXTENSIONS.has(extension)) return 'txt'
+  if (attachment.media_type.startsWith('text/') || TEXT_ATTACHMENT_EXTENSIONS.has(extension))
+    return 'txt'
   if (attachment.media_type.startsWith('image/')) return 'img'
   if (attachment.media_type.startsWith('video/')) return 'video'
   if (attachment.media_type.startsWith('audio/')) return 'music'

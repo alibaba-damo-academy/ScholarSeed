@@ -22,13 +22,17 @@ from service.chat.service.search import (
     SearchService,
     search_result,
 )
+from service.invocation.service.artifacts import InvocationArtifactError
 from service.invocation.service.runtime import INVOCATION_WORKSPACE_UNAVAILABLE, InvocationError
 from service.invocation.service.skills import InvocationSkillRuntimeError
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_TOKEN_HEADER,
     SEARCH_ROUTE,
     WebSearchRequest,
+)
+from service.platform.vocabulary import (
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_TOKEN_HEADER,
 )
 
 URL = "https://example.com/result"
@@ -153,8 +157,66 @@ class SearchContract(unittest.IsolatedAsyncioTestCase):
         publish = AsyncMock()
         result = await self.run_search(service, publish=publish)
         self.assertEqual(result["status"], "action_required")
+        self.assertEqual(result["invocation_id"], INVOCATION_ID)
         publish.assert_not_awaited()
         invocations.interrupt.assert_awaited_once()
+
+    async def test_failed_child_preserves_safe_error_and_identity(self):
+        service, _ = self.service(
+            [{"type": "invocation.failed", "data": {"error": "agent_runtime_failed"}}]
+        )
+        publish = AsyncMock()
+        result = await self.run_search(service, publish=publish)
+        self.assertEqual(result["error"], "agent_runtime_failed")
+        self.assertEqual(result["invocation_id"], INVOCATION_ID)
+        publish.assert_not_awaited()
+
+    async def test_concurrent_search_failures_keep_distinct_invocation_ids(self):
+        service, invocations = self.service(
+            [{"type": "invocation.failed", "data": {"error": "agent_runtime_failed"}}]
+        )
+        identities = ("first-child", "second-child")
+        invocations.prepare.side_effect = [
+            SimpleNamespace(record=SimpleNamespace(invocation_id=identity))
+            for identity in identities
+        ]
+        results = await asyncio.gather(self.run_search(service), self.run_search(service))
+        self.assertEqual({result["invocation_id"] for result in results}, set(identities))
+
+    async def test_budget_timeout_preserves_identity_and_drains_child(self):
+        service, invocations = self.service([])
+        closed = asyncio.Event()
+
+        async def stream(prepared):
+            try:
+                await asyncio.Event().wait()
+                yield terminal()
+            finally:
+                closed.set()
+
+        invocations.stream = stream
+        with patch("service.chat.service.search.SEARCH_TIMEOUT_SECONDS", 0.01):
+            result = await self.run_search(service)
+        self.assertEqual(result["error"], "search_timeout")
+        self.assertEqual(result["invocation_id"], INVOCATION_ID)
+        self.assertTrue(closed.is_set())
+        invocations.interrupt.assert_awaited_once()
+
+    async def test_internal_timeout_is_not_mislabeled_as_search_budget(self):
+        service, invocations = self.service([])
+        invocations.prepare.side_effect = TimeoutError("internal timeout")
+        result = await self.run_search(service)
+        self.assertEqual(result["error"], "search_execution_timeout")
+        self.assertNotIn("internal timeout", str(result))
+
+    async def test_artifact_failure_preserves_identity(self):
+        service, invocations = self.service([terminal()])
+        invocations.artifact.side_effect = InvocationArtifactError(
+            "invocation_artifact_path_invalid"
+        )
+        result = await self.run_search(service)
+        self.assertEqual(result["error"], "invocation_artifact_path_invalid")
+        self.assertEqual(result["invocation_id"], INVOCATION_ID)
 
     async def test_terminal_stream_drains_before_result_is_published(self):
         for event in (terminal(), {"type": "invocation.failed", "data": {}}):
@@ -223,13 +285,34 @@ class SearchContract(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 search_result(value, SEARCH_PROFILES["official"], 20)
 
+    def test_malformed_result_has_a_stable_validation_code(self):
+        for value in ("not JSON", '{"schema":'):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "search_result_invalid"),
+            ):
+                search_result(value, SEARCH_PROFILES["official"], 20)
+
+    async def test_invalid_artifact_encoding_has_a_stable_validation_code(self):
+        service, invocations = self.service([terminal()])
+        invocations.artifact.side_effect = lambda *args, **kwargs: (None, io.BytesIO(b"\xff"))
+        with self.assertRaisesRegex(ValueError, "search_result_encoding_invalid"):
+            await self.run_search(service)
+
+    def test_invalid_native_encoding_has_a_stable_validation_code(self):
+        with self.assertRaisesRegex(ValueError, "search_result_encoding_invalid"):
+            search_result(SEARCH_BEGIN + "\ud800" + SEARCH_END, SEARCH_PROFILES["native"], 20)
+
 
 class SearchRouteContract(unittest.TestCase):
     def setUp(self):
+        self.activities = Activities()
+        self.turn_activity = self.activities.enter(ActivityDomain.RUNTIME)
         self.live = SimpleNamespace(
             catalog=SimpleNamespace(get=Mock(return_value=SimpleNamespace(principal_id=OWNER))),
             id="session",
             bridge_token="token",
+            turn_activity=self.turn_activity,
             publication_turn_id="turn",
             interrupt_generation=0,
             attachment_generation=0,
@@ -244,7 +327,9 @@ class SearchRouteContract(unittest.TestCase):
         self.can_search = Mock(side_effect=lambda *_: self.allowed)
         app = FastAPI()
         app.state.auth_enabled = False
-        register_conversation_search_routes(app, self.sessions, self.service, self.can_search)
+        register_conversation_search_routes(
+            app, self.sessions, self.service, self.can_search, activities=self.activities
+        )
         self.client = TestClient(app)
         self.headers = {
             BRIDGE_SESSION_HEADER: self.live.id,
@@ -253,12 +338,89 @@ class SearchRouteContract(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
+        self.turn_activity.close()
+
+    def test_expired_turn_cannot_start_search(self):
+        self.turn_activity.close()
+        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
+        self.assertEqual(response.status_code, 503)
+        self.service.run.assert_not_awaited()
+
+    def test_search_holds_bridge_until_response_after_parent_turn_ends(self):
+        self.activities.begin()
+
+        async def run(*args, **kwargs):
+            self.turn_activity.close()
+            self.assertEqual(self.activities.snapshot().counts.get(ActivityDomain.BRIDGE.value), 1)
+            drained = asyncio.create_task(self.activities.wait_execution_drained())
+            try:
+                await asyncio.sleep(0)
+                self.assertFalse(drained.done())
+                return {"ok": False}
+            finally:
+                drained.cancel()
+                await asyncio.gather(drained, return_exceptions=True)
+
+        self.service.run.side_effect = run
+        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.activities.snapshot().counts, {})
 
     def test_parent_scope_refuses_before_child_execution(self):
         self.allowed = False
         response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
         self.assertEqual(response.status_code, 403)
         self.service.run.assert_not_awaited()
+
+    def test_invalid_request_never_runs_search(self):
+        for body in ("not JSON", '{"query": ""}', '{"query": 1}'):
+            with self.subTest(body=body):
+                response = self.client.post(SEARCH_ROUTE, headers=self.headers, content=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"], "search_request_invalid")
+        self.service.run.assert_not_awaited()
+
+    def test_child_validation_failure_preserves_safe_reason_and_identity(self):
+        event = terminal()
+        event["data"]["artifacts"] = []
+        service, _ = SearchContract().service([event])
+        self.service.run.side_effect = service.run
+        with self.assertLogs("service.chat.api.search", level="WARNING") as captured:
+            response = self.client.post(
+                SEARCH_ROUTE, headers=self.headers, json={"query": "private query"}
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["status"], "failed")
+        self.assertEqual(response.json()["error"], "search_artifact_invalid")
+        self.assertEqual(response.json()["invocation_id"], INVOCATION_ID)
+        diagnostic = " ".join(captured.output)
+        for identity in ("session", "turn", "official", INVOCATION_ID, "search_artifact_invalid"):
+            self.assertIn(identity, diagnostic)
+        self.assertNotIn("private query", diagnostic)
+        self.assertNotIn("token", diagnostic)
+        self.live.publish.assert_not_awaited()
+
+    def test_invalid_profile_is_not_echoed_in_diagnostics(self):
+        service, invocations = SearchContract().service([])
+        self.service.run.side_effect = service.run
+        with self.assertLogs("service.chat.api.search", level="WARNING") as captured:
+            response = self.client.post(
+                SEARCH_ROUTE,
+                headers=self.headers,
+                json={"query": "query", "profile": "private-profile-value"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "search_profile_invalid")
+        self.assertNotIn("private-profile-value", " ".join(captured.output))
+        invocations.prepare.assert_not_awaited()
+
+    def test_whitespace_query_is_rejected_before_child_execution(self):
+        service, invocations = SearchContract().service([])
+        self.service.run.side_effect = service.run
+        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "   "})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "search_query_required")
+        invocations.prepare.assert_not_awaited()
 
     def test_wrong_session_token_refused(self):
         response = self.client.post(

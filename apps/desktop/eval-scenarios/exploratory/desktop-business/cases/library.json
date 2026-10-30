@@ -1,0 +1,1253 @@
+[
+  {
+    "id": "D4-RES-001",
+    "name": "DOCX 资料导入、打开并用于回答",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已准备可独立核对内容的无敏感信息 .docx 合成资料；目标项目为空或已确认无同名冲突；真实模型调用另已获准。",
+    "steps": [
+      "从资料库的本地资料导入入口，将该 .docx 资料复制导入目标项目。",
+      "等待导入终态，记录项目、资料身份，并从资料库打开实际导入对象。",
+      "四格式已分别打开后，共享 library-formats 公开任务的一轮四格式问答；本用例只核该格式独立事实和来源证据，不为每行重复发送。未来执行的模型预算须单独授权，不从本轮8次额度继承。"
+    ],
+    "expected": [
+      "导入对象属于目标项目，DOCX 内容与原资料一致且可读，不以页签名或导入提示代替打开证据。",
+      "回答与该资料中的可核事实一致；保留该格式独立的读取或来源指针，不借用其他格式证据。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-DOCX-01@1。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-DOCX-01",
+    "revision": 1,
+    "directionIds": [
+      "RES-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-DOCX-01@1",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "四种资料格式均为本轮构建包核心承诺，不能以其他格式代替 DOCX",
+    "checkIds": [
+      "RES-DOCX"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-picker",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/library-native-selected.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-native-actions.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/manual-handoff-1-cancel.json"
+    ]
+  },
+  {
+    "id": "D4-RES-002",
+    "name": "XLSX 资料导入、打开并用于回答",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已准备可独立核对内容的无敏感信息 .xlsx 合成资料；目标项目为空或已确认无同名冲突；真实模型调用另已获准。",
+    "steps": [
+      "从资料库的本地资料导入入口，将该 .xlsx 资料复制导入目标项目。",
+      "等待导入终态，记录项目、资料身份，并从资料库打开实际导入对象。",
+      "四格式已分别打开后，共享 library-formats 公开任务的一轮四格式问答；本用例只核该格式独立事实和来源证据，不为每行重复发送。未来执行的模型预算须单独授权，不从本轮8次额度继承。"
+    ],
+    "expected": [
+      "导入对象属于目标项目，XLSX 内容与原资料一致且可读，不以页签名或导入提示代替打开证据。",
+      "回答与该资料中的可核事实一致；保留该格式独立的读取或来源指针，不借用其他格式证据。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-XLSX-01@1。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-XLSX-01",
+    "revision": 1,
+    "directionIds": [
+      "RES-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-XLSX-01@1",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "四种资料格式均为本轮构建包核心承诺，不能以其他格式代替 XLSX",
+    "checkIds": [
+      "RES-XLSX"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-picker",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/library-native-selected.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-native-actions.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/manual-handoff-1-cancel.json"
+    ]
+  },
+  {
+    "id": "D4-RES-003",
+    "name": "Markdown 资料导入、打开并用于回答",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已准备可独立核对内容的无敏感信息 .md 合成资料；目标项目为空或已确认无同名冲突；真实模型调用另已获准。",
+    "steps": [
+      "从资料库的本地资料导入入口，将该 .md 资料复制导入目标项目。",
+      "等待导入终态，记录项目、资料身份，并从资料库打开实际导入对象。",
+      "四格式已分别打开后，共享 library-formats 公开任务的一轮四格式问答；本用例只核该格式独立事实和来源证据，不为每行重复发送。未来执行的模型预算须单独授权，不从本轮8次额度继承。"
+    ],
+    "expected": [
+      "导入对象属于目标项目，Markdown 内容与原资料一致且可读，不以页签名或导入提示代替打开证据。",
+      "回答与该资料中的可核事实一致；保留该格式独立的读取或来源指针，不借用其他格式证据。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-MD-01@1。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-MD-01",
+    "revision": 1,
+    "directionIds": [
+      "RES-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-MD-01@1",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "四种资料格式均为本轮构建包核心承诺，不能以其他格式代替 MD",
+    "checkIds": [
+      "RES-MD"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-picker",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/library-native-selected.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-native-actions.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/manual-handoff-1-cancel.json"
+    ]
+  },
+  {
+    "id": "D4-RES-004",
+    "name": "资料库 PDF 资料导入、打开并用于回答",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已准备可独立核对内容的无敏感信息 .pdf 合成资料；目标项目为空或已确认无同名冲突；真实模型调用另已获准。",
+    "steps": [
+      "从资料库的本地资料导入入口，将该 .pdf 资料复制导入目标项目。",
+      "等待导入终态，记录项目、资料身份，并从资料库打开实际导入对象。",
+      "四格式已分别打开后，共享 library-formats 公开任务的一轮四格式问答；本用例只核该格式独立事实和来源证据，不为每行重复发送。未来执行的模型预算须单独授权，不从本轮8次额度继承。"
+    ],
+    "expected": [
+      "导入对象属于目标项目，资料库 PDF 内容与原资料一致且可读，不以页签名或导入提示代替打开证据。",
+      "回答与该资料中的可核事实一致；保留该格式独立的读取或来源指针，不借用其他格式证据。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-PDF-01@1。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-PDF-01",
+    "revision": 1,
+    "directionIds": [
+      "RES-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-PDF-01@1",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "资料库 PDF 与文献附件 PDF 是不同入口，均需独立覆盖",
+    "checkIds": [
+      "RES-PDF"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-picker",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/library-native-selected.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-native-actions.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/manual-handoff-1-cancel.json"
+    ]
+  },
+  {
+    "id": "D4-RES-005",
+    "name": "复制导入目录保留层级与文件",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备含两层目录和至少两个不同内容文件的合成资料目录，记录导入前清单与摘要。",
+    "steps": [
+      "选择资料库本地资料导入中的复制到项目方式。",
+      "选择该目录并等待所有导入任务终态。",
+      "展开目标资料树，分别打开两层目录中的文件。"
+    ],
+    "expected": [
+      "目标项目中的目录层级和文件内容与原目录一致；原目录仍保留。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-COPY-DIR-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-COPY-DIR-01",
+    "revision": 3,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-COPY-DIR-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "批量资料导入是核心资料准备路径，区别于单格式打开",
+    "checkIds": [
+      "RES-COPY-DIR"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-picker",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/library-native-selected.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-native-actions.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/manual-handoff-1-cancel.json"
+    ],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-RES-006",
+    "name": "外部目录关联不复制原件",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已获准关联一个专用外部测试目录；该目录不含真实用户资料；记录来源位置。",
+    "steps": [
+      "从资料库外部目录关联入口选择测试目录。",
+      "等待关联完成，读回来源身份并打开其中一份文件。",
+      "核对关联关系和原目录仍在原位置。"
+    ],
+    "expected": [
+      "可从资料库读取正确外部内容，来源身份保持外部关联；没有把原目录移走或删除。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-LINK-DIR-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-LINK-DIR-01",
+    "revision": 3,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-LINK-DIR-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "资料接入的另一种模式，需独立覆盖原件保护但不是首选核心导入路径",
+    "checkIds": [
+      "RES-LINK-DIR"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-RES-007",
+    "name": "同名导入重命名保留新旧资料",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。目标项目已有 conflict.md；待导入目录有同名但正文不同的合成文件，记录两份原文。",
+    "steps": [
+      "再次导入同名文件并进入实际冲突处理界面。",
+      "选择可见的重命名保留方式，给新文件不同名称并确认。",
+      "分别打开旧文件和重命名后的新文件。"
+    ],
+    "expected": [
+      "新旧两份文件都存在且名称可区分；各自内容未被相互覆盖。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-CONFLICT-RENAME-01@4。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-CONFLICT-RENAME-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-CONFLICT-RENAME-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "同名冲突保留双方是防覆盖的数据保护核心分支。",
+    "checkIds": [
+      "RES-CONFLICT-RENAME"
+    ],
+    "evidenceRefs": [],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "同名冲突保留双方是防覆盖的数据保护核心分支。"
+    },
+    "caseRevision": 3,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-RES-008",
+    "name": "同名导入版本化替换可追溯旧版",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。目标项目已有旧版同名文件；准备不同正文的新版本；仅在现场确认存在版本化替换入口后继续。",
+    "steps": [
+      "导入新版本并选择产品可见的替换方式。",
+      "完成导入后打开当前文件。",
+      "通过实际提供的版本入口查找并读取旧版本记录。"
+    ],
+    "expected": [
+      "当前版本显示新内容，旧内容有可追溯版本记录；若没有该可见能力则保留缺口，不按已通过处理。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-CONFLICT-REPLACE-01@4。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-CONFLICT-REPLACE-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-CONFLICT-REPLACE-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "替换导入必须可追溯旧版，涉及资料恢复与数据损失。",
+    "checkIds": [
+      "RES-CONFLICT-REPLACE"
+    ],
+    "evidenceRefs": [],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "替换导入必须可追溯旧版，涉及资料恢复与数据损失。"
+    },
+    "caseRevision": 3,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-RES-009",
+    "name": "在目标资料位置创建文件夹",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。目标项目资料树可操作，目标父目录中不存在本次唯一测试名称。",
+    "steps": [
+      "在目标父目录打开创建菜单并选择新建文件夹。",
+      "输入本次唯一名称并确认。",
+      "刷新或重新展开父目录。"
+    ],
+    "expected": [
+      "新文件夹出现在正确父目录下，名称读回一致且未影响其他节点。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-CREATE-FOLDER-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-CREATE-FOLDER-01",
+    "revision": 3,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-CREATE-FOLDER-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基础资料组织能力，可在核心资料读写闭环后覆盖",
+    "checkIds": [
+      "RES-CREATE-FOLDER"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-RES-010",
+    "name": "新建 Markdown 文档并读回",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。目标资料目录可写，准备一行不含敏感信息的唯一测试文本。",
+    "steps": [
+      "在资料树的目标目录创建 Markdown 文档。",
+      "通过产品编辑入口写入唯一文本并按实际保存方式完成保存。",
+      "关闭并重新打开该文档。"
+    ],
+    "expected": [
+      "目标目录中存在新 Markdown 文档，重新打开可读回已保存文本。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-CREATE-MD-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。 本轮局部补证：正常创建MD、编辑后离开并由搜索打开读回含17的正文，文件SHA256 a1d460ebf4be522da042155c0b93b9d8fa0fb15fc8747e6fc940097a63e6c011；不是四格式导入或资料问答补测。",
+    "businessPointId": "RES-CREATE-MD-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-CREATE-MD-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "资料创建是基础管理能力，独立于既有 MD 导入 P0 点",
+    "checkIds": [
+      "RES-CREATE-MD"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-md",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/library-md-reopened.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-md-reopened.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/024-global-search-task-hits.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/025-search-open-original.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/026-global-search-resource-hits.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/027-search-resource-open.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/048-local-skill-result.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/017-search-resource-open.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/030-local-skill-result-project-restored.png"
+    ],
+    "caseRevision": 4,
+    "readiness": "manual_ready",
+    "observationScope": "正常创建MD、编辑后离开并由搜索打开读回含17的正文，文件SHA256 a1d460ebf4be522da042155c0b93b9d8fa0fb15fc8747e6fc940097a63e6c011；不是四格式导入或资料问答补测。",
+    "observationSources": [
+      {
+        "sourceBuild": "202610241139",
+        "platform": "macos-arm64",
+        "language": "zh",
+        "snapshotId": "20261024T112333061Z-105872aa",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-amendments",
+        "scope": "正常创建MD、编辑后离开并由搜索打开读回含17的正文，文件SHA256 a1d460ebf4be522da042155c0b93b9d8fa0fb15fc8747e6fc940097a63e6c011；不是四格式导入或资料问答补测。"
+      }
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "assetGaps": []
+  },
+  {
+    "id": "D4-RES-011",
+    "name": "重命名资料节点保持内容",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有一份专用合成文件，记录原名称及可核正文；新名称尚未占用。",
+    "steps": [
+      "在资料树定位该文件并使用重命名操作。",
+      "输入新名称并确认。",
+      "刷新资料树并打开新名称文件。"
+    ],
+    "expected": [
+      "原节点以新名称出现，内容保持不变；不产生错误对象或多余同内容副本。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-RES-RENAME局部来源；已观察结果；仅补观察来源，不改既有等级或重跑导入。原资产partial不自动升级。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "RES-RENAME-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-RENAME-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基础文件管理能力，需独立保护内容不丢失",
+    "checkIds": [
+      "RES-RENAME"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-file-menu.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/063-resource-rename-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/064-resource-rename-input-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/065-resource-rename-submit-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/066-resource-renamed-open-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/009-resource-renamed-open.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/resource-rename-result.json"
+    ],
+    "resultEvidenceStatus": "partial",
+    "observationScope": "E063–066/S09：重命名原MD并重开正文17，旧路径不存在，哈希保持；resource-rename-result.json 已观察结果；仅补观察来源，不改既有等级或重跑导入。原资产partial不自动升级",
+    "readiness": "manual_ready",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "observationSources": [
+      {
+        "localId": "BROAD-RES-RENAME",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-rename",
+        "observationScope": "E063–066/S09：重命名原MD并重开正文17，旧路径不存在，哈希保持；resource-rename-result.json 已观察结果；仅补观察来源，不改既有等级或重跑导入。原资产partial不自动升级",
+        "resultEvidenceStatus": "partial"
+      }
+    ],
+    "assetGaps": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已观察结果；仅补观察来源，不改既有等级或重跑导入。原资产partial不自动升级"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D4-RES-012",
+    "name": "移动资料文件到目标目录",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。同一项目下已有源目录、目标目录及专用文件；目标无同名文件。",
+    "steps": [
+      "从产品可见移动入口将源文件移到目标目录。",
+      "刷新或重新展开源、目标两个目录。",
+      "从目标目录打开文件。"
+    ],
+    "expected": [
+      "文件只在正确目标位置可见，内容不变；源目录中不再保留原位置节点。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-RES-MOVE局部来源；仅线索，入口路径待补；不据两个菜单缺少选项判产品不支持，不用文件系统mv替代真实UI；保留资产/操作路径缺口。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "RES-MOVE-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-MOVE-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基础目录管理能力，需验证路径与内容一致性",
+    "checkIds": [
+      "RES-MOVE"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/084-file-menu-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/219-resource-manager-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/220-tree-expand-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/221-tree-file-menu-receipt.txt"
+    ],
+    "resultEvidenceStatus": "missing",
+    "observationScope": "E084资料列表菜单及E219–221项目资源管理器文件菜单均未见“移动”；未执行拖放/剪切或任何文件移动 仅线索，入口路径待补；不据两个菜单缺少选项判产品不支持，不用文件系统mv替代真实UI；保留资产/操作路径缺口",
+    "readiness": "manual_ready",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "observationSources": [
+      {
+        "localId": "BROAD-RES-MOVE",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-move",
+        "observationScope": "E084资料列表菜单及E219–221项目资源管理器文件菜单均未见“移动”；未执行拖放/剪切或任何文件移动 仅线索，入口路径待补；不据两个菜单缺少选项判产品不支持，不用文件系统mv替代真实UI；保留资产/操作路径缺口",
+        "resultEvidenceStatus": "missing"
+      }
+    ],
+    "assetGaps": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "仅线索，入口路径待补；不据两个菜单缺少选项判产品不支持，不用文件系统mv替代真实UI；保留资产/操作路径缺口"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D4-RES-013",
+    "name": "按资料名称筛选正确对象",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有名称明显不同的至少三份资料，其中仅一份包含本次唯一关键词。",
+    "steps": [
+      "在资料列表打开实际可见的筛选或搜索入口。",
+      "输入唯一名称关键词。",
+      "核对结果中的资料身份并打开目标对象。"
+    ],
+    "expected": [
+      "结果仅包含满足关键词条件的资料，打开的是原目标资料而非同名近似对象。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 RES-LIST-FILTER-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-LIST-FILTER-01",
+    "revision": 3,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-LIST-FILTER-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "资料管理效率功能，不能冒充核心资料打开和使用",
+    "checkIds": [
+      "RES-FILTER-NAME",
+      "RES-FILTER-SOURCE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-md",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-md-reopened.yaml"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-RES-014",
+    "name": "将项目资料引用为对话上下文",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已在资料库导入一份可核对的合成资料；有可用会话和获准模型调用。",
+    "steps": [
+      "在资料库选中目标资料并使用实际加入对话或引用入口。",
+      "核对当前输入区中的引用对象身份。",
+      "发送只依赖该资料可核事实的问题。"
+    ],
+    "expected": [
+      "本轮上下文可见地关联正确项目资料；回答依据与目标资料一致，不把会话本地附件当成项目引用。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-RES-REF局部来源；已交互但结果未知：不能由17正确判断来源身份正确，需不同事实的对照和真实上下文证据；先作为产品/操作歧义线索，不诊断根因，不修改产品或判据。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "RES-CHAT-REF-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-ref",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "显式资料引用连接资料与对话核心业务，区别于临时本地附件",
+    "checkIds": [
+      "RES-CHAT-REF"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-file-menu.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/093-select-source-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/094-add-source-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/097-artifact-progress-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/098-artifact-result-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/013-artifact-open.png"
+    ],
+    "resultEvidenceStatus": "insufficient",
+    "observationScope": "E093/094选原文件且消息chip为原名；模型在第1回合却读取`(2).md`且最终来源写副本；两份内容相同，活跃编辑器当时是副本。S13、E097/098、入库前言又指向原文件 已交互但结果未知：不能由17正确判断来源身份正确，需不同事实的对照和真实上下文证据；先作为产品/操作歧义线索，不诊断根因，不修改产品或判据",
+    "readiness": "manual_ready",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "observationSources": [
+      {
+        "localId": "BROAD-RES-REF",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-ref",
+        "observationScope": "E093/094选原文件且消息chip为原名；模型在第1回合却读取`(2).md`且最终来源写副本；两份内容相同，活跃编辑器当时是副本。S13、E097/098、入库前言又指向原文件 已交互但结果未知：不能由17正确判断来源身份正确，需不同事实的对照和真实上下文证据；先作为产品/操作歧义线索，不诊断根因，不修改产品或判据",
+        "resultEvidenceStatus": "insufficient"
+      }
+    ],
+    "assetGaps": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已交互但结果未知：不能由17正确判断来源身份正确，需不同事实的对照和真实上下文证据；先作为产品/操作歧义线索，不诊断根因，不修改产品或判据"
+        ],
+        "caseRevision": 2
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-RES-015",
+    "name": "复制导入中文及空格目录名",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备含中文、空格目录名与两层子目录的合成资料，文件内容可独立核对。",
+    "steps": [
+      "通过资料库复制到项目方式导入目录。",
+      "等待导入完成并按原结构展开中文及空格节点。",
+      "打开最内层文件并核对内容。"
+    ],
+    "expected": [
+      "中文、空格和层级得到正确保留，目标文件可打开且内容不丢失。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 RES-COPY-DIR-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-COPY-DIR-01",
+    "revision": 3,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-COPY-DIR-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "批量资料导入是核心资料准备路径，区别于单格式打开；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [],
+    "caseRevision": 2,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "point revision synchronized only; variant requires explicit separate data and scope selection"
+    }
+  },
+  {
+    "id": "D4-RES-016",
+    "name": "中文同名文件冲突保留双方",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。目标已存在 研究记录.md；待导入同名合成文件正文不同；新文件名含中文及空格。",
+    "steps": [
+      "导入同名文件并选择产品提供的重命名保留方式。",
+      "给新文件命名后确认导入。",
+      "分别打开原文件和重命名文件。"
+    ],
+    "expected": [
+      "两份中文名称文件身份可区分，内容分别与各自来源一致。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 RES-CONFLICT-RENAME-01@4。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-CONFLICT-RENAME-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-CONFLICT-RENAME-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "中文同名仍是防覆盖核心风险，不因前提变体降低数据保护等级。",
+    "checkIds": [],
+    "evidenceRefs": [],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "中文同名仍是防覆盖核心风险，不因前提变体降低数据保护等级。"
+    },
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "point revision synchronized only; variant requires explicit separate data and scope selection"
+    }
+  },
+  {
+    "id": "D4-RES-017",
+    "name": "按资料类型筛选不同格式",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。目标范围同时有 DOCX、XLSX、Markdown 和 PDF 合成资料；记录每种类型的目标身份。",
+    "steps": [
+      "进入资料列表实际提供的类型筛选入口。",
+      "选择 PDF 类型。",
+      "核对可见结果身份与文件类型。"
+    ],
+    "expected": [
+      "结果正确保留 PDF 对象，不将其他三类资料误纳为 PDF。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 RES-LIST-FILTER-01@2。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-LIST-FILTER-01",
+    "revision": 3,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-LIST-FILTER-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "资料管理效率功能，不能冒充核心资料打开和使用；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [
+      "RES-FILTER-TYPE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-res-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/library-type-filter.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-RES-018",
+    "name": "同名不同目录资料引用身份正确",
+    "folder": "Desktop四业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。两个目录内各有一份同名但事实不同的合成资料；已获准模型调用并记录双方路径与内容。",
+    "steps": [
+      "在资料库进入指定目录，仅将其中一份同名资料加入当前对话。",
+      "核对引用路径或资料身份。",
+      "询问该份资料中可区分来源的一项事实。"
+    ],
+    "expected": [
+      "引用和回答针对选中的具体资料，不混用另一目录的同名内容。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 RES-CHAT-REF-01@4。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "RES-CHAT-REF-01",
+    "revision": 4,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-CHAT-REF-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "显式资料引用连接资料与对话核心业务，区别于临时本地附件；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "point revision synchronized only; variant requires explicit separate data and scope selection"
+    }
+  },
+  {
+    "id": "D6-RES-001",
+    "name": "查看并恢复合成资料的指定历史版本",
+    "folder": "Desktop六业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。独立合成MD有可区分内容的两个版本，允许恢复本轮文件。",
+    "steps": [
+      "记录当前路径、正文和版本身份，保存两版不同内容。",
+      "查看指定旧版与当前版的对比，不能只认标题。",
+      "恢复指定版本，重新打开正文并核文件摘要、新历史版本与来源。"
+    ],
+    "expected": [
+      "恢复所选版本且当前正文、文件内容及恢复历史一致，旧版仍可追溯。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-RES-HISTORY，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "RES-VERSION-RESTORE-01",
+    "revision": 2,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-history",
+    "observationStatus": "observed",
+    "observationScope": "E067–082：保存 v3(17)，编辑为 v4(23)，查看 v3 对比，再恢复成 v5；UI 正文回到17，文件 SHA-256 与恢复前基准一致。已观察结果，S10/S11、history-restore-result.json",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "资料误改恢复与数据保护属于核心可靠性P1。",
+    "checkIds": [
+      "RES-VERSION-RESTORE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/067-resource-history-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/068-save-renamed-version-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/069-history-close-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/070-md-second-content-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/071-second-content-blur-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/072-history-from-list-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/073-history-reopen-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/074-history-settled-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/075-current-md-open-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/076-editor-history-open-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/077-preview-v3-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/078-return-file-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/079-history-again-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/080-restore-v3-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/081-close-history-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/082-history-restored-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/010-history-compare.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/011-history-restored.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/history-restore-result.json"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-RES-HISTORY",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；只改本轮合成文件；未测试跨重命名前旧路径恢复、批量恢复；G0+恢复边界。列表“版本历史”入口未打开面板另记异常线索，不与编辑器混算",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "只改本轮合成文件；未测试跨重命名前旧路径恢复、批量恢复；G0+恢复边界。列表“版本历史”入口未打开面板另记异常线索，不与编辑器混算"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-RES-002",
+    "name": "创建资料副本并保留原件",
+    "folder": "Desktop六业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。任务项目内有一份已知内容的合成MD。",
+    "steps": [
+      "记录原件路径、正文及摘要。",
+      "从原件菜单创建副本，记录新对象身份。",
+      "分别打开原件及副本，核内容与原件仍存在；编辑隔离另测。"
+    ],
+    "expected": [
+      "创建新身份的副本，不覆盖或误改原件。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-RES-DUPLICATE，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "RES-DUPLICATE-01",
+    "revision": 2,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-DUPLICATE-01@2",
+    "observationStatus": "observed",
+    "observationScope": "E084–086/S12：生成 `(2).md`，副本可打开；原件和副本当时 SHA-256 相同。已观察结果",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基本资料管理P2，区别于导入同名冲突。",
+    "checkIds": [
+      "RES-DUPLICATE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/084-file-menu-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/085-file-duplicate-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/086-duplicate-open-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/012-duplicate-open.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/duplicate-result.json"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-RES-DUPLICATE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；新增任务文件；编辑副本后隔离性、更多重名后缀未做；G0+独立性数据",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "新增任务文件；编辑副本后隔离性、更多重名后缀未做；G0+独立性数据"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-RES-003",
+    "name": "Markdown查看方式切换保持同一资料正文",
+    "folder": "Desktop六业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。合成MD已打开；先核菜单真实提供哪些模式，不预设预览入口。",
+    "steps": [
+      "记录当前文件路径与正文。",
+      "展开查看方式菜单，仅选择当前版本实际提供的模式。",
+      "切换并返回，核内容与对象身份保持；无入口记缺口。"
+    ],
+    "expected": [
+      "可用查看方式切换不丢失正文、不串到其他文件；具体模式须先确认。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-RES-VIEW，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "RES-VIEW-MODE-01",
+    "revision": 2,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-VIEW-MODE-01@2",
+    "observationStatus": "entry_observed",
+    "observationScope": "E066/082：当前为编辑模式，观察到查看方式组合框；已观察入口，没有展开选项或切换。后续计划仅从真实菜单选择可用模式并核正文不变",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基本阅读与编辑状态切换P2。",
+    "checkIds": [
+      "RES-VIEW-MODE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/066-resource-renamed-open-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/082-history-restored-receipt.txt"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-RES-VIEW",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；未修改模式；G0+实际菜单与结果，不能由组合框宣称预览已可用",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "未修改模式；G0+实际菜单与结果，不能由组合框宣称预览已可用"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-RES-004",
+    "name": "资料自动保存策略与实际落盘行为一致",
+    "folder": "Desktop六业务域/资料库",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。可恢复合成MD及已核任务配置隔离；开关动作获准。",
+    "steps": [
+      "记录配置与文件原始内容。",
+      "按已确认策略编辑合成内容并完成对应保存动作。",
+      "重新打开及只读核文件，分别记录开启/关闭分支，不由默认保存推断关闭分支。"
+    ],
+    "expected": [
+      "已确认保存策略与真实落盘、重开内容一致，不丢失用户已保存内容。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-SET-AUTOSAVE，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "RES-AUTOSAVE-01",
+    "revision": 2,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-autosave",
+    "observationStatus": "entry_observed",
+    "observationScope": "E025：自动保存开启、保存时格式化关闭；E071/082有默认自动保存现象，但没有切换配置，本候选只计已观察入口",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "用户资料落盘可靠性属于核心P1。",
+    "checkIds": [
+      "RES-AUTOSAVE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/025-library-file-settings-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/071-second-content-blur-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/082-history-restored-receipt.txt"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-SET-AUTOSAVE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；未改设置；G0+开关分支与非破坏数据样本",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "未改设置；G0+开关分支与非破坏数据样本"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-RES-005",
+    "name": "历史版本数量及最大文件阈值按声明策略生效",
+    "folder": "Desktop六业务域/资料库",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。专用可恢复样本、阈值策略来源及涉及清理时的精确授权；50MB不是历史总容量。",
+    "steps": [
+      "核当前字段语义和原值，不从数值推定批准要求。",
+      "在获准样本中分别准备数量与单文件大小边界。",
+      "核当前文件、历史保留及可恢复性；缺删除授权就记录阻塞。"
+    ],
+    "expected": [
+      "保留策略符合已确认数量和单文件阈值语义，不破坏当前文件；未获批准不固化默认数值。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-SET-VERSION-POLICY，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "RES-VERSION-POLICY-01",
+    "revision": 2,
+    "directionIds": [
+      "RES-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#RES-VERSION-POLICY-01@2",
+    "observationStatus": "entry_observed",
+    "observationScope": "E025：版本数量50、最大文件大小50MB可见；说明为超过数量清最早版本、超大小的文件不自动保存历史，不是历史总容量50MB；已观察入口，未改阈值、未制造淘汰",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "历史容量边界与高级资料管理P2。",
+    "checkIds": [
+      "RES-VERSION-COUNT",
+      "RES-VERSION-SIZE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/025-library-file-settings-receipt.txt"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-SET-VERSION-POLICY",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；不清理历史、不删除数据；G0+专用可恢复样本、精确授权及淘汰规则来源",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "不清理历史、不删除数据；G0+专用可恢复样本、精确授权及淘汰规则来源"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  }
+]

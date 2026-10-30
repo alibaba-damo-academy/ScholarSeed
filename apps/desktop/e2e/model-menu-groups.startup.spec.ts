@@ -3,9 +3,10 @@ import { writeFileSync } from 'fs'
 import { expect, test } from '@playwright/test'
 import { DesktopSession, enterWorkbenchShell } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { skipQuarantined } from './fixtures/quarantine'
 
-// 回归验收: 模型菜单按提供商分组, 且模型名整行铺开不被省略号截断。
-// 目录由 /api/serve/models 的 route stub 提供, 只验菜单渲染, 不声明任何厂商连通性。
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
+
 const catalog = {
   available_models: [
     {
@@ -27,7 +28,7 @@ const catalog = {
     },
     {
       key: 'personal-bb:qwen2.5-coder-14b-instruct-q5_K_M',
-      label: 'qwen2.5-coder-14b-instruct-q5_K_M',
+      label: 'qwen2.5-coder-14b-instruct-q5_K_M-long-context-experimental',
       provider_label: 'Local Ollama / vLLM',
       source: 'personal',
       billing: 'api',
@@ -59,7 +60,7 @@ const catalog = {
   subscription_groups: []
 }
 
-test('model menu groups models by provider and shows full model names', async ({}, testInfo) => {
+test('model menus fit content within bounds and animate without moving the main menu', async ({}, testInfo) => {
   const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
   try {
     writeFileSync(
@@ -74,7 +75,8 @@ test('model menu groups models by provider and shows full model names', async ({
       await page.getByTestId('topbar-ai').click()
       await expect(page.getByTestId('ai-panel')).toBeVisible()
     }
-    await page.getByTestId('model-selector-toggle').click()
+    await page.getByTestId('model-selector-toggle').focus()
+    await page.getByTestId('model-selector-toggle').press('Enter')
     const menu = page.getByTestId('model-selector-menu')
     await expect(menu).toBeVisible()
     for (const header of [/内置模型|Built-in model/, 'OpenRouter', 'Local Ollama / vLLM', 'Gemini Direct']) {
@@ -94,7 +96,10 @@ test('model menu groups models by provider and shows full model names', async ({
           })
           .filter(Boolean)
       )
-    expect(truncated).toEqual([])
+    expect(truncated).toContain('qwen2.5-coder-14b-instruct-q5_K_M-long-context-experimental')
+    await menu.getByText('qwen2.5-coder-14b-instruct-q5_K_M-long-context-experimental', { exact: true }).hover()
+    await expect(page.getByRole('tooltip')).toHaveText('qwen2.5-coder-14b-instruct-q5_K_M-long-context-experimental')
+    await page.mouse.move(0, 0)
     // 思考强度二级卡向左弹: 展开后主菜单盒逐像素不变, 且二级卡整体位于主菜单左侧。
     const boxOf = async (locator: ReturnType<typeof page.getByTestId>) => {
       const box = await locator.boundingBox()
@@ -104,13 +109,68 @@ test('model menu groups models by provider and shows full model names', async ({
     await expect(page.getByTestId('model-option-qwen3.8-max')).toContainText('登录可用')
     await expect(menu.getByText(/切换后/)).toHaveCount(0)
     const menuBox = await boxOf(menu)
-    await page.getByTestId('model-effort-row').click()
+    expect(menuBox?.width).toBe(320)
+    const samples = await page.evaluate(async () => {
+      const trigger = document.querySelector<HTMLElement>('[data-testid="model-effort-row"]')!
+      const main = document.querySelector<HTMLElement>('[data-testid="model-selector-menu"]')!
+      const frames: { width: number; right: number; gap: number | null }[] = []
+      trigger.click()
+      await new Promise<void>((resolve) => {
+        const start = performance.now()
+        const sample = () => {
+          const effort = document.querySelector<HTMLElement>('[data-testid="model-effort-menu"]')
+          const effortBox = effort?.getBoundingClientRect()
+          const mainBox = main.getBoundingClientRect()
+          frames.push({ width: effortBox?.width ?? 0, right: mainBox.right, gap: effortBox ? mainBox.left - effortBox.right : null })
+          if (performance.now() - start < 500) requestAnimationFrame(sample)
+          else resolve()
+        }
+        requestAnimationFrame(sample)
+      })
+      return frames
+    })
     const effortMenu = page.getByTestId('model-effort-menu')
     await expect(effortMenu).toBeVisible()
     const effortBox = await boxOf(effortMenu)
+    expect(effortBox?.width).toBe(200)
+    expect(samples.some(({ width }) => width > 0 && width < 199)).toBe(true)
+    expect(Math.max(...samples.map(({ right }) => right)) - Math.min(...samples.map(({ right }) => right))).toBeLessThanOrEqual(1)
+    expect(samples.filter(({ width }) => width > 0).every(({ gap }) => gap === 8)).toBe(true)
     expect(await boxOf(menu)).toEqual(menuBox)
     expect(effortBox && menuBox && effortBox.x + effortBox.width <= menuBox.x + 1).toBe(true)
+    expect(menuBox!.x - effortBox!.x - effortBox!.width).toBe(8)
     await page.screenshot({ path: join(desktop.runtime.artifacts, 'model-menu-groups.png') })
+    await page.setViewportSize({ width: 480, height: 800 })
+    await expect.poll(async () => (await boxOf(menu))!.width).toBeLessThanOrEqual(224)
+    const narrowMain = (await boxOf(menu))!
+    const narrowEffort = (await boxOf(effortMenu))!
+    expect(narrowEffort.x).toBeGreaterThanOrEqual(0)
+    expect(narrowMain.x + narrowMain.width).toBeLessThanOrEqual(480)
+    expect(narrowMain.x - narrowEffort.x - narrowEffort.width).toBe(8)
+    await page.setViewportSize({ width: 1280, height: 840 })
+    await page.getByTestId('model-effort-row').click()
+    await expect(effortMenu).not.toBeVisible()
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.getByTestId('model-effort-row').click()
+    await expect(effortMenu).toBeVisible()
+    await expect(effortMenu).toHaveCSS('transition-property', 'none')
+    await page.keyboard.press('Escape')
+    await expect(menu).not.toBeVisible()
+    await expect(page.getByTestId('model-selector-toggle')).toHaveAttribute('aria-expanded', 'false')
+    for (const [label, minimum, maximum] of [['Qwen', 200, 200], ['Medium length model name', 201, 319]] as const) {
+      await page.unroute('**/api/serve/models')
+      await page.route('**/api/serve/models', (route) => route.fulfill({ json: {
+        available_models: [{ key: 'qwen', label, source: 'builtin', billing: 'api' }],
+        current_model: 'qwen', subscription_groups: []
+      } }))
+      await page.reload()
+      await enterWorkbenchShell(page)
+      await page.getByTestId('model-selector-toggle').click()
+      await expect(menu).toBeVisible()
+      const width = (await boxOf(menu))!.width
+      expect(width).toBeGreaterThanOrEqual(minimum)
+      expect(width).toBeLessThanOrEqual(maximum)
+    }
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()

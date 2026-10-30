@@ -504,6 +504,13 @@ class DownloadAuthorizationPathContract(RunFixture):
             "./search/round-001/metadata.json",
             "search/round-001/metadata.json",
         )
+        # The official contract runner enables safe-path mode. Declare this
+        # script's module owner explicitly instead of relying on Python adding
+        # the entrypoint directory or inheriting the runner's tests package root.
+        # A run directory must not supply modules for the skill command.
+        (self.run / "acquire_result.py").write_text(
+            "raise RuntimeError('run directory module was imported')\n", encoding="utf-8"
+        )
         result = subprocess.run(
             [
                 sys.executable,
@@ -516,6 +523,8 @@ class DownloadAuthorizationPathContract(RunFixture):
                 "--decision-source",
                 "user_explicit",
             ],
+            cwd=self.run,
+            env={**os.environ, "PYTHONSAFEPATH": "1", "PYTHONPATH": str(SCRIPTS)},
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -791,9 +800,13 @@ class PaidRouteBoundaryContract(unittest.TestCase):
 
     def test_invalid_manual_target_remains_unsuccessful(self) -> None:
         recovery = {
-            "options": {"manual_download": {"papers": [
-                {"paper_id": "p3", "target_file": "downloads/papers/NUL.pdf"},
-            ]}},
+            "options": {
+                "manual_download": {
+                    "papers": [
+                        {"paper_id": "p3", "target_file": "downloads/papers/NUL.pdf"},
+                    ]
+                }
+            },
         }
         with mock.patch.object(
             download_recovery, "filesystem_path", side_effect=ValueError("invalid Windows path")
@@ -805,9 +818,13 @@ class PaidRouteBoundaryContract(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "requires native Windows filename validation")
     def test_native_reserved_manual_target_remains_unsuccessful(self) -> None:
         recovery = {
-            "options": {"manual_download": {"papers": [
-                {"paper_id": "p3", "target_file": "downloads/papers/NUL.pdf"},
-            ]}},
+            "options": {
+                "manual_download": {
+                    "papers": [
+                        {"paper_id": "p3", "target_file": "downloads/papers/NUL.pdf"},
+                    ]
+                }
+            },
         }
         result = download_recovery.verify_manual(self.run, recovery, self.manifest)
         self.assertEqual(result["invalid_or_missing_paper_ids"], ["p3"])
@@ -815,9 +832,13 @@ class PaidRouteBoundaryContract(unittest.TestCase):
 
     def test_manual_target_outside_run_is_rejected(self) -> None:
         recovery = {
-            "options": {"manual_download": {"papers": [
-                {"paper_id": "p3", "target_file": "../outside.pdf"},
-            ]}},
+            "options": {
+                "manual_download": {
+                    "papers": [
+                        {"paper_id": "p3", "target_file": "../outside.pdf"},
+                    ]
+                }
+            },
         }
         with self.assertRaisesRegex(ValueError, "must stay inside the run directory"):
             download_recovery.verify_manual(self.run, recovery, self.manifest)

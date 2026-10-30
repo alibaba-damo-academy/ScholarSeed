@@ -50,8 +50,11 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         cleanup_pool(self.root)
         self.temp.cleanup()
 
-    def prepare_run(self, paper_ids):
+    def prepare_run(self, paper_ids, *, auto_delegated=False):
         run = initialize_run(self.root, "Find papers")
+        workflow = json.loads((run / "workflow.json").read_text())
+        workflow["auto_delegated"] = auto_delegated
+        atomic_write_json(run / "workflow.json", workflow)
         update_status(run, "INTENT_CONFIRMED", "Test intent confirmed")
         increment_search_round(run)
         metadata_relative = "search/round-001/metadata.json"
@@ -104,7 +107,9 @@ class PaidPoolIntegrationTests(unittest.TestCase):
                 "paid_download_confirmation": "included_in_selection",
             },
         )
-        authorize_download(run, selection_path, "user_explicit")
+        authorize_download(
+            run, selection_path, "auto_delegated" if auto_delegated else "user_explicit"
+        )
         manifest = {
             "schema_version": "1.0",
             "run_id": run.name,
@@ -140,9 +145,10 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         )
         return run
 
-    def launch(self, index, delay="2"):
-        run = self.prepare_run([f"paper-{index}"])
+    def launch(self, index, delay="2", mode="interactive", paper_ids=None):
+        run = self.prepare_run(paper_ids or [f"paper-{index}"], auto_delegated=mode == "autodev")
         env = self.environment.copy()
+        env["PAPER_DL_MODE"] = mode
         env["PAPER_DL_TEST_DOWNLOADER_DELAY"] = delay
         p = subprocess.Popen(
             [
@@ -174,11 +180,12 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         self.fail(f"Expected {count} active downloads")
 
     def test_four_adapters_isolate_output_and_fourth_waits(self):
-        first = [self.launch(i) for i in range(3)]
+        modes = ["interactive", "autodev", "interactive", "autodev"]
+        first = [self.launch(i, mode=modes[i]) for i in range(3)]
         states = self.wait_for_downloads(3)
         expected_endpoint = {s["run_dir"]: s["endpoint"] for s in states}
         self.assertEqual(len(set(expected_endpoint.values())), 3)
-        fourth = self.launch(3, delay="0")
+        fourth = self.launch(3, delay="0", mode=modes[3])
         for index, (run, p) in enumerate([*first, fourth]):
             out, err = p.communicate(timeout=15)
             self.assertEqual(p.returncode, 0, out + err)
@@ -190,6 +197,9 @@ class PaidPoolIntegrationTests(unittest.TestCase):
             report = json.loads((run / manifest["external_report"]).read_text())
             self.assertEqual(report["results"][0]["identifier"]["value"], f"10.0000/paper-{index}")
             self.assertTrue(manifest["completion_notice"]["browser_pool_released"])
+            self.assertEqual(manifest["adapter"]["mode"], modes[index])
+            self.assertTrue(manifest["adapter"]["cdp"])
+            self.assertIn("[FAKE CDP] attached to", out)
             if index < 3:
                 self.assertIn(expected_endpoint[str(run)], out)
             else:
@@ -197,7 +207,7 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         self.assertEqual(self.pool.status(), [None, None, None])
 
     def test_cancel_active_adapter_cleans_only_its_own_processes(self):
-        run0, p0 = self.launch(0, delay="60")
+        run0, p0 = self.launch(0, delay="60", mode="autodev")
         run1, p1 = self.launch(1, delay="60")
         states = self.wait_for_downloads(2)
         own = next(s for s in states if s["run_dir"] == str(run0))
@@ -210,6 +220,24 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         self.assertEqual(self.pool.state(other["slot"])["lease_id"], other["lease_id"])
         self.assertTrue(group_members(other["download"]["pid"]))
         self.assertIsNone(p1.poll())
+
+    def test_autodev_skips_challenges_and_releases_browser(self):
+        run, process = self.launch(
+            0, delay="0", mode="autodev", paper_ids=["success", "manual", "login"]
+        )
+        out, err = process.communicate(timeout=15)
+        self.assertEqual(process.returncode, 0, out + err)
+        manifest = json.loads((run / "downloads/manifest.json").read_text())
+        validate_data("download-manifest", manifest)
+        self.assertEqual(manifest["summary"]["downloaded"], 1)
+        self.assertEqual(manifest["summary"]["skipped"], 2)
+        self.assertEqual(manifest["summary"]["action_required"], 0)
+        self.assertNotIn("action", manifest)
+        self.assertTrue(manifest["adapter"]["cdp"])
+        self.assertIn("[FAKE CDP] attached to", out)
+        self.assertNotIn("[ACTION REQUIRED]", out)
+        self.assertTrue(manifest["completion_notice"]["browser_pool_released"])
+        self.assertEqual(self.pool.status(), [None, None, None])
 
     def assert_intervention_failure_preserves_results(self, *, close_browser):
         spec = importlib.util.spec_from_file_location("paid_pool_recovery_test", ADAPTER)

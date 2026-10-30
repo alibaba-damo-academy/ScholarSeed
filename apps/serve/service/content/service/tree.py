@@ -55,6 +55,14 @@ PAGE_SIZE = 100
 
 #: 默认递归深度。再深的层级等用户展开时按需请求。
 DEFAULT_MAX_DEPTH = 3
+PROJECT_TREE_DEPTH = 1
+
+
+def _modified_at(entry: Path | os.DirEntry[str]) -> float | None:
+    try:
+        return entry.stat().st_mtime
+    except FileNotFoundError:
+        return None
 
 
 def _join(parent: str, name: str) -> str:
@@ -165,6 +173,9 @@ def _mount_node(space: ProjectSpace, mount: Mount, depth: int, conflict: bool) -
         # 外部根拔盘/被删时为 False: UI 要能区分「关联失效」与「空目录」。
         available=available,
         conflict=conflict,
+        updated_at=(
+            _modified_at(mount.source) if available and mount.kind is AssetKind.FILE else None
+        ),
         child_total=(
             page.total
             if page
@@ -187,7 +198,7 @@ def _child_node(
     """一个目录条目的节点。目录到了深度上限就不再下扫, 但要报出它有多少条目。
 
     `is_dir()` 走的是 `_entries` 排序时已填好的 dirent 缓存, `relative` 是父层
-    拼下来的 —— 建一个节点因此不产生任何新的系统调用。
+    拼下来的。文件仅对本页条目读取 stat，以投影最近修改时间。
     """
 
     is_dir = row.is_dir()
@@ -199,7 +210,7 @@ def _child_node(
         origin=origin,
     )
     if not is_dir:
-        return AssetTree(asset=asset)
+        return AssetTree(asset=asset, updated_at=_modified_at(row))
     target = Path(row.path)
     if depth > 1:
         page = _scan(space, target, relative, depth - 1, origin)

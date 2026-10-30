@@ -229,7 +229,8 @@ test('both renderer builds register the font source rewrite', async () => {
     assert.ok(loaded, `${configFile} did not load`)
     const config = configFile.startsWith('electron')
       ? (loaded.config as UserConfig & { renderer: UserConfig }).renderer : loaded.config
-    const names = (config.plugins ?? []).flat(Infinity).map(entry => (entry as { name?: string } | null)?.name)
+    const plugins: unknown[] = config.plugins ?? []
+    const names = plugins.flat(Infinity).map(entry => (entry as { name?: string } | null)?.name)
     assert.ok(names.includes(expected), `${configFile} must register ${expected}`)
   }
 })

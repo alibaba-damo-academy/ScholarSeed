@@ -1,7 +1,7 @@
 # ScholarSeed 产品后端 (FastAPI Serve + composition root) —— distribution `scholarseed`。
 #
 # 边界: 本包只拥有 apps/serve/service/**。runtime kernel (damoagent)、证据查询
-# (damoatrace) 与 runtime adapter (scholarseed-codex) 都是独立发行包,
+# (damoatrace) 与runtime adapter (scholarseed-codex) 都是独立发行包,
 # 这里只作依赖声明, 绝不打包它们的 namespace。
 
 [build-system]
@@ -23,6 +23,8 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "fastcdc>=1.7,<2",
     "httpx",            # tool backend (LocalBackend) 顶层硬依赖
+    "mcp==1.26.0",
+    "zotero-mcp-server==0.15.1",
     "json-repair",
     "lxml>=5.2",
     "numpy",
@@ -39,7 +41,7 @@ dependencies = [
     "python-pptx",
     "pyyaml",           # skills frontmatter / memory packs / context config
     "rich",
-    "scholarseed-runtime==0.2.0",
+    "scholarseed-runtime==0.2.1",
     "tenacity>=9.0",
     "truststore>=0.10", # 出站 TLS 走 OS 信任库: certifi 内置根永远不含企业中间人代理根
     "typer>=0.12",
@@ -55,7 +57,7 @@ dependencies = [
 docker = ["docker"]                     # DockerBackend
 claude-sdk = ["claude-agent-sdk"]
 # runtime adapter: 产品默认随 codex adapter 一起交付。
-codex = ["scholarseed-codex"]
+codex = ["scholarseed-codex==0.2.1"]
 serve = [
     "fastapi",
     "uvicorn",
@@ -71,7 +73,7 @@ serve = [
 all = [
     "docker",
     "claude-agent-sdk",
-    "scholarseed-codex",
+    "scholarseed-codex==0.2.1",
     "fastapi",
     "uvicorn",
     "python-multipart",

@@ -10,19 +10,17 @@ const MINIMUM_ACTIVITY_SECONDS = 1
 const HOURS_PER_DAY = 24
 const MILLISECONDS_PER_DAY = HOURS_PER_DAY * SECONDS_PER_HOUR * MILLISECONDS_PER_SECOND
 
-export function planDurationLabel(milliseconds: number): string {
-  const wholeSeconds = Math.max(0, Math.floor(milliseconds / MILLISECONDS_PER_SECOND)) * MILLISECONDS_PER_SECOND
+export function planDurationLabel(milliseconds: number, rounding: 'down' | 'up' = 'down'): string {
+  const round = rounding === 'up' ? Math.ceil : Math.floor
+  const wholeSeconds =
+    Math.max(0, round(milliseconds / MILLISECONDS_PER_SECOND)) * MILLISECONDS_PER_SECOND
   const days = Math.floor(wholeSeconds / MILLISECONDS_PER_DAY)
   const remainder = wholeSeconds % MILLISECONDS_PER_DAY
   if (!days) return turnDurationLabel(0, wholeSeconds)
   return remainder ? `${days}d ${turnDurationLabel(0, remainder)}` : `${days}d`
 }
 
-export function elapsedLabel(
-  startedAt: number,
-  now: number,
-  t: TFunction<'components'>
-): string {
+export function elapsedLabel(startedAt: number, now: number, t: TFunction<'components'>): string {
   const seconds = Math.max(0, Math.floor((now - startedAt) / MILLISECONDS_PER_SECOND))
   if (seconds < SECONDS_PER_MINUTE) return t('stream.seconds', { count: seconds })
   const minutes = Math.floor(seconds / SECONDS_PER_MINUTE)
@@ -32,10 +30,7 @@ export function elapsedLabel(
     : t('stream.minutes', { count: minutes })
 }
 
-export function activityDurationLabel(
-  startedAt: number,
-  endedAt: number
-): string {
+export function activityDurationLabel(startedAt: number, endedAt: number): string {
   const seconds = Math.max(
     MINIMUM_ACTIVITY_SECONDS,
     Math.floor((endedAt - startedAt) / MILLISECONDS_PER_SECOND)
@@ -58,10 +53,7 @@ export function activitySummaryState(
   return duration ? t('stream.durationState', { state: stateLabel, duration }) : stateLabel
 }
 
-export function turnDurationLabel(
-  startedAt: number,
-  endedAt: number
-): string {
+export function turnDurationLabel(startedAt: number, endedAt: number): string {
   const elapsedMilliseconds = Math.max(0, endedAt - startedAt)
   if (elapsedMilliseconds < SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND) {
     const seconds = Math.round(elapsedMilliseconds / MILLISECONDS_PER_TENTH_SECOND) / 10
@@ -74,6 +66,8 @@ export function turnDurationLabel(
   return [
     hours > 0 ? `${hours}h` : '',
     minutes > 0 ? `${minutes}m` : '',
-    seconds > 0 ? `${seconds}s` : ''
-  ].filter(Boolean).join(' ')
+    seconds > 0 ? `${seconds}s` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 }

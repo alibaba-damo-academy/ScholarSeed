@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from service.assistant.persistence.invocations import AssistantInvocationStore
 from service.assistant.service.actions import AssistantActionService
+from service.platform.activity import Activities
 from service.platform.inference import (
     ModelInvocationRequest,
     ModelInvocationResult,
@@ -129,6 +130,7 @@ def client_for(
         evidence=provider,
         actions=AssistantActionService(
             AssistantInvocationStore(Path(temporary.name) / "actions.sqlite3"),
+            activities=Activities(),
             model=model,
         ),
         registry=default_selection_action_registry(),

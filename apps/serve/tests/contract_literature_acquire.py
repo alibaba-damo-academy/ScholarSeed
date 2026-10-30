@@ -24,6 +24,7 @@ from service.chat.persistence.catalog import (  # noqa: E402
     SessionPrincipal,
     SessionStatus,
 )
+from service.literature.domain.delivery import AcquisitionScope  # noqa: E402
 from service.literature.persistence import fulltexts  # noqa: E402
 from service.literature.service.acquire import (  # noqa: E402
     FAILURE_DOWNLOAD,
@@ -32,6 +33,7 @@ from service.literature.service.acquire import (  # noqa: E402
     acquire_fulltexts,
 )
 from service.literature.service.fulltexts import ManagedFulltexts  # noqa: E402
+from service.literature.service.outcome import FULLTEXT_TIMEOUT  # noqa: E402
 from service.literature.service.receipt import (  # noqa: E402
     RECEIPT_AUTHORIZED,
     RECEIPT_PENDING,
@@ -47,6 +49,7 @@ from service.platform.bridge import (  # noqa: E402
     LiteratureAcquire,
     LiteratureReceipt,
 )
+from service.platform.context import FulltextTaskContext, ProductTaskType  # noqa: E402
 
 PDF_BYTES = (
     b"%PDF-1.4\n"
@@ -80,9 +83,22 @@ def paper(paper_id: str, identifier: str = "2501.00001", kind: str = "arxiv") ->
     )
 
 
+def task_context(session_id: str, project_id: str = "") -> FulltextTaskContext:
+    return FulltextTaskContext(
+        owner_id="owner",
+        project_id=project_id,
+        session_id=session_id,
+        workdir=_HOME,
+        task_type=ProductTaskType.PRECISE_SEARCH,
+        workspace="run1",
+        run_id="run1",
+    )
+
+
 class LiteratureAcquireContract(unittest.TestCase):
     def test_registry_exposes_acquire(self) -> None:
-        model, route = BRIDGE_REQUESTS[("literature", "acquire")]
+        entry = BRIDGE_REQUESTS[("literature", "acquire")]
+        model, route = entry.request_type, entry.route
         self.assertIs(model, LiteratureAcquire)
         self.assertEqual(route, LITERATURE_ACQUIRE_ROUTE)
 
@@ -119,7 +135,12 @@ class LiteratureAcquireContract(unittest.TestCase):
         self.assertEqual([f.code for f in outcome.failures], [FAILURE_UNSUPPORTED])
 
     def test_authorized_batch_stores_managed_bytes(self) -> None:
-        outcome = acquire_fulltexts((paper("p1"),), transport=_transport())
+        context = task_context("acquire-session", "proj")
+        outcome = acquire_fulltexts(
+            (paper("p1"),),
+            transport=_transport(),
+            scope=AcquisitionScope(context.session_id, context.project_id, context.workspace),
+        )
         self.assertEqual(outcome.refs, ("paper:p1",))
         self.assertEqual(outcome.downloaded, 1)
         self.assertEqual(outcome.failures, ())
@@ -127,7 +148,7 @@ class LiteratureAcquireContract(unittest.TestCase):
         self.assertIsNotNone(obj)
         assert obj is not None
         self.assertTrue((SERVICE_LITERATURE_FILES_DIR / obj.object_name).is_file())
-        document = ManagedFulltexts().managed_fulltext_document("proj", "p1")
+        document = ManagedFulltexts().managed_fulltext_document("proj", "p1", task_context=context)
         self.assertIsNotNone(document)
         assert document is not None
         self.assertTrue(document.payload.startswith(b"%PDF"))
@@ -142,6 +163,28 @@ class LiteratureAcquireContract(unittest.TestCase):
         self.assertEqual(outcome.downloaded, 0)
         self.assertEqual([f.code for f in outcome.failures], [FAILURE_DOWNLOAD])
         self.assertIsNone(fulltexts.find_fulltext_object("p2"))
+
+    def test_timeout_reason_is_preserved_without_publishing_partial_pdf(self) -> None:
+        def stalled(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("stalled", request=request)
+
+        outcome = acquire_fulltexts(
+            (paper("timeout-paper"),), transport=httpx.MockTransport(stalled)
+        )
+        payload = outcome.payload()
+        self.assertEqual(payload["manifest"]["downloaded"], 0)
+        self.assertEqual(payload["manifest"]["failed"], 1)
+        self.assertEqual(
+            payload["failures"],
+            [
+                {
+                    "paper_id": "timeout-paper",
+                    "code": FAILURE_DOWNLOAD,
+                    "reason": FULLTEXT_TIMEOUT,
+                }
+            ],
+        )
+        self.assertIsNone(fulltexts.find_fulltext_object("timeout-paper"))
 
     def test_partial_batch_keeps_per_paper_evidence(self) -> None:
         outcome = acquire_fulltexts(
@@ -161,6 +204,7 @@ class LiteratureAcquireContract(unittest.TestCase):
                     "ref": "paper:p3",
                     "revision": outcome.papers[0].revision,
                     "source_kind": "arxiv",
+                    "reused": False,
                 }
             ],
         )
@@ -181,6 +225,9 @@ class LiteratureReceiptContract(unittest.TestCase):
     SNAPSHOT = "receipt-snapshot"
     TURN = "receipt-turn"
     REFS = ("paper:p1", "paper:p2")
+
+    def setUp(self) -> None:
+        self.context = task_context(self.SESSION)
 
     def _authorizer(self, answer: str | None, values: dict | None = None) -> FulltextAuthorizer:
         holder: dict[str, str] = {}
@@ -227,6 +274,7 @@ class LiteratureReceiptContract(unittest.TestCase):
             turn_id=self.TURN,
             authorization_type=PRECISE_SEARCH_FULLTEXT,
             refs=self.REFS,
+            task_context=self.context,
         )
         holder["question_id"] = challenge.question_id
         self.challenge = challenge
@@ -240,17 +288,21 @@ class LiteratureReceiptContract(unittest.TestCase):
             snapshot_id=self.SNAPSHOT,
             turn_id=self.TURN,
             authorization_type=PRECISE_SEARCH_FULLTEXT,
+            task_context=self.context,
         )
 
     def test_registry_exposes_receipt(self) -> None:
-        model, route = BRIDGE_REQUESTS[("literature", "receipt")]
+        entry = BRIDGE_REQUESTS[("literature", "receipt")]
+        model, route = entry.request_type, entry.route
         self.assertIs(model, LiteratureReceipt)
         self.assertEqual(route, LITERATURE_RECEIPT_ROUTE)
         with self.assertRaises(ValueError):
             LiteratureReceipt.model_validate({"run": "run1", "refs": ["paper:p1"]})
 
     def test_granted_subset_and_managed_bytes_are_reported(self) -> None:
-        acquire_fulltexts((paper("p1"),), transport=_transport())
+        acquire_fulltexts(
+            (paper("p1"),), transport=_transport(), scope=AcquisitionScope(self.SESSION, "", "run1")
+        )
         authorizer = self._authorizer(AUTHORIZE, {"selected_paper_ids": ["paper:p1"]})
         payload = self._receipt(authorizer).payload()
         self.assertEqual(payload["ok"], True)
@@ -267,7 +319,9 @@ class LiteratureReceiptContract(unittest.TestCase):
         self.assertTrue(str(papers[0]["revision"]))
 
     def test_authorized_refs_without_bytes_stay_visible(self) -> None:
-        acquire_fulltexts((paper("p1"),), transport=_transport())
+        acquire_fulltexts(
+            (paper("p1"),), transport=_transport(), scope=AcquisitionScope(self.SESSION, "", "run1")
+        )
         authorizer = self._authorizer(AUTHORIZE)
         receipt = self._receipt(authorizer)
         self.assertEqual(receipt.refs, self.REFS)

@@ -68,10 +68,38 @@
 ; 用 tasklist + findstr 按镜像名精确锚定，不依赖 PowerShell 语言模式（真机 langMode=
 ; ConstrainedLanguage，模板里 CIM 路径匹配不可靠），也与 proposal 108「等待退出、不强杀」纪律一致。
 ; 无标签、无函数，可在同一构建内安全多次展开。
+!include "${__FILEDIR__}\diagnostics.nsh"
+
 !macro ssDetectAppRunning _RETURN
   nsExec::Exec `"$SYSDIR\cmd.exe" /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq ${APP_EXECUTABLE_FILENAME}" /FO CSV /NH | "$SYSDIR\findstr.exe" /B /I /C:"\"${APP_EXECUTABLE_FILENAME}\""`
   Pop ${_RETURN}
 !macroend
+
+; The native owner must release its journal roots through normal shutdown.
+; The builder default may force-terminate the owner, leaving unprovable family roots.
+!ifdef SS_NATIVE_CARRIER
+  !macro customCheckAppRunning
+    !ifndef BUILD_UNINSTALLER
+      ${if} $ssMaintenance == "1"
+        Call ssCheckController
+        ${if} ${Errors}
+          StrCpy $ssLogResult "maintenance-controller-unavailable"
+          Call ssHandshakeFail
+        ${endIf}
+      ${endIf}
+    !endif
+    !insertmacro ssDetectAppRunning $R0
+    !insertmacro ssInstallerDiagnostic "phase=process-check code=$R0"
+    ${if} $R0 != 1
+      !insertmacro ssLocalizedMessage $R9 "ScholarSeed is running or its status could not be checked. Close it and retry." "ScholarSeed 正在运行或无法确认运行状态，请关闭后重试。"
+      IfSilent +2
+      MessageBox MB_OK|MB_ICONSTOP "$R9"
+      !insertmacro ssInstallerDiagnostic "phase=process-check result=rejected"
+      SetErrorLevel 2
+      Quit
+    ${endIf}
+  !macroend
+!endif
 
 !macro ssLocalizedMessage _OUTPUT _ENGLISH _CHINESE
   StrCpy ${_OUTPUT} "${_ENGLISH}"
@@ -81,8 +109,18 @@
   ${endIf}
 !macroend
 
+!include "${__FILEDIR__}\privileges.nsh"
+
 !macro customHeader
   !ifndef BUILD_UNINSTALLER
+
+    Function .onInstFailed
+      !insertmacro ssInstallerDiagnostic "phase=installation result=failed"
+    FunctionEnd
+
+    Function .onInstSuccess
+      !insertmacro ssInstallerDiagnostic "phase=installation result=passed"
+    FunctionEnd
 
     !include FileFunc.nsh
     !include StrFunc.nsh
@@ -90,6 +128,8 @@
 
     ; ---- 握手协议常量（与 src/main/handshake.ts 逐字对齐） ----
     !define SS_HANDSHAKE_SCHEMA "1"
+    !define SS_MAINTENANCE_SCHEMA "2"
+    !define SS_MAINTENANCE_RECORD_BYTES 8192
     !define SS_UPDATE_ID_OPTION "/SCHOLARSEED_UPDATE_ID="
     !define SS_HOME_ENV "SCHOLARSEED_HOME"
     !define SS_NONCE_ENV "SCHOLARSEED_UPDATE_NONCE"
@@ -116,6 +156,8 @@
     !define SS_PROCESS_QUERY_TIMEOUT_MS 1000
 
     Var ssTargetDir
+    Var ssProtocolSchema
+    Var ssDecision
     Var ssReadyResult
     Var ssHandshakeCommitted
     Var ssUpdateId
@@ -144,6 +186,8 @@
     Var ssTimeHour
     Var ssTimeMinute
     Var ssTimeSecond
+
+    !insertmacro ssPrivilegeFunctions
 
     ; ---------- 通用小工具 ----------
 
@@ -361,6 +405,7 @@
       FileWrite $ssLogHandle "$ssLogEventName"
       FileWrite $ssLogHandle '","result":"'
       FileWrite $ssLogHandle "$ssLogResult"
+      FileWrite $ssLogHandle '","actualProcessId":"$ssActualPid","tokenElevated":"$ssOriginalElevated","integrityLevel":"$ssOriginalIntegrity","pluginAdmin":"$ssPluginAdmin","callerElevated":"$ssCallerElevated","callerIntegrityLevel":"$ssCallerIntegrity'
       FileWrite $ssLogHandle '"}$\r$\n'
       FileClose $ssLogHandle
       ss_log_done:
@@ -501,6 +546,7 @@
     ; 只在 legacy 分支调用；协议分支继续由 ssWaitOldProcessExit 按 callerPid 收敛。
     ; 读写寄存器：全部自保存/恢复；$R1 = 静默等待轮次；ssLog* 为本函数私有契约。
     Function ssEnforceAppClosed
+      !insertmacro ssInstallerDiagnostic "phase=app-close event=start"
       Push $0
       Push $1
       Push $2
@@ -555,12 +601,14 @@
         Sleep ${SS_HANDSHAKE_SLEEP_MS}
         Goto ss_eac_silent_loop
       ss_eac_silent_abort:
+        !insertmacro ssInstallerDiagnostic "phase=app-close result=timeout"
         StrCpy $ssLogPhase "app-close"
         StrCpy $ssLogEventName "abort"
         StrCpy $ssLogResult "timeout"
         Call ssLogEvent
         Quit
       ss_eac_closed:
+        !insertmacro ssInstallerDiagnostic "phase=app-close result=closed"
         StrCpy $ssLogPhase "app-close"
         StrCpy $ssLogEventName "closed"
         StrCpy $ssLogResult "ok"
@@ -591,9 +639,10 @@
 
     ; 协议模式下唯一的自动拉起者。$appExe 由 installSection 在文件安装前设好
     ; （StrCpy $appExe "$INSTDIR\${APP_EXECUTABLE_FILENAME}"），Finish PRE 时必然可用；
-    ; 用真实 exe 而非可能陈旧的快捷方式（提案 §5.2）。ExecShellAsUser 保证不继承管理员身份。
-    ; 读写寄存器：$0（ExecShellAsUser 状态串，随即转存进日志）。
+    ; 使用真实 exe，继承原更新发起进程身份；UAC 内层通过原进程回调执行。
     Function ssLaunchUpdatedAppOnce
+      ; The independent ordinary controller owns restart and post-install checks.
+      StrCmp $ssMaintenance "1" ss_launch_done
       StrCmp $ssHandshakeCommitted "1" 0 ss_launch_done
       StrCmp $ssLaunchAttempted "1" ss_launch_done
       StrCpy $ssLaunchAttempted "1"
@@ -601,10 +650,14 @@
       StrCpy $ssLogEventName "begin"
       StrCpy $ssLogResult "attempt"
       Call ssLogEvent
-      ${StdUtils.ExecShellAsUser} $0 "$appExe" "open" "--updated --scholarseed-update-id=$ssUpdateId"
+      ClearErrors
+      Exec '"$appExe" --updated --scholarseed-update-id=$ssUpdateId'
+      StrCpy $ssLogResult "ok"
+      ${if} ${Errors}
+        StrCpy $ssLogResult "launch-failed"
+      ${endIf}
       StrCpy $ssLogPhase "launch"
       StrCpy $ssLogEventName "end"
-      StrCpy $ssLogResult $0
       Call ssLogEvent
       ss_launch_done:
     FunctionEnd
@@ -618,7 +671,12 @@
       StrCpy $ssLogPhase "context"
       StrCpy $ssLogEventName "invalid"
       Call ssLogEvent
-      !insertmacro ssLocalizedMessage $R9 "Update handoff failed ($ssLogResult); install cancelled, current version untouched. Run the installer manually." "更新交接失败（$ssLogResult），安装已取消，当前版本未被改动。请手动运行安装程序完成更新。"
+      ${if} $ssMaintenance == "1"
+        !insertmacro ssLocalizedMessage $R9 "Launcher update handoff failed ($ssLogResult). Retry the update in the app." "启动器更新交接失败（$ssLogResult）。请在应用内重试更新。"
+        SetErrorLevel 2
+      ${else}
+        !insertmacro ssLocalizedMessage $R9 "Update handoff failed ($ssLogResult); install cancelled, current version untouched. Run the installer manually." "更新交接失败（$ssLogResult），安装已取消，当前版本未被改动。请手动运行安装程序完成更新。"
+      ${endIf}
       MessageBox MB_OK|MB_ICONSTOP "$R9"
       Quit
     FunctionEnd
@@ -626,6 +684,10 @@
     ; 读写寄存器：$R0/$R1/$R2/$R4/$R5/$R6/$R7/$R8/$R9、$0-$8；全局 Var 见声明区。
     Function ssHandshakeInit
       StrCpy $ssHandshakeMode "legacy"
+      StrCpy $ssProtocolSchema "${SS_HANDSHAKE_SCHEMA}"
+      ${if} $ssMaintenance == "1"
+        StrCpy $ssProtocolSchema "${SS_MAINTENANCE_SCHEMA}"
+      ${endIf}
       StrCpy $ssInstallComplete "0"
       StrCpy $ssLaunchAttempted "0"
       StrCpy $ssLogRotated "0"
@@ -650,9 +712,7 @@
       StrCmp $R0 "" 0 ss_init_fail_scope
 
       ${if} ${UAC_IsInnerInstance}
-        ${ifNot} ${UAC_IsAdmin}
-          Quit
-        ${endIf}
+        StrCmp $ssMaintenance "1" ss_init_fail_scope
         !insertmacro setInstallModePerAllUsers
         ReadRegStr $ssTargetDir HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
         StrCmp $ssTargetDir "" ss_init_inner_fail
@@ -671,10 +731,6 @@
         !insertmacro ssLocalizedMessage $R9 "Automatic update could not safely take over this installation. The installer has stopped." "无法安全接管此安装，自动更新已停止。"
         MessageBox MB_OK|MB_ICONSTOP "$R9"
         Quit
-      ${endIf}
-      ${if} ${UAC_IsAdmin}
-        StrCpy $ssLogResult "elevated-caller-unsupported"
-        Call ssHandshakeFail
       ${endIf}
 
       Call ssValidateUuid
@@ -712,12 +768,16 @@
 
       FileOpen $R2 "$R1\${SS_REQUEST_FILE}" r
       IfErrors ss_init_fail_request
+      ${if} $ssMaintenance == "1"
+        Call ssCheckMaintenanceRecord
+        IfErrors ss_init_close_fail
+      ${endIf}
 
       ; 字段顺序与 handshake.ts REQUEST_KEYS 逐字一致
       StrCpy $R5 "schemaVersion="
       Call ssReadField
       IfErrors ss_init_close_fail
-      StrCmp $R4 "${SS_HANDSHAKE_SCHEMA}" 0 ss_init_close_fail
+      StrCmp $R4 $ssProtocolSchema 0 ss_init_close_fail
       StrCpy $R5 "updateId="
       Call ssReadField
       IfErrors ss_init_close_fail
@@ -742,6 +802,29 @@
       Call ssReadField
       IfErrors ss_init_close_fail
       StrCpy $ssCreationHigh $R4
+      ${if} $ssMaintenance == "1"
+        StrCpy $R5 "controllerPid="
+        Call ssReadField
+        IfErrors ss_init_close_fail
+        StrCpy $ssControllerPid $R4
+        IntFmt $0 "%u" $ssControllerPid
+        StrCmp $0 $ssControllerPid 0 ss_init_close_fail
+        StrCmp $ssControllerPid "0" ss_init_close_fail
+        StrCmp $ssControllerPid $ssCallerPid ss_init_close_fail
+        StrCmp $ssControllerPid $ssInstallerPid ss_init_close_fail
+        StrCpy $R5 "controllerCreationLow="
+        Call ssReadField
+        IfErrors ss_init_close_fail
+        StrCpy $ssControllerLow $R4
+        IntFmt $0 "%d" $ssControllerLow
+        StrCmp $0 $ssControllerLow 0 ss_init_close_fail
+        StrCpy $R5 "controllerCreationHigh="
+        Call ssReadField
+        IfErrors ss_init_close_fail
+        StrCpy $ssControllerHigh $R4
+        IntFmt $0 "%d" $ssControllerHigh
+        StrCmp $0 $ssControllerHigh 0 ss_init_close_fail
+      ${endIf}
       StrCpy $R5 "fromVersion="
       Call ssReadField
       IfErrors ss_init_close_fail
@@ -752,7 +835,7 @@
       Call ssReadField
       IfErrors ss_init_close_fail
       StrCpy $ssTargetDir $R4
-      ; 必须恰好 10 行：第 11 次读到内容 = 记录被追加过，拒绝
+      ; Exactly 10 fields for schema 1, 13 for maintenance schema 2.
       ClearErrors
       FileReadUTF16LE $R2 $R4
       IfErrors 0 ss_init_close_fail
@@ -762,6 +845,16 @@
       Call ssCurrentUserSid
       IfErrors ss_init_fail_sid
       StrCmp $R4 $ssCallerSid 0 ss_init_fail_sid
+      ${if} $ssMaintenance == "1"
+        Call ssBindController
+        IfErrors ss_init_fail_controller
+      ${endIf}
+
+      Call ssInspectCaller
+      StrCpy $ssLogPhase "privileges"
+      StrCpy $ssLogEventName "verified"
+      StrCpy $ssLogResult "native-token"
+      Call ssLogEvent
 
       ReadRegStr $R0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
       ReadRegStr $R3 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
@@ -780,6 +873,17 @@
       StrCpy $INSTDIR $ssTargetDir
       StrCpy $appExe "$ssTargetDir\${APP_EXECUTABLE_FILENAME}"
       ${if} $ssInstallScope == "${SS_SCOPE_MACHINE}"
+        StrCmp $ssMaintenance "1" ss_init_fail_scope
+        ; 模板的全局安装会卸载 HKCU 安装，冲突时停止，避免范围迁移。
+        ReadRegStr $R0 HKCU "${UNINSTALL_REGISTRY_KEY}" UninstallString
+        StrCmp $R0 "" 0 ss_init_fail_scope
+        ReadRegStr $R0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+        StrCmp $R0 "" 0 ss_init_fail_scope
+        ClearErrors
+        ${if} $ssOriginalElevated == 1
+          !insertmacro setInstallModePerAllUsers
+          Goto ss_init_exchange
+        ${endIf}
         StrCpy $ssReadyResult "${SS_ELEVATION_REQUIRED}"
         Call ssWriteReady
         IfErrors ss_init_fail_ready
@@ -790,6 +894,9 @@
         Call ssLogEvent
         Quit
       ${endIf}
+      !insertmacro setInstallModePerUser
+      ss_init_exchange:
+      StrCmp $INSTDIR $ssTargetDir 0 ss_init_fail_scope
       StrCpy $R8 $ssTargetDir
       Call ssHandshakeExchange
       StrCmp $R9 "${SS_HANDOFF_COMMITTED}" 0 ss_init_exchange_failed
@@ -798,6 +905,10 @@
       Quit
       ss_init_fail_scope:
       StrCpy $ssLogResult "install-scope-mismatch"
+      Call ssHandshakeFail
+
+      ss_init_fail_controller:
+      StrCpy $ssLogResult "maintenance-controller-invalid"
       Call ssHandshakeFail
 
       ss_init_close_fail:
@@ -830,31 +941,120 @@
       ; 覆盖默认 CHECK_APP_RUNNING 因 ${UAC_IsInnerInstance} 守卫而在 per-machine 内层实例
       ; 被整体跳过的路径；关闭失败即中止（见 ssEnforceAppClosed）。
       ss_init_legacy:
+      ${if} $ssMaintenance == "1"
+        StrCpy $ssLogResult "maintenance-context-missing"
+        Call ssHandshakeFail
+      ${endIf}
       Call ssEnforceAppClosed
     FunctionEnd
 
+    ; Schema 2 records are bounded UTF-16LE with BOM, not JSON. The native
+    ; transaction API uses JSON; it must serialize this separate NSIS contract.
+    Function ssCheckMaintenanceRecord
+      ClearErrors
+      FileSeek $R2 0 END $0
+      IfErrors ss_record_failed
+      IntCmp $0 ${SS_MAINTENANCE_RECORD_BYTES} 0 0 ss_record_failed
+      IntCmp $0 2 ss_record_failed ss_record_failed
+      IntOp $2 $0 - 2
+      IntOp $1 $0 & 1
+      StrCmp $1 0 0 ss_record_failed
+      FileSeek $R2 0 SET
+      FileReadByte $R2 $0
+      FileReadByte $R2 $1
+      IfErrors ss_record_failed
+      StrCmp $0 255 0 ss_record_failed
+      StrCmp $1 254 0 ss_record_failed
+      ; NSIS strings terminate at NUL. Reject hidden suffixes before decoding
+      ; any field rather than accepting a truncated textual identity/decision.
+      ss_record_scan:
+      FileReadByte $R2 $0
+      FileReadByte $R2 $1
+      IfErrors ss_record_failed
+      ${if} $0 == 0
+      ${andIf} $1 == 0
+        Goto ss_record_failed
+      ${endIf}
+      IntOp $2 $2 - 2
+      IntCmp $2 0 0 ss_record_failed ss_record_scan
+      FileSeek $R2 0 SET
+      IfErrors ss_record_failed
+      ClearErrors
+      Return
+      ss_record_failed:
+      SetErrors
+    FunctionEnd
+
+    Function ssWriteControllerRecord
+      FileWriteUTF16LE $R2 "controllerPid=$ssControllerPid$\r$\n"
+      IfErrors ss_controller_write_failed
+      FileWriteUTF16LE $R2 "controllerCreationLow=$ssControllerLow$\r$\n"
+      IfErrors ss_controller_write_failed
+      FileWriteUTF16LE $R2 "controllerCreationHigh=$ssControllerHigh$\r$\n"
+      IfErrors ss_controller_write_failed
+      Return
+      ss_controller_write_failed:
+      SetErrors
+    FunctionEnd
+
+    Function ssReadControllerRecord
+      StrCpy $R5 "controllerPid="
+      Call ssReadField
+      IfErrors ss_controller_read_failed
+      StrCmp $R4 $ssControllerPid 0 ss_controller_read_failed
+      StrCpy $R5 "controllerCreationLow="
+      Call ssReadField
+      IfErrors ss_controller_read_failed
+      StrCmp $R4 $ssControllerLow 0 ss_controller_read_failed
+      StrCpy $R5 "controllerCreationHigh="
+      Call ssReadField
+      IfErrors ss_controller_read_failed
+      StrCmp $R4 $ssControllerHigh 0 ss_controller_read_failed
+      Return
+      ss_controller_read_failed:
+      SetErrors
+    FunctionEnd
+
+    Function ssReadMaintenanceDecision
+      Call ssCheckMaintenanceRecord
+      IfErrors ss_maintenance_decision_failed
+      StrCpy $R5 "schemaVersion="
+      Call ssReadField
+      IfErrors ss_maintenance_decision_failed
+      StrCmp $R4 "${SS_MAINTENANCE_SCHEMA}" 0 ss_maintenance_decision_failed
+      StrCpy $R5 "updateId="
+      Call ssReadField
+      IfErrors ss_maintenance_decision_failed
+      StrCmp $R4 $ssUpdateId 0 ss_maintenance_decision_failed
+      StrCpy $R5 "nonce="
+      Call ssReadField
+      IfErrors ss_maintenance_decision_failed
+      StrCmp $R4 $ssNonce 0 ss_maintenance_decision_failed
+      Call ssReadControllerRecord
+      IfErrors ss_maintenance_decision_failed
+      StrCpy $R5 "decision="
+      Call ssReadField
+      IfErrors ss_maintenance_decision_failed
+      StrCpy $ssDecision $R4
+      StrCmp $ssDecision "commit" ss_maintenance_decision_eof
+      StrCmp $ssDecision "cancel" 0 ss_maintenance_decision_failed
+      ss_maintenance_decision_eof:
+      ClearErrors
+      FileReadUTF16LE $R2 $R4
+      IfErrors 0 ss_maintenance_decision_failed
+      ClearErrors
+      Return
+      ss_maintenance_decision_failed:
+      SetErrors
+    FunctionEnd
+
     Function ssWriteReady
-      StrCpy $R3 "0"
-      StrCpy $R7 "0"
-      System::Call 'kernel32::GetCurrentProcess() p .r1'
-      System::Alloc 8
-      Pop $2
-      System::Alloc 8
-      Pop $3
-      System::Alloc 8
-      Pop $4
-      System::Alloc 8
-      Pop $5
-      System::Call 'kernel32::GetProcessTimes(p r1, p r2, p r3, p r4, p r5) i .r0'
-      StrCmp $0 "0" ss_ready_write
-      System::Call '*$2(i .r0, i .r7)'
-      StrCpy $R3 $0
-      StrCpy $R7 $7
-      ss_ready_write:
-      System::Free $2
-      System::Free $3
-      System::Free $4
-      System::Free $5
+      StrCpy $ssNativeProcess -1
+      Call ssProcessCreation
+      StrCpy $ssNativeProcess 0
+      IfErrors ss_ready_failed
+      StrCpy $R3 $ssProcessLow
+      StrCpy $R7 $ssProcessHigh
       ; 文件操作拥有自己的错误状态，不能误用注册表/进程查询的残留。
       ClearErrors
       ${if} $ssReadyResult == "${SS_ELEVATION_REQUIRED}"
@@ -863,7 +1063,7 @@
         FileOpen $R2 "$R1\${SS_READY_FILE}" w
       ${endIf}
       IfErrors ss_ready_failed
-      FileWriteUTF16LE /BOM $R2 "schemaVersion=${SS_HANDSHAKE_SCHEMA}$\r$\n"
+      FileWriteUTF16LE /BOM $R2 "schemaVersion=$ssProtocolSchema$\r$\n"
       IfErrors ss_ready_close_failed
       FileWriteUTF16LE $R2 "updateId=$ssUpdateId$\r$\n"
       IfErrors ss_ready_close_failed
@@ -875,6 +1075,10 @@
       IfErrors ss_ready_close_failed
       FileWriteUTF16LE $R2 "installerCreationHigh=$R7$\r$\n"
       IfErrors ss_ready_close_failed
+      ${if} $ssMaintenance == "1"
+        Call ssWriteControllerRecord
+        IfErrors ss_ready_close_failed
+      ${endIf}
       FileWriteUTF16LE $R2 "result=$ssReadyResult$\r$\n"
       IfErrors ss_ready_close_failed
       FileClose $R2
@@ -890,6 +1094,10 @@
     Function ssHandshakeExchange
       StrCpy $ssLogResult "install-scope-mismatch"
       StrCmp $R8 $ssTargetDir 0 ss_exchange_failed
+      ${if} $ssMaintenance == "1"
+        Call ssCheckController
+        IfErrors ss_exchange_controller
+      ${endIf}
       StrCpy $R1 "$ssHome\updates\install\$ssUpdateId"
       StrCpy $ssReadyResult "${SS_INSTALLER_READY}"
       StrCpy $ssLogResult "ready-write-failed"
@@ -902,13 +1110,21 @@
       ; 等决策（300 × 200ms）；$R6 = 轮次计数
       StrCpy $R6 0
       ss_decision_loop:
+        ${if} $ssMaintenance == "1"
+          Call ssCheckController
+          IfErrors ss_exchange_controller
+        ${endIf}
         IfFileExists "$R1\${SS_DECISION_FILE}" 0 ss_decision_sleep
         FileOpen $R2 "$R1\${SS_DECISION_FILE}" r
         IfErrors ss_decision_sleep
+        ${if} $ssMaintenance == "1"
+          Call ssReadMaintenanceDecision
+          IfErrors ss_decision_close_poll
+        ${else}
         StrCpy $R5 "schemaVersion="
         Call ssReadField
         IfErrors ss_decision_close_poll
-        StrCmp $R4 "${SS_HANDSHAKE_SCHEMA}" 0 ss_decision_close_poll
+        StrCmp $R4 $ssProtocolSchema 0 ss_decision_close_poll
         StrCpy $R5 "updateId="
         Call ssReadField
         IfErrors ss_decision_close_poll
@@ -920,9 +1136,11 @@
         StrCpy $R5 "decision="
         Call ssReadField
         IfErrors ss_decision_close_poll
+        StrCpy $ssDecision $R4
+        ${endIf}
         FileClose $R2
-        StrCmp $R4 "commit" ss_decision_commit
-        StrCmp $R4 "cancel" ss_decision_cancel
+        StrCmp $ssDecision "commit" ss_decision_commit
+        StrCmp $ssDecision "cancel" ss_decision_cancel
         ; 决策值非法：身份全对但内容不认识 → 协议失败，fail-closed
         StrCpy $ssLogResult "decision-value-invalid"
         Goto ss_exchange_failed
@@ -955,8 +1173,16 @@
       Call ssLogEvent
 
       ; 等旧进程退出；超时 = 中止（绝不强杀、绝不带着活进程进入卸载）
-      Call ssWaitOldProcessExit
-      IfErrors ss_exchange_oldproc
+      ${if} $ssMaintenance == "1"
+        ; Only the authenticated live controller can commit after proving exit
+        ; on its original owner handle and acquiring the native store gate.
+        ; Never use legacy OpenProcess failure/PID reuse as that proof.
+        Call ssCheckController
+        IfErrors ss_exchange_controller
+      ${else}
+        Call ssWaitOldProcessExit
+        IfErrors ss_exchange_oldproc
+      ${endIf}
       StrCpy $ssLogPhase "old-process"
       StrCpy $ssLogEventName "exit"
       StrCpy $ssLogResult "ok"
@@ -965,12 +1191,19 @@
       StrCpy $R9 "${SS_HANDOFF_COMMITTED}"
       Return
 
+      ss_exchange_controller:
+      StrCpy $ssLogResult "maintenance-controller-unavailable"
+      Goto ss_exchange_failed
+
       ss_exchange_oldproc:
       StrCpy $ssLogPhase "old-process"
       StrCpy $ssLogEventName "exit"
       StrCpy $ssLogResult "timeout"
       Call ssLogEvent
       ss_exchange_failed:
+      ${if} $ssMaintenance == "1"
+        SetErrorLevel 2
+      ${endIf}
       StrCpy $ssLogPhase "handoff"
       StrCpy $ssLogEventName "rejected"
       Call ssLogEvent
@@ -1000,6 +1233,13 @@
 
 
     Function ssCompleteUserInstall
+  ${if} $ssMaintenance == "1"
+    Call ssCheckController
+    ${if} ${Errors}
+      StrCpy $ssLogResult "maintenance-controller-unavailable"
+      Call ssHandshakeFail
+    ${endIf}
+  ${endIf}
   ; ---- proposal 112 §6.E：legacy 组件仓库轴 → SCHOLARSEED_HOME 一次性协调（install+upgrade 都跑）----
   ; 触发判据用注册表而非 env：升级路径把握手 SCHOLARSEED_HOME 注入进程 env（updater.ts:1127），
   ; env 恒非空，只有 HKCU 注册表才反映「用户是否持久配置过 home」。
@@ -1071,7 +1311,7 @@
 
     Function ssStorePagePre
       ${if} $ssHandshakeMode == "protocol"
-      ${andIf} ${UAC_IsInnerInstance}
+      ${andIf} $ssInstallScope == "${SS_SCOPE_MACHINE}"
         ReadRegStr $R0 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
         StrCmp $INSTDIR $ssTargetDir 0 ss_store_update_failed
         StrCmp $R0 $ssTargetDir 0 ss_store_update_failed
@@ -1164,19 +1404,65 @@
 ; 必须是顶层宏，不能放进 customHeader：NSIS 禁止在宏内定义宏，且 !ifmacrodef 探测要求它独立存在。
 ; 卸载器构建没有握手 Var，宏体整体排除以免编译期引用未声明变量。
 !macro customInstallMode
+  !ifdef SS_NATIVE_CARRIER
+    StrCpy $isForceCurrentInstall "1"
+  !endif
   !ifndef BUILD_UNINSTALLER
     ${if} $ssHandshakeMode == "protocol"
-    ${andIf} $ssInstallScope == "${SS_SCOPE_USER}"
-      StrCpy $isForceCurrentInstall "1"
+      ${if} $ssInstallScope == "${SS_SCOPE_USER}"
+        StrCpy $isForceCurrentInstall "1"
+      ${elseIf} $ssInstallScope == "${SS_SCOPE_MACHINE}"
+        StrCpy $isForceMachineInstall "1"
+      ${endIf}
     ${endIf}
   !endif
 !macroend
 
+; initMultiUser runs before customInit, including silent installation. Check its
+; actual selection and registry discovery before handshake or template elevation.
+!macro ssRequireNativeUserScope
+  !insertmacro ssInstallerDiagnostic "phase=scope-check"
+  ${if} $installMode != "CurrentUser"
+  ${orIf} $hasPerMachineInstallation == "1"
+  ${orIf} $perMachineInstallationFolder != ""
+  ${orIf} ${isForAllUsers}
+    !insertmacro ssLocalizedMessage $R9 "This installer supports a current-user installation only. A machine-wide installation cannot be upgraded with this package." "此安装包仅支持当前用户安装，不能用于升级计算机范围的安装。"
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$R9"
+    !insertmacro ssInstallerDiagnostic "phase=scope-check result=rejected"
+    SetErrorLevel 2
+    Quit
+  ${endIf}
+!macroend
+
+!macro preInit
+  !ifndef BUILD_UNINSTALLER
+    Call ssPrivilegeInit
+  !endif
+!macroend
+
 !macro customInit
+  !insertmacro ssInstallerDiagnostic "phase=initialize"
+  !ifdef SS_NATIVE_CARRIER
+    !insertmacro ssRequireNativeUserScope
+  !endif
   Call ssHandshakeInit
+  !ifdef SS_NATIVE_CARRIER
+    ${if} ${isForAllUsers}
+      SetErrorLevel 2
+      Quit
+    ${endIf}
+    !ifndef BUILD_UNINSTALLER
+      ${if} $ssInstallScope == "${SS_SCOPE_MACHINE}"
+        SetErrorLevel 2
+        Quit
+      ${endIf}
+    !endif
+  !endif
 !macroend
 
 !macro customInstall
+  !insertmacro ssInstallerDiagnostic "phase=files-installed"
 
   !ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT
     ${ifNot} ${FileExists} "$newDesktopLink"
@@ -1244,7 +1530,29 @@
 ;    - 真正卸载：整删 store 与暂存包缓存，并撤掉 env 登记（HKCU Environment + 广播）；
 ;      .scholarseed 其余内容（会话/配置/技能/文献）是用户数据，一字不动。
 ;    更新档不碰暂存包缓存：新安装器正从其中那个 exe 运行。
+!macro customUnInit
+  !ifdef SS_NATIVE_CARRIER
+    !insertmacro ssRequireNativeUserScope
+  !endif
+!macroend
+
 !macro customUnInstall
+  !ifdef SS_NATIVE_CARRIER
+    ; Updates retain the native Current/Prepared closure. A real uninstall asks
+    ; the installed launcher to retire its own namespace before removing it.
+    ${ifNot} ${isUpdated}
+      ClearErrors
+      ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --retire-update-store' $R0
+      ${if} ${Errors}
+      ${orIf} $R0 != 0
+        !insertmacro ssLocalizedMessage $R9 "The update store could not be safely removed. Uninstallation stopped; close ScholarSeed and retry." "无法安全清理更新数据，卸载已停止。请关闭 ScholarSeed 后重试。"
+        IfSilent +2
+        MessageBox MB_OK|MB_ICONSTOP "$R9"
+        SetErrorLevel 2
+        Quit
+      ${endIf}
+    ${endIf}
+  !else
   ; store 根 = <home>\runtime；home 取注册表 SCHOLARSEED_HOME（收敛后唯一数据根），否则默认。
   ReadRegStr $R0 HKCU "Environment" "SCHOLARSEED_HOME"
   StrCmp $R0 "" 0 ss_uninst_home_set
@@ -1260,6 +1568,7 @@
     System::Call 'user32::SendMessageTimeout(i 0xffff, i 0x001A, p 0, t "Environment", i 0x0002, i 5000, *p .r1)'
     RMDir /r "$LOCALAPPDATA\scholarseed-update"
   ${endIf}
+  !endif
 !macroend
 
 ; D. 首装高级步骤：组件 store 位置（可选）。assisted 模板的 customPageAfterChangeDir 钩子在

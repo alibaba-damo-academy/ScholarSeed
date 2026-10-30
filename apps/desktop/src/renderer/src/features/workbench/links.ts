@@ -5,6 +5,40 @@ const FRAGMENT_PREFIX = '#'
 const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:'])
 const EXACT_CITATION_STATE = 'exact'
 const TARGET_UNAVAILABLE = 'document_link_target_unavailable'
+const CITATION_FAILURE_MESSAGES = {
+  citation_evidence_unavailable: 'markdown.citationRecordMissing',
+  citation_source_unavailable: 'markdown.citationSourceUnavailable',
+  source_revision_changed: 'markdown.citationSourceChanged',
+} as const
+const CITATION_STATE_FAILURES = {
+  unavailable: 'citation_source_unavailable',
+  changed: 'source_revision_changed',
+} as const
+
+export class DocumentCitationError extends Error {
+  readonly reason: keyof typeof CITATION_FAILURE_MESSAGES
+
+  constructor(reason: keyof typeof CITATION_FAILURE_MESSAGES) {
+    super(reason)
+    this.reason = reason
+  }
+}
+
+export function savedCitationError(detail: unknown): Error {
+  if (
+    typeof detail === 'string' &&
+    Object.prototype.hasOwnProperty.call(CITATION_FAILURE_MESSAGES, detail)
+  ) {
+    return new DocumentCitationError(detail as keyof typeof CITATION_FAILURE_MESSAGES)
+  }
+  return new Error(TARGET_UNAVAILABLE)
+}
+
+export function citationFailureMessage(error: unknown) {
+  return error instanceof DocumentCitationError
+    ? CITATION_FAILURE_MESSAGES[error.reason]
+    : undefined
+}
 
 export const DOCUMENT_LINK_ATTRIBUTE = 'data-document-link'
 export const DOCUMENT_LINK_SELECTOR = `a[${DOCUMENT_LINK_ATTRIBUTE}]`
@@ -58,6 +92,11 @@ export async function navigateDocumentLink(
       ) {
         await actions.revealCitation(citation)
       } else {
+        if (Object.prototype.hasOwnProperty.call(CITATION_STATE_FAILURES, citation.state)) {
+          throw new DocumentCitationError(
+            CITATION_STATE_FAILURES[citation.state as keyof typeof CITATION_STATE_FAILURES]
+          )
+        }
         actions.previewCitation(citation)
       }
       return

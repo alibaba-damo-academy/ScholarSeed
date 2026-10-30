@@ -6,6 +6,7 @@ from enum import Enum
 INCIDENT_PAYLOAD_KEY = "incident"
 INCIDENT_ID_KEY = "incident_id"
 RESOLVED_AMBIGUOUS_INCIDENT_ID_KEY = "resolved_ambiguous_incident_id"
+RUNTIME_TURN_NOT_SUBMITTED = "runtime_turn_not_submitted"
 
 
 class RuntimeIncidentScope(str, Enum):
@@ -31,6 +32,7 @@ class RuntimeIncidentKind(str, Enum):
     TRANSPORT_LOST = "transport_lost"
     PROCESS_EXIT = "process_exit"
     RESUME_FAILED = "resume_failed"
+    SUBMISSION_FAILED = "submission_failed"
     PROTOCOL_INCOMPATIBLE = "protocol_incompatible"
     UNSUPPORTED_NOTIFICATION = "unsupported_notification"
     AUTHENTICATION_REQUIRED = "authentication_required"

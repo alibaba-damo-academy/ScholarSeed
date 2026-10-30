@@ -104,7 +104,10 @@ def rename_exclusive(
     Unsupported kernels/filesystems fail explicitly; plain rename is not a fallback.
     """
     if sys.platform == WINDOWS:
-        os.rename(source_directory.child(source), directory.child(name))
+        os.rename(
+            storage.filesystem_path(source_directory.child(source)),
+            storage.filesystem_path(directory.child(name)),
+        )
         return
     if _RENAME is None or _RENAME_SPEC is None:
         raise OSError(errno.ENOTSUP, "exclusive rename unsupported")
@@ -139,9 +142,9 @@ def exchange_entries(directory: DirectoryHandle, source: str, target: str) -> No
     """Atomically swap two entries, keeping the displaced file recoverable."""
     if sys.platform == WINDOWS:
         temporary = f".scholarseed-exchange-{uuid4().hex}"
-        source_path = directory.child(source)
-        target_path = directory.child(target)
-        temporary_path = directory.child(temporary)
+        source_path = storage.filesystem_path(directory.child(source))
+        target_path = storage.filesystem_path(directory.child(target))
+        temporary_path = storage.filesystem_path(directory.child(temporary))
         os.rename(target_path, temporary_path)
         try:
             os.rename(source_path, target_path)
@@ -181,7 +184,10 @@ _PUBLISHERS: dict[str, Callable[[int, DirectoryHandle, str], None]] = {
 def publish_descriptor(source: int, directory: DirectoryHandle, name: str) -> bool:
     """Publish exclusively and report whether the staging name was consumed."""
     if sys.platform == WINDOWS:
-        os.rename(storage.path_for_file(source), directory.child(name))
+        os.rename(
+            storage.filesystem_path(storage.path_for_file(source)),
+            storage.filesystem_path(directory.child(name)),
+        )
         return True
     publisher = _PUBLISHERS.get(sys.platform)
     if publisher is None:

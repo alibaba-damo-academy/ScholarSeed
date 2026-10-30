@@ -1,6 +1,8 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
+import emptyImage from '../../assets/empty_img.webp'
+import { EmptyState } from '../../components/ui'
 import type { FeatureModule } from '../../contracts/features'
 import { Pending } from '../../shell/Pending'
 import { useApp } from '../../store'
@@ -13,22 +15,30 @@ import { useApp } from '../../store'
  * lazy 在模块作用域创建一次；放进 render 会让每次渲染都产出新组件类型而丢掉状态。
  * 加载边界由组合根统一施加（见 `app/composition.tsx`）。
  */
-const MarkdownDocument = React.lazy(() => import('./MarkdownDocument')
-  .then((module) => ({ default: module.MarkdownDocument })))
-const MonacoDocument = React.lazy(() => import('./MonacoDocument')
-  .then((module) => ({ default: module.MonacoDocument })))
-const PdfDocument = React.lazy(() => import('./PdfDocument')
-  .then((module) => ({ default: module.PdfDocument })))
-const OfficeDocument = React.lazy(() => import('./OfficeDocument')
-  .then((module) => ({ default: module.OfficeDocument })))
-const ImageDocument = React.lazy(() => import('./ImageDocument')
-  .then((module) => ({ default: module.ImageDocument })))
-const TableViewer = React.lazy(() => import('./viewers/TableViewer')
-  .then((module) => ({ default: module.TableViewer })))
-const VersionDiff = React.lazy(() => import('./VersionDiff')
-  .then((module) => ({ default: module.VersionDiff })))
+const MarkdownDocument = React.lazy(() =>
+  import('./MarkdownDocument').then((module) => ({ default: module.MarkdownDocument }))
+)
+const MonacoDocument = React.lazy(() =>
+  import('./MonacoDocument').then((module) => ({ default: module.MonacoDocument }))
+)
+const PdfDocument = React.lazy(() =>
+  import('./PdfDocument').then((module) => ({ default: module.PdfDocument }))
+)
+const OfficeDocument = React.lazy(() =>
+  import('./OfficeDocument').then((module) => ({ default: module.OfficeDocument }))
+)
+const ImageDocument = React.lazy(() =>
+  import('./ImageDocument').then((module) => ({ default: module.ImageDocument }))
+)
+const TableViewer = React.lazy(() =>
+  import('./viewers/TableViewer').then((module) => ({ default: module.TableViewer }))
+)
+const VersionDiff = React.lazy(() =>
+  import('./VersionDiff').then((module) => ({ default: module.VersionDiff }))
+)
 
 export { VersionHistory } from './VersionHistory'
+export { DocumentView } from './Dock'
 
 /**
  * Workbench Feature 贡献声明（开发 4 拥有）。
@@ -48,63 +58,100 @@ export function workbenchFeature(): FeatureModule {
     viewerPlugins: [
       {
         kind: 'version_diff',
-        render: ({ tabId }) => tabId
-          ? <VersionDiff tabId={tabId} />
-          : <UnavailableViewer kind="version_diff" />
+        render: ({ tabId }) =>
+          tabId ? <VersionDiff tabId={tabId} /> : <UnavailableViewer kind="version_diff" />,
       },
       {
         kind: 'markdown',
         toolbar: 'viewer',
-        render: ({ path, documentSessionId, tabId, viewKind, toolbarActions }) =>
-          documentSessionId && tabId && viewKind
-            ? (
-                <MarkdownDocumentHost
-                  sessionId={documentSessionId}
-                  tabId={tabId}
-                  toolbarActions={toolbarActions}
-                  viewKind={viewKind}
-                />
-              )
-            : <UnavailableViewer kind="markdown" path={path} />
+        render: ({ path, documentSessionId, tabId, viewKind, toolbarActions, modeControlHost }) =>
+          documentSessionId && tabId && viewKind ? (
+            <MarkdownDocumentHost
+              sessionId={documentSessionId}
+              tabId={tabId}
+              toolbarActions={toolbarActions}
+              modeControlHost={modeControlHost}
+              viewKind={viewKind}
+            />
+          ) : (
+            <UnavailableViewer kind="markdown" path={path} />
+          ),
       },
       {
         kind: 'pdf',
         toolbar: 'viewer',
-        render: ({ active, path, documentSessionId, documentPanels, tabId }) => documentSessionId && tabId
-          ? <PdfDocumentHost active={active} documentPanels={documentPanels} sessionId={documentSessionId} tabId={tabId} />
-          : <UnavailableViewer kind="pdf" path={path} />
+        render: ({ active, path, documentSessionId, documentPanels, tabId }) =>
+          documentSessionId && tabId ? (
+            <PdfDocumentHost
+              active={active}
+              documentPanels={documentPanels}
+              sessionId={documentSessionId}
+              tabId={tabId}
+            />
+          ) : (
+            <UnavailableViewer kind="pdf" path={path} />
+          ),
       },
       { kind: 'table', render: ({ path }) => <TableViewerHost path={path} /> },
       {
         kind: 'code',
         toolbar: 'viewer',
         render: ({ path, documentSessionId, tabId, viewKind, toolbarActions }) =>
-          documentSessionId && tabId && viewKind
-            ? <MonacoDocumentHost sessionId={documentSessionId} tabId={tabId} viewKind={viewKind} toolbarActions={toolbarActions} />
-            : <UnavailableViewer kind="code" path={path} />
+          documentSessionId && tabId && viewKind ? (
+            <MonacoDocumentHost
+              sessionId={documentSessionId}
+              tabId={tabId}
+              viewKind={viewKind}
+              toolbarActions={toolbarActions}
+            />
+          ) : (
+            <UnavailableViewer kind="code" path={path} />
+          ),
       },
-      { kind: 'image', render: ({ documentSessionId, tabId }) => documentSessionId && tabId
-        ? <ImageDocument sessionId={documentSessionId} tabId={tabId} />
-        : <UnavailableViewer kind="image" /> },
+      {
+        kind: 'image',
+        render: ({ documentSessionId, tabId }) =>
+          documentSessionId && tabId ? (
+            <ImageDocument sessionId={documentSessionId} tabId={tabId} />
+          ) : (
+            <UnavailableViewer kind="image" />
+          ),
+      },
       {
         kind: 'office',
-        render: ({ documentSessionId, tabId, viewKind }) => documentSessionId && tabId && viewKind
-          ? <OfficeDocument kind="office" sessionId={documentSessionId} tabId={tabId} viewKind={viewKind} />
-          : <UnavailableViewer kind="office" />
+        render: ({ documentSessionId, tabId, viewKind }) =>
+          documentSessionId && tabId && viewKind ? (
+            <OfficeDocument
+              kind="office"
+              sessionId={documentSessionId}
+              tabId={tabId}
+              viewKind={viewKind}
+            />
+          ) : (
+            <UnavailableViewer kind="office" />
+          ),
       },
       {
         kind: 'spreadsheet',
-        render: ({ documentSessionId, tabId, viewKind }) => documentSessionId && tabId && viewKind
-          ? <OfficeDocument kind="spreadsheet" sessionId={documentSessionId} tabId={tabId} viewKind={viewKind} />
-          : <UnavailableViewer kind="spreadsheet" />
+        render: ({ documentSessionId, tabId, viewKind }) =>
+          documentSessionId && tabId && viewKind ? (
+            <OfficeDocument
+              kind="spreadsheet"
+              sessionId={documentSessionId}
+              tabId={tabId}
+              viewKind={viewKind}
+            />
+          ) : (
+            <UnavailableViewer kind="spreadsheet" />
+          ),
       },
       {
         kind: 'unsupported',
         render: ({ path, contentKind }) => (
           <UnavailableViewer kind="unsupported" path={path} contentKind={contentKind} />
-        )
-      }
-    ]
+        ),
+      },
+    ],
   }
 }
 
@@ -120,10 +167,11 @@ function useProject(): string | null {
 }
 
 function MarkdownDocumentHost(props: {
+  modeControlHost?: HTMLElement | null
   sessionId: string
   tabId: string
   toolbarActions?: React.ReactNode
-  viewKind: 'preview' | 'edit'
+  viewKind: 'preview' | 'edit' | 'source'
 }): React.JSX.Element {
   const formatOnSave = useApp().state.formatOnSave
   return <MarkdownDocument {...props} formatOnSave={formatOnSave} />
@@ -133,10 +181,16 @@ function MonacoDocumentHost(props: {
   sessionId: string
   tabId: string
   toolbarActions?: React.ReactNode
-  viewKind: 'preview' | 'edit'
+  viewKind: 'preview' | 'edit' | 'source'
 }): React.JSX.Element {
   const { editorRuntimeRevision, formatOnSave } = useApp().state
-  return <MonacoDocument key={`${props.tabId}:${editorRuntimeRevision}`} {...props} formatOnSave={formatOnSave} />
+  return (
+    <MonacoDocument
+      key={`${props.tabId}:${editorRuntimeRevision}`}
+      {...props}
+      formatOnSave={formatOnSave}
+    />
+  )
 }
 
 function TableViewerHost({ path }: { path: string }): React.JSX.Element {
@@ -147,7 +201,7 @@ function PdfDocumentHost({
   active,
   documentPanels,
   sessionId,
-  tabId
+  tabId,
 }: {
   active: boolean
   documentPanels?: React.ComponentProps<typeof PdfDocument>['documentPanels']
@@ -176,23 +230,45 @@ const VIEWER_MESSAGE_KEYS = {
   office: 'viewer.office',
   spreadsheet: 'viewer.spreadsheet',
   version_diff: 'viewer.versionDiff',
-  unsupported: 'viewer.unsupported'
+  unsupported: 'viewer.unsupported',
 } as const
 
-function UnavailableViewer({ kind, path = '', contentKind }: {
+function UnavailableViewer({
+  kind,
+  path = '',
+  contentKind,
+}: {
   kind: keyof typeof VIEWER_MESSAGE_KEYS
   path?: string
   contentKind?: string
 }): React.JSX.Element {
   const { t } = useTranslation('workbench')
-  const detail = kind === 'unsupported'
-    ? contentKind === 'oversized'
-      ? t('viewer.oversized', { path })
-      : contentKind === 'binary'
-        ? t('viewer.binary', { path })
-        : t('viewer.noPreview', { path })
-    : path
-      ? t('viewer.openPath', { path })
-      : t('viewer.open')
-  return <Pending feature={t(VIEWER_MESSAGE_KEYS[kind])} owner={t('unavailable.workspace')} detail={detail} />
+  const detail =
+    kind === 'unsupported'
+      ? contentKind === 'oversized'
+        ? t('viewer.oversized', { path })
+        : contentKind === 'binary'
+          ? t('viewer.binary', { path })
+          : t('viewer.noPreview', { path })
+      : path
+        ? t('viewer.openPath', { path })
+        : t('viewer.open')
+  if (kind === 'unsupported') {
+    return (
+      <div className="grid h-full min-h-0 place-items-center" title={detail}>
+        <EmptyState
+          className="gap-[var(--vds-space-6)]"
+          image={{ src: emptyImage, alt: '' }}
+          title={t('viewer.previewUnavailable')}
+        />
+      </div>
+    )
+  }
+  return (
+    <Pending
+      feature={t(VIEWER_MESSAGE_KEYS[kind])}
+      owner={t('unavailable.workspace')}
+      detail={detail}
+    />
+  )
 }

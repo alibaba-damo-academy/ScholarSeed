@@ -1,19 +1,22 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
 import { chromium, expect, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+import { renderServers } from '../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const FIXTURE_URL = '/components/update.render.fixture.html'
+const SCREENSHOT_DIRECTORY = process.env.UPDATE_MESSAGE_SCREENSHOTS
 
 async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
-  const server = await createServer({
+  const server = await servers.create({
     configFile: false,
-    cacheDir: path.join(ROOT_DIR, 'node_modules/.vite-tests', `installation-${process.pid}`),
+    cacheKey: 'installation',
     root: ROOT_DIR,
     plugins: [react()],
     server: { host: '127.0.0.1', port: 0 },
@@ -34,6 +37,48 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
     await server.close()
   }
 }
+
+test('storage exhaustion stays concise, localized and retryable in the update panel', async () => {
+  await withFixture(async (page) => {
+    await page.setViewportSize({ width: 900, height: 600 })
+    await page.evaluate(() => {
+      Reflect.get(window, 'updateFixture').publish({
+        phase: 'failed',
+        errorOrigin: 'preparation',
+        error:
+          'Error: archive mounted application failed: ditto: /cache/application.zip:/Contents/file: No space left on device\nditto: /cache/application.zip:/Contents/another: No space left on device',
+      })
+    })
+    await page.getByTestId('activity-update').click()
+    const panel = page.getByTestId('update-panel')
+    for (const language of ['zh', 'en']) {
+      await page.evaluate(async (language) => {
+        await Reflect.get(window, 'updateFixture').language(language)
+      }, language)
+      const message =
+        language === 'zh'
+          ? '磁盘可用空间不足，无法继续更新。请释放空间后重试；关闭此提示可返回应用。'
+          : 'There is not enough free disk space to continue the update. Free up disk space and try again. You can close this message to return to the app.'
+      await expect(panel.getByText(message, { exact: true })).toBeVisible()
+      await expect(panel).not.toContainText('/cache/application.zip')
+      await expect(panel).not.toContainText('ditto:')
+      await expect(
+        panel.getByRole('button', {
+          name: language === 'zh' ? '重试准备' : 'Retry preparation',
+          exact: true,
+        })
+      ).toBeEnabled()
+      await expect(panel).toBeInViewport({ ratio: 1 })
+      if (SCREENSHOT_DIRECTORY) {
+        await panel.screenshot({
+          path: path.join(SCREENSHOT_DIRECTORY, `component-${language}.png`),
+        })
+      }
+    }
+    await panel.getByRole('button', { name: 'Retry preparation', exact: true }).click()
+    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update')
+  })
+})
 
 test('update installation shows source and staged steps, elapsed time, cancellation and restart in both languages', async () => {
   await withFixture(async (page) => {
@@ -91,6 +136,11 @@ test('update installation shows source and staged steps, elapsed time, cancellat
     await expect(page.getByTestId('update-overlay-step')).toHaveText('正在卸载安装镜像…')
     await expect(page.getByTestId('update-overlay-cancel')).toHaveCount(0)
     await publish({ phase: 'ready', installation: undefined })
+    await expect(page.getByTestId('update-overlay')).toHaveCount(0)
+    await publish({ phase: 'downloading', restartPending: true, installStage: undefined })
+    await expect(page.getByTestId('update-overlay-description')).toContainText('正在准备最新版本')
+    await expect(page.getByTestId('update-overlay-cancel')).toBeEnabled()
+    await publish({ restartPending: false })
     await expect(page.getByTestId('update-overlay')).toHaveCount(0)
     await page.evaluate(() =>
       (

@@ -8,6 +8,8 @@ export interface TaskCenterValue {
   tasks: ProductTask[]
   open: boolean
   setOpen: (open: boolean) => void
+  clearCompleted: () => Promise<void>
+  clearingCompleted: boolean
   cancel: (task: ProductTask) => Promise<void>
   retry: (task: ProductTask) => Promise<void>
   errorText: (task: ProductTask) => string
@@ -15,7 +17,6 @@ export interface TaskCenterValue {
 }
 
 export const TaskCenterContext = createContext<TaskCenterValue | null>(null)
-
 
 export function useTaskCenter(): TaskCenterValue {
   const value = useContext(TaskCenterContext)

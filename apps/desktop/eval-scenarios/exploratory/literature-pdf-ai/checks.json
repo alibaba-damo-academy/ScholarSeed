@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "directionId": "LIT-01",
+  "checks": [
+    {
+      "id": "LIT-OPEN",
+      "pointIds": ["LIT-PDF-OPEN-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-EXPLAIN",
+      "pointIds": ["LIT-PDF-EXPLAIN-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-TRANSLATE",
+      "pointIds": ["LIT-PDF-TRANSLATE-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-EVIDENCE",
+      "pointIds": ["LIT-PDF-OPEN-01", "LIT-PDF-EXPLAIN-01", "LIT-PDF-TRANSLATE-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-EXPLAIN-QUALITY",
+      "pointIds": ["LIT-PDF-EXPLAIN-QUALITY-01"],
+      "required": true,
+      "evaluationType": "B"
+    },
+    {
+      "id": "LIT-TRANSLATE-QUALITY",
+      "pointIds": ["LIT-PDF-TRANSLATE-QUALITY-01"],
+      "required": true,
+      "evaluationType": "B"
+    },
+    {
+      "id": "LIT-QUALITY-EVIDENCE",
+      "pointIds": ["LIT-PDF-EXPLAIN-QUALITY-01", "LIT-PDF-TRANSLATE-QUALITY-01"],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

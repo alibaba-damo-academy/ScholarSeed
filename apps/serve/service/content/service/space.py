@@ -15,16 +15,74 @@ proposal 47 §5.1 选定「外部根登记为项目内虚拟挂载点」这一�
 
 from __future__ import annotations
 
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Iterator
 
 from service.content.domain.model import ContentError
 from service.content.service.utils import open_directory
+from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
 from service.platform.content import AssetKind, AssetOrigin, ProjectRef, RootKind
-from service.platform.storage import DirectoryHandle
+from service.platform.storage import (
+    DirectoryHandle,
+    DirectoryRole,
+    filesystem_path,
+    prepare_private_directory,
+)
 
 #: posix 路径分隔符。相对路径一律用它, 不跟随宿主平台。
 SEPARATOR = "/"
+
+
+@contextmanager
+def project_database(root: Path) -> Iterator[Path | None]:
+    """Discover existing private storage under a caller-qualified project root.
+
+    Reuse Content's boundary resolver and strict directory traversal. Missing
+    storage is not created. The caller must qualify the returned parent before
+    opening SQLite, and finish all IO while this parent handle remains open.
+    """
+    with closing(open_directory(root, ())):
+        _within(root, PROJECT_DB_RELATIVE, "path_outside_project")
+        relative = PurePosixPath(PROJECT_DB_RELATIVE)
+        try:
+            parent = open_directory(root, tuple(relative.parent.parts))
+        except FileNotFoundError:
+            yield None
+        else:
+            with closing(parent):
+                yield parent.child(relative.name)
+
+
+def prepare_project_storage(root: Path) -> None:
+    """Create private parents under an existing, exclusively qualified project.
+
+    Does not create the database. The caller must rediscover and reacquire the
+    complete directory set before opening project storage.
+    """
+    with closing(open_directory(root, ())):
+        _within(root, PROJECT_DB_RELATIVE, "path_outside_project")
+        relative = PurePosixPath(PROJECT_DB_RELATIVE)
+        prepare_private_directory(root, tuple(relative.parent.parts), role=DirectoryRole.PROJECT)
+
+
+@contextmanager
+def project_version_storage(root: Path) -> Iterator[Path | None]:
+    """Resolve existing resource storage through Content's project boundary.
+
+    The caller retains the project qualification for the entire context. No
+    private directory or CAS lock is created by this read-only lookup.
+    """
+    with closing(open_directory(root, ())):
+        _within(root, PROJECT_VERSIONS_RELATIVE, "path_outside_project")
+        try:
+            directory = open_directory(root, PurePosixPath(PROJECT_VERSIONS_RELATIVE).parts)
+        except FileNotFoundError:
+            yield None
+        else:
+            with closing(directory):
+                yield directory.path
 
 
 @dataclass(frozen=True)
@@ -147,15 +205,14 @@ class ProjectSpace:
 
         target = absolute.expanduser().resolve()
         for mount in self.mounts:
-            if target == mount.source:
+            tail = _relative_to(target, mount.source)
+            if tail == Path("."):
                 return mount.mount_path
-            if mount.kind is AssetKind.DIR and mount.source in target.parents:
-                tail = target.relative_to(mount.source).as_posix()
-                return f"{mount.mount_path}{SEPARATOR}{tail}"
-        if target == self.root:
-            return ""
-        if self.root in target.parents:
-            return target.relative_to(self.root).as_posix()
+            if mount.kind is AssetKind.DIR and tail is not None:
+                return f"{mount.mount_path}{SEPARATOR}{tail.as_posix()}"
+        tail = _relative_to(target, self.root)
+        if tail is not None:
+            return "" if tail == Path(".") else tail.as_posix()
         raise ContentError("path_outside_project")
 
     # ---- 归属判定 ----
@@ -182,6 +239,19 @@ class ProjectSpace:
         return tuple(mount for mount in self.mounts if mount.parent == parent)
 
 
+def _relative_to(target: Path, base: Path) -> Path | None:
+    """Compare resolved identities in the same platform path namespace.
+
+    Windows resolution may return ordinary or extended path spelling. Normalize
+    spelling after resolution without replacing the returned path. Containment
+    is still checked against the resolved root, including symlink destinations.
+    """
+    try:
+        return filesystem_path(target).relative_to(filesystem_path(base))
+    except ValueError:
+        return None
+
+
 def _within(base: Path, relative: str, error: str) -> Path:
     """把相对路径解析到 base 内, 越界即拒绝。"""
 
@@ -189,9 +259,16 @@ def _within(base: Path, relative: str, error: str) -> Path:
     if not relative:
         return resolved_base
     target = (resolved_base / relative).resolve()
-    if target != resolved_base and resolved_base not in target.parents:
+    if _relative_to(target, resolved_base) is None:
         raise ContentError(error)
     return target
 
 
-__all__ = ["SEPARATOR", "Mount", "ProjectSpace", "normalize"]
+__all__ = [
+    "SEPARATOR",
+    "Mount",
+    "ProjectSpace",
+    "normalize",
+    "project_database",
+    "prepare_project_storage",
+]

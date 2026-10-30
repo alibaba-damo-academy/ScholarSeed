@@ -36,17 +36,11 @@ from service.chat.runtime.composition import LiveSessionService
 from service.chat.service.context import SessionContextProvider
 from service.chat.service.history import HistoryError, HistoryService
 from service.cli.bridge import main
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     ARTIFACT_PUBLISH_ROUTE,
-    BRIDGE_MAX_RESPONSE_BYTES,
-    BRIDGE_SESSION_ENV,
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_SOCKET_ENV,
-    BRIDGE_TOKEN_ENV,
-    BRIDGE_TOKEN_HEADER,
     HISTORY_ROUTE_PREFIX,
     HISTORY_TEXT_CHARS,
-    INTERNAL_BASE_URL_ENV,
     HistoryList,
     HistoryRead,
     HistorySearch,
@@ -65,6 +59,15 @@ from service.platform.local import (
     UNIX_SOCKET_FAMILY,
     WINDOWS_PLATFORM,
     local_listener,
+)
+from service.platform.vocabulary import (
+    BRIDGE_MAX_RESPONSE_BYTES,
+    BRIDGE_SESSION_ENV,
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_SOCKET_ENV,
+    BRIDGE_TOKEN_ENV,
+    BRIDGE_TOKEN_HEADER,
+    INTERNAL_BASE_URL_ENV,
 )
 
 SOURCE = "history-source"
@@ -307,7 +310,11 @@ class HistoryContract(unittest.TestCase):
             bridge_caller=lambda session: live if session == CALLER else None
         )
         app = FastAPI()
-        register_history_routes(app, sessions, self.history, self.assistant)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_history_routes(app, sessions, self.history, self.assistant, activities=activities)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             base_url = f"http://127.0.0.1:{listener.getsockname()[1]}"
@@ -450,7 +457,13 @@ class HistoryContract(unittest.TestCase):
         sessions = SimpleNamespace(
             bridge_caller=lambda session: live if session == CALLER else None
         )
-        router = register_history_routes(FastAPI(), sessions, self.history, self.assistant)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        router = register_history_routes(
+            FastAPI(), sessions, self.history, self.assistant, activities=activities
+        )
 
         async def check():
             # Keep the isolated fixture below the platform's Unix socket path limit.
@@ -532,7 +545,11 @@ class HistoryContract(unittest.TestCase):
             bridge_caller=lambda session: live if session == CALLER else None
         )
         app = FastAPI()
-        register_history_routes(app, sessions, self.history, self.assistant)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_history_routes(app, sessions, self.history, self.assistant, activities=activities)
         with TestClient(app) as client:
             route = HISTORY_ROUTE_PREFIX + "search"
             self.assertEqual(client.post(route, json={"query": "方案"}).status_code, 403)
@@ -575,7 +592,11 @@ class ArtifactPublishContract(unittest.TestCase):
         sessions = SimpleNamespace(
             bridge_caller=lambda session: live if session == CALLER else None
         )
-        router = register_artifact_routes(FastAPI(), sessions.bridge_caller)
+        activities = Activities()
+        self.activities = activities
+        live.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.bridge_activity.close)
+        router = register_artifact_routes(FastAPI(), sessions.bridge_caller, activities=activities)
 
         async def check():
             with tempfile.TemporaryDirectory(prefix="bridge-artifact-", dir="/tmp") as directory:

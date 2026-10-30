@@ -1,22 +1,37 @@
 import {
-  RECORDER_BODY_MAX_LENGTH,
   RECORDER_ROOT_ATTRIBUTE,
   type NetworkRecord,
   type RecordedStep,
-  type StepKind
+  type StepKind,
 } from './model.ts'
 import { summarizeTarget } from './target.ts'
+import {
+  fileMetadata,
+  isCredentialName,
+  redactUrl,
+  responseFileMetadata,
+  summarizeBody,
+  summarizeBodyText,
+  summarizeText,
+} from './utils.ts'
 
 const REQUEST_STEP_WINDOW_MS = 10_000
 const PAGE_LABEL_MAX_LENGTH = 80
+const BODY_CAPTURE_PENDING = '[正文摘要生成中]'
+const PASSWORD_INPUT_TYPE = 'password'
+const SENSITIVE_AUTOCOMPLETE = new Set(['current-password', 'new-password', 'one-time-code'])
+/** fetch 被自己的 signal 取消时 reject 的 DOMException 名字。超时器用的是 TimeoutError,
+ * 那是客户端给接口设的期限到了, 仍然按失败记录。 */
+const ABORT_ERROR_NAME = 'AbortError'
 const EVENT_SOURCE_MEDIA_TYPE = 'text/event-stream'
+const MULTIPART_MEDIA_TYPE = 'multipart/form-data'
 const BINARY_MEDIA_PREFIXES = ['image/', 'audio/', 'video/']
 const PAGE_LABEL_SELECTORS = [
   '[data-feedback-page-name]',
   '[role="tab"][aria-selected="true"]',
   '[aria-current="page"]',
   'main h1',
-  'main h2'
+  'main h2',
 ]
 const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [aria-modal="true"]'
 
@@ -46,64 +61,90 @@ function id(prefix: string): string {
 }
 
 function normalizedLabel(value: string | null | undefined): string | undefined {
-  const normalized = String(value || '').replace(/\s+/g, ' ').trim()
+  const normalized = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
   return normalized ? normalized.slice(0, PAGE_LABEL_MAX_LENGTH) : undefined
 }
 
 function labelledByText(element: Element): string | undefined {
   const labelledBy = element.getAttribute('aria-labelledby')
   if (!labelledBy || typeof document.getElementById !== 'function') return undefined
-  return normalizedLabel(labelledBy
-    .split(/\s+/)
-    .map((id) => document.getElementById(id)?.textContent || '')
-    .join(' '))
+  return normalizedLabel(
+    labelledBy
+      .split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent || '')
+      .join(' ')
+  )
 }
 
 function dialogLabel(eventTarget: EventTarget | null): string | undefined {
   if (!(eventTarget instanceof Element)) return undefined
   const dialog = eventTarget.closest(DIALOG_SELECTOR)
   if (!dialog) return undefined
-  return normalizedLabel(dialog.getAttribute('aria-label'))
-    || labelledByText(dialog)
-    || normalizedLabel(dialog.querySelector('h1, h2, h3, [role="heading"]')?.textContent)
+  return (
+    normalizedLabel(dialog.getAttribute('aria-label')) ||
+    labelledByText(dialog) ||
+    normalizedLabel(dialog.querySelector('h1, h2, h3, [role="heading"]')?.textContent)
+  )
 }
 
 function pageContext(eventTarget: EventTarget | null): RecordedStep['page'] {
-  const path = `${window.location.pathname || ''}${window.location.search || ''}${window.location.hash || ''}`
-  const label = typeof document.querySelector === 'function'
-    ? PAGE_LABEL_SELECTORS
-      .map((selector) => document.querySelector(selector)?.textContent || '')
-      .map(normalizedLabel)
-      .find(Boolean)
-    : undefined
+  const path = redactUrl(
+    `${window.location.pathname || ''}${window.location.search || ''}${window.location.hash || ''}`
+  )
+  const label =
+    typeof document.querySelector === 'function'
+      ? PAGE_LABEL_SELECTORS.map((selector) => document.querySelector(selector)?.textContent || '')
+          .map(normalizedLabel)
+          .find(Boolean)
+      : undefined
   const currentDialogLabel = eventTarget ? dialogLabel(eventTarget) : undefined
   return {
-    url: window.location.href,
+    url: redactUrl(window.location.href),
     title: document.title,
     ...(path ? { path } : {}),
     ...(label ? { label } : {}),
-    ...(currentDialogLabel ? { dialogLabel: currentDialogLabel } : {})
+    ...(currentDialogLabel ? { dialogLabel: currentDialogLabel } : {}),
   }
 }
 
 function isRecorderEvent(event: Event): boolean {
-  return event.composedPath().some(
-    (entry) => entry instanceof Element && entry.hasAttribute(RECORDER_ROOT_ATTRIBUTE)
-  )
+  return event
+    .composedPath()
+    .some((entry) => entry instanceof Element && entry.hasAttribute(RECORDER_ROOT_ATTRIBUTE))
+}
+
+function isCancellation(error: unknown): boolean {
+  return error instanceof DOMException && error.name === ABORT_ERROR_NAME
 }
 
 function inputValue(target: EventTarget | null): string | undefined {
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-    return target.value.slice(0, RECORDER_BODY_MAX_LENGTH)
+    if (isCredentialInput(target)) return undefined
+    return summarizeText(target.value)
   }
   if (target instanceof HTMLSelectElement) return target.value
   if (target instanceof HTMLElement && target.isContentEditable) {
-    return String(target.textContent || '').slice(0, RECORDER_BODY_MAX_LENGTH)
+    return summarizeText(String(target.textContent || ''))
   }
   return undefined
 }
 
+function isCredentialInput(target: HTMLInputElement | HTMLTextAreaElement): boolean {
+  return (
+    (target instanceof HTMLInputElement && target.type === PASSWORD_INPUT_TYPE) ||
+    isCredentialName(target.getAttribute('name') || '') ||
+    SENSITIVE_AUTOCOMPLETE.has(target.getAttribute('autocomplete') || '')
+  )
+}
+
 function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (
+    (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
+    isCredentialInput(target)
+  )
+    return false
   if (target instanceof HTMLInputElement) {
     return ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(
       String(target.type || 'text').toLowerCase()
@@ -114,31 +155,38 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
 }
 
 function bodyText(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined
-  if (typeof value === 'string') return value.slice(0, RECORDER_BODY_MAX_LENGTH)
-  if (value instanceof URLSearchParams) return value.toString().slice(0, RECORDER_BODY_MAX_LENGTH)
-  if (value instanceof FormData) {
-    const entries = Array.from(value.entries(), ([key, item]) => [key, item instanceof File ? `[File ${item.name}]` : item])
-    return JSON.stringify(entries).slice(0, RECORDER_BODY_MAX_LENGTH)
-  }
-  if (value instanceof Blob) return `[Blob ${value.type || 'application/octet-stream'} ${value.size} bytes]`
-  if (ArrayBuffer.isView(value)) return `[Binary ${value.byteLength} bytes]`
-  if (value instanceof ArrayBuffer) return `[Binary ${value.byteLength} bytes]`
-  return String(value).slice(0, RECORDER_BODY_MAX_LENGTH)
+  return summarizeBody(value)
 }
 
 function canReadResponse(contentType: string): boolean {
   const normalized = contentType.toLowerCase()
-  return !normalized.includes(EVENT_SOURCE_MEDIA_TYPE) &&
+  return (
+    !normalized.includes(EVENT_SOURCE_MEDIA_TYPE) &&
     !normalized.includes('application/octet-stream') &&
     !BINARY_MEDIA_PREFIXES.some((prefix) => normalized.startsWith(prefix))
+  )
 }
 
-async function responseText(response: Response): Promise<string | undefined> {
+async function responseText(response: Response, url: string): Promise<string | undefined> {
+  const metadata = responseFileMetadata(response.headers, response.url || url)
+  if (metadata) return metadata
   const contentType = response.headers.get('content-type') || ''
   if (!canReadResponse(contentType)) return undefined
   try {
-    return (await response.clone().text()).slice(0, RECORDER_BODY_MAX_LENGTH)
+    return summarizeBodyText(await response.clone().text())
+  } catch {
+    return undefined
+  }
+}
+
+async function requestText(request: Request): Promise<string | undefined> {
+  const metadata = responseFileMetadata(request.headers, '')
+  if (metadata) return metadata
+  const contentType = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+  if (contentType === MULTIPART_MEDIA_TYPE) return fileMetadata(undefined, undefined)
+  if (!contentType.includes('json') && !contentType.startsWith('text/')) return undefined
+  try {
+    return summarizeBodyText(await request.clone().text())
   } catch {
     return undefined
   }
@@ -158,7 +206,7 @@ export function createInitialPageStep(startedAtMs: number): RecordedStep {
     elapsedMs: 0,
     kind: 'navigation',
     page: pageContext(null),
-    target: { tag: 'window', role: 'navigation' }
+    target: { tag: 'window', role: 'navigation' },
   }
 }
 
@@ -189,15 +237,20 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
   ): void => {
     if (!active) return
     const now = Date.now()
+    const target =
+      kind === 'navigation' ? { tag: 'window', role: 'navigation' } : summarizeTarget(eventTarget)
     options.onStep({
       stepId: id('step'),
       occurredAt: new Date(now).toISOString(),
       elapsedMs: now - options.startedAtMs,
       kind,
       page: pageContext(eventTarget),
-      target: kind === 'navigation' ? { tag: 'window', role: 'navigation' } : summarizeTarget(eventTarget),
+      target: {
+        ...target,
+        ...('href' in target && target.href ? { href: redactUrl(target.href) } : {}),
+      },
       ...(value !== undefined ? { value } : {}),
-      ...(pointer ? { pointer } : {})
+      ...(pointer ? { pointer } : {}),
     })
   }
 
@@ -211,7 +264,7 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
     if (!isRecorderEvent(event)) {
       record('click', event.target, undefined, {
         x: Math.round(event.clientX),
-        y: Math.round(event.clientY)
+        y: Math.round(event.clientY),
       })
     }
   }
@@ -256,40 +309,55 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
     const request = input instanceof Request ? input : null
     const method = String(init?.method || request?.method || 'GET').toUpperCase()
     const url = request?.url || String(input)
-    const requestBody = bodyText(init?.body)
+    const requestBody =
+      init?.body !== undefined
+        ? bodyText(init.body)
+        : request
+          ? responseFileMetadata(request.headers, '') ||
+            (request.body ? BODY_CAPTURE_PENDING : undefined)
+          : undefined
+    const requestSummary =
+      request && init?.body === undefined ? requestText(request) : Promise.resolve(requestBody)
     const stepId = associatedStep(options, startedAtMs)
     try {
       const response = await originalFetch(input, init)
       const endedAtMs = Date.now()
       if (active) {
-        const responseBody = await responseText(response)
-        options.onRequest({
+        const responseSummary = responseText(response, url)
+        const record: NetworkRecord = {
           requestId: id('request'),
           startedAt: new Date(startedAtMs).toISOString(),
           endedAt: new Date(endedAtMs).toISOString(),
           durationMs: endedAtMs - startedAtMs,
           method,
-          url,
+          url: redactUrl(url),
           status: response.status,
           ...(requestBody ? { requestBody } : {}),
-          ...(responseBody ? { responseBody } : {}),
-          ...(stepId ? { stepId } : {})
+          responseBody:
+            responseFileMetadata(response.headers, response.url || url) || BODY_CAPTURE_PENDING,
+          ...(stepId ? { stepId } : {}),
+        }
+        options.onRequest(record)
+        void Promise.all([requestSummary, responseSummary]).then(([requestBody, responseBody]) => {
+          if (active) options.onRequest({ ...record, requestBody, responseBody })
         })
       }
       return response
     } catch (error) {
       const endedAtMs = Date.now()
       if (active) {
+        const cancelled = isCancellation(error)
         options.onRequest({
           requestId: id('request'),
           startedAt: new Date(startedAtMs).toISOString(),
           endedAt: new Date(endedAtMs).toISOString(),
           durationMs: endedAtMs - startedAtMs,
           method,
-          url,
+          url: redactUrl(url),
           ...(requestBody ? { requestBody } : {}),
+          ...(cancelled ? { cancelled: true } : {}),
           error: error instanceof Error ? error.message : String(error),
-          ...(stepId ? { stepId } : {})
+          ...(stepId ? { stepId } : {}),
         })
       }
       throw error
@@ -317,31 +385,63 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
       metadata.startedAtMs = Date.now()
       metadata.requestBody = bodyText(body)
       metadata.stepId = associatedStep(options, metadata.startedAtMs)
-      this.addEventListener('loadend', () => {
-        if (!active) return
-        const endedAtMs = Date.now()
-        const contentType = this.getResponseHeader('content-type') || ''
-        let responseBody: string | undefined
-        if (canReadResponse(contentType) && (!this.responseType || this.responseType === 'text')) {
-          try {
-            responseBody = String(this.responseText || '').slice(0, RECORDER_BODY_MAX_LENGTH)
-          } catch {
-            responseBody = undefined
+      this.addEventListener(
+        'loadend',
+        () => {
+          if (!active) return
+          const endedAtMs = Date.now()
+          const contentType = this.getResponseHeader('content-type') || ''
+          const headers = new Headers()
+          for (const name of [
+            'content-type',
+            'content-disposition',
+            'content-length',
+            'content-encoding',
+          ]) {
+            const value = this.getResponseHeader(name)
+            if (value) headers.set(name, value)
           }
-        }
-        options.onRequest({
-          requestId: id('request'),
-          startedAt: new Date(metadata.startedAtMs).toISOString(),
-          endedAt: new Date(endedAtMs).toISOString(),
-          durationMs: endedAtMs - metadata.startedAtMs,
-          method: metadata.method,
-          url: metadata.url,
-          status: this.status,
-          ...(metadata.requestBody ? { requestBody: metadata.requestBody } : {}),
-          ...(responseBody ? { responseBody } : {}),
-          ...(metadata.stepId ? { stepId: metadata.stepId } : {})
-        })
-      }, { once: true })
+          const binary = this.responseType === 'blob' || this.responseType === 'arraybuffer'
+          const payload = binary ? this.response : undefined
+          const size =
+            payload instanceof Blob
+              ? payload.size
+              : payload instanceof ArrayBuffer
+                ? payload.byteLength
+                : undefined
+          let responseBody = responseFileMetadata(headers, this.responseURL || metadata.url, size)
+          if (!responseBody && binary) {
+            responseBody = fileMetadata(undefined, size)
+          }
+          if (
+            !responseBody &&
+            canReadResponse(contentType) &&
+            (!this.responseType || this.responseType === 'text')
+          ) {
+            try {
+              responseBody = summarizeBodyText(String(this.responseText || ''))
+            } catch {
+              responseBody = undefined
+            }
+          }
+          if (!responseBody && this.responseType === 'json' && this.response !== null) {
+            responseBody = summarizeBodyText(JSON.stringify(this.response))
+          }
+          options.onRequest({
+            requestId: id('request'),
+            startedAt: new Date(metadata.startedAtMs).toISOString(),
+            endedAt: new Date(endedAtMs).toISOString(),
+            durationMs: endedAtMs - metadata.startedAtMs,
+            method: metadata.method,
+            url: redactUrl(metadata.url),
+            status: this.status,
+            ...(metadata.requestBody ? { requestBody: metadata.requestBody } : {}),
+            ...(responseBody ? { responseBody } : {}),
+            ...(metadata.stepId ? { stepId: metadata.stepId } : {}),
+          })
+        },
+        { once: true }
+      )
     }
     originalSend.call(this, body)
   }
@@ -360,12 +460,14 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
       window.removeEventListener('popstate', onNavigation)
       window.removeEventListener('hashchange', onNavigation)
       if (window.fetch === fetchWrapper) window.fetch = originalFetch
-      if (XMLHttpRequest.prototype.open === openWrapper) XMLHttpRequest.prototype.open = originalOpen
-      if (XMLHttpRequest.prototype.send === sendWrapper) XMLHttpRequest.prototype.send = originalSend
+      if (XMLHttpRequest.prototype.open === openWrapper)
+        XMLHttpRequest.prototype.open = originalOpen
+      if (XMLHttpRequest.prototype.send === sendWrapper)
+        XMLHttpRequest.prototype.send = originalSend
       if (history.pushState === pushStateWrapper) history.pushState = originalPushState
       if (history.replaceState === replaceStateWrapper) history.replaceState = originalReplaceState
       if (currentLease === lease) currentLease = null
-    }
+    },
   }
   currentLease = lease
   return lease

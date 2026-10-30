@@ -1,0 +1,1329 @@
+[
+  {
+    "id": "D4-LIT-001",
+    "name": "打开文献附件 PDF 并读取文字",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已通过文献全览导入可选中文字的合成 PDF，记录文献与附件身份；不是资料库 PDF。",
+    "steps": [
+      "从文献全览定位目标文献并打开对应 PDF 附件。",
+      "核对页数、可见正文与目标附件身份。",
+      "在文字层选择一段正文。"
+    ],
+    "expected": [
+      "打开的是目标文献附件，正文可见且文字层可选择，不以题录名或空阅读器外壳代替。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-OPEN-01@2；2026-10-28 用户明确授权拆分功能与质量，仅适用后续冻结运行，旧报告和结论不追溯改判。",
+    "businessPointId": "LIT-PDF-OPEN-01",
+    "revision": 2,
+    "directionIds": [
+      "LIT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-OPEN-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文献附件打开是解释与翻译的必要前提，资料库 PDF 不可替代",
+    "checkIds": [
+      "LIT-OPEN",
+      "LIT-EVIDENCE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-pdf",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-002",
+    "name": "解释文献 PDF 指定选区",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。同一可核对文献 PDF 附件已打开且文字可选；解释动作和模型调用已获准。",
+    "steps": [
+      "选择 PDF 中一段可独立核对的正文。",
+      "使用实际选区解释入口。",
+      "等待该解释任务真实终态并记录原选区和可见结果。"
+    ],
+    "expected": [
+      "解释由该附件的非空选区正常触发，精确任务完成且真实界面展示非空完整结果；P0不判断内容准确性，P1另评。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-EXPLAIN-01@2；2026-10-28 用户明确授权拆分功能与质量，仅适用后续冻结运行，旧报告和结论不追溯改判。",
+    "businessPointId": "LIT-PDF-EXPLAIN-01",
+    "revision": 2,
+    "directionIds": [
+      "LIT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-EXPLAIN-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "选区解释是文献阅读的核心 AI 动作，不能以打开 PDF 代替",
+    "checkIds": [
+      "LIT-EXPLAIN",
+      "LIT-EVIDENCE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-ai",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/pdf-explanation-result.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/pdf-explanation-running.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/pdf-explanation-task-first.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/action-summary.json"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-003",
+    "name": "翻译文献 PDF 指定选区",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。同一可核对的外文 PDF 附件已打开，选区翻译模型调用已获准。",
+    "steps": [
+      "选择目标外文正文段落。",
+      "通过实际选区翻译入口设置中文并提交。",
+      "等待任务终态，读回实际目标语言与译文。"
+    ],
+    "expected": [
+      "独立选区翻译请求目标为简体中文，精确任务完成且真实界面展示非空完整结果；P0不判断译文准确性，P1另评。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-TRANSLATE-01@2；2026-10-28 用户明确授权拆分功能与质量，仅适用后续冻结运行，旧报告和结论不追溯改判。",
+    "businessPointId": "LIT-PDF-TRANSLATE-01",
+    "revision": 2,
+    "directionIds": [
+      "LIT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-TRANSLATE-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "选区翻译是独立核心 AI 动作，不能以解释结果代替",
+    "checkIds": [
+      "LIT-TRANSLATE",
+      "LIT-EVIDENCE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-ai",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/pdf-translation-result.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/pdf-translation-complete.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/pdf-translation-task-final.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/action-summary.json"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-004",
+    "name": "从文献全览 AI 对话发现新题录",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。本次仅授权公开元数据检索，未授权全文下载或入库；已保存隔离文献库起始快照并具备外部检索网络。",
+    "steps": [
+      "从文献全览的实际 AI 对话检索入口提出一个清晰研究主题，要求返回可核对题名、年份、DOI 或 arXiv ID 及相关性说明。",
+      "按产品真实澄清和开始确认流程操作，但不扩大到全文下载或入库。",
+      "记录可见候选和检索任务来源，并对照起始库快照。"
+    ],
+    "expected": [
+      "至少有一个与问题相关、起始库中不存在且可独立核对的公开题录；不以列表筛选、模型自述或当前隐藏入口代替。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 DISC-NEW-PAPER-01@1。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "DISC-NEW-PAPER-01",
+    "revision": 1,
+    "directionIds": [
+      "DISC-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#DISC-NEW-PAPER-01@1",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "发现新文献是已固定的核心业务方向，列表筛选不能替代",
+    "checkIds": [
+      "DISC-ENTRY",
+      "DISC-NEW",
+      "DISC-SOURCE",
+      "DISC-BOUNDARY"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-discovery",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/discovery-result.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/discovery-complete.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/action-summary.json"
+    ]
+  },
+  {
+    "id": "D4-LIT-005",
+    "name": "导入本地 PDF 为文献条目",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备一份可读的合成 PDF，隔离文献库中不存在其目标条目。",
+    "steps": [
+      "在文献全览使用实际本地 PDF 导入入口选择文件。",
+      "等待导入完成并读取新条目的文献及附件身份。",
+      "打开对应附件。"
+    ],
+    "expected": [
+      "新文献条目及对应 PDF 附件均可读回，附件内容与导入文件一致。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-IMPORT-PDF-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-IMPORT-PDF-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-IMPORT-PDF-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文献阅读核心前置入库路径，区别于已入库附件打开",
+    "checkIds": [
+      "LIT-IMPORT-PDF"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-pdf",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-LIT-006",
+    "name": "通过稳定标识符导入文献",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备一个可独立核对且不在当前库中的 DOI 或 arXiv ID；相应联网与导入操作已获准。",
+    "steps": [
+      "打开文献的标识符导入入口。",
+      "输入该 DOI 或 arXiv ID 并提交。",
+      "等待终态后读回新题录及稳定标识符。"
+    ],
+    "expected": [
+      "目标题录加入当前文献库，标识符与可核公开来源一致，不误导入其他同名条目。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-IMPORT-ID-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-IMPORT-ID-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-IMPORT-ID-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "重要补充导入方式，依赖外部元数据服务且不占首两档预算",
+    "checkIds": [
+      "LIT-IMPORT-DOI",
+      "LIT-IMPORT-ARXIV"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-007",
+    "name": "通过书目文件导入题录",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备含两条无敏感信息、字段可核对的 BibTeX 或 RIS 测试记录；已记录导入前库快照。",
+    "steps": [
+      "打开实际书目文件导入入口并选择测试文件。",
+      "等待导入终态。",
+      "逐条核对新增记录的题名、作者、年份及标识符。"
+    ],
+    "expected": [
+      "两条题录均与书目文件字段对应，无字段串项或静默漏项。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-IMPORT-BIB-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。 本轮局部补证：202610241139正常浏览器filechooser导入两条合成Bib题录并读回题名、作者和年份；仅Bib分支，不覆盖RIS，缺原始导入任务完整回执及独立Check。",
+    "businessPointId": "LIT-IMPORT-BIB-01",
+    "revision": 4,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-IMPORT-BIB-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "书目批量导入是基础扩展能力，格式不互相替代",
+    "checkIds": [
+      "LIT-IMPORT-BIB",
+      "LIT-IMPORT-RIS"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/028-bib-two-records.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/018-bib-two-records.png"
+    ],
+    "caseRevision": 4,
+    "readiness": "manual_ready",
+    "observationScope": "202610241139正常浏览器filechooser导入两条合成Bib题录并读回题名、作者和年份；仅Bib分支，不覆盖RIS，缺原始导入任务完整回执及独立Check。",
+    "observationSources": [
+      {
+        "sourceBuild": "202610241139",
+        "platform": "macos-arm64",
+        "language": "zh",
+        "snapshotId": "20261024T112333061Z-105872aa",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-amendments",
+        "scope": "202610241139正常浏览器filechooser导入两条合成Bib题录并读回题名、作者和年份；仅Bib分支，不覆盖RIS，缺原始导入任务完整回执及独立Check。"
+      }
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "assetGaps": []
+  },
+  {
+    "id": "D4-LIT-008",
+    "name": "筛选已有文献而非执行发现",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。库内已有至少三篇题名不同的合成或授权测试文献，其中一篇包含唯一关键词。",
+    "steps": [
+      "在现有文献列表中使用可见筛选入口输入关键词。",
+      "核对目标条目身份。",
+      "打开该条目详情。"
+    ],
+    "expected": [
+      "筛选定位已在库中的正确文献，没有将外部检索或新题录当作列表筛选结果。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-LIST-SEARCH-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-LIST-SEARCH-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-LIST-SEARCH-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文献浏览效率功能，不能替代 AI 检索发现 P0 点",
+    "checkIds": [
+      "LIT-LIST-SEARCH"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-009",
+    "name": "创建文献分类并读回",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。使用本次专用文献库；目标分类名称尚未存在。",
+    "steps": [
+      "通过实际创建分类入口输入唯一分类名并确认。",
+      "重新展开分类导航或重新进入列表。"
+    ],
+    "expected": [
+      "新分类以正确名称出现，且不误修改已有分类。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-CREATE-COLLECTION-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-CREATE-COLLECTION-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-CREATE-COLLECTION-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基础文献组织能力，低于导入与阅读闭环",
+    "checkIds": [
+      "LIT-CREATE-COLLECTION"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-010",
+    "name": "将已有文献加入分类",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有一篇专用测试文献和一个目标分类；该文献尚未属于目标分类。",
+    "steps": [
+      "在该文献操作入口选择加入目标分类。",
+      "进入目标分类并定位该文献。",
+      "核对其原文献身份与内容。"
+    ],
+    "expected": [
+      "目标分类包含同一文献对象，未因加入分类产生错误题录副本；不以加入项目替代。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-JOIN-COLLECTION-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-JOIN-COLLECTION-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-JOIN-COLLECTION-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "分类归属是基础文献组织动作，结果独立于项目归属",
+    "checkIds": [
+      "LIT-JOIN-COLLECTION"
+    ],
+    "evidenceRefs": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-011",
+    "name": "将已有文献加入项目",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有一篇专用测试文献和一个可进入的目标项目；当前未关联目标项目。",
+    "steps": [
+      "在文献实际操作入口选择加入目标项目。",
+      "进入目标项目中的文献范围。",
+      "定位并核对原文献身份。"
+    ],
+    "expected": [
+      "同一文献正确关联到目标项目，项目范围可读回；不以加入分类替代。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-LIT-PROJECT局部来源；已观察结果；补关联后可发现性，不把准备动作算新用例。关联后BETA没有再次检索，不能声称完成全部跨项目文献隔离。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "LIT-JOIN-PROJECT-01",
+    "revision": 5,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-project",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文献归属决定项目可用依据与检索范围，提升为核心工作范围验证。",
+    "checkIds": [
+      "LIT-JOIN-PROJECT"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/031-literature-linked-project.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/032-global-search-three-domains.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/033-search-literature-open.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/020-global-search-three-domains.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/021-search-literature-open.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/167-associate-project-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/168-associate-default-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/169-save-association-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/174-associated-search-result-receipt.txt"
+    ],
+    "caseRevision": 4,
+    "readiness": "manual_ready",
+    "observationScope": "E167–169在管理关联项目只勾默认项目，保存；E174默认项目搜索文献1，BETA之前0；都是本轮合成对象 已观察结果；补关联后可发现性，不把准备动作算新用例。关联后BETA没有再次检索，不能声称完成全部跨项目文献隔离",
+    "observationSources": [
+      {
+        "sourceBuild": "202610241139",
+        "platform": "macos-arm64",
+        "language": "zh",
+        "snapshotId": "20261024T112333061Z-105872aa",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-amendments",
+        "scope": "ALPHA加入明确项目A，项目文献计数1，项目搜索只显示关联ALPHA而未显示未关联BETA；未测重复加入或完整跨项目隔离。"
+      },
+      {
+        "localId": "BROAD-LIT-PROJECT",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-project",
+        "observationScope": "E167–169在管理关联项目只勾默认项目，保存；E174默认项目搜索文献1，BETA之前0；都是本轮合成对象 已观察结果；补关联后可发现性，不把准备动作算新用例。关联后BETA没有再次检索，不能声称完成全部跨项目文献隔离",
+        "resultEvidenceStatus": "partial"
+      }
+    ],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "文献归属决定项目可用依据与检索范围，提升为核心工作范围验证。"
+    },
+    "resultEvidenceStatus": "partial",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 4,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已观察结果；补关联后可发现性，不把准备动作算新用例。关联后BETA没有再次检索，不能声称完成全部跨项目文献隔离"
+        ],
+        "caseRevision": 3
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-LIT-012",
+    "name": "编辑文献元数据并持久读回",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有可编辑的专用测试题录，记录原有非目标字段；仅更改本次授权字段。",
+    "steps": [
+      "打开文献元数据编辑入口。",
+      "修改一个允许修改的测试字段并保存。",
+      "关闭详情后重新打开该文献。"
+    ],
+    "expected": [
+      "目标字段读回新值，未授权或未编辑字段保持原值。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-LIT-META局部来源；已观察结果；候选修订为精确对象、字段及重开读回；不是整条元数据字段全覆盖。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "LIT-EDIT-META-01",
+    "revision": 4,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-EDIT-META-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基础题录维护能力，独立于导入与阅读",
+    "checkIds": [
+      "LIT-EDIT-META"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/119-lit-title-open-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/120-edit-lit-year-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/121-lit-year-value-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/122-lit-year-submit-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/131-basic-after-save-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/174-associated-search-result-receipt.txt"
+    ],
+    "resultEvidenceStatus": "partial",
+    "observationScope": "E119–122把合成ALPHA年份2024改2026；E131重开基本信息、E174搜索结果均为2026 已观察结果；候选修订为精确对象、字段及重开读回；不是整条元数据字段全覆盖",
+    "readiness": "manual_ready",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "observationSources": [
+      {
+        "localId": "BROAD-LIT-META",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-meta",
+        "observationScope": "E119–122把合成ALPHA年份2024改2026；E131重开基本信息、E174搜索结果均为2026 已观察结果；候选修订为精确对象、字段及重开读回；不是整条元数据字段全覆盖",
+        "resultEvidenceStatus": "partial"
+      }
+    ],
+    "assetGaps": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已观察结果；候选修订为精确对象、字段及重开读回；不是整条元数据字段全覆盖"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D4-LIT-013",
+    "name": "为已有文献添加附件",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有专用文献条目及一份可核内容的合成附件，文件不含敏感信息。",
+    "steps": [
+      "从该文献实际附件管理入口添加测试文件。",
+      "等待附件处理完成并记录附件身份。",
+      "从同一文献打开新增附件。"
+    ],
+    "expected": [
+      "附件绑定到正确文献，可打开且内容与原文件一致。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-ADD-ATTACHMENT-01@4。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-ADD-ATTACHMENT-01",
+    "revision": 4,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-ADD-ATTACHMENT-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "题录绑定全文附件连接文献元数据与实际阅读，属于核心输入链路。",
+    "checkIds": [
+      "LIT-ADD-ATTACHMENT"
+    ],
+    "evidenceRefs": [],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "题录绑定全文附件连接文献元数据与实际阅读，属于核心输入链路。"
+    },
+    "caseRevision": 3,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-LIT-014",
+    "name": "创建文献笔记并读回",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有专用测试文献，准备一段唯一无敏感信息笔记。",
+    "steps": [
+      "在该文献可见笔记入口创建笔记。",
+      "写入唯一内容并按产品保存方式保存。",
+      "关闭后重新打开该文献笔记。"
+    ],
+    "expected": [
+      "笔记内容完整读回且属于原文献，不串到其他条目。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-LIT-NOTE局部来源；已观察结果；补保存/重开证据。未导出、未删除、未核跨文献串写。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "LIT-NOTE-01",
+    "revision": 4,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-NOTE-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基础阅读产出能力，需验证持久化但不是第二档核心路径",
+    "checkIds": [
+      "LIT-NOTE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/123-lit-notes-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/124-new-lit-note-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/125-note-title-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/126-note-body-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/127-note-preview-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/128-note-return-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/129-note-reopen-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/016-note-reopened.png"
+    ],
+    "resultEvidenceStatus": "partial",
+    "observationScope": "E123–129/S16：创建BROAD1024-ALPHA-NOTE，正文ALPHA17；返回列表笔记1，再打开同标题同正文且显示已保存 已观察结果；补保存/重开证据。未导出、未删除、未核跨文献串写",
+    "readiness": "manual_ready",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "observationSources": [
+      {
+        "localId": "BROAD-LIT-NOTE",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-note",
+        "observationScope": "E123–129/S16：创建BROAD1024-ALPHA-NOTE，正文ALPHA17；返回列表笔记1，再打开同标题同正文且显示已保存 已观察结果；补保存/重开证据。未导出、未删除、未核跨文献串写",
+        "resultEvidenceStatus": "partial"
+      }
+    ],
+    "assetGaps": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已观察结果；补保存/重开证据。未导出、未删除、未核跨文献串写"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D4-LIT-015",
+    "name": "将 AI 检索结果题录加入文献库",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有获准元数据检索得到的可核对题录，目标库起始状态明确且该题录尚未入库；入库操作另已获准。",
+    "steps": [
+      "在目标检索结果上使用实际加入文献库入口。",
+      "等待操作终态并在目标文献库读回记录。",
+      "回到同一结果观察重复加入入口状态。"
+    ],
+    "expected": [
+      "正确题录加入目标库，稳定标识符一致；重复加入受到产品相应约束，不静默生成多份错误副本。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-SEARCH-SAVE-01@4。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-SEARCH-SAVE-01",
+    "revision": 4,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-SEARCH-SAVE-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "新文献发现到可持久使用的入库闭环属于核心业务。",
+    "checkIds": [
+      "LIT-SEARCH-SAVE"
+    ],
+    "evidenceRefs": [],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "新文献发现到可持久使用的入库闭环属于核心业务。"
+    },
+    "caseRevision": 3,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-LIT-016",
+    "name": "通过 PDF 大纲定位章节",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备实际含可识别大纲、至少两个章节的授权 PDF 文献附件。",
+    "steps": [
+      "打开文献 PDF 并显示实际大纲导航。",
+      "选择一个非当前页的大纲条目。",
+      "核对跳转后的页码和章节正文。"
+    ],
+    "expected": [
+      "阅读器定位到所选章节对应位置，未跳到同名错误对象。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-OUTLINE-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-PDF-OUTLINE-01",
+    "revision": 4,
+    "directionIds": [
+      "LIT-READ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-OUTLINE-01@4",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "长PDF按大纲定位是基本阅读能力，不应仅归全量便利项。",
+    "checkIds": [
+      "LIT-PDF-OUTLINE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "priorityReview": {
+      "previousPriority": "P3",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "长PDF按大纲定位是基本阅读能力，不应仅归全量便利项。"
+    },
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": []
+  },
+  {
+    "id": "D4-LIT-017",
+    "name": "为选中文字创建高亮标注",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。可选中文本的 PDF 文献附件已打开，目标段落未有本次测试标注。",
+    "steps": [
+      "选择目标段落并通过实际标注入口创建高亮。",
+      "取消选区后查看正文及标注记录。"
+    ],
+    "expected": [
+      "高亮准确覆盖所选正文，记录关联正确附件和位置。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-ANNOTATE-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-PDF-ANNOTATE-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-READ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-ANNOTATE-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "基础阅读笔记行为，独立于 PDF AI 解释与翻译",
+    "checkIds": [
+      "LIT-PDF-ANNOTATE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-018",
+    "name": "从标注记录回到 PDF 原文",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。同一附件已有一个可核对标注，当前阅读位置与该标注不在同一处。",
+    "steps": [
+      "打开实际标注记录列表。",
+      "选择目标标注的回查或定位入口。",
+      "核对定位后的页码及原文。"
+    ],
+    "expected": [
+      "阅读器回到该标注对应的原文位置，不误定位其他附件或标注。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-ANNOTATION-LOCATE-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-PDF-ANNOTATION-LOCATE-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-READ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-ANNOTATION-LOCATE-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "标注可追溯是阅读基础行为，但以已有标注为前提",
+    "checkIds": [
+      "LIT-PDF-ANNOTATION-LOCATE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "caseRevision": 2
+  },
+  {
+    "id": "D4-LIT-019",
+    "name": "执行文献 PDF 逐页翻译",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备两页可核对外文 PDF 文献附件；真实逐页翻译及模型费用已获准。",
+    "steps": [
+      "在文献阅读器使用实际文档或逐页翻译入口。",
+      "按产品支持的范围选择目标页并提交。",
+      "等待各页任务终态，逐页核对译文及原文映射。"
+    ],
+    "expected": [
+      "各目标页有与其原文对应的译文，页间内容不串位；不得用单个选区翻译代替文档逐页结果。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-DOCUMENT-TRANSLATE-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-PDF-DOCUMENT-TRANSLATE-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-READ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-DOCUMENT-TRANSLATE-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "独立于选区翻译的文献深度阅读核心 AI 路径",
+    "checkIds": [
+      "LIT-DOCUMENT-TRANSLATE"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-lit-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/literature-pdf-open.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md"
+    ],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-LIT-020",
+    "name": "生成可追溯文献 AI 解读",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备一份贡献与主张可独立核对的短 PDF 文献附件；全文解读模型调用已获准。",
+    "steps": [
+      "在目标附件阅读器使用实际 AI 解读入口。",
+      "等待该任务真实终态并保存可见完整解读。",
+      "对照正文核对主要贡献、关键主张及产品提供的证据定位。"
+    ],
+    "expected": [
+      "解读贴合正文，主要主张有可定位依据，不用选区解释结果替代。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 LIT-PDF-SUMMARY-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "LIT-PDF-SUMMARY-01",
+    "revision": 3,
+    "directionIds": [
+      "LIT-READ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-SUMMARY-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文献全文理解是核心 AI 阅读能力，区别于选区解释",
+    "checkIds": [
+      "LIT-DOCUMENT-SUMMARY"
+    ],
+    "evidenceRefs": [],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-LIT-001",
+    "name": "文献标签关联与筛选命中正确对象",
+    "folder": "Desktop六业务域/文献",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。两条身份可核对的合成题录；仅允许创建任务标签并关联一条。",
+    "steps": [
+      "新建任务标签，仅将ALPHA题录加入。",
+      "选择该标签并核对计数及结果身份。",
+      "打开ALPHA详情读回标签，同时确认BETA未混入。"
+    ],
+    "expected": [
+      "标签只关联目标文献且筛选范围正确；标签与分类分别记录，不把本地题录操作当在线发现。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "标签INC1024-重点计数0→1，仅ALPHA命中，BETA未混入，详情仍含标签。 缺独立Check及复用题录资产；未测移除、删除、同名冲突或跨平台。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "LIT-TAG-FILTER-01",
+    "revision": 2,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-TAG-FILTER-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文献组织与筛选一致性，建议P2。",
+    "checkIds": [
+      "LIT-TAG-FILTER"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/028-bib-two-records.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/029-literature-tag-assigned.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/030-literature-tag-filter.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/033-search-literature-open.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/018-bib-two-records.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/019-literature-tag-filter.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/021-search-literature-open.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-LIT-TAG",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "创建任务标签及本地关联，不做外部检索。",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check及复用题录资产；未测移除、删除、同名冲突或跨平台。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-LIT-002",
+    "name": "文献列表显示列配置与重开状态一致",
+    "folder": "Desktop六业务域/文献",
+    "author": "评测维护",
+    "priority": "P3",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。两条可区分的合成题录；获准调整任务界面偏好。",
+    "steps": [
+      "记录原始显示列。",
+      "勾选出版物并取消作者显示，核真实表头与数据。",
+      "离开模块返回，核选择和表头一致，再恢复原偏好。"
+    ],
+    "expected": [
+      "列选择与实际显示一致；跨重启持久性另核，不改变题录元数据。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-LIT-COLUMNS，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "LIT-COLUMNS-01",
+    "revision": 1,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-columns",
+    "observationStatus": "observed",
+    "observationScope": "E133–140/S17：勾出版物、去作者；离开模块再返回，两项仍保留，表头实际变化；末尾恢复默认。已观察结果",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "列表展示偏好不影响文献读取或检索，调整为P3。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/133-columns-menu-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/134-show-publication-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/135-hide-author-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/136-close-columns-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/137-project-return-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/138-lit-return-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/139-columns-reopen-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/140-columns-restore-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/017-columns-retained.png"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "BROAD-LIT-COLUMNS",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；任务偏好变更后恢复；拖动顺序、重启/语言变更未做；G0+持久范围",
+    "assetGaps": [
+      "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+      "任务偏好变更后恢复；拖动顺序、重启/语言变更未做；G0+持久范围"
+    ],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "列表展示偏好不影响文献读取或检索，调整为P3。"
+    }
+  },
+  {
+    "id": "D6-LIT-003",
+    "name": "从专用Zotero资料源导入所选题录",
+    "folder": "Desktop六业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。专用合成Zotero库、可核源身份和独立连接授权；没有这些前提不读取个人库。",
+    "steps": [
+      "核对目标实例、授权及专用资料源身份。",
+      "通过真实Zotero导入入口选择合成题录并提交。",
+      "核导入终态、题录身份及未选资料未混入；缺连接记阻塞。"
+    ],
+    "expected": [
+      "仅导入明确选定的题录并保留可核来源，不混入未知个人文献。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-LIT-ZOTERO，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "LIT-IMPORT-ZOTERO-01",
+    "revision": 2,
+    "directionIds": [
+      "LIT-MGMT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-zotero",
+    "observationStatus": "entry_observed",
+    "observationScope": "E007/112、S02：有“从 Zotero 导入”；已观察入口，没有读取个人文献库。计划用专用合成 Zotero 库核选择与导入结果",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "外部文献迁入是核心输入链路P1，非构建最小路径。",
+    "checkIds": [
+      "LIT-IMPORT-ZOTERO"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/007-literature-tour-skip-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/112-lit-import-toolbar-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/002-literature-import.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-LIT-ZOTERO",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；无专用库与授权连接，执行受前提阻塞；G0+隔离库、连接与去重判据",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "无专用库与授权连接，执行受前提阻塞；G0+隔离库、连接与去重判据"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-LIT-004",
+    "name": "核对文献 PDF 选区解释语义准确性",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。同一可核对文献 PDF 附件已打开且文字可选；解释动作和模型调用已获准。",
+    "steps": [
+      "定位本轮已授权的同一选区解释原请求、完整结果、任务与截图。",
+      "核对附件与选区身份，交独立Judge按冻结质量判据评审；不重新生成或选择最好的一次。"
+    ],
+    "expected": [
+      "解释忠实于原文的研究设计、观察数值和局限，不虚构前测、对照或因果结论"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-28用户授权从原PDF选区场景拆出的独立P1质量点；复用同一次真实动作，不新增调用，不追认历史通过。",
+    "businessPointId": "LIT-PDF-EXPLAIN-QUALITY-01",
+    "revision": 1,
+    "directionIds": [
+      "LIT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-EXPLAIN-QUALITY-01@1",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "用户明确将PDF解释和翻译的语义准确性归入P1；P0只核功能可用，不因本次结果升降级",
+    "checkIds": [
+      "LIT-EXPLAIN-QUALITY",
+      "LIT-QUALITY-EVIDENCE"
+    ],
+    "evidenceRefs": [],
+    "caseRevision": 1,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "observationScope": "本轮仅准备拆档资产，未执行新的产品评测；旧观察仍在原功能点及历史报告。"
+  },
+  {
+    "id": "D6-LIT-005",
+    "name": "核对文献 PDF 选区翻译语义准确性",
+    "folder": "Desktop四业务域/文献",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。同一可核对的外文 PDF 附件已打开，选区翻译模型调用已获准。",
+    "steps": [
+      "定位本轮已授权的同一选区翻译原请求、完整结果、任务与截图。",
+      "核对附件与选区身份，交独立Judge按冻结质量判据评审；不重新生成或选择最好的一次。"
+    ],
+    "expected": [
+      "译文忠实保留原文数字、条件、否定及因果关系，不以功能完成代替准确性"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-28用户授权从原PDF选区场景拆出的独立P1质量点；复用同一次真实动作，不新增调用，不追认历史通过。",
+    "businessPointId": "LIT-PDF-TRANSLATE-QUALITY-01",
+    "revision": 1,
+    "directionIds": [
+      "LIT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#LIT-PDF-TRANSLATE-QUALITY-01@1",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "用户明确将PDF解释和翻译的语义准确性归入P1；P0只核功能可用，不因本次结果升降级",
+    "checkIds": [
+      "LIT-TRANSLATE-QUALITY",
+      "LIT-QUALITY-EVIDENCE"
+    ],
+    "evidenceRefs": [],
+    "caseRevision": 1,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "observationScope": "本轮仅准备拆档资产，未执行新的产品评测；旧观察仍在原功能点及历史报告。"
+  }
+]

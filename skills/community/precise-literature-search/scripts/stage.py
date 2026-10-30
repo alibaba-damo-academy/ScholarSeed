@@ -21,7 +21,7 @@ from run_state import (initialize_run, read_state, update_status, increment_sear
 from stage_guard import (authorize_download, claim_stage, contained, digest,
                          require_run, release_stage, require_worker, cancel_stage, serialized)
 from task_binding import ACTIVATION_HINT, activation_request
-from validate_json import validate_data
+from validate_json import ContractError, validate_data
 
 SKILL = Path(__file__).resolve().parent.parent
 FINAL_DELIVERY_CHECKPOINT = {
@@ -36,12 +36,50 @@ FINAL_DELIVERY_CHECKPOINT = {
 # web-search skill is not installed alongside this one.
 WEB_SEARCH_SKILL_NAME = "web-search"
 WEB_SEARCH_INVOKE_PARTS = ("scripts", "invoke.py")
+DOWNLOAD_COMMAND = "download"
+DOWNLOAD_MANIFEST_RELATIVE = "downloads/manifest.json"
 
 
-def with_task_activation(result: dict, run: Path) -> dict:
+def read_download_manifest(run: Path) -> dict:
+    manifest = read_json(run / DOWNLOAD_MANIFEST_RELATIVE)
+    if not isinstance(manifest, dict):
+        raise ContractError("download manifest must be a JSON object")
+    papers = manifest.get("papers")
+    if not isinstance(papers, list):
+        raise ContractError("download manifest papers must be an array")
+    for index, paper in enumerate(papers):
+        if not isinstance(paper, dict):
+            raise ContractError(f"papers[{index}] must be a JSON object")
+        status = paper.get("status")
+        if not isinstance(status, str) or not status.strip():
+            raise ContractError(f"papers[{index}].status must be a non-empty string")
+    return manifest
+
+
+def with_task_activation(result: dict, run: Path, *, download_checkpoint: bool = False) -> dict:
     """Attach this run's lease activation request; the product lease lasts one turn."""
-    return {**result, "task_activation": activation_request(run),
-            "task_activation_hint": ACTIVATION_HINT}
+    activation = activation_request(run)
+    output = {**result, "task_activation": activation,
+              "task_activation_hint": ACTIVATION_HINT}
+    manifest = run / DOWNLOAD_MANIFEST_RELATIVE
+    if download_checkpoint and path_exists(manifest) and any(paper.get("status") == "downloaded"
+                                    for paper in read_download_manifest(run)["papers"]):
+        output["download_admission"] = {
+            "capability": "literature", "operation": "ingest",
+            "request": {"run": activation["request"]["workspace"]},
+        }
+        output["fulltext_delivery"] = {
+            "capability": "literature", "operation": "delivery",
+            "request": {"run": activation["request"]["workspace"]},
+            "instructions": "Register verified successes with download_admission first, then call this checkpoint. The user chooses where to save resources; library admission is separate. Canceling preserves library items and reading authorization.",
+        }
+        output["download_admission_hint"] = (
+            "After task activation, call this native scholarseed_bridge request now, including "
+            "partial successes. It saves PDFs to the library and publishes full-text buttons; "
+            "do not wait for reading or final-report. Resolve run relative to the actual session "
+            "workdir. Downloaded and admitted are separate outcomes; report admission failures."
+        )
+    return output
 
 
 def web_search_invoke() -> str:
@@ -217,10 +255,10 @@ def stats(run: Path) -> dict:
     state = read_state(run)
     result = {"status": state["status"], "run_id": state["run_id"],
               "run_dir": str(run), "search_round": state["search_round"], "artifacts": state["paths"]}
-    manifest_path = run / "downloads/manifest.json"
+    manifest_path = run / DOWNLOAD_MANIFEST_RELATIVE
     if path_exists(manifest_path):
         from post_open_gate import verified_manifest_download
-        manifest = read_json(manifest_path)
+        manifest = read_download_manifest(run)
         counts = Counter(p.get("status", "unknown") for p in manifest["papers"])
         counts["verified_pdf"] = sum(verified_manifest_download(p, run) for p in manifest["papers"])
         counts["managed"] = sum(p.get("storage") == "managed" for p in manifest["papers"])
@@ -284,10 +322,11 @@ def download(run: Path, intervention_resolved=False, confirm_non_arxiv=False) ->
                 "--output", manifest, "--run-dir", run, "--resume"], environment=environment)
     elif state["status"] == "PAID_ACTION_REQUIRED":
         return {**stats(run), "next_action": "resolve_intervention_before_resume"}
-    current = read_json(manifest)
+    current = read_download_manifest(run)
     if current.get("status") == "action_required":
         update_status(run, "PAID_ACTION_REQUIRED", "Download requires user intervention")
-    return stats(run)
+    result = stats(run)
+    return result
 
 
 def require_acquired_by_product(run: Path, selection: dict) -> None:
@@ -310,7 +349,7 @@ def prepare_reading(run: Path, source: str) -> dict:
     state = read_state(run)
     if state["status"] not in {"DOWNLOADING_OPEN", "DOWNLOADING_PAID"}:
         raise ValueError("reading requires a settled download batch")
-    manifest = read_json(run / "downloads/manifest.json")
+    manifest = read_download_manifest(run)
     validate_data("download-manifest", manifest)
     if any(p["status"] in {"failed", "action_required", "not_attempted"} for p in manifest["papers"]):
         raise ValueError("resolve, retry, or explicitly skip unsuccessful downloads before reading")
@@ -356,7 +395,7 @@ def validate_reading(run: Path) -> dict:
             or outcome["manifest_sha256"] != digest(manifest_path)):
         raise ValueError("reading outcome is stale or bound to a different manifest")
     from post_open_gate import verified_manifest_download
-    manifest_papers = read_json(manifest_path)["papers"]
+    manifest_papers = read_download_manifest(run)["papers"]
     verified = {p["paper_id"] for p in manifest_papers if verified_manifest_download(p, run)}
     expected = {p["paper_id"] for p in manifest_papers if p["status"] == "downloaded"}
     actual = [p["paper_id"] for p in outcome["papers"]]
@@ -536,6 +575,7 @@ def main() -> int:
         if name == "authorize-download":
             command.add_argument("--selection", type=Path, required=True)
     args = parser.parse_args()
+    run = None
     try:
         if args.command == "start":
             result = start(args.work_dir, args.request_file, args.auto_delegated)
@@ -566,13 +606,19 @@ def main() -> int:
                 result = metadata_only(run, args.decision_source)
             else:
                 result = stats(run)
-        print(json.dumps(with_task_activation(result, run), ensure_ascii=False))
+        print(json.dumps(with_task_activation(result, run, download_checkpoint=args.command == DOWNLOAD_COMMAND), ensure_ascii=False))
         return 0
     except ChildProcessCancelled as exc:
         print(json.dumps({"status": "cancelled", "signal": exc.signum}))
         return 128 + exc.signum
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(json.dumps({"status": "blocked", "reason": str(exc)}, ensure_ascii=False))
+        result = {"status": "blocked", "reason": str(exc)}
+        if args.command == DOWNLOAD_COMMAND and run is not None:
+            try:
+                result = with_task_activation(result, run, download_checkpoint=True)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                pass
+        print(json.dumps(result, ensure_ascii=False))
         return 2
 
 

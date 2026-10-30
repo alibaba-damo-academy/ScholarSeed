@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from service import brand
+from service.chat.persistence.projects import ProjectRegistry
 
 SCRIPT = """
 import json
@@ -52,11 +53,58 @@ def probe(home: Path, trace: Path | None = None) -> dict:
     return json.loads(result.stdout)
 
 
+def legacy_registry_contract() -> None:
+    with tempfile.TemporaryDirectory(prefix="legacy-root-contract-") as temporary:
+        path = Path(temporary) / "projects.json"
+        registry = ProjectRegistry(path)
+        assert registry.projects() == [] and not path.exists()
+        invalid = [
+            b"{bad",
+            b"[]",
+            b"{}",
+            b'{"projects":null}',
+            b'{"projects":[42]}',
+            b'{"projects":[{}]}',
+            b'{"projects":[{"path":"relative"}]}',
+            b"\xff",
+        ]
+        for payload in invalid:
+            path.write_bytes(payload)
+            try:
+                registry.add(Path(temporary) / "new", "new")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid project inventory was accepted")
+            assert path.read_bytes() == payload
+        original = {
+            "unknown": {"keep": 1},
+            "projects": [{"path": str(Path(temporary) / "old"), "name": "old", "extra": True}],
+        }
+        path.write_text(json.dumps(original), encoding="utf-8")
+        registry.add(Path(temporary) / "new", "new")
+        loaded = registry.load()
+        assert loaded["unknown"] == original["unknown"]
+        assert loaded["projects"][0] == original["projects"][0]
+        assert len(loaded["projects"]) == 2
+        path.unlink()
+        path.mkdir()
+        try:
+            registry.projects()
+        except OSError:
+            pass
+        else:
+            raise AssertionError("unreadable project inventory was treated as absent")
+
+
 def main() -> int:
+    legacy_registry_contract()
     assert brand.HOME_ENV == "SCHOLARSEED_HOME"
     root = Path(__file__).resolve().parents[3]
     desktop = (root / "apps/desktop/src/main/backend.ts").read_text()
-    assert "'SCHOLARSEED_HOME'" in desktop
+    storage = (root / "apps/desktop/src/main/storage.ts").read_text()
+    assert "SCHOLARSEED_HOME_ENV = 'SCHOLARSEED_HOME'" in storage
+    assert "process.env[SCHOLARSEED_HOME_ENV] = activeHome" in desktop
     assert "'SCHOLARSEED_PROJECT_DIRNAME'" in desktop
     with tempfile.TemporaryDirectory(prefix="runtime-root-contract-") as temporary:
         home = Path(temporary) / "product"

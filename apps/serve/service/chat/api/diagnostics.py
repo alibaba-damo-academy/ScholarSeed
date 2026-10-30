@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -13,6 +11,7 @@ from service.chat.persistence.catalog import SessionAccessError, SessionPrincipa
 from service.chat.service.diagnostics import DIAGNOSTIC_FILENAME, DiagnosticService
 from service.chat.service.recording import PolicyConflict, RecordingMode
 from service.identity.utils import request_owner_id
+from service.platform.activity import ActivityDomain, MaintenanceActive
 
 
 class PolicyChange(BaseModel):
@@ -27,9 +26,21 @@ class ExportConfirmation(BaseModel):
 
 
 def mount_diagnostic_routes(app: FastAPI, diagnostics: DiagnosticService) -> None:
+    async def admit():
+        try:
+            lease = diagnostics.activities.enter(ActivityDomain.DIAGNOSTIC, root=True)
+        except MaintenanceActive as error:
+            raise HTTPException(503, "update_maintenance") from error
+        with lease:
+            yield
+
+    admission = [Depends(admit)]
+
     async def execute(operation, *args, **kwargs):
         try:
-            return await asyncio.to_thread(operation, *args, **kwargs)
+            return await diagnostics.activities.to_thread(
+                ActivityDomain.DIAGNOSTIC, operation, *args, **kwargs
+            )
         except SessionAccessError as error:
             raise HTTPException(404, "session not found") from error
         except PolicyConflict as error:
@@ -39,7 +50,7 @@ def mount_diagnostic_routes(app: FastAPI, diagnostics: DiagnosticService) -> Non
         except OSError as error:
             raise HTTPException(503, "diagnostic storage unavailable") from error
 
-    @app.get("/api/serve/sessions/{session_id}/diagnostic-policy")
+    @app.get("/api/serve/sessions/{session_id}/diagnostic-policy", dependencies=admission)
     async def get_policy(session_id: str, request: Request):
         policy = await execute(
             diagnostics.recording.require,
@@ -48,7 +59,7 @@ def mount_diagnostic_routes(app: FastAPI, diagnostics: DiagnosticService) -> Non
         )
         return policy.payload()
 
-    @app.put("/api/serve/sessions/{session_id}/diagnostic-policy")
+    @app.put("/api/serve/sessions/{session_id}/diagnostic-policy", dependencies=admission)
     async def put_policy(session_id: str, request: Request, body: PolicyChange):
         policy = await execute(
             diagnostics.recording.update,
@@ -59,13 +70,13 @@ def mount_diagnostic_routes(app: FastAPI, diagnostics: DiagnosticService) -> Non
         )
         return policy.payload()
 
-    @app.get("/api/serve/sessions/{session_id}/diagnostics/preview")
+    @app.get("/api/serve/sessions/{session_id}/diagnostics/preview", dependencies=admission)
     async def preview(session_id: str, request: Request):
         return await execute(
             diagnostics.preview, session_id, SessionPrincipal(user_id=request_owner_id(request))
         )
 
-    @app.post("/api/serve/sessions/{session_id}/diagnostics")
+    @app.post("/api/serve/sessions/{session_id}/diagnostics", dependencies=admission)
     async def export(session_id: str, request: Request, body: ExportConfirmation):
         bundle = await execute(
             diagnostics.export,
@@ -84,7 +95,7 @@ def mount_diagnostic_routes(app: FastAPI, diagnostics: DiagnosticService) -> Non
             },
         )
 
-    @app.delete("/api/serve/sessions/{session_id}/diagnostics/content")
+    @app.delete("/api/serve/sessions/{session_id}/diagnostics/content", dependencies=admission)
     async def clear(session_id: str, request: Request):
         count = await execute(
             diagnostics.clear, session_id, SessionPrincipal(user_id=request_owner_id(request))

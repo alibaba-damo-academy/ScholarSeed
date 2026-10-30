@@ -179,6 +179,20 @@ def records(connection: sqlite3.Connection) -> tuple[MigrationRecord, ...]:
     )
 
 
+def _resolution(raw: str) -> object:
+    return json.loads(raw)
+
+
+def inspect_rows(connection: sqlite3.Connection) -> None:
+    """Read legacy identities and cutover receipts without migrating any file."""
+    records(connection)
+    inputs(connection)
+    for row in connection.execute(
+        "SELECT resolution FROM resources_review_migrations WHERE resolution IS NOT NULL"
+    ):
+        _resolution(row["resolution"])
+
+
 def resolved(
     connection: sqlite3.Connection, request: MigrationResolution
 ) -> MigrationRecord | None:
@@ -191,7 +205,7 @@ def resolved(
     if row is None:
         raise MigrationError(MigrationBlocker.SOURCE_CHANGED)
     if row["status"] == MigrationStatus.RESOLVED.value:
-        if not row["resolution"] or json.loads(row["resolution"]) != asdict(request):
+        if not row["resolution"] or _resolution(row["resolution"]) != asdict(request):
             raise MigrationError(MigrationBlocker.RESOLUTION_CONFLICT)
         return next(
             item

@@ -1,7 +1,8 @@
 {
   "dependencies": {
     "executables": [
-      "scholarseed-bridge"
+      "scholarseed-bridge",
+      "scholarseed-skill-python"
     ],
     "skills": [
       "agentic-search"
@@ -11,20 +12,26 @@
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "967d3bc4230d0d7684a927367b5cf2735be9ebd2a443bd081bda8d0331bad0a1",
-      "size": 15374
+      "sha256": "26cb26346197e7162ee639c6c70b2f90dc52e75725b77dc8fd6bd9fcd01f28ba",
+      "size": 21211
     },
     {
       "mode": 420,
       "path": "SKILL.zh.md",
-      "sha256": "67a32c63e531d4e56a3e345b128e3e5d20b0a3fb684c6f25f2b7889707f9eeed",
-      "size": 9566
+      "sha256": "090ab1da4b464e4eeadbb5cfdb77de3b3f6eeceaef12fa40aa4aac664015f4f1",
+      "size": 15152
+    },
+    {
+      "mode": 420,
+      "path": "VERSION",
+      "sha256": "091d55b64de2013341ba60beea22ca1392e1c258d68ff2aa2e8f901cf9723d63",
+      "size": 7
     },
     {
       "mode": 420,
       "path": "agents/openai.yaml",
-      "sha256": "bab54fa0401aebaee0f68d1b567a298f9ce5c931af2fc7d61f05623c97c29430",
-      "size": 243
+      "sha256": "7b59696c4b5aea05233f9d32e4209790cbcff8ad432ba91d68974751b6f9498e",
+      "size": 240
     },
     {
       "mode": 420,
@@ -37,6 +44,12 @@
       "path": "references.schema.json",
       "sha256": "2ca4f22e74e2438c51c1e3fba23be8509111f2aebfbe1c15d02220429fd42cf5",
       "size": 5180
+    },
+    {
+      "mode": 420,
+      "path": "scripts/task.py",
+      "sha256": "ca8687d763998beedc9161b7b1e1d6f3b9a56860e567b7825a8f584f67d7198f",
+      "size": 1926
     }
   ],
   "name": "research-idea-partner",
@@ -44,6 +57,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "967d3bc4230d0d7684a927367b5cf2735be9ebd2a443bd081bda8d0331bad0a1",
-  "version": "1.2.0"
+  "source_document_sha256": "26cb26346197e7162ee639c6c70b2f90dc52e75725b77dc8fd6bd9fcd01f28ba",
+  "version": "1.2.15"
 }

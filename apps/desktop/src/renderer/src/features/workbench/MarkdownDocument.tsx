@@ -1,5 +1,6 @@
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
+import { createPortal } from 'react-dom'
 
 import { EditorView as CodeEditorView } from '@codemirror/view'
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
@@ -48,7 +49,6 @@ import {
   List,
   ListOrdered,
   Quote,
-  Save,
   Sigma,
   Strikethrough,
   Table2,
@@ -57,7 +57,6 @@ import {
 
 import {
   Alert,
-  BadgeDot,
   Button,
   Dialog,
   DialogPortal,
@@ -67,9 +66,11 @@ import {
   DialogTitle,
   IconButton,
   SearchBox,
-  Tabs,
-  TabsList,
-  TabsTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Tooltip,
   TooltipContent,
   useToast,
@@ -79,21 +80,31 @@ import { writeClipboard } from '../../components/primitive/clipboard'
 import { useApp } from '../../store'
 import { useSelectionActionContribution, type SelectionReplacement } from './actions'
 import type { CitationResolution } from '../../contracts/citations'
-import { configureCitationLinks, editDocumentLink } from './citations'
+import { configureCitationLinks, editDocumentLink, numericCitationPlugin } from './citations'
 import {
   DOCUMENT_LINK_ATTRIBUTE,
   DOCUMENT_LINK_SELECTOR,
   documentLinkTarget,
+  citationFailureMessage,
   navigateDocumentLink,
   type DocumentLinkTarget,
 } from './links'
-import { markdownFragmentTarget, matchesMarkdownTarget } from './anchors'
+import {
+  anchorCompatibilityPlugin,
+  anchorHtmlSchema,
+  markdownFragmentTarget,
+  matchesMarkdownTarget,
+} from './anchors'
 import { preserveMarkdownReadingPosition } from './reading'
 import { useImageFailureText } from './failure'
 import { formatTextOnSave } from './format'
 import { encodeTextForSave } from './text'
-import { createMarkdownImageResolver, persistMarkdownImage, resolveSavedCitation } from './api'
-import { sealResourceSnapshot } from '../../contracts/resources'
+import {
+  createMarkdownImageResolver,
+  persistMarkdownImage,
+  resolveSavedCitation,
+  resolveArtifactCitation,
+} from './api'
 import {
   resolveMarkdownShortcut,
   suppressMarkdownDefaultShortcut,
@@ -130,6 +141,7 @@ const ATOM_VALUE_ATTRIBUTE = 'value'
 const RENDERED_BLOCK_SEPARATOR = ''
 const SELECTION_TEXT_SEPARATOR = '\n'
 const EMPTY_ICON = '<span aria-hidden="true"></span>'
+const MARKDOWN_READONLY_ERROR = 'markdown_readonly'
 const TOOLBAR_ICONS: Record<string, ReactNode> = {
   bold: <Bold size={16} />,
   italic: <Italic size={16} />,
@@ -147,20 +159,20 @@ const TOOLBAR_ICONS: Record<string, ReactNode> = {
   image: <Image size={16} />,
 }
 const TOOLBAR_ITEMS = [
-  { key: 'bold', label: 'markdown.bold' },
-  { key: 'italic', label: 'markdown.italic' },
-  { key: 'strikethrough', label: 'markdown.strike' },
-  { key: 'h1', label: 'markdown.h1' },
-  { key: 'h2', label: 'markdown.h2' },
-  { key: 'h3', label: 'markdown.h3' },
-  { key: 'bullet-list', label: 'markdown.bullet' },
-  { key: 'ordered-list', label: 'markdown.numbered' },
-  { key: 'link', label: 'markdown.link' },
-  { key: 'code', label: 'markdown.inlineCode' },
-  { key: 'math', label: 'markdown.inlineMath' },
-  { key: 'quote', label: 'markdown.quote' },
-  { key: 'table', label: 'markdown.table' },
-  { key: 'image', label: 'markdown.image' },
+  { key: 'bold', labelKey: 'markdown.bold' },
+  { key: 'italic', labelKey: 'markdown.italic' },
+  { key: 'strikethrough', labelKey: 'markdown.strike' },
+  { key: 'h1', labelKey: 'markdown.h1' },
+  { key: 'h2', labelKey: 'markdown.h2' },
+  { key: 'h3', labelKey: 'markdown.h3' },
+  { key: 'bullet-list', labelKey: 'markdown.bullet' },
+  { key: 'ordered-list', labelKey: 'markdown.numbered' },
+  { key: 'link', labelKey: 'markdown.link' },
+  { key: 'code', labelKey: 'markdown.inlineCode' },
+  { key: 'math', labelKey: 'markdown.inlineMath' },
+  { key: 'quote', labelKey: 'markdown.quote' },
+  { key: 'table', labelKey: 'markdown.table' },
+  { key: 'image', labelKey: 'markdown.image' },
 ] as const
 interface MarkdownToolbarAction {
   key: string
@@ -168,6 +180,8 @@ interface MarkdownToolbarAction {
   active: (ctx: Ctx) => boolean
 }
 const SLASH_MENU_SELECTOR = '.milkdown-slash-menu'
+const MARKDOWN_SLASH_MENU_CLASS =
+  '[&_.milkdown-slash-menu]:!z-[var(--vds-z-markdown-slash-menu)] [&_.milkdown-slash-menu]:!w-[var(--vds-markdown-slash-menu-width)] [&_.milkdown-slash-menu]:!max-h-[var(--vds-markdown-slash-menu-max-height)] [&_.milkdown-slash-menu]:!overflow-y-auto [&_.milkdown-slash-menu]:!border [&_.milkdown-slash-menu]:!border-[var(--vds-divider-default)] [&_.milkdown-slash-menu]:!rounded-[var(--vds-radius-5)] [&_.milkdown-slash-menu]:!bg-[var(--vds-bg-page)] [&_.milkdown-slash-menu]:!px-[calc(var(--vds-space-1)+var(--vds-space-half))] [&_.milkdown-slash-menu]:!py-[var(--vds-space-2)] [&_.milkdown-slash-menu]:!text-[var(--vds-text-primary)] [&_.milkdown-slash-menu]:!shadow-[var(--vds-markdown-slash-menu-shadow)] [&_.milkdown-slash-menu]:[scrollbar-width:thin] [&_.milkdown-slash-menu]:[scrollbar-color:var(--vds-markdown-slash-menu-scrollbar-color)_transparent] [&_.milkdown-slash-menu_.tab-group]:!hidden [&_.milkdown-slash-menu_.menu-groups]:!p-0 [&_.milkdown-slash-menu_.menu-group+.menu-group]:!mt-[var(--vds-markdown-slash-menu-group-gap)] [&_.milkdown-slash-menu_.menu-group+.menu-group]:!border-t [&_.milkdown-slash-menu_.menu-group+.menu-group]:!border-[var(--vds-divider-default)] [&_.milkdown-slash-menu_.menu-group+.menu-group]:!pt-[var(--vds-markdown-slash-menu-group-gap)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!block [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!px-[calc(var(--vds-space-2)+var(--vds-space-half))] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!pb-[var(--vds-space-1)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!pt-[calc(var(--vds-space-1)+var(--vds-space-half))] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!text-[var(--vds-text-tertiary)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!text-[length:var(--vds-markdown-slash-menu-heading-font-size)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!font-[var(--vds-fw-semibold)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!leading-[var(--vds-space-5)] [&_.milkdown-slash-menu_.menu-groups_.menu-group_h6]:!normal-case [&_.milkdown-slash-menu_li]:!relative [&_.milkdown-slash-menu_li]:!flex [&_.milkdown-slash-menu_li]:!h-[var(--vds-markdown-slash-menu-item-height)] [&_.milkdown-slash-menu_li]:!box-border [&_.milkdown-slash-menu_li]:!items-center [&_.milkdown-slash-menu_li]:!rounded-[var(--vds-radius-3)] [&_.milkdown-slash-menu_li]:!px-[calc(var(--vds-space-2)+var(--vds-space-half))] [&_.milkdown-slash-menu_li]:!text-[length:var(--vds-font-body-lv1)] [&_.milkdown-slash-menu_li:is(:hover,.hover)]:!bg-[var(--vds-bg-white-default)]'
 const EDITOR_ACTION_SELECTOR = 'button,[role="button"],[role="menuitem"]'
 const INLINE_MATH_NODE = 'math_inline'
 const TOGGLE_INLINE_MATH_COMMAND = 'ToggleLatex'
@@ -397,12 +411,8 @@ const HEADING_OPTIONS = [
   { labelKey: 'markdown.h6', level: 6 },
 ] as const
 
-function SaveFeedback({ saved }: { saved: boolean }): React.JSX.Element {
-  const { t } = useTranslation('workbench')
-  return <>{saved ? t('markdown.saved') : t('markdown.saveFailed')}</>
-}
-
 function MarkdownHeader({
+  modeControlHost,
   sessionId,
   tabId,
   viewKind,
@@ -411,6 +421,7 @@ function MarkdownHeader({
   toolbarActions,
   visualDisabled,
 }: {
+  modeControlHost?: HTMLElement | null
   sessionId: string
   tabId: string
   viewKind: DocumentViewKind
@@ -421,60 +432,21 @@ function MarkdownHeader({
 }): React.JSX.Element {
   const session = useDocumentWorkspace().sessions[sessionId]
   const workspace = useWorkspaceController()
-  const { toast } = useToast()
   const { t } = useTranslation('workbench')
-  const externalPending =
-    session?.source.kind === 'project' &&
-    session.source.project &&
-    session.versioning?.pending?.origin === 'external' &&
-    !session.versioning.pending.review
-      ? session.versioning
-      : null
   const switchView = (target: DocumentViewKind): void => {
     if (target === 'edit' && visualDisabled) return
     workspace.setTabView(tabId, target)
   }
-  const saveDocument = (): void => {
-    if (
-      session?.source.kind === 'project' &&
-      session.source.project &&
-      externalPending &&
-      !session.dirty
-    ) {
-      void sealResourceSnapshot(
-        session.source.project,
-        session.source.path,
-        externalPending,
-        crypto.randomUUID(),
-        'external_confirmed'
-      ).then(async (result) => {
-        if (result.ok) await workspace.refreshVersioning(sessionId, session.documentId)
-        toast({
-          dedupeKey: result.ok
-            ? undefined
-            : JSON.stringify(['markdown-save-failure', session.documentId]),
-          title: <SaveFeedback saved={result.ok} />,
-          tone: result.ok ? 'success' : 'error',
-        })
-      })
-      return
-    }
-    void workspace.save(sessionId).then((saved) => {
-      toast({
-        dedupeKey: saved
-          ? undefined
-          : JSON.stringify(['markdown-save-failure', session?.documentId]),
-        title: <SaveFeedback saved={saved} />,
-        tone: saved ? 'success' : 'error',
-      })
-    })
-  }
-  const savePending = Boolean(session?.dirty || externalPending)
   return (
     <div
       className="vds-markdown-header flex min-h-12 min-w-0 flex-nowrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] px-[var(--vds-space-4)] py-[var(--vds-space-1)]"
       data-save-state={session?.saveState ?? 'clean'}
     >
+      {visualDisabled && (
+        <span className="min-w-0 truncate text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]">
+          {t(session?.lightweightText ? 'markdown.large' : 'markdown.readonly')}
+        </span>
+      )}
       <div
         className={`${viewKind === 'edit' ? 'vds-markdown-crepe ' : ''}flex min-w-0 flex-1 items-center overflow-hidden`}
       >
@@ -488,60 +460,56 @@ function MarkdownHeader({
           </div>
         </div>
       </div>
-      {visualDisabled && (
-        <span className="min-w-0 truncate text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]">
-          {t('markdown.large')}
-        </span>
-      )}
       <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-2)]">
-        <Tabs
-          className="flex-none"
-          value={viewKind}
-          aria-label={t('markdown.view')}
-          onValueChange={(target) => {
-            if (target === 'preview' || target === 'edit') switchView(target)
-          }}
-        >
-          <TabsList>
-            <TabsTrigger value="preview" data-testid="markdown-open-source">
-              {t('markdown.source')}
-            </TabsTrigger>
-            <TabsTrigger
-              value="edit"
-              data-testid="markdown-open-editor"
-              disabled={visualDisabled}
-              title={visualDisabled ? t('markdown.largeHint') : undefined}
-            >
-              {t('markdown.edit')}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
         {toolbarActions}
-        <Tooltip portalled content={t('markdown.save')}>
-          <span className="relative inline-flex">
-            <IconButton
-              variant="ghostIcon"
-              size="sm"
-              title={undefined}
-              label={t('markdown.save')}
-              icon={<Save />}
-              data-testid="markdown-save"
-              data-external-change={externalPending ? 'true' : undefined}
-              disabled={
-                !savePending ||
-                session?.saveState === 'saving' ||
-                (session?.dirty ? !session.capabilities.can_save : !externalPending?.can_version)
-              }
-              onClick={saveDocument}
-            />
-            {savePending && (
-              <BadgeDot
-                className="pointer-events-none absolute right-0 top-0"
-                data-testid="markdown-save-dirty"
-              />
-            )}
-          </span>
-        </Tooltip>
+        {(() => {
+          const control = (
+            <Select
+              className="flex-none"
+              size="md"
+              value={viewKind}
+              aria-label={t('markdown.view')}
+              onValueChange={(target) => {
+                if (target === 'preview' || target === 'edit' || target === 'source')
+                  switchView(target)
+              }}
+            >
+              <SelectTrigger
+                data-testid="markdown-mode-select"
+                aria-label={t('markdown.view')}
+                className="[&.vds-select]:!h-[var(--vds-control-height-md)] [&.vds-select]:!w-auto [&.vds-select]:!min-w-0 [&.vds-select]:!gap-[calc(var(--vds-space-1)+var(--vds-space-half))] [&.vds-select]:!px-[calc(var(--vds-space-3)-var(--vds-border-width-1))] [&.vds-select]:!py-[calc(var(--vds-space-1)+var(--vds-space-half)-var(--vds-border-width-1))] [&.vds-select]:!leading-[var(--vds-control-label-line-height)] [&.vds-select]:!text-[var(--vds-text-tertiary)] [&.vds-select]:!border-[var(--vds-divider-default)]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem
+                  value="preview"
+                  data-testid="markdown-open-preview"
+                  disabled={Boolean(session?.lightweightText)}
+                  title={session?.lightweightText ? t('markdown.largeHint') : undefined}
+                >
+                  {t('markdown.preview')}
+                </SelectItem>
+                <SelectItem
+                  value="edit"
+                  data-testid="markdown-open-editor"
+                  disabled={visualDisabled}
+                  title={
+                    visualDisabled
+                      ? t(session?.lightweightText ? 'markdown.largeHint' : 'markdown.readonly')
+                      : undefined
+                  }
+                >
+                  {t('markdown.edit')}
+                </SelectItem>
+                <SelectItem value="source" data-testid="markdown-open-source">
+                  {t('markdown.source')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          )
+          return modeControlHost ? createPortal(control, modeControlHost) : control
+        })()}
       </div>
     </div>
   )
@@ -549,11 +517,13 @@ function MarkdownHeader({
 
 function MarkdownVisualEditor({
   formatOnSave,
+  readOnly,
   sessionId,
   tabId,
   onToolbarChange,
 }: {
   formatOnSave: boolean
+  readOnly: boolean
   sessionId: string
   tabId: string
   onToolbarChange: (toolbar: ReactNode) => void
@@ -567,7 +537,6 @@ function MarkdownVisualEditor({
   const { t, i18n } = useTranslation('workbench')
   const requestedLanguage = i18n.resolvedLanguage === 'en' ? 'en' : 'zh'
   const [editorLanguage] = useState(requestedLanguage)
-  const [dismissedLanguageNotice, setDismissedLanguageNotice] = useState<string | null>(null)
   const { t: citationText } = useTranslation('components')
   const [citation, setCitation] = useState<CitationResolution | null>(null)
   const [citationError, setCitationError] = useState(false)
@@ -597,10 +566,6 @@ function MarkdownVisualEditor({
     to: number
   } | null>(null)
   const pointerStartRef = useRef<{ host: HTMLElement | null; x: number; y: number } | null>(null)
-
-  useEffect(() => {
-    setDismissedLanguageNotice(null)
-  }, [requestedLanguage])
 
   const [formatActions, setFormatActions] = useState<
     {
@@ -668,6 +633,9 @@ function MarkdownVisualEditor({
         openExternal: (href) => window.scholarseed.openExternal(href),
         navigateFragment,
         resolveCitation: async (handle) => {
+          if (session.source.kind === 'session-artifact') {
+            return resolveArtifactCitation(session.source, session.revision, handle)
+          }
           if (session.source.kind !== 'project') throw new Error('saved_citation_unavailable')
           return resolveSavedCitation(session.source, handle)
         },
@@ -676,14 +644,18 @@ function MarkdownVisualEditor({
         },
         previewCitation: setCitation,
       })
-        .catch(() => {
-          toast({ title: t('markdown.linkFailed', { url: target.href }), tone: 'error' })
+        .catch((error: unknown) => {
+          const message = citationFailureMessage(error)
+          toast({
+            title: message ? t(message) : t('markdown.linkFailed', { url: target.href }),
+            tone: 'error',
+          })
         })
         .finally(() => {
           linkOpeningRef.current = false
         })
     },
-    [navigateFragment, session.source, t, toast, workspace]
+    [navigateFragment, session.source, session.revision, t, toast, workspace]
   )
 
   const showDocumentLink = useCallback((target: EventTarget | null): void => {
@@ -744,19 +716,20 @@ function MarkdownVisualEditor({
   }, [])
 
   const markUserEdit = useCallback((): void => {
+    if (readOnly) return
     userEditPendingRef.current = true
-  }, [])
+  }, [readOnly])
 
   const commitVisualEdit = useCallback(
     (markdown: string): void => {
-      if (!userEditPendingRef.current) return
+      if (readOnly || !userEditPendingRef.current) return
       userEditPendingRef.current = false
       if (markdown === projectedMarkdownRef.current) return
       projectedMarkdownRef.current = markdown
       externallyAppliedMarkdownRef.current = null
       workspace.updateText(sessionId, markdown)
     },
-    [sessionId, workspace]
+    [readOnly, sessionId, workspace]
   )
 
   const markKeyboardDeletion = useCallback(
@@ -803,6 +776,7 @@ function MarkdownVisualEditor({
 
   const runFormat = useCallback(
     (run: (ctx: Ctx) => void): void => {
+      if (readOnly) return
       const crepe = crepeRef.current
       if (!crepe || !crepeReadyRef.current) return
       markUserEdit()
@@ -812,20 +786,20 @@ function MarkdownVisualEditor({
       })
       refreshFormatState()
     },
-    [markUserEdit, refreshFormatState]
+    [markUserEdit, readOnly, refreshFormatState]
   )
 
   useEffect(() => {
     onToolbarChange(
-      toolbarItems.length ? (
+      !readOnly && toolbarItems.length ? (
         <>
-          {TOOLBAR_ITEMS.map(({ key, label }) => {
+          {TOOLBAR_ITEMS.map(({ key, labelKey }) => {
             const action = toolbarItems.find((item) => item.key === key)
             if (!action) return null
             return (
               <IconButton
                 key={key}
-                label={t(label)}
+                label={t(labelKey)}
                 icon={TOOLBAR_ICONS[key]}
                 size="sm"
                 variant="ghostIcon"
@@ -839,7 +813,7 @@ function MarkdownVisualEditor({
       ) : null
     )
     return () => onToolbarChange(null)
-  }, [onToolbarChange, runFormat, t, toolbarItems, toolbarPressed])
+  }, [onToolbarChange, readOnly, runFormat, t, toolbarItems, toolbarPressed])
 
   const runFind = useCallback(
     (direction: 1 | -1): void => {
@@ -886,6 +860,7 @@ function MarkdownVisualEditor({
 
   const runMarkdownShortcut = useCallback(
     (id: ShortcutCommandId): void => {
+      if (readOnly && id !== 'markdown.find' && id !== 'markdown.selectAll') return
       if (id === 'markdown.save') {
         void workspace.save(sessionId)
         return
@@ -927,7 +902,7 @@ function MarkdownVisualEditor({
         })
       }
     },
-    [formatActions, runFormat, sessionId, workspace]
+    [formatActions, readOnly, runFormat, sessionId, workspace]
   )
 
   const replaceSelection = useCallback<SelectionReplacement>(
@@ -936,6 +911,7 @@ function MarkdownVisualEditor({
       const captured = nativeSelectionRef.current
       const current = workspace.getSnapshot().sessions[sessionId]
       if (
+        readOnly ||
         !crepe ||
         !crepeReadyRef.current ||
         !captured ||
@@ -961,12 +937,12 @@ function MarkdownVisualEditor({
       })
       return replaced ? { ok: true } : { ok: false, error: 'selection_changed' }
     },
-    [markUserEdit, sessionId, workspace]
+    [markUserEdit, readOnly, sessionId, workspace]
   )
 
   const selectionActions = useMemo(
     () => ({
-      actions: (
+      actions: readOnly ? null : (
         <>
           {formatActions.map((action) => (
             <Button
@@ -990,9 +966,9 @@ function MarkdownVisualEditor({
       expanded: false,
       id: 'markdown-format',
       order: 200,
-      replaceSelection,
+      replaceSelection: readOnly ? undefined : replaceSelection,
     }),
-    [formatActions, formatState, replaceSelection, runFormat, t]
+    [formatActions, formatState, readOnly, replaceSelection, runFormat, t]
   )
   useSelectionActionContribution(tabId, selectionActions)
 
@@ -1020,9 +996,12 @@ function MarkdownVisualEditor({
           blockCaptionPlaceholderText: t('markdown.imageCaptionPlaceholder'),
           blockUploadPlaceholderText: t('markdown.pasteImageLink'),
           onUpload: async (file) => {
+            if (readOnly) throw new Error(MARKDOWN_READONLY_ERROR)
             setUploadError(null)
             try {
-              return await persistMarkdownImage(session.source, file)
+              const path = await persistMarkdownImage(session.source, file)
+              markUserEdit()
+              return path
             } catch (error) {
               setUploadError({ cause: error })
               throw error
@@ -1200,7 +1179,11 @@ function MarkdownVisualEditor({
         },
       },
     })
+    crepe.setReadonly(readOnly)
     crepe.editor
+      .use(numericCitationPlugin)
+      .use(anchorCompatibilityPlugin)
+      .use(anchorHtmlSchema)
       .use(mathCompatibilityPlugin)
       .use(literalLatexSchema)
       .use(tableColumnInheritancePlugin)
@@ -1240,9 +1223,12 @@ function MarkdownVisualEditor({
     crepeRef.current = crepe
     crepeReadyRef.current = false
     const unregisterSave = workspace.registerSaveDelegate(sessionId, {
-      prepare: () => commitVisualEdit(crepe.getMarkdown()),
+      prepare: () => {
+        if (readOnly || !crepeReadyRef.current || crepeRef.current !== crepe) return
+        commitVisualEdit(crepe.getMarkdown())
+      },
       beforeSave: async () => {
-        if (!formatOnSave) return
+        if (readOnly || !formatOnSave) return
         const current = workspace.getSnapshot().sessions[sessionId]
         if (!current || current.text === null) return
         const source = current.text
@@ -1288,7 +1274,7 @@ function MarkdownVisualEditor({
         paper.dataset.testid = 'markdown-paper'
         root.insertBefore(paper, view.dom)
         paper.append(view.dom)
-        if (hostRef.current)
+        if (!readOnly && hostRef.current)
           disposeMathInteraction = installMathBlockInteraction(hostRef.current, view)
       })
       const latestText = latestTextRef.current
@@ -1328,6 +1314,7 @@ function MarkdownVisualEditor({
     formatOnSave,
     i18n,
     markUserEdit,
+    readOnly,
     replaceExternalText,
     sessionId,
     session?.loadState,
@@ -1434,13 +1421,18 @@ function MarkdownVisualEditor({
             const rangeTo = range
               ? editorPositionAtDOM(view, range.endContainer, range.endOffset)
               : null
+            const useNativeEndpoints = nativeSelection && !pointerStart?.host && !target
             const anchor =
-              editorPositionAtPoint(view, pointerStart?.host ?? null, pointerStart) ??
+              (useNativeEndpoints && selection.anchorNode
+                ? editorPositionAtDOM(view, selection.anchorNode, selection.anchorOffset)
+                : editorPositionAtPoint(view, pointerStart?.host ?? null, pointerStart)) ??
               (selection.anchorNode && rangeFrom !== null
                 ? editorPositionAtDOM(view, selection.anchorNode, selection.anchorOffset)
                 : rangeFrom)
             const focus =
-              editorPositionAtPoint(view, target, eventPoint) ??
+              (useNativeEndpoints && selection.focusNode
+                ? editorPositionAtDOM(view, selection.focusNode, selection.focusOffset)
+                : editorPositionAtPoint(view, target, eventPoint)) ??
               (selection.focusNode && rangeTo !== null
                 ? editorPositionAtDOM(view, selection.focusNode, selection.focusOffset)
                 : rangeTo)
@@ -1544,15 +1536,6 @@ function MarkdownVisualEditor({
 
   return (
     <>
-      {requestedLanguage !== editorLanguage && dismissedLanguageNotice !== requestedLanguage && (
-        <Alert
-          closable
-          data-testid="markdown-language-pending"
-          onClose={() => setDismissedLanguageNotice(requestedLanguage)}
-          tone="info"
-          title={t('markdown.languagePending')}
-        />
-      )}
       {uploadError && (
         <Alert
           tone="error"
@@ -1595,7 +1578,10 @@ function MarkdownVisualEditor({
                 }}
               />
               {findResult && (
-                <p aria-live="polite" className="m-0 text-sm text-[var(--vds-text-secondary)]">
+                <p
+                  aria-live="polite"
+                  className="m-0 text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-secondary)]"
+                >
                   {findResult.total
                     ? t('markdown.findResult', {
                         current: findResult.current,
@@ -1633,7 +1619,7 @@ function MarkdownVisualEditor({
                   pages: citation.pages.map((page) => page.page).join(', '),
                 })}
               </p>
-              <blockquote className="m-0 max-h-64 overflow-auto whitespace-pre-wrap text-sm">
+              <blockquote className="m-0 max-h-64 overflow-auto whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)]">
                 {citation.quote}
               </blockquote>
               {citation.state !== 'exact' && (
@@ -1670,9 +1656,9 @@ function MarkdownVisualEditor({
 
       <div
         ref={hostRef}
-        className="vds-markdown-crepe [&_.milkdown-top-bar]:!hidden [&_.milkdown-link-preview]:!hidden [&_.ProseMirror_a]:!text-[var(--vds-link)] [&_.ProseMirror_a:hover]:!text-[var(--vds-link-hover)] [&_.ProseMirror_a:active]:!text-[var(--vds-link-active)] [&_.ProseMirror_a]:cursor-pointer [&_.ProseMirror_a:focus-visible]:outline [&_.ProseMirror_a:focus-visible]:outline-[var(--vds-link)]"
+        className={`vds-markdown-crepe h-full min-h-0 w-full [&>.milkdown]:block [&>.milkdown]:h-full [&>.milkdown]:min-h-0 [&>.milkdown]:w-full [&>.milkdown]:overflow-auto [&>.milkdown]:[scrollbar-gutter:stable] [&>.milkdown]:bg-[var(--vds-bg-gray-default)] [&>.milkdown::-webkit-scrollbar]:w-[var(--vds-space-3)] [&>.milkdown::-webkit-scrollbar]:h-[var(--vds-space-3)] [&>.milkdown::-webkit-scrollbar-thumb]:min-h-[var(--vds-space-8)] [&>.milkdown::-webkit-scrollbar-thumb]:border-[length:var(--vds-border-width-3)] [&>.milkdown::-webkit-scrollbar-thumb]:border-solid [&>.milkdown::-webkit-scrollbar-thumb]:border-transparent [&>.milkdown::-webkit-scrollbar-thumb]:rounded-[var(--vds-radius-4)] [&>.milkdown::-webkit-scrollbar-thumb]:bg-[var(--vds-scrollbar-thumb)] [&>.milkdown::-webkit-scrollbar-thumb]:bg-clip-padding [&_.milkdown-top-bar]:!hidden [&_.milkdown-link-preview]:!hidden [&_.ProseMirror_a]:!text-[var(--vds-link)] [&_.ProseMirror_a:hover]:!text-[var(--vds-link-hover)] [&_.ProseMirror_a:active]:!text-[var(--vds-link-active)] [&_.ProseMirror_a]:cursor-pointer [&_.ProseMirror_a:focus-visible]:outline [&_.ProseMirror_a:focus-visible]:outline-[var(--vds-link)] [&_.ProseMirror_code:not(pre_code)]:!inline [&_.ProseMirror_code:not(pre_code)]:[overflow-wrap:anywhere] [&_.ProseMirror]:select-text ${MARKDOWN_SLASH_MENU_CLASS}`}
         data-shortcut-scope="markdown"
-        data-testid="markdown-visual-editor"
+        data-testid={readOnly ? 'markdown-preview' : 'markdown-visual-editor'}
         onBeforeInputCapture={markUserEdit}
         onCutCapture={markUserEdit}
         onDropCapture={markUserEdit}
@@ -1797,12 +1783,14 @@ function MarkdownVisualEditor({
 }
 
 export function MarkdownDocument({
+  modeControlHost,
   formatOnSave = false,
   sessionId,
   tabId,
   toolbarActions,
   viewKind,
 }: {
+  modeControlHost?: HTMLElement | null
   formatOnSave?: boolean
   sessionId: string
   tabId: string
@@ -1815,11 +1803,19 @@ export function MarkdownDocument({
   const workspace = useWorkspaceController()
   const [editorToolbarHost, setEditorToolbarHost] = useState<HTMLDivElement | null>(null)
   const [editorToolbarActions, setEditorToolbarActions] = useState<ReactNode>(null)
-  const visualDisabled = Boolean(session?.lightweightText)
+  const visualDisabled = Boolean(session?.lightweightText || !session?.capabilities.can_edit)
+  const sourceActive = viewKind === 'source' || Boolean(session?.lightweightText)
+  const [sourceSessionId, setSourceSessionId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (visualDisabled && viewKind === 'edit') workspace.setTabView(tabId, 'preview')
-  }, [tabId, viewKind, visualDisabled, workspace])
+    if (sourceActive) setSourceSessionId(sessionId)
+    else if (sourceSessionId !== sessionId) setSourceSessionId(null)
+  }, [sessionId, sourceActive, sourceSessionId])
+
+  useEffect(() => {
+    if (session?.lightweightText && viewKind !== 'source') workspace.setTabView(tabId, 'source')
+    else if (visualDisabled && viewKind === 'edit') workspace.setTabView(tabId, 'preview')
+  }, [session?.lightweightText, tabId, viewKind, visualDisabled, workspace])
 
   if (!session || session.loadState === 'loading') {
     return <div className="vds-viewer-empty">{t('markdown.opening')}</div>
@@ -1831,6 +1827,7 @@ export function MarkdownDocument({
   return (
     <section className="vds-markdown-workbench grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--vds-bg-gray-default)]">
       <MarkdownHeader
+        modeControlHost={modeControlHost}
         sessionId={sessionId}
         tabId={tabId}
         viewKind={viewKind}
@@ -1839,24 +1836,30 @@ export function MarkdownDocument({
         toolbarActions={toolbarActions}
         visualDisabled={visualDisabled}
       />
-      {viewKind === 'preview' || visualDisabled ? (
+      {(sourceActive || sourceSessionId === sessionId) && (
         <div
+          key="source"
           className="vds-markdown-source min-h-0 min-w-0 overflow-hidden"
           data-testid="markdown-source-editor"
+          hidden={!sourceActive}
         >
           <MonacoDocument
             key={`${tabId}:${editorRuntimeRevision}`}
+            active={sourceActive}
             formatOnSave={formatOnSave}
             sessionId={sessionId}
             tabId={tabId}
-            viewKind={viewKind}
+            viewKind="source"
             toolbarHost={editorToolbarHost}
           />
         </div>
-      ) : (
+      )}
+      {!sourceActive && (
         <div className="vds-markdown-visual">
           <MarkdownVisualEditor
+            key={viewKind}
             formatOnSave={formatOnSave}
+            readOnly={viewKind === 'preview' || !session.capabilities.can_edit}
             sessionId={sessionId}
             tabId={tabId}
             onToolbarChange={setEditorToolbarActions}

@@ -10,7 +10,9 @@ metadata:
 
 # Fast Search
 
-Return 5–20 relevant papers in `metadata.json`. This skill exposes exactly one
+Return up to 20 relevant papers in `metadata.json`, aiming for a useful,
+well-covered result within the search budget. A short or empty result under a
+hard publication window is a last-resort outcome, not the target. This skill exposes exactly one
 workflow: Veryfast. It does not perform iterative gap filling or generate a
 narrative report.
 
@@ -23,9 +25,10 @@ field and its text. Do not copy an abstract into another field.
 
 1. `SKILL_DIR` is the absolute directory containing this file. Use absolute
    paths for bundled tools.
-2. `WORK_DIR` is the user's current working directory. Write only under
+2. `WORK_DIR` is the user's current working directory. Write results only under
    `WORK_DIR/fast-search-results/<short-topic>/`; append a timestamp rather
-   than overwrite existing results.
+   than overwrite existing results. The one transient structured plan may be a
+   hidden sibling under `WORK_DIR`; the runner consumes it after success.
 3. PaperHub authentication comes only from `SCHOLARSEED_API_KEY`; configuration is
    loaded by `tools/localconf.py`.
 4. Read `SETUP.md` only when configuration is missing or a request fails. If a
@@ -109,64 +112,165 @@ Web Search may satisfy the same logical batch as a compatibility path:
 2. the central comparison/relationship plus `original study paper`;
 3. the rarest mechanism, population, dataset, or method clues plus `paper title`.
 
-Do not repeat successful queries through another provider, open result pages,
-or make a second logical web batch. Extract clean scholarly
-titles from the batch, then produce 3–6 short English relevance concepts and at
-most 12 PaperHub queries:
+For a single-paper lookup, use this same batch to resolve the target instead:
+the clean article URL, its DOI/identifier when available, and its canonical
+title or article identifier. When the input is an explicit full paper title,
+preserve that title in `best_target.title` and the exact-title query, with
+`required: true`; use the given title verbatim in the existing web batch too.
+Do not substitute a more familiar, similarly titled preprint or journal version.
+For URL/DOI inputs, the linked identifier determines the requested version.
+A publisher article URL (not just arXiv) names
+the paper itself unless the user asks for related work. Remove tracking
+parameters such as `utm_*` and fragments, but keep article IDs in query parameters.
+DOIs embedded in a URL can be reused; Nature `/articles/<id>` maps to
+`10.1038/<id>`. For opaque publisher URLs, resolve the title from web evidence
+matching that URL; never guess a DOI from an arbitrary article number.
+Do not add web batches or agent-driven page fetches. The runner can verify the
+input URL/DOI directly from scholarly metadata in parallel with PaperHub. If
+the batch cannot resolve its title, keep `best_target.required: true`, omit its
+title, and use the known identifier as a bounded keyword query; never invent a
+title or stop solely because web search/PaperHub did not resolve the link.
+If the user instead asks for related work around a linked paper, explicitly set
+`best_target.required: false`; do not treat the seed as a mandatory answer.
 
-- for a direct paper lookup (an arXiv URL/ID, DOI, or clearly named full title),
+Respect hard publication periods in the existing searches. A cutoff does not
+mean "newest papers only": core and founding papers inside the period remain
+useful. A soft preference for recency is not a hard cutoff.
+
+Do not repeat successful queries through another provider, open result pages,
+or make a second logical web batch. Extract clean scholarly titles from the
+batch, then produce 3–6 short English relevance concepts and an ordered
+PaperHub plan. Order both keyword and title queries from highest to lowest
+expected value; the runner's safety guard keeps the first four keywords and
+first eight titles if the plan accidentally exceeds the Veryfast budget:
+
+- for a direct paper lookup (a publisher/arXiv article URL, ID, DOI, or full title),
   first identify the single canonical title from a web candidate that matches
   that identifier or title; do not substitute generic identifier/topic queries
   for this exact-title probe;
 - 3–4 complementary keyword queries for the central relationship and compared
-  method/evidence families;
+  method/evidence families. For an explicitly named method/application request,
+  use Boolean clauses to keep that relationship together; PaperHub OR-matches
+  an unqualified list of words. Write Boolean operators as uppercase AND/OR/NOT;
+  quote multiword method/task phrases and use OR for alternative names, not AND;
 - 6–8 exact or near-exact title queries for the most likely core entities and
-  founding papers;
+  founding papers within any hard date window; do not invent titles to fill
+  the budget;
 - prioritize queries that jointly explain multiple rare clues, but retain bare
   canonical-title queries for central entities;
-- for “before YEAR” or “before January YEAR”, set `--year-end YEAR-1`.
+- interpret publication requirements from the full request, including negation,
+  exceptions, and whether recency is mandatory or merely preferred. Translate
+  hard bounds into inclusive top-level `date_start` / `date_end` (`YYYY-MM-DD`),
+  or `year_start` / `year_end` for whole years. Omit bounds for soft preferences
+  or unconstrained requests. The runner validates and executes these fields;
+  it does not interpret natural-language dates or repair omitted constraints.
+  Before submitting the plan, check that its bounds reflect the user's intent.
 
-Do not open web pages, use a pool-inspection tool, make another logical web batch, or
-run a model-based selection pass. Do not create a result directory or plan file
-yourself.
+Topic and method relevance remain part of semantic query planning and the
+existing ranking, not a literal-name eligibility gate. Use the bounded queries
+to cover complementary formulations of the same request, including genuine
+method aliases where useful, without relaxing the user's hard requirements.
+
+Do not open web pages, use a pool-inspection tool, make another logical web
+batch, or run a model-based selection pass.
+
+Use a file-editing tool, not a shell command, to write one JSON plan at
+`WORK_DIR/.fast-search-plan-<short-topic>.json`. Do not create `RESULT_DIR`
+yourself. Put the full user query and concepts in the plan so no user-controlled
+text needs shell quoting:
+
+```json
+{
+  "query": "FULL_USER_QUERY",
+  "inspect_concepts": ["entity", "mechanism", "method", "dataset"],
+  "year_end": 2025,
+  "queries": [
+    {"mode": "keyword", "query": "highest-priority relation"},
+    {"mode": "title", "query": "Highest-Priority Paper Title"}
+  ]
+}
+```
+
+Preserve up to four important paper-page/DOI URLs from this same web batch in
+`web_papers: [{"title":"CANONICAL_TITLE","url":"EVIDENCE_URL"}]`, prioritizing
+the requested paper. Include each title as a planned title query. Use direct
+scholarly sources, not news, snippets or guessed URLs; provide no abstract or
+claimed bibliographic fields. The runner verifies these records independently
+and adds only papers missing from PaperHub to the existing ranking. This is a
+bounded metadata lookup, not another model/web-search round. Do not gather extra
+URLs or pad this list when the batch lacks useful evidence.
+
+For a direct paper lookup with a resolved title, also set
+`"best_target":{"title":"CANONICAL_TITLE","required":true}` and include that
+canonical title as a title query. The runner copies the bounded plan into the
+result and consumes the external plan only after successful publication; an
+invalid or failed run leaves the source plan available for diagnosis without
+creating partial paper results.
 
 ### 2. Run once
 
-Make exactly one shell call. Repeat `--keyword` and `--title` flags for the
-planned queries:
+After writing the structured plan, make exactly one shell call containing only
+stable file paths:
 
 ```bash
 scholarseed-skill-python "SKILL_DIR/tools/quick_search.py" \
-  --query "FULL_USER_QUERY" \
-  --concepts "entity,mechanism,method,dataset" \
-  --keyword "central relation query" \
-  --keyword "comparison family query" \
-  --title "Likely Foundational Paper Title" \
-  --title "Canonical Method or Dataset" \
-  --year-end 2025 \
+  --plan "PLAN_FILE" \
+  --consume-plan \
   --output-dir "RESULT_DIR"
 ```
 
-For a direct paper lookup, the same one runner call must additionally include
-`--best-title "CANONICAL_TITLE" --require-best-target`, and the canonical title
-must also appear as a `--title` query (the runner inserts it first if omitted).
-The runner refuses an arXiv/DOI lookup without a resolved best title. It also
-fails closed instead of returning a plausible but wrong list when that target
-is absent from the PaperHub pool or does not enter Tier 1. Do not run the
-PaperHub call until the canonical title is known.
+For a direct paper lookup, supply the resolved `best_target`. The runner reserves
+the verified target as Tier 1 top-1, even if the topic ranker would place it lower.
+The eligible pool includes independently verified external metadata when
+PaperHub did not retrieve the paper. A single verified paper is a valid direct
+lookup result; do not pad it with unrelated papers. It fails closed only when
+neither path verifies an eligible target. Conflicting identifiers are rejected;
+if identifiers are missing, an exact match of the web-verified title is allowed.
+For an unresolved URL/DOI, the runner may obtain the canonical metadata itself.
+External records use explicit non-PaperHub IDs and retain real DOI/URL and
+source evidence. Never mix a preprint's PaperHub ID/date with a journal version's
+DOI or promise that retrieving metadata also downloads the full text.
 
-Use normal shell argument quoting; never interpolate credentials. The runner
-creates the directory and trace plan, initializes internal state, executes the
-single serial PaperHub graph, automatically tracks references from two ranked
-anchors, and selects papers using relevance, exact-title match, citation
-provenance, and diversity. Within Tier 1 it first promotes a paper whose arXiv
-ID, DOI, or full title is explicitly present in the user query, then an
-agent-declared `--best-title`, and otherwise the highest relevance score. The
-declared target never promotes a Tier 2/3 paper or changes tier membership.
-Remaining Tier 1 members retain their existing order. It writes compact
-`metadata.json` without abstracts and does not generate a report. On success,
-return the metadata path and paper count without rereading the file or running
-another command.
+Never interpolate credentials. The runner validates and bounds the complete
+plan before creating state, runs in a private staging directory, and publishes
+paper results only after success. It executes the single serial PaperHub graph,
+automatically tracks references from two ranked anchors, and selects papers
+using relevance, exact-title match, citation provenance, and diversity. Within
+Tier 1 it first promotes a paper whose arXiv ID, DOI, or full title is explicitly
+present in the user query, then the agent-declared best target, and otherwise
+the highest relevance score. For topic searches, the optional declared best
+target never changes tier membership. Only a required single-paper target has
+the reservation described above. Remaining candidates retain their
+existing order. It writes compact `metadata.json` without abstracts and does
+not generate a report. The runner adds server-side date bounds and checks all
+keyword/title/citation dates before pooling and anchor selection, without extra
+requests. Do not append date clauses yourself. Insufficient date evidence is
+excluded; counts are reported in `search_summary.retrieval_date_filter` and
+`date_exclusions`. Do not relax dates or pad a shortfall with older papers.
+A valid empty result still produces `metadata.json`. If no verified matches were
+found, state that this search found none under the stated dates, not that no such
+papers exist, and suggest a user-approved reformulation. Do not relax the dates
+or silently start more rounds. Report a shortfall as such, not as full coverage.
+Report completion only after an actual successful runner tool result supplies
+`result.output` and `result.selected_count`; a plan, intended command, or
+simulated transcript is not execution evidence. If execution is unavailable or
+fails, report that failure instead of inventing a file path or count. On success,
+return the runner's path and count without rereading the file or running another
+command.
+
+### Failure contract
+
+Do not equate missing `metadata.json` with a successful zero-result search.
+If neither a usable locator nor a verified title can be obtained, use the file-editing
+tool to write `RESULT_DIR/search_failure.json` containing
+`{"schema":"fast_search.failure.v1","error":"fast_search_target_unresolved"}`
+and report the problem without inventing a title or running PaperHub.
+When the runner cannot find a verified target, it exits nonzero and writes the
+same failure file with `error: fast_search_target_not_found`; leave it intact.
+Explain that this search could not retrieve/verify the requested paper, not
+that the paper does not exist or is definitely not indexed. Suggest a full
+title/DOI or trying later. Other execution failures must also be reported as
+failures. Never fabricate metadata or repeat the bounded graph to hide failure.
 
 The low-latency target assumes the persistent Worker and its bundled default
 model configuration. A direct invocation inside an already-running interactive

@@ -81,6 +81,63 @@ class GbtTest(unittest.TestCase):
                 synchronize(workspace, source)
             self.assertEqual(source.read_text(), body)
 
+    def test_template_citation_switch_preserves_natbib_loading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            configure(workspace, task({'publication': {'citation_style': STYLE}}))
+            source = workspace / 'full_draft_v2.tex'
+            source.write_text(
+                r'\documentclass{article}'
+                r'\PassOptionsToPackage{numbers,sort}{natbib}'
+                r'\usepackage[preprint]{neurips_2026}'
+                r'\bibliographystyle{unsrtnat_scholarseed}'
+                r'\begin{document}Evidence\end{document}'
+            )
+            (workspace / 'publication.json').write_text(json.dumps({'citation_style': 'numeric'}))
+
+            synchronize(workspace, source)
+
+            updated = source.read_text()
+            self.assertIn(r'\PassOptionsToPackage{' + CITATION_STYLES[STYLE]['natbib_options'] +
+                          r'}{natbib}', updated)
+            self.assertIn(r'\usepackage[preprint]{neurips_2026}', updated)
+            self.assertNotIn(r'\usepackage{natbib}', updated)
+            self.assertIn(r'\bibliographystyle{' + CITATION_STYLES[STYLE]['bst'] + '}', updated)
+
+    def test_ambiguous_natbib_loading_rejects_without_mutating_source(self):
+        options = r'\PassOptionsToPackage{numbers,sort}{natbib}'
+        loader = r'\usepackage[preprint]{neurips_2026}'
+        explicit = r'\usepackage[numbers]{natbib}'
+        cases = {
+            'disabled': options + r'\usepackage[preprint,nonatbib]{neurips_2026}',
+            'unknown': options + r'\usepackage{unknown_template}',
+            'missing_options': loader,
+            'late_options': loader + options,
+            'duplicate_options': options + options + loader,
+            'duplicate_template': options + loader + loader,
+            'duplicate_loaders': options + loader + explicit,
+            'duplicate_explicit': explicit + explicit,
+        }
+        for name, loading in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                workspace = Path(directory)
+                configure(workspace, task({'publication': {'citation_style': STYLE}}))
+                source = workspace / 'full_draft_v2.tex'
+                body = (r'\documentclass{article}' + loading +
+                        r'\bibliographystyle{unsrtnat_scholarseed}' +
+                        r'\begin{document}Evidence\end{document}')
+                source.write_text(body)
+                settings = workspace / 'publication.json'
+                settings.write_text(json.dumps({'citation_style': 'numeric'}))
+                previous_settings = settings.read_bytes()
+
+                with self.assertRaisesRegex(ValueError, 'one natbib'):
+                    synchronize(workspace, source)
+
+                self.assertEqual(source.read_text(), body)
+                self.assertEqual(settings.read_bytes(), previous_settings)
+                self.assertFalse((workspace / (CITATION_STYLES[STYLE]['bst'] + '.bst')).exists())
+
     def test_versioned_style_is_vendored(self):
         self.assertIn(STYLE, CITATION_STYLES)
         self.assertTrue(style_asset(STYLE).is_file())

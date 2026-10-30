@@ -29,6 +29,7 @@ from service.literature.schema import (
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.pdf import LiteraturePdf
 from service.literature.service.records import AttachmentRecords
+from service.platform.activity import Activities
 from service.platform.content import RootKind
 from service.platform.records import EMPTY_RECORDS, RecordOwner, RecordTarget
 from service.platform.resources import VersionOrigin, VersionPolicyMode
@@ -72,13 +73,15 @@ def run() -> None:
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
         project = registry.create("Import")
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         settings = Settings()
         formats = WorkbenchFormatPolicy()
         versions = ResourceVersionService(
             content, ResourceRetentionService(content, settings), formats, PdfRecordStore(content)
         )
-        supervisor = ResourceVersionSupervisor(content, versions, formats, settings)
+        supervisor = ResourceVersionSupervisor(
+            content, versions, formats, settings, activities=Activities()
+        )
         content.bind_resource_changes(supervisor)
         importer = ResourceImportService(content, versions, supervisor)
         resource_root = content.root(project.id, RootKind.RESOURCES).path

@@ -19,8 +19,10 @@ from service.content.domain.model import ContentError
 from service.content.service.port import REVISION_PREFIX, ContentService
 from service.content.service.spreadsheet import (
     MAXIMUM_SPREADSHEET_RANGE_CHARS,
+    SpreadsheetProcessorKind,
     SpreadsheetRangeError,
     SpreadsheetRangeTooLarge,
+    processor_for,
     read_spreadsheet_range,
 )
 from service.platform.context import (
@@ -85,7 +87,6 @@ WRITER_PROCESSORS = {
     doc_selection.SUFFIX: doc_selection,
     docx_selection.SUFFIX: docx_selection,
 }
-MAXIMUM_SELECTED_CELLS = 150
 MAXIMUM_MARKDOWN_SEGMENTS = 64
 MAXIMUM_ACTION_CONTEXT_CHARS = MAXIMUM_SPREADSHEET_RANGE_CHARS
 CONTEXT_SURROUNDING_ROWS = 20
@@ -256,13 +257,18 @@ def _calc_reference_text(source_id: str, locator: Mapping[str, Any]) -> str | No
         raise SelectionLocatorError("calc_reference_kind")
     sheet_name = _string(locator, "sheet")
     selected_range = _string(locator, "range")
-    minimum_column, minimum_row, maximum_column, maximum_row = range_boundaries(selected_range)
-    minimum_column = minimum_column or 1
-    minimum_row = minimum_row or 1
-    maximum_column = maximum_column or MAX_COLUMN
-    maximum_row = maximum_row or MAX_ROW
-    cell_count = (maximum_column - minimum_column + 1) * (maximum_row - minimum_row + 1)
-    if cell_count <= MAXIMUM_SELECTED_CELLS:
+    try:
+        minimum_column, minimum_row, maximum_column, maximum_row = range_boundaries(selected_range)
+    except ValueError as exc:
+        raise SelectionLocatorError("calc_reference_range") from exc
+    minimum_column = 1 if minimum_column is None else minimum_column
+    minimum_row = 1 if minimum_row is None else minimum_row
+    maximum_column = MAX_COLUMN if maximum_column is None else maximum_column
+    maximum_row = MAX_ROW if maximum_row is None else maximum_row
+    if not (
+        1 <= minimum_column <= maximum_column <= MAX_COLUMN
+        and 1 <= minimum_row <= maximum_row <= MAX_ROW
+    ):
         raise SelectionLocatorError("calc_reference_range")
     filename = PurePosixPath(source_id).name
     if not filename:
@@ -446,8 +452,23 @@ class SelectionContextProvider:
         if locator_kind != reference.locator_kind or locator_kind not in SUPPORTED_LOCATORS:
             raise SelectionEvidenceError("selection_unsupported")
         if draft is not None:
-            if locator_kind not in DRAFT_LOCATORS:
+            processor = processor_for(reference.source_id)
+            csv_draft = (
+                locator_kind == LOCATOR_CALC
+                and processor is not None
+                and processor.kind is SpreadsheetProcessorKind.CSV
+                and capabilities_for(reference.source_id, payload).can_edit
+            )
+            if locator_kind not in DRAFT_LOCATORS and not csv_draft:
                 raise SelectionEvidenceError("selection_unsupported")
+            if csv_draft:
+                try:
+                    _string(reference.locator, "sheet")
+                    left, top, right, bottom = _calc_boundaries(_string(reference.locator, "range"))
+                    if not (1 <= left <= right <= MAX_COLUMN and 1 <= top <= bottom <= MAX_ROW):
+                        raise SelectionLocatorError("calc_range")
+                except (SelectionLocatorError, ValueError) as exc:
+                    raise SelectionEvidenceError("selection_unsupported") from exc
             if (
                 draft.change_version < 1
                 or draft.selected_text_hash != reference.selected_text_hash

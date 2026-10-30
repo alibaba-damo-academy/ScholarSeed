@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "name": "find-skill",
+  "source": {
+    "kind": "directory"
+  },
+  "dependencies": {},
+  "version": "2026.10.28",
+  "source_document_sha256": "4717599487e1d91d4b5875b6a115ec712c2c55849fe92f3f7a91274a3d3e8f2b",
+  "files": [
+    {
+      "path": "NOTICE.md",
+      "size": 812,
+      "sha256": "ca85b5018b070743d0af3d67919d58dd10c8b524e95ec60fa4adafe6151f6a3c",
+      "mode": 420
+    },
+    {
+      "path": "PACKAGE-MANIFEST.sha256",
+      "size": 390,
+      "sha256": "9aaf55b4e58c97a6103c861b707384526239959cbef07d180fdc49e1d4be61c0",
+      "mode": 420
+    },
+    {
+      "path": "SKILL.md",
+      "size": 6802,
+      "sha256": "4717599487e1d91d4b5875b6a115ec712c2c55849fe92f3f7a91274a3d3e8f2b",
+      "mode": 420
+    },
+    {
+      "path": "VERSION",
+      "size": 11,
+      "sha256": "9cf54d316aa7c479f9eab896e2ee461f632e490bf1901cbe69f91dc13348accb",
+      "mode": 420
+    },
+    {
+      "path": "agents/openai.yaml",
+      "size": 321,
+      "sha256": "2b41b87b364747a79765a21803d83943c66b5870509045ba0e28c31e486b893d",
+      "mode": 420
+    },
+    {
+      "path": "registry.json",
+      "size": 301,
+      "sha256": "c485d42badcd9a7fc64b68f80c3602bc4e8531fb5422eeefb5d4095ce78bd3ba",
+      "mode": 420
+    }
+  ]
+}

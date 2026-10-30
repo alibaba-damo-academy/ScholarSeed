@@ -1,5 +1,12 @@
 import type { UpdateInstallFallback, UpdateSnapshot } from '../updates'
 import type { TFunction } from 'i18next'
+import { BROWSER_FEATURE_POLICY_ERROR } from './product.ts'
+
+const BROWSER_POLICY_FAILURE_KEYS = {
+  [BROWSER_FEATURE_POLICY_ERROR.missing]: 'backendFailure.browserPolicyMissing',
+  [BROWSER_FEATURE_POLICY_ERROR.invalid]: 'backendFailure.browserPolicyInvalid',
+  [BROWSER_FEATURE_POLICY_ERROR.mismatch]: 'backendFailure.browserPolicyMismatch'
+} as const
 
 /** Product-owned startup reasons; raw subprocess/runtime diagnostics remain separate. */
 export type BackendFailure =
@@ -24,7 +31,8 @@ export function backendFailureMessage(
       message = t('backendFailure.pythonInvalid')
       break
     case 'startupFailed':
-      message = t('backendFailure.startupFailed')
+      const policyCode = Object.values(BROWSER_FEATURE_POLICY_ERROR).find(code => failure.detail.includes(code))
+      message = policyCode ? t(BROWSER_POLICY_FAILURE_KEYS[policyCode]) : t('backendFailure.startupFailed')
       break
     case 'exited':
       message = t('backendFailure.exited', { code: String(failure.code), signal: String(failure.signal) })

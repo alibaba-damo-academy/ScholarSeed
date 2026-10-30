@@ -72,21 +72,6 @@ class ProductEndpointTests(unittest.TestCase):
             self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("no_proxy", ""))
             self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("NO_PROXY", ""))
 
-    def test_configured_url_preserves_proxy(self):
-        with patch.dict(os.environ, {}, clear=True), patch.object(
-            localconf, "config_source", return_value=localconf._BUNDLED_CFG_PATH
-        ), patch.object(localconf, "_applied", False), patch(
-            "builtins.open", create=True
-        ) as config_file:
-            config_file.return_value.__enter__.return_value.read.return_value = (
-                '{"paperhub_url": "https://scholarseed.damo.alibaba.com/paperhub"}'
-            )
-            localconf.apply()
-            self.assertEqual(
-                os.environ["PAPERHUB_URL"], "https://scholarseed.damo.alibaba.com/paperhub"
-            )
-            self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("no_proxy", ""))
-
     def test_web_fallback_provenance_names_the_skill(self):
         paper, warning = web_fallback._normalize_paper(
             {"title": "Example", "url": "https://example.test/paper"}

@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, Mapping
 
 from service.chat.constants import (
+    CANCELLED_MESSAGE_HISTORY_PREFIX,
     EVENT_BACKLOG_MAX,
     PRODUCT_EVENT_ANSWER_SOURCES,
     PRODUCT_EVENT_ARTIFACT_FAILED,
@@ -57,6 +58,7 @@ from service.chat.persistence.events import (
     MAXIMUM_REPLAY_LIMIT,
     ProductEventRecord,
     ProductEventStore,
+    cancelled_message_text,
 )
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.live import LiveSession
@@ -64,12 +66,13 @@ from service.platform.context import ASSISTANT_CONTEXT_MARKER
 
 SSE_DATA_PREFIX = "data: "
 SSE_FRAME_SUFFIX = "\n\n"
-SSE_HEARTBEAT_FRAME = ": keepalive\n\n"
+SSE_HEARTBEAT_FRAME = "event: heartbeat\ndata: {}\n\n"
 HISTORY_ACTIVITY_EVENT_KINDS = frozenset(
     {
         PRODUCT_EVENT_ANSWER_SOURCES,
         PRODUCT_EVENT_ARTIFACT_FAILED,
         PRODUCT_EVENT_TURN_FAILED,
+        PRODUCT_EVENT_TURN_INTERRUPTED,
         PRODUCT_EVENT_MESSAGE_DELTA,
         PRODUCT_EVENT_REASONING_DELTA,
         PRODUCT_EVENT_REASONING_COMPLETED,
@@ -279,20 +282,30 @@ class EventService:
                 ),
                 None,
             )
-            if target is None and not cancelled:
+            if target is None:
+                native_text = (
+                    CANCELLED_MESSAGE_HISTORY_PREFIX
+                    + json.dumps(cancelled_message_text(record.payload), ensure_ascii=False)
+                    if cancelled
+                    else text
+                )
                 target = next(
                     (
                         row
                         for row in decorated
                         if id(row) not in claimed
                         and self._is_user_turn(row)
-                        and str(row.get("text") or "") == text
+                        and str(row.get("text") or "") == native_text
                     ),
                     None,
                 )
             if target is not None:
                 target["text"] = text
                 target["refs"] = references
+                if cancelled:
+                    target["status"] = USER_MESSAGE_BINDING_CANCELLED
+                    target["turn_id"] = turn_id
+                    target["item_id"] = str(record.vendor_item_id or turn_id)
                 if record.payload.get("origin"):
                     target["origin"] = str(record.payload["origin"])
                 if record.payload.get("assistant_snapshot_id"):
@@ -407,7 +420,8 @@ class EventService:
         queue: asyncio.Queue[dict[str, Any]] | None = None
         if live is not None:
             queue = asyncio.Queue(maxsize=EVENT_BACKLOG_MAX)
-            live.subscribers.append(queue)
+            async with live.lifecycle_lock:
+                live.subscribers.append(queue)
         self._logger.info(
             SSE_CONNECTED_EVENT,
             extra={

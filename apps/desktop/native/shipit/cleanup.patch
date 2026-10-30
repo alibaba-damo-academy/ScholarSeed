@@ -1,0 +1,229 @@
+--- a/Squirrel/SQRLInstaller.m
++++ b/Squirrel/SQRLInstaller.m
+@@ -8,6 +8,7 @@
+ 
+ #import "SQRLInstaller.h"
+ #import "timing.h"
++#import "cleanup.h"
+ 
+ #import <libkern/OSAtomic.h>
+ #import <mach-o/dyld.h>
+@@ -154,7 +155,11 @@
+ 		@strongify(self);
+ 		NSParameterAssert(request != nil);
+ 
+-		// Request can be changed between launches, the installer may have
++		if (self.ownedBundle && SSCleanupReconcilesRollback(self.ownedBundle.temporaryURL, self.ownedBundle.originalURL) && !SSCleanupClearRollback(self.applicationIdentifier, SQRLInstallerOwnedBundleKey)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:nil]];
++        if (self.ownedBundle && SSCleanupKnowsRollback(self.ownedBundle.temporaryURL, self.ownedBundle.originalURL)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
++        if (SSCleanupCommittedRequest(request.updateBundleURL, request.targetBundleURL)) return [RACSignal return:request];
++
++        // Request can be changed between launches, the installer may have
+ 		// already have an owned bundle, for a previous targetURL.
+ 		//
+ 		// If that's the case, we need to abort the previous owned bundle, and
+@@ -222,6 +227,12 @@
+ 
+ 	CFPreferencesSetValue((__bridge CFStringRef)SQRLInstallerOwnedBundleKey, (__bridge CFPropertyListRef)archiveData, (__bridge CFStringRef)self.applicationIdentifier, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+ 	CFPreferencesSynchronize((__bridge CFStringRef)self.applicationIdentifier, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
++}
++
++- (BOOL)reconcileDeferredCleanup {
++    SQRLInstallerOwnedBundle *owned = self.ownedBundle;
++    if (owned == nil || !SSCleanupKnowsRollback(owned.temporaryURL, owned.originalURL)) return YES;
++    return SSCleanupReconcilesRollback(owned.temporaryURL, owned.originalURL) && SSCleanupClearRollback(self.applicationIdentifier, SQRLInstallerOwnedBundleKey);
+ }
+ 
+ #pragma mark Properties
+@@ -353,6 +364,7 @@
+ 		}
+ 	}
+ 
++	NSURL *originalTarget = request.targetBundleURL;
+ 	return [[[[self
+ 		prepareAndValidateUpdateBundleURLForRequest:request]
+ 		flattenMap:^(NSURL *updateBundleURL) {
+@@ -378,24 +390,13 @@
+ 					return [[self acquireTargetBundleURLForRequest:request] concat:[RACSignal return:request]];
+ 				}]
+ 				flattenMap:^(SQRLShipItRequest *request) {
+-					return [[[[[[self
+-						installItemToURL:request.targetBundleURL fromURL:updateBundleURL]
+-						concat:[RACSignal return:request.updateBundleURL]]
+-						concat:[RACSignal return:updateBundleURL]]
+-						concat:[RACSignal defer:^{
+-							return [RACSignal return:self.ownedBundle.temporaryURL];
+-						}]]
+-						flattenMap:^(NSURL *location) {
+-							NSString *stage = [location isEqual:request.updateBundleURL] ? @"cleanup-source" :
+-								([location isEqual:updateBundleURL] ? @"cleanup-stage" : @"cleanup-previous");
+-							return [[SSShipItTiming(stage, [self
+-								deleteOwnedBundleAtURL:location])
+-								doError:^(NSError *error) {
+-									NSLog(@"Couldn't remove owned bundle at location %@, error %@", location, error.sqrl_verboseDescription);
+-								}]
+-								catchTo:[RACSignal empty]];
+-						}]
+-						concat:[RACSignal return:request]];
++                    return [[[self installItemToURL:request.targetBundleURL fromURL:updateBundleURL]
++                        then:^{
++                            NSError *error;
++                            if (!SSCleanupCommit(request.updateBundleURL, updateBundleURL, self.ownedBundle.temporaryURL, request.targetBundleURL, originalTarget, &error)) return [RACSignal error:error];
++                            if (!SSCleanupClearRollback(self.applicationIdentifier, SQRLInstallerOwnedBundleKey)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:nil]];
++                            return [RACSignal return:request];
++                        }] setNameWithFormat:@"committed installation awaiting deferred cleanup"];
+ 				}]
+ 				doCompleted:^{
+ 					self.ownedBundle = nil;
+@@ -413,6 +414,8 @@
+ 	// original location.
+ 
+ 	SQRLInstallerOwnedBundle *ownedBundle = self.ownedBundle;
++    if (ownedBundle && SSCleanupReconcilesRollback(ownedBundle.temporaryURL, ownedBundle.originalURL)) { if (!SSCleanupClearRollback(self.applicationIdentifier, SQRLInstallerOwnedBundleKey)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:nil]]; return [RACSignal empty]; }
++    if (ownedBundle && SSCleanupKnowsRollback(ownedBundle.temporaryURL, ownedBundle.originalURL)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
+ 	if (ownedBundle == nil) return [RACSignal empty];
+ 
+ 	return [[[[self
+--- a/Squirrel/ShipIt-main.m
++++ b/Squirrel/ShipIt-main.m
+@@ -21,9 +21,14 @@
+ #import "NSError+SQRLVerbosityExtensions.h"
+ #import "RACSignal+SQRLTransactionExtensions.h"
+ #import "SQRLInstaller.h"
++#import "cleanup.h"
+ #import "SQRLInstaller+Private.h"
+ #import "SQRLTerminationListener.h"
+ #import "SQRLShipItRequest.h"
++
++@interface SQRLInstaller (SSDeferredCleanup)
++- (BOOL)reconcileDeferredCleanup;
++@end
+ 
+ extern char **environ;
+ 
+@@ -101,20 +106,29 @@
+ }
+ 
+ static void installRequest(RACSignal *readRequestSignal, NSString *applicationIdentifier) {
++    __block NSURL *cleanupTarget = nil;
++    __block BOOL launchFailed = NO;
+ 	[[[[[readRequestSignal
+ 		flattenMap:^(SQRLShipItRequest *request) {
+-			return waitForTerminationIfNecessary(request);
++			if (SSCleanupCommittedRequest(request.updateBundleURL, request.targetBundleURL)) return [RACSignal empty];
++            if (SSCleanupKnownRequest(request.updateBundleURL)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
++            return waitForTerminationIfNecessary(request);
+ 		}]
+ 		ignoreValues]
+ 		concat:readRequestSignal]
+ 		flattenMap:^(SQRLShipItRequest *request) {
+-			SQRLInstaller *installer = [[SQRLInstaller alloc] initWithApplicationIdentifier:applicationIdentifier];
++			NSURL *recovered = SSCleanupRecoveredTarget(request.updateBundleURL, request.targetBundleURL);
++            if (recovered) request = [[SQRLShipItRequest alloc] initWithUpdateBundleURL:request.updateBundleURL targetBundleURL:recovered bundleIdentifier:request.bundleIdentifier launchAfterInstallation:request.launchAfterInstallation useUpdateBundleName:request.useUpdateBundleName];
++            cleanupTarget = request.targetBundleURL;
++            SQRLInstaller *installer = [[SQRLInstaller alloc] initWithApplicationIdentifier:applicationIdentifier];
+ 
+ 			NSUInteger attempt = installationAttempts(applicationIdentifier) + 1;
+ 			setInstallationAttempts(applicationIdentifier, attempt);
+ 
+ 			RACSignal *action;
+-			if (attempt > SQRLShipItMaximumInstallationAttempts) {
++			if (SSCleanupCommittedRequest(request.updateBundleURL, request.targetBundleURL)) {
++                action = [installer.installUpdateCommand execute:request];
++            } else if (attempt > SQRLShipItMaximumInstallationAttempts) {
+ 				action = [[[[installer.abortInstallationCommand
+ 					execute:request]
+ 					initially:^{
+@@ -156,7 +170,10 @@
+ 				action = [[action
+ 					deliverOn:RACScheduler.mainThreadScheduler]
+ 					doNext:^(SQRLShipItRequest *finalRequest) {
+-						NSLog(@"On main thread and launching: %@", finalRequest.targetBundleURL);
++						cleanupTarget = finalRequest.targetBundleURL;
++                        if (!SSCleanupLaunchNeeded(finalRequest.updateBundleURL, finalRequest.targetBundleURL)) return;
++                        launchFailed = YES;
++                        NSLog(@"On main thread and launching: %@", finalRequest.targetBundleURL);
+ 						NSURL *bundleURL = finalRequest.targetBundleURL;
+ 						if (bundleURL == nil) {
+ 							NSLog(@"Missing target bundle URL, cannot launch application");
+@@ -174,7 +191,8 @@
+ 						if (@available(macOS 11.0, *)) {
+ 							NSLog(@"Attempting to launch app on 11.0 or higher");
+ 
+-							NSString *exe = NSProcessInfo.processInfo.arguments[0];
++							static NSString * const helperRelativePath = @"Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
++                            NSString *exe = [bundleURL URLByAppendingPathComponent:helperRelativePath].path;
+ 							NSLog(@"Launching new ShipIt at %@ with instructions to launch %@", exe, bundleURL);
+ 
+ 							posix_spawnattr_t attr;
+@@ -196,6 +214,7 @@
+ 								do {
+ 									if (waitpid(pid, &status, 0) != -1) {
+ 										NSLog(@"ShipIt status %d", WEXITSTATUS(status));
++                                        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) launchFailed = !SSCleanupMarkLaunched(finalRequest.updateBundleURL, finalRequest.targetBundleURL);
+ 									} else {
+ 										perror("waitpid");
+ 										exit(1);
+@@ -220,6 +239,7 @@
+ #pragma clang diagnostic pop
+ 
+ 							NSLog(@"Application launched at %@", bundleURL);
++                            launchFailed = !SSCleanupMarkLaunched(finalRequest.updateBundleURL, finalRequest.targetBundleURL);
+ 						}
+ 					}];
+ 			}
+@@ -237,7 +257,15 @@
+ 				exit(EXIT_FAILURE);
+ 			}
+ 		} completed:^{
+-			drainMachServicePort(applicationIdentifier.UTF8String);
++            BOOL cleaned = SSCleanupDrain(cleanupTarget);
++            if (launchFailed || (!cleaned && geteuid() == 0)) {
++                // Root's journal cannot be serviced by the user's startup helper.
++                // Retain launchd demand; recovery skips installation and relaunch.
++                static const unsigned int cleanupRetrySeconds = 60;
++                sleep(cleanupRetrySeconds);
++                exit(EXIT_FAILURE);
++            }
++            drainMachServicePort(applicationIdentifier.UTF8String);
+ 			exit(EXIT_SUCCESS);
+ 		}];
+ }
+@@ -263,7 +291,17 @@
+ 		const char *statePath = argv[2];
+ 		NSURL *shipItStateURL = [NSURL fileURLWithPath:@(statePath)];
+ 
+-		if (strcmp(jobLabel, [launchSignal UTF8String]) == 0) {
++		if (strcmp(jobLabel, "___cleanup___") == 0) {
++            if (argc != 4) return EXIT_FAILURE;
++            NSError *cleanupError;
++            if (!SSCleanupOpen(@(argv[2]), &cleanupError)) {
++                NSLog(@"[shipit-cleanup] event=open-failed error=%@", cleanupError);
++                return EXIT_FAILURE;
++            }
++            SQRLInstaller *installer = [[SQRLInstaller alloc] initWithApplicationIdentifier:@(argv[2])];
++            if (![installer reconcileDeferredCleanup]) return EXIT_FAILURE;
++            return SSCleanupDrain([NSURL fileURLWithPath:@(argv[3])]) ? EXIT_SUCCESS : EXIT_FAILURE;
++        } else if (strcmp(jobLabel, [launchSignal UTF8String]) == 0) {
+ 			NSLog(@"Detected this as a launch request");
+ // TODO: https://github.com/electron/electron/issues/43168
+ #pragma clang diagnostic push
+@@ -271,6 +309,7 @@
+ 			NSError *error;
+ 			if (![NSWorkspace.sharedWorkspace launchApplicationAtURL:shipItStateURL options:NSWorkspaceLaunchDefault configuration:@{} error:&error]) {
+ 				NSLog(@"Could not launch application at %@: %@", shipItStateURL, error);
++                exit(EXIT_FAILURE);
+ 			} else {
+ 				NSLog(@"Successfully launched application at %@", shipItStateURL);
+ 			}
+@@ -278,6 +317,11 @@
+ 			exit(EXIT_SUCCESS);
+ 		} else {
+ 			NSLog(@"Detected this as an install request");
++            NSError *cleanupError;
++            if (!SSCleanupOpen(@(jobLabel), &cleanupError)) {
++                NSLog(@"[shipit-cleanup] event=open-failed error=%@", cleanupError);
++                return EXIT_FAILURE;
++            }
+ 			installRequest([SQRLShipItRequest readUsingURL:[RACSignal return:shipItStateURL]], @(jobLabel));
+ 			dispatch_main();
+ 		}

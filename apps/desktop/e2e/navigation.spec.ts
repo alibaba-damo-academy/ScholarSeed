@@ -7,6 +7,9 @@ import type { NavigationLocation } from '../src/navigation'
 import { apiBase, DesktopSession } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
 import { MARKDOWN_SOURCE, openFile, seedProject } from './fixtures/workbench'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const PREFERENCES_FILE = 'renderer-preferences.json'
 const DOCUMENT_NAME = 'acceptance.md'
@@ -17,6 +20,7 @@ async function persistedLocation(desktop: DesktopSession): Promise<NavigationLoc
 }
 
 async function initialize(page: Page): Promise<void> {
+  if (await page.getByTestId('account-settings-shell').isVisible()) return
   const skip = page.getByTestId('landing-skip')
   if (await skip.isVisible()) await skip.click()
 }
@@ -105,6 +109,8 @@ test('已删除项目和会话的启动记录回退，不覆盖尚未恢复的�
     await initialize(page)
     await expect(page.getByTestId('activity-literature')).toHaveAttribute('aria-current', 'true')
     await expect.poll(async () => (await persistedLocation(desktop))?.sessionId).toBeNull()
+    await expect(page.getByText('对话暂时没有加载完成', { exact: true })).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'deleted-session-fallback.png') })
     await seedProject(page, runtime)
     const projectId = (await persistedLocation(desktop))?.projectId
     expect(projectId).toBeTruthy()

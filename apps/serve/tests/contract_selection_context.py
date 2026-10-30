@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
@@ -26,6 +27,7 @@ from service.content.service.context import ContentContextProvider
 from service.content.service.port import ContentService, ProjectRegistry
 from service.literature.schema import FulltextStatus, LiteratureItem, LiteratureView
 from service.literature.service.context import LiteratureContextProvider
+from service.platform.activity import Activities
 from service.platform.context import (
     AssistantContextBudget,
     AssistantContextFailureKind,
@@ -69,7 +71,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         if project is None:
             raise AssertionError("test project was not registered")
         self.project = project
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.provider = ContentContextProvider(self.content)
         self.selection_provider = SelectionContextProvider(self.content)
         self.literature_provider = LiteratureContextProvider(self.content)
@@ -852,7 +854,50 @@ class SelectionContextProviderContract(unittest.TestCase):
                 )
             )
 
-    def test_calc_reference_rejects_small_ranges_and_forged_text(self) -> None:
+    def test_small_xlsx_reference_reads_authoritative_dates_and_decimals(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Evidence"
+        sheet["B2"] = datetime(2026, 10, 14, 9, 30)
+        sheet["C2"] = 0.30000000000000004
+        output = BytesIO()
+        workbook.save(output)
+        (Path(self.project.root) / "sample.xlsx").write_bytes(output.getvalue())
+        descriptor = "sample.xlsx · Evidence!B2:C2"
+        locator = {
+            "kind": "calc",
+            "sheet": "Evidence",
+            "range": "B2:C2",
+            "content_mode": "reference",
+        }
+        ref = self.selection_ref("sample.xlsx", locator, descriptor)
+        reference = SelectionEvidenceReference(
+            project_id=self.project.id,
+            source_id="sample.xlsx",
+            source_revision=ref.source_revision or "",
+            locator_kind="calc",
+            selected_text_hash=_selection_hash(descriptor),
+            locator=locator,
+        )
+
+        evidence = self.selection_provider.resolve_action(reference)
+
+        self.assertEqual(evidence.selected_text, "2026-10-14T09:30:00\t0.3")
+        self.assertEqual(evidence.context_text, evidence.selected_text)
+        self.assertEqual(evidence.evidence_revision, reference.source_revision)
+        self.assertEqual(evidence.reference.locator["range"], "B2:C2")
+        self.assertEqual(evidence.mode.value, "persisted")
+        for forged in (
+            replace(reference, selected_text_hash=_selection_hash("forged cell content")),
+            replace(reference, source_revision="sha256:" + "a" * 64),
+            replace(reference, locator={**locator, "sheet": "Wrong"}),
+            replace(reference, locator={**locator, "range": "A1:C2"}),
+        ):
+            with self.subTest(reference=forged):
+                with self.assertRaisesRegex(SelectionEvidenceError, "selection_stale"):
+                    self.selection_provider.resolve_action(forged)
+
+    def test_calc_reference_rejects_invalid_ranges_and_forged_text(self) -> None:
         class UnreadableContent:
             def read_bytes(self, project_id: str, source_id: str):
                 raise AssertionError(f"content read attempted: {project_id}/{source_id}")
@@ -867,12 +912,16 @@ class SelectionContextProviderContract(unittest.TestCase):
             locator={
                 "kind": "calc",
                 "sheet": "Evidence",
-                "range": "A1:A150",
+                "range": "A1:A151",
                 "content_mode": "reference",
             },
         )
-        with self.assertRaisesRegex(SelectionEvidenceError, "selection_unsupported"):
-            provider.resolve_action(base)
+        for selected_range in ("A2:A1", "B1:A1", "A0:A1", "not-a-range", "XFE1:XFE2"):
+            with self.subTest(selected_range=selected_range):
+                with self.assertRaisesRegex(SelectionEvidenceError, "selection_unsupported"):
+                    provider.resolve_action(
+                        replace(base, locator={**base.locator, "range": selected_range})
+                    )
         with self.assertRaisesRegex(SelectionEvidenceError, "selection_stale"):
             provider.resolve_action(
                 replace(

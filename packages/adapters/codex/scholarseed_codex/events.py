@@ -48,6 +48,7 @@ _DIRECT_EVENT_KINDS = {
     CodexSessionEventKind.TURN_UNKNOWN: RuntimeEventKind.TURN_UNKNOWN,
     CodexSessionEventKind.RUNTIME_STATUS: RuntimeEventKind.RUNTIME_STATUS,
     CodexSessionEventKind.RUNTIME_INCIDENT: RuntimeEventKind.RUNTIME_INCIDENT,
+    CodexSessionEventKind.SKILLS_CHANGED: RuntimeEventKind.SKILLS_CHANGED,
 }
 
 _COALESCIBLE_KINDS = frozenset(
@@ -108,6 +109,8 @@ def _payload(event: CodexSessionEvent) -> dict[str, RuntimeValue]:
 
 
 def _event_kind(event: CodexSessionEvent) -> RuntimeEventKind:
+    if event.kind is CodexSessionEventKind.RUNTIME_WARNING and "rpc_method" not in event.payload:
+        return RuntimeEventKind.RUNTIME_WARNING
     if event.kind is CodexSessionEventKind.SUBAGENT_ACTIVITY:
         return RuntimeEventKind.SUBAGENT_STATUS_CHANGED
     if event.kind == CodexSessionEventKind.ASSISTANT_DELTA:

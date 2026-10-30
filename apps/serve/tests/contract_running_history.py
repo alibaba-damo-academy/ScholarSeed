@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
-from scholarseed_runtime.contract import CommandReceipt, CommandState
+from scholarseed_runtime.contract import CommandReceipt, CommandState, RuntimeEventKind
 from scholarseed_runtime.contract.history import HistoryEntry
+from service.chat.persistence.catalog import QueuedMessageRecord, QueuedMessageState, SubmissionMode
 from service.chat.runtime.live import LiveSession
 from service.chat.service.turns import TurnService
+from service.platform.activity import Activities
 
 PASS = 0
 FAIL = 0
@@ -44,22 +47,30 @@ class _SteeringAdapter:
 
 class _QueueCatalog:
     def __init__(self) -> None:
-        self.rows: dict[str, SimpleNamespace] = {}
+        self.rows: dict[str, QueuedMessageRecord] = {}
+        self.pending_settlement: SimpleNamespace | None = None
+
+    def pending_turn_settlement(self, _session_id: str) -> SimpleNamespace | None:
+        return self.pending_settlement
 
     @staticmethod
     def portable_history(_session_id: str) -> tuple:
         return ()
 
     def add(self, queued_message_id: str, body: dict) -> None:
-        self.rows[queued_message_id] = SimpleNamespace(
+        self.rows[queued_message_id] = QueuedMessageRecord(
             queued_message_id=queued_message_id,
+            session_id="running-history-contract",
             enqueue_seq=len(self.rows) + 1,
             operation_seq=None,
-            state=SimpleNamespace(value="queued"),
+            state=QueuedMessageState.QUEUED,
             body=body,
             safe_error="",
             deadline=None,
             purpose="turn",
+            submission_mode=SubmissionMode.QUEUED,
+            safe_error_details={},
+            native_turn_id="",
             created_at=1.0,
             updated_at=1.0,
         )
@@ -68,9 +79,9 @@ class _QueueCatalog:
         row = self.rows.get(queued_message_id)
         if row is None:
             return None
-        row.operation_seq = 1
-        row.state = SimpleNamespace(value="submitting")
-        return row
+        submitted = replace(row, operation_seq=1, state=QueuedMessageState.SUBMITTING)
+        self.rows[queued_message_id] = submitted
+        return submitted
 
     def remove_queued_message(self, _session_id: str, queued_message_id: str) -> bool:
         return self.rows.pop(queued_message_id, None) is not None
@@ -96,8 +107,10 @@ def live_with_history(entries: tuple[HistoryEntry, ...] = ()) -> LiveSession:
     live.id = "running-history-contract"
     live._catalog = _QueueCatalog()
     live._local_history = []
+    live._turn_models = {}
     live.interrupting = False
     live.terminating = False
+    live.termination_task = None
     live.terminated = False
     live.current_task = None
     live.turn_lock = asyncio.Lock()
@@ -187,6 +200,7 @@ def test_side_input_uses_native_same_turn_steering() -> None:
     service = TurnService(
         {"session": live},
         SimpleNamespace(error=lambda *_args, **_kwargs: None),
+        activities=Activities(),
     )
 
     async def exercise() -> tuple[dict, int]:
@@ -239,6 +253,7 @@ def test_side_input_without_active_turn_fails_closed() -> None:
         TurnService(
             {"session": live},
             SimpleNamespace(error=lambda *_args, **_kwargs: None),
+            activities=Activities(),
         ).post(
             "session",
             {"queued_message_id": "missing"},
@@ -252,11 +267,37 @@ def test_side_input_without_active_turn_fails_closed() -> None:
     )
 
 
+def test_side_input_waits_for_pending_settlement() -> None:
+    live = live_with_history()
+    live.ledger.active_turn_id = "active-turn"
+    live.catalog.pending_settlement = SimpleNamespace(
+        client_turn_id="unsettled", event=SimpleNamespace(kind=RuntimeEventKind.TURN_UNKNOWN)
+    )
+    live.catalog.add("queued-side", {"input": [{"type": "text", "text": "side"}]})
+    result, status = asyncio.run(
+        TurnService(
+            {"session": live},
+            SimpleNamespace(error=lambda *_args, **_kwargs: None),
+            activities=Activities(),
+        ).post("session", {"queued_message_id": "queued-side"}, side=True)
+    )
+    check(
+        "pending settlement rejects steering without consuming the queue or publishing history",
+        status == 409
+        and result.get("error") == "turn_outcome_unconfirmed"
+        and live.catalog.rows["queued-side"].state.value == "queued"
+        and live.adapter.inputs == []
+        and live.history() == [],
+        str(result),
+    )
+
+
 def main() -> int:
     test_live_projection()
     test_cold_resume_projection()
     test_side_input_uses_native_same_turn_steering()
     test_side_input_without_active_turn_fails_closed()
+    test_side_input_waits_for_pending_settlement()
     print(f"\ncontract_running_history: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
 

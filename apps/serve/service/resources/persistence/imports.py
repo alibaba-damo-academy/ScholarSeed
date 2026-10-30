@@ -42,15 +42,38 @@ class ResourceImportCatalog:
         self._content = content
 
     @staticmethod
+    def _reservation_key(state: str, operation_id: str, target_path: str) -> str:
+        if state == ImportState.COMPLETED:
+            return json.dumps((ImportState.COMPLETED, operation_id))
+        return json.dumps((ImportState.PREPARED, target_path))
+
+    @staticmethod
     def _schema(connection: sqlite3.Connection) -> None:
         connection.execute(f"""CREATE TABLE IF NOT EXISTS {IMPORT_TABLE} (
             operation_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
-            target_path TEXT NOT NULL UNIQUE, prepared TEXT NOT NULL,
+            target_path TEXT NOT NULL, reservation_key TEXT NOT NULL UNIQUE, prepared TEXT NOT NULL,
             state TEXT NOT NULL, asset_id TEXT
         )""")
         columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({IMPORT_TABLE})")}
         if "asset_id" not in columns:
             connection.execute(f"ALTER TABLE {IMPORT_TABLE} ADD COLUMN asset_id TEXT")
+        if "reservation_key" not in columns:
+            connection.execute(
+                f"ALTER TABLE {IMPORT_TABLE} RENAME COLUMN target_path TO reservation_key"
+            )
+            connection.execute(f"ALTER TABLE {IMPORT_TABLE} ADD COLUMN target_path TEXT")
+            for row in connection.execute(f"SELECT * FROM {IMPORT_TABLE}").fetchall():
+                path = row["reservation_key"]
+                connection.execute(
+                    f"UPDATE {IMPORT_TABLE} SET target_path = ?, reservation_key = ? WHERE operation_id = ?",
+                    (
+                        path,
+                        ResourceImportCatalog._reservation_key(
+                            row["state"], row["operation_id"], path
+                        ),
+                        row["operation_id"],
+                    ),
+                )
 
     def _operation(
         self, project_id: str, fingerprint: str, row: sqlite3.Row
@@ -115,17 +138,21 @@ class ResourceImportCatalog:
                 return self._operation(project_id, fingerprint, row)
             reserved = tuple(
                 row["target_path"]
-                for row in connection.execute(f"SELECT target_path FROM {IMPORT_TABLE}")
+                for row in connection.execute(
+                    f"SELECT target_path FROM {IMPORT_TABLE} WHERE state != ?",
+                    (ImportState.COMPLETED,),
+                )
             )
             prepared = prepare(reserved)
             if prepared.project_id != project_id:
                 raise ResourceImportConflict(IMPORT_CONFLICT)
             connection.execute(
-                f"INSERT INTO {IMPORT_TABLE} (operation_id, fingerprint, target_path, prepared, state) VALUES (?, ?, ?, ?, ?)",
+                f"INSERT INTO {IMPORT_TABLE} (operation_id, fingerprint, target_path, reservation_key, prepared, state) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     operation_id,
                     fingerprint,
                     prepared.path,
+                    self._reservation_key(ImportState.PREPARED, operation_id, prepared.path),
                     json.dumps(asdict(prepared), ensure_ascii=False),
                     ImportState.PREPARED.value,
                 ),
@@ -173,7 +200,14 @@ class ResourceImportCatalog:
             ):
                 raise ResourceImportConflict(IMPORT_CONFLICT)
             connection.execute(
-                f"UPDATE {IMPORT_TABLE} SET state = ?, asset_id = ? WHERE operation_id = ?",
-                (ImportState.COMPLETED.value, asset.asset_id, operation.operation_id),
+                f"UPDATE {IMPORT_TABLE} SET state = ?, asset_id = ?, reservation_key = ? WHERE operation_id = ?",
+                (
+                    ImportState.COMPLETED.value,
+                    asset.asset_id,
+                    self._reservation_key(
+                        ImportState.COMPLETED, operation.operation_id, operation.prepared.path
+                    ),
+                    operation.operation_id,
+                ),
             )
         return asset

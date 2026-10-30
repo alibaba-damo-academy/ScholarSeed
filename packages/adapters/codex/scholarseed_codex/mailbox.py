@@ -10,7 +10,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO, Callable, cast
 
 from scholarseed_runtime.contract import RuntimeCallbackRequest, RuntimeEvent
 
@@ -152,7 +152,9 @@ class ObservationMailbox:
     def _append(self, payload: bytes) -> None:
         length = OBSERVATION_LENGTH.size + len(payload)
         if self._writer is None or self._writer.size + length > OBSERVATION_SEGMENT_BYTES:
-            self._writer = SpoolSegment(tempfile.TemporaryFile(prefix=OBSERVATION_SPOOL_PREFIX))
+            self._writer = SpoolSegment(
+                cast(BinaryIO, tempfile.TemporaryFile(prefix=OBSERVATION_SPOOL_PREFIX))
+            )
             self._segments.append(self._writer)
         segment = self._writer
         segment.file.seek(segment.size)

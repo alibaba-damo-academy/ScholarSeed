@@ -1,11 +1,13 @@
+import { parsePackageKeys } from './nupkg.ts'
+import { UPDATE_CHANNELS, type UpdateChannel } from '../updates.ts'
+import { parseActivationKeys, type ActivationKeys } from './update-authorization.ts'
 import { BUILD_NUMBER_PATTERN } from './version.ts'
+import { FEEDBACK_DEFAULT_BASE_URL } from '../feedback.ts'
 
 export const AUTH_MODES = ['off', 'local', 'account', 'auto'] as const
 export type AuthMode = (typeof AUTH_MODES)[number]
 export const RELEASE_LANES = ['local', 'distribution'] as const
 export type ReleaseLane = (typeof RELEASE_LANES)[number]
-export const UPDATE_CHANNELS = ['preview', 'release'] as const
-export type UpdateChannel = (typeof UPDATE_CHANNELS)[number]
 export const CODEX_RUNTIME_PROFILES = ['official'] as const
 export type CodexRuntimeProfile = (typeof CODEX_RUNTIME_PROFILES)[number]
 export const CREDENTIAL_KEY_PROVIDERS = ['mock_keychain', 'system_keychain'] as const
@@ -20,6 +22,7 @@ export const DISTRIBUTION_RELEASE_LANE: ReleaseLane = 'distribution'
 export interface DesktopProductConfig {
   authMode: AuthMode
   accountBaseUrl: string
+  feedbackBaseUrl: string
   productId: string
   productName: string
   bundleId: string
@@ -29,13 +32,58 @@ export interface DesktopProductConfig {
   buildNumber: string
   expectedTeamId: string
   expectedWindowsPublisher: string
+  updatePackageKeys?: Readonly<Record<string, string>>
+  runtimeManifestSha256?: string
+  updateActivationKeys: ActivationKeys
   codexRuntime: CodexRuntimePolicy
   credentialProfile: CredentialProfile
   features: DesktopFeaturePolicy
 }
 
 export interface DesktopFeaturePolicy {
+  browser: boolean
   feedbackRecorder: boolean
+}
+
+export const BROWSER_FEATURE_POLICY_ERROR = {
+  missing: 'browser_feature_policy_missing',
+  invalid: 'browser_feature_policy_invalid',
+  mismatch: 'browser_feature_policy_mismatch',
+} as const
+
+export class BrowserFeatureReadinessError extends Error {
+  constructor(
+    readonly code: (typeof BROWSER_FEATURE_POLICY_ERROR)[keyof typeof BROWSER_FEATURE_POLICY_ERROR]
+  ) {
+    super(code)
+  }
+}
+
+export function validateBrowserFeatureReadiness(
+  health: unknown,
+  enabled: boolean,
+  mode: 'managed' | 'attach'
+): boolean | null {
+  if (!health || typeof health !== 'object' || Array.isArray(health)) {
+    throw new BrowserFeatureReadinessError(BROWSER_FEATURE_POLICY_ERROR.invalid)
+  }
+  const source = health as Record<string, unknown>
+  const hasFeatures = Object.prototype.hasOwnProperty.call(source, 'features')
+  const features = source.features
+  if (hasFeatures && (!features || typeof features !== 'object' || Array.isArray(features))) {
+    throw new BrowserFeatureReadinessError(BROWSER_FEATURE_POLICY_ERROR.invalid)
+  }
+  const policy = features as Record<string, unknown> | undefined
+  if (!policy || !Object.prototype.hasOwnProperty.call(policy, 'browser')) {
+    if (mode === 'attach' && !enabled) return null
+    throw new BrowserFeatureReadinessError(BROWSER_FEATURE_POLICY_ERROR.missing)
+  }
+  if (typeof policy.browser !== 'boolean') {
+    throw new BrowserFeatureReadinessError(BROWSER_FEATURE_POLICY_ERROR.invalid)
+  }
+  if (policy.browser !== enabled)
+    throw new BrowserFeatureReadinessError(BROWSER_FEATURE_POLICY_ERROR.mismatch)
+  return policy.browser
 }
 
 export interface CredentialProfile {
@@ -54,29 +102,31 @@ export const ACCOUNT_AUTH_MODE: AuthMode = 'account'
 export const DEVELOPMENT_AUTH_MODE: AuthMode = 'off'
 export const PRODUCT_CONFIG_FILE = 'product.json'
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
-const SEMANTIC_VERSION_PATTERN = /^\d+\.\d+\.\d+$/
+const CODEX_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:\+[a-z0-9][a-z0-9.-]*)?$(?![\s\S])/
 const CREDENTIAL_NAMESPACE_PATTERN = /^[a-z][a-z0-9-]*$/
 
 const SECURE_CREDENTIAL_FALLBACK: CredentialProfile = Object.freeze({
   keyProvider: 'system_keychain',
   refreshNamespace: 'distribution',
-  sessionNamespace: 'distribution'
+  sessionNamespace: 'distribution',
 })
 
 const SECURE_CODEX_RUNTIME_FALLBACK: CodexRuntimePolicy = Object.freeze({
   profile: 'official',
   executableSha256: '',
-  reportedVersion: ''
+  reportedVersion: '',
 })
 
 const SECURE_FEATURE_FALLBACK: DesktopFeaturePolicy = Object.freeze({
-  feedbackRecorder: false
+  browser: false,
+  feedbackRecorder: false,
 })
 
 // A broken or missing packaged policy must never make the product anonymous.
 export const SECURE_PACKAGED_FALLBACK: DesktopProductConfig = Object.freeze({
   authMode: ACCOUNT_AUTH_MODE,
   accountBaseUrl: '',
+  feedbackBaseUrl: '',
   productId: SCHOLARSEED_PRODUCT_ID,
   productName: SCHOLARSEED_PRODUCT_NAME,
   bundleId: SCHOLARSEED_BUNDLE_ID,
@@ -86,9 +136,11 @@ export const SECURE_PACKAGED_FALLBACK: DesktopProductConfig = Object.freeze({
   buildNumber: '',
   expectedTeamId: '',
   expectedWindowsPublisher: '',
+  updatePackageKeys: Object.freeze({}),
+  updateActivationKeys: Object.freeze({}),
   codexRuntime: SECURE_CODEX_RUNTIME_FALLBACK,
   credentialProfile: SECURE_CREDENTIAL_FALLBACK,
-  features: SECURE_FEATURE_FALLBACK
+  features: SECURE_FEATURE_FALLBACK,
 })
 
 export function isAuthMode(value: string): value is AuthMode {
@@ -107,11 +159,7 @@ function normalizeAccountBaseUrl(value: unknown): string {
   return parsed.toString().replace(/\/$/, '')
 }
 
-function oneOf<T extends string>(
-  value: unknown,
-  allowed: readonly T[],
-  field: string
-): T {
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
   if (typeof value !== 'string' || !allowed.some((candidate) => candidate === value)) {
     throw new Error(`product config ${field} is invalid`)
   }
@@ -140,12 +188,15 @@ function parseCodexRuntimePolicy(value: unknown): CodexRuntimePolicy {
     throw new Error('product config runtime policy must be an object')
   }
   const source = value as Record<string, unknown>
-  if (source.distribution === 'official-vendored' &&
-      source.executable_sha256 === undefined && source.reported_version === undefined) {
+  if (
+    source.distribution === 'official-vendored' &&
+    source.executable_sha256 === undefined &&
+    source.reported_version === undefined
+  ) {
     return {
       profile: oneOf(source.profile, CODEX_RUNTIME_PROFILES, 'runtimes.codex.profile'),
       executableSha256: '',
-      reportedVersion: 'vendored'
+      reportedVersion: 'vendored',
     }
   }
   return {
@@ -157,9 +208,9 @@ function parseCodexRuntimePolicy(value: unknown): CodexRuntimePolicy {
     ),
     reportedVersion: patternedString(
       source.reported_version,
-      SEMANTIC_VERSION_PATTERN,
+      CODEX_VERSION_PATTERN,
       'runtimes.codex.reported_version'
-    )
+    ),
   }
 }
 
@@ -209,11 +260,13 @@ function parseCredentialEntry(value: unknown, releaseLane: ReleaseLane): Credent
       source.session_namespace,
       CREDENTIAL_NAMESPACE_PATTERN,
       `credential_profiles.${releaseLane}.session_namespace`
-    )
+    ),
   }
   const requiredProvider = releaseLane === LOCAL_RELEASE_LANE ? 'mock_keychain' : 'system_keychain'
   if (profile.keyProvider !== requiredProvider) {
-    throw new Error(`product config ${releaseLane} credential key provider must be ${requiredProvider}`)
+    throw new Error(
+      `product config ${releaseLane} credential key provider must be ${requiredProvider}`
+    )
   }
   return profile
 }
@@ -241,7 +294,9 @@ function parseFeaturePolicy(value: unknown): DesktopFeaturePolicy {
   }
   const source = value as Record<string, unknown>
   return {
-    feedbackRecorder: exactBoolean(source.feedback_recorder, 'features.feedback_recorder')
+    browser:
+      source.browser === undefined ? false : exactBoolean(source.browser, 'features.browser'),
+    feedbackRecorder: exactBoolean(source.feedback_recorder, 'features.feedback_recorder'),
   }
 }
 
@@ -253,9 +308,8 @@ function normalizeUpdateBaseUrl(value: unknown, releaseLane: ReleaseLane): strin
     return ''
   }
   const parsed = new URL(value.trim())
-  const allowedProtocols = releaseLane === DISTRIBUTION_RELEASE_LANE
-    ? ['https:']
-    : ['http:', 'https:']
+  const allowedProtocols =
+    releaseLane === DISTRIBUTION_RELEASE_LANE ? ['https:'] : ['http:', 'https:']
   if (!allowedProtocols.includes(parsed.protocol)) {
     throw new Error('distribution update_base_url must use https')
   }
@@ -309,6 +363,12 @@ export function parseDesktopProductConfig(
   const expectedTeamId = normalizeTeamId(source.expected_team_id)
   const expectedWindowsPublisher = normalizeWindowsPublisher(source.expected_windows_publisher)
   const buildNumber = normalizeBuildNumber(source.build_number, releaseLane)
+  if (
+    source.runtime_manifest_sha256 !== undefined &&
+    (typeof source.runtime_manifest_sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(source.runtime_manifest_sha256))
+  )
+    throw new Error('product config runtime_manifest_sha256 is invalid')
   if (releaseLane === DISTRIBUTION_RELEASE_LANE) {
     if (platform === 'darwin' && !expectedTeamId) {
       throw new Error('macOS distribution product config requires expected_team_id')
@@ -320,6 +380,10 @@ export function parseDesktopProductConfig(
   return {
     authMode: source.auth_mode,
     accountBaseUrl,
+    feedbackBaseUrl: normalizeFeedbackBaseUrl(
+      source.feedback_base_url ?? FEEDBACK_DEFAULT_BASE_URL,
+      releaseLane
+    ),
     productId: exactString(source.product_id, SCHOLARSEED_PRODUCT_ID, 'product_id'),
     productName: exactString(source.product_name, SCHOLARSEED_PRODUCT_NAME, 'product_name'),
     bundleId: exactString(source.bundle_id, SCHOLARSEED_BUNDLE_ID, 'bundle_id'),
@@ -329,13 +393,37 @@ export function parseDesktopProductConfig(
     buildNumber,
     expectedTeamId,
     expectedWindowsPublisher,
+    updatePackageKeys: parsePackageKeys(source.update_package_keys),
+    ...(source.runtime_manifest_sha256
+      ? { runtimeManifestSha256: source.runtime_manifest_sha256 as string }
+      : {}),
+    updateActivationKeys: parseActivationKeys(source.update_activation_keys),
     codexRuntime: parseDefaultRuntimePolicy(source),
     credentialProfile: parseCredentialProfile(source.credential_profiles, releaseLane),
-    features: parseFeaturePolicy(source.features)
+    features: parseFeaturePolicy(source.features),
   }
 }
 
 export function resolveAccountBaseUrl(override: string, configuredBaseUrl: string): string {
   if (!override.trim()) return configuredBaseUrl
   return normalizeAccountBaseUrl(override)
+}
+
+export function normalizeFeedbackBaseUrl(value: unknown, releaseLane: ReleaseLane): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('feedback_base_url is required')
+  const url = new URL(value)
+  if (
+    (url.protocol !== 'https:' &&
+      !(
+        releaseLane === LOCAL_RELEASE_LANE &&
+        url.protocol === 'http:' &&
+        ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
+      )) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw new Error('feedback_base_url must be a trusted HTTPS endpoint')
+  return url.toString().replace(/\/$/, '')
 }

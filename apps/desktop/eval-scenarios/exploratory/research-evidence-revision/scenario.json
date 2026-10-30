@@ -1,0 +1,24 @@
+{
+  "id": "research-evidence-revision",
+  "project": {
+    "name": "Research Evidence Revision",
+    "files": [
+      {
+        "path": "resources/sources/study-a.md",
+        "contentFrom": "fixtures/study-a.md"
+      },
+      {
+        "path": "resources/sources/study-b.md",
+        "contentFrom": "fixtures/study-b.md"
+      }
+    ]
+  },
+  "config": {
+    "language": "zh"
+  },
+  "drive": "cmd.jsonl",
+  "expected": {
+    "minTurns": 2,
+    "maxTurns": 2
+  }
+}

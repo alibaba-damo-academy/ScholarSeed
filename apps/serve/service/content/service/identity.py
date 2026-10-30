@@ -434,6 +434,11 @@ def _relocated_physical(scope: ProjectSpace, row: sqlite3.Row, path: str) -> os.
             physical = os.fstat(stream.fileno())
             if not stat.S_ISREG(physical.st_mode):
                 raise ContentError(PREPARED_CONFLICT)
+            stored_device, stored_inode = _stored_identity(row)
+            if physical.st_dev == stored_device and physical.st_ino != stored_inode:
+                # Same-volume rename preserves identity. A copied marker or
+                # digest cannot authorize adopting a substituted inode.
+                return None
             if row["identity_kind"] == IDENTITY_MANAGED:
                 return (
                     physical if creation_marker(stream.fileno()) == row["creation_marker"] else None

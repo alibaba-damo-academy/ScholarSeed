@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from service.content.domain.model import IGNORED_NAMES, ContentError, resolve_root
-from service.content.service.space import ProjectSpace
+from service.content.service.space import ProjectSpace, normalize
 from service.platform.content import ResourceEntry, ResourcePage, ResourceScanObserver, RootKind
 
 GITIGNORE_FILENAME = ".gitignore"
@@ -55,19 +56,52 @@ def _entry(
     )
 
 
+def resource_scopes(space: ProjectSpace, paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Intersect logical changes with registered resource roots, including deletions."""
+
+    roots = (
+        resolve_root(space.project, RootKind.RESOURCES).relative,
+        *(mount.mount_path for mount in space.mounts),
+    )
+    selected: set[str] = set()
+    for raw in paths:
+        path = normalize(raw)
+        if space.excluded(path):
+            continue
+        for root in roots:
+            if not root or path == root or path.startswith(f"{root}/"):
+                selected.add(path)
+            elif not path or root.startswith(f"{path}/"):
+                selected.add(root)
+    return tuple(sorted(selected))
+
+
 def scan_files(
     space: ProjectSpace,
     observer: ResourceScanObserver | None = None,
+    *,
+    check: Callable[[], None] | None = None,
+    paths: tuple[str, ...] | None = None,
 ) -> tuple[ResourceEntry, ...]:
     """Enumerate every authorized logical resource file exactly once."""
 
     resource_root = resolve_root(space.project, RootKind.RESOURCES).absolute.resolve()
     linked_roots = tuple(mount.source.resolve() for mount in space.mounts)
     allowed_roots = (resource_root, *linked_roots)
-    starts = (resource_root, *linked_roots)
+    starts = (
+        (resource_root, *linked_roots)
+        if paths is None
+        else tuple(
+            space.absolute(path)
+            for path in resource_scopes(space, paths)
+            if all(_scan_name(part) for part in PurePosixPath(path).parts)
+        )
+    )
     found: dict[str, ResourceEntry] = {}
     visited: set[tuple[int, int]] = set()
     for start in starts:
+        if check is not None:
+            check()
         if start.is_file():
             if _scan_name(start.name):
                 entry = _entry(space, start, allowed_roots)
@@ -80,6 +114,8 @@ def scan_files(
         if not start.is_dir():
             continue
         for current, directories, filenames in os.walk(start, followlinks=True):
+            if check is not None:
+                check()
             current_path = Path(current)
             try:
                 resolved_current = current_path.resolve()
@@ -98,6 +134,8 @@ def scan_files(
             visited.add(directory_key)
             directories[:] = sorted(name for name in directories if _scan_name(name))
             for name in sorted(name for name in filenames if _scan_name(name)):
+                if check is not None:
+                    check()
                 entry = _entry(space, current_path / name, allowed_roots)
                 if entry is not None:
                     discovered = entry.path not in found

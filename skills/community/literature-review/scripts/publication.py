@@ -10,7 +10,7 @@ from processing.audit_citation_metadata import audit
 from processing.build_bib import build
 from task_contract import publication_view, read_request
 from templates import list_templates, resolve_citation_style
-from citation_styles import style_ids
+from citation_styles import style_ids, style_labels
 
 
 def publication_options(ws):
@@ -53,24 +53,10 @@ def publication_options(ws):
     except (ValueError, OSError):
         metadata = {}
     citations = []
-    chinese_citation_labels = {
-        "numeric": "数字编号条目",
-        "author_year": "作者—年份条目",
-        "ieee": "IEEE 编号条目（含卷期页），条目信息可能存在不完整。",
-        "acm": "ACM 参考文献格式",
-        "gbt7714_2025": "GB/T 7714—2025 顺序编码制（国标精确排版请选择 PDF）",
-    }
-    english_citation_labels = {
-        "numeric": "Numbered references",
-        "author_year": "Author–year references",
-        "ieee": "IEEE numbered references (including volume, issue, and pages); some entry details may be incomplete.",
-        "acm": "ACM Reference Format",
-        "gbt7714_2025": "GB/T 7714—2025 numeric (choose PDF for standard-conformant typesetting)",
-    }
     for sid in style_ids():
         row = resolve_citation_style(sid)
         coverage = metadata.get(sid, {})
-        label = (chinese_citation_labels if language == "CHINESE" else english_citation_labels)[sid]
+        label = style_labels(sid, language)["option"]
         citations.append(
             {
                 "id": sid,

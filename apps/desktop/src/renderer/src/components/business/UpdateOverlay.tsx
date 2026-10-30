@@ -36,7 +36,7 @@ export function UpdateOverlay(): React.JSX.Element | null {
   const phase = state?.phase
   const installation = state?.installation
   const now = useInstallationClock(phase === 'installing')
-  if (phase !== 'installing' && phase !== 'restarting') return null
+  if (phase !== 'installing' && phase !== 'restarting' && !state?.restartPending) return null
 
   const restarting = phase === 'restarting' || state?.installStage === 'restarting'
   const cancelling = installation?.cancelling === true
@@ -50,14 +50,16 @@ export function UpdateOverlay(): React.JSX.Element | null {
         : t('update.installing')
   // 准备/拷贝阶段安装还在本进程里跑，取消能真的 abort；restarting 之后安装器已脱离本进程，
   // 给取消按钮只会制造「点了却没反应」的假控件（bug 87253073：用户必须有可见的恢复路径）。
-  const cancellable = phase === 'installing' && !restarting && !cleaning
+  const cancellable = (phase === 'installing' || state?.restartPending) && !restarting && !cleaning
   const description = cancelling
     ? t('update.cancellingDescription')
     : restarting
       ? t('update.installDescription')
       : cleaning
         ? t('update.cleanupDescription')
-        : t('update.preparingDescription')
+        : state?.restartPending && phase !== 'installing'
+          ? t('update.waitingForLatest')
+          : t('update.preparingDescription')
 
   return (
     <div

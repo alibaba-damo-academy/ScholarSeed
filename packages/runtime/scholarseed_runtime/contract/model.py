@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Protocol
 
+MODEL_CATALOG_UNAVAILABLE = "runtime_model_catalog_unavailable"
+
 
 class ModelConnectionMode(str, Enum):
     NATIVE = "native"
@@ -27,15 +29,17 @@ class ModelCapabilities:
     tool_protocol: ModelToolProtocol = ModelToolProtocol.PROVIDER_NATIVE
     input_modalities: tuple[str, ...] | None = None
     reasoning_efforts: tuple[str, ...] = ()
+    native_web_search: bool | None = None
 
 
 @dataclass(frozen=True)
 class ModelCatalogEntry:
-    """One model available through the selected product connection."""
+    """One declared model in an execution-compatible product catalog."""
 
     model_ref: str
     capabilities: ModelCapabilities = ModelCapabilities()
     context_window: int | None = None
+    approval_model_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,7 @@ class ModelCredentialPort(Protocol):
 
 @dataclass(frozen=True)
 class ModelTransport:
-    mode: ModelConnectionMode = ModelConnectionMode.NATIVE
+    mode: ModelConnectionMode = ModelConnectionMode.REMOTE
     endpoint: str = ""
     wire_protocol: ModelWireProtocol = ModelWireProtocol.RESPONSES
     credential_ref: str = ""
@@ -101,6 +105,7 @@ class ModelIntent:
 
 
 __all__ = [
+    "MODEL_CATALOG_UNAVAILABLE",
     "ModelCapabilities",
     "ModelCatalogEntry",
     "ModelToolProtocol",

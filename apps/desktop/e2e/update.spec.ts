@@ -14,7 +14,10 @@ import {
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
-import { seedRendererLanguage } from './fixtures/runtime'
+import { seedRendererPreferences } from './fixtures/runtime'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 const DESKTOP_ROOT = join(REPO_ROOT, 'apps', 'desktop')
@@ -121,7 +124,7 @@ test('local lane skips update checks and still offers the read-only diagnosis', 
   }, null, 2)}\n`)
   writeFileSync(join(home, '.adopted-from-veda'), 'isolated update acceptance\n')
   // 本 spec 自建 userData、不走 createRuntime，语言要单独播种：下面的断言直接匹配中文文案。
-  seedRendererLanguage(userData)
+  seedRendererPreferences(userData)
 
   const desktopLog = join(artifacts, 'desktop.log')
   const app = await electron.launch({

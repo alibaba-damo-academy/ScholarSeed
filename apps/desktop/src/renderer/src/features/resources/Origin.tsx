@@ -28,9 +28,12 @@ export function ResourceAgentOriginAction({
     return () => {
       active = false
     }
-  }, [path, projectId])
+  }, [path, projectId, state.sessionCatalogRevision])
 
   if (!origin) return null
+  if (origin.sessionDeleted) {
+    return <span data-testid="resource-agent-origin-deleted">{t('origin.deleted')}</span>
+  }
   const sourceSession: SessionNode = findSessionNode(state.sessions, origin.sessionId) ?? {
     id: origin.sessionId,
     title: origin.sessionId,

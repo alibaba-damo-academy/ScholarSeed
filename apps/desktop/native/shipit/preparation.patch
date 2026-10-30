@@ -1,0 +1,123 @@
+--- a/Squirrel/SQRLInstaller.m
++++ b/Squirrel/SQRLInstaller.m
+@@ -9,6 +9,7 @@
+ #import "SQRLInstaller.h"
+ #import "timing.h"
+ #import "cleanup.h"
++#import "preparation.h"
+ 
+ #import <libkern/OSAtomic.h>
+ #import <mach-o/dyld.h>
+@@ -259,11 +260,11 @@
+ - (RACSignal *)prepareAndValidateUpdateBundleURLForRequest:(SQRLShipItRequest *)request {
+ 	NSParameterAssert(request != nil);
+ 
+-	return [[[[[[[self
+-		ownedTemporaryDirectoryURL]
+-		flattenMap:^(NSURL *directoryURL) {
+-			return [self copyBundleAtURL:request.updateBundleURL toDirectory:directoryURL];
+-		}]
++	return [[[[[[RACSignal defer:^{
++            NSError *error = nil;
++            NSURL *candidate = SSPreparationCopy(request.updateBundleURL, request.targetBundleURL, &error);
++            return candidate ? [RACSignal return:candidate] : [RACSignal error:error];
++        }]
+ 		flattenMap:^(NSURL *bundleURL) {
+ 			return [[[self
+ 				clearQuarantineForDirectory:bundleURL]
+@@ -363,6 +364,9 @@
+                         then:^{
+                             NSError *error;
+                             if (!SSCleanupCommit(request.updateBundleURL, updateBundleURL, self.ownedBundle.temporaryURL, request.targetBundleURL, originalTarget, &error)) return [RACSignal error:error];
++                            NSError *retirementError = nil;
++                            if (!SSPreparationRetire(request.updateBundleURL, request.targetBundleURL, &retirementError))
++                                NSLog(@"[shipit-preparation] event=retirement-failed error=%@", retirementError);
+                             if (!SSCleanupClearRollback(self.applicationIdentifier, SQRLInstallerOwnedBundleKey)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:nil]];
+                             return [RACSignal return:request];
+                         }] setNameWithFormat:@"committed installation awaiting deferred cleanup"];
+--- a/Squirrel/ShipIt-main.m
++++ b/Squirrel/ShipIt-main.m
+@@ -22,6 +22,8 @@
+ #import "RACSignal+SQRLTransactionExtensions.h"
+ #import "SQRLInstaller.h"
+ #import "cleanup.h"
++#import "preparation.h"
++#import "readiness.h"
+ #import "SQRLInstaller+Private.h"
+ #import "SQRLTerminationListener.h"
+ #import "SQRLShipItRequest.h"
+@@ -106,17 +108,62 @@
+ }
+ 
+ static void installRequest(RACSignal *readRequestSignal, NSString *applicationIdentifier) {
++    __block BOOL preparationFailed = NO;
++    __block SQRLShipItRequest *preparedRequest = nil;
+     __block NSURL *cleanupTarget = nil;
+     __block BOOL launchFailed = NO;
+ 	[[[[[readRequestSignal
+ 		flattenMap:^(SQRLShipItRequest *request) {
+ 			if (SSCleanupCommittedRequest(request.updateBundleURL, request.targetBundleURL)) return [RACSignal empty];
+             if (SSCleanupKnownRequest(request.updateBundleURL)) return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
++            // An entered install may have moved the target already. Preserve
++            // the original rollback-first path before asking preparation to read it.
++            BOOL targetRunning = NO;
++            if (request.bundleIdentifier) for (NSRunningApplication *application in [NSRunningApplication runningApplicationsWithBundleIdentifier:request.bundleIdentifier]) {
++                if ([application.bundleURL.URLByResolvingSymlinksInPath isEqual:request.targetBundleURL.URLByResolvingSymlinksInPath]) targetRunning = YES;
++            }
++            // A reopened old application must still get ready or failure; never
++            // silently wait for its exit while its Squirrel is waiting for us.
++            NSError *openError = nil;
++            BOOL openedPreparation = SSPreparationOpen(applicationIdentifier, &openError);
++            if (installationAttempts(applicationIdentifier) == 0 || targetRunning) {
++                if (!openedPreparation) {
++                    preparationFailed = YES;
++                    SSReadinessPublish(request.updateBundleURL, request.targetBundleURL, NO, openError.code, NULL);
++                    return [RACSignal error:openError];
++                }
++                static const NSUInteger preparationAttempts = 3;
++                NSError *error = nil;
++                NSURL *candidate = nil;
++                for (NSUInteger attempt = 0; attempt < preparationAttempts && !candidate; attempt++) {
++                    candidate = SSPreparationCopy(request.updateBundleURL, request.targetBundleURL, &error);
++                }
++                if (!candidate) {
++                    preparationFailed = YES;
++                    SSReadinessPublish(request.updateBundleURL, request.targetBundleURL, NO, error.code, NULL);
++                    return [RACSignal error:error];
++                }
++                if (!SSReadinessPublish(request.updateBundleURL, request.targetBundleURL, YES, 0, &error)) {
++                    preparationFailed = YES;
++                    return [RACSignal error:error];
++                }
++                preparedRequest = request;
++                NSLog(@"[shipit-preparation] event=ready-before-termination");
++            }
+             return waitForTerminationIfNecessary(request);
+ 		}]
+ 		ignoreValues]
+ 		concat:readRequestSignal]
+ 		flattenMap:^(SQRLShipItRequest *request) {
++            if (preparedRequest &&
++                (![preparedRequest.updateBundleURL isEqual:request.updateBundleURL] ||
++                 ![preparedRequest.targetBundleURL isEqual:request.targetBundleURL]))
++                return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
++            // Best effort notification removal cannot authorize installation.
++            // The private journal and final signature verification remain authority.
++            NSError *notificationError = nil;
++            if (!SSReadinessRemove(request.updateBundleURL, &notificationError))
++                NSLog(@"[shipit-preparation] event=notification-remove-failed code=%ld", (long)notificationError.code);
+ 			NSURL *recovered = SSCleanupRecoveredTarget(request.updateBundleURL, request.targetBundleURL);
+             if (recovered) request = [[SQRLShipItRequest alloc] initWithUpdateBundleURL:request.updateBundleURL targetBundleURL:recovered bundleIdentifier:request.bundleIdentifier launchAfterInstallation:request.launchAfterInstallation useUpdateBundleName:request.useUpdateBundleName];
+             cleanupTarget = request.targetBundleURL;
+@@ -247,6 +294,11 @@
+ 			return action;
+ 		}]
+ 		subscribeError:^(NSError *error) {
++            if (preparationFailed) {
++                NSLog(@"[shipit-preparation] event=failed code=%ld", (long)error.code);
++                drainMachServicePort(applicationIdentifier.UTF8String);
++                exit(EXIT_SUCCESS);
++            }
+ 			if ([[error domain] isEqual:SQRLInstallerErrorDomain] && [error code] == SQRLInstallerErrorAppStillRunning) {
+ 				NSLog(@"Installation cancelled: %@", error);
+ 				clearInstallationAttempts(applicationIdentifier);

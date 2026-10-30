@@ -33,6 +33,7 @@ from scholarseed_codex.activity import (
     tool_item_payload,
     tool_item_result,
 )
+from scholarseed_codex.admission import NativeAdmission
 from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.failure import (
     ProviderFailure,
@@ -57,6 +58,7 @@ from scholarseed_codex.protocol.session import (
     CodexUsage,
 )
 from scholarseed_codex.protocol.state import (
+    CODEX_APP_SERVER_ERROR,
     CODEX_AUTO_APPROVAL_NOTIFICATION_KINDS,
     CODEX_BENIGN_NOTIFICATION_METHODS,
     CODEX_COLLAB_TOOL_CALL_ITEM_TYPE,
@@ -64,6 +66,8 @@ from scholarseed_codex.protocol.state import (
     CODEX_PROVIDER_INCIDENT_METHODS,
     CODEX_SEARCH_NOTIFICATION_KINDS,
     CODEX_STRICT_REVIEW_NOTIFICATION,
+    CODEX_SUBMISSION_CANCELLED,
+    CODEX_SUBMISSION_RETRY_EXPIRED,
     CODEX_WEB_SEARCH_ITEM_TYPE,
     AppServerError,
     _message_phase,
@@ -71,6 +75,7 @@ from scholarseed_codex.protocol.state import (
     logger,
 )
 from scholarseed_codex.router import ThreadRouter
+from scholarseed_codex.rpc import RpcSubmission, RpcSubmissionState
 from scholarseed_codex.watch import WorkspaceWatch
 from scholarseed_runtime.contract.content import (
     PUBLIC_REASONING_SUMMARY,
@@ -83,6 +88,7 @@ from scholarseed_runtime.contract.history import (
     TurnStatus,
 )
 from scholarseed_runtime.contract.incident import (
+    RUNTIME_TURN_NOT_SUBMITTED,
     RuntimeIncident,
     RuntimeIncidentKind,
     RuntimeIncidentScope,
@@ -90,7 +96,7 @@ from scholarseed_runtime.contract.incident import (
     RuntimeRecoveryStrategy,
     RuntimeRetryability,
 )
-from scholarseed_runtime.contract.input import TurnInput
+from scholarseed_runtime.contract.input import TURN_ADMISSION_STALE, TurnInput
 from scholarseed_runtime.contract.permission import PERMISSION_MODE_KEY
 
 INTERRUPTED_TERMINAL_CLEANUP_SECONDS = 10.0
@@ -109,7 +115,15 @@ class ThreadContext(Protocol):
 
 
 class TurnRequest(Protocol):
-    async def __call__(self, method: str, params: Any, *, generation: int) -> dict[str, Any]: ...
+    async def __call__(
+        self,
+        method: str,
+        params: Any,
+        *,
+        generation: int,
+        before_write: Callable[[], None] | None = None,
+        submission: RpcSubmission | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class CodexTurnRuntime:
@@ -128,8 +142,10 @@ class CodexTurnRuntime:
         diagnostic: Callable[[str], None],
         protocol_error: Callable[[str], None],
         resume_turns: tuple[ResumeTurnSnapshot, ...] = (),
+        admission: NativeAdmission | None = None,
     ) -> None:
         self._thread = thread
+        self._admission = admission or NativeAdmission()
         self._request = request
         self._ensure_attached = ensure_attached
         self._stale_requests = stale_requests
@@ -140,6 +156,11 @@ class CodexTurnRuntime:
         self._protocol_error = protocol_error
         self._generation = thread.attached_generation
         self._closed = False
+        self.submission_attempted = False
+        self.execution_observed = False
+        self.replacement_sealed = False
+        self._submission_revision = 0
+        self._submission_changed = asyncio.Event()
         self._settled_turns: set[str] = set()
         self._completion_lock = asyncio.Lock()
         self.resume_turns = resume_turns
@@ -171,6 +192,7 @@ class CodexTurnRuntime:
         self.ambiguous_submission_id: str = ""
         self.ambiguous_incident_id: str = ""
         self.ambiguous_generation: int = 0
+        self._submission: RpcSubmission | None = None
         self.provider_incident_id: str = ""
         self.provider_incident_turn_id: str = ""
         self.provider_incident_kind: RuntimeIncidentKind = RuntimeIncidentKind.PROVIDER_RETRY
@@ -206,6 +228,7 @@ class CodexTurnRuntime:
 
     async def close(self, generation: int, connected: bool) -> None:
         self._closed = True
+        self._submission_changed.set()
         self.abandon_files()
         if self.active_turn_id and self.attached_generation == generation and connected:
             try:
@@ -223,6 +246,13 @@ class CodexTurnRuntime:
     async def notification(
         self, method: str, params: Mapping[str, Any], *, generation: int
     ) -> None:
+        if (
+            method.startswith(("turn/", "item/", "thread/goal/"))
+            or params.get("turnId")
+            or params.get("itemId")
+            or params.get("turn")
+        ):
+            self.execution_observed = True
         self._generation = generation
         message_generation = generation
         raw_turn = params.get("turn")
@@ -265,6 +295,8 @@ class CodexTurnRuntime:
             )
             if turn_id and client_id:
                 self.turn_client_ids[turn_id] = client_id
+                if self._submission is not None and client_id == self.active_turn_client_id:
+                    self._submission.state = RpcSubmissionState.ACCEPTED
             if turn_id:
                 self._router.bind_turn(turn_id, thread_id)
             resolved_ambiguous_incident_id = ""
@@ -434,6 +466,8 @@ class CodexTurnRuntime:
             await self._emitter.emit(
                 self._thread,
                 CodexSessionEventKind.RUNTIME_WARNING,
+                turn_id=turn_id,
+                item_id=item_id,
                 payload={"message": str(params.get("message") or "")},
             )
             return
@@ -600,6 +634,7 @@ class CodexTurnRuntime:
             )
         terminal_status = terminal_turn_status(str(matched.get("status") or ""))
         if terminal_status is not None:
+            await self._replay_resumed_messages(matched, interrupted_turn_id)
             await self._resolve_interrupted_turn(
                 interrupted_turn_id,
                 terminal_status,
@@ -722,6 +757,11 @@ class CodexTurnRuntime:
             TurnStatus.INTERRUPTED.value,
         }:
             return
+        await self._replay_resumed_messages(matched, turn_id)
+        await self._turn_completed(matched)
+
+    async def _replay_resumed_messages(self, matched: Mapping[str, Any], turn_id: str) -> None:
+        status = str(matched.get("status") or "")
         matched_items = list(matched.get("items") or [])
         agent_indexes = [
             index
@@ -763,9 +803,178 @@ class CodexTurnRuntime:
             # A streamed prefix is not completion evidence. Recovered authoritative
             # text must reach the same declaration path as item/completed.
             await self._complete_assistant_message(turn_id, item_id, text, phase)
-        await self._turn_completed(matched)
 
-    async def start(self, turn_input: TurnInput) -> CodexTurnResult:
+    @property
+    def submission_revision(self) -> int:
+        return self._submission_revision
+
+    def check_submission_revision(self, revision: int) -> None:
+        if self._closed or revision != self._submission_revision:
+            unknown = bool(
+                self.active_turn_id or self.ambiguous_submission_id or self.interrupted_turn_id
+            )
+            raise AppServerError(
+                "Codex submission was cancelled",
+                safe_error=CODEX_SUBMISSION_CANCELLED,
+                generation=self._generation,
+                retryability=(
+                    RuntimeRetryability.UNKNOWN_OUTCOME
+                    if unknown
+                    else RuntimeRetryability.USER_RETRYABLE
+                ),
+                submission_not_applied=not unknown,
+            )
+
+    async def wait_submission_retry(self, revision: int, delay: float) -> None:
+        changed = self._submission_changed
+        self.check_submission_revision(revision)
+        try:
+            await asyncio.wait_for(changed.wait(), timeout=delay)
+        except TimeoutError:
+            pass
+        self.check_submission_revision(revision)
+
+    async def prepare_submission_retry(
+        self,
+        prepare: Awaitable[Callable[[], None]],
+        revision: int,
+        deadline: float,
+    ) -> Callable[[], None]:
+        operation = asyncio.ensure_future(prepare)
+        changed = asyncio.create_task(self._submission_changed.wait())
+        try:
+            self.check_submission_revision(revision)
+            done, _ = await asyncio.wait(
+                (operation, changed),
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
+            self.check_submission_revision(revision)
+            if operation in done:
+                return operation.result()
+            raise AppServerError(
+                CODEX_SUBMISSION_RETRY_EXPIRED,
+                safe_error=CODEX_SUBMISSION_RETRY_EXPIRED,
+                submission_not_applied=True,
+            )
+        finally:
+            operation.cancel()
+            changed.cancel()
+            await asyncio.gather(operation, changed, return_exceptions=True)
+
+    def seal_replacement(self) -> None:
+        self.replacement_sealed = True
+        self._closed = True
+        self._submission_changed.set()
+
+    async def start(
+        self,
+        turn_input: TurnInput,
+        *,
+        before_write: Callable[[], None] | None = None,
+        deadline: float | None = None,
+    ) -> CodexTurnResult:
+        written = asyncio.Event()
+
+        def attempted() -> None:
+            self.submission_attempted = True
+            written.set()
+
+        submission = RpcSubmission(on_attempt=attempted)
+        revision = self._submission_revision
+        changed = self._submission_changed
+
+        def authorize() -> None:
+            self.check_submission_revision(revision)
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                raise AppServerError(
+                    CODEX_SUBMISSION_RETRY_EXPIRED,
+                    safe_error=CODEX_SUBMISSION_RETRY_EXPIRED,
+                    submission_not_applied=True,
+                )
+            if before_write is not None:
+                before_write()
+
+        async def acquire() -> CodexTurnResult:
+            async with self._admission.enter():
+                return await self._start(turn_input, submission, authorize)
+
+        operation = asyncio.create_task(acquire())
+        write_wait = asyncio.create_task(written.wait())
+        cancel_wait = asyncio.create_task(changed.wait())
+        try:
+            remaining = (
+                None if deadline is None else max(0.0, deadline - asyncio.get_running_loop().time())
+            )
+            done, _ = await asyncio.wait(
+                (operation, write_wait, cancel_wait),
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if (
+                operation in done
+                or written.is_set()
+                or submission.state is not RpcSubmissionState.NOT_SUBMITTED
+            ):
+                return await operation
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+            self.check_submission_revision(revision)
+            raise AppServerError(
+                CODEX_SUBMISSION_RETRY_EXPIRED,
+                safe_error=CODEX_SUBMISSION_RETRY_EXPIRED,
+                submission_not_applied=True,
+            )
+        except Exception as error:
+            if (
+                submission.state is RpcSubmissionState.NOT_SUBMITTED
+                and not self.active_turn_id
+                and not self.ambiguous_incident_id
+                and not self.interrupted_turn_id
+            ):
+                raise AppServerError(
+                    "Codex turn was not submitted",
+                    safe_error=(
+                        error.safe_error
+                        if isinstance(error, AppServerError)
+                        else RUNTIME_TURN_NOT_SUBMITTED
+                    ),
+                    generation=(error.generation if isinstance(error, AppServerError) else 0)
+                    or self._generation,
+                    method=error.method if isinstance(error, AppServerError) else "",
+                    rpc_code=error.rpc_code if isinstance(error, AppServerError) else None,
+                    rpc_latency_ms=error.rpc_latency_ms if isinstance(error, AppServerError) else 0,
+                    submission_not_applied=True,
+                ) from error
+            if submission.state is not RpcSubmissionState.NOT_SUBMITTED:
+                raise AppServerError(
+                    "Codex turn outcome requires reconciliation",
+                    safe_error=(
+                        error.safe_error
+                        if isinstance(error, AppServerError)
+                        else CODEX_APP_SERVER_ERROR
+                    ),
+                    generation=(error.generation if isinstance(error, AppServerError) else 0)
+                    or self._generation,
+                    method="turn/start",
+                    rpc_code=error.rpc_code if isinstance(error, AppServerError) else None,
+                    rpc_latency_ms=error.rpc_latency_ms if isinstance(error, AppServerError) else 0,
+                    retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+                ) from error
+            raise
+        finally:
+            write_wait.cancel()
+            cancel_wait.cancel()
+            if not operation.done():
+                operation.cancel()
+            await asyncio.gather(write_wait, cancel_wait, operation, return_exceptions=True)
+
+    async def _start(
+        self,
+        turn_input: TurnInput,
+        submission: RpcSubmission,
+        before_write: Callable[[], None],
+    ) -> CodexTurnResult:
         thread_id = self._thread.thread_id
         if self._closed:
             raise AppServerError("Codex thread is closed", safe_error="codex_thread_closed")
@@ -787,6 +996,7 @@ class CodexTurnRuntime:
             )
         if self.turn_done is not None and not self.turn_done.done():
             raise AppServerError(f"Codex thread already has an active turn: {thread_id}")
+        self._submission = submission
         params = start_parameters(
             thread_id,
             turn_input,
@@ -837,10 +1047,63 @@ class CodexTurnRuntime:
         submission_id = turn_input.client_user_message_id or uuid.uuid4().hex
         params["clientUserMessageId"] = submission_id
         self.active_turn_client_id = submission_id
+        admission = turn_input.admission
         try:
-            response = await self._request("turn/start", params, generation=generation)
-        except AppServerError as exc:
-            if exc.retryability == RuntimeRetryability.UNKNOWN_OUTCOME:
+
+            def authorize() -> None:
+                before_write()
+                if admission is not None and not admission.current():
+                    raise AppServerError(TURN_ADMISSION_STALE, safe_error=TURN_ADMISSION_STALE)
+
+            response = await self._request(
+                "turn/start",
+                params,
+                generation=generation,
+                before_write=authorize,
+                submission=submission,
+            )
+            turn = dict(response.get("turn") or {})
+            turn_id = str(turn.get("id") or self.active_turn_id)
+            if not turn_id:
+                raise AppServerError("Codex App Server returned no turn id")
+        except asyncio.CancelledError:
+            if (
+                submission.state is RpcSubmissionState.NOT_SUBMITTED
+                and self.turn_done is completion
+            ):
+                self.turn_done = None
+                self.active_turn_client_id = ""
+                self.abandon_files()
+            raise
+        except Exception as submission_error:
+            if self.active_turn_id:
+                raise
+            exc = AppServerError(
+                "Codex turn submission failed",
+                safe_error=(
+                    submission_error.safe_error
+                    if isinstance(submission_error, AppServerError)
+                    else CODEX_APP_SERVER_ERROR
+                ),
+                generation=generation,
+                method="turn/start",
+                rpc_code=(
+                    submission_error.rpc_code
+                    if isinstance(submission_error, AppServerError)
+                    else None
+                ),
+                rpc_latency_ms=(
+                    submission_error.rpc_latency_ms
+                    if isinstance(submission_error, AppServerError)
+                    else 0
+                ),
+                retryability=(
+                    RuntimeRetryability.USER_RETRYABLE
+                    if submission.state is RpcSubmissionState.NOT_SUBMITTED
+                    else RuntimeRetryability.UNKNOWN_OUTCOME
+                ),
+            )
+            if submission.state is not RpcSubmissionState.NOT_SUBMITTED:
                 incident = RuntimeIncident(
                     incident_id=uuid.uuid4().hex,
                     scope=RuntimeIncidentScope.TURN,
@@ -867,7 +1130,11 @@ class CodexTurnRuntime:
                     self._thread,
                     CodexSessionEventKind.TURN_UNKNOWN,
                     turn_id=submission_id,
-                    payload={"safe_error": exc.safe_error},
+                    payload={
+                        "safe_error": exc.safe_error,
+                        "client_user_message_id": submission_id,
+                        "correlation_id": submission_id,
+                    },
                     incident=incident,
                 )
             else:
@@ -875,11 +1142,7 @@ class CodexTurnRuntime:
                 self.turn_done = None
                 self.active_turn_client_id = ""
                 self.active_skill_inputs.clear()
-            raise
-        turn = dict(response.get("turn") or {})
-        turn_id = str(turn.get("id") or self.active_turn_id)
-        if not turn_id:
-            raise AppServerError("Codex App Server returned no turn id")
+            raise exc from submission_error
         if not completion.done():
             self.active_turn_id = turn_id
             self.turn_client_ids[turn_id] = submission_id
@@ -1076,10 +1339,13 @@ class CodexTurnRuntime:
             await asyncio.sleep(INTERRUPTED_TERMINAL_POLL_SECONDS)
 
     async def interrupt(self, *, cleanup_background_processes: bool = False) -> None:
+        self._submission_revision += 1
+        self._submission_changed.set()
+        self._submission_changed = asyncio.Event()
         thread_id = self._thread.thread_id
-        self._generation = await self._ensure_attached(thread_id)
         if not self.active_turn_id:
             return
+        self._generation = await self._ensure_attached(thread_id)
         turn_id = self.active_turn_id
         item_ids = (
             set(self.active_command_items.get(turn_id, ()))
@@ -1572,6 +1838,19 @@ class CodexTurnRuntime:
         self.fs_watch_id = ""
         self.abandon_files()
         turn_id = self.active_turn_id
+        client_id = (
+            self.turn_client_ids.get(turn_id)
+            or self.active_turn_client_id
+            or self.ambiguous_submission_id
+        )
+        unknown_turn_id = turn_id or client_id
+        if (
+            not turn_id
+            and not self.ambiguous_submission_id
+            and self._submission is not None
+            and self._submission.state is RpcSubmissionState.NOT_SUBMITTED
+        ):
+            unknown_turn_id = ""
         interrupted_turn_id = self.interrupted_turn_id or turn_id
         if turn_id and not self.interrupted_turn_id:
             self.interrupted_turn_id = turn_id
@@ -1579,37 +1858,42 @@ class CodexTurnRuntime:
                 self.turn_client_ids.get(turn_id) or self.active_turn_client_id
             )
             self.interrupted_turn_generation = exit_generation
-        await self._stale_requests(self._thread.thread_id, "", "process_exit")
-        if turn_id:
-            await self._close_provider_incident(
-                turn_id,
-                recovered=False,
-                generation=exit_generation,
-            )
-        await self._emitter.incident(self._thread, incident, turn_id=interrupted_turn_id)
-        if turn_id:
-            await self._emitter.emit(
-                self._thread,
-                CodexSessionEventKind.TURN_UNKNOWN,
-                turn_id=turn_id,
-                payload={
-                    "status": "unknown",
-                    "error": "process_exit",
-                    "process_generation": exit_generation,
-                },
-                incident=incident,
-            )
-            self._router.bind_turn(turn_id, self._thread.thread_id)
-            for item_id in self.turn_items.pop(turn_id, set()):
-                self._router.forget_item(item_id)
-            self.active_command_items.pop(turn_id, None)
-        if self.turn_done is not None and not self.turn_done.done():
-            self.turn_done.set_result(
-                {
-                    "id": turn_id,
-                    "status": "unknown",
-                    "error": {"message": "Codex App Server process exited"},
-                }
-            )
-        self.active_turn_id = ""
-        self.active_turn_client_id = ""
+        try:
+            await self._stale_requests(self._thread.thread_id, "", "process_exit")
+            if turn_id:
+                await self._close_provider_incident(
+                    turn_id,
+                    recovered=False,
+                    generation=exit_generation,
+                )
+            await self._emitter.incident(self._thread, incident, turn_id=interrupted_turn_id)
+            if unknown_turn_id:
+                await self._emitter.emit(
+                    self._thread,
+                    CodexSessionEventKind.TURN_UNKNOWN,
+                    turn_id=unknown_turn_id,
+                    payload={
+                        "status": "unknown",
+                        "error": "process_exit",
+                        "process_generation": exit_generation,
+                        "client_user_message_id": client_id,
+                        "correlation_id": client_id,
+                    },
+                    incident=incident,
+                )
+        finally:
+            if turn_id:
+                self._router.bind_turn(turn_id, self._thread.thread_id)
+                for item_id in self.turn_items.pop(turn_id, set()):
+                    self._router.forget_item(item_id)
+                self.active_command_items.pop(turn_id, None)
+            if self.turn_done is not None and not self.turn_done.done():
+                self.turn_done.set_result(
+                    {
+                        "id": turn_id,
+                        "status": "unknown",
+                        "error": {"message": "Codex App Server process exited"},
+                    }
+                )
+            self.active_turn_id = ""
+            self.active_turn_client_id = ""

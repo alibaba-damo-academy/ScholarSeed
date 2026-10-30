@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import stat
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +21,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
+from service.platform.activity import Activities
 from service.platform.resources import (
     VERSION_MAX_BYTES,
     FileState,
@@ -85,7 +88,7 @@ class SnapshotStateTests(unittest.TestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("snapshot state")
         self.path = "resources/example.docx"
         self.file = Path(self.project.root) / self.path
@@ -106,6 +109,13 @@ class SnapshotStateTests(unittest.TestCase):
             ResourceRetentionService(self.content, Settings()),
             PdfRecordStore(self.content),
         )
+
+    def _toggle_file_mode(self) -> None:
+        before = stat.S_IMODE(self.file.stat().st_mode)
+        # Windows chmod exposes the read-only attribute, not executable bits.
+        bit = stat.S_IWRITE if sys.platform == "win32" else stat.S_IXUSR
+        self.file.chmod(before ^ bit)
+        self.assertNotEqual(stat.S_IMODE(self.file.stat().st_mode), before)
 
     def test_editor_save_creates_a_version_without_external_drift(self) -> None:
         before = self.versions.capability(self.project.id, self.path)
@@ -245,25 +255,43 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
         self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"explicit snapshot")
 
-    def test_additive_upgrade_preserves_legacy_versions_and_extra_columns(self) -> None:
+    def test_additive_upgrade_preserves_legacy_versions(self) -> None:
         started = self.initial.created_at_ms + 1000
         self._save_at(started, b"legacy save", "legacy-first")
         first = self.versions.history(self.project.id, self.path)[0]
         with transaction(self.content.resolve(self.project.id, PROJECT_DB_RELATIVE)) as connection:
             connection.execute("ALTER TABLE resources_versions DROP COLUMN editor_save")
-            connection.execute("ALTER TABLE resources_versions ADD COLUMN user_asset TEXT")
-            connection.execute("UPDATE resources_versions SET user_asset = 'preserved'")
         self.store.ensure()
         self.store.ensure()
         self.assertEqual(self.versions.history(self.project.id, self.path)[0], first)
         with transaction(self.content.resolve(self.project.id, PROJECT_DB_RELATIVE)) as connection:
-            rows = connection.execute(
-                "SELECT editor_save, user_asset FROM resources_versions"
-            ).fetchall()
-            self.assertEqual([tuple(row) for row in rows], [(0, "preserved"), (0, "preserved")])
+            rows = connection.execute("SELECT editor_save FROM resources_versions").fetchall()
+            self.assertEqual([tuple(row) for row in rows], [(0,), (0,)])
         self._save_at(started + 1000, b"new save", "legacy-second")
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
         self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"legacy save")
+
+    def test_unknown_columns_reject_additive_upgrade_without_writing(self) -> None:
+        database = Path(self.content.resolve(self.project.id, PROJECT_DB_RELATIVE))
+        with closing(sqlite3.connect(database)) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("ALTER TABLE resources_versions DROP COLUMN editor_save")
+            writer.execute("ALTER TABLE resources_versions ADD COLUMN user_asset TEXT")
+            writer.execute("UPDATE resources_versions SET user_asset = 'preserved'")
+            writer.commit()
+            wal = Path(str(database) + "-wal")
+            before = database.read_bytes(), wal.read_bytes()
+            logical_before = tuple(writer.iterdump())
+            for operation in (
+                lambda: VersionStore.inspect_schema(database),
+                self.store.ensure,
+                self.store.ensure,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "unsupported resource version"):
+                    operation()
+                self.assertEqual((database.read_bytes(), wal.read_bytes()), before)
+                self.assertEqual(tuple(writer.iterdump()), logical_before)
 
     def test_active_turn_baseline_freezes_the_editor_version(self) -> None:
         started = self.initial.created_at_ms + 1000
@@ -381,7 +409,7 @@ class SnapshotStateTests(unittest.TestCase):
 
     def test_capability_detects_metadata_only_disk_changes(self) -> None:
         before = self.file.stat().st_mode & 0o777
-        self.file.chmod(before ^ 0o100)
+        self._toggle_file_mode()
         current = self.versions.capability(self.project.id, self.path)
         self.assertTrue(current.drifted)
         self.assertEqual(current.disk_revision, current.working_revision)
@@ -458,7 +486,7 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
 
     def test_mode_change_seals_a_distinct_snapshot(self) -> None:
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         sealed = self.versions.seal(self.project.id, self.path, VersionOrigin.USER)
         self.assertFalse(sealed.unchanged)
         self.assertEqual(sealed.version.sequence, 2)
@@ -466,7 +494,7 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertNotEqual(sealed.version.mode_bits, self.initial.mode_bits)
 
     def test_external_mode_change_is_pending_without_sealing(self) -> None:
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         self.versions.observe(self.project.id, self.path)
         current = self.versions.capability(self.project.id, self.path)
         self.assertEqual(current.pending.origin, PendingOrigin.EXTERNAL)
@@ -766,7 +794,7 @@ class SnapshotStateTests(unittest.TestCase):
     def test_restore_candidate_keeps_review_and_exact_metadata(self) -> None:
         review = self._review()
         self.file.write_bytes(b"external content")
-        self.file.chmod(review.candidate.mode_bits ^ 0o100)
+        self._toggle_file_mode()
         self._reconcile("restore_candidate")
         current = self.store.pending(self.initial.file_id)
         self.assertEqual(current.review.id, review.id)
@@ -787,7 +815,7 @@ class SnapshotStateTests(unittest.TestCase):
         review = self._review()
         self.file.write_bytes(b"external content")
         preview = self.recovery.preview_review_conflict(self.project.id, self.initial.file_id)
-        self.file.chmod(review.candidate.mode_bits ^ 0o100)
+        self._toggle_file_mode()
         with (
             self.assertRaisesRegex(ResourceRecoveryError, "preflight_stale"),
             self.assertLogs("scholarseed.resources.recovery", level="INFO") as logs,
@@ -1341,7 +1369,7 @@ class SnapshotStateTests(unittest.TestCase):
             self._discard("discard-external")
         self.assertEqual(self.file.read_bytes(), b"external newer file")
         self.file.write_bytes(b"ordinary draft")
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         with self.assertRaises(ResourceRecoveryError):
             self._discard("discard-external-mode")
         self.assertIsNotNone(self.store.pending(self.initial.file_id))
@@ -1447,7 +1475,7 @@ class SnapshotStateTests(unittest.TestCase):
 
     def test_reject_detects_external_permission_change(self) -> None:
         self._review()
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         with self.assertRaises(ResourceRecoveryError):
             self._reject("reject-mode-conflict")
         self.assertEqual(self.file.read_bytes(), b"agent candidate")
@@ -1534,11 +1562,11 @@ class SnapshotStateTests(unittest.TestCase):
     def test_ordinary_seal_rejects_unobserved_metadata_and_null_version_mismatch(self) -> None:
         self._write(b"pending", "pending")
         payload = self._seal_payload()
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         response = self._seal_http(payload)
         self.assertEqual(response.status_code, 412, response.text)
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         response = self._seal_http({**payload, "expected_version_id": None}, "null-version")
         self.assertEqual(response.status_code, 412, response.text)
 
@@ -1964,7 +1992,11 @@ class SnapshotStateTests(unittest.TestCase):
         app = FastAPI()
         app.state.content = self.content
         supervisor = ResourceVersionSupervisor(
-            self.content, self.versions, WorkbenchFormatPolicy(), Settings()
+            self.content,
+            self.versions,
+            WorkbenchFormatPolicy(),
+            Settings(),
+            activities=Activities(),
         )
         retention = ResourceRetentionService(self.content, Settings())
         supervisor.bind_preparation(
@@ -1972,7 +2004,9 @@ class SnapshotStateTests(unittest.TestCase):
                 self.content,
                 self.recovery,
                 self.versions,
-                ResourceDeliveryService(self.content, self.versions, supervisor),
+                ResourceDeliveryService(
+                    self.content, self.versions, supervisor, activities=supervisor._activities
+                ),
                 retention,
                 ResourceReviewMigration(self.content, self.versions),
             )
@@ -2012,7 +2046,7 @@ class SnapshotStateTests(unittest.TestCase):
 
     def test_bulk_review_drift_includes_external_permission_changes(self) -> None:
         self._review()
-        self.file.chmod(stat.S_IMODE(self.file.stat().st_mode) ^ stat.S_IXUSR)
+        self._toggle_file_mode()
         self.versions.observe(self.project.id, self.path)
         single = self.versions.capability(self.project.id, self.path)
         bulk = self.versions.capability_states(self.project.id, (self.path,))[self.path]

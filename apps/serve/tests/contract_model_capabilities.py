@@ -76,6 +76,7 @@ from service.settings.capabilities import (  # noqa: E402
     bundled_registry,
     load_registry,
     modality_flags,
+    option_payload,
     reasoning_option,
 )
 from service.settings.connections import (  # noqa: E402
@@ -225,6 +226,26 @@ def test_gateway_lane_resolves_the_declared_truth() -> None:
         str(item.get("context_window")),
     )
     check("a fully declared item carries no unverified marker", "capability_reason" not in item)
+    for model_name in ("qwen3.8-flash", "qwen3.8-max"):
+        declared = bundled_registry().lookup(model_name, GATEWAY_CONNECTION)
+        options = [option_payload(option) for option in (declared.reasoning_options or ())]
+        check(f"{model_name} defaults to medium", default_effort(options) == "medium")
+        for protocol, expected_parameters in (
+            (CHAT_COMPLETIONS_PROTOCOL, {"reasoning_effort": "medium"}),
+            (RESPONSES_PROTOCOL, {"reasoning": {"effort": "medium"}}),
+        ):
+            resolved = effort_parameters(options, protocol, "qwen", "")
+            check(
+                f"{model_name} sends medium by default over {protocol}",
+                resolved.parameters == expected_parameters and resolved.effort == "medium",
+                str(resolved),
+            )
+            selected = effort_parameters(options, protocol, "qwen", "low")
+            check(
+                f"{model_name} preserves explicit low over {protocol}",
+                selected.effort == "low" and not selected.adjusted,
+                str(selected),
+            )
 
 
 def test_resolution_matches_only_the_exact_wire_id() -> None:

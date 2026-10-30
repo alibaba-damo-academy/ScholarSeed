@@ -103,9 +103,10 @@ class InvocationSkillResolver:
         try:
             inventory = await self._runtime.skill_inventory(
                 cwd=cwd,
+                user_id=user_id,
                 executable=self._settings.runtime_executable(),
                 process_environment=process_environment,
-                force_reload=True,
+                force_reload=False,
             )
         except Exception as error:
             raise InvocationSkillRuntimeError() from error

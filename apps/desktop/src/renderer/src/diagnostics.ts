@@ -31,10 +31,22 @@ export interface RendererDiagnosticsSnapshot {
 const consoleMessages: ConsoleDiagnostic[] = []
 const networkRequests: NetworkDiagnostic[] = []
 let installed = false
+// A caught render crash is still a startup failure. Keep this outside the bounded
+// log ring so subsequent console traffic cannot turn a broken workbench healthy.
+let renderFailed = false
+
+export function recordRendererCrash(): void {
+  renderFailed = true
+}
+
+export function rendererHasCrashed(): boolean {
+  return renderFailed
+}
 
 function appendBounded<T>(entries: T[], entry: T): void {
   entries.push(entry)
-  if (entries.length > DIAGNOSTIC_ENTRY_LIMIT) entries.splice(0, entries.length - DIAGNOSTIC_ENTRY_LIMIT)
+  if (entries.length > DIAGNOSTIC_ENTRY_LIMIT)
+    entries.splice(0, entries.length - DIAGNOSTIC_ENTRY_LIMIT)
 }
 
 function truncate(value: string): string {
@@ -48,7 +60,8 @@ function redact(value: unknown, seen = new WeakSet<object>()): unknown {
   if (seen.has(value)) return '[circular]'
   seen.add(value)
   if (Array.isArray(value)) return value.map((item) => redact(item, seen))
-  if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack }
+  if (value instanceof Error)
+    return { name: value.name, message: value.message, stack: value.stack }
   const output: Record<string, unknown> = {}
   for (const [key, child] of Object.entries(value)) {
     output[key] = SENSITIVE_KEY.test(key) ? REDACTED_VALUE : redact(child, seen)
@@ -93,7 +106,8 @@ function bodyText(body: BodyInit | null | undefined): string {
     })
     return diagnosticText(values)
   }
-  if (body instanceof Blob) return diagnosticText({ size: body.size, type: body.type || OMITTED_BINARY_VALUE })
+  if (body instanceof Blob)
+    return diagnosticText({ size: body.size, type: body.type || OMITTED_BINARY_VALUE })
   if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return OMITTED_BINARY_VALUE
   return truncate(String(body))
 }
@@ -142,7 +156,7 @@ export function installRendererDiagnostics(): void {
       appendBounded(consoleMessages, {
         level,
         message: truncate(values.map(diagnosticText).join(' ')),
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       })
       original(...values)
     }
@@ -152,12 +166,14 @@ export function installRendererDiagnostics(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     if (!isApiRequest(input)) return originalFetch(input, init)
     const entry: NetworkDiagnostic = {
-      method: String(init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase(),
+      method: String(
+        init?.method || (input instanceof Request ? input.method : 'GET')
+      ).toUpperCase(),
       path: requestPath(input),
       requestBody: bodyText(init?.body),
       responseBody: '',
       status: null,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     }
     if (init?.body === undefined && input instanceof Request) {
       void input
@@ -188,12 +204,12 @@ export function rendererDiagnosticsSnapshot(): RendererDiagnosticsSnapshot {
     schemaVersion: 1,
     capturedAt: new Date().toISOString(),
     consoleMessages: consoleMessages.slice(-DIAGNOSTIC_ENTRY_LIMIT),
-    networkRequests: networkRequests.slice(-DIAGNOSTIC_ENTRY_LIMIT)
+    networkRequests: networkRequests.slice(-DIAGNOSTIC_ENTRY_LIMIT),
   }
 }
 
 export function rendererDiagnosticsFile(): File {
   return new File([JSON.stringify(rendererDiagnosticsSnapshot())], 'renderer-diagnostics.json', {
-    type: 'application/json'
+    type: 'application/json',
   })
 }

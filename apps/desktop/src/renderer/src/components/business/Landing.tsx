@@ -1,5 +1,6 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
+import { LOGIN_DIAGNOSTIC_PREFIX } from '../../../../authentication'
 
 import { loginFailureText, type LoginFailure } from './login'
 import { confirmAdoptedSession } from '../../account'
@@ -9,17 +10,9 @@ import bannerImage3 from '../../assets/banner3.webp'
 import bannerImage4 from '../../assets/banner4.webp'
 import loginLogoEn from '../../assets/login-logo-en.webp'
 import loginLogoZh from '../../assets/login-logo-zh.webp'
-import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import { LanguagePopoverControl } from './Preferences'
-import {
-  Button,
-  Carousel,
-  CarouselContent,
-  CarouselIndicators,
-  CarouselItem,
-  Spinner
-} from '../ui'
+import { Button, Carousel, CarouselContent, CarouselIndicators, CarouselItem, Spinner } from '../ui'
 
 // Landing.tsx — 冷启动{t('landing.aria')}：左品牌大图 + 右面板（品牌 / 标语 / 两个动作）。
 //
@@ -38,48 +31,47 @@ import {
 // 切换完成后由宿主直达自带模型 key（BYOK）配置页。
 
 const LANDING_CLASS_NAME =
-  'fixed inset-0 z-[450] overflow-hidden rounded-[20px] [background:var(--auth-window-bg)]'
+  'fixed inset-0 z-[var(--vds-z-overlay)] overflow-hidden rounded-[var(--vds-radius-10)] [background:var(--auth-window-bg)]'
 const WINDOW_BAR_CLASS_NAME =
-  'absolute inset-x-0 top-0 z-[2] flex h-[48px] items-center justify-end px-[20px]'
+  'absolute inset-x-0 top-0 z-[var(--vds-z-local-control)] flex h-[var(--vds-auth-toolbar-height)] items-center justify-end px-[var(--vds-space-5)]'
 const LANGUAGE_CLASS_NAME =
-  'no-drag h-[36px] px-[12px] text-[var(--vds-text-primary)]'
+  'no-drag h-[var(--vds-auth-language-control-height)] px-[var(--vds-space-3)] text-[var(--vds-text-primary)]'
 const CONTENT_CLASS_NAME =
-  'absolute left-1/2 top-1/2 flex h-[400px] w-[774px] -translate-x-1/2 -translate-y-1/2 items-center gap-[80px]'
-const HERO_CLASS_NAME = 'w-[320px] shrink-0'
+  'absolute left-1/2 top-1/2 flex h-[var(--vds-auth-card-height)] w-[var(--vds-auth-layout-width)] -translate-x-1/2 -translate-y-1/2 items-center gap-[var(--vds-auth-column-gap)]'
+const HERO_CLASS_NAME = 'w-[var(--vds-auth-hero-width)] shrink-0'
 const PANEL_CLASS_NAME =
-  'flex h-[400px] w-[374px] shrink-0 items-center justify-center text-[var(--auth-text)]'
+  'flex h-[var(--vds-auth-card-height)] w-[var(--vds-auth-form-width)] shrink-0 items-center justify-center text-[var(--auth-text)]'
 const PANEL_INNER_CLASS_NAME =
-  'flex h-full w-full flex-col items-stretch justify-center gap-[40px] rounded-[20px] border border-solid border-[var(--auth-login-card-border)] bg-white/60 px-[40px]'
-const TITLE_GROUP_CLASS_NAME = 'flex flex-col items-center gap-[8px]'
-const BRAND_CLASS_NAME = 'flex shrink-0 items-center justify-center gap-[4px]'
-const BRAND_IMAGE_CLASS_NAME = 'h-[20px] w-auto object-contain'
+  'flex h-full w-full flex-col items-stretch justify-center gap-[var(--vds-space-10)] rounded-[var(--vds-radius-10)] border border-solid border-[var(--auth-login-card-border)] bg-white/60 px-[var(--vds-space-10)]'
+const TITLE_GROUP_CLASS_NAME = 'flex flex-col items-center gap-[var(--vds-space-2)]'
+const BRAND_CLASS_NAME = 'flex shrink-0 items-center justify-center gap-[var(--vds-space-1)]'
+const BRAND_IMAGE_CLASS_NAME = 'h-[var(--vds-auth-brand-mark-height)] w-auto object-contain'
 const TITLE_CLASS_NAME =
-  'm-[var(--vds-space-0)] shrink-0 text-center text-[28px] font-semibold leading-[42px] tracking-[0.02em] !text-[var(--vds-text-secondary)] whitespace-nowrap [font-family:var(--vds-font-serif)]'
+  'm-[var(--vds-space-0)] shrink-0 text-center text-[length:var(--vds-font-display-lv4)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-display-lv4)] tracking-[var(--vds-auth-title-letter-spacing)] !text-[var(--vds-text-secondary)] whitespace-nowrap [font-family:var(--vds-font-serif)]'
 const WAITING_TITLE_CLASS_NAME =
-  'm-[var(--vds-space-0)] max-w-full shrink-0 whitespace-normal text-center text-[28px] font-semibold leading-[36px] tracking-[0.02em] !text-[var(--vds-text-secondary)] [font-family:var(--vds-font-serif)]'
+  'm-[var(--vds-space-0)] max-w-full shrink-0 whitespace-normal text-center text-[length:var(--vds-font-display-lv4)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-display-lv2)] tracking-[var(--vds-auth-title-letter-spacing)] !text-[var(--vds-text-secondary)] [font-family:var(--vds-font-serif)]'
 const BODY_CLASS_NAME =
-  'm-[var(--vds-space-0)] mt-[var(--vds-space-2)] text-center text-[14px] leading-[20px] text-[var(--auth-muted)]'
-const ACTIONS_CLASS_NAME = 'flex flex-col items-stretch gap-[16px]'
+  'm-[var(--vds-space-0)] mt-[var(--vds-space-2)] text-center text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-control-label-line-height)] text-[var(--auth-muted)]'
+const ACTIONS_CLASS_NAME = 'flex flex-col items-stretch gap-[var(--vds-space-4)]'
 const ACTION_CLASS_NAME = 'w-full'
 const ERROR_CLASS_NAME =
   'mb-[var(--vds-space-3)] mt-[var(--vds-space-2)] text-center text-[12.5px] leading-[1.6] text-[var(--c-tension)]'
 const WAITING_CLASS_NAME =
   'flex items-center justify-center gap-[8px] text-[13px] text-[var(--auth-muted)]'
 const HERO_ART_CLASS_NAME =
-  'flex h-[260px] w-[283px] items-center justify-center'
+  'flex h-[var(--vds-auth-illustration-height)] w-[var(--vds-auth-illustration-width)] items-center justify-center'
 const HERO_IMAGE_CLASS_NAME = 'h-full w-full object-contain'
 const HERO_COPY_CLASS_NAME =
-  'm-0 whitespace-pre-line text-center font-[PingFang_SC] text-[14px] font-normal leading-[22px] tracking-normal text-[#4C4C4C]'
+  'm-0 whitespace-pre-line text-center font-[PingFang_SC] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] tracking-[var(--vds-auth-hero-copy-letter-spacing)] text-[var(--vds-text-secondary)]'
 const HERO_ITEM_CLASS_NAME = 'flex min-h-0 border-0 bg-transparent'
-const HERO_ITEM_INNER_CLASS_NAME =
-  'flex w-full flex-col items-center gap-[20px]'
-const HERO_INDICATORS_CLASS_NAME = 'mt-[20px]'
+const HERO_ITEM_INNER_CLASS_NAME = 'flex w-full flex-col items-center gap-[var(--vds-space-5)]'
+const HERO_INDICATORS_CLASS_NAME = 'mt-[var(--vds-space-5)]'
 
 const HERO_SLIDES = [
   { copyKey: 'landing.heroCopy1', image: bannerImage1 },
   { copyKey: 'landing.heroCopy2', image: bannerImage2 },
   { copyKey: 'landing.heroCopy3', image: bannerImage3 },
-  { copyKey: 'landing.heroCopy4', image: bannerImage4 }
+  { copyKey: 'landing.heroCopy4', image: bannerImage4 },
 ] as const
 
 type LandingPhase = 'idle' | 'waiting' | 'exchanging' | 'adopted' | 'failed'
@@ -88,7 +80,7 @@ export function Landing({
   onAuthed,
   onSkipped,
   onClose,
-  autoStart = false
+  autoStart = false,
 }: {
   /** 深链交接的凭据已被 serve 验通：宿主关首页并广播身份刷新。 */
   onAuthed: () => void
@@ -106,23 +98,55 @@ export function Landing({
   const [phase, setPhase] = React.useState<LandingPhase>('idle')
   const [error, setError] = React.useState<LoginFailure | null>(null)
   const [starting, setStarting] = React.useState(false)
+  const [elevated, setElevated] = React.useState(false)
   const autoStartConsumed = React.useRef(false)
   const loginLogo = state.lang === 'en' ? loginLogoEn : loginLogoZh
 
-  const finishAdopted = React.useCallback((): void => {
+  // 提权运行会让浏览器回调送不到主实例（87498884）：等待态把这条风险显式告诉用户，
+  // 而不是让登录无限停在「已在浏览器打开登录页」。取数失败按未提权处理，不挡登录。
+  React.useEffect(() => {
+    let alive = true
+    void window.scholarseed
+      .desktopEnvironment()
+      .then((env) => {
+        if (alive) setElevated(env.elevated)
+      })
+      .catch(() => {
+        if (alive) setElevated(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const [confirmationId, setConfirmationId] = React.useState<number | null>(null)
+  const onAuthedRef = React.useRef(onAuthed)
+  onAuthedRef.current = onAuthed
+  React.useEffect(() => {
+    if (confirmationId === null) return
+    const controller = new AbortController()
     void (async () => {
-      const confirmed = await confirmAdoptedSession()
-      if (!confirmed) {
+      const confirmed = await confirmAdoptedSession(controller.signal)
+      if (controller.signal.aborted) return
+      const ack = await window.scholarseed.desktopAuthAdoptedAck(confirmationId, confirmed)
+      if (!ack.ok) return
+      if (confirmed) onAuthedRef.current()
+      else {
         setPhase('failed')
         setError({ code: 'verify_failed' })
-        return
       }
-      await window.scholarseed.desktopAuthAdoptedAck()
-      onAuthed()
-    })()
-  }, [onAuthed])
+    })().catch(() => {
+      // Main's bounded confirmation deadline will fail the attempt if IPC is lost.
+      console.info(
+        LOGIN_DIAGNOSTIC_PREFIX,
+        JSON.stringify({ operation: 'login-confirmation', reason: 'ack-failed' })
+      )
+    })
+    return () => controller.abort()
+  }, [confirmationId])
 
   const startLogin = React.useCallback(async (): Promise<void> => {
+    setConfirmationId(null)
     setStarting(true)
     setError(null)
     const result = await window.scholarseed.desktopLoginStart(state.lang)
@@ -132,26 +156,25 @@ export function Landing({
       setError(
         result.applicationFailure ?? {
           code: 'login_failed',
-          diagnostic: result.error
+          diagnostic: result.error,
         }
       )
     }
   }, [state.lang])
 
   const applySnapshot = React.useCallback(
-    (snapshot: { phase: LandingPhase; error?: string }): void => {
+    (snapshot: { phase: LandingPhase; error?: string; confirmationId?: number }): void => {
       setPhase(snapshot.phase)
       setError(snapshot.error ? { code: snapshot.error } : null)
-      if (snapshot.phase === 'adopted') finishAdopted()
+      setConfirmationId(snapshot.phase === 'adopted' ? (snapshot.confirmationId ?? null) : null)
       // 自动发起只按首次快照决策：waiting/exchanging/adopted 说明这次登录已在飞或已
       // 完成，再 start 会多开一个浏览器页并把在飞 state 顶掉。
       if (autoStart && !autoStartConsumed.current) {
         autoStartConsumed.current = true
-        if (snapshot.phase === 'idle' || snapshot.phase === 'failed')
-          void startLogin()
+        if (snapshot.phase === 'idle' || snapshot.phase === 'failed') void startLogin()
       }
     },
-    [autoStart, finishAdopted, startLogin]
+    [autoStart, startLogin]
   )
 
   React.useEffect(() => {
@@ -176,7 +199,7 @@ export function Landing({
     if (!onClose) return
     const onKey = (event: KeyboardEvent): void => {
       // 交接在飞时不给 Esc 关：浏览器那边正在回跳，关掉只会让用户以为登录失败了。
-      if (event.key === 'Escape' && phase !== 'exchanging') onClose()
+      if (event.key === 'Escape' && phase !== 'exchanging' && phase !== 'adopted') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -204,17 +227,10 @@ export function Landing({
           <Carousel autoPlay className="w-full">
             <CarouselContent>
               {HERO_SLIDES.map((slide) => (
-                <CarouselItem
-                  className={HERO_ITEM_CLASS_NAME}
-                  key={slide.copyKey}
-                >
+                <CarouselItem className={HERO_ITEM_CLASS_NAME} key={slide.copyKey}>
                   <div className={HERO_ITEM_INNER_CLASS_NAME}>
                     <div aria-hidden="true" className={HERO_ART_CLASS_NAME}>
-                      <img
-                        alt=""
-                        className={HERO_IMAGE_CLASS_NAME}
-                        src={slide.image}
-                      />
+                      <img alt="" className={HERO_IMAGE_CLASS_NAME} src={slide.image} />
                     </div>
                     <p className={HERO_COPY_CLASS_NAME}>{t(slide.copyKey)}</p>
                   </div>
@@ -236,11 +252,10 @@ export function Landing({
                       src={loginLogo}
                     />
                   </div>
-                  <h1 className={WAITING_TITLE_CLASS_NAME}>
-                    {t('landing.waitingTitle')}
-                  </h1>
+                  <h1 className={WAITING_TITLE_CLASS_NAME}>{t('landing.waitingTitle')}</h1>
                 </div>
                 <p className={BODY_CLASS_NAME}>{t('landing.waitingBody')}</p>
+                {elevated ? <p className={BODY_CLASS_NAME}>{t('landing.elevatedHint')}</p> : null}
                 <div className={ACTIONS_CLASS_NAME}>
                   <Button
                     className={ACTION_CLASS_NAME}
@@ -269,9 +284,7 @@ export function Landing({
                       src={loginLogo}
                     />
                   </div>
-                  <h1 className={WAITING_TITLE_CLASS_NAME}>
-                    {t('landing.loggingIn')}
-                  </h1>
+                  <h1 className={WAITING_TITLE_CLASS_NAME}>{t('landing.loggingIn')}</h1>
                 </div>
                 <div className={WAITING_CLASS_NAME}>
                   <Spinner size="sm" />
@@ -291,9 +304,7 @@ export function Landing({
                   <h1 className={TITLE_CLASS_NAME}>{t('landing.title')}</h1>
                 </div>
                 {error && (
-                  <p className={ERROR_CLASS_NAME}>
-                    {loginFailureText(error, accountText)}
-                  </p>
+                  <p className={ERROR_CLASS_NAME}>{loginFailureText(error, accountText)}</p>
                 )}
                 <div className={ACTIONS_CLASS_NAME}>
                   <Button

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-_HOME = Path(tempfile.mkdtemp(prefix="scholarseed-cors-home-"))
+_HOME = Path(tempfile.mkdtemp(prefix="scholarseed-cors-home-")).resolve()
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
 
 from tests._isolate import isolate_research_db  # noqa: E402

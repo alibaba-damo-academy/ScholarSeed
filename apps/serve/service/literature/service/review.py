@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -29,8 +30,12 @@ from service.literature.service.result import (
     authorization_source,
 )
 
+logger = logging.getLogger(__name__)
+
 REVIEW_CARD = "literature-review"
 REVIEW_VERSION: Literal["1.1"] = "1.1"
+REVIEW_RESULT_CHECKPOINT = "result"
+REVIEW_INCOMPLETE_STATUS = "incomplete"
 REVIEW_FILE_BYTES = 16 * 1024 * 1024
 REVIEW_SECTIONS = 8
 REVIEW_CHILDREN = 8
@@ -81,6 +86,12 @@ QUALITY = "05_generation/quality_report.json"
 CITATIONS = "05_generation/citations.bib"
 POSTCHECK = "07_verifier/postcheck/report.json"
 FAST_AUDIT = "07_verifier/fast_audit/output/aggregated_issues.json"
+INCOMPLETE_EVIDENCE_WARNINGS = {
+    (CORPUS,): "检索筛选产物缺失，无法统计最终纳入；请恢复检索与筛选流程。",
+    (FULLTEXT, SUMMARY): "全文与材料处理统计缺失，无法区分全文和摘要级证据。",
+    (GENERATION,): "生成报告缺失，当前正文不能作为已完成综述的证据。",
+    (POSTCHECK,): "核验报告缺失，引用与待核对统计尚不可确认。",
+}
 JSON_FILES = (
     QUERY,
     REQUIREMENTS,
@@ -131,6 +142,7 @@ DOCUMENT_FILES = {
 CHECK_LABELS = {
     "cite_sync": "引用与书目一致性",
     "citation_format": "引用格式完整性",
+    "citation_fidelity": "引用样式一致性",
     "page_render": "页面渲染检查",
     "number_fidelity": "输出数字一致性",
     "req_special": "特殊要求检查",
@@ -146,6 +158,11 @@ PUBLICATION_CITATION_CHECK_IDS = frozenset(
     ("unknown_citations", "bibliography_ownership", "bibliography_definitions")
 )
 PUBLICATION_STATUS_PRIORITY = {"SUCCESS": 0, "WARNING": 1, "FAILED": 2}
+PUBLICATION_PROJECTED_CHECKS = {
+    "citation_metadata": "citation_format",
+    "citation_fidelity": "citation_fidelity",
+}
+METADATA_MISSING_FIELDS = ("missing_required", "missing_recommended", "missing")
 PUBLICATION_CHECK_IDS = frozenset(
     (
         "unknown_citations",
@@ -158,7 +175,7 @@ PUBLICATION_CHECK_IDS = frozenset(
         "bibliography_definitions",
         "visual_inspection_scope",
     )
-)
+) | frozenset(PUBLICATION_PROJECTED_CHECKS)
 PUBLICATION_STRUCTURAL_CHECK_IDS = frozenset(
     ("unresolved_references", "planned_chapters", "planned_tables", "plan_advice")
 )
@@ -240,6 +257,7 @@ class ReviewSnapshot(ReviewRecord):
     abstract_evidence: list[ReviewEvidenceLimitation] = Field(max_length=REVIEW_CITATIONS)
     checks: list[ReviewCheck] = Field(max_length=REVIEW_CHECKS)
     issues: list[ReviewIssue] = Field(max_length=REVIEW_ISSUES)
+    issue_count: int | None = Field(default=None, ge=0)
     warnings: list[str]
     source_hashes: dict[str, str]
     session_id: str = ""
@@ -544,8 +562,12 @@ def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIs
             )
             for entry in check.get("incomplete_entries", []) or []:
                 if isinstance(entry, dict) and _text(entry.get("key")):
-                    missing = _strings(entry.get("missing_required")) + _strings(
-                        entry.get("missing_recommended")
+                    missing = list(
+                        dict.fromkeys(
+                            field
+                            for name in METADATA_MISSING_FIELDS
+                            for field in _strings(entry.get(name))
+                        )
                     )
                     issues.append(
                         ReviewIssue(
@@ -581,7 +603,7 @@ def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIs
                         affected_content=_text(row.get("affected_content") or row.get("location")),
                     )
                 )
-    return issues[:REVIEW_ISSUES]
+    return issues
 
 
 def _publication_reason(check: dict) -> str:
@@ -643,6 +665,17 @@ def _adapt_publication_postcheck(postcheck: dict, generation: dict) -> tuple[dic
                 "reason": _publication_reason(citations),
             }
         )
+    for identity, projected_identity in PUBLICATION_PROJECTED_CHECKS.items():
+        if identity in checks_by_id:
+            check = checks_by_id[identity]
+            checks.append(
+                {
+                    **check,
+                    "id": projected_identity,
+                    "verdict": PUBLICATION_VERDICTS[check["status"]],
+                    "reason": _publication_reason(check),
+                }
+            )
     if "visual_review_required" in postcheck:
         if not postcheck.get("visual_review_required"):
             render_verdict = "NOT_APPLICABLE"
@@ -776,12 +809,24 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     if final is not None and final not in GENERATION_STATUSES:
         raise ValueError("review_generation_status_invalid")
     status = (
-        "outline" if checkpoint == "outline" else GENERATION_PRESENTATION.get(final, "incomplete")
+        "outline"
+        if checkpoint == "outline"
+        else (
+            GENERATION_PRESENTATION.get(final, REVIEW_INCOMPLETE_STATUS)
+            if final is not None
+            else REVIEW_INCOMPLETE_STATUS
+        )
     )
     facts = postcheck.get("facts", {})
     if not isinstance(facts, dict):
         raise ValueError("review_facts_invalid")
-    warnings = []
+    warnings: list[str] = []
+    if checkpoint == REVIEW_RESULT_CHECKPOINT and status == REVIEW_INCOMPLETE_STATUS:
+        warnings.extend(
+            message
+            for artifacts, message in INCOMPLETE_EVIDENCE_WARNINGS.items()
+            if not any(artifact in values for artifact in artifacts)
+        )
     for label, report in (("生成报告", generation), ("核验报告", postcheck)):
         reason = _text(report.get("status_reason") or report.get("reason"))
         if reason:
@@ -809,7 +854,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         intent=intent,
         title=_text(outline.get("survey_title"), REVIEW_TITLE) or "文献综述",
         status=cast(Literal["outline", "generated", "partial", "incomplete", "failed"], status),
-        generation_status=final,
+        generation_status=cast(Literal["SUCCESS", "PARTIAL_SUCCESS", "FAILED"] | None, final),
         scope=_scope(query, writing_request or requirements, corpus),
         output=ReviewOutput(
             format=output.get("format"),
@@ -830,7 +875,8 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         citations=citations,
         abstract_evidence=abstract_evidence[:REVIEW_CITATIONS],
         checks=checks,
-        issues=issues,
+        issues=issues[:REVIEW_ISSUES],
+        issue_count=len(issues),
         warnings=warnings,
         source_hashes=hashes,
     )
@@ -1034,6 +1080,13 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
     for paper in papers:
         for source in paper.sources:
             source_counts[source] = source_counts.get(source, 0) + 1
+    warnings = _strings(report.get("degradations"), REVIEW_CHECKS)
+    if warnings:
+        logger.warning(
+            "literature_retrieval_diagnostics run_id=%s diagnostics=%s",
+            run_id,
+            json.dumps(warnings, ensure_ascii=False),
+        )
     card = SearchResult(
         run_id=run_id,
         round=1,
@@ -1047,7 +1100,7 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
         deduplicated=_count(report.get("input_count")),
         retained=len(corpus),
         papers=papers[:SEARCH_CARD_PAPERS],
-        warnings=_strings(report.get("degradations"), REVIEW_CHECKS),
+        warnings=warnings,
         origin=LITERATURE_REVIEW_ORIGIN,
     )
     included = tuple(

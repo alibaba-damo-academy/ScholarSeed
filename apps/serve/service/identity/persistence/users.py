@@ -22,13 +22,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
-import os
 import secrets
 import time
 from typing import Any, Dict, Optional
 
-from service.paths import AUTH_FILE
+from service.identity.persistence.store import auth_file_lock, load_auth_data, save_auth_data
 
 _PBKDF2_ITERS = 240_000
 
@@ -46,27 +44,6 @@ class UserRepository:
         return verify_password(email, password)
 
 
-# ── 存储 ──
-
-
-def _load() -> Dict[str, Any]:
-    try:
-        return json.loads(AUTH_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"users": [], "tokens": []}
-
-
-def _save(data: Dict[str, Any]) -> None:
-    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = AUTH_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, AUTH_FILE)
-    try:
-        AUTH_FILE.chmod(0o600)
-    except OSError:
-        pass
-
-
 def _hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), bytes.fromhex(salt), _PBKDF2_ITERS
@@ -74,7 +51,7 @@ def _hash_password(password: str, salt: str) -> str:
 
 
 def has_users() -> bool:
-    return bool(_load()["users"])
+    return bool(load_auth_data()["users"])
 
 
 def create_user(email: str, password: str) -> Dict[str, Any]:
@@ -83,9 +60,6 @@ def create_user(email: str, password: str) -> Dict[str, Any]:
         raise ValueError("invalid email")
     if len(password) < 6:
         raise ValueError("password too short (min 6)")
-    data = _load()
-    if any(u["email"] == email for u in data["users"]):
-        raise ValueError(f"user {email} already exists")
     salt = secrets.token_hex(16)
     user = {
         "user_id": f"u-{secrets.token_hex(6)}",
@@ -94,14 +68,18 @@ def create_user(email: str, password: str) -> Dict[str, Any]:
         "password_hash": _hash_password(password, salt),
         "created": time.time(),
     }
-    data["users"].append(user)
-    _save(data)
+    with auth_file_lock():
+        data = load_auth_data()
+        if any(u["email"] == email for u in data["users"]):
+            raise ValueError(f"user {email} already exists")
+        data["users"].append(user)
+        save_auth_data(data)
     return {"user_id": user["user_id"], "email": email}
 
 
 def verify_password(email: str, password: str) -> Optional[Dict[str, Any]]:
     email = email.strip().lower()
-    for u in _load()["users"]:
+    for u in load_auth_data()["users"]:
         if u["email"] == email:
             # Identities without a local password cannot authenticate with one.
             if not u.get("salt") or not u.get("password_hash"):

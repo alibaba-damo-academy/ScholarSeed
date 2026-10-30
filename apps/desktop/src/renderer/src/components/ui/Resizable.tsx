@@ -6,7 +6,7 @@ import type {
   PointerEvent,
   ReactElement,
   ReactNode,
-  Ref
+  Ref,
 } from 'react'
 import {
   Children,
@@ -18,7 +18,7 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState
+  useState,
 } from 'react'
 
 import {
@@ -31,7 +31,7 @@ import {
   resizableSplitMobilePanelClassName,
   resizableSplitPanelClassName,
   resizableStyleClassName,
-  type ResizableDirection
+  type ResizableDirection,
 } from './classes'
 import { cx } from './utils'
 
@@ -61,7 +61,10 @@ function useResizableContext(component: string): ResizableContextValue {
   return context
 }
 
-export interface ResizablePanelGroupProps extends Omit<HTMLAttributes<HTMLDivElement>, 'defaultValue' | 'onChange'> {
+export interface ResizablePanelGroupProps extends Omit<
+  HTMLAttributes<HTMLDivElement>,
+  'defaultValue' | 'onChange'
+> {
   children: ReactNode
   defaultSizes?: number[]
   direction?: ResizableDirection
@@ -71,11 +74,14 @@ export interface ResizablePanelGroupProps extends Omit<HTMLAttributes<HTMLDivEle
 }
 
 export interface ResizablePanelProps extends HTMLAttributes<HTMLDivElement> {
+  animated?: boolean
   defaultSize?: number
   defaultRightWidth?: string
   isCollapsed?: boolean
   isLeftCollapsed?: boolean
   isMobile?: boolean
+  resizeEnabled?: boolean
+  reversed?: boolean
   leftPanel?: ReactNode
   leftWidth?: string
   leftWidthStep?: number
@@ -89,6 +95,7 @@ export interface ResizablePanelProps extends HTMLAttributes<HTMLDivElement> {
   onRightWidthChange?: (width: string) => void
   onRightWidthChangeEnd?: (width: string) => void
   onWidthChange?: (width: string) => void
+  onWidthChangeEnd?: (width: string) => void
   rightPanel?: ReactNode
   rightWidth?: string
   value?: number
@@ -96,9 +103,13 @@ export interface ResizablePanelProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 export interface ResizableHandleProps extends Omit<HTMLAttributes<HTMLDivElement>, 'onKeyDown'> {
+  appearance?: 'default' | 'invisible'
   __index?: number
   disabled?: boolean
   onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void
+  onOffsetChange?: (offset: number) => void
+  onResizeStart?: () => void
+  onResizeEnd?: () => void
 }
 
 type ResizablePanelChildRef = { ref?: Ref<HTMLDivElement> }
@@ -119,6 +130,7 @@ const NORMALIZE_MAX_PASSES = 4
 const FLOAT_EPSILON = 0.0001
 const DEFAULT_LEFT_WIDTH = '445px'
 const RIGHT_WIDTH_PROPERTY = '--vds-resizable-right-width'
+const LEFT_WIDTH_PROPERTY = '--vds-resizable-left-width'
 const SPLIT_MIN_PANEL_WIDTH = 120
 const PIXEL_BOUNDARY_THRESHOLD = 100
 const GRIP_DOT_COUNT = 4
@@ -147,7 +159,8 @@ function useResizePointer(onFinish: () => void, enabled = true) {
   }, [enabled])
 
   const start = (event: PointerEvent<HTMLElement>): boolean => {
-    if (!enabled || event.button !== PRIMARY_POINTER_BUTTON || activePointerRef.current !== null) return false
+    if (!enabled || event.button !== PRIMARY_POINTER_BUTTON || activePointerRef.current !== null)
+      return false
     const target = event.currentTarget
     const pointerId = event.pointerId
     const ownerDocument = target.ownerDocument
@@ -175,7 +188,11 @@ function useResizePointer(onFinish: () => void, enabled = true) {
       if (pointerEvent.pointerId === pointerId) finish(true)
     }
     const handleMove = (pointerEvent: globalThis.PointerEvent): void => {
-      if (pointerEvent.pointerId === pointerId && !(pointerEvent.buttons & PRIMARY_POINTER_BUTTON_MASK)) finish(true)
+      if (
+        pointerEvent.pointerId === pointerId &&
+        !(pointerEvent.buttons & PRIMARY_POINTER_BUTTON_MASK)
+      )
+        finish(true)
     }
     const handleBlur = (): void => finish(true)
     const handleVisibility = (): void => {
@@ -213,7 +230,7 @@ function widthToPixels(width: string, hostWidth: number): number {
 }
 
 function ResizableGripDots({
-  direction = 'horizontal'
+  direction = 'horizontal',
 }: {
   direction?: ResizableDirection
 }): React.JSX.Element {
@@ -246,7 +263,7 @@ function getPanelConfigs(children: ReactNode): PanelConfig[] {
     configs.push({
       defaultSize: child.props.defaultSize,
       max: child.props.maxSize ?? DEFAULT_MAX_SIZE,
-      min: child.props.minSize ?? DEFAULT_MIN_SIZE
+      min: child.props.minSize ?? DEFAULT_MIN_SIZE,
     })
   })
   return configs
@@ -292,10 +309,15 @@ function normalizeSizes(sizes: number[], configs: PanelConfig[]): number[] {
       0
     )
     const remaining = Math.max(PERCENTAGE_TOTAL - lockedTotal, 0)
-    const flexibleTotal = flexibleIndexes.reduce((sum, index) => sum + Math.max(constrainedSizes[index], 0), 0)
+    const flexibleTotal = flexibleIndexes.reduce(
+      (sum, index) => sum + Math.max(constrainedSizes[index], 0),
+      0
+    )
     flexibleIndexes.forEach((index) => {
       constrainedSizes[index] =
-        flexibleTotal > 0 ? (Math.max(constrainedSizes[index], 0) / flexibleTotal) * remaining : remaining / flexibleIndexes.length
+        flexibleTotal > 0
+          ? (Math.max(constrainedSizes[index], 0) / flexibleTotal) * remaining
+          : remaining / flexibleIndexes.length
     })
   }
 
@@ -306,7 +328,11 @@ function rebalanceTotal(sizes: number[], configs: PanelConfig[]): number[] {
   const nextSizes = [...sizes]
   let total = nextSizes.reduce((sum, size) => sum + size, 0)
 
-  for (let pass = 0; pass < NORMALIZE_MAX_PASSES && Math.abs(total - PERCENTAGE_TOTAL) > FLOAT_EPSILON; pass += 1) {
+  for (
+    let pass = 0;
+    pass < NORMALIZE_MAX_PASSES && Math.abs(total - PERCENTAGE_TOTAL) > FLOAT_EPSILON;
+    pass += 1
+  ) {
     const excess = total - PERCENTAGE_TOTAL
     const shrinking = excess > 0
     const adjustableIndexes = nextSizes
@@ -339,7 +365,12 @@ function rebalanceTotal(sizes: number[], configs: PanelConfig[]): number[] {
   return nextSizes
 }
 
-function resizePair(sizes: number[], configs: PanelConfig[], handleIndex: number, delta: number): number[] {
+function resizePair(
+  sizes: number[],
+  configs: PanelConfig[],
+  handleIndex: number,
+  delta: number
+): number[] {
   const beforeIndex = handleIndex
   const afterIndex = handleIndex + 1
   const before = sizes[beforeIndex]
@@ -400,7 +431,7 @@ export const ResizablePanelGroup = forwardRef<HTMLDivElement, ResizablePanelGrou
         resizeHandle: (index, delta) => {
           commitSizes(resizePair(currentSizes, panelConfigsRef.current, index, delta))
         },
-        sizes: currentSizes
+        sizes: currentSizes,
       }),
       [currentSizes, direction, disabled, onSizesChange, panelConfigs, sizes]
     )
@@ -411,8 +442,11 @@ export const ResizablePanelGroup = forwardRef<HTMLDivElement, ResizablePanelGrou
     return (
       <ResizableContext.Provider value={context}>
         <div
-          aria-disabled={disabled || undefined}
-          className={cx(resizableClassName({ className, direction, disabled }), resizableStyleClassName({ direction, disabled }))}
+          data-resize-disabled={disabled || undefined}
+          className={cx(
+            resizableClassName({ className, direction, disabled }),
+            resizableStyleClassName({ direction, disabled })
+          )}
           data-direction={direction}
           ref={ref}
           {...props}
@@ -427,7 +461,7 @@ export const ResizablePanelGroup = forwardRef<HTMLDivElement, ResizablePanelGrou
               panelIndex += 1
               return cloneElement(child as ReactElement<ResizableChildProps>, {
                 __index: currentIndex,
-                ref: childRef
+                ref: childRef,
               })
             }
 
@@ -436,7 +470,7 @@ export const ResizablePanelGroup = forwardRef<HTMLDivElement, ResizablePanelGrou
               handleIndex += 1
               return cloneElement(child as ReactElement<ResizableChildProps>, {
                 __index: currentIndex,
-                ref: childRef
+                ref: childRef,
               })
             }
 
@@ -454,6 +488,7 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
   (
     {
       __index = 0,
+      animated = false,
       children,
       className,
       defaultSize,
@@ -461,6 +496,8 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
       isCollapsed,
       isLeftCollapsed = false,
       isMobile = false,
+      resizeEnabled = true,
+      reversed = false,
       leftPanel,
       leftWidth = DEFAULT_LEFT_WIDTH,
       leftWidthStep,
@@ -474,6 +511,7 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
       onRightWidthChange,
       onRightWidthChangeEnd,
       onWidthChange,
+      onWidthChangeEnd,
       rightPanel,
       rightWidth,
       style,
@@ -489,10 +527,15 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
     // 拖动开始时缓存的容器宽度：move 内不再 getBoundingClientRect，避免每步强制同步布局
     const hostWidthRef = useRef(0)
     const [currentLeftWidth, setCurrentLeftWidth] = useState(leftWidth)
+    const latestLeftWidthRef = useRef(leftWidth)
     const [uncontrolledRightWidth, setUncontrolledRightWidth] = useState(
       rightWidth ?? defaultRightWidth
     )
     const latestRightWidthRef = useRef(rightWidth ?? defaultRightWidth)
+    useEffect(() => {
+      latestLeftWidthRef.current = leftWidth
+      setCurrentLeftWidth(leftWidth)
+    }, [leftWidth])
     const setRefs = (node: HTMLDivElement | null): void => {
       hostRef.current = node
       if (typeof ref === 'function') ref(node)
@@ -503,24 +546,39 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
     const commitSplitWidth = (nextPixels: number): void => {
       const hostWidth = hostWidthRef.current
       if (hostWidth <= 0) return
-      const safeMinPixels = Math.max(splitBoundaryToPixels(minLeftWidth, hostWidth), SPLIT_MIN_PANEL_WIDTH)
+      const safeMinPixels = Math.max(
+        splitBoundaryToPixels(minLeftWidth, hostWidth),
+        SPLIT_MIN_PANEL_WIDTH
+      )
       const safeMaxPixels = Math.max(
         safeMinPixels,
-        Math.min(splitBoundaryToPixels(maxLeftWidth, hostWidth), hostWidth - SPLIT_MIN_PANEL_WIDTH)
+        Math.min(
+          splitBoundaryToPixels(maxLeftWidth, hostWidth),
+          hostWidth -
+            Math.max(splitBoundaryToPixels(minRightWidth, hostWidth), SPLIT_MIN_PANEL_WIDTH)
+        )
       )
       const constrainedPixels = clamp(nextPixels, safeMinPixels, safeMaxPixels)
-      const steppedPixels = leftWidthStep && leftWidthStep > 0
-        ? Math.round(constrainedPixels / leftWidthStep) * leftWidthStep
-        : constrainedPixels
+      const steppedPixels =
+        leftWidthStep && leftWidthStep > 0
+          ? Math.round(constrainedPixels / leftWidthStep) * leftWidthStep
+          : constrainedPixels
       const nextWidth = `${clamp(steppedPixels, safeMinPixels, safeMaxPixels)}px`
-      setCurrentLeftWidth(nextWidth)
+      latestLeftWidthRef.current = nextWidth
+      hostRef.current?.style.setProperty(LEFT_WIDTH_PROPERTY, nextWidth)
       onWidthChange?.(nextWidth)
     }
     const commitRightSplitWidth = (nextPixels: number): void => {
       const hostWidth = hostWidthRef.current
       if (hostWidth <= 0) return
-      const safeMinPixels = Math.max(splitBoundaryToPixels(minRightWidth, hostWidth), SPLIT_MIN_PANEL_WIDTH)
-      const leftMinPixels = Math.max(splitBoundaryToPixels(minLeftWidth, hostWidth), SPLIT_MIN_PANEL_WIDTH)
+      const safeMinPixels = Math.max(
+        splitBoundaryToPixels(minRightWidth, hostWidth),
+        SPLIT_MIN_PANEL_WIDTH
+      )
+      const leftMinPixels = Math.max(
+        splitBoundaryToPixels(minLeftWidth, hostWidth),
+        SPLIT_MIN_PANEL_WIDTH
+      )
       const safeMaxPixels = Math.max(
         safeMinPixels,
         Math.min(splitBoundaryToPixels(maxRightWidth, hostWidth), hostWidth - leftMinPixels)
@@ -540,56 +598,112 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
       }
       if (nextWidth !== undefined) onRightWidthChangeEnd?.(nextWidth)
     }
-    const splitPointer = useResizePointer(() => {
-      pointerStartRef.current = null
-      if ((rightWidth ?? uncontrolledRightWidth) !== undefined) finishRightSplitResize()
-    }, !isMobile && !isLeftCollapsed && !(isCollapsed ?? !rightPanel))
+    const splitPointer = useResizePointer(
+      () => {
+        pointerStartRef.current = null
+        if ((rightWidth ?? uncontrolledRightWidth) !== undefined) finishRightSplitResize()
+        else {
+          setCurrentLeftWidth(latestLeftWidthRef.current)
+          onWidthChangeEnd?.(latestLeftWidthRef.current)
+        }
+      },
+      resizeEnabled && !isMobile && !isLeftCollapsed && !(isCollapsed ?? !rightPanel)
+    )
 
     if (leftPanel !== undefined || rightPanel !== undefined) {
       const currentRightWidth = rightWidth ?? uncontrolledRightWidth
+      const animateSplit = animated && !isMobile
       const collapsed = isCollapsed ?? !rightPanel
       const parsedWidth = parsePercentage(currentLeftWidth)
-      const percentageMinWidth = Math.min(Math.max(minLeftWidth, 0), PERCENTAGE_TOTAL)
-      const percentageMaxWidth = Math.min(Math.max(maxLeftWidth, percentageMinWidth), PERCENTAGE_TOTAL)
-      const constrainedWidth = parsedWidth === undefined
-        ? currentLeftWidth
-        : `${clamp(parsedWidth, percentageMinWidth, percentageMaxWidth)}%`
+      const percentageMinWidth = minLeftWidth > PERCENTAGE_TOTAL ? 0 : Math.max(minLeftWidth, 0)
+      const percentageMaxWidth = Math.min(
+        Math.max(maxLeftWidth, percentageMinWidth),
+        PERCENTAGE_TOTAL
+      )
+      const constrainedWidth =
+        parsedWidth === undefined
+          ? currentLeftWidth
+          : `${clamp(parsedWidth, percentageMinWidth, percentageMaxWidth)}%`
       const rightSized = currentRightWidth !== undefined
-      const parsedRightWidth = currentRightWidth === undefined ? undefined : parsePercentage(currentRightWidth)
-      const percentageMinRightWidth = Math.min(Math.max(minRightWidth, 0), PERCENTAGE_TOTAL)
+      const parsedRightWidth =
+        currentRightWidth === undefined ? undefined : parsePercentage(currentRightWidth)
+      const percentageMinRightWidth =
+        minRightWidth > PERCENTAGE_TOTAL ? 0 : Math.max(minRightWidth, 0)
       const percentageMaxRightWidth = Math.min(
         Math.max(maxRightWidth, percentageMinRightWidth),
         PERCENTAGE_TOTAL
       )
-      const constrainedRightWidth = parsedRightWidth === undefined
-        ? currentRightWidth ?? ''
-        : `${clamp(parsedRightWidth, percentageMinRightWidth, percentageMaxRightWidth)}%`
-      const leftPanelWidth = rightSized ? 'auto' : constrainedWidth
-      const rightPanelWidth = rightSized ? constrainedRightWidth : `calc(100% - ${constrainedWidth})`
+      const constrainedRightWidth =
+        parsedRightWidth === undefined
+          ? (currentRightWidth ?? '')
+          : `${clamp(parsedRightWidth, percentageMinRightWidth, percentageMaxRightWidth)}%`
+      const leftPanelWidth = rightSized ? 'auto' : `var(${LEFT_WIDTH_PROPERTY})`
+      const rightPanelWidth = rightSized
+        ? constrainedRightWidth
+        : `calc(100% - var(${LEFT_WIDTH_PROPERTY}))`
       const splitStyle = rightSized
         ? ({ ...style, [RIGHT_WIDTH_PROPERTY]: rightPanelWidth } as CSSProperties)
-        : style
+        : ({ ...style, [LEFT_WIDTH_PROPERTY]: constrainedWidth } as CSSProperties)
 
       return (
         <div
-          className={cx(resizableSplitClassName, 'group', isMobile && resizableSplitMobileClassName, className)}
+          className={cx(
+            resizableSplitClassName,
+            'group',
+            isMobile && resizableSplitMobileClassName,
+            reversed && !isMobile && '!flex-row-reverse',
+            className
+          )}
           data-resizing={splitPointer.isResizing || undefined}
           ref={setRefs}
           style={splitStyle}
           {...props}
         >
           <div
-            className={cx(resizableSplitPanelClassName, resizableSplitMobilePanelClassName, 'vds-resizable-split__panel--left')}
-            hidden={isLeftCollapsed}
+            className={cx(
+              resizableSplitPanelClassName,
+              resizableSplitMobilePanelClassName,
+              'vds-resizable-split__panel--left',
+              animateSplit &&
+                !splitPointer.isResizing &&
+                'transition-[width] duration-[var(--vds-duration-normal)] ease-[var(--vds-ease-standard)] motion-reduce:transition-none',
+              animateSplit && 'overflow-hidden'
+            )}
+            hidden={!animateSplit && isLeftCollapsed}
+            aria-hidden={isLeftCollapsed || undefined}
+            ref={(element) => {
+              if (element) element.inert = isLeftCollapsed
+            }}
             style={{
-              flex: rightSized && !collapsed && !isLeftCollapsed ? '1 1 auto' : undefined,
-              minWidth: rightSized && !collapsed && !isLeftCollapsed ? splitBoundaryToCss(minLeftWidth) : undefined,
-              width: isLeftCollapsed ? '0%' : collapsed ? '100%' : leftPanelWidth
+              flex:
+                animateSplit && !rightSized
+                  ? '0 0 auto'
+                  : !collapsed && !isLeftCollapsed
+                    ? rightSized
+                      ? '1 1 auto'
+                      : '0 0 auto'
+                    : undefined,
+              minWidth: animateSplit
+                ? 0
+                : !collapsed && !isLeftCollapsed
+                  ? splitBoundaryToCss(minLeftWidth)
+                  : undefined,
+              maxWidth:
+                !animateSplit && !rightSized && !collapsed && !isLeftCollapsed
+                  ? `min(${splitBoundaryToCss(maxLeftWidth)}, calc(100% - ${splitBoundaryToCss(minRightWidth)}))`
+                  : undefined,
+              width: isLeftCollapsed
+                ? '0%'
+                : collapsed
+                  ? '100%'
+                  : animateSplit && !rightSized
+                    ? `clamp(${splitBoundaryToCss(minLeftWidth)}, ${leftPanelWidth}, min(${splitBoundaryToCss(maxLeftWidth)}, calc(100% - ${splitBoundaryToCss(minRightWidth)})))`
+                    : leftPanelWidth,
             }}
           >
             {leftPanel}
           </div>
-          {!collapsed && !isLeftCollapsed && !isMobile ? (
+          {resizeEnabled && !collapsed && !isLeftCollapsed && !isMobile ? (
             <button
               aria-label={t('resize.action')}
               className={cx(
@@ -601,17 +715,21 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
               onPointerDown={(event) => {
                 if (!splitPointer.start(event)) return
                 pointerStartRef.current = event.clientX
-                const hostWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? 0
+                const hostWidth =
+                  event.currentTarget.parentElement?.getBoundingClientRect().width ?? 0
                 hostWidthRef.current = hostWidth
-                const renderedRightWidth = event.currentTarget.nextElementSibling?.getBoundingClientRect().width
-                widthStartRef.current = rightSized && renderedRightWidth !== undefined
-                  ? renderedRightWidth
-                  : widthToPixels(constrainedWidth, hostWidth)
+                const renderedRightWidth =
+                  event.currentTarget.nextElementSibling?.getBoundingClientRect().width
+                widthStartRef.current =
+                  rightSized && renderedRightWidth !== undefined
+                    ? renderedRightWidth
+                    : widthToPixels(constrainedWidth, hostWidth)
+                if (!rightSized) latestLeftWidthRef.current = `${widthStartRef.current}px`
                 if (rightSized) latestRightWidthRef.current = `${widthStartRef.current}px`
               }}
               onPointerMove={(event) => {
                 if (!splitPointer.ownsPointer(event) || pointerStartRef.current === null) return
-                const delta = event.clientX - pointerStartRef.current
+                const delta = (event.clientX - pointerStartRef.current) * (reversed ? -1 : 1)
                 if (rightSized) commitRightSplitWidth(widthStartRef.current - delta)
                 else commitSplitWidth(widthStartRef.current + delta)
               }}
@@ -619,8 +737,11 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
                 if (rightSized && rightWidth !== undefined) {
                   onRightWidthChange?.(rightWidth)
                 } else {
+                  latestLeftWidthRef.current = leftWidth
+                  hostRef.current?.style.setProperty(LEFT_WIDTH_PROPERTY, leftWidth)
                   setCurrentLeftWidth(leftWidth)
                   onWidthChange?.(leftWidth)
+                  onWidthChangeEnd?.(leftWidth)
                 }
                 onToggleCollapse?.()
               }}
@@ -629,18 +750,42 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
             </button>
           ) : null}
           <div
-            className={cx(resizableSplitPanelClassName, resizableSplitMobilePanelClassName, 'vds-resizable-split__panel--right')}
-            hidden={collapsed}
+            className={cx(
+              resizableSplitPanelClassName,
+              resizableSplitMobilePanelClassName,
+              'vds-resizable-split__panel--right',
+              animateSplit &&
+                !splitPointer.isResizing &&
+                'transition-[width] duration-[var(--vds-duration-normal)] ease-[var(--vds-ease-standard)] motion-reduce:transition-none',
+              animateSplit && 'overflow-hidden'
+            )}
+            hidden={!animateSplit && collapsed}
+            aria-hidden={collapsed || undefined}
+            ref={(element) => {
+              if (element) element.inert = collapsed
+            }}
             style={{
               // 宽度由 --vds-resizable-right-width 唯一决定：禁用 flex 收缩，否则相邻
               // 面板出现宽内容（如文献宽表）时 basis 变大，本面板会被 flex 挤窄，
               // 表现为「切换视图后面板宽度变了」，而宽度变量本身没动。
-              flex: rightSized ? '0 0 auto' : undefined,
+              flex: rightSized ? '0 0 auto' : isMobile ? undefined : '1 1 0%',
               maxWidth: rightSized
                 ? `min(${splitBoundaryToCss(maxRightWidth)}, calc(100% - ${splitBoundaryToCss(minLeftWidth)}))`
                 : undefined,
-              minWidth: rightSized ? splitBoundaryToCss(minRightWidth) : undefined,
-              width: collapsed ? '0%' : isLeftCollapsed ? '100%' : rightSized ? `var(${RIGHT_WIDTH_PROPERTY})` : rightPanelWidth
+              minWidth: animateSplit
+                ? 0
+                : rightSized
+                  ? splitBoundaryToCss(minRightWidth)
+                  : undefined,
+              width: collapsed
+                ? '0%'
+                : isLeftCollapsed
+                  ? '100%'
+                  : rightSized
+                    ? animateSplit
+                      ? `clamp(${splitBoundaryToCss(minRightWidth)}, var(${RIGHT_WIDTH_PROPERTY}), min(${splitBoundaryToCss(maxRightWidth)}, calc(100% - ${splitBoundaryToCss(minLeftWidth)})))`
+                      : `var(${RIGHT_WIDTH_PROPERTY})`
+                    : rightPanelWidth,
             }}
           >
             {rightPanel}
@@ -675,33 +820,41 @@ export const ResizableHandle = forwardRef<HTMLDivElement, ResizableHandleProps>(
   (
     {
       __index = 0,
+      appearance = 'default',
       className,
       disabled,
       onKeyDown,
       onPointerCancel,
       onPointerDown,
       onPointerUp,
+      onOffsetChange,
+      onResizeStart,
+      onResizeEnd,
       ...props
     },
     ref
   ) => {
-    const context = useResizableContext('ResizableHandle')
-    const isDisabled = context.disabled || disabled
+    const context = useContext(ResizableContext)
+    if (!context && !onOffsetChange)
+      throw new Error('ResizableHandle requires a panel group or onOffsetChange')
+    const direction = context?.direction ?? 'horizontal'
+    const isDisabled = context?.disabled || disabled
     const pointerStartRef = useRef<number | null>(null)
     const sizeStartRef = useRef<number[]>([])
     const pointer = useResizePointer(() => {
       pointerStartRef.current = null
       sizeStartRef.current = []
+      onResizeEnd?.()
     }, !isDisabled)
-    const beforeSize = context.sizes[__index] ?? DEFAULT_PANEL_SIZE
-    const afterSize = context.sizes[__index + 1] ?? DEFAULT_PANEL_SIZE
-    const beforeConfig = context.panelConfigs[__index] ?? {
+    const beforeSize = context?.sizes[__index] ?? DEFAULT_PANEL_SIZE
+    const afterSize = context?.sizes[__index + 1] ?? DEFAULT_PANEL_SIZE
+    const beforeConfig = context?.panelConfigs[__index] ?? {
       max: DEFAULT_MAX_SIZE,
-      min: DEFAULT_MIN_SIZE
+      min: DEFAULT_MIN_SIZE,
     }
-    const afterConfig = context.panelConfigs[__index + 1] ?? {
+    const afterConfig = context?.panelConfigs[__index + 1] ?? {
       max: DEFAULT_MAX_SIZE,
-      min: DEFAULT_MIN_SIZE
+      min: DEFAULT_MIN_SIZE,
     }
     const valueMin = beforeConfig.min
     const valueMax = Math.min(beforeConfig.max, beforeSize + afterSize - afterConfig.min)
@@ -710,7 +863,11 @@ export const ResizableHandle = forwardRef<HTMLDivElement, ResizableHandleProps>(
       const pointerStart = pointerStartRef.current
       if (pointerStart === null) return
 
-      const pointerCurrent = context.direction === 'horizontal' ? event.clientX : event.clientY
+      const pointerCurrent = direction === 'horizontal' ? event.clientX : event.clientY
+      if (!context) {
+        onOffsetChange?.(pointerCurrent - pointerStart)
+        return
+      }
       const hostSize =
         context.direction === 'horizontal'
           ? event.currentTarget.parentElement?.getBoundingClientRect().width
@@ -727,30 +884,36 @@ export const ResizableHandle = forwardRef<HTMLDivElement, ResizableHandleProps>(
       if (event.defaultPrevented || isDisabled) return
 
       const keyDelta: Record<string, number | undefined> = {
-        ArrowDown: context.direction === 'vertical' ? KEYBOARD_STEP : undefined,
-        ArrowLeft: context.direction === 'horizontal' ? -KEYBOARD_STEP : undefined,
-        ArrowRight: context.direction === 'horizontal' ? KEYBOARD_STEP : undefined,
-        ArrowUp: context.direction === 'vertical' ? -KEYBOARD_STEP : undefined,
-        End: PERCENTAGE_TOTAL,
-        Home: -PERCENTAGE_TOTAL
+        ArrowDown: direction === 'vertical' ? KEYBOARD_STEP : undefined,
+        ArrowLeft: direction === 'horizontal' ? -KEYBOARD_STEP : undefined,
+        ArrowRight: direction === 'horizontal' ? KEYBOARD_STEP : undefined,
+        ArrowUp: direction === 'vertical' ? -KEYBOARD_STEP : undefined,
+        End: context ? PERCENTAGE_TOTAL : undefined,
+        Home: context ? -PERCENTAGE_TOTAL : undefined,
       }
       const delta = keyDelta[event.key]
       if (delta === undefined) return
 
       event.preventDefault()
-      context.resizeHandle(__index, delta)
+      if (context) context.resizeHandle(__index, delta)
+      else {
+        onResizeStart?.()
+        onOffsetChange?.(delta)
+        onResizeEnd?.()
+      }
     }
 
     return (
       <div
         aria-disabled={isDisabled || undefined}
-        aria-orientation={context.direction}
-        aria-valuemax={valueMax}
-        aria-valuemin={valueMin}
-        aria-valuenow={beforeSize}
+        aria-orientation={context ? direction : 'vertical'}
+        aria-valuemax={context ? valueMax : undefined}
+        aria-valuemin={context ? valueMin : undefined}
+        aria-valuenow={context ? beforeSize : undefined}
         className={cx(
-          resizableHandleClassName,
-          'group/resizable-handle after:![background-image:none]',
+          appearance === 'invisible'
+            ? 'cursor-ew-resize touch-none select-none'
+            : cx(resizableHandleClassName, 'group/resizable-handle after:![background-image:none]'),
           className
         )}
         data-resizing={pointer.isResizing || undefined}
@@ -761,8 +924,9 @@ export const ResizableHandle = forwardRef<HTMLDivElement, ResizableHandleProps>(
         onPointerDown={(event) => {
           onPointerDown?.(event)
           if (event.defaultPrevented || !pointer.start(event)) return
-          pointerStartRef.current = context.direction === 'horizontal' ? event.clientX : event.clientY
-          sizeStartRef.current = context.sizes
+          onResizeStart?.()
+          pointerStartRef.current = direction === 'horizontal' ? event.clientX : event.clientY
+          sizeStartRef.current = context?.sizes ?? []
         }}
         onPointerMove={(event) => {
           if (isDisabled || !pointer.ownsPointer(event)) return
@@ -772,7 +936,7 @@ export const ResizableHandle = forwardRef<HTMLDivElement, ResizableHandleProps>(
         onPointerCancel={onPointerCancel}
         {...props}
       >
-        <ResizableGripDots direction={context.direction} />
+        {appearance !== 'invisible' && <ResizableGripDots direction={direction} />}
       </div>
     )
   }

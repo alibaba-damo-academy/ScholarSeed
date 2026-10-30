@@ -21,3 +21,14 @@ test('failed submissions restore before any draft typed while sending', () => {
   assert.equal(restoreComposerDraft('原问题', ''), '原问题')
   assert.equal(restoreComposerDraft('原问题', '后续草稿'), '原问题\n后续草稿')
 })
+
+test('draft revisions distinguish edits that return to the submitted text', () => {
+  const draft = createComposerDraftStore('submitted')
+  const revision = draft.getRevision()
+  draft.set('submitted')
+  assert.equal(draft.getRevision(), revision)
+  draft.set('')
+  draft.set('submitted')
+  assert.equal(draft.getSnapshot(), 'submitted')
+  assert.equal(draft.getRevision(), revision + 2)
+})

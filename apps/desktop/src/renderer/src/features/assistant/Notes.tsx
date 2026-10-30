@@ -32,16 +32,16 @@ const COMMENT_MAX_LENGTH = 600
 
 // 设计稿: 注释标识为蓝色圆形气泡 + 白色序号, 左下角带小尾巴;
 const ANNOTATION_BADGE_CLASS =
-  'relative inline-grid size-5 place-items-center rounded-[var(--vds-radius-circle)] border-0 bg-transparent p-0 text-[10px] font-[var(--vds-fw-semibold)] text-[var(--vds-static-white)] shadow-none focus-visible:shadow-[var(--vds-focus-brand)]'
+  'relative inline-grid size-[var(--vds-badge-height-sm)] place-items-center rounded-[var(--vds-radius-circle)] border-0 bg-transparent p-0 text-[length:var(--vds-font-caption)] font-[var(--vds-fw-semibold)] text-[var(--vds-static-white)] shadow-none focus-visible:shadow-[var(--vds-focus-brand)]'
 
 // 设计稿: hover 标识时为白色圆角气泡仅展示备注文本; 点击标识为可编辑弹窗,
 // 两者共用 raised 卡片外壳, 编辑弹窗点击外部区域由 Popover 默认行为关闭。
 const NOTE_TOOLTIP_CLASS =
-  '!gap-0 !max-w-[min(320px,calc(100vw-32px))] !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] !p-0 shadow-[var(--vds-shadow-md)]'
+  '!gap-0 !max-w-[var(--vds-assistant-floating-panel-width)] !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] !p-0 shadow-[var(--vds-shadow-md)]'
 const NOTE_TOOLTIP_CONTENT_CLASS =
-  'whitespace-pre-wrap px-[6px] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]'
+  'whitespace-pre-wrap px-[calc(var(--vds-space-1)+var(--vds-space-half))] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]'
 const NOTE_EDITOR_POPOVER_CLASS =
-  '!w-[320px] !max-w-[calc(100vw-32px)] !gap-0 overflow-hidden !rounded-[var(--vds-radius-6)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-down)]'
+  '!w-[var(--vds-assistant-floating-panel-width)] !max-w-none !gap-0 overflow-hidden !rounded-[var(--vds-radius-6)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] !p-0 !shadow-[var(--vds-shadow-2-down)]'
 
 export function AnnotationBadge({
   className,
@@ -298,26 +298,26 @@ export function AnnotationDetails({
   }
 
   return (
-    <div className="max-h-80 overflow-auto px-4 py-3">
+    <div className="max-h-[var(--vds-assistant-notes-max-height)] overflow-auto px-[var(--vds-space-4)] py-[var(--vds-space-3)]">
       {annotations.map((annotation, index) => {
         const number = numberForAnnotation?.(annotation.id, index) ?? index + 1
         const statusLabel = locationLabel(annotation.id)
         return (
           <div
-            className="grid grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-2 border-0 border-b border-solid border-[var(--vds-divider-color)] py-3 first:pt-0 last:border-b-0 last:pb-0"
+            className="grid grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-[var(--vds-space-2)] border-0 border-b border-solid border-[var(--vds-divider-color)] py-[var(--vds-space-3)] first:pt-0 last:border-b-0 last:pb-0"
             data-testid={`answer-annotation-details-${annotation.id}`}
             key={annotation.id}
           >
-            <span className="pt-px text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-secondary)]">
+            <span className="pt-[var(--vds-border-width-1)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-secondary)]">
               {number}.
             </span>
             <div className="min-w-0">
-              <div className="text-[length:var(--vds-font-body-lv2)] leading-5 text-[var(--vds-text-tertiary)]">
+              <div className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-tertiary)]">
                 {t('annotation.selectedText')}
               </div>
               {onOpenOriginal ? (
                 <Button
-                  className="h-auto min-h-0 w-full justify-start whitespace-pre-wrap p-0 text-left text-[length:var(--vds-font-body-lv2)] leading-6 !text-[var(--vds-text-primary)] hover:underline"
+                  className="h-auto min-h-0 w-full justify-start whitespace-pre-wrap p-0 text-left text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] !text-[var(--vds-text-primary)] hover:underline"
                   data-testid={`answer-annotation-open-${annotation.id}`}
                   onClick={() => onOpenOriginal(annotation.id)}
                   unstyled
@@ -325,22 +325,22 @@ export function AnnotationDetails({
                   {annotation.previewText}
                 </Button>
               ) : (
-                <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-6 font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
                   {annotation.previewText}
                 </div>
               )}
               {annotation.comment ? (
-                <div className="mt-2">
-                  <div className="text-[length:var(--vds-font-body-lv2)] leading-5 text-[var(--vds-text-tertiary)]">
+                <div className="mt-[var(--vds-space-2)]">
+                  <div className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-tertiary)]">
                     {t('annotation.userComment')}
                   </div>
-                  <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-6 text-[var(--vds-text-primary)]">
+                  <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
                     {annotation.comment}
                   </div>
                 </div>
               ) : null}
               {onEdit && editingId === annotation.id ? (
-                <div className="mt-2 space-y-2">
+                <div className="mt-[var(--vds-space-2)] space-y-[var(--vds-space-2)]">
                   <Input
                     aria-label={t('remaining.editNote', { number })}
                     autoFocus
@@ -354,7 +354,7 @@ export function AnnotationDetails({
                     }}
                     value={commentDraft}
                   />
-                  <div className="flex justify-end gap-2">
+                  <div className="flex justify-end gap-[var(--vds-space-2)]">
                     <Button
                       disabled={saving}
                       onClick={() => setEditingId(null)}
@@ -375,7 +375,7 @@ export function AnnotationDetails({
                 </div>
               ) : null}
               {statusLabel ? (
-                <Badge className="mt-2" size="sm" tone="warning">
+                <Badge className="mt-[var(--vds-space-2)]" size="sm" tone="warning">
                   {statusLabel}
                 </Badge>
               ) : null}

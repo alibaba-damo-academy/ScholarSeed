@@ -19,7 +19,9 @@ from service.chat.service.settings import SettingsService
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
+from service.platform.activity import Activities
 from service.platform.resources import ManagementState, RestorePolicy, TurnOutcome, VersionOrigin
+from service.platform.storage import filesystem_path
 from service.resources.api.settings import register_version_setting_routes
 from service.resources.persistence.objects import CasEntryKind, CasLayout, CasStore
 from service.resources.service.activation import ResourceActivation
@@ -91,7 +93,7 @@ def main() -> int:
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         project = registry.create("保留策略")
         target = Path(project.root) / "resources" / "notes.md"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -120,7 +122,9 @@ def main() -> int:
             )
             first_file_id = sealed.version.file_id
 
-        supervisor = ResourceVersionSupervisor(content, versions, WorkbenchFormatPolicy(), settings)
+        supervisor = ResourceVersionSupervisor(
+            content, versions, WorkbenchFormatPolicy(), settings, activities=Activities()
+        )
         preview = retention.preview(2, ("*.md", "*.pdf"), ("*.log",))
         check("lowering limit previews exact version deletions", preview.delete_versions == 2)
         check("retention preview counts distinct affected files", preview.affected_files == 1)
@@ -173,7 +177,9 @@ def main() -> int:
             "retention moves unreachable objects out of the canonical CAS",
             expired_object_ids.isdisjoint(canonical_objects),
         )
-        trash_root = Path(content.resolve(project.id, PROJECT_VERSIONS_RELATIVE)) / "trash"
+        trash_root = (
+            filesystem_path(content.resolve(project.id, PROJECT_VERSIONS_RELATIVE)) / "trash"
+        )
         check(
             "first GC pass preserves unreachable bytes in epoch trash",
             any(item.is_file() for item in trash_root.rglob("*")),
@@ -213,7 +219,9 @@ def main() -> int:
 
         delivery_target = Path(project.root) / "resources" / "delivery.md"
         delivery_target.write_text("delivery 1\n", encoding="utf-8")
-        deliveries = ResourceDeliveryService(content, versions, supervisor)
+        deliveries = ResourceDeliveryService(
+            content, versions, supervisor, activities=supervisor._activities
+        )
         recovery = ResourceRecoveryService(content, retention, annotations)
         supervisor.bind_preparation(
             ResourceActivation(

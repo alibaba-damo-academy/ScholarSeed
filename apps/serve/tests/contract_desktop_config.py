@@ -4,33 +4,32 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import stat
-import subprocess
+import re
 import tempfile
 from contextlib import redirect_stderr
+from dataclasses import FrozenInstanceError
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from scholarseed_runtime.contract.resource import RESOURCE_LIFECYCLE_LOGGER
+from service import bootstrap
 from service.cli.desktop import synchronize_source_skills
-from service.cli.serve import (
-    CONFIG_FILE_MODE,
-    _configure_resource_logging,
-    seed_user_config,
-)
+from service.cli.serve import _configure_resource_logging
+from service.settings.config import seed_user_config
+from tests.storage_permissions import private_file
 
 PASS = 0
 FAIL = 0
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BUNDLE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "bundle.cjs"
-PACKAGE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "build.cjs"
-BUILD_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "build.cjs"
-VERIFY_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "verify.cjs"
-SIGN_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "sign.cjs"
+BUNDLE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "bundle.cjs"
+PACKAGE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "build.cjs"
+BUILD_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "build.cjs"
+VERIFY_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "verify.cjs"
+SIGN_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "cd" / "sign.cjs"
 # baseline.cjs 是 Skillhub 交付基线提升器, 开源后应当不存在。
 BASELINE_SCRIPT_PATH = REPO_ROOT / "apps" / "desktop" / "scripts" / "baseline.cjs"
-TOOLCHAIN_SCRIPT = REPO_ROOT / "scripts" / "toolchain.cjs"
+TOOLCHAIN_SCRIPT = REPO_ROOT / "scripts" / "pre" / "toolchain.cjs"
 DESKTOP_PACKAGE = REPO_ROOT / "apps" / "desktop" / "package.json"
 DESKTOP_PRODUCT = REPO_ROOT / "apps" / "desktop" / "resources" / "product.json"
 DESKTOP_BACKEND = REPO_ROOT / "apps" / "desktop" / "src" / "main" / "backend.ts"
@@ -49,6 +48,106 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     else:
         FAIL += 1
         print(f"  FAIL {name}: {detail}")
+
+
+def test_packaged_config_installation_layout() -> None:
+    module = r"C:\Installed\ScholarSeed\current\resources\backend\pylibs\service\bootstrap.py"
+    executable = r"C:\Installed\ScholarSeed\runtime\python\3.12.13-r2\python\python.exe"
+    seed = r"C:\Installed\ScholarSeed\current\resources\defaults\config.json"
+
+    def discover(
+        *,
+        module_path: str = module,
+        python: str = executable,
+        source: str = seed,
+        platform: str = "win32",
+    ) -> bootstrap.InstallationBinding | None:
+        with (
+            patch.object(bootstrap, "__file__", module_path),
+            patch.object(bootstrap.sys, "executable", python),
+            patch.object(bootstrap.sys, "platform", platform),
+            patch.dict(bootstrap.os.environ, {bootstrap.CONFIG_SEED_ENV: source}),
+            patch.object(Path, "resolve", side_effect=AssertionError("must not resolve aliases")),
+        ):
+            return bootstrap._packaged_config_installation()
+
+    expected = bootstrap.InstallationBinding(r"C:\Installed\ScholarSeed")
+    check(
+        "packaged seed binds the actual module and interpreter installation", discover() == expected
+    )
+    check(
+        "extended Windows paths preserve the same lexical installation boundary",
+        discover(
+            module_path="\\\\?\\" + module, python="\\\\?\\" + executable, source="\\\\?\\" + seed
+        )
+        == expected,
+    )
+    check(
+        "Windows comparison accepts case and slash spellings",
+        discover(source=seed.lower().replace("\\", "/")) == expected,
+    )
+    for name, values in (
+        ("macOS", {"platform": "darwin"}),
+        ("development module", {"module_path": r"C:\repo\apps\serve\service\bootstrap.py"}),
+        ("foreign interpreter", {"python": executable.replace("Installed", "Other")}),
+        ("non-runtime interpreter", {"python": r"C:\Installed\ScholarSeed\python\python.exe"}),
+        ("wrong interpreter entry", {"python": executable.replace("python.exe", "pythonw.exe")}),
+        (
+            "extra interpreter nesting",
+            {"python": executable.replace("runtime\\python", "runtime\\extra\\python")},
+        ),
+        ("external seed", {"source": r"C:\External\config.json"}),
+        ("different bundled seed", {"source": seed.replace("config.json", "other.json")}),
+        ("prefix sibling", {"source": seed.replace("ScholarSeed", "ScholarSeed-other")}),
+        ("traversal seed", {"source": seed.replace("defaults", "other\\..\\defaults")}),
+        ("traversal module", {"module_path": module.replace("current", "other\\..\\current")}),
+        ("UNC source", {"source": r"\\server\share\current\resources\defaults\config.json"}),
+        ("missing seed selection", {"source": ""}),
+    ):
+        check(f"installation binding rejects {name}", discover(**values) is None)
+
+
+def test_windows_installation_native_composition() -> None:
+    binding = bootstrap.InstallationBinding(r"C:\Installed\ScholarSeed")
+    with (
+        patch.object(bootstrap, "_packaged_config_installation", return_value=binding),
+        patch.object(bootstrap, "WindowsDirectoryNative") as constructor,
+    ):
+        native = bootstrap._windows_directory_native(None)
+        check(
+            "composition injects the frozen binding into its single native instance",
+            native is constructor.return_value
+            and constructor.call_count == 1
+            and constructor.call_args.kwargs == {"installation": binding},
+        )
+        constructor.reset_mock()
+        try:
+            bootstrap._windows_directory_native(object())
+        except bootstrap.LeaseError as error:
+            check(
+                "guardian rejects installation binding before native construction or domain extend",
+                error.code == "ERR_LEASE_UNSUPPORTED" and not constructor.called,
+            )
+        else:
+            check("guardian rejects installation binding", False, "no exception")
+    with (
+        patch.object(bootstrap, "_packaged_config_installation", return_value=None),
+        patch.object(bootstrap, "WindowsDirectoryNative") as constructor,
+    ):
+        native = bootstrap._windows_directory_native(object())
+        check(
+            "unbound composition retains ordinary private native and guardian behavior",
+            native is constructor.return_value
+            and constructor.call_count == 1
+            and not constructor.call_args.args
+            and not constructor.call_args.kwargs,
+        )
+    try:
+        setattr(binding, "root", r"C:\Other")
+    except FrozenInstanceError:
+        check("composition authority cannot change its installation root", True)
+    else:
+        check("composition authority cannot change its installation root", False)
 
 
 def test_resource_logging_preserves_hosting_and_third_party_configuration() -> None:
@@ -124,7 +223,7 @@ def test_seed_user_config() -> None:
         )
         check(
             "seeded config has owner-only mode",
-            stat.S_IMODE(target.stat().st_mode) == CONFIG_FILE_MODE,
+            private_file(target),
         )
         target.write_text(json.dumps({"provider": "user-choice"}), encoding="utf-8")
         check(
@@ -186,6 +285,7 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     bundle = BUNDLE_SCRIPT.read_text(encoding="utf-8")
     package = PACKAGE_SCRIPT.read_text(encoding="utf-8")
     build = BUILD_SCRIPT.read_text(encoding="utf-8")
+    build_arguments = re.sub(r"\s+", " ", build)
     verify = VERIFY_SCRIPT.read_text(encoding="utf-8")
     signer = SIGN_SCRIPT.read_text(encoding="utf-8")
     backend = DESKTOP_BACKEND.read_text(encoding="utf-8")
@@ -203,7 +303,7 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     )
     check(
         "local package discovers the reviewed upstream Codex binary",
-        "const DESKTOP = path.resolve(__dirname, '..')" in package
+        "const DESKTOP = path.resolve(__dirname, '../..')" in package
         and "resolveVendoredCodex" in build
         and "DEFAULT_CODEX_DIR" not in package
         and "SCHOLARSEED_BUNDLE_CODEX_CODE_MODE_HOST" not in package,
@@ -214,7 +314,11 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     )
     check(
         "bundle validates the target architecture",
-        "target.triple" in bundle and "target.ripgrepName" in bundle,
+        "resolveVendoredCodex( DESKTOP, selected.platform, "
+        "selected.arch === 'x86_64' ? 'x64' : selected.arch," in build_arguments
+        and "ensureRipgrep(context.repo, target.platform, target.arch)" in bundle
+        and "target.ripgrepName" in bundle
+        and "args.platform !== process.platform || args.target.arch !== hostArch()" in build,
     )
     check(
         "electron-builder copies the generated backend resource tree",
@@ -225,7 +329,8 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     )
     check(
         "desktop packaging uses one locked owner and target-scoped build directory",
-        desktop["scripts"]["bundle:backend"] == "node scripts/build.cjs --stage backend --type dev"
+        desktop["scripts"]["bundle:backend"]
+        == "node ../../scripts/pre/toolchain.cjs run prepare:python && node scripts/cd/build.cjs --stage backend --type dev"
         and "const mutex = acquireMutex()" in build
         and "buildRunDirectory(releaseRoot, args)" in build
         and "resourceRoot" in build,
@@ -233,8 +338,9 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     check(
         "skill compilation is offline and the frozen lock is re-checked",
         # 开源版没有 Hub sync: 从源码编译, 冻结 lock, 构建末尾复核 lock 未漂移。
-        "'service.cli.prebundle', '--build'" in build
-        and "context.lockSha256 = await verify.sha256(context.lock)" in build,
+        "'service.cli.prebundle', '--build'" in build_arguments
+        and "context.lockSha256 = await verify.sha256(context.lock)" in build
+        and "!== frozen.lockSha256" in verify,
     )
     check(
         "local DMG needs no delivered Skillhub baseline",
@@ -244,9 +350,8 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     check(
         "desktop build uses the shared locked npm dependency installer",
         "ensureNodeDependencies()" in build
-        and "require('../../../scripts/toolchain.cjs')" in build
-        and "runNpm(['ci', '--no-audit', '--no-fund'], repo)"
-        in TOOLCHAIN_SCRIPT.read_text(encoding="utf-8"),
+        and "require('../../../../scripts/pre/toolchain.cjs')" in build
+        and "['ci', '--no-audit', '--no-fund']" in TOOLCHAIN_SCRIPT.read_text(encoding="utf-8"),
     )
     check(
         "backend configuration validation uses the product Python",
@@ -261,8 +366,9 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     )
     check(
         "packaging compiles skills from the in-repo source and re-verifies bytes",
-        "'--build', '--source', context.skillSource" in build
-        and "path.join(REPO, 'skills', 'community')" in build,
+        "'--build', '--source', context.skillSource, '--lock', context.lock" in build_arguments
+        and "path.join(REPO, 'skills', 'community')" in build
+        and "!== frozen.lockSha256" in verify,
     )
     check(
         "development desktop launch synchronizes repository skills before runtime discovery",
@@ -271,7 +377,7 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
     check(
         "local DMG uses a complete ad-hoc app signature",
         "mac.identity = null" in build
-        and desktop["build"]["afterPack"] == "scripts/sign.cjs"
+        and desktop["build"]["afterPack"] == "scripts/cd/sign.cjs"
         and "identity: AD_HOC_IDENTITY" in signer
         and "identityValidation: false" in signer
         and signer.index("await verify(builderContext)") < signer.index("await signAsync")
@@ -282,9 +388,9 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
         "/Contents/Resources/backend/bin/codex$" in desktop["build"]["mac"]["signIgnore"]
         and "/Contents/Resources/backend/codex-runtime(?:/|$)"
         in desktop["build"]["mac"]["signIgnore"]
-        and "ignore: shouldIgnore" in signer
-        and "return preserveReviewedRuntime(filename) || !isMachO(filename)" in signer
-        and "await sha256(current.codex) !== frozen.binaries.codex.sha256" in verify,
+        and "function adHocOptions(app, ignore = shouldIgnore)" in signer
+        and "return preserveReviewedRuntime(filename) || !isSignable(filename)" in signer
+        and "(await sha256(current.codex)) !== frozen.binaries.codex.sha256" in verify,
     )
     check(
         "packaged code identity must match the product bundle id",
@@ -353,6 +459,8 @@ def test_packaged_codex_runtime_is_a_complete_pair() -> None:
 
 def main() -> int:
     print("desktop packaged config contract")
+    test_packaged_config_installation_layout()
+    test_windows_installation_native_composition()
     test_resource_logging_preserves_hosting_and_third_party_configuration()
     test_seed_user_config()
     test_reject_invalid_default_config()

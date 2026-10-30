@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next'
 import type { AuthUser } from './api.ts'
-import { ensureSkillCredential, getAuthMe } from './api.ts'
+import { ensureSkillCredential } from './api.ts'
+import { confirmLocalSession } from './confirmation.ts'
 
 // account.ts — 托管账号服务 (veda-account) 客户端。
 //
@@ -485,9 +486,8 @@ export async function adoptSession(token: string, refreshToken: string): Promise
  * 应用内登录（AccountAuth）与深链交接（Landing）共用它 —— 两条登录线不允许在「凭据
  * 是否真可用」上各自漂移：拿到 token 只证明账号服务认了凭据，不证明宿主验得通。
  */
-export async function confirmAdoptedSession(): Promise<boolean> {
-  const me = await getAuthMe()
-  if (me?.auth !== true) return false
+export async function confirmAdoptedSession(signal: AbortSignal): Promise<boolean> {
+  if (!(await confirmLocalSession(signal))) return false
   void ensureSkillCredential()
   return true
 }

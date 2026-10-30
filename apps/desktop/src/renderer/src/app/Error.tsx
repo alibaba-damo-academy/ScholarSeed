@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next'
 
 import { submitFeedback } from '../api'
 import { Alert, Button, Page, PageBody, PageHeader } from '../components/ui'
-import { rendererDiagnosticsFile } from '../diagnostics'
+import { rendererDiagnosticsFile, recordRendererCrash } from '../diagnostics'
 import { createCrashReport } from './crash'
+import { NavigationRecoveryContext } from '../contracts/navigation'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -25,11 +26,13 @@ export function ErrorPage({
   componentStack,
   error,
   onReload,
-  embedded = false
+  onHome,
+  embedded = false,
 }: {
   componentStack: string | null
   error: Error
   onReload: () => void
+  onHome?: () => void
   embedded?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('shell')
@@ -47,7 +50,7 @@ export function ErrorPage({
         location: window.location.href,
         userAgent: navigator.userAgent,
         viewportHeight: window.innerHeight,
-        viewportWidth: window.innerWidth
+        viewportWidth: window.innerWidth,
       },
       new Date()
     )
@@ -56,7 +59,7 @@ export function ErrorPage({
       includeLogs: true,
       includeTrace: false,
       rendererDiagnostics: rendererDiagnosticsFile(),
-      sessionId: null
+      sessionId: null,
     })
     setFeedbackPhase(result.ok ? 'submitted' : 'failed')
   }
@@ -66,10 +69,7 @@ export function ErrorPage({
       className={`grid min-h-0 min-w-0 place-items-center overflow-auto bg-[var(--vds-bg-app)] p-[var(--vds-layout-page-padding)]${embedded ? ' h-full flex-1' : ' min-h-screen'}`}
     >
       <Page className="w-full" width="reading">
-        <PageHeader
-          description={t('errorBoundary.description')}
-          title={t('errorBoundary.title')}
-        />
+        <PageHeader description={t('errorBoundary.description')} title={t('errorBoundary.title')} />
         <PageBody>
           <Alert
             data-i18n-description="shell:errorBoundary.guidance"
@@ -79,7 +79,10 @@ export function ErrorPage({
             tone="error"
           />
           <div className="flex flex-wrap gap-[var(--vds-layout-control-gap)]">
-            <Button onClick={onReload}>{t('errorBoundary.reload')}</Button>
+            {onHome && <Button onClick={onHome}>{t('navigation.returnHome')}</Button>}
+            <Button onClick={onReload} variant="secondary">
+              {t('errorBoundary.reload')}
+            </Button>
             <Button
               disabled={feedbackPhase === 'submitted'}
               loading={feedbackPhase === 'submitting'}
@@ -106,10 +109,9 @@ export function ErrorPage({
   )
 }
 
-export class ErrorBoundary extends Component<
-  ErrorBoundaryProps,
-  ErrorBoundaryState
-> {
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  static contextType = NavigationRecoveryContext
+  declare context: React.ContextType<typeof NavigationRecoveryContext>
   state: ErrorBoundaryState = INITIAL_STATE
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
@@ -117,16 +119,22 @@ export class ErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    recordRendererCrash()
     console.error('[renderer] Unhandled React render failure', {
       message: error.message,
       stack: error.stack,
-      componentStack: errorInfo.componentStack
+      componentStack: errorInfo.componentStack,
     })
     this.setState({ componentStack: errorInfo.componentStack ?? null })
   }
 
   private readonly reload = (): void => {
     window.location.reload()
+  }
+
+  private readonly returnHome = (): void => {
+    this.context?.()
+    this.setState(INITIAL_STATE)
   }
 
   render(): ReactNode {
@@ -137,6 +145,7 @@ export class ErrorBoundary extends Component<
           embedded={this.props.embedded}
           error={this.state.error}
           onReload={this.reload}
+          onHome={this.context ? this.returnHome : undefined}
         />
       )
     }

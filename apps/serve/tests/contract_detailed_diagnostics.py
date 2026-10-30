@@ -34,6 +34,7 @@ from service.chat.service.recording import (
     RecordingMode,
     RecordingService,
 )
+from service.platform.activity import Activities
 
 SESSION = "detailed-contract"
 OWNER = SessionPrincipal("owner")
@@ -238,7 +239,7 @@ class DetailedDiagnosticsContract(unittest.TestCase):
             )
         self.assertIn("after-expiry", json.dumps(self.rows()))
         self.assertGreater(len(self.rows()), len(before), "metadata remains available")
-        diagnostics = DiagnosticService(self.policies)
+        diagnostics = DiagnosticService(self.policies, activities=Activities())
         with patch(
             "service.chat.service.diagnostics.session_trace_paths", return_value=(self.trace.path,)
         ):
@@ -261,7 +262,7 @@ class DetailedDiagnosticsContract(unittest.TestCase):
     def test_default_session_expiry_maintenance_without_policy_event(self) -> None:
         self.input()
         self.assertIsNone(self.events.latest_kind(SESSION, POLICY_EVENT))
-        diagnostics = DiagnosticService(self.policies)
+        diagnostics = DiagnosticService(self.policies, activities=Activities())
         with patch(
             "service.chat.service.diagnostics.session_trace_paths", return_value=(self.trace.path,)
         ):
@@ -294,7 +295,7 @@ class DetailedDiagnosticsContract(unittest.TestCase):
     def test_export_confirmation_and_clear(self) -> None:
         self.enable()
         self.input()
-        diagnostics = DiagnosticService(self.policies)
+        diagnostics = DiagnosticService(self.policies, activities=Activities())
         with patch(
             "service.chat.service.diagnostics.session_trace_paths", return_value=(self.trace.path,)
         ):

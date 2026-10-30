@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import React, { useEffect, useMemo, useRef } from 'react'
 
 import type { PreferenceLanguage } from '../../../../../preferences'
@@ -8,7 +9,7 @@ import {
   MONACO_FRAME_TOKEN_PARAM,
   type MonacoFrameContext,
   type MonacoFrameReadyMessage,
-  type MonacoFrameWindow
+  type MonacoFrameWindow,
 } from './contract'
 
 const MONACO_LIGHT_THEME = 'vs'
@@ -30,13 +31,14 @@ export function MonacoFrame({
   language,
   onReady,
   testId,
-  theme
+  theme,
 }: {
   language: PreferenceLanguage
   onReady: (context: MonacoFrameContext | null) => void
   testId: string
   theme: 'light' | 'dark'
 }): React.JSX.Element {
+  const { t } = useTranslation('workbench')
   const frameRef = useRef<HTMLIFrameElement>(null)
   const contextRef = useRef<MonacoFrameContext | null>(null)
   const themeRef = useRef(theme)
@@ -71,5 +73,13 @@ export function MonacoFrame({
     if (contextRef.current) applyTheme(contextRef.current, theme)
   }, [theme])
 
-  return <iframe className="vds-monaco size-full min-h-0 min-w-0 border-0" data-testid={testId} ref={frameRef} src={source} title="Monaco runtime" />
+  return (
+    <iframe
+      className="vds-monaco size-full min-h-0 min-w-0 border-0"
+      data-testid={testId}
+      ref={frameRef}
+      src={source}
+      title={t('monaco.frameTitle')}
+    />
+  )
 }

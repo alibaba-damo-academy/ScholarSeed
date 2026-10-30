@@ -33,6 +33,7 @@ import {
   isUnverifiableCitationError,
   resolveCitation,
 } from './api'
+import { citationDisplay } from './display'
 
 function useCitationText() {
   const { t, i18n } = useTranslation('assistant')
@@ -65,10 +66,19 @@ function useCitationText() {
 }
 const CITATION_NUMBER = /^\d+$/
 const CITATION_JOINER = '\u2060'
+const COVERAGE_MESSAGE_KEYS = {
+  pending: 'citations.coverage.pending',
+  reviewing: 'citations.coverage.reviewing',
+  reviewed: 'citations.coverage.reviewed',
+  partial: 'citations.coverage.partial',
+  unavailable: 'citations.coverage.unavailable',
+  interrupted: 'citations.coverage.interrupted',
+} as const
+const COVERAGE_PROGRESS_STATUSES = new Set<AnswerCoverage['status']>(['pending', 'reviewing'])
 const NUMBERED_CITATION_CLASS =
-  'inline cursor-pointer align-super text-[0.72em] font-semibold leading-none text-[var(--accent-ink)] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand-ink)]'
+  'inline cursor-pointer align-super text-[length:var(--vds-assistant-citation-font-scale)] font-[var(--vds-fw-semibold)] leading-none text-[var(--accent-ink)] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand-ink)]'
 const NAMED_CITATION_CLASS =
-  'inline max-w-full cursor-pointer whitespace-normal [overflow-wrap:anywhere] rounded-sm text-left font-semibold text-[var(--accent-ink)] underline decoration-[var(--vds-border-default)] underline-offset-4 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand-ink)]'
+  'inline max-w-full cursor-pointer whitespace-normal [overflow-wrap:anywhere] rounded-[var(--vds-radius-1)] text-left font-[var(--vds-fw-semibold)] text-[var(--accent-ink)] underline decoration-[var(--vds-border-default)] underline-offset-4 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand-ink)]'
 
 function citationLabel(node: React.ReactNode): string {
   return React.Children.toArray(node)
@@ -88,8 +98,8 @@ function EvidenceContent({ source }: { source: CitationResolution }): React.JSX.
   const previewPage = source.presentation.page
   if (source.presentation.mode === 'structured_text') {
     return (
-      <blockquote className="mx-0 mb-0 mt-[var(--vds-space-3)] max-h-52 overflow-auto whitespace-pre-line [overflow-wrap:break-word] border-0 border-t border-solid border-[var(--vds-divider-default)] pt-[var(--vds-space-3)] text-left text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]">
-        <mark className="rounded-[var(--vds-radius-2)] bg-[var(--vds-brand-bg-light)] px-1 text-inherit">
+      <blockquote className="mx-0 mb-0 mt-[var(--vds-space-3)] max-h-[var(--vds-assistant-citation-list-max-height)] overflow-auto whitespace-pre-line [overflow-wrap:break-word] border-0 border-t border-solid border-[var(--vds-divider-default)] pt-[var(--vds-space-3)] text-left text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-assistant-citation-line-height)] text-[var(--vds-text-secondary)]">
+        <mark className="rounded-[var(--vds-radius-2)] bg-[var(--vds-brand-bg-light)] px-[var(--vds-space-1)] text-inherit">
           {source.presentation.text}
         </mark>
       </blockquote>
@@ -105,17 +115,18 @@ function EvidenceContent({ source }: { source: CitationResolution }): React.JSX.
       <div className="mt-[var(--vds-space-3)] grid gap-[var(--vds-space-2)] border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-3)]">
         <img
           src={previewUrl}
+          crossOrigin="use-credentials"
           loading="lazy"
           onError={() => setImageFailed(true)}
           alt={t('citations.evidenceImageAlt', { page: previewPage })}
-          className="max-h-72 w-full rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] object-contain"
+          className="max-h-[var(--vds-assistant-citation-expanded-max-height)] w-full rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] object-contain"
         />
         <div className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
           <Badge size="sm" tone="warning">
             {t('citations.manualCheck')}
           </Badge>
           {source.presentation.precision === 'page' && (
-            <span className="text-xs text-[var(--vds-text-secondary)]">
+            <span className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
               {t('citations.pageOnly')}
             </span>
           )}
@@ -144,13 +155,18 @@ function SourcePreview({
     <div className="relative pl-6 text-left">
       <img src={iconPdf} alt="" className="absolute left-0 top-0.5 h-4 w-4 object-contain" />
       <div className="min-w-0">
-        <p className="m-0 [overflow-wrap:anywhere] text-[length:var(--vds-font-body-lv1)] leading-relaxed font-medium text-[var(--vds-text-primary)]">
+        <p className="m-0 [overflow-wrap:anywhere] text-[length:var(--vds-font-body-lv1)] leading-relaxed font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
           {source.title}
         </p>
-        <p className="my-1 text-xs text-[var(--vds-text-secondary)]">{location(source)}</p>
+        <p className="my-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+          {location(source)}
+        </p>
         <EvidenceContent source={source} />
         {source.state !== 'exact' && (
-          <p role="status" className="mb-0 mt-2 text-xs text-[var(--vds-text-secondary)]">
+          <p
+            role="status"
+            className="mb-0 mt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+          >
             {statuses[source.state]}
           </p>
         )}
@@ -309,10 +325,13 @@ export function CitationLink({
         </HoverCardTrigger>
         <HoverCardContent
           aria-label={t('citations.preview')}
-          className="!w-80 !max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto rounded-[var(--vds-radius-4)] border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] p-[var(--vds-space-3)] shadow-[var(--vds-shadow-lg)]"
+          className="!w-[var(--vds-assistant-citation-panel-width)] !max-w-[var(--vds-assistant-floating-panel-width)] max-h-[70vh] overflow-y-auto rounded-[var(--vds-radius-4)] border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] p-[var(--vds-space-3)] shadow-[var(--vds-shadow-lg)]"
         >
           {previewError && preview && (
-            <p role="status" className="text-xs text-[var(--vds-text-secondary)]">
+            <p
+              role="status"
+              className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+            >
               {t('citations.stalePreview')}
             </p>
           )}
@@ -328,7 +347,10 @@ export function CitationLink({
               }}
             />
           ) : (
-            <p role="status" className="m-0 text-sm text-[var(--vds-text-secondary)]">
+            <p
+              role="status"
+              className="m-0 text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-secondary)]"
+            >
               {previewError === 'unverifiable'
                 ? t('citations.previewUnverifiable')
                 : previewError
@@ -352,7 +374,7 @@ export function CitationLink({
               </DialogHeader>
               {problem && (
                 <>
-                  <p className="text-sm text-[var(--vds-text-secondary)]">
+                  <p className="text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-secondary)]">
                     {location(problem)} · {statuses[problem.state]}
                   </p>
                   <EvidenceContent source={problem} />
@@ -401,7 +423,8 @@ export function WebCitationLink({
   named?: boolean
 }): React.JSX.Element {
   const { t } = useCitationText()
-  const label = named ? source.title : String(source.number)
+  const display = citationDisplay(source)
+  const label = named ? display.title : String(source.number)
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -426,20 +449,20 @@ export function WebCitationLink({
       </PopoverTrigger>
       <PopoverContent
         aria-label={t('citations.webPreview')}
-        className="!w-80 !max-w-[calc(100vw-2rem)] rounded-[var(--vds-radius-4)] border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] p-[var(--vds-space-3)] shadow-[var(--vds-shadow-lg)]"
+        className="!w-[var(--vds-assistant-citation-panel-width)] !max-w-[var(--vds-assistant-floating-panel-width)] rounded-[var(--vds-radius-4)] border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] p-[var(--vds-space-3)] shadow-[var(--vds-shadow-lg)]"
       >
         <div className="flex gap-[var(--vds-space-2)] text-left">
           <Icon name="globe" size={16} />
           <div className="min-w-0">
-            <p className="m-0 [overflow-wrap:anywhere] text-[length:var(--vds-font-body-lv1)] leading-relaxed font-medium text-[var(--vds-text-primary)]">
-              {source.title}
+            <p className="m-0 [overflow-wrap:anywhere] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-assistant-citation-line-height)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+              {display.title}
             </p>
             {source.title.trim() !== source.url.trim() && (
-              <p className="my-1 [overflow-wrap:anywhere] text-xs text-[var(--vds-text-secondary)]">
-                {source.url}
+              <p className="my-[var(--vds-space-1)] [overflow-wrap:anywhere] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+                {display.url}
               </p>
             )}
-            <p className="my-1 text-xs text-[var(--vds-text-secondary)]">
+            <p className="my-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
               {t(webSourceLabel(source))}
             </p>
             <Button
@@ -497,7 +520,10 @@ export function CitationSources({
   }, [sessionId, answerId, text, refresh, resolveEnabled])
   if (error && !result && !answerSources?.length)
     return (
-      <p role="status" className="mt-3 text-xs text-[var(--vds-text-secondary)]">
+      <p
+        role="status"
+        className="mt-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+      >
         {t('citations.listFailed')}
       </p>
     )
@@ -512,11 +538,18 @@ export function CitationSources({
     []
   if (!projected.length && !coverage) return null
   const resolved = new Map(result?.sources.map((source) => [source.handle, source]))
+  const reviewing = coverage && COVERAGE_PROGRESS_STATUSES.has(coverage.status)
+  const coverageMessage = coverage && t(COVERAGE_MESSAGE_KEYS[coverage.status])
+  const showAnswerStatus =
+    coverage && (reviewing || (!projected.length && coverage.status !== 'reviewed'))
   return (
     <div className="mt-3" data-answer-source-list>
-      {coverage && (
-        <p role="status" className="text-xs text-[var(--vds-text-secondary)]">
-          {t(`citations.coverage.${coverage.status}`)}
+      {showAnswerStatus && coverage && (
+        <p
+          role="status"
+          className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+        >
+          {coverage.status === 'partial' ? t('citations.noAssociatedSources') : coverageMessage}
         </p>
       )}
       {projected.length > 0 && (
@@ -535,11 +568,6 @@ export function CitationSources({
             </Button>
           </PopoverTrigger>
           <PopoverContent className="max-h-96 w-96 overflow-auto rounded-2xl p-3">
-            {error && (
-              <p role="status" className="text-xs text-[var(--vds-text-secondary)]">
-                {t('citations.staleList')}
-              </p>
-            )}
             <div
               role="list"
               tabIndex={0}
@@ -556,9 +584,9 @@ export function CitationSources({
                     key={source.kind === 'searched' ? source.url : source.handle}
                     role="listitem"
                     data-citation-source-entry
-                    className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] py-[var(--vds-space-3)] text-sm last:border-0"
+                    className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] last:border-0"
                   >
-                    <span className="font-semibold text-[var(--vds-text-secondary)]">
+                    <span className="font-[var(--vds-fw-semibold)] text-[var(--vds-text-secondary)]">
                       [{source.number}]
                     </span>
                     <div className="min-w-0">
@@ -566,11 +594,11 @@ export function CitationSources({
                         <>
                           <WebCitationLink source={source} named />
                           {source.title.trim() !== source.url.trim() && (
-                            <p className="my-1 [overflow-wrap:anywhere] text-xs text-[var(--vds-text-secondary)]">
-                              {source.url}
+                            <p className="my-[var(--vds-space-1)] [overflow-wrap:anywhere] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+                              {citationDisplay(source).url}
                             </p>
                           )}
-                          <p className="my-1 text-xs text-[var(--vds-text-secondary)]">
+                          <p className="my-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
                             {t(webSourceLabel(source))}
                           </p>
                         </>
@@ -598,13 +626,13 @@ export function CitationSources({
                           </CitationLink>
                           {pdf && (
                             <>
-                              <p className="my-1 text-xs text-[var(--vds-text-secondary)]">
+                              <p className="my-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
                                 {location(pdf)}
                               </p>
                               {pdf.state !== 'exact' && (
                                 <p
                                   role="status"
-                                  className="text-xs text-[var(--vds-text-secondary)]"
+                                  className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
                                 >
                                   {statuses[pdf.state]}
                                 </p>
@@ -618,6 +646,29 @@ export function CitationSources({
                 )
               })}
             </div>
+            {error && (
+              <p
+                role="status"
+                className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+              >
+                {t('citations.staleList')}
+              </p>
+            )}
+            {coverage && !reviewing && (
+              <div
+                role="note"
+                className="mt-[var(--vds-space-2)] space-y-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
+              >
+                <p>
+                  {coverage.status === 'partial'
+                    ? t('citations.noAssociatedSources')
+                    : coverageMessage}
+                </p>
+                {!!coverage.unread_sources && (
+                  <p>{t('citations.unreadCandidates', { count: coverage.unread_sources })}</p>
+                )}
+              </div>
+            )}
           </PopoverContent>
         </Popover>
       )}

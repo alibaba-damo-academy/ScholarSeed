@@ -1,12 +1,11 @@
-"""Problem-report intake that forwards to Damoclaw-Server."""
+"""Diagnostic bundle export and standalone problem-report submission."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from starlette.status import (
     HTTP_404_NOT_FOUND,
@@ -33,14 +32,18 @@ from service.chat.service.feedback import (
     FeedbackService,
     FeedbackSubmission,
     FeedbackValidationError,
+    ThreadEvidenceStatus,
+    session_thread_history,
 )
 from service.identity.service.skill_credentials import (
     SKILL_API_KEY_ENV,
     SkillCredentialService,
 )
 from service.identity.utils import bearer_or_cookie, request_owner_id, request_user_id
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 
 logger = logging.getLogger(__name__)
+FEEDBACK_BUNDLE_PATH = "/api/serve/feedback/bundle"
 
 DEFAULT_IMAGE_MEDIA_TYPE = "application/octet-stream"
 UNSPECIFIED_IMAGE_NAME = "screenshot.png"
@@ -60,6 +63,7 @@ def _total_exceeded_detail() -> str:
 def mount_feedback_routes(
     app: FastAPI,
     *,
+    activities: Activities,
     feedback: FeedbackService,
     catalog: SessionCatalogStore,
     credentials: SkillCredentialService,
@@ -67,10 +71,21 @@ def mount_feedback_routes(
 ) -> None:
     """Expose the desktop feedback submit endpoint."""
 
-    @app.get("/api/serve/sessions/{session_id}/diagnostics")
+    async def admit():
+        try:
+            lease = activities.enter(ActivityDomain.DIAGNOSTIC, root=True)
+        except MaintenanceActive as error:
+            raise HTTPException(503, "update_maintenance") from error
+        with lease:
+            yield
+
+    admission = [Depends(admit)]
+
+    @app.get("/api/serve/sessions/{session_id}/diagnostics", dependencies=admission)
     async def download_diagnostics(session_id: str, request: Request) -> Response:
         try:
-            bundle = await asyncio.to_thread(
+            bundle = await activities.to_thread(
+                ActivityDomain.DIAGNOSTIC,
                 export_diagnostics,
                 catalog,
                 session_id=session_id,
@@ -116,7 +131,8 @@ def mount_feedback_routes(
             return None
         return str(getattr(record, "vendor_thread_id", "") or "")
 
-    @app.post("/api/serve/feedback")
+    @app.post(FEEDBACK_BUNDLE_PATH, dependencies=admission)
+    @app.post("/api/serve/feedback", dependencies=admission)
     async def submit_feedback(
         request: Request,
         description: str = Form(""),
@@ -212,23 +228,48 @@ def mount_feedback_routes(
         # 只认 API key、拒用户 JWT —— 用户 JWT 是全权限凭据, 一个只需要「这是谁」的
         # 服务不该拿到。ensure 缓存命中就沿用、没有就签一把; 拿不到 (未登录/未配账号
         # 服务) 就返回空, 反馈照收、只是落成匿名。
-        credential_env = await credentials.ensure(actor_id, bearer_or_cookie(request))
+        bundle_only = request.url.path == FEEDBACK_BUNDLE_PATH
+        credential_env = (
+            {} if bundle_only else await credentials.ensure(actor_id, bearer_or_cookie(request))
+        )
         api_key = credential_env.get(SKILL_API_KEY_ENV, "")
 
         vendor_thread_id = resolve_vendor_thread(session_id, owner_id)
         authorized_session_id = session_id if vendor_thread_id is not None else ""
         execution_threads: tuple[RuntimeExecutionThread, ...] = ()
-        execution_tree_status = "unavailable"
-        if include_logs and include_trace and vendor_thread_id and runtime is not None:
-            try:
-                execution_threads = await runtime.execution_threads(session_id)
-                if len(execution_threads) > MAX_FEEDBACK_EXECUTION_THREADS:
-                    execution_threads = ()
-                    execution_tree_status = "thread_limit_exceeded"
-                else:
-                    execution_tree_status = "complete"
-            except (RuntimeError, ValueError) as error:
-                logger.warning("feedback: execution tree unavailable: %s", type(error).__name__)
+        execution_tree_status = ThreadEvidenceStatus.UNAVAILABLE.value
+        thread_history = None
+        if include_logs and include_trace and authorized_session_id:
+            thread_history = await activities.to_thread(
+                ActivityDomain.DIAGNOSTIC,
+                session_thread_history,
+                authorized_session_id,
+                vendor_thread_id or "",
+            )
+        if thread_history is not None and thread_history.thread_ids and runtime is not None:
+            nodes: dict[str, RuntimeExecutionThread] = {}
+            discovered = 0
+            for thread_id in thread_history.thread_ids:
+                try:
+                    descendants = await runtime.execution_threads(
+                        session_id,
+                        root_thread_id=thread_id,
+                        user_id=actor_id,
+                    )
+                    discovered += 1
+                    nodes.update((node.thread_id, node) for node in descendants)
+                    if len(nodes) > MAX_FEEDBACK_EXECUTION_THREADS:
+                        nodes = dict(tuple(nodes.items())[:MAX_FEEDBACK_EXECUTION_THREADS])
+                        execution_tree_status = ThreadEvidenceStatus.LIMIT_EXCEEDED.value
+                        break
+                except (RuntimeError, ValueError) as error:
+                    logger.warning("feedback: execution tree unavailable: %s", type(error).__name__)
+            execution_threads = tuple(nodes.values())
+            if execution_tree_status != ThreadEvidenceStatus.LIMIT_EXCEEDED.value:
+                if discovered == len(thread_history.thread_ids):
+                    execution_tree_status = ThreadEvidenceStatus.COMPLETE.value
+                elif discovered:
+                    execution_tree_status = ThreadEvidenceStatus.PARTIAL.value
             logger.info(
                 "feedback: execution tree status=%s threads=%d",
                 execution_tree_status,
@@ -251,14 +292,24 @@ def mount_feedback_routes(
             vendor_thread_id=vendor_thread_id or "",
             execution_threads=execution_threads,
             execution_tree_status=execution_tree_status,
+            thread_history=thread_history,
             images=tuple(attachments),
             recording_report=report_bytes,
             renderer_diagnostics=renderer_diagnostics_bytes,
         )
         try:
+            if bundle_only:
+                bundle = await activities.to_thread(
+                    ActivityDomain.DIAGNOSTIC, feedback.build_bundle, submission
+                )
+                return Response(
+                    bundle, media_type="application/zip", headers={"Cache-Control": "no-store"}
+                )
             # submit 是同步的 (zip 打包 + 阻塞 httpx): 一个 40MB 的日志包上传要好几秒,
             # 留在 event loop 里会把整个 serve 卡住 —— 包括正在流式输出的会话。
-            result = await asyncio.to_thread(feedback.submit, submission)
+            result = await activities.to_thread(
+                ActivityDomain.DIAGNOSTIC, feedback.submit, submission
+            )
         except FeedbackValidationError as exc:
             raise HTTPException(422, str(exc)) from exc
         if not result.ok:

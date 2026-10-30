@@ -4,7 +4,7 @@ import test from 'node:test'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { chromium, type Browser } from '@playwright/test'
+import { chromium, expect, type Browser } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer } from 'vite'
 
@@ -32,21 +32,77 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     configFile: false,
     root: ROOT_DIR,
     plugins: [react()],
-    server: { host: '127.0.0.1', port, strictPort: true },
+    // Other render suites write fixtures in this root; those writes must not
+    // navigate this suite's page while it checks retained DOM identities.
+    server: { host: '127.0.0.1', port, strictPort: true, hmr: false },
   })
   let browser: Browser | undefined
   try {
     await server.listen()
     const url = server.resolvedUrls?.local[0]
     assert.ok(url)
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     const page = await browser.newPage()
+    const openedUrls: string[] = []
+    await page.exposeFunction('recordOpenedSource', (url: string) => openedUrls.push(url))
+    const encodedCitationUrl =
+      'https://example.com/%E4%B8%AD%E6%96%87?q=%E6%9D%A5%E6%BA%90#%E7%89%87%E6%AE%B5'
+    const readableCitationUrl = 'https://example.com/中文?q=来源#片段'
     const sourceRequests: string[] = []
     await page.route('**/sessions/fixture-stream/answers/stream-answer/sources?**', (route) => {
       sourceRequests.push(route.request().url())
       return route.fulfill({ json: { count: 0, sources: [] } })
     })
+    let staleRequests = 0
+    await page.route('**/sessions/fixture-stale/answers/stale-answer/sources?**', (route) => {
+      staleRequests += 1
+      return route.abort()
+    })
     await page.goto(new URL(FIXTURE_URL, url).toString())
+
+    const publisher = page.getByTestId('publisher-citation-boundary')
+    assert.deepEqual(
+      await publisher
+        .getByRole('link')
+        .evaluateAll((links) => links.map((link) => link.getAttribute('href'))),
+      ['https://aclanthology.org/2024.eacl-demo.16/']
+    )
+    assert.equal(
+      await publisher.locator('p').first().textContent(),
+      '出版方：https://aclanthology.org/2024.eacl-demo.16/[3]'
+    )
+    assert.equal(await publisher.locator('p').last().getByRole('link').count(), 0)
+
+    const projectSource = page.getByTestId('project-source-markdown')
+    assert.equal(await projectSource.getByRole('button').count(), 1)
+    assert.equal(await projectSource.getByRole('link').count(), 0)
+    await projectSource.getByRole('button', { name: 'Project file', exact: true }).click()
+    assert.equal(
+      await page.locator('body').getAttribute('data-opened-project-source'),
+      '/api/resource/raw?project=project&path=resources%2Fa.md'
+    )
+
+    const localSources = page.getByTestId('local-project-source-markdown')
+    assert.equal(await localSources.getByRole('button').count(), 4)
+    await localSources
+      .getByRole('button', { name: 'resources/项目A/calibration.md#L5', exact: true })
+      .click()
+    assert.equal(
+      await page.locator('body').getAttribute('data-opened-local-project-source'),
+      'resources/项目A/calibration.md'
+    )
+    await localSources
+      .getByRole('button', {
+        name: 'D:\\work space\\项目A\\resources\\项目A\\calibration.md',
+        exact: true,
+      })
+      .click()
+    assert.equal(
+      await page.locator('body').getAttribute('data-opened-local-project-source'),
+      'resources/项目A/calibration.md'
+    )
+    assert.equal(await localSources.locator('pre button').count(), 0)
+    assert.equal((await localSources.locator('button [data-md-source-start]').count()) > 0, true)
 
     const summary = page.getByTestId('reading-summary')
     await summary.locator('details').first().locator('summary').click()
@@ -118,9 +174,20 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     assert.equal(await candidates.getByRole('button').count(), 0)
     assert.doesNotMatch(await candidates.innerText(), /候选来源/)
     assert.equal(await page.getByTestId('no-source-list').innerText(), '')
-    await page.getByTestId('cited-source-list').getByRole('button', { name: '1 个来源' }).click()
-    const citedList = page.getByRole('list', { name: '1 个来源' })
-    assert.equal(await citedList.getByRole('listitem').count(), 1)
+    await page.getByTestId('cited-source-list').getByRole('button', { name: '2 个来源' }).click()
+    const citedList = page.getByRole('list', { name: '2 个来源' })
+    assert.equal(await citedList.getByRole('listitem').count(), 2)
+    assert.equal(
+      await citedList.getByText('https://example.com/cited/中文', { exact: true }).count(),
+      1
+    )
+    const fallbackTitle = citedList.getByRole('button', {
+      name: `查看引用：${readableCitationUrl}`,
+      exact: true,
+    })
+    assert.equal(await fallbackTitle.textContent(), readableCitationUrl)
+    assert.equal((await citedList.innerText()).split(readableCitationUrl).length, 2)
+    assert.doesNotMatch(await citedList.innerText(), /%E4%B8%AD/)
     assert.match(await citedList.innerText(), /已引用页面/)
     assert.doesNotMatch(await citedList.innerText(), /候选/)
     assert.equal(await page.getByText('未能关联证据的内容', { exact: true }).count(), 0)
@@ -130,22 +197,125 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
         .count(),
       0
     )
-    assert.match(
-      await page.getByTestId('cited-source-list').getByRole('status').innerText(),
-      /部分内容/
+    assert.equal(await page.getByTestId('cited-source-list').getByRole('status').count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '来源关联详情' }).count(), 0)
+    assert.equal(
+      await citedList.evaluate((list) => list.parentElement?.firstElementChild === list),
+      true
     )
     assert.equal(await page.getByRole('button', { name: '真实候选页面' }).count(), 0)
+    await page.keyboard.press('Escape')
+    const coverageDetails = page.getByTestId('coverage-source-list')
+    assert.equal(await coverageDetails.getByRole('status').count(), 0)
+    await coverageDetails.getByRole('button', { name: '1 个来源' }).click()
+    const coverageList = page.getByRole('list', { name: '1 个来源' })
+    assert.equal(
+      await coverageList.evaluate((list) => list.parentElement?.firstElementChild === list),
+      true
+    )
+    assert.equal(await page.getByText('未关联来源的内容', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('尚未找到依据的事实。', { exact: true }).count(), 0)
+    const coverageNote = page.getByRole('note')
+    assert.equal(await coverageNote.count(), 1)
+    assert.equal(
+      await coverageNote
+        .getByText('部分内容尚未关联来源，请自行核对关键事实', { exact: true })
+        .count(),
+      1
+    )
+    assert.equal(
+      await coverageNote
+        .getByText('还有 14 个检索候选网页未纳入核验，不影响已列出的来源。', { exact: true })
+        .count(),
+      1
+    )
+    await page.keyboard.press('Escape')
+    assert.equal(await coverageDetails.getByRole('status').count(), 0)
+    for (const [status, message, unread] of [
+      [
+        'reviewed',
+        '已自动关联检索证据，关键事实请核对原文',
+        '还有 3 个检索候选网页未纳入核验，不影响已列出的来源。',
+      ],
+      ['unavailable', '回答已生成，但来源核验未完成；关键事实请自行核对原文', undefined],
+      ['interrupted', '来源核验已中断，部分内容可能没有引用', undefined],
+    ] as const) {
+      const terminal = page.getByTestId(`coverage-${status}-list`)
+      assert.equal(await terminal.getByRole('status').count(), 0, status)
+      await terminal.getByRole('button', { name: '1 个来源' }).click()
+      const terminalList = page.getByRole('list', { name: '1 个来源' })
+      assert.equal(
+        await terminalList.evaluate((list) => list.parentElement?.firstElementChild === list),
+        true,
+        status
+      )
+      assert.match(await terminalList.innerText(), new RegExp(`终态来源 ${status}`))
+      const terminalNote = page.getByRole('note')
+      assert.equal(await terminalNote.count(), 1, status)
+      assert.equal(
+        await terminalNote.evaluate((note) => note.previousElementSibling?.getAttribute('role')),
+        'list',
+        status
+      )
+      assert.deepEqual(
+        await terminalNote.locator('p').allInnerTexts(),
+        unread ? [message, unread] : [message],
+        status
+      )
+      assert.equal(await page.getByRole('heading', { name: '来源关联详情' }).count(), 0, status)
+      assert.equal(await page.getByText('未关联来源的内容', { exact: true }).count(), 0, status)
+      assert.equal(await page.getByText('未关联的终态原文。', { exact: true }).count(), 0, status)
+      await page.keyboard.press('Escape')
+    }
+    const stale = page.getByTestId('stale-source-list')
+    await stale.getByRole('button', { name: '1 个来源' }).click()
+    const staleList = page.getByRole('list', { name: '1 个来源' })
+    const staleStatus = page.getByRole('status').filter({ hasText: '暂时无法更新来源状态' })
+    await staleStatus.waitFor()
+    assert.ok(staleRequests > 0)
+    assert.equal(
+      await staleStatus.innerText(),
+      '暂时无法更新来源状态，已保留上次信息；可点击引用重试。'
+    )
+    assert.equal(
+      await staleList.evaluate((list) => list.parentElement?.firstElementChild === list),
+      true
+    )
+    assert.match(await staleList.innerText(), /保留的来源/)
+    await expect
+      .poll(() =>
+        staleStatus.evaluate((status) => status.previousElementSibling?.getAttribute('role'))
+      )
+      .toBe('list')
+    assert.equal(await stale.getByText('来源列表暂时无法加载', { exact: false }).count(), 0)
     await page.keyboard.press('Escape')
     assert.equal(await streamingUrls.locator('a').count(), 0)
     assert.ok((await streamingUrls.textContent())?.includes('。后文保留'))
     assert.equal(await streamingUrls.locator('code').textContent(), 'https://example.com/code')
     await page.getByTestId('url-title-citation').getByRole('button').click()
     const webPreview = page.getByRole('region', { name: '网页来源预览' })
-    assert.equal((await webPreview.textContent())?.split('https://example.com/source').length, 2)
+    assert.equal((await webPreview.textContent())?.split(readableCitationUrl).length, 2)
+    assert.doesNotMatch((await webPreview.textContent()) ?? '', /%E4%B8%AD/)
+    await page.evaluate(() => {
+      Object.assign(window, {
+        scholarseed: {
+          openExternal: (url: string) =>
+            (
+              window as unknown as { recordOpenedSource: (url: string) => Promise<void> }
+            ).recordOpenedSource(url),
+        },
+      })
+    })
+    await webPreview.getByRole('button', { name: '查看原文' }).click()
+    assert.deepEqual(openedUrls, [encodedCitationUrl])
+    await page.evaluate(() => Reflect.deleteProperty(window, 'scholarseed'))
     await page.keyboard.press('Escape')
-    await page.getByTestId('named-title-citation').getByRole('button').click()
-    assert.ok((await webPreview.textContent())?.includes('原始页面标题'))
-    assert.ok((await webPreview.textContent())?.includes('https://example.com/named'))
+    await page
+      .getByTestId('named-title-citation')
+      .getByRole('button', { name: '查看引用：原始页面标题 100% %E4%B8%AD', exact: true })
+      .click()
+    assert.ok((await webPreview.textContent())?.includes('原始页面标题 100% %E4%B8%AD'))
+    assert.ok((await webPreview.textContent())?.includes(readableCitationUrl))
     await page.keyboard.press('Escape')
     await assert.equal(
       (await page.locator('code').first().textContent())?.startsWith('postgres'),

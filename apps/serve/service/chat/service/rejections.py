@@ -63,8 +63,27 @@ MODEL_CONFIG_SAFE_MESSAGE = "The model is not supported by this endpoint."
 REQUEST_SAFE_MESSAGE = "The model provider rejected the request."
 # 确定性 4xx 认证/凭据类。
 AUTH_SAFE_MESSAGE = "The model provider rejected the credentials."
+AUTH_FAILURE_CODE = "authentication_error"
+RATE_LIMIT_CODE = "rate_limit_exceeded"
+RATE_LIMIT_MESSAGE = "The model provider rate limit was reached."
+QUOTA_FAILURE_CODES = frozenset(
+    (
+        "insufficient_quota",
+        "throttling.allocationquota",
+        "credit_balance_exhausted",
+        "subscription_sharing_usage_limit_exceeded",
+    )
+)
+RATE_LIMIT_POLICY = RejectionPolicy(
+    retryability=RuntimeRetryability.USER_RETRYABLE,
+    http_status=HTTPStatus.TOO_MANY_REQUESTS,
+    message=RejectionMessage.FIXED,
+    safe_message=RATE_LIMIT_MESSAGE,
+    product_code=RATE_LIMIT_CODE,
+)
 TRANSIENT_PROVIDER_FAILURE_CODE = "service_unavailable"
 TRANSIENT_PROVIDER_FAILURE_MESSAGE = "The model provider is temporarily unavailable."
+PROVIDER_HTTP_ERROR_MAX_STATUS = 599
 TRANSIENT_PROVIDER_HTTP_STATUSES = frozenset(
     (
         HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -87,6 +106,24 @@ TRANSIENT_PROVIDER_CODES = frozenset(
 # 键一律 casefold（匹配时 ``code.casefold()``）。
 PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
     **dict.fromkeys(
+        (
+            RATE_LIMIT_CODE,
+            "rate_limit_error",
+            "throttling.ratelimit",
+            "throttling.requestsratelimit",
+        ),
+        RATE_LIMIT_POLICY,
+    ),
+    **dict.fromkeys(
+        QUOTA_FAILURE_CODES,
+        RejectionPolicy(
+            retryability=RuntimeRetryability.TERMINAL,
+            http_status=HTTPStatus.TOO_MANY_REQUESTS,
+            message=RejectionMessage.FIXED,
+            safe_message="The model provider quota or credit balance was exhausted.",
+        ),
+    ),
+    **dict.fromkeys(
         TRANSIENT_PROVIDER_CODES,
         RejectionPolicy(
             retryability=RuntimeRetryability.USER_RETRYABLE,
@@ -95,12 +132,15 @@ PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
             safe_message=TRANSIENT_PROVIDER_FAILURE_MESSAGE,
         ),
     ),
-    CONTENT_SAFETY_BLOCKED.casefold(): RejectionPolicy(
-        retryability=RuntimeRetryability.TERMINAL,
-        http_status=400,
-        message=RejectionMessage.FIXED,
-        safe_message=CONTENT_SAFETY_MESSAGE,
-        product_code=CONTENT_SAFETY_BLOCKED,
+    **dict.fromkeys(
+        (CONTENT_SAFETY_BLOCKED.casefold(), "content_policy_violation", "content_filter"),
+        RejectionPolicy(
+            retryability=RuntimeRetryability.TERMINAL,
+            http_status=400,
+            message=RejectionMessage.FIXED,
+            safe_message=CONTENT_SAFETY_MESSAGE,
+            product_code=CONTENT_SAFETY_BLOCKED,
+        ),
     ),
     "invalidparameter": RejectionPolicy(
         retryability=RuntimeRetryability.TERMINAL,
@@ -144,7 +184,7 @@ PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
         message=RejectionMessage.BOUNDED,
         safe_message=AUTH_SAFE_MESSAGE,
     ),
-    "authentication_error": RejectionPolicy(
+    AUTH_FAILURE_CODE: RejectionPolicy(
         retryability=RuntimeRetryability.TERMINAL,
         http_status=401,
         message=RejectionMessage.BOUNDED,
@@ -167,6 +207,14 @@ CODEX_PROVIDER_REJECTIONS: Mapping[tuple[str, str], RejectionPolicy] = {
 }
 
 
+def rate_limit_policy(code: str) -> RejectionPolicy:
+    """Classify HTTP 429 while preserving explicit non-retryable provider errors."""
+    policy = PRODUCT_PROVIDER_REJECTIONS.get(code.casefold())
+    if policy is not None and policy.retryability is RuntimeRetryability.TERMINAL:
+        return policy
+    return RATE_LIMIT_POLICY
+
+
 def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
     """Recover product semantics from a finished bridge diagnostic.
 
@@ -174,15 +222,64 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
     ``error_code`` / ``safe_error`` / ``retryability``) plus ``provider_http_status``
     for incident backfill, or ``{}`` when the diagnostic is not a whitelisted terminal
     provider failure. Exhausted transient HTTP failures use a fixed product-safe
-    message. Deterministic rejection messages use the bridge's already-redacted,
-    bounded ``error_message`` for BOUNDED codes, never the raw upstream envelope.
-    Lookup is by ``error_code`` first, then by the Codex-normalized
+    message. Registered terminal HTTP rejections use fixed policy messages.
+    Stream rejections use the bridge's already-redacted, bounded ``error_message``
+    for BOUNDED codes, never the raw upstream envelope.
+    HTTP 429 uses the bridge's normalized ``http_error_code`` independently of SSE
+    terminal events or retry exhaustion. Explicit quota and credential errors take
+    precedence over the status fallback. Stream lookup is by ``error_code``, then by the Codex-normalized
     ``(error_code, error_type)`` pair; a hit may remap to a stable ``product_code``.
     """
 
     status = fields.get("status_code")
     attempt = fields.get("attempt")
     max_attempts = fields.get("max_attempts")
+    if (
+        fields.get("phase") == "finished"
+        and isinstance(status, int)
+        and not isinstance(status, bool)
+        and HTTPStatus.BAD_REQUEST <= status <= PROVIDER_HTTP_ERROR_MAX_STATUS
+    ):
+        code = str(fields.get("http_error_code") or "")
+        policy = PRODUCT_PROVIDER_REJECTIONS.get(code.casefold())
+        # The HTTP authentication signal is authoritative even when the body
+        # carries a generic request code. Do not overwrite the adapter's restored
+        # authentication failure when the bridge projects the terminal outcome.
+        if (
+            status == HTTPStatus.UNAUTHORIZED
+            and policy is not None
+            and policy.http_status != HTTPStatus.UNAUTHORIZED
+        ):
+            code = AUTH_FAILURE_CODE
+            policy = PRODUCT_PROVIDER_REJECTIONS[code]
+        if policy is not None and policy.retryability is RuntimeRetryability.TERMINAL:
+            return {
+                "error": policy.safe_message,
+                "error_code": policy.product_code or code,
+                "safe_error": policy.safe_message,
+                "retryability": policy.retryability.value,
+                "provider_http_status": status,
+            }
+    if (
+        fields.get("phase") == "finished"
+        and isinstance(status, int)
+        and not isinstance(status, bool)
+        and status == HTTPStatus.TOO_MANY_REQUESTS
+    ):
+        code = str(fields.get("http_error_code") or "").casefold()
+        rate_policy = rate_limit_policy(code)
+        return {
+            "error": rate_policy.safe_message,
+            "error_code": rate_policy.product_code or code,
+            "safe_error": rate_policy.safe_message,
+            "retryability": rate_policy.retryability.value,
+            "provider_http_status": int(status),
+            **(
+                {"automatic_retry_attempts": attempt}
+                if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 1
+                else {}
+            ),
+        }
     if (
         fields.get("phase") == "finished"
         and isinstance(status, int)
@@ -244,9 +341,11 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
 __all__ = [
     "CODEX_PROVIDER_REJECTIONS",
     "PRODUCT_PROVIDER_REJECTIONS",
+    "RATE_LIMIT_CODE",
     "RejectionMessage",
     "RejectionPolicy",
     "TRANSIENT_PROVIDER_CODES",
     "TRANSIENT_PROVIDER_HTTP_STATUSES",
+    "rate_limit_policy",
     "terminal_provider_failure",
 ]

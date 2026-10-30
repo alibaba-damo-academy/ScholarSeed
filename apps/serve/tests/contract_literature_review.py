@@ -36,22 +36,27 @@ from service.literature.service.review import (
     REQUIREMENTS,
     RETRIEVAL,
     REVIEW_CARD,
+    REVIEW_ISSUES,
     SUMMARY,
     WRITING_REQUEST,
     _fulltext_limitation_reason,
     prepare_review,
     prepare_review_search,
+    project_review_search_artifacts,
     review_retrieval_run,
     validate_review_card,
     validate_review_checkpoint,
 )
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     BRIDGE_REQUESTS,
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_TOKEN_HEADER,
     LITERATURE_REVIEW_ROUTE,
 )
 from service.platform.context import ProductTaskType
+from service.platform.vocabulary import (
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_TOKEN_HEADER,
+)
 
 LITERATURE_PUBLICATION_SCRIPT = (
     Path(__file__).resolve().parents[3]
@@ -210,7 +215,7 @@ class LiteratureReviewContract(unittest.TestCase):
         separate = "Run `run retrieval_adapt` as its own command"
         wait = "wait for the product authorization in this same turn"
         checkpoint = '"checkpoint":"retrieval"'
-        plan_transition = "first write the existing structured plan"
+        plan_transition = "read the current structured plan and update"
         resume = (
             "only after that plan write succeeds may you run `workflow evidence --from fulltext`"
         )
@@ -219,6 +224,7 @@ class LiteratureReviewContract(unittest.TestCase):
         self.assertLess(prompt.index(wait), prompt.index(checkpoint))
         self.assertLess(prompt.index(checkpoint), prompt.index(plan_transition))
         self.assertLess(prompt.index(plan_transition), prompt.index(resume))
+        self.assertIn("with its root items unchanged", prompt)
         self.assertIn("never start `workflow evidence` without `--from`", prompt.lower())
         self.assertIn("Keep the existing plan tree unchanged while waiting", prompt)
         self.assertIn(
@@ -353,6 +359,128 @@ class LiteratureReviewContract(unittest.TestCase):
         self.assertEqual(card.status, "failed")
         self.assertEqual([check.verdict for check in card.checks], ["FAIL", "WARN", "FAIL"])
 
+    def test_gbt_skill_publication_preserves_metadata_and_style_checks(self) -> None:
+        self.write(
+            WRITING_REQUEST,
+            {"intent": "中文综述", "publication": {"citation_style": "gbt7714_2025"}},
+        )
+        self.write("05_generation/full_draft_v2.md", "# 方法\n\n比较。\\citep{Keyp1}\n")
+        self.write(
+            "05_generation/citations.bib",
+            "@article{Keyp1,title={One},author={Example},year={2024},doi={10.1/one}}\n",
+        )
+        for action in ("publish", "postcheck"):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(LITERATURE_PUBLICATION_SCRIPT),
+                    action,
+                    "--workspace",
+                    str(self.workspace),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        original = (self.workspace / POSTCHECK).read_bytes()
+        card = prepare_review(self.root, "survey", "result").card
+        checks = {check.title: check for check in card.checks}
+        self.assertEqual(card.generation_status, "SUCCESS")
+        self.assertEqual(card.status, "generated")
+        self.assertEqual(checks[CHECK_LABELS["citation_format"]].verdict, "WARN")
+        self.assertEqual(checks[CHECK_LABELS["citation_fidelity"]].verdict, "WARN")
+        entry = next(issue for issue in card.issues if issue.paper_ids == ["Keyp1"])
+        self.assertEqual(entry.detail, "缺少字段：journal、volume")
+        self.assertEqual((self.workspace / POSTCHECK).read_bytes(), original)
+
+    def test_optional_issue_and_pages_do_not_create_review_issues(self) -> None:
+        self.write(
+            WRITING_REQUEST,
+            {"intent": "中文综述", "publication": {"citation_style": "gbt7714_2025"}},
+        )
+        self.write("05_generation/full_draft_v2.md", "# 方法\n\n比较。\\citep{Keyp1}\n")
+        self.write(
+            "05_generation/citations.bib",
+            "@article{Keyp1,title={One},author={Example},year={2024},"
+            "journal={Research},volume={12},doi={10.1/one}}\n",
+        )
+        for action in ("publish", "postcheck"):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(LITERATURE_PUBLICATION_SCRIPT),
+                    action,
+                    "--workspace",
+                    str(self.workspace),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        card = prepare_review(self.root, "survey", "result").card
+        checks = {check.title: check for check in card.checks}
+        self.assertEqual(card.status, "generated")
+        self.assertEqual(checks[CHECK_LABELS["citation_format"]].verdict, "PASS")
+        self.assertFalse(any(issue.paper_ids == ["Keyp1"] for issue in card.issues))
+        self.assertEqual(checks[CHECK_LABELS["citation_fidelity"]].verdict, "WARN")
+
+    def test_publication_pdf_style_pass_and_metadata_failure_are_not_lost(self) -> None:
+        self.write(GENERATION, {"status": "SUCCESS", "deliverable": "survey.pdf"})
+        self.write(
+            POSTCHECK,
+            {
+                "status": "WARNING",
+                "checks": [
+                    {
+                        "id": "citation_metadata",
+                        "status": "FAILED",
+                        "message": "Missing author",
+                        "incomplete_entries": [{"key": "Book", "missing": ["author", "publisher"]}],
+                    },
+                    {"id": "citation_fidelity", "status": "SUCCESS", "message": "Fixed PDF style"},
+                ],
+            },
+        )
+        card = prepare_review(self.root, "survey", "result").card
+        checks = {check.title: check for check in card.checks}
+        self.assertEqual(checks[CHECK_LABELS["citation_format"]].verdict, "FAIL")
+        self.assertEqual(checks[CHECK_LABELS["citation_fidelity"]].verdict, "PASS")
+        self.assertEqual(card.issues[1].detail, "缺少字段：author、publisher")
+        for invalid_checks in (
+            [{"id": "unknown_check", "status": "SUCCESS"}],
+            [{"id": "citation_metadata", "status": "SUCCESS"}] * 2,
+        ):
+            self.write(POSTCHECK, {"status": "SUCCESS", "checks": invalid_checks})
+            with self.assertRaisesRegex(ValueError, "review_check_identity_invalid"):
+                prepare_review(self.root, "survey", "result")
+
+    def test_issue_total_precedes_card_limit_and_missing_field_aliases_are_preserved(self) -> None:
+        entries = [
+            {"key": f"Paper{index}", "missing": ["pages"]} for index in range(REVIEW_ISSUES + 8)
+        ]
+        entries[0].update(missing_required=["author"], missing_recommended=["pages", "publisher"])
+        self.report["checks"] = [
+            {
+                "id": "citation_format",
+                "verdict": "WARN",
+                "reason": "Metadata gaps",
+                "incomplete_entries": entries,
+            }
+        ]
+        self.write(POSTCHECK, self.report)
+        card = prepare_review(self.root, "survey", "result").card
+        self.assertEqual(len(card.issues), REVIEW_ISSUES)
+        self.assertEqual(card.issue_count, len(entries) + 1)
+        self.assertEqual(card.pending_checks, card.issue_count)
+        self.assertEqual(card.issues[1].detail, "缺少字段：author、pages、publisher")
+        self.assertEqual(card.issues[2].detail, "缺少字段：pages")
+        projected = validate_review_card(card.model_dump(mode="json"))
+        self.assertEqual(projected["issue_count"], len(entries) + 1)
+        projected.pop("issue_count")
+        self.assertIsNone(validate_review_card(projected)["issue_count"])
+
     def retrieval_payload(self) -> dict[str, str]:
         run_id = "review-run"
         self.write(".slr-binding.json", {"schema_version": 1, "run_id": run_id})
@@ -412,6 +540,18 @@ class LiteratureReviewContract(unittest.TestCase):
         self.write(SUMMARY, {"total_papers": 2, "with_fulltext": 3})
         with self.assertRaisesRegex(ValueError, "coverage_invalid"):
             prepare_review(self.root, "survey", "outline")
+
+    def test_incomplete_review_explains_missing_pipeline_evidence(self) -> None:
+        for artifact in (CORPUS, SUMMARY, RETRIEVAL, GENERATION, POSTCHECK, OUTLINE):
+            (self.workspace / artifact).unlink(missing_ok=True)
+        self.write("06_output/survey.md", "# Manually written draft")
+        card = prepare_review(self.root, "survey", "result").card
+        self.assertEqual(card.status, "incomplete")
+        for count in (card.included, card.fulltext, card.abstract_only, card.pending_checks):
+            self.assertIsNone(count)
+        self.assertEqual(len(card.warnings), 4)
+        for stage in ("检索", "全文", "生成", "核验"):
+            self.assertTrue(any(stage in warning for warning in card.warnings))
 
     def test_retrieval_projects_all_candidates_and_only_previews_three(self) -> None:
         papers = [
@@ -494,6 +634,7 @@ class LiteratureReviewContract(unittest.TestCase):
                 payload["manifest"],
                 payload["manifest_sha256"],
             )
+
         self.write(CORPUS, {"p2": {"title": "Different selection"}})
         with self.assertRaisesRegex(ValueError, "artifact_changed"):
             validate_review_checkpoint(
@@ -503,6 +644,29 @@ class LiteratureReviewContract(unittest.TestCase):
                 payload["manifest"],
                 payload["manifest_sha256"],
             )
+
+    def test_retrieval_diagnostics_are_logged_without_changing_forty_paper_snapshot(self) -> None:
+        papers = [
+            {"paper_id": f"p{index}", "title": f"Paper {index}", "year": 2025}
+            for index in range(40)
+        ]
+        warning = "agentic-search used degraded retrieval (source_mode=web_only)"
+        self.write(METADATA, {"papers": papers})
+        self.write(CORPUS, {paper["paper_id"]: paper for paper in papers})
+        self.write(RETRIEVAL, {"input_count": 40, "output_count": 40, "degradations": [warning]})
+        with self.assertLogs("service.literature.service.review", level="WARNING") as captured:
+            prepared = prepare_review_search(self.root, "survey", "review-run")
+        self.assertEqual(prepared.card.retained, 40)
+        self.assertEqual(prepared.card.candidates, 40)
+        self.assertEqual(len(prepared.card.papers), 3)
+        self.assertEqual(len(prepared.authorization_sources), 40)
+        snapshot = project_review_search_artifacts(
+            {path: (self.workspace / path).read_bytes() for path in (METADATA, CORPUS, RETRIEVAL)}
+        )
+        self.assertEqual(len(snapshot), prepared.card.retained)
+        self.assertEqual([paper.id for paper in snapshot], [paper["paper_id"] for paper in papers])
+        self.assertIn(warning, captured.output[0])
+        self.assertIn("review-run", captured.output[0])
 
     def test_retrieval_run_uses_launcher_id_or_workspace_identity(self) -> None:
         self.write(
@@ -599,6 +763,10 @@ class LiteratureReviewContract(unittest.TestCase):
             bridge_token="private",
             publication_turn_id="turn",
             active_assistant_snapshot_id="snapshot-1",
+            active_product_turn_id="turn",
+            active_task_type="literature_review",
+            product_turn_generation=1,
+            current_task=SimpleNamespace(done=lambda: False),
             runtime_workdir=self.root,
             active_task_lease=ProductTaskLease(
                 task_type=ProductTaskType.LITERATURE_REVIEW,
@@ -613,8 +781,14 @@ class LiteratureReviewContract(unittest.TestCase):
         )
         sessions = SimpleNamespace(bridge_caller=lambda sid: live if sid == live.id else None)
         app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
         register_literature_review_routes(
-            app, sessions, SimpleNamespace(authorize_sources=authorize_sources)
+            app,
+            sessions,
+            SimpleNamespace(authorize_sources=authorize_sources),
+            activities=activities,
         )
         headers = {BRIDGE_SESSION_HEADER: live.id, BRIDGE_TOKEN_HEADER: live.bridge_token}
         with TestClient(app) as client:
@@ -812,7 +986,9 @@ class LiteratureReviewContract(unittest.TestCase):
             last_submission_id="client-turn",
             interrupt_generation=0,
             active_assistant_revision=None,
-            current_task=None,
+            current_task=SimpleNamespace(done=lambda: False),
+            active_product_turn_id="turn",
+            product_turn_generation=1,
             ledger=SimpleNamespace(active_turn_id="turn"),
             runtime_workdir=self.root,
             publish_artifact=publish,
@@ -837,19 +1013,42 @@ class LiteratureReviewContract(unittest.TestCase):
                 authorization_type="literature_review_fulltext",
                 scope_digest="scope-digest",
                 question_id="literature-review-fulltext:opaque",
+                turn_id="turn",
             )
         )
         app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
         register_literature_review_routes(
             app,
             sessions,
             FulltextGate(
                 SimpleNamespace(
                     prepare=prepare_authorization,
-                    turn_granted_refs=lambda **_scope: (),
+                    task_key=lambda *_scope: "",
+                    effective_scope=lambda **scope: SimpleNamespace(
+                        allowed=scope.get("refs", ()) if product_questions else (),
+                        denied=(),
+                        unknown=scope.get("refs", ()) if not product_questions else (),
+                        authorizations=(
+                            (
+                                SimpleNamespace(
+                                    refs=scope.get("refs", ()),
+                                    question_id="literature-review-fulltext:opaque",
+                                    authorization_type="literature_review_fulltext",
+                                    scope_digest="scope-digest",
+                                ),
+                            )
+                            if product_questions
+                            else ()
+                        ),
+                    ),
                 ),
                 SimpleNamespace(),
+                activities=activities,
             ),
+            activities=activities,
         )
         headers = {BRIDGE_SESSION_HEADER: live.id, BRIDGE_TOKEN_HEADER: "private"}
         payload = {"workspace": "survey", "checkpoint": "outline"}
@@ -1024,7 +1223,8 @@ class LiteratureReviewContract(unittest.TestCase):
             )
             self.assertEqual(wrong_task.status_code, 400, wrong_task.text)
             self.assertEqual(wrong_task.json()["reason"], "task_context_mismatch")
-            self.assertEqual(prepare_authorization.call_count, 3)
+            prepare_authorization.assert_called_once()
+            self.assertEqual(len(product_questions), 1)
             lease(ProductTaskType.LITERATURE_REVIEW, derived_run)
             switch_turn = True
             response = client.post(
@@ -1040,7 +1240,7 @@ class LiteratureReviewContract(unittest.TestCase):
             ["literature", "review", "--json", '{"workspace":"survey","checkpoint":"outline"}']
         )
         self.assertEqual(args.operation, "review")
-        self.assertEqual(BRIDGE_REQUESTS[("literature", "review")][1], LITERATURE_REVIEW_ROUTE)
+        self.assertEqual(BRIDGE_REQUESTS[("literature", "review")].route, LITERATURE_REVIEW_ROUTE)
         registry = CardRegistry()
         registry.register(REVIEW_CARD, validate_review_card, direct=False)
         self.assertFalse(registry.allows_direct(REVIEW_CARD))

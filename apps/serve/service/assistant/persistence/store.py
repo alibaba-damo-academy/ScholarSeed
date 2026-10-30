@@ -6,15 +6,25 @@ import json
 import sqlite3
 import time
 from contextlib import closing
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from service.assistant.domain.model import AnswerAnnotation
+from service.assistant.persistence.utils import extend, extensions
 from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
     SQLITE_TIMEOUT_SECONDS,
 )
 from service.chat.persistence.utils import validate_transaction
+from service.persistence.project import (
+    database_files,
+    reader,
+    rebuild_table,
+    reject_schema_residue,
+    schema_transaction,
+    sql_tokens,
+    table_clauses,
+)
 from service.platform.context import (
     ASSISTANT_ANSWER_ID_PREFIX,
     AssistantContextSelection,
@@ -39,32 +49,42 @@ ASSISTANT_SNAPSHOT_TABLE = "assistant_turn_snapshot"
 ASSISTANT_ITEM_TABLE = "assistant_turn_item"
 ASSISTANT_ANNOTATION_TABLE = "assistant_answer_annotation"
 MIGRATION_SUFFIX = "_migration"
+_FOREIGN_TARGETS = {
+    ASSISTANT_SELECTION_TABLE: frozenset((SESSION_CATALOG_TABLE,)),
+    ASSISTANT_REF_TABLE: frozenset((ASSISTANT_SELECTION_TABLE,)),
+    ASSISTANT_SNAPSHOT_TABLE: frozenset((SESSION_CATALOG_TABLE,)),
+    ASSISTANT_ITEM_TABLE: frozenset((ASSISTANT_SNAPSHOT_TABLE,)),
+    ASSISTANT_ANNOTATION_TABLE: frozenset((SESSION_CATALOG_TABLE,)),
+}
+_ADDITIVE_COLUMNS = {
+    ASSISTANT_REF_TABLE: {
+        "project_id": "TEXT",
+        "label_fallback": "TEXT",
+        "selection_source_label": "TEXT",
+        "retention": "TEXT NOT NULL DEFAULT 'session'",
+        "origin": "TEXT NOT NULL DEFAULT 'explicit'",
+        "claim_turn_id": "TEXT",
+    },
+    ASSISTANT_ITEM_TABLE: {
+        "project_id": "TEXT",
+        "label_fallback": "TEXT",
+        "selection_source_label": "TEXT",
+        "retention": "TEXT NOT NULL DEFAULT 'session'",
+        "origin": "TEXT NOT NULL DEFAULT 'explicit'",
+        "authority": "TEXT NOT NULL DEFAULT 'source_material'",
+        "surface": "TEXT NOT NULL DEFAULT '{}'",
+        "item_role": "TEXT NOT NULL DEFAULT 'material'",
+        "model_locator": "TEXT NOT NULL DEFAULT ''",
+    },
+    ASSISTANT_SNAPSHOT_TABLE: {
+        "question_hash": "TEXT NOT NULL DEFAULT ''",
+    },
+}
+
 DEFAULT_SELECTION_REVISION = 0
 DEFAULT_SEARCH_SCOPE = SearchScope.WEB
 ASSISTANT_CLAIMED_REFS_IMMUTABLE = "assistant_claimed_refs_immutable"
 
-SELECTION_COLUMNS = (
-    "session_id",
-    "revision",
-    "project_policy",
-    "search_scope",
-    "updated_at",
-)
-REF_COLUMNS = (
-    "session_id",
-    "ref_id",
-    "kind",
-    "source_id",
-    "source_revision",
-    "label",
-    "label_fallback",
-    "selection_source_label",
-    "anchor",
-    "retention",
-    "origin",
-    "claim_turn_id",
-    "order_index",
-)
 SNAPSHOT_COLUMNS = (
     "snapshot_id",
     "session_id",
@@ -84,6 +104,7 @@ ITEM_COLUMNS = (
     "ref_id",
     "kind",
     "source_id",
+    "project_id",
     "source_revision",
     "label",
     "label_fallback",
@@ -157,6 +178,22 @@ class AnswerAnnotationRevisionConflictError(RuntimeError):
         self.latest = latest
 
 
+@dataclass(frozen=True)
+class AssistantSchema:
+    """Assistant-owned initialization requirements, not whole-product admission."""
+
+    create_tables: tuple[str, ...]
+    add_columns: tuple[tuple[str, str], ...]
+    create_indexes: tuple[str, ...]
+    rebuild_tables: tuple[str, ...]
+
+    @property
+    def needs_write(self) -> bool:
+        return bool(
+            self.create_tables or self.add_columns or self.create_indexes or self.rebuild_tables
+        )
+
+
 class AssistantStore:
     """Own Assistant tables inside the Session aggregate database."""
 
@@ -164,14 +201,122 @@ class AssistantStore:
         # SessionCatalogStore owns and initializes this aggregate database path.
         # Assistant only adds its own tables; it must not become a second filesystem owner.
         self._database = database
-        with closing(self._connect()) as connection, connection:
-            self._repair_foreign_keys(connection)
-            self._create_tables(connection)
-            self._ensure_columns(connection)
+        if not self.inspect_schema(database).needs_write:
+            return
+        with closing(self._connect()) as connection, schema_transaction(connection):
+            self.initialize_schema(connection)
+
+    @classmethod
+    def initialize_schema(cls, connection: sqlite3.Connection) -> None:
+        """Apply owned startup migrations inside the caller's transaction.
+
+        Uses the same code for qualified startup and isolated compatibility
+        projection; this method neither opens files nor grants write access.
+        """
+        schema = cls.inspect_connection(connection)
+        if schema.needs_write:
+            cls._repair_foreign_keys(connection, schema.rebuild_tables)
+            cls._create_tables(connection)
+            cls._ensure_columns(connection)
+        if cls.inspect_connection(connection).needs_write:
+            raise RuntimeError("assistant initialization did not reach the supported format")
 
     @property
     def database(self) -> Path:
         return self._database
+
+    @classmethod
+    def inspect_schema(cls, database: Path) -> AssistantSchema:
+        """Read a WAL snapshot under the caller's directory qualification.
+
+        Does not create a missing database or execute source DDL/DML. SQLite
+        may touch SHM; filesystem binding and maintenance remain caller duties.
+        """
+        with database_files(database) as present:
+            if not present:
+                with closing(sqlite3.connect(":memory:")) as connection:
+                    connection.row_factory = sqlite3.Row
+                    return cls.inspect_connection(connection)
+            with reader(database) as connection:
+                connection.execute("BEGIN")
+                return cls.inspect_connection(connection)
+
+    @classmethod
+    def inspect_connection(cls, connection: sqlite3.Connection) -> AssistantSchema:
+        reject_schema_residue(connection, _FOREIGN_TARGETS)
+        objects = {
+            row["name"]: row
+            for row in connection.execute("SELECT name,type,tbl_name,sql FROM sqlite_master")
+        }
+        if any(table + MIGRATION_SUFFIX in objects for table in _FOREIGN_TARGETS):
+            raise RuntimeError("assistant migration residue exists; recovery required")
+        create_tables: list[str] = []
+        add_columns: list[tuple[str, str]] = []
+        create_indexes: list[str] = []
+        rebuild_tables: list[str] = []
+        with closing(sqlite3.connect(":memory:")) as reference:
+            cls._create_tables(reference)
+            for table, definition in reference.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='table'"
+            ):
+                if table not in objects:
+                    create_tables.append(table)
+                    continue
+                if objects[table]["type"] != "table":
+                    raise RuntimeError("unsupported assistant table object")
+                declared = {row[1] for row in reference.execute(f"PRAGMA table_xinfo({table})")}
+                actual = {row["name"] for row in connection.execute(f"PRAGMA table_xinfo({table})")}
+                missing = declared - actual
+                if missing - _ADDITIVE_COLUMNS.get(table, {}).keys():
+                    raise RuntimeError("unsupported assistant missing columns")
+                add_columns.extend((table, name) for name in sorted(missing))
+                required = {
+                    clause
+                    for clause in table_clauses(definition, table)
+                    if clause[0] not in missing
+                }
+                try:
+                    clauses = table_clauses(objects[table]["sql"], table)
+                    extra = extensions(connection, table, declared)
+                except ValueError as error:
+                    raise RuntimeError("unsupported assistant table definition") from error
+                corrected = set()
+                rebuild = False
+                for clause in clauses:
+                    if clause[0] in extra:
+                        continue
+                    normalized = clause
+                    if clause[:2] == ("foreign", "key") and "references" in clause:
+                        position = clause.index("references") + 1
+                        target = next(iter(_FOREIGN_TARGETS[table]))
+                        if clause[position] not in {target, target + MIGRATION_SUFFIX}:
+                            raise RuntimeError("unsupported assistant foreign key target")
+                        normalized = (*clause[:position], target, *clause[position + 1 :])
+                        rebuild |= normalized != clause
+                    if normalized in corrected or normalized not in required:
+                        raise RuntimeError("unsupported assistant schema declaration")
+                    corrected.add(normalized)
+                if corrected != required:
+                    raise RuntimeError("unsupported assistant missing constraints")
+                if rebuild:
+                    rebuild_tables.append(table)
+            for name, table, sql in reference.execute(
+                "SELECT name,tbl_name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            ):
+                if name not in objects:
+                    create_indexes.append(name)
+                elif (
+                    objects[name]["type"] != "index"
+                    or objects[name]["tbl_name"] != table
+                    or sql_tokens(objects[name]["sql"]) != sql_tokens(sql)
+                ):
+                    raise RuntimeError("unsupported assistant owned index")
+        return AssistantSchema(
+            tuple(sorted(create_tables)),
+            tuple(sorted(add_columns)),
+            tuple(sorted(create_indexes)),
+            tuple(rebuild_tables),
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -188,94 +333,40 @@ class AssistantStore:
             connection.close()
             raise
 
-    @staticmethod
-    def _tables(connection: sqlite3.Connection) -> frozenset[str]:
-        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-        return frozenset(str(row["name"]) for row in rows)
-
-    @staticmethod
-    def _foreign_targets(connection: sqlite3.Connection, table: str) -> frozenset[str]:
-        rows = connection.execute(f"PRAGMA foreign_key_list({table})").fetchall()
-        return frozenset(str(row["table"]) for row in rows)
-
     @classmethod
-    def _repair_foreign_keys(cls, connection: sqlite3.Connection) -> None:
-        tables = cls._tables(connection)
-        expected = {
-            ASSISTANT_SELECTION_TABLE: frozenset((SESSION_CATALOG_TABLE,)),
-            ASSISTANT_REF_TABLE: frozenset((ASSISTANT_SELECTION_TABLE,)),
-            ASSISTANT_SNAPSHOT_TABLE: frozenset((SESSION_CATALOG_TABLE,)),
-            ASSISTANT_ITEM_TABLE: frozenset((ASSISTANT_SNAPSHOT_TABLE,)),
-            ASSISTANT_ANNOTATION_TABLE: frozenset((SESSION_CATALOG_TABLE,)),
-        }
-        existing = tuple(table for table in expected if table in tables)
-        if not any(
-            cls._foreign_targets(connection, table) != expected[table] for table in existing
-        ):
+    def _repair_foreign_keys(cls, connection: sqlite3.Connection, tables: tuple[str, ...]) -> None:
+        if not tables:
             return
+        with closing(sqlite3.connect(":memory:")) as reference:
+            cls._create_tables(reference)
+            definitions = dict(
+                reference.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")
+            )
+        for table in tables:
+            definition = definitions[table]
+            known = {clause[0] for clause in table_clauses(definition, table)}
+            extra = extensions(connection, table, known)
 
-        connection.execute("PRAGMA foreign_keys = OFF")
-        try:
-            for table in reversed(existing):
-                migration = f"{table}{MIGRATION_SUFFIX}"
-                connection.execute(f"DROP TABLE IF EXISTS {migration}")
-                connection.execute(f"ALTER TABLE {table} RENAME TO {migration}")
-            cls._create_tables(connection)
-            cls._copy_migration(connection, ASSISTANT_SELECTION_TABLE, SELECTION_COLUMNS)
-            cls._copy_migration(connection, ASSISTANT_REF_TABLE, REF_COLUMNS)
-            cls._copy_migration(connection, ASSISTANT_SNAPSHOT_TABLE, SNAPSHOT_COLUMNS)
-            cls._copy_migration(connection, ASSISTANT_ITEM_TABLE, ITEM_COLUMNS)
-            cls._copy_migration(connection, ASSISTANT_ANNOTATION_TABLE, ANNOTATION_COLUMNS)
-        finally:
-            connection.execute("PRAGMA foreign_keys = ON")
+            def create(
+                target: sqlite3.Connection,
+                temporary: str,
+                *,
+                schema: str = definition,
+                original: str = table,
+                columns: dict[str, tuple[str, ...]] = extra,
+            ) -> None:
+                target.execute(
+                    schema.replace(f"CREATE TABLE {original} ", f'CREATE TABLE "{temporary}" ', 1)
+                )
+                extend(target, temporary, columns)
 
-    @staticmethod
-    def _copy_migration(
-        connection: sqlite3.Connection,
-        table: str,
-        columns: tuple[str, ...],
-    ) -> None:
-        migration = f"{table}{MIGRATION_SUFFIX}"
-        if migration not in AssistantStore._tables(connection):
-            return
-        source_columns = frozenset(
-            str(row["name"])
-            for row in connection.execute(f"PRAGMA table_info({migration})").fetchall()
-        )
-        shared_columns = tuple(column for column in columns if column in source_columns)
-        column_sql = ", ".join(shared_columns)
-        connection.execute(
-            f"INSERT INTO {table} ({column_sql}) SELECT {column_sql} FROM {migration}"
-        )
-        connection.execute(f"DROP TABLE {migration}")
+            rebuild_table(connection, table, create)
 
     @staticmethod
     def _ensure_columns(connection: sqlite3.Connection) -> None:
         """升级已存在的 selection DB；`CREATE TABLE IF NOT EXISTS` 不会补列。"""
 
-        expected = {
-            ASSISTANT_REF_TABLE: {
-                "label_fallback": "TEXT",
-                "selection_source_label": "TEXT",
-                "retention": "TEXT NOT NULL DEFAULT 'session'",
-                "origin": "TEXT NOT NULL DEFAULT 'explicit'",
-                "claim_turn_id": "TEXT",
-            },
-            ASSISTANT_ITEM_TABLE: {
-                "label_fallback": "TEXT",
-                "selection_source_label": "TEXT",
-                "retention": "TEXT NOT NULL DEFAULT 'session'",
-                "origin": "TEXT NOT NULL DEFAULT 'explicit'",
-                "authority": "TEXT NOT NULL DEFAULT 'source_material'",
-                "surface": "TEXT NOT NULL DEFAULT '{}'",
-                "item_role": "TEXT NOT NULL DEFAULT 'material'",
-                "model_locator": "TEXT NOT NULL DEFAULT ''",
-            },
-            ASSISTANT_SNAPSHOT_TABLE: {
-                "question_hash": "TEXT NOT NULL DEFAULT ''",
-            },
-        }
-        for table, columns in expected.items():
+        for table, columns in _ADDITIVE_COLUMNS.items():
             existing = frozenset(
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -303,6 +394,7 @@ class AssistantStore:
                 ref_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 source_id TEXT NOT NULL,
+                project_id TEXT,
                 source_revision TEXT,
                 label TEXT NOT NULL,
                 label_fallback TEXT,
@@ -343,6 +435,7 @@ class AssistantStore:
                 ref_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 source_id TEXT NOT NULL,
+                project_id TEXT,
                 source_revision TEXT,
                 label TEXT NOT NULL,
                 label_fallback TEXT,
@@ -491,6 +584,7 @@ class AssistantStore:
             ref_id=str(row["ref_id"]),
             kind=ContextRefKind(str(row["kind"])),
             source_id=str(row["source_id"]),
+            project_id=row["project_id"],
             source_revision=str(row["source_revision"]) if row["source_revision"] else None,
             label=str(row["label"]),
             label_fallback=cls._label_fallback(row["label_fallback"]),
@@ -926,7 +1020,7 @@ class AssistantStore:
                 if ref_row["claim_turn_id"]:
                     raise AnswerAnnotationClaimedError(annotation_id)
                 connection.execute(
-                    f"DELETE FROM {ASSISTANT_REF_TABLE} " "WHERE session_id = ? AND ref_id = ?",
+                    f"DELETE FROM {ASSISTANT_REF_TABLE} WHERE session_id = ? AND ref_id = ?",
                     (session_id, str(ref_row["ref_id"])),
                 )
                 self._write_selection_header(
@@ -968,7 +1062,7 @@ class AssistantStore:
                     raise AnswerAnnotationClaimedError(annotation_id)
                 if ref_row is not None:
                     connection.execute(
-                        f"DELETE FROM {ASSISTANT_REF_TABLE} " "WHERE session_id = ? AND ref_id = ?",
+                        f"DELETE FROM {ASSISTANT_REF_TABLE} WHERE session_id = ? AND ref_id = ?",
                         (session_id, str(ref_row["ref_id"])),
                     )
                     self._write_selection_header(
@@ -1120,8 +1214,8 @@ class AssistantStore:
                         f"""
                         INSERT INTO {ASSISTANT_REF_TABLE} (
                             session_id, ref_id, kind, source_id, source_revision,
-                            label, label_fallback, selection_source_label, anchor, retention, origin, claim_turn_id, order_index
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            label, label_fallback, selection_source_label, anchor, retention, origin, claim_turn_id, order_index, project_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             session_id,
@@ -1137,6 +1231,7 @@ class AssistantStore:
                             ref.origin.value,
                             claim_ids.get(ref.ref_id),
                             index,
+                            ref.project_id,
                         ),
                     )
                 connection.execute("COMMIT")
@@ -1325,7 +1420,7 @@ class AssistantStore:
                     return existing
                 connection.execute(
                     f"""
-                    INSERT INTO {ASSISTANT_SNAPSHOT_TABLE} ({', '.join(SNAPSHOT_COLUMNS)})
+                    INSERT INTO {ASSISTANT_SNAPSHOT_TABLE} ({", ".join(SNAPSHOT_COLUMNS)})
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -1345,8 +1440,8 @@ class AssistantStore:
                 for index, item in enumerate(snapshot.items):
                     connection.execute(
                         f"""
-                        INSERT INTO {ASSISTANT_ITEM_TABLE} ({', '.join(ITEM_COLUMNS)})
-                        VALUES ({', '.join('?' for _ in ITEM_COLUMNS)})
+                        INSERT INTO {ASSISTANT_ITEM_TABLE} ({", ".join(ITEM_COLUMNS)})
+                        VALUES ({", ".join("?" for _ in ITEM_COLUMNS)})
                         """,
                         (
                             snapshot.snapshot_id,
@@ -1354,6 +1449,7 @@ class AssistantStore:
                             item.ref.ref_id,
                             item.ref.kind.value,
                             item.ref.source_id,
+                            item.ref.project_id,
                             item.ref.source_revision,
                             item.ref.label,
                             item.ref.label_fallback,
@@ -1410,35 +1506,7 @@ class AssistantStore:
             f"SELECT * FROM {ASSISTANT_ITEM_TABLE} WHERE snapshot_id = ? ORDER BY order_index",
             (str(row["snapshot_id"]),),
         ).fetchall()
-        items = tuple(
-            AssistantTurnItem(
-                evidence_id=str(item["evidence_id"]),
-                ref=ContextRef(
-                    ref_id=str(item["ref_id"]),
-                    kind=ContextRefKind(str(item["kind"])),
-                    source_id=str(item["source_id"]),
-                    source_revision=(
-                        str(item["source_revision"]) if item["source_revision"] else None
-                    ),
-                    label=str(item["label"]),
-                    label_fallback=cls._label_fallback(item["label_fallback"]),
-                    selection_source_label=item["selection_source_label"],
-                    anchor=cls._anchor(item["anchor"]),
-                    retention=ContextRetention(str(item["retention"])),
-                    origin=ContextOrigin(str(item["origin"])),
-                ),
-                state=ContextResolutionState(str(item["resolution_state"])),
-                role=ContextItemRole(str(item["item_role"])),
-                model_locator=str(item["model_locator"]),
-                authority=ContextAuthority(str(item["authority"])),
-                surface=cls._mapping(item["surface"]),
-                excerpt_text=str(item["excerpt_text"]),
-                excerpt_hash=str(item["excerpt_hash"]),
-                used_chars=int(item["used_chars"]),
-                reason=str(item["reason"]),
-            )
-            for item in item_rows
-        )
+        items = tuple(cls._item(item) for item in item_rows)
         return AssistantTurnSnapshot(
             snapshot_id=str(row["snapshot_id"]),
             session_id=str(row["session_id"]),
@@ -1453,6 +1521,40 @@ class AssistantStore:
             items=items,
             created_at=float(row["created_at"]),
         )
+
+    @classmethod
+    def _item(cls, item: sqlite3.Row) -> AssistantTurnItem:
+        return AssistantTurnItem(
+            evidence_id=str(item["evidence_id"]),
+            ref=cls._ref(item),
+            state=ContextResolutionState(str(item["resolution_state"])),
+            role=ContextItemRole(str(item["item_role"])),
+            model_locator=str(item["model_locator"]),
+            authority=ContextAuthority(str(item["authority"])),
+            surface=cls._mapping(item["surface"]),
+            excerpt_text=str(item["excerpt_text"]),
+            excerpt_hash=str(item["excerpt_hash"]),
+            used_chars=int(item["used_chars"]),
+            reason=str(item["reason"]),
+        )
+
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Use production selection, evidence and annotation readers in memory.
+
+        All child records are decoded, including records not returned by a
+        parent lookup. No claim, release, annotation edit or recovery executes.
+        """
+        for row in connection.execute(f"SELECT session_id FROM {ASSISTANT_SELECTION_TABLE}"):
+            cls._selection(connection, str(row["session_id"]))
+        for row in connection.execute(f"SELECT * FROM {ASSISTANT_REF_TABLE}"):
+            cls._ref(row)
+        for row in connection.execute(f"SELECT * FROM {ASSISTANT_SNAPSHOT_TABLE}"):
+            cls._snapshot(connection, row)
+        for row in connection.execute(f"SELECT * FROM {ASSISTANT_ITEM_TABLE}"):
+            cls._item(row)
+        for row in connection.execute(f"SELECT * FROM {ASSISTANT_ANNOTATION_TABLE}"):
+            cls._annotation(row)
 
     def snapshot_for_turn(
         self,

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping
 
+from scholarseed_codex.admission import NativeAdmission
 from scholarseed_codex.protocol.constants import MCP_TOOL_NAME_PREFIX
 from scholarseed_codex.protocol.mcp import (
     McpAuthStatus,
@@ -46,6 +48,11 @@ from scholarseed_codex.protocol.mcp import (
     McpTrustState,
 )
 from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID
+from scholarseed_runtime.contract.mcp import (
+    McpConfigurationReceipt,
+    McpServerObservation,
+    McpServerState,
+)
 
 CODEX_MCP_RUNTIME_ID = CODEX_RUNTIME_ID
 MCP_STATUS_LIST_METHOD = "mcpServerStatus/list"
@@ -62,9 +69,175 @@ MCP_REQUEST_TIMEOUT_SECONDS = 30.0
 MCP_STATUS_CACHE_SECONDS = 2.0
 MCP_RUNTIME_ERROR = "mcp_runtime_request_failed"
 MCP_STARTUP_ERROR = "mcp_server_startup_failed"
+MCP_INVENTORY_INVALID = "mcp_inventory_invalid"
+MCP_INVENTORY_MISMATCH = "mcp_inventory_mismatch"
+MCP_INVENTORY_PENDING = "mcp_inventory_pending"
+MCP_AUTH_REQUIRED = "mcp_auth_required"
+MCP_NATIVE_CONNECTED = "connected"
+MCP_NATIVE_STARTING = "starting"
+MCP_INVENTORY_MAX_PAGES = 100
+LOGGER = logging.getLogger(__name__)
 
 RequestCallback = Callable[[str, Any], Awaitable[dict[str, Any]]]
 SessionIdCallback = Callable[[], str]
+
+
+@dataclass(frozen=True)
+class NativeMcpInventory:
+    revision: str = ""
+    safe_error: str = ""
+    servers: tuple[McpServerObservation, ...] = ()
+    configuration_verified: bool = False
+
+    @property
+    def can_admit(self) -> bool:
+        return bool(self.revision) or self.configuration_verified
+
+
+MCP_SERVER_STATE_PRIORITY = (
+    McpServerState.FAILED,
+    McpServerState.AUTH_REQUIRED,
+    McpServerState.CONNECTING,
+    McpServerState.READY,
+)
+
+
+def _server_observation(name: str, row: Mapping[str, Any], thread_id: str) -> McpServerObservation:
+    if _auth_status(row.get("authStatus")) is McpAuthStatus.NOT_LOGGED_IN:
+        return McpServerObservation(
+            name, McpServerState.AUTH_REQUIRED, safe_error=MCP_AUTH_REQUIRED
+        )
+    if row.get("toolsError"):
+        return McpServerObservation(name, McpServerState.FAILED, safe_error=MCP_STARTUP_ERROR)
+    if not isinstance(row.get("tools"), dict):
+        return McpServerObservation(name, McpServerState.FAILED, safe_error=MCP_INVENTORY_INVALID)
+    if (
+        not isinstance(row.get("serverInfo"), dict)
+        or thread_id
+        and row.get("runtimeStatus") != MCP_NATIVE_CONNECTED
+    ):
+        return McpServerObservation(
+            name, McpServerState.CONNECTING, safe_error=MCP_INVENTORY_PENDING
+        )
+    return McpServerObservation(name, McpServerState.READY, tool_count=len(row["tools"]))
+
+
+async def verify_mcp_inventory(
+    request: RequestCallback,
+    thread_ids: tuple[str, ...],
+    expected_servers: frozenset[str],
+    disabled_servers: frozenset[str] = frozenset(),
+) -> NativeMcpInventory:
+    if expected_servers & disabled_servers:
+        return NativeMcpInventory(safe_error=MCP_INVENTORY_INVALID)
+    snapshots: dict[str, dict[str, Any]] = {}
+    observations: dict[str, list[McpServerObservation]] = {name: [] for name in expected_servers}
+    errors: list[str] = []
+    configuration_verified = True
+    for thread_id in dict.fromkeys(("", *thread_ids)):
+        rows: dict[str, Any] = {}
+        cursor = None
+        seen_cursors: set[str] = set()
+        for _page in range(MCP_INVENTORY_MAX_PAGES):
+            result = await request(
+                MCP_STATUS_LIST_METHOD,
+                {
+                    "threadId": thread_id or None,
+                    "detail": MCP_STATUS_TOOLS_DETAIL,
+                    "limit": DEFAULT_PAGE_LIMIT,
+                    "cursor": cursor,
+                },
+            )
+            data = result.get("data")
+            if not isinstance(data, list):
+                return NativeMcpInventory(safe_error=MCP_INVENTORY_INVALID)
+            for row in data:
+                if not isinstance(row, dict):
+                    return NativeMcpInventory(safe_error=MCP_INVENTORY_INVALID)
+                name = row.get("name")
+                if not isinstance(name, str) or not name or name in rows:
+                    return NativeMcpInventory(safe_error=MCP_INVENTORY_INVALID)
+                rows[name] = row
+            cursor = result.get("nextCursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                return NativeMcpInventory(safe_error=MCP_INVENTORY_INVALID)
+            seen_cursors.add(cursor)
+        else:
+            return NativeMcpInventory(safe_error=MCP_INVENTORY_INVALID)
+        inactive = {
+            name
+            for name in rows.keys() & disabled_servers
+            if rows[name].get("tools") == {}
+            and rows[name].get("serverInfo") is None
+            and rows[name].get("runtimeStatus") is None
+        }
+        if rows.keys() - inactive != expected_servers:
+            configuration_verified = False
+            LOGGER.debug(
+                "mcp_inventory_mismatch thread=%s expected=%s observed=%s extra_states=%s",
+                thread_id,
+                sorted(expected_servers),
+                sorted(rows),
+                {
+                    name: {
+                        "runtime": rows[name].get("runtimeStatus"),
+                        "tool_count": len(rows[name].get("tools") or {}),
+                        "server_info": bool(rows[name].get("serverInfo")),
+                    }
+                    for name in rows.keys() - expected_servers
+                },
+            )
+            errors.append(MCP_INVENTORY_MISMATCH)
+        for name in expected_servers:
+            observation = (
+                _server_observation(name, rows[name], thread_id)
+                if name in rows
+                else McpServerObservation(
+                    name, McpServerState.CONNECTING, safe_error=MCP_INVENTORY_PENDING
+                )
+            )
+            observations[name].append(observation)
+            if observation.safe_error:
+                errors.append(observation.safe_error)
+                row = rows.get(name, {})
+                if not (
+                    observation.safe_error in (MCP_STARTUP_ERROR, MCP_AUTH_REQUIRED)
+                    and row.get("tools") == {}
+                    and row.get("runtimeStatus") != MCP_NATIVE_STARTING
+                ):
+                    configuration_verified = False
+        snapshots[thread_id] = rows
+    servers = []
+    for name, observed in sorted(observations.items()):
+        state = next(
+            state
+            for state in MCP_SERVER_STATE_PRIORITY
+            if any(item.state is state for item in observed)
+        )
+        selected = next(item for item in observed if item.state is state)
+        tool_count = (
+            min(item.tool_count for item in observed if item.tool_count is not None)
+            if state is McpServerState.READY
+            else None
+        )
+        servers.append(McpServerObservation(name, state, tool_count, selected.safe_error))
+    if errors:
+        error = next(
+            (error for error in errors if error != MCP_INVENTORY_PENDING), MCP_INVENTORY_PENDING
+        )
+        return NativeMcpInventory(
+            safe_error=error,
+            servers=tuple(servers),
+            configuration_verified=configuration_verified,
+        )
+    return NativeMcpInventory(
+        revision=hashlib.sha256(
+            json.dumps(snapshots, sort_keys=True, ensure_ascii=True).encode()
+        ).hexdigest(),
+        servers=tuple(servers),
+    )
 
 
 @dataclass
@@ -90,6 +263,21 @@ def _startup_state(value: Any) -> McpStartupState:
         return McpStartupState(str(value or ""))
     except ValueError:
         return McpStartupState.UNKNOWN
+
+
+def _inventory_startup(
+    row: Mapping[str, Any], previous: _CodexServerState | None
+) -> McpStartupState:
+    if row.get("toolsError"):
+        return McpStartupState.FAILED
+    status = row.get("runtimeStatus")
+    if status == MCP_NATIVE_CONNECTED:
+        return McpStartupState.READY
+    if status == MCP_NATIVE_STARTING:
+        return McpStartupState.STARTING
+    if status is None and previous is not None:
+        return previous.startup
+    return McpStartupState.UNKNOWN
 
 
 def _failure_reason(value: Any) -> McpFailureReason:
@@ -141,8 +329,13 @@ class CodexMcpControl:
         *,
         request: RequestCallback,
         session_id: SessionIdCallback,
+        admission: NativeAdmission | None = None,
+        reload_configuration: Callable[[], McpConfigurationReceipt] | None = None,
     ) -> None:
         self._request = request
+        self._reload_configuration = reload_configuration
+        self.capabilities = replace(self.capabilities, reload=reload_configuration is not None)
+        self._admission = admission or NativeAdmission()
         self._session_id = session_id
         self._states: dict[str, _CodexServerState] = {}
         self._observers: set[McpEventObserver] = set()
@@ -150,6 +343,7 @@ class CodexMcpControl:
         self._refresh_lock = asyncio.Lock()
         self._refreshed_at = 0.0
         self._full_inventory = False
+        self._cache_epoch = 0
 
     async def _call(self, method: str, params: Any) -> dict[str, Any]:
         try:
@@ -161,10 +355,15 @@ class CodexMcpControl:
             raise RuntimeError(MCP_RUNTIME_ERROR) from error
 
     async def _refresh(self, *, full: bool = False, force: bool = False) -> None:
+        while not await self._refresh_once(full=full, force=force):
+            force = True
+
+    async def _refresh_once(self, *, full: bool, force: bool) -> bool:
         async with self._refresh_lock:
             cache_fresh = time.monotonic() - self._refreshed_at < MCP_STATUS_CACHE_SECONDS
             if not force and self._states and cache_fresh and (not full or self._full_inventory):
-                return
+                return True
+            epoch = self._cache_epoch
             cursor = ""
             updated: dict[str, _CodexServerState] = {}
             while True:
@@ -184,26 +383,36 @@ class CodexMcpControl:
                     if not name:
                         continue
                     previous = self._states.get(name)
+                    startup = _inventory_startup(item, previous)
                     updated[name] = _CodexServerState(
                         raw=item,
-                        startup=(
-                            previous.startup if previous is not None else McpStartupState.READY
-                        ),
+                        startup=startup,
                         failure=(
-                            previous.failure if previous is not None else McpFailureReason.NONE
+                            previous.failure
+                            if previous is not None and startup is McpStartupState.FAILED
+                            else McpFailureReason.NONE
                         ),
-                        safe_error=previous.safe_error if previous is not None else "",
+                        safe_error=(MCP_STARTUP_ERROR if startup is McpStartupState.FAILED else ""),
                     )
                 cursor = str(response.get("nextCursor") or "")
                 if not cursor:
                     break
+            if epoch != self._cache_epoch:
+                return False
             self._states = updated
             self._full_inventory = full
             self._refreshed_at = time.monotonic()
+            return True
 
     async def snapshot(self) -> McpSnapshot:
         await self._refresh()
         return self._snapshot()
+
+    def invalidate(self) -> None:
+        self._cache_epoch += 1
+        self._states.clear()
+        self._refreshed_at = 0.0
+        self._full_inventory = False
 
     def _snapshot(self) -> McpSnapshot:
         return McpSnapshot(
@@ -330,6 +539,10 @@ class CodexMcpControl:
         )
 
     async def read_resource(self, request: McpReadRequest) -> McpResourceContents:
+        async with self._admission.enter():
+            return await self._read_resource(request)
+
+    async def _read_resource(self, request: McpReadRequest) -> McpResourceContents:
         response = await self._call(
             MCP_RESOURCE_READ_METHOD,
             {
@@ -371,6 +584,10 @@ class CodexMcpControl:
         )
 
     async def call_tool(self, request: McpToolCallRequest) -> McpToolCallResult:
+        async with self._admission.enter():
+            return await self._call_tool(request)
+
+    async def _call_tool(self, request: McpToolCallRequest) -> McpToolCallResult:
         response = await self._call(
             MCP_TOOL_CALL_METHOD,
             {
@@ -399,21 +616,19 @@ class CodexMcpControl:
     async def logout(self, request: McpLogoutRequest) -> McpSnapshot:
         raise RuntimeError("Codex App Server does not expose MCP OAuth logout")
 
-    async def reload(self, request: McpReloadRequest) -> McpSnapshot:
-        await self._call(MCP_RELOAD_METHOD, None)
-        await self._refresh(force=True)
-        await self._emit(McpEventKind.INVENTORY_CHANGED, server=request.server)
-        return self._snapshot()
+    async def reload(self, request: McpReloadRequest) -> McpConfigurationReceipt:
+        if self._reload_configuration is None:
+            raise RuntimeError(MCP_RUNTIME_ERROR)
+        return self._reload_configuration()
 
     async def decide_trust(self, request: McpTrustRequest) -> McpSnapshot:
         raise RuntimeError("Codex owns project trust outside the MCP control API")
 
     async def handle_notification(self, method: str, params: Mapping[str, Any]) -> bool:
         if method == MCP_LOGIN_COMPLETED_NOTIFICATION:
+            self.invalidate()
             name = str(params.get("name") or "")
             success = bool(params.get("success"))
-            if success:
-                await self._refresh(force=True)
             await self._emit(
                 McpEventKind.AUTH_COMPLETED,
                 server=name,
@@ -424,6 +639,7 @@ class CodexMcpControl:
             )
             return True
         if method == MCP_STARTUP_UPDATED_NOTIFICATION:
+            self._cache_epoch += 1
             name = str(params.get("name") or "")
             state = self._states.get(name) or _CodexServerState(raw={"name": name})
             state.startup = _startup_state(params.get("status"))

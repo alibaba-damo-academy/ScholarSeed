@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
+import threading
 import unittest
 from hashlib import sha256
 from pathlib import Path
@@ -15,6 +17,7 @@ from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
+from service.platform.activity import Activities, MaintenanceActive
 from service.platform.resources import TurnOutcome, VersionOrigin
 from service.resources.api.versions import register_version_routes
 from service.resources.persistence.version import VersionStore
@@ -57,7 +60,7 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("归档状态")
         self.other = registry.create("其他项目")
         self.target = Path(self.project.root) / "resources/notes.md"
@@ -71,8 +74,12 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             formats,
             annotations,
         )
-        self.supervisor = ResourceVersionSupervisor(self.content, self.versions, formats, settings)
-        self.deliveries = ResourceDeliveryService(self.content, self.versions, self.supervisor)
+        self.supervisor = ResourceVersionSupervisor(
+            self.content, self.versions, formats, settings, activities=Activities()
+        )
+        self.deliveries = ResourceDeliveryService(
+            self.content, self.versions, self.supervisor, activities=self.supervisor._activities
+        )
         self.supervisor.bind_preparation(
             ResourceActivation(
                 self.content,
@@ -104,6 +111,43 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         await self.deliveries.record_change(
             "session", turn, str(self.target), "update", generation="generation"
         )
+
+    async def test_cancelled_finalization_remains_busy_until_snapshot_is_committed(self) -> None:
+        await self.begin()
+        gate = self.supervisor._activities
+        entered, release = threading.Event(), threading.Event()
+        original = self.deliveries._finish
+
+        def finish(*args):
+            entered.set()
+            if not release.wait(10):
+                raise TimeoutError("finalization thread was not released")
+            return original(*args)
+
+        with patch.object(self.deliveries, "_finish", side_effect=finish):
+            task = asyncio.create_task(
+                self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+            )
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 10))
+                generation = gate.begin()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertFalse(gate.seal(generation))
+                with self.assertRaises(MaintenanceActive):
+                    await self.deliveries.retry_finalization(
+                        self.project.id, "session", "turn", "retry"
+                    )
+            finally:
+                release.set()
+                async with asyncio.timeout(10):
+                    while gate.snapshot().counts:
+                        await asyncio.sleep(0.01)
+        result = self.deliveries._store(self.project.id).review_result("session", "turn")
+        self.assertIsNotNone(result)
+        self.assertTrue(result.file_ids)
+        self.assertTrue(gate.seal(generation))
 
     async def fail_capture(self, turn: str = "turn") -> None:
         await self.begin(turn)

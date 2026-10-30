@@ -8,9 +8,11 @@ import unittest
 from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock, patch
 
 from scholarseed_codex.activity import (
     NATIVE_BACKGROUND_TERMINALS_LIST_METHOD,
+    NATIVE_EPHEMERAL_FIELD,
     NATIVE_GOAL_GET_METHOD,
     NATIVE_QUEUE_LIST_METHOD,
     NATIVE_THREAD_LIST_METHOD,
@@ -19,8 +21,10 @@ from scholarseed_codex.activity import (
     NativeActivity,
     NativeActivityBlocker,
 )
-from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.process import CodexProcessHost
+from scholarseed_codex.protocol.state import CODEX_COLLAB_TOOL_CALL_ITEM_TYPE, AppServerError
 from scholarseed_codex.session import CodexRuntimeSession
+from scholarseed_runtime.contract.command import InterruptRequest
 from scholarseed_runtime.contract.session import (
     RuntimeActivitySnapshot,
     RuntimeExecutionTreeBlocker,
@@ -41,6 +45,8 @@ class ScriptedNativeHost:
     def __init__(self) -> None:
         self.process_generation = 1
         self.activity_revision = 0
+        self.unscoped_activity_revision = 0
+        self.thread_revisions: dict[str, int] = defaultdict(int)
         self.known_roots = (ROOT_THREAD,)
         self.threads = {ROOT_THREAD: idle_thread(ROOT_THREAD)}
         self.responses: dict[tuple[str, str, str], Any] = {}
@@ -50,6 +56,9 @@ class ScriptedNativeHost:
 
     def suspend_blockers(self, _thread_id: str) -> tuple[str, ...]:
         return ()
+
+    def thread_activity_revision(self, thread_id: str) -> int:
+        return self.unscoped_activity_revision + self.thread_revisions[thread_id]
 
     def retain_loaded_roots(self, _loaded: tuple[str, ...]) -> None:
         return None
@@ -93,6 +102,150 @@ class ScriptedNativeHost:
 
 
 class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_detach_waits_for_whole_tree_interruption(self) -> None:
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def interrupt_tree(**_kwargs):
+            entered.set()
+            await finish.wait()
+
+        session = CodexRuntimeSession.__new__(CodexRuntimeSession)
+        session._owns_pool = False
+        session._admission_lock = asyncio.Lock()
+        session._interrupt_lock = asyncio.Lock()
+        session._suspend_receipt = None
+        session._active_operations = 0
+        session._activity_revision = 0
+        session._events = SimpleNamespace(close=AsyncMock())
+        host = ScriptedNativeHost()
+        host.attachment = lambda _key: SimpleNamespace(turn=SimpleNamespace(interrupt=AsyncMock()))
+        session._native = SimpleNamespace(host=host, session_id=ROOT_THREAD, aclose=AsyncMock())
+        with patch.object(NativeActivity, "interrupt", side_effect=interrupt_tree):
+            stopping = asyncio.create_task(session.interrupt(InterruptRequest("stop")))
+            await entered.wait()
+            closing = asyncio.create_task(session.detach())
+            await asyncio.sleep(0)
+            session._native.aclose.assert_not_awaited()
+            finish.set()
+            await asyncio.gather(stopping, closing)
+        session._native.aclose.assert_awaited_once()
+        self.assertEqual(session._active_operations, 0)
+
+    async def test_interrupt_covers_idle_parent_descendants_and_new_grandchild(self) -> None:
+        host = ScriptedNativeHost()
+        host.known_roots = (ROOT_THREAD, SIBLING_THREAD)
+        host.threads[SIBLING_THREAD] = idle_thread(SIBLING_THREAD)
+        host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, ROOT_THREAD)
+        host.threads[CHILD_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        interrupted = []
+        request = host.request
+
+        async def native(method, params):
+            thread = host.threads.get(params.get("threadId"))
+            if method == "thread/turns/list":
+                return {
+                    "data": [{"id": params["threadId"] + "-turn", "status": "inProgress"}],
+                    "nextCursor": None,
+                }
+            if method == "turn/interrupt":
+                interrupted.append(params["threadId"])
+                thread["status"] = {"type": "idle"}
+                if params["threadId"] == CHILD_THREAD:
+                    host.threads["grandchild"] = idle_thread("grandchild", CHILD_THREAD)
+                    host.threads["grandchild"]["status"] = {"type": "active", "activeFlags": []}
+                return {}
+            return await request(method, params)
+
+        host.request = native
+        await NativeActivity(host, ROOT_THREAD, known_roots=host.known_roots).interrupt()
+        self.assertEqual(interrupted, [CHILD_THREAD, "grandchild"])
+
+    async def test_interrupt_unknown_ownership_has_no_mutations(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads["unknown"] = idle_thread("unknown")
+        with self.assertRaises(ValueError):
+            await NativeActivity(host, ROOT_THREAD).interrupt()
+        self.assertFalse(any(method == "turn/interrupt" for method, _ in host.calls))
+
+    async def test_interrupt_reclaims_owned_terminals_after_root_ended(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, ROOT_THREAD)
+        terminals = [{"itemId": "child-command", "processId": "child-process"}]
+        terminated = []
+        request = host.request
+
+        async def native(method, params):
+            if method == "thread/backgroundTerminals/list" and params["threadId"] == CHILD_THREAD:
+                return {"data": list(terminals), "nextCursor": None}
+            if method == "thread/backgroundTerminals/terminate":
+                terminated.append(params)
+                terminals.clear()
+                return {"terminated": True}
+            return await request(method, params)
+
+        host.request = native
+        await NativeActivity(host, ROOT_THREAD).interrupt(cleanup_background_processes=True)
+        self.assertEqual(terminated, [{"threadId": CHILD_THREAD, "processId": "child-process"}])
+
+    async def test_interrupt_transport_failure_can_be_retried(self) -> None:
+        host = ScriptedNativeHost()
+        host.responses[(NATIVE_THREAD_LOADED_LIST_METHOD, "", "")] = AppServerError("offline")
+        with self.assertRaises(AppServerError):
+            await NativeActivity(host, ROOT_THREAD).interrupt()
+        host.responses.clear()
+        await NativeActivity(host, ROOT_THREAD).interrupt()
+
+    async def test_interrupt_generation_change_rejects_without_writes(self) -> None:
+        host = ScriptedNativeHost()
+
+        def restart(method, _params, _count):
+            if method == NATIVE_THREAD_READ_METHOD:
+                host.process_generation += 1
+
+        host.mutation = restart
+        with self.assertRaisesRegex(ValueError, "generation_changed"):
+            await NativeActivity(host, ROOT_THREAD).interrupt()
+        self.assertFalse(any(method == "turn/interrupt" for method, _ in host.calls))
+
+    async def test_interrupt_preserves_goals_and_queued_input_as_drain_blockers(self) -> None:
+        host = ScriptedNativeHost()
+        host.responses[(NATIVE_GOAL_GET_METHOD, ROOT_THREAD, "")] = {
+            "goal": {"threadId": ROOT_THREAD, "status": "paused"}
+        }
+        host.responses[(NATIVE_QUEUE_LIST_METHOD, ROOT_THREAD, "")] = {
+            "data": [{"id": "queued", "clientUserMessageId": "message", "input": []}],
+            "nextCursor": None,
+        }
+        activity = NativeActivity(host, ROOT_THREAD)
+        await activity.interrupt(cleanup_background_processes=True)
+        state = await activity.inspect()
+        self.assertIn(NativeActivityBlocker.GOAL.value, state.blockers)
+        self.assertIn(NativeActivityBlocker.QUEUED_SUBMISSION.value, state.blockers)
+
+    async def test_native_ephemeral_threads_have_no_goals_or_queue(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads[ROOT_THREAD][NATIVE_EPHEMERAL_FIELD] = True
+        result = await NativeActivity(host, ROOT_THREAD).inspect()
+        self.assertTrue(result.complete)
+        self.assertFalse(result.blockers)
+        methods = [method for method, _params in host.calls]
+        self.assertNotIn(NATIVE_GOAL_GET_METHOD, methods)
+        self.assertNotIn(NATIVE_QUEUE_LIST_METHOD, methods)
+        self.assertIn(NATIVE_BACKGROUND_TERMINALS_LIST_METHOD, methods)
+        host.threads[ROOT_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        result = await NativeActivity(host, ROOT_THREAD).inspect()
+        self.assertIn(NativeActivityBlocker.TURN.value, result.blockers)
+
+    async def test_unknown_ephemeral_flag_does_not_skip_activity_checks(self) -> None:
+        for value in (None, False, "true", 1):
+            with self.subTest(value=value):
+                host = ScriptedNativeHost()
+                host.threads[ROOT_THREAD][NATIVE_EPHEMERAL_FIELD] = value
+                await NativeActivity(host, ROOT_THREAD).inspect()
+                methods = [method for method, _params in host.calls]
+                self.assertIn(NATIVE_GOAL_GET_METHOD, methods)
+                self.assertIn(NATIVE_QUEUE_LIST_METHOD, methods)
+
     @staticmethod
     def runtime_session(host: ScriptedNativeHost) -> CodexRuntimeSession:
         session = object.__new__(CodexRuntimeSession)
@@ -200,11 +353,40 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         def change_revision(method: str, _params: dict[str, Any], count: int) -> None:
             if method == NATIVE_THREAD_READ_METHOD and count == 2:
                 host.activity_revision += 1
+                host.unscoped_activity_revision += 1
 
         host.mutation = change_revision
         snapshot = await self.runtime_session(host).activity()
         self.assertFalse(snapshot.execution_tree_complete)
         self.assertFalse(snapshot.execution_tree_idle)
+
+    async def test_other_root_output_does_not_invalidate_idle_tree(self) -> None:
+        host = ScriptedNativeHost()
+        host.known_roots = (ROOT_THREAD, SIBLING_THREAD)
+        host.threads[SIBLING_THREAD] = idle_thread(SIBLING_THREAD)
+        host.threads[SIBLING_THREAD]["status"] = {"type": "active", "activeFlags": []}
+
+        def stream_sibling(_method: str, _params: dict[str, Any], _count: int) -> None:
+            host.activity_revision += 1
+            host.thread_revisions[SIBLING_THREAD] += 1
+
+        host.mutation = stream_sibling
+        snapshot = await self.runtime_session(host).activity()
+        self.assertTrue(snapshot.idle, snapshot.blockers)
+        self.assertTrue(snapshot.execution_tree_idle)
+
+    async def test_own_tree_revision_change_still_invalidates_idle_inspection(self) -> None:
+        host = ScriptedNativeHost()
+
+        def change_root(method: str, _params: dict[str, Any], count: int) -> None:
+            if method == NATIVE_THREAD_READ_METHOD and count == 2:
+                host.activity_revision += 1
+                host.thread_revisions[ROOT_THREAD] += 1
+
+        host.mutation = change_root
+        snapshot = await self.runtime_session(host).activity()
+        self.assertFalse(snapshot.idle)
+        self.assertFalse(snapshot.execution_tree_complete)
 
     async def test_idle_tree_requires_every_dimension_and_keeps_requests_read_only(
         self,
@@ -470,6 +652,43 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         host.responses[(NATIVE_GOAL_GET_METHOD, ROOT_THREAD, "")] = asyncio.CancelledError()
         with self.assertRaises(asyncio.CancelledError):
             await NativeActivity(host, ROOT_THREAD).inspect()
+
+    async def test_other_root_callback_keeps_session_revision_independent(self) -> None:
+        host = CodexProcessHost(executable="contract-only")
+        host._threads[ROOT_THREAD] = Mock()
+        host._threads[SIBLING_THREAD] = Mock()
+        host._respond_error = AsyncMock()
+        await host._handle_server_request(
+            "unsupported-request", "contract/unsupported", {"threadId": SIBLING_THREAD}
+        )
+        self.assertEqual(host.activity_revision, 1)
+        self.assertEqual(host.thread_activity_revision(ROOT_THREAD), 0)
+        self.assertEqual(host.thread_activity_revision(SIBLING_THREAD), 1)
+        host._threads.pop(SIBLING_THREAD)
+        host.retain_loaded_roots((ROOT_THREAD,))
+        self.assertNotIn(SIBLING_THREAD, host._thread_activity_revisions)
+
+    async def test_native_notifications_scope_revisions_to_owner_tree(self) -> None:
+        host = CodexProcessHost(executable="contract-only")
+        host._threads[ROOT_THREAD] = Mock()
+        host._threads[SIBLING_THREAD] = Mock()
+        host._router.register_agents(
+            ROOT_THREAD,
+            "owner-turn",
+            {"type": CODEX_COLLAB_TOOL_CALL_ITEM_TYPE, "receiverThreadIds": [CHILD_THREAD]},
+            host._threads,
+        )
+        await host._handle_notification("thread/started", {"threadId": SIBLING_THREAD})
+        self.assertEqual(host.activity_revision, 1)
+        self.assertEqual(host.thread_activity_revision(ROOT_THREAD), 0)
+        self.assertEqual(host.thread_activity_revision(SIBLING_THREAD), 1)
+        await host._handle_notification("thread/started", {"threadId": CHILD_THREAD})
+        self.assertEqual(host.thread_activity_revision(ROOT_THREAD), 1)
+        self.assertEqual(host.thread_activity_revision(SIBLING_THREAD), 1)
+        await host._handle_notification("thread/started", {})
+        self.assertEqual(host.activity_revision, 3)
+        self.assertEqual(host.thread_activity_revision(ROOT_THREAD), 2)
+        self.assertEqual(host.thread_activity_revision(SIBLING_THREAD), 2)
 
 
 if __name__ == "__main__":

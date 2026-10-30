@@ -636,6 +636,10 @@ class ResourceChangeSink(Protocol):
         """Move stable identities for a successful file or directory mutation."""
         raise NotImplementedError
 
+    def relocation_scope(self, project_id: str) -> AbstractContextManager[None]:
+        """Exclude observation until filesystem and stable path identities agree."""
+        raise NotImplementedError
+
     def import_scope(self, project_id: str) -> AbstractContextManager[None]:
         """Reuse one resource eligibility snapshot for a COPY import batch."""
         raise NotImplementedError
@@ -737,6 +741,10 @@ class ResourceFormatPolicy(Protocol):
 
     def diffable(self, path: str) -> bool:
         """Whether historical raw bytes support UTF-8 line comparison."""
+        raise NotImplementedError
+
+    def reviewable(self, path: str) -> bool:
+        """Whether the current Workbench can present a file review."""
         raise NotImplementedError
 
 

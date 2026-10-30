@@ -25,6 +25,7 @@ export type RootKind = 'resources' | 'literature' | 'artifacts' | 'sessions'
  * 输入框靠 maxLength 先挡住，后端超长仍会抛 `name_too_long` 兜底。
  */
 export const PROJECT_NAME_MAX = 100
+export const PROJECT_DESCRIPTION_MAX = 100
 
 /**
  * 项目目录布局。

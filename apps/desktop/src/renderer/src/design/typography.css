@@ -1,4 +1,14 @@
+@font-face {
+  font-family: 'iconfont';
+  src:
+    url('/src/components/primitive/Iconfont/download/iconfont.woff2') format('woff2'),
+    url('/src/components/primitive/Iconfont/download/iconfont.woff') format('woff'),
+    url('/src/components/primitive/Iconfont/download/iconfont.ttf') format('truetype');
+}
+
 :root {
+  --vds-font-icon: 'iconfont';
+  --vds-font-icon-size: 16px;
   --vds-type-caption-size: var(--vds-font-caption);
   --vds-type-caption-line: var(--vds-lh-caption);
   --vds-type-body-size: var(--vds-font-body-lv2);

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.resources import PendingOrigin, VersionOrigin, VersionPolicyMode
 from service.resources.api.versions import RESOURCE_ADMISSION_ROUTE, register_version_routes
 from service.resources.service.history import ResourceVersionError, ResourceVersionService
@@ -49,7 +50,7 @@ class AdmissionTests(unittest.TestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("admission")
         self.path = "resources/data.unknown"
         self.disk = Path(self.project.root) / self.path
@@ -111,7 +112,11 @@ class AdmissionTests(unittest.TestCase):
 
     def test_manual_unknown_file_edits_follow_shared_policy(self):
         supervisor = ResourceVersionSupervisor(
-            self.content, self.service, WorkbenchFormatPolicy(), Settings()
+            self.content,
+            self.service,
+            WorkbenchFormatPolicy(),
+            Settings(),
+            activities=Activities(),
         )
         self.service.bind_admission_policy(supervisor)
         app = FastAPI()
@@ -196,19 +201,17 @@ class AdmissionTests(unittest.TestCase):
 
     def test_disk_changed_during_publication_has_no_admission(self):
         revision = self.content.stable_snapshot(self.project.id, self.path, 1024).revision
-        original = self.content.stable_snapshot
-        calls = 0
+        original = self.content.snapshot
 
-        def race(project, path, maximum):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                self.disk.write_bytes(b"raced bytes")
-            return original(project, path, maximum)
+        def race(project, path):
+            self.disk.write_bytes(b"raced bytes")
+            return original(project, path)
 
-        with patch.object(self.content, "stable_snapshot", side_effect=race):
+        with patch.object(self.content, "snapshot", side_effect=race) as final_read:
             with self.assertRaises(ResourceVersionError):
                 self.service.admit(self.project.id, self.path, revision, "race")
+        final_read.assert_called_once_with(self.project.id, self.path)
+        self.assertEqual(self.disk.read_bytes(), b"raced bytes")
         self.assertFalse(self.service.manual_admitted(self.project.id, self.path))
         self.assertEqual(self.service.history(self.project.id, self.path), ())
 

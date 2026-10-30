@@ -4,11 +4,16 @@ import test from 'node:test'
 
 const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 
-test('Office renderer diagnostics persist through the existing rotating window log', () => {
-  assert.match(
-    source,
-    /details\.message\.startsWith\('\[office-runtime\]'\)[\s\S]*?logWindowLifecycle\(/
-  )
+test('menu diagnostics use the existing rotating window log', () => {
+  assert.match(source, /createMenuOwner\(browserWindow, \{\s*log: logWindowLifecycle,/)
+})
+
+test('Windows native notification diagnostics use the existing rotating window log', () => {
+  assert.match(source, /new WindowsNotifications\(toastNative, logWindowLifecycle\)/)
+})
+
+test('registered renderer diagnostics persist through the existing rotating window log', () => {
+  assert.match(source, /isRendererDiagnostic\(details\.message\)[\s\S]*?logWindowLifecycle\(/)
 })
 
 test('pushLog does not send IPC through disposed renderer webContents', () => {
@@ -29,7 +34,7 @@ test('main-process callbacks validate sender through alive main window', () => {
   )
   assert.match(
     source,
-    /notification\.on\('click', \(\) => \{\s*const win = aliveMainWindow\(\)\s*if \(!win\) return/
+    /function deliverAttentionActivation\(\): void \{[\s\S]*?const window = aliveMainWindow\(\)[\s\S]*?if \(!attentionRendererReady \|\| !window \|\| !pendingAttentionId\) return/
   )
   assert.match(
     source,
@@ -44,6 +49,6 @@ test('main window installs the CSP owned by the lifecycle-safe policy module', (
   )
   assert.match(
     source,
-    /installContentSecurityPolicy\(\s*mainWindow,\s*mainWindowContentSecurityPolicy\(await accountBaseUrlFromServe\(\)\)/
+    /installContentSecurityPolicy\(\s*mainWindow,\s*mainWindowContentSecurityPolicy\(launchAccountBase\)/
   )
 })

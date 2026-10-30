@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
+from threading import RLock
 from typing import Any, TypedDict
 
 from scholarseed_runtime.contract.artifact import ArtifactRole
@@ -32,8 +33,11 @@ SESSION_OUTPUT_ROOT_KINDS = (RootKind.ARTIFACTS, RootKind.SESSIONS)
 PROJECT_CONTEXT_INSTRUCTIONS = (
     "Project root: {project}. Session working directory: {cwd}. "
     "Shared Resources directory: {resources}. Filesystem paths are relative to the session "
-    "working directory; source IDs remain project-relative identifiers. Use the supplied "
-    "literature references and literature/PDF tools to access the Literature library; "
+    "working directory; source IDs remain project-relative identifiers. "
+    "Authorized linked roots are also project resources, not necessarily files inside "
+    "the Shared Resources directory. Use resource/list for their logical inventory and "
+    "resource/read for entries without a supplied real filesystem locator. "
+    "Use the supplied literature references and literature/PDF tools to access the Literature library; "
     "do not assume that it is a folder below the working directory. "
     "Read applicable project instructions (including AGENTS.md at the project root) before "
     "working on project files. Keep new files inside this session unless the user requests "
@@ -87,6 +91,7 @@ class PublicationService:
 
     def __init__(self, content: ContentPort):
         self._content = content
+        self._lock = RLock()
 
     def project_context(self, project_id: str, cwd: Path) -> str:
         if not project_id:
@@ -138,13 +143,31 @@ class PublicationService:
     def publish(
         self, command: PublicationCommand, *, provenance: dict[str, Any]
     ) -> PublicationRecord:
+        with self._lock:
+            return self._publish(command, provenance=provenance)
+
+    def delete_session(self, project_id: str, session_id: str) -> None:
+        with self._lock:
+            store = self.store(project_id, session_id)
+            for publication in store.list_session(session_id):
+                if not store.snapshot_shared(session_id, publication.content.sha256):
+                    self._content.remove_artifact(publication.content)
+            store.remove_session(session_id)
+
+    def _publish(
+        self, command: PublicationCommand, *, provenance: dict[str, Any]
+    ) -> PublicationRecord:
         if not all(
             (
                 command.session_id,
                 command.turn_id,
                 command.path,
             )
-        ) or command.role not in (ArtifactRole.FINAL, ArtifactRole.SUPPORTING):
+        ) or command.role not in (
+            ArtifactRole.FINAL,
+            ArtifactRole.INTERMEDIATE,
+            ArtifactRole.SUPPORTING,
+        ):
             raise ValueError(INVALID_PUBLICATION)
         request = {
             "turn_id": command.turn_id,

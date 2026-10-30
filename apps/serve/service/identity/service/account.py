@@ -29,6 +29,8 @@ import httpx
 import jwt
 from starlette.status import HTTP_200_OK
 
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
+
 logger = logging.getLogger(__name__)
 
 # ── 环境变量键（账号服务地址是 serve 侧唯一需要配的一项）──
@@ -110,12 +112,14 @@ class AccountTrust:
         self,
         base_url: str,
         *,
+        activities: Activities,
         issuer: str = "",
         client: Optional[httpx.Client] = None,
         clock: Callable[[], float] = time.monotonic,
         spawn: Optional[Callable[[Callable[[], None]], None]] = None,
     ) -> None:
         self._base_url = base_url.strip().rstrip("/")
+        self._activities = activities
         self._issuer = issuer.strip()
         self._client = client if client is not None else httpx.Client(timeout=HTTP_TIMEOUT_S)
         # 单调时钟可注入（契约测按刷新节律推时间，不靠 sleep）；默认 monotonic：系统
@@ -268,8 +272,28 @@ class AccountTrust:
                 stale_refresh = True
             revoked = jti in self._revoked_jtis
         if stale_refresh:
-            self._spawn(self._refresh_revocations)
+            self._start_refresh()
         return revoked
+
+    def _start_refresh(self) -> None:
+        try:
+            lease = self._activities.enter(ActivityDomain.CREDENTIAL, root=True)
+        except MaintenanceActive:
+            with self._lock:
+                self._revocations_inflight = False
+            return
+
+        def refresh() -> None:
+            with lease:
+                self._refresh_revocations()
+
+        try:
+            self._spawn(refresh)
+        except BaseException:
+            lease.close()
+            with self._lock:
+                self._revocations_inflight = False
+            raise
 
     def _revocations_stale_locked(self) -> bool:
         fetched_at = self._revocations_fetched_at
@@ -402,12 +426,15 @@ class AccountTrust:
         return payload if isinstance(payload, dict) else None
 
 
-def account_trust_from_env(env: Optional[Dict[str, str]] = None) -> AccountTrust:
+def account_trust_from_env(
+    env: Optional[Dict[str, str]] = None, *, activities: Activities
+) -> AccountTrust:
     """按环境变量装配（未配地址时 configured() 为 False，整条腿静默不参与）。"""
 
     source = os.environ if env is None else env
     return AccountTrust(
         source.get(ACCOUNT_BASE_URL_ENV, ""),
+        activities=activities,
         issuer=source.get(ACCOUNT_ISSUER_ENV, ""),
     )
 

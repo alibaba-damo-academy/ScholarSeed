@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
+from pydantic import ValidationError
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN, HTTP_502_BAD_GATEWAY
 
 from scholarseed_runtime.contract import RuntimePermissionMode
-from service.chat.api.bridge import bridge_caller
+from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.constants import PRODUCT_EVENT_SOURCE_CANDIDATES
-from service.chat.service.search import SearchInterrupted, SearchService
+from service.chat.service.search import (
+    SEARCH_PROFILES,
+    SEARCH_REQUEST_ERRORS,
+    SearchError,
+    SearchInterrupted,
+    SearchService,
+)
 from service.chat.service.sessions import SessionService
 from service.invocation.service.artifacts import InvocationArtifactError
 from service.invocation.service.runtime import INVOCATION_PERMISSION_EXCEEDS_PARENT, InvocationError
 from service.invocation.service.skills import InvocationSkillError, InvocationSkillRuntimeError
-from service.platform.bridge import BRIDGE_MAX_REQUEST_BYTES, SEARCH_ROUTE, WebSearchRequest
+from service.platform.activity import Activities
+from service.platform.bridge import (
+    SEARCH_ROUTE,
+    WebSearchRequest,
+)
+from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
+
+LOGGER = logging.getLogger(__name__)
+SEARCH_REQUEST_INVALID = "search_request_invalid"
+SEARCH_UNKNOWN_PROFILE = "unknown"
 
 
 def register_conversation_search_routes(
@@ -25,8 +42,10 @@ def register_conversation_search_routes(
     sessions: SessionService,
     searches: SearchService,
     can_search: Callable[[str, str], bool],
+    *,
+    activities: Activities,
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
 
     @router.post(SEARCH_ROUTE)
     async def search(request: Request) -> JSONResponse:
@@ -78,6 +97,13 @@ def register_conversation_search_routes(
 
         try:
             command = WebSearchRequest.model_validate(json.loads(raw))
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            return JSONResponse(
+                {"ok": False, "status": "failed", "error": SEARCH_REQUEST_INVALID},
+                HTTP_400_BAD_REQUEST,
+            )
+
+        try:
             mode = RuntimePermissionMode(
                 live.applied_permission_mode or RuntimePermissionMode.ASK.value
             )
@@ -104,9 +130,27 @@ def register_conversation_search_routes(
             return JSONResponse({"ok": False, "status": "action_required", "error": error.code})
         except (InvocationArtifactError, InvocationSkillRuntimeError) as error:
             return JSONResponse({"ok": False, "status": "failed", "error": error.code})
-        except ValueError:
+        except SearchError as error:
+            LOGGER.warning(
+                "search_validation_failed session_id=%s turn_id=%s profile=%s invocation_id=%s code=%s",
+                live.id,
+                turn_id,
+                command.profile if command.profile in SEARCH_PROFILES else SEARCH_UNKNOWN_PROFILE,
+                error.invocation_id,
+                error.code.value,
+            )
             return JSONResponse(
-                {"ok": False, "error": "search_request_or_result_invalid"}, HTTP_400_BAD_REQUEST
+                {
+                    "ok": False,
+                    "status": "failed",
+                    "error": error.code.value,
+                    "invocation_id": error.invocation_id,
+                },
+                (
+                    HTTP_400_BAD_REQUEST
+                    if error.code in SEARCH_REQUEST_ERRORS
+                    else HTTP_502_BAD_GATEWAY
+                ),
             )
         return JSONResponse(result)
 

@@ -72,6 +72,8 @@ WIRE_PROTOCOL_KEYS = tuple(protocol.value for protocol in ModelWireProtocol)
 
 CONTEXT_WINDOW_KEY = "context_window"
 MAX_OUTPUT_TOKENS_KEY = "max_output_tokens"
+# Private inference connection capability, distinct from a model's output capacity.
+OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY = "output_token_limit_supported"
 IMAGE_INPUT_KEY = "image_input"
 PDF_INPUT_KEY = "pdf_input"
 IMAGE_INPUT_REASON_KEY = "image_input_reason"

@@ -29,11 +29,17 @@ test('target summary resolves a nested event target to its stable semantic owner
   Object.defineProperty(globalThis, 'Element', { configurable: true, value: FakeElement })
   try {
     const page = new FakeElement('SECTION', 'Projects', { 'data-testid': 'project-overview' })
-    const button = new FakeElement('BUTTON', 'Open project', {
-      'data-testid': 'project-open',
-      role: 'button',
-      'aria-label': 'Open project'
-    }, null, page)
+    const button = new FakeElement(
+      'BUTTON',
+      'Open project',
+      {
+        'data-testid': 'project-open',
+        role: 'button',
+        'aria-label': 'Open project',
+      },
+      null,
+      page
+    )
     const icon = new FakeElement('SPAN', '', {}, button)
     assert.deepEqual(summarizeTarget(icon as unknown as EventTarget), {
       tag: 'button',
@@ -44,7 +50,7 @@ test('target summary resolves a nested event target to its stable semantic owner
       text: 'Open project',
       locator: { kind: 'testId', value: 'project-open' },
       containerTestIds: ['project-overview'],
-      bounds: { x: 10, y: 21, width: 100, height: 41 }
+      bounds: { x: 10, y: 21, width: 100, height: 41 },
     })
   } finally {
     delete (globalThis as Record<string, unknown>).Element
@@ -53,8 +59,14 @@ test('target summary resolves a nested event target to its stable semantic owner
 
 test('target label follows stable identifier, aria, role, text and tag priority', () => {
   assert.equal(targetLabel({ tag: 'button', text: 'Open', role: 'button' }), 'button')
-  assert.equal(targetLabel({ tag: 'button', text: 'Open', ariaLabel: 'Open project' }), 'Open project')
-  assert.equal(targetLabel({ tag: 'button', testId: 'project-open', ariaLabel: 'Open project' }), 'project-open')
+  assert.equal(
+    targetLabel({ tag: 'button', text: 'Open', ariaLabel: 'Open project' }),
+    'Open project'
+  )
+  assert.equal(
+    targetLabel({ tag: 'button', testId: 'project-open', ariaLabel: 'Open project' }),
+    'project-open'
+  )
 })
 
 test('target display label favors user-facing accessible names and text', () => {
@@ -62,10 +74,10 @@ test('target display label favors user-facing accessible names and text', () => 
     targetDisplayLabel({
       tag: 'button',
       testId: 'activity-literature',
-      ariaLabel: '文献全览',
-      accessibleName: '文献全览'
+      ariaLabel: '文献中心',
+      accessibleName: '文献中心',
     }),
-    '文献全览'
+    '文献中心'
   )
   assert.equal(
     targetDisplayLabel({ tag: 'button', testId: 'filter-recent', text: '最近添加 24' }),
@@ -94,7 +106,10 @@ test('target locator label favors durable semantic selectors over structural pat
     '[data-testid="project-open"]'
   )
   assert.equal(
-    targetLocatorLabel({ tag: 'button', locator: { kind: 'roleName', value: 'button\nOpen project' } }),
+    targetLocatorLabel({
+      tag: 'button',
+      locator: { kind: 'roleName', value: 'button\nOpen project' },
+    }),
     'role=button, name="Open project"'
   )
 })

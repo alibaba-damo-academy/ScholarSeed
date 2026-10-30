@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import tempfile
 import tomllib
@@ -360,6 +361,71 @@ class CodexInteractionContract(unittest.TestCase):
         self.assertEqual(payload["changes"], changes)
 
 
+class CodexProxyContract(unittest.TestCase):
+    def test_proxy_transport_preserves_platform_and_domain_boundaries(self) -> None:
+        domain = "scholarseed.damo.alibaba.com"
+        for platform in ("win32", "darwin", "linux"):
+            for sandbox, parent in (
+                ("workspace-write", ":workspace"),
+                ("read-only", ":read-only"),
+            ):
+                for network_access in (False, True):
+                    with (
+                        self.subTest(
+                            platform=platform, sandbox=sandbox, network_access=network_access
+                        ),
+                        patch("scholarseed_codex.permission.sys.platform", platform),
+                    ):
+                        profile, arguments = local_socket_permissions(
+                            sandbox,
+                            (),
+                            network_domains=(domain,),
+                            network_access=network_access,
+                        )
+                        self.assertEqual(arguments[0].option, "--strict-config")
+                        config = tomllib.loads(
+                            "\n".join(argument.value for argument in arguments[1:])
+                        )
+                        proxy = config["features"]["network_proxy"]
+                        if platform == "win32":
+                            self.assertIs(proxy.get("enable_socks5_udp"), False)
+                        else:
+                            self.assertNotIn("enable_socks5_udp", proxy)
+                        self.assertNotIn("enable_socks5", proxy)
+                        self.assertIs(proxy["enabled"], True)
+                        self.assertEqual(proxy["domains"], {})
+                        self.assertIs(proxy["allow_local_binding"], False)
+                        self.assertIs(proxy["dangerously_allow_all_unix_sockets"], False)
+                        permission = config["permissions"][profile]
+                        self.assertEqual(permission["extends"], parent)
+                        self.assertEqual(
+                            permission["network"],
+                            {
+                                "enabled": True,
+                                "mode": "full",
+                                "domains": {"*" if network_access else domain: "allow"},
+                                "unix_sockets": {},
+                            },
+                        )
+
+    def test_unused_and_full_access_profiles_add_no_proxy_overrides(self) -> None:
+        for platform in ("win32", "darwin", "linux"):
+            with (
+                self.subTest(platform=platform),
+                patch("scholarseed_codex.permission.sys.platform", platform),
+            ):
+                self.assertEqual(local_socket_permissions("workspace-write", ()), ("", ()))
+                self.assertEqual(local_socket_permissions("read-only", ()), ("", ()))
+                self.assertEqual(
+                    local_socket_permissions(
+                        "danger-full-access",
+                        (),
+                        network_domains=("scholarseed.damo.alibaba.com",),
+                    ),
+                    ("", ()),
+                )
+
+
 class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
     async def test_collaboration_completion_closes_started_receivers_without_stopping_agents(self):
         for receivers in (None, [], ["child-b", "child-c", "child-c"]):
@@ -593,13 +659,19 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure.code, "CONTENT_SAFETY_BLOCKED")
         self.assertEqual(failure.http_status, 400)
         normalized_failure = provider_failure(
-            {"code": "invalid_prompt", "message": PROVIDER_CONTENT_POLICY_MESSAGE}
+            {
+                "code": "invalid_prompt",
+                "message": PROVIDER_CONTENT_POLICY_MESSAGE,
+            }
         )
         self.assertEqual(normalized_failure.code, "CONTENT_SAFETY_BLOCKED")
         self.assertEqual(normalized_failure.retryability, RuntimeRetryability.TERMINAL)
         self.assertEqual(
             provider_failure(
-                {"code": "server_error", "message": "The model provider is unavailable."}
+                {
+                    "code": "server_error",
+                    "message": "The model provider is unavailable.",
+                }
             ).code,
             "server_error",
         )
@@ -658,8 +730,7 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
     async def test_credit_balance_exhausted_is_terminal_with_product_safe_message(self) -> None:
         self.state.active_turn_id = "credits-turn"
         raw_error = (
-            'unexpected status 429 Too Many Requests: {"error":'
-            '{"code":"credit_balance_exhausted"}}'
+            'unexpected status 429 Too Many Requests: {"error":{"code":"credit_balance_exhausted"}}'
         )
         await self.state.notification(
             "error",
@@ -682,7 +753,7 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         failure = provider_failure(
             {
                 "message": (
-                    "unexpected status 429 Too Many Requests: " '{"detail":"temporarily limited"}'
+                    'unexpected status 429 Too Many Requests: {"detail":"temporarily limited"}'
                 )
             }
         )
@@ -849,11 +920,11 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         (private / "secret.py").write_text("private")
         (nested / "linked.py").symlink_to(unchanged)
         await self.host._watcher.finish_turn(self.state)
-        self.assertEqual(
-            set(self.state.watched_paths), {"outputs/nested/changed.py", "outputs/nested/new.py"}
-        )
-        self.assertEqual(self.state.watched_paths["outputs/nested/changed.py"], "update")
-        self.assertEqual(self.state.watched_paths["outputs/nested/new.py"], "add")
+        expected = {
+            str(Path("outputs") / "nested" / "changed.py"): "update",
+            str(Path("outputs") / "nested" / "new.py"): "add",
+        }
+        self.assertEqual(self.state.watched_paths, expected)
 
     async def test_invalid_input_preserves_previous_turn_state(self) -> None:
         self.state.final_text = "previous answer"
@@ -881,13 +952,15 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         rows = await session.history()
         self.assertEqual([row["phase"] for row in rows], [None, "commentary", "final_answer"])
 
-    async def test_message_delta_waits_for_authoritative_started_phase(self) -> None:
+    async def test_message_delta_streams_before_official_phase_without_replaying_text(self) -> None:
         await self.state.notification(
             "item/agentMessage/delta",
             {"turnId": "turn", "itemId": "message", "delta": "正在检查。"},
             generation=1,
         )
-        self.assertEqual(self.events, [])
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].kind, CodexSessionEventKind.ASSISTANT_DELTA)
+        self.assertEqual(self.events[0].payload, {"text": "正在检查。"})
 
         await self.state.notification(
             "item/started",
@@ -904,10 +977,40 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(self.events), 1)
         self.assertEqual(self.events[0].kind, CodexSessionEventKind.ASSISTANT_DELTA)
-        self.assertEqual(
-            self.events[0].payload,
-            {"text": "正在检查。", "phase": "commentary"},
+        self.assertEqual(self.events[0].payload, {"text": "正在检查。"})
+        await self.state.notification(
+            "item/agentMessage/delta",
+            {"turnId": "turn", "itemId": "message", "delta": "继续检查。"},
+            generation=1,
         )
+        await self.state.notification(
+            "item/completed",
+            {
+                "turnId": "turn",
+                "item": {
+                    "id": "message",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "正在检查。继续检查。",
+                },
+            },
+            generation=1,
+        )
+        self.assertEqual(
+            [event.kind for event in self.events],
+            [
+                CodexSessionEventKind.ASSISTANT_DELTA,
+                CodexSessionEventKind.ASSISTANT_DELTA,
+                CodexSessionEventKind.ASSISTANT_COMPLETED,
+            ],
+        )
+        self.assertEqual(self.events[1].payload, {"text": "继续检查。", "phase": "commentary"})
+        self.assertEqual(
+            self.events[2].payload,
+            {"text": "正在检查。继续检查。", "phase": "commentary"},
+        )
+        self.assertTrue(all(event.item_id == "message" for event in self.events))
+        self.assertTrue(all(event.turn_id == "turn" for event in self.events))
 
     async def asyncSetUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="codex-watch-")
@@ -1091,7 +1194,9 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(serialized[0], {"type": "text", "text": "概括附件"})
         self.assertEqual(serialized[1]["type"], "text")
-        self.assertIn(str(selected.resolve()), serialized[1]["text"])
+        self.assertIn(
+            json.dumps(str(selected.resolve()), ensure_ascii=False), serialized[1]["text"]
+        )
         self.assertNotIn("mention", [item["type"] for item in serialized])
 
     async def test_thread_params_send_native_auto_reviewer(self) -> None:
@@ -1135,8 +1240,16 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_local_grants_use_exact_native_socket_permissions(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="grant-", dir="/tmp") as directory:
+        with tempfile.TemporaryDirectory(prefix="grant-") as directory:
             endpoint = Path(directory) / "api.sock"
+            if not hasattr(socket, "AF_UNIX"):
+                # Windows has no native Unix socket in this Python build. A
+                # same-named ordinary file must never qualify as a socket grant.
+                endpoint.write_text("not a socket")
+                with self.assertRaisesRegex(ValueError, "existing absolute Unix sockets"):
+                    local_socket_permissions("workspace-write", (endpoint,))
+                self.assertEqual(local_socket_permissions("workspace-write", ()), ("", ()))
+                return
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as bound:
                 bound.bind(str(endpoint))
                 for sandbox, parent in (
@@ -1161,15 +1274,6 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(local_socket_permissions("workspace-write", ()), ("", ()))
                 domain = "scholarseed.damo.alibaba.com"
                 profile, arguments = local_socket_permissions(
-                    "workspace-write", (), network_domains=(domain,)
-                )
-                config = tomllib.loads("\n".join(argument.value for argument in arguments[1:]))
-                network = config["permissions"][profile]["network"]
-                self.assertEqual(network["domains"], {domain: "allow"})
-                self.assertEqual(network["unix_sockets"], {})
-                self.assertEqual(network["mode"], "full")
-                self.assertTrue(config["features"]["network_proxy"]["enabled"])
-                profile, arguments = local_socket_permissions(
                     "workspace-write", (endpoint,), network_domains=(domain,)
                 )
                 config = tomllib.loads("\n".join(argument.value for argument in arguments[1:]))
@@ -1190,6 +1294,18 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
                     local_socket_permissions(
                         "workspace-write", (), network_domains=("*.damo.alibaba.com",)
                     )
+
+    async def test_network_domain_grants_work_without_unix_sockets(self) -> None:
+        domain = "scholarseed.damo.alibaba.com"
+        profile, arguments = local_socket_permissions(
+            "workspace-write", (), network_domains=(domain,)
+        )
+        config = tomllib.loads("\n".join(argument.value for argument in arguments[1:]))
+        network = config["permissions"][profile]["network"]
+        self.assertEqual(network["domains"], {domain: "allow"})
+        self.assertEqual(network["unix_sockets"], {})
+        self.assertEqual(network["mode"], "full")
+        self.assertTrue(config["features"]["network_proxy"]["enabled"])
 
     async def test_local_profile_is_exclusive_on_thread_and_turn(self) -> None:
         request = replace(

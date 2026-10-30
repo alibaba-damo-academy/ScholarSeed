@@ -5,3 +5,5 @@
 @import './zindex.css';
 @import './layout.css';
 @import './legacy.css';
+
+@custom-variant library-narrow (@media (max-width: 1050px));

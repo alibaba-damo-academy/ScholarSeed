@@ -37,6 +37,7 @@ Requests to include all cited references are fulfilled there. Do not plan a
 References/Bibliography chapter, write bibliography entries, or emit bibitem,
 thebibliography, bibliography or printbibliography commands in authored prose.
 Related-work analysis and inline citations remain ordinary manuscript content.
+Do not mention how many papers this review or any of its sections uses.
 There is no length quota unless explicitly supplied by the user, except for the
 abstract-specific genre defaults when supplied by the stage. API capacity is
 not a requested word count. Follow the assigned stage; do not introduce extra model calls yourself.

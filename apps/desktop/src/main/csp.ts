@@ -21,7 +21,10 @@ export function mainWindowContentSecurityPolicy(accountBaseUrl: string): string 
   ].join('; ')
 }
 
-export function installContentSecurityPolicy(win: BrowserWindow, policy: string): void {
+export function installContentSecurityPolicy(
+  win: Pick<BrowserWindow, 'webContents'>,
+  policy: string
+): void {
   const { id: webContentsId, session } = win.webContents
   session.webRequest.onHeadersReceived((details, callback) => {
     if (

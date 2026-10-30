@@ -56,6 +56,42 @@ CREATE TABLE IF NOT EXISTS resources_pending (
 )
 """
 
+LEGACY_SCHEMA = """
+CREATE TABLE resources_pending (
+    file_id TEXT PRIMARY KEY REFERENCES resources_files(file_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    origin TEXT NOT NULL CHECK (origin IN ('user','agent','external','restore')),
+    review_id TEXT UNIQUE,
+    group_id TEXT,
+    session_id TEXT,
+    first_turn_id TEXT,
+    turn_id TEXT,
+    terminal_outcome TEXT CHECK (terminal_outcome IN ('completed','failed','interrupted')),
+    base_object_id TEXT REFERENCES resources_objects(object_id),
+    base_state TEXT CHECK (base_state IN ('present','tombstone')),
+    base_path TEXT,
+    base_mode_bits INTEGER,
+    base_annotation_object_id TEXT REFERENCES resources_objects(object_id),
+    base_revision TEXT,
+    base_origin TEXT CHECK (base_origin IN ('user','agent','external','restore')),
+    base_version_id TEXT REFERENCES resources_versions(version_id),
+    candidate_object_id TEXT REFERENCES resources_objects(object_id),
+    candidate_state TEXT CHECK (candidate_state IN ('present','tombstone')),
+    candidate_path TEXT,
+    candidate_mode_bits INTEGER,
+    candidate_annotation_object_id TEXT REFERENCES resources_objects(object_id),
+    candidate_revision TEXT,
+    edited_by_user INTEGER NOT NULL DEFAULT 0 CHECK (edited_by_user IN (0,1)),
+    updated_at_ms INTEGER NOT NULL,
+    CHECK (review_id IS NULL OR (
+        origin = 'agent' AND group_id IS NOT NULL AND session_id IS NOT NULL
+        AND first_turn_id IS NOT NULL AND turn_id IS NOT NULL AND terminal_outcome IS NOT NULL
+        AND base_state IS NOT NULL AND base_path IS NOT NULL
+        AND candidate_state IS NOT NULL AND candidate_path IS NOT NULL
+    ))
+)
+"""
+
 
 def read(connection: sqlite3.Connection, file_id: str) -> PendingSnapshot | None:
     row = connection.execute(

@@ -8,7 +8,7 @@ import re
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, cast
 
 from service.paths import CONFIG_PATH
 from service.settings.capabilities import (
@@ -69,7 +69,7 @@ GATEWAY_STRATEGY_MODELS = (
     ("qwen3.8-flash", "Qwen 3.8 Flash"),
     ("qwen3-next-80b-a3b-thinking", "Qwen 3 Next 80B A3B Thinking"),
 )
-GATEWAY_DIRECT_MODELS: tuple[tuple[str, str], ...] = ()
+GATEWAY_DIRECT_MODELS = cast(tuple[tuple[str, str], ...], ())
 GATEWAY_APPROVAL_MODEL_KEY = "auto_review_model"
 GATEWAY_QWEN_APPROVAL_MODEL = "qwen3-next-80b-a3b-thinking"
 GATEWAY_QWEN_MODEL_KEYS = frozenset(

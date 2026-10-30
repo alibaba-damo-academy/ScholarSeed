@@ -17,8 +17,9 @@ from typing import Any, Dict, Iterable, List, Optional, TypedDict
 
 import damoatrace.recording.records as _rec
 from damoatrace.contract.event import EventKind
-from damoatrace.paths import APP_DIRNAME, METRICS_DIRNAME, PATHS, TracePaths
-from damoatrace.recording.content import visible_content
+from damoatrace.data.records import decode_event_record, decode_object_line
+from damoatrace.paths import APP_DIRNAME, METRICS_DIRNAME, PATHS, TRACE_FILE_SUFFIX, TracePaths
+from damoatrace.recording.content import validate_content_version, visible_content
 from damoatrace.utils import (
     _NOISE_KINDS,
     _agent_identity,
@@ -30,10 +31,17 @@ from damoatrace.utils import (
 )
 
 CONTEXT_LEDGER_DIRNAME = "context"
+CONTEXT_SUBAGENTS_DIRNAME = "_subagents"
 CONTEXT_ITEMS_FILENAME = "items.jsonl"
 CONTEXT_OPERATIONS_FILENAME = "operations.jsonl"
 CONTEXT_SPANS_FILENAME = "spans.jsonl"
 CONTEXT_VISIBLE_INDEXES_FILENAME = "visible_indexes.jsonl"
+CONTEXT_LEDGER_FILES = (
+    CONTEXT_ITEMS_FILENAME,
+    CONTEXT_OPERATIONS_FILENAME,
+    CONTEXT_SPANS_FILENAME,
+    CONTEXT_VISIBLE_INDEXES_FILENAME,
+)
 CONTEXT_CONTENT_PREVIEW_CHARS = 240
 CONTEXT_EVENT_ENTERED = "entered"
 CONTEXT_EVENT_VISIBLE = "visible"
@@ -132,12 +140,16 @@ class TraceStore:
     def _scan_files(self) -> List[Path]:
         if self.trace_file is not None:
             return [self.trace_file]
-        if not self.trace_dir.exists():
+        try:
+            entries = tuple(self.trace_dir.iterdir())
+        except FileNotFoundError:
             return []
         return sorted(
             path
-            for path in self.trace_dir.glob("*.jsonl")
-            if path.is_file() and (not self.offline or path.resolve().parent == self.trace_dir)
+            for path in entries
+            if path.match(f"*{TRACE_FILE_SUFFIX}")
+            and path.is_file()
+            and (not self.offline or path.resolve().parent == self.trace_dir)
         )
 
     def _load_file(self, path: Path) -> List[Dict[str, Any]]:
@@ -158,21 +170,20 @@ class TraceStore:
                     line = line.strip()
                     if not line:
                         continue
-                    try:
-                        record = json.loads(line)
-                        if not isinstance(record, dict) or not isinstance(
-                            record.get("attributes", {}), dict
-                        ):
-                            skipped += 1
-                            continue
-                        events.append(record)
-                    except json.JSONDecodeError:
+                    record = decode_object_line(line)
+                    if record is not None:
+                        validate_content_version(record)
+                    record = decode_event_record(record)
+                    if record is None:
                         skipped += 1
                         continue
+                    events.append(record)
+        except FileNotFoundError:
+            return []
         except (OSError, UnicodeError):
             with self._lock:
                 self._read_gaps[path] = skipped + 1
-            return []
+            raise
         self._attribute_sessions(events)
         with self._lock:
             self._read_gaps[path] = skipped
@@ -715,11 +726,12 @@ class TraceStore:
                 latest[row_id] = row
         return latest
 
+    @classmethod
     def _context_item_at(
-        self, item_rows: List[Dict[str, Any]], item_id: str, at: Any
+        cls, item_rows: List[Dict[str, Any]], item_id: str, at: Any
     ) -> Optional[Dict[str, Any]]:
         versions = [row for row in item_rows if row.get("item_id") == item_id]
-        versions.sort(key=self._context_item_sort_key)
+        versions.sort(key=cls._context_item_sort_key)
         if not versions:
             return None
         if not at:
@@ -739,7 +751,7 @@ class TraceStore:
                 transitions,
                 key=lambda row: (
                     str(row.get("lifecycle_ended_at") or ""),
-                    self._context_item_sort_key(row),
+                    cls._context_item_sort_key(row),
                 ),
             )
         open_versions = [row for row in historical if not row.get("lifecycle_ended_at")]
@@ -789,8 +801,9 @@ class TraceStore:
             return text
         return text[:CONTEXT_CONTENT_PREVIEW_CHARS].rstrip() + "..."
 
+    @classmethod
     def _context_item_lifecycle(
-        self,
+        cls,
         *,
         lineage_ids: set[str],
         item_rows: List[Dict[str, Any]],
@@ -806,11 +819,11 @@ class TraceStore:
         and replacement/end transitions.
         """
         related_rows = [row for row in item_rows if row.get("item_id") in lineage_ids]
-        related_rows.sort(key=self._context_item_sort_key)
+        related_rows.sort(key=cls._context_item_sort_key)
         first_by_item: Dict[str, Dict[str, Any]] = {}
         for row in related_rows:
             first_by_item.setdefault(str(row.get("item_id") or ""), row)
-        latest_by_item = self._latest_context_items(related_rows)
+        latest_by_item = cls._latest_context_items(related_rows)
         spans_by_id = {
             str(span.get("context_span_id") or ""): span
             for span in spans
@@ -846,9 +859,9 @@ class TraceStore:
 
         events: List[Dict[str, Any]] = []
         for current_id, row in first_by_item.items():
-            span = self._context_item_origin_span(row, spans_by_id, current_id)
+            span = cls._context_item_origin_span(row, spans_by_id, current_id)
             events.append(
-                self._context_lifecycle_event(
+                cls._context_lifecycle_event(
                     kind=CONTEXT_EVENT_ENTERED,
                     at=row.get("lifecycle_started_at") or (span or {}).get("created_at"),
                     item=row,
@@ -876,7 +889,7 @@ class TraceStore:
             active_ids = [
                 current_id
                 for current_id, row in latest_by_item.items()
-                if self._context_item_active_at(row, created_at)
+                if cls._context_item_active_at(row, created_at)
             ]
             if not active_ids:
                 continue
@@ -885,9 +898,9 @@ class TraceStore:
             ]
             if entries:
                 entry = entries[0]
-                item = self._context_item_at(item_rows, str(entry.get("item_id") or ""), created_at)
+                item = cls._context_item_at(item_rows, str(entry.get("item_id") or ""), created_at)
                 events.append(
-                    self._context_lifecycle_event(
+                    cls._context_lifecycle_event(
                         kind=CONTEXT_EVENT_VISIBLE,
                         at=created_at,
                         item=item or first_by_item.get(str(entry.get("item_id") or "")),
@@ -955,7 +968,7 @@ class TraceStore:
                     ),
                 }
             events.append(
-                self._context_lifecycle_event(
+                cls._context_lifecycle_event(
                     kind=(
                         CONTEXT_EVENT_COMPACTED
                         if item_compaction is not None
@@ -1128,8 +1141,9 @@ class TraceStore:
                 return span
         return None
 
+    @classmethod
     def _context_lifecycle_event(
-        self,
+        cls,
         *,
         kind: str,
         at: Any,
@@ -1162,9 +1176,9 @@ class TraceStore:
                 {
                     "item_id": item.get("item_id"),
                     "channel": item.get("channel"),
-                    "item_kind": self._context_item_kind(item),
+                    "item_kind": cls._context_item_kind(item),
                     "content": item.get("content"),
-                    "content_preview": self._context_content_preview(item.get("content")),
+                    "content_preview": cls._context_content_preview(item.get("content")),
                 }
             )
         return event
@@ -1187,8 +1201,13 @@ class TraceStore:
         was removed, the removal span, and the checkpoint item(s) that replaced
         its model-visible projection.
         """
+        return self.project_compaction_events(self.session_events(session_id))
+
+    @staticmethod
+    def project_compaction_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Project caller-owned events using the normal context query decoder."""
         compactions = []
-        for event in self.session_events(session_id):
+        for event in events:
             if (
                 event.get("kind") != TRACE_CONTEXT_KIND
                 or event.get("name") != TRACE_CONTEXT_COMPACTION_NAME
@@ -1324,7 +1343,8 @@ class TraceStore:
         """Collapse a write burst into the state transition users experience."""
         return at[:CONTEXT_EVENT_BATCH_TIMESTAMP_LENGTH]
 
-    def _content_versions(self, item_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @classmethod
+    def _content_versions(cls, item_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Keep one record for each actual content value, not status-only transitions."""
         changes = []
         seen = set()
@@ -1333,15 +1353,16 @@ class TraceStore:
             if content_key in seen:
                 continue
             seen.add(content_key)
-            changes.append(self._context_item_view(row))
+            changes.append(cls._context_item_view(row))
         return changes
 
+    @classmethod
     def _related_context_operations(
-        self, operations: List[Dict[str, Any]], lineage_ids: set[str]
+        cls, operations: List[Dict[str, Any]], lineage_ids: set[str]
     ) -> List[Dict[str, Any]]:
         related = []
         for operation in operations:
-            refs = self._context_refs(operation, "input_item_refs", "output_item_refs")
+            refs = cls._context_refs(operation, "input_item_refs", "output_item_refs")
             if not refs & lineage_ids:
                 continue
             fields = (
@@ -1368,18 +1389,19 @@ class TraceStore:
         related.sort(key=lambda row: str(row.get("created_at") or ""))
         return related
 
+    @classmethod
     def _related_context_spans(
-        self,
+        cls,
         spans: List[Dict[str, Any]],
         lineage_ids: set[str],
         item_rows: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         related = []
         for span in spans:
-            input_refs = self._context_refs(span, "input_item_refs")
-            output_refs = self._context_refs(span, "output_item_refs")
-            used_refs = self._context_refs(span, "used_item_refs")
-            excluded_refs = self._context_refs(span, "excluded_item_refs")
+            input_refs = cls._context_refs(span, "input_item_refs")
+            output_refs = cls._context_refs(span, "output_item_refs")
+            used_refs = cls._context_refs(span, "used_item_refs")
+            excluded_refs = cls._context_refs(span, "excluded_item_refs")
             if not (input_refs | output_refs | used_refs | excluded_refs) & lineage_ids:
                 continue
             related.append(
@@ -1392,16 +1414,16 @@ class TraceStore:
                     "turn_id": span.get("turn_id"),
                     "trace_span_id": span.get("trace_span_id"),
                     "parent_context_span_id": span.get("parent_context_span_id"),
-                    "input_items": self._span_item_views(
+                    "input_items": cls._span_item_views(
                         input_refs & lineage_ids, item_rows, span.get("created_at"), "input"
                     ),
-                    "output_items": self._span_item_views(
+                    "output_items": cls._span_item_views(
                         output_refs & lineage_ids, item_rows, span.get("created_at"), "output"
                     ),
-                    "used_items": self._span_item_views(
+                    "used_items": cls._span_item_views(
                         used_refs & lineage_ids, item_rows, span.get("created_at"), "used"
                     ),
-                    "excluded_items": self._span_item_views(
+                    "excluded_items": cls._span_item_views(
                         excluded_refs & lineage_ids, item_rows, span.get("created_at"), "excluded"
                     ),
                 }
@@ -1415,14 +1437,15 @@ class TraceStore:
             str(ref) for key in keys for ref in (row.get(key) or []) if isinstance(ref, str) and ref
         }
 
+    @classmethod
     def _span_item_views(
-        self, item_ids: set[str], item_rows: List[Dict[str, Any]], at: Any, role: str
+        cls, item_ids: set[str], item_rows: List[Dict[str, Any]], at: Any, role: str
     ) -> List[Dict[str, Any]]:
         views = []
         for current_id in sorted(item_ids):
-            chosen = self._context_item_at(item_rows, current_id, at)
+            chosen = cls._context_item_at(item_rows, current_id, at)
             if chosen is not None:
-                views.append({"role": role, **self._context_item_view(chosen)})
+                views.append({"role": role, **cls._context_item_view(chosen)})
             else:
                 views.append({"role": role, "item_id": current_id, "content": None})
         return views
@@ -1450,20 +1473,56 @@ class TraceStore:
         appearances.sort(key=lambda row: str(row.get("created_at") or ""))
         return appearances
 
+    @classmethod
+    def inspect_context_records(
+        cls,
+        records: dict[str, List[Dict[str, Any]]],
+        *,
+        compactions: List[Dict[str, Any]] | None = None,
+    ) -> None:
+        """Run actual ledger projections on caller-owned rows without filesystem IO.
+
+        Compactions, when supplied, come from project_compaction_events under
+        the caller's same stable snapshot. Provider write formats remain separate.
+        """
+        if set(records) != set(CONTEXT_LEDGER_FILES):
+            raise ValueError("context inspection requires all ledger file kinds")
+        items = records[CONTEXT_ITEMS_FILENAME]
+        operations = records[CONTEXT_OPERATIONS_FILENAME]
+        spans = records[CONTEXT_SPANS_FILENAME]
+        indexes = records[CONTEXT_VISIBLE_INDEXES_FILENAME]
+        for rows in records.values():
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError("invalid context ledger records")
+        for item in items:
+            cls._context_item_sort_key(item)
+            cls._context_item_view(item)
+        lineage = set(cls._latest_context_items(items))
+        cls._content_versions(items)
+        cls._related_context_operations(operations, lineage)
+        cls._related_context_spans(spans, lineage, items)
+        cls._context_item_appearances(indexes, lineage)
+        cls._context_item_lifecycle(
+            lineage_ids=lineage,
+            item_rows=items,
+            operations=operations,
+            spans=spans,
+            indexes=indexes,
+            compactions=compactions or [],
+        )
+
     @staticmethod
     def _jsonl_records(path: Path) -> List[Dict[str, Any]]:
         try:
             with path.open("r", encoding="utf-8") as handle:
                 rows = []
                 for line in handle:
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(row, dict):
+                    row = decode_object_line(line)
+                    if row is not None:
+                        validate_content_version(row)
                         rows.append(row)
                 return rows
-        except OSError:
+        except FileNotFoundError:
             return []
 
     def _context_ledger_dir(self, session_id: str) -> Optional[Path]:
@@ -1474,10 +1533,10 @@ class TraceStore:
             return None
         try:
             projects = sorted(path for path in self.paths.ledger_root.iterdir() if path.is_dir())
-        except OSError:
+        except FileNotFoundError:
             return None
         for project in projects:
-            for parent in (project, project / "_subagents"):
+            for parent in (project, project / CONTEXT_SUBAGENTS_DIRNAME):
                 ledger_dir = parent / session_id / CONTEXT_LEDGER_DIRNAME
                 if ledger_dir.is_dir():
                     return ledger_dir

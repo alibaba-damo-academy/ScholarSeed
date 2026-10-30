@@ -25,18 +25,24 @@ from service.chat.runtime.live import LiveSession
 from service.chat.service.tasks import (
     TASK_ACTIVATION_POLICIES,
     ProductTaskLease,
+    activate_task,
     restore_task_binding,
+    verified_authorization_context,
 )
 from service.literature.api.acquire import register_acquire_routes
 from service.literature.api.receipt import register_receipt_routes
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_TOKEN_HEADER,
     LITERATURE_ACQUIRE_ROUTE,
     LITERATURE_RECEIPT_ROUTE,
     TASK_ACTIVATE_ROUTE,
+    TaskActivate,
 )
 from service.platform.context import ProductTaskType
+from service.platform.vocabulary import (
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_TOKEN_HEADER,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PRECISE_SKILL = REPO_ROOT / "skills" / "community" / "precise-literature-search"
@@ -85,10 +91,7 @@ class TaskLeaseContract(unittest.TestCase):
             }
 
         def install(lease) -> None:
-            if lease.turn_id != live.active_product_turn_id:
-                raise ValueError("task_context_stale")
-            live.active_task_lease = lease
-            live.active_task_type = lease.task_type.value
+            LiveSession.set_task_lease(live, lease)
 
         live: Any = SimpleNamespace(
             id="session",
@@ -97,7 +100,11 @@ class TaskLeaseContract(unittest.TestCase):
             active_product_turn_id="turn-1",
             product_turn_generation=1,
             current_task=RunningTask(),
+            interrupting=False,
+            terminating=False,
+            terminated=False,
             active_task_lease=None,
+            task_lease_revision=0,
             active_task_type="",
             skill_identity_by_name=identity,
             set_task_lease=install,
@@ -122,13 +129,18 @@ class TaskLeaseContract(unittest.TestCase):
         )
         live.catalog = self.catalog
         live.user_id = "account-one"
+        live.project_id = "project-one"
         live.skill_state_by_name = identity
-        live.clear_task_lease = lambda: setattr(live, "active_task_lease", None)
-        sessions = SimpleNamespace(
-            bridge_caller=lambda session_id: live if session_id == live.id else None
-        )
+        live.clear_task_lease = lambda: LiveSession.clear_task_lease(live)
+        self.callers = {live.id: live}
+        sessions = SimpleNamespace(bridge_caller=self.callers.get)
+        self.sessions = sessions
         app = FastAPI()
-        register_task_routes(app, sessions)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_task_routes(app, sessions, activities=activities)
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
         self.headers = {
@@ -157,6 +169,221 @@ class TaskLeaseContract(unittest.TestCase):
         self.assertEqual(lease.run_id, "review-run")
         self.assertEqual(self.live.active_task_type, "literature_review")
         self.assertEqual(response.json()["workspace"], "survey")
+
+    def research_payload(self) -> dict[str, str]:
+        skill = self.root / "skills/research-idea-partner"
+        skill.mkdir(parents=True)
+        manifest = skill / "SKILL.md"
+        manifest.write_text("---\nname: research-idea-partner\nversion: 1.2.14\n---\n")
+        workspace = self.root / "agentic-search-results/topic"
+        workspace.mkdir(parents=True)
+        (workspace / ".rip-binding.json").write_text(
+            json.dumps({"skill": str(skill.resolve()), "version": "1.2.14"}),
+            encoding="utf-8",
+        )
+
+        async def identity(name: str, *, force_reload: bool = True):
+            self.assertFalse(force_reload)
+            if name != "research-idea-partner":
+                return None
+            return {
+                "name": name,
+                "version": "1.2.14",
+                "path": str(manifest),
+                "active": True,
+            }
+
+        self.live.skill_state_by_name = identity
+        return {
+            "task_type": "research_idea",
+            "skill_name": "research-idea-partner",
+            "skill_version": "1.2.14",
+            "skill_path": str(skill.resolve()),
+            "workspace": "agentic-search-results/topic",
+        }
+
+    def test_text_only_deep_followup_can_activate_its_current_turn(self) -> None:
+        payload = self.research_payload()
+        self.assertEqual(self.live.active_task_type, "")
+        response = self.client.post(TASK_ACTIVATE_ROUTE, json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.live.active_task_type, "research_idea")
+        self.assertIsNone(
+            verified_authorization_context(
+                self.live, ProductTaskType.RESEARCH_IDEA, workspace=payload["workspace"]
+            )
+        )
+        self.live.product_turn_generation += 1
+        with self.assertRaisesRegex(ValueError, "task_context_stale"):
+            LiveSession.set_task_lease(self.live, self.live.active_task_lease)
+
+    def test_research_fulltext_keeps_turn_scoped_consent(self) -> None:
+        self.live.active_task_type = ProductTaskType.RESEARCH_IDEA.value
+        self.assertIsNone(self.live.active_task_lease)
+        self.assertIsNone(verified_authorization_context(self.live, ProductTaskType.RESEARCH_IDEA))
+
+    def test_research_binding_does_not_label_a_later_untyped_turn(self) -> None:
+        payload = self.research_payload()
+        response = self.client.post(TASK_ACTIVATE_ROUTE, json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.live.active_product_turn_id = "next-turn"
+        self.live.product_turn_generation += 1
+        self.live.clear_task_lease()
+        self.assertEqual(asyncio.run(restore_task_binding(self.live)), "")
+        self.assertIsNone(self.live.active_task_lease)
+        self.assertEqual(self.live.active_task_type, "")
+        response = self.client.post(TASK_ACTIVATE_ROUTE, json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.live.active_task_lease.turn_id, "next-turn")
+
+    def test_research_activation_rejects_a_binding_version_mismatch(self) -> None:
+        payload = self.research_payload()
+        payload["skill_version"] = "old-version"
+        response = self.client.post(TASK_ACTIVATE_ROUTE, json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["reason"], "task_skill_version_mismatch")
+        self.assertIsNone(self.live.active_task_lease)
+
+    def test_consent_identity_is_stable_but_execution_lease_is_not(self) -> None:
+        self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        original = verified_authorization_context(
+            self.live, ProductTaskType.LITERATURE_REVIEW, workspace="survey", run_id="review-run"
+        )
+        self.live.active_product_turn_id = "turn-2"
+        self.live.product_turn_generation = 2
+        with self.assertRaisesRegex(ValueError, "fulltext_authorization_task_required"):
+            verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+        asyncio.run(restore_task_binding(self.live))
+        resumed = verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+        self.assertEqual(original, resumed)
+        for arguments in ({"workspace": "other"}, {"run_id": "other"}):
+            with self.assertRaises(ValueError):
+                verified_authorization_context(
+                    self.live, ProductTaskType.LITERATURE_REVIEW, **arguments
+                )
+
+    def test_rejection_logs_missing_lease_without_credentials(self) -> None:
+        with self.assertLogs("service.chat.service.tasks", level="WARNING") as captured:
+            with self.assertRaisesRegex(ValueError, "fulltext_authorization_task_required"):
+                verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+        message = " ".join(captured.output)
+        self.assertIn("lease_present=False", message)
+        self.assertNotIn(self.live.bridge_token, message)
+
+    def test_global_task_keeps_owner_and_session_scope(self) -> None:
+        self.live.project_id = ""
+        with self.assertLogs("service.chat.service.tasks", level="INFO") as captured:
+            response = self.client.post(
+                TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            context = verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+        self.assertIsNotNone(context)
+        self.assertEqual(context.project_id, "")
+        self.assertEqual(context.owner_id, self.live.user_id)
+        self.assertEqual(context.session_id, self.live.id)
+        self.assertEqual(context.run_id, "review-run")
+        message = " ".join(captured.output)
+        self.assertIn("task_activation_succeeded", message)
+        self.assertIn("task_authorization_verified", message)
+        self.assertIn("owner_present=True project_present=False", message)
+        self.assertNotIn(self.live.user_id, message)
+
+    def test_global_task_still_rejects_missing_owner(self) -> None:
+        self.live.project_id = ""
+        self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        self.live.user_id = ""
+        with self.assertLogs("service.chat.service.tasks", level="WARNING") as captured:
+            with self.assertRaisesRegex(ValueError, "fulltext_authorization_task_required"):
+                verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+        message = " ".join(captured.output)
+        self.assertIn("task_authorization_rejected", message)
+        self.assertIn("owner_present=False project_present=False", message)
+
+    def test_missing_owner_still_rejects_task_context(self) -> None:
+        self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        self.live.user_id = ""
+        with self.assertRaisesRegex(ValueError, "fulltext_authorization_task_required"):
+            verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+
+    def test_rejection_logs_stale_generation(self) -> None:
+        self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        self.live.product_turn_generation += 1
+        with self.assertLogs("service.chat.service.tasks", level="WARNING") as captured:
+            with self.assertRaisesRegex(ValueError, "fulltext_authorization_task_required"):
+                verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+        message = " ".join(captured.output)
+        self.assertIn("turn_matches=True", message)
+        self.assertIn("generation_matches=False", message)
+        self.assertIn("validation=lease", message)
+        self.assertIn("turn_id=turn-1", message)
+        self.assertIn("generation=2", message)
+        self.assertIn("lease_generation=1", message)
+        self.assertIn("lease_revision=1", message)
+
+    def test_authorization_logs_binding_mismatches_without_paths_or_run_ids(self) -> None:
+        self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        for arguments, validation, reason in (
+            ({"workspace": "private-workspace"}, "workspace", "task_workspace_mismatch"),
+            ({"run_id": "private-run"}, "run", "task_run_mismatch"),
+        ):
+            with self.subTest(validation=validation):
+                with self.assertLogs("service.chat.service.tasks", level="WARNING") as captured:
+                    with self.assertRaisesRegex(ValueError, reason):
+                        verified_authorization_context(
+                            self.live, ProductTaskType.LITERATURE_REVIEW, **arguments
+                        )
+                message = " ".join(captured.output)
+                self.assertIn(f"validation={validation}", message)
+                self.assertIn("turn_id=turn-1", message)
+                self.assertIn("lease_revision=1", message)
+                for sensitive in (
+                    *arguments.values(),
+                    str(self.root),
+                    self.live.active_task_lease.run_id,
+                    self.live.user_id,
+                    self.live.project_id,
+                    self.live.bridge_token,
+                ):
+                    self.assertNotIn(sensitive, message)
+
+    def test_activation_and_authorization_logs_correlate_the_current_lease(self) -> None:
+        with self.assertLogs("service.chat.service.tasks", level="INFO") as captured:
+            self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+            context = verified_authorization_context(
+                self.live,
+                ProductTaskType.LITERATURE_REVIEW,
+                workspace="survey",
+                run_id="review-run",
+            )
+        self.assertIsNotNone(context)
+        self.assertEqual(len(captured.output), 2)
+        self.assertIn("task_activation_succeeded", captured.output[0])
+        self.assertIn("skill_version=1.1.0", captured.output[0])
+        self.assertIn("task_authorization_verified", captured.output[1])
+        for message in captured.output:
+            for value in ("turn_id=turn-1", "generation=1", "lease_revision=1"):
+                self.assertIn(value, message)
+            for sensitive in (
+                str(self.root),
+                "review-run",
+                self.live.user_id,
+                self.live.project_id,
+            ):
+                self.assertNotIn(sensitive, message)
+
+    def test_derived_run_cannot_become_cross_turn_consent_identity(self) -> None:
+        binding = self.workspace / ".slr-binding.json"
+        content = json.loads(binding.read_text())
+        content.pop("run_id")
+        binding.write_text(json.dumps(content))
+        payload = self.payload()
+        payload.pop("run_id")
+        response = self.client.post(TASK_ACTIVATE_ROUTE, json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(
+            verified_authorization_context(self.live, ProductTaskType.LITERATURE_REVIEW)
+        )
 
     def test_login_required_preserves_binding_for_fresh_turn_recovery(self) -> None:
         async def unavailable(name: str, *, force_reload: bool = False):
@@ -247,8 +474,8 @@ class TaskLeaseContract(unittest.TestCase):
         async def submit(request):
             submitted.append(request)
 
-        async def refresh(*, force_reload: bool):
-            self.assertTrue(force_reload)
+        async def refresh(*, force_reload: bool = False):
+            self.assertFalse(force_reload)
 
         self.live.runtime_driver = SimpleNamespace(submit=submit)
         self.live.refresh_skills = refresh
@@ -363,6 +590,128 @@ class TaskLeaseContract(unittest.TestCase):
         self.assertEqual(response.json()["reason"], "task_context_stale")
         self.assertIsNone(self.live.active_task_lease)
 
+    def test_inventory_wait_cannot_rebind_changed_execution_or_account(self) -> None:
+        initial = (
+            self.live.active_product_turn_id,
+            self.live.product_turn_generation,
+            self.live.turn_activity,
+            self.live.user_id,
+            self.live.current_task,
+        )
+        mutations = {
+            "generation": lambda: setattr(self.live, "product_turn_generation", 2),
+            "account": lambda: setattr(self.live, "user_id", "other-account"),
+            "task": lambda: setattr(self.live, "current_task", SimpleNamespace(done=lambda: False)),
+            "interrupt": lambda: setattr(self.live, "interrupting", True),
+            "detached": self.callers.clear,
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                (
+                    self.live.active_product_turn_id,
+                    self.live.product_turn_generation,
+                    self.live.turn_activity,
+                    self.live.user_id,
+                    self.live.current_task,
+                ) = initial
+                self.live.interrupting = False
+                self.callers[self.live.id] = self.live
+
+                async def identity(*_args, _mutate=mutate, **_kwargs):
+                    _mutate()
+                    return {"path": str(self.manifest), "version": "1.1.0", "active": True}
+
+                self.live.skill_state_by_name = identity
+                response = self.client.post(
+                    TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(response.json()["reason"], "task_context_stale")
+                self.assertIsNone(self.catalog.task_binding(self.live.id))
+                self.assertIsNone(self.live.active_task_lease)
+
+    def test_stale_recovery_cannot_clear_a_new_turn_lease(self) -> None:
+        response = self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        next_lease = ProductTaskLease(
+            task_type=ProductTaskType.LITERATURE_REVIEW,
+            turn_id="next-turn",
+            generation=2,
+            source="skill_run",
+            workspace="other",
+            run_id="new-run",
+        )
+
+        async def identity(*_args, **_kwargs):
+            self.live.active_product_turn_id = "next-turn"
+            self.live.product_turn_generation = 2
+            self.live.active_task_lease = next_lease
+            raise ValueError("task_skill_unavailable")
+
+        self.live.skill_state_by_name = identity
+        self.assertEqual(asyncio.run(restore_task_binding(self.live)), "")
+        self.assertIs(self.live.active_task_lease, next_lease)
+
+    def test_same_turn_activation_supersedes_an_inflight_recovery(self) -> None:
+        workspace = self.root / "next"
+        workspace.mkdir()
+        (workspace / ".slr-binding.json").write_text(
+            json.dumps({"skill": str(self.skill), "version": "1.1.0", "run_id": "next-run"}),
+            encoding="utf-8",
+        )
+
+        async def available(*_args, **_kwargs):
+            return {"path": str(self.manifest), "version": "1.1.0", "active": True}
+
+        for outcome in ("active", "inactive", "error"):
+            with self.subTest(outcome=outcome):
+                self.live.skill_state_by_name = available
+                response = self.client.post(
+                    TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+
+                async def race(outcome=outcome):
+                    entered, release = asyncio.Event(), asyncio.Event()
+                    calls = 0
+
+                    async def identity(*_args, **_kwargs):
+                        nonlocal calls
+                        calls += 1
+                        first = calls == 1
+                        if first:
+                            entered.set()
+                            await release.wait()
+                            if outcome == "error":
+                                raise ValueError("task_binding_invalid")
+                        return {
+                            "path": str(self.manifest),
+                            "version": "1.1.0",
+                            "active": not (first and outcome == "inactive"),
+                            "unavailable_reason": "login_required",
+                        }
+
+                    self.live.skill_state_by_name = identity
+                    previous = asyncio.create_task(restore_task_binding(self.live))
+                    try:
+                        await asyncio.wait_for(entered.wait(), 3)
+                        lease = await activate_task(
+                            self.live,
+                            TaskActivate.model_validate(
+                                self.payload(workspace="next", run_id="next-run")
+                            ),
+                        )
+                    finally:
+                        release.set()
+                        context = await previous
+                    self.assertEqual(context, "")
+                    self.assertIs(self.live.active_task_lease, lease)
+                    self.assertEqual(
+                        self.catalog.task_binding(self.live.id)["command"]["run_id"], "next-run"
+                    )
+
+                asyncio.run(race())
+
 
 class PreciseSearchTaskLeaseContract(unittest.TestCase):
     """The search skill proves its own identity, so any turn can hold the lease.
@@ -417,10 +766,7 @@ class PreciseSearchTaskLeaseContract(unittest.TestCase):
             }
 
         def install(lease) -> None:
-            if lease.turn_id != live.active_product_turn_id:
-                raise ValueError("task_context_stale")
-            live.active_task_lease = lease
-            live.active_task_type = lease.task_type.value
+            LiveSession.set_task_lease(live, lease)
 
         live = SimpleNamespace(
             id="session",
@@ -430,7 +776,11 @@ class PreciseSearchTaskLeaseContract(unittest.TestCase):
             active_product_turn_id="turn-1",
             product_turn_generation=1,
             current_task=SimpleNamespace(done=lambda: False),
+            interrupting=False,
+            terminating=False,
+            terminated=False,
             active_task_lease=None,
+            task_lease_revision=0,
             active_task_type="",
             skill_identity_by_name=identity,
             skill_state_by_name=identity,
@@ -438,7 +788,7 @@ class PreciseSearchTaskLeaseContract(unittest.TestCase):
         )
         self.live = live
         live.user_id = "precise-account"
-        live.clear_task_lease = lambda: setattr(live, "active_task_lease", None)
+        live.clear_task_lease = lambda: LiveSession.clear_task_lease(live)
         live.catalog = SessionCatalogStore(self.root / "sessions.sqlite3")
         live.catalog.register(
             live.id,
@@ -460,9 +810,13 @@ class PreciseSearchTaskLeaseContract(unittest.TestCase):
             bridge_caller=lambda session_id: live if session_id == live.id else None
         )
         app = FastAPI()
-        register_task_routes(app, sessions)
-        register_acquire_routes(app, sessions, None)
-        register_receipt_routes(app, sessions, None)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_task_routes(app, sessions, activities=activities)
+        register_acquire_routes(app, sessions, None, activities=activities)
+        register_receipt_routes(app, sessions, None, activities=activities)
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
         self.headers = {
@@ -483,6 +837,19 @@ class PreciseSearchTaskLeaseContract(unittest.TestCase):
         self.assertEqual(lease.run_id, self.run.name)
         self.assertEqual(self.live.active_task_type, "precise_search")
         self.assertEqual(response.json()["workspace"], expected)
+
+    def test_stage_run_without_project_has_verified_authorization_context(self) -> None:
+        self.live.project_id = ""
+        response = self.client.post(
+            TASK_ACTIVATE_ROUTE, json=self.activation["request"], headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        context = verified_authorization_context(self.live, ProductTaskType.PRECISE_SEARCH)
+        self.assertIsNotNone(context)
+        self.assertEqual(context.project_id, "")
+        self.assertEqual(context.owner_id, self.live.user_id)
+        self.assertEqual(context.session_id, self.live.id)
+        self.assertEqual(context.run_id, self.run.name)
 
     def test_another_run_or_skill_cannot_claim_the_lease(self) -> None:
         accepted = self.client.post(

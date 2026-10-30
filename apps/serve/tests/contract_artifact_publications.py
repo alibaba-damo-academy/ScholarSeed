@@ -17,10 +17,47 @@ from service.chat.service.publication import (
 )
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.content import ArtifactScope, ArtifactScopeKind, RootKind
 
 
 class PublicationContract(unittest.TestCase):
+    def test_managed_and_selected_roots_survive_reload_and_bind_session_context(self):
+        selected = self.root / "selected-existing"
+        selected.mkdir()
+        sentinel = selected / "sentinel.txt"
+        sentinel.write_text("selected project input", encoding="utf-8")
+        managed = self.content.create_project("Named project")
+        adopted = self.content.adopt_project(str(selected), "Display name")
+        self.assertEqual(Path(managed.root), self.source.parent.resolve() / "Named-project")
+        self.assertEqual(Path(adopted.root), selected.resolve())
+        self.assertNotEqual(managed.id, adopted.id)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "selected project input")
+        reloaded = ProjectRegistry(
+            str(self.source.parent), ContentCatalog(self.root / "content.sqlite3")
+        )
+        for project in (managed, adopted):
+            with self.subTest(project=project.name):
+                restored = reloaded.resolve(project.id)
+                self.assertEqual(restored.root, project.root)
+                sessions = self.content.root(project.id, RootKind.SESSIONS)
+                directory = self.content.ensure_directory(
+                    project.id, sessions.path, "bound-session"
+                )
+                cwd = Path(self.content.resolve(project.id, directory.path))
+                self.assertEqual(cwd, Path(project.root) / "sessions" / "bound-session")
+                context = self.service.project_context(project.id, cwd)
+                self.assertIn(f"Project root: {project.root}.", context)
+                self.assertIn(f"Session working directory: {cwd}.", context)
+                report = cwd / "report.md"
+                report.write_text(project.id, encoding="utf-8")
+                source = self.service.source_path(project.id, cwd, report.name)
+                command = replace(self.command, project_id=project.id, path=source)
+                publication = self.publish(command)
+                self.assertEqual(
+                    self.content.read_artifact(publication.content), project.id.encode()
+                )
+
     def test_session_execution_paths_resolve_through_project_content(self):
         project_id = self.command.project_id
         root = self.content.root(project_id, RootKind.SESSIONS)
@@ -41,6 +78,8 @@ class PublicationContract(unittest.TestCase):
         context = self.service.project_context(project_id, cwd)
         self.assertIn(str(cwd), context)
         self.assertIn(str(self.source.parent.resolve()), context)
+        self.assertIn("Authorized linked roots are also project resources", context)
+        self.assertIn("resource/list", context)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="artifact-publication-")
@@ -51,7 +90,7 @@ class PublicationContract(unittest.TestCase):
         catalog = ContentCatalog(self.root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
         project = registry.seed_workspace()
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.service = PublicationService(self.content)
         self.source = workspace / "report.md"
         self.source.write_text("version one", encoding="utf-8")
@@ -113,10 +152,16 @@ class PublicationContract(unittest.TestCase):
         self.publish(replace(self.command, declaration_id="duplicate"))
         self.assertEqual(recovered.list_session("session", pending_only=True), ())
 
-    def test_intermediate_does_not_create_publication(self):
-        with self.assertRaises(ValueError):
-            self.publish(replace(self.command, role=ArtifactRole.INTERMEDIATE))
-        self.assertEqual(self.service.store(self.command.project_id).list_session("session"), ())
+    def test_explicit_intermediate_publication_keeps_its_delivered_revision(self):
+        command = replace(self.command, role=ArtifactRole.INTERMEDIATE)
+        first = self.publish(command)
+        self.assertEqual(first.role, ArtifactRole.INTERMEDIATE.value)
+        self.source.write_text("later working draft", encoding="utf-8")
+        self.assertEqual(self.publish(command), first)
+        self.source.unlink()
+        restored = PublicationService(self.content).store(self.command.project_id)
+        self.assertEqual(restored.list_session("session"), (first,))
+        self.assertEqual(self.content.read_artifact(first.content), b"version one")
 
     def test_session_scope_never_defaults_to_current_project(self):
         sessions = self.root / "sessions"

@@ -30,6 +30,7 @@ from service.platform.context import (
     AssistantContextResolvedItem,
     AssistantContextResolveRequest,
     ContextItemRole,
+    ContextOrigin,
     ContextRef,
     ContextRefKind,
     ContextResolutionState,
@@ -145,6 +146,7 @@ class ContentContextProvider:
     def citation_document(
         self, project_id: str, ref: ContextRef, *, scope: ContextRef | None = None
     ) -> CitationDocument:
+        project_id = ref.project_id or project_id
         if not project_id:
             raise ValueError(REASON_SOURCE_FORBIDDEN)
         if scope is not None:
@@ -164,11 +166,18 @@ class ContentContextProvider:
         ref = request.ref
         if ref.kind not in SUPPORTED_KINDS:
             return self._failure(ContextResolutionState.UNSUPPORTED, REASON_SOURCE_UNSUPPORTED)
-        if not request.project_id:
+        project_id = ref.project_id or request.project_id
+        if ref.project_id and (
+            ref.kind is not ContextRefKind.FILE
+            or ref.origin is not ContextOrigin.EXPLICIT
+            or ref.anchor is not None
+        ):
+            return self._failure(ContextResolutionState.FORBIDDEN, REASON_SOURCE_FORBIDDEN)
+        if not project_id:
             return self._failure(ContextResolutionState.FORBIDDEN, REASON_SOURCE_FORBIDDEN)
         try:
             if ref.kind is ContextRefKind.FILE:
-                text, revision, media_type = self._file(request.project_id, ref.source_id)
+                text, revision, media_type = self._file(project_id, ref.source_id)
                 if (
                     ref.anchor is not None
                     and ref.source_revision

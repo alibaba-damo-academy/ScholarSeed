@@ -1,4 +1,8 @@
 {
+  "sandbox": {
+    "policyRejected": "Windows sandbox setup did not pass its security checks. Send feedback to check the installation and permissions; repeating authorization will not resolve this issue.",
+    "setupCancelled": "System authorization for Windows sandbox setup was cancelled. Send again and complete authorization when the system requests it."
+  },
   "toolOutcome": {
     "noMatches": "No matches found",
     "noMatchesHelp": "The search found no matches. This does not mean the task failed; the agent can continue.",
@@ -21,8 +25,20 @@
     "duration": "Turn duration: {{duration}}"
   },
   "subagent": {
+    "running": "Running",
+    "numbered": "Subagent {{number}}",
+    "named": "Subagent · {{name}}",
+    "call": {
+      "spawning": "Spawn call running",
+      "waiting": "Wait call running",
+      "running": "Call running",
+      "spawned": "Spawn call completed",
+      "waited": "Wait call ended",
+      "ended": "Call ended",
+      "failed": "Call failed"
+    },
     "waiting": "Awaiting response",
-    "elapsed": "Waiting {{duration}}",
+    "elapsed": "Running for {{duration}}",
     "lastObserved": "Last confirmed: {{activity}} · {{age}} ago",
     "action": {
       "message": "Writing a response",
@@ -42,13 +58,15 @@
     "session": "Session {{id}}"
   },
   "resume": {
-    "title": "Resuming conversation",
+    "title": "Resuming task",
     "codex": "Connecting to the Codex session and loading history…",
     "agent": "Connecting to the Agent session and loading history…",
+    "runtimeSwitch": "Waiting for the background runtime switch. Finish existing tasks and pending approvals first…",
+    "runtimeSwitchBlocked": "The background switch could not confirm safe cleanup. Session recovery is paused. Wait for existing tasks to finish, then fully quit and restart the app.",
     "reconnect": "Reconnecting to the session…",
     "retry": "Connection incomplete. Retrying ({{attempt}}/{{maximum}})…",
     "reconnected": "Session reconnected",
-    "stopped": "Session recovery stopped. Check sign-in, version, or session status before reconnecting.",
+    "stopped": "Session recovery failed; this does not mean the task has ended. Check sign-in, version, or network before reconnecting.",
     "retrying": "The session cannot be resumed yet. Retrying ({{attempt}}/{{maximum}})"
   },
   "preflight": {
@@ -122,7 +140,7 @@
   },
   "retry": {
     "attachmentsGone": "The original attachments are unavailable. Select the files again.",
-    "contextNotReady": "Conversation context is not ready. Please retry later.",
+    "contextNotReady": "Task context is not ready. Please retry later.",
     "continueUnknown": "The continuation submission could not be confirmed. Check the result in pending messages.",
     "regenerateUnknown": "The regeneration submission could not be confirmed. Check the result in pending messages.",
     "continueUnconfirmed": "The service did not confirm continuing."
@@ -146,7 +164,7 @@
     "runtime": "The request did not reach Codex Runtime.",
     "quota": {
       "message": "The allocated model quota has been exhausted.",
-      "action": "Built-in models use credits. When your credits run out, you cannot continue the conversation. Open “Remaining credits” to check your balance and get more credits, or switch models."
+      "action": "Built-in models use credits. When your credits run out, you cannot continue the task. Open “Remaining credits” to check your balance and get more credits, or switch models."
     },
     "credits": {
       "message": "Your credit balance is exhausted, so generation has stopped.",
@@ -158,7 +176,9 @@
     },
     "auth": {
       "message": "Model service authentication failed.",
-      "action": "Check your login or model credentials."
+      "action": "In Settings → Model services, check that your custom model’s API Key is valid and matches the service URL, then update it and retry. For models that use account sign-in, sign in again. Your request and context have been preserved.",
+      "login": "Sign in",
+      "configure": "Check model credentials"
     },
     "unavailable": {
       "message": "The model service is temporarily unavailable.",
@@ -178,6 +198,9 @@
       "message": "This model is not supported by the current endpoint.",
       "action": "Check that the model name is correct, or switch to another model in settings. Your question and context have been retained."
     },
+    "interrupted": {
+      "message": "This turn did not complete."
+    },
     "unknown": {
       "message": "Generation did not complete.",
       "action": "An error occurred during generation. Your question and context have been retained."
@@ -189,10 +212,10 @@
     "legacy": "Delivery: {{title}}"
   },
   "request": {
-    "historyUnavailable": "The conversation history could not be loaded.",
+    "historyUnavailable": "The task history could not be loaded.",
     "timeout": "Request timed out",
     "unavailable": "The request could not reach the backend.",
-    "invalidRecovery": "The session recovery snapshot is invalid. Recovery stopped to prevent duplicate submissions.",
+    "invalidRecovery": "The session recovery snapshot is invalid. Execution status is unconfirmed. Recovery will not automatically replay tasks or answers.",
     "failed": "Request failed",
     "authentication": "Authentication required",
     "resourceReviewRequired": "This turn created file changes that still need review. Review them before regenerating.",
@@ -220,14 +243,25 @@
     "handled": "Handled",
     "invalidRequest": "A request without request_id was received and safely rejected."
   },
+  "browserApproval": {
+    "expired": "Browser request expired",
+    "inactive": "Browser request cancelled because the turn ended",
+    "unknown": "Browser decision outcome is unconfirmed"
+  },
+  "browserHistoryApproval": {
+    "expired": "Browsing history request expired",
+    "inactive": "Browsing history request cancelled because the turn ended",
+    "unknown": "Browsing history decision outcome is unconfirmed"
+  },
   "turnUnknown": {
     "title": "Previous task interrupted",
-    "action": "Confirming will not replay the previous task. After recovery is verified, enter a new message yourself.",
+    "action": "Your task is preserved. Continue to pick up the task; existing results will be checked first to avoid repeating operations.",
     "reason": {
       "timeout": "Waiting for the task result timed out. Some operations may have completed.",
       "transportLost": "The connection was interrupted during the task. Some operations may have completed.",
       "processExit": "The app was interrupted before the task finished. Some operations may have completed.",
       "unconfirmed": "The app was interrupted before the task finished. Some operations may have completed."
     }
-  }
+  },
+  "queuePosition": "{{current}} / {{total}}"
 }

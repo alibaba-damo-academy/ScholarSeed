@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import tempfile
 from dataclasses import dataclass, field
@@ -12,9 +13,9 @@ from typing import Any, Mapping
 
 import yaml
 
+from service.capabilities.domain import SKILL_MANIFEST_NAME
 from service.capabilities.service.install import (
     MAX_PACKAGE_BYTES,
-    SKILL_MANIFEST_NAME,
     SKILL_NAME_PATTERN,
     parse_skill_frontmatter,
 )
@@ -33,6 +34,7 @@ from service.capabilities.service.package import (
     json_bytes,
 )
 from service.capabilities.service.skills import SKILL_PRODUCT_METADATA_FILE
+from service.platform.storage import WINDOWS_PLATFORM, filesystem_path
 
 SKILL_INTERFACE_FILE = Path("agents") / "openai.yaml"
 SKILL_PACK_ORIGIN = "skillhub"
@@ -135,6 +137,7 @@ def validate_bundled_skills(
 ) -> SkillPackValidation:
     """Validate one compiled pack and optionally require its exact skill set."""
 
+    root = filesystem_path(root.expanduser())
     discovered = (
         tuple(
             sorted(
@@ -274,6 +277,18 @@ def compile_bundled_skills(lock_path: Path, cache: Path, target: Path) -> SkillP
     )
 
 
+def _installed_mode(mode: int) -> int:
+    """Project archive and disk modes onto permissions the host can preserve.
+
+    Windows chmod only changes the read-only attribute; CRT executable bits may
+    come from the filename extension and cannot attest a ZIP's POSIX execute bit.
+    The original mode remains authenticated in the lock and package manifest.
+    """
+    if os.name == WINDOWS_PLATFORM:
+        return FILE_MODE if mode & stat.S_IWRITE else FILE_MODE & ~stat.S_IWRITE
+    return EXECUTABLE_MODE if mode & stat.S_IXUSR else FILE_MODE
+
+
 def _payload_fingerprints(root: Path) -> dict[str, tuple[str, int, int]]:
     fingerprints: dict[str, tuple[str, int, int]] = {}
     for path in root.rglob("*"):
@@ -285,7 +300,7 @@ def _payload_fingerprints(root: Path) -> dict[str, tuple[str, int, int]]:
             fingerprints[relative.as_posix()] = (
                 sha256(data).hexdigest(),
                 len(data),
-                EXECUTABLE_MODE if path.stat().st_mode & stat.S_IXUSR else FILE_MODE,
+                _installed_mode(path.stat().st_mode),
             )
         elif not path.is_dir():
             raise SkillPackError(f"技能产物包含特殊文件: {relative.as_posix()}")
@@ -351,7 +366,11 @@ def verify_locked_pack(lock_path: Path, target: Path) -> SkillPackValidation:
             ):
                 raise SkillPackError(f"锁行与包内清单不一致: {row['slug']}")
         for item in row["files"]:
-            expected[f"{row['slug']}/{item['path']}"] = (item["sha256"], item["size"], item["mode"])
+            expected[f"{row['slug']}/{item['path']}"] = (
+                item["sha256"],
+                item["size"],
+                _installed_mode(item["mode"]),
+            )
         directory = target / row["slug"]
         if (directory / SKILL_MANIFEST_NAME).is_file():
             metadata = product_metadata(directory, row)

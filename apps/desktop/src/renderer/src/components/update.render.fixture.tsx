@@ -5,7 +5,6 @@ import { createLocalization } from '../../../localization/engine'
 import { resources } from '../../../localization/resources'
 import { updateCandidateKey, type UpdateSnapshot } from '../../../updates'
 import { UpdateEntry } from './business/UpdateEntry'
-import { UpdateAnnouncement } from './business/UpdateAnnouncement'
 import { UpdateOverlay } from './business/UpdateOverlay'
 import { Button, Dialog, DialogContent, DialogPortal } from './ui'
 import '../styles.css'
@@ -85,7 +84,6 @@ function SettingsFixture(): React.JSX.Element {
 createRoot(document.getElementById('root')!).render(
   <I18nextProvider i18n={localization}>
     <UpdateOverlay />
-    <UpdateAnnouncement />
     <div style={{ padding: 32, paddingTop: 480 }}>
       <UpdateEntry />
     </div>

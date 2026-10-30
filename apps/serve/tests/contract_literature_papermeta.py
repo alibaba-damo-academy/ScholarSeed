@@ -16,6 +16,9 @@
    Authorization 头, 未登录请求一样 200。
 7. **覆盖通道**: ``OPENALEX_SEARCH_URL`` 只接受落在 ``/works`` 的干净绝对 HTTP(S) 地址,
    ``PAPER_META_TIMEOUT`` 不合法就退回默认。
+8. **摘要补充腿**: 标识符腿拿到的 BibTeX 不带 abstract 时, 按维度补打一次 arXiv Atom
+   API 或 Crossref; 拿不到就降级成「没有摘要」, 绝不把已经成功的同步打成失败, 也绝不
+   覆盖 BibTeX 自带的摘要。
 
  fixture 形状取自 2026-09-20 对 api.openalex.org/works 的真实响应 (W2166273353 与
  W2626778328), 数组已裁剪以便阅读; 预印本一条的 year/abstract 是补上的真实值, 当时
@@ -34,6 +37,7 @@ import tempfile
 
 os.environ["SCHOLARSEED_HOME"] = tempfile.mkdtemp(prefix="papermeta-home-")
 
+import asyncio  # noqa: E402
 import inspect  # noqa: E402
 import json  # noqa: E402
 import unittest  # noqa: E402
@@ -44,6 +48,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from service.literature.api.catalogue import EDITABLE_FIELDS  # noqa: E402
 from service.literature.api.papermeta import (  # noqa: E402
+    DEFAULT_TIMEOUT_SECONDS,
     NOT_FOUND,
     PREFIX,
     QUERY_REQUIRED,
@@ -52,20 +57,106 @@ from service.literature.api.papermeta import (  # noqa: E402
     register_papermeta_routes,
     resolve_timeout_seconds,
 )
-from service.literature.service.bibliography import BibliographyError  # noqa: E402
+from service.literature.service.bibliography import (  # noqa: E402
+    ABSTRACT_ENDPOINTS,
+    ABSTRACT_USER_AGENT,
+    ARXIV_QUERY_LIMIT,
+    NETWORK_FAILED,
+    BibliographyError,
+    fetch_bibliography,
+    fetch_identifier_bibliography,
+)
 from service.literature.service.openalex import (  # noqa: E402
     SELECT_FIELDS,
     resolve_search_url,
+    search_by_title,
+)
+from service.literature.service.transport import (  # noqa: E402
+    PLAIN_CONNECT_TIMEOUT_SECONDS,
+    PLAIN_READ_TIMEOUT_SECONDS,
+    PLAIN_TOTAL_TIMEOUT_SECONDS,
+    plain_data_timeout,
 )
 
 OPENALEX_URL = "https://openalex.test/works"
-DEFAULT_TIMEOUT = 30.0
+HTTP_BAD_GATEWAY = 502
+# 只要 handler 真的让出事件循环, total=0 就一定先到期; 不依赖真实等待时长。
+UPSTREAM_STALL_SECONDS = 0.05
+DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_SECONDS
 BIBTEX = (
     "@article{paper2017,title={Attention Is All You Need},"
     "author={Vaswani, Ashish and Shazeer, Noam},year={2017},"
     "publisher={Example Publisher},volume={7},number={2},pages={1--9},"
     "doi={10.1234/example},eprint={1706.03762}}"
 )
+#: 同一条题录但上游自带 abstract —— 这时摘要腿一跳都不许打。
+BIBTEX_ABSTRACT_TEXT = "Upstream abstract"
+BIBTEX_WITH_ABSTRACT = BIBTEX[:-1] + f",abstract={{{BIBTEX_ABSTRACT_TEXT}}}}}"
+
+#: arXiv 的公开 BibTeX 从不带摘要, 摘要只能从 Atom feed 的 summary 取。
+ARXIV_ABSTRACT_TEXT = (
+    "The dominant sequence transduction models are based on complex recurrent networks."
+)
+ATOM_FEED = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<feed xmlns="http://www.w3.org/2005/Atom">'
+    "<entry>"
+    "<id>http://arxiv.org/abs/1706.03762v5</id>"
+    "<title>Attention Is All You Need</title>"
+    "<summary>  The dominant sequence transduction models\n"
+    "  are based on complex recurrent networks. </summary>"
+    "</entry>"
+    "</feed>"
+)
+#: arXiv 对未知标识符也回一条 entry, 它的 summary 是错误文案而不是摘要。
+ATOM_ERROR_FEED = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<feed xmlns="http://www.w3.org/2005/Atom">'
+    "<entry>"
+    "<id>http://arxiv.org/api/errors#incorrect_id_format_for_9999.99999</id>"
+    "<title>Error</title>"
+    "<summary>incorrect id format for 9999.99999</summary>"
+    "</entry>"
+    "</feed>"
+)
+
+#: Crossref 的 abstract 是 JATS 片段。声明了命名空间才能走 XML 取文本。
+CROSSREF_ABSTRACT_TEXT = "Attention is all you need."
+CROSSREF_ABSTRACT_MARKUP = (
+    '<jats:abstract xmlns:jats="http://www.ncbi.nlm.nih.gov/JATS1.1">'
+    "<jats:p>Attention is <jats:italic>all</jats:italic> you need.</jats:p>"
+    "</jats:abstract>"
+)
+#: 没声明命名空间的片段 (出版商直接塞 jats: 前缀) XML 解析必然失败, 只能剥标签 + 解实体。
+CROSSREF_ABSTRACT_UNDECLARED_TEXT = "Dew formation & three stages"
+CROSSREF_ABSTRACT_UNDECLARED = "<jats:p>Dew formation &amp; three stages</jats:p>"
+#: 取自 2026-10-20 对 api.crossref.org/works/10.1038/s41586-021-03819-2 的真实响应:
+#: jats 前缀没有声明命名空间 (XML 必然解析失败), 小节标题是 "Abstract", 行内还有 sup。
+CROSSREF_ABSTRACT_REAL = (
+    "<jats:title>Abstract</jats:title>\n"
+    "                  <jats:p>\n"
+    "                    Proteins are essential to life\n"
+    "                    <jats:sup>1-4</jats:sup>\n"
+    "                    , and their structures can be determined.\n"
+    "                  </jats:p>"
+)
+CROSSREF_ABSTRACT_REAL_TEXT = (
+    "Proteins are essential to life 1-4, and their structures can be determined."
+)
+
+#: 标识符腿与其摘要腿可能出现的主机; 出现别的就说明换了来源。
+IDENTIFIER_HOSTS = {"doi.org", "arxiv.org", "api.crossref.org", "export.arxiv.org"}
+ANONYMOUS_HOSTS = IDENTIFIER_HOSTS | {"api.openalex.org"}
+
+
+def crossref_payload(abstract: str | None = None) -> dict:
+    """Crossref 的 work 记录形状; 不传 abstract 就是「出版商没存摘要」那一种。"""
+
+    message: dict = {"DOI": "10.1234/example", "type": "journal-article"}
+    if abstract is not None:
+        message["abstract"] = abstract
+    return {"status": "ok", "message": message}
+
 
 # 摘要倒排索引: 词 → 出现位置数组; 首位那个 "Abstract." 是出版商塞进正文的前缀。
 ABSTRACT_INDEX = {
@@ -363,7 +454,11 @@ class PaperMetaProxyTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(len(transport.requests), 1)
+        # doi 赢: 只打 doi.org 这一维, 外加它缺摘要时补打的一次 Crossref;
+        # arXiv 与 OpenAlex 一跳都不许有。
+        self.assertEqual(
+            [request.url.host for request in transport.requests], ["doi.org", "api.crossref.org"]
+        )
         self.assertEqual(str(transport.requests[0].url), "https://doi.org/10.7282/T34X59H0")
         self.assertEqual(transport.requests[0].method, "GET")
         self.assertEqual(transport.requests[0].headers["accept"], "application/x-bibtex")
@@ -533,8 +628,14 @@ class PaperMetaProxyTests(unittest.TestCase):
                     response, recorder = self.post(reply, body)
                     self.assertEqual(response.status_code, status, response.text)
                     self.assertEqual(response.json()["detail"]["code"], code)
-                    self.assertEqual(len(recorder.requests), 1)
-                    self.assertNotIn("authorization", recorder.requests[0].headers)
+                    # 失败不换来源: 200 但正文不可用时还会补打一次摘要腿, 所以钉主机集合
+                    # 而不是请求数 —— 落到 OpenAlex 或另一个注册库才算违约。
+                    self.assertLessEqual(
+                        {request.url.host for request in recorder.requests}, IDENTIFIER_HOSTS
+                    )
+                    self.assertTrue(
+                        all("authorization" not in request.headers for request in recorder.requests)
+                    )
 
     def test_doi_content_negotiation_follows_redirect_without_credentials(self) -> None:
         requests: list[httpx.Request] = []
@@ -549,7 +650,11 @@ class PaperMetaProxyTests(unittest.TestCase):
         register_papermeta_routes(app, transport=httpx.MockTransport(handle))
         response = TestClient(app).post(PREFIX, json={"doi": "https://doi.org/10.1234/example"})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(len(requests), 2)
+        # 第三跳是摘要腿: 重定向回来的 BibTeX 不带 abstract, 所以补打一次 Crossref。
+        self.assertEqual(
+            [request.url.host for request in requests],
+            ["doi.org", "data.crossref.org", "api.crossref.org"],
+        )
         self.assertTrue(all("authorization" not in request.headers for request in requests))
 
     def test_invalid_identifiers_do_not_fall_back_or_send_requests(self) -> None:
@@ -586,8 +691,14 @@ class PaperMetaProxyTests(unittest.TestCase):
                 # 没有 app.state.skill_credentials, 也没有任何请求头: 未登录一样能用。
                 response = TestClient(app).post(PREFIX, json=body)
                 self.assertEqual(response.status_code, 200, response.text)
-                self.assertEqual(len(recorder.requests), 1)
-                self.assertNotIn("authorization", recorder.requests[0].headers)
+                # 标识符腿缺摘要时会多一跳, 所以这里不钉请求数, 只钉「每一跳都匿名」
+                # 与「不打到这三条腿之外的主机」。
+                self.assertLessEqual(
+                    {request.url.host for request in recorder.requests}, ANONYMOUS_HOSTS
+                )
+                self.assertTrue(
+                    all("authorization" not in request.headers for request in recorder.requests)
+                )
 
     # --- 6. 覆盖通道 --------------------------------------------------------
 
@@ -623,6 +734,232 @@ class PaperMetaProxyTests(unittest.TestCase):
                 self.assertEqual(
                     resolve_timeout_seconds({"PAPER_META_TIMEOUT": invalid}), DEFAULT_TIMEOUT
                 )
+
+
+class RoutingTransport:
+    """按主机分发回复: 题录腿与摘要腿打的是不同主机, 单一回复的 RecordingTransport 不够用。
+
+    没登记的主机直接 KeyError —— 「多打了一跳」当场就是测试失败, 不必再写断言去数请求。
+    """
+
+    def __init__(self, replies: dict[str, object]) -> None:
+        self.replies = replies
+        self.requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        reply = self.replies[request.url.host]
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, httpx.Response):
+            return reply
+        return httpx.Response(200, json=reply)
+
+    @property
+    def hosts(self) -> list[str]:
+        return [request.url.host for request in self.requests]
+
+
+class IdentifierAbstractTests(unittest.TestCase):
+    """摘要补充腿: arXiv 取 Atom 的 summary, DOI 取 Crossref 的 abstract, 拿不到就降级。"""
+
+    def post(
+        self, replies: dict[str, object], body: dict
+    ) -> tuple[httpx.Response, RoutingTransport]:
+        transport = RoutingTransport(replies)
+        app = FastAPI()
+        register_papermeta_routes(app, transport=httpx.MockTransport(transport.handler))
+        return TestClient(app).post(PREFIX, json=body), transport
+
+    def test_arxiv_bibtex_without_abstract_is_completed_from_the_atom_feed(self) -> None:
+        response, transport = self.post(
+            {
+                "arxiv.org": httpx.Response(200, text=BIBTEX),
+                "export.arxiv.org": httpx.Response(200, text=ATOM_FEED),
+            },
+            {"arxiv": "1706.03762"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        # Atom 的 summary 带排版换行与首尾空白, 落库前必须归一化成一行。
+        self.assertEqual(response.json()["fields"]["abstract"], ARXIV_ABSTRACT_TEXT)
+        self.assertEqual(transport.hosts, ["arxiv.org", "export.arxiv.org"])
+        abstract = transport.requests[1]
+        self.assertEqual(abstract.url.params["id_list"], "1706.03762")
+        self.assertEqual(abstract.url.params["max_results"], str(ARXIV_QUERY_LIMIT))
+        self.assertEqual(abstract.headers["user-agent"], ABSTRACT_USER_AGENT)
+        self.assertNotIn("authorization", abstract.headers)
+
+    def test_doi_bibtex_without_abstract_is_completed_from_crossref(self) -> None:
+        response, transport = self.post(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(CROSSREF_ABSTRACT_MARKUP),
+            },
+            {"doi": "10.1234/example"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["fields"]["abstract"], CROSSREF_ABSTRACT_TEXT)
+        self.assertEqual(transport.hosts, ["doi.org", "api.crossref.org"])
+        self.assertEqual(
+            str(transport.requests[1].url), "https://api.crossref.org/works/10.1234/example"
+        )
+
+    def test_an_undeclared_jats_namespace_falls_back_to_tag_stripping(self) -> None:
+        response, _ = self.post(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(CROSSREF_ABSTRACT_UNDECLARED),
+            },
+            {"doi": "10.1234/example"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["fields"]["abstract"], CROSSREF_ABSTRACT_UNDECLARED_TEXT)
+
+    def test_a_real_crossref_fragment_drops_its_section_title(self) -> None:
+        response, _ = self.post(
+            {
+                "doi.org": httpx.Response(200, text=BIBTEX),
+                "api.crossref.org": crossref_payload(CROSSREF_ABSTRACT_REAL),
+            },
+            {"doi": "10.1038/s41586-021-03819-2"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        # 小节标题不进摘要, 行内元素两侧的空位收成单个空格, 标点前不留空位。
+        self.assertEqual(response.json()["fields"]["abstract"], CROSSREF_ABSTRACT_REAL_TEXT)
+
+    def test_an_abstract_already_in_the_bibtex_stops_before_the_second_call(self) -> None:
+        # replies 只登记了 doi.org: 真去补打摘要腿就是 KeyError, 上游值也不会被覆盖。
+        response, transport = self.post(
+            {"doi.org": httpx.Response(200, text=BIBTEX_WITH_ABSTRACT)},
+            {"doi": "10.1234/example"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["fields"]["abstract"], BIBTEX_ABSTRACT_TEXT)
+        self.assertEqual(transport.hosts, ["doi.org"])
+
+    def test_an_arxiv_error_entry_is_not_mistaken_for_an_abstract(self) -> None:
+        response, _ = self.post(
+            {
+                "arxiv.org": httpx.Response(200, text=BIBTEX),
+                "export.arxiv.org": httpx.Response(200, text=ATOM_ERROR_FEED),
+            },
+            {"arxiv": "1706.03762"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("abstract", response.json()["fields"])
+
+    def test_a_failed_abstract_leg_never_touches_the_other_bibtex_fields(self) -> None:
+        """摘要腿失败只降级成「没有摘要」: 状态码仍是 200, BibTeX 的字段一个都不能少。
+
+        两条腿都要过同一批上游意外 —— 状态码不对、传输异常、正文不是期望的格式、格式对
+        但没有摘要、有摘要但是空串。任何一种都不许把已经取到的题录字段带下去。
+        """
+
+        upstream_failures = (
+            httpx.Response(500, text="upstream error"),
+            httpx.Response(429, json={"message": "rate limited"}),
+            httpx.ConnectError("network failure"),
+            httpx.ReadTimeout("timeout"),
+            httpx.Response(200, text="<html>not json</html>"),
+            httpx.Response(200, json=["not", "an", "object"]),
+            httpx.Response(200, json=crossref_payload()),
+            httpx.Response(200, json=crossref_payload("   ")),
+            httpx.Response(200, json=crossref_payload("<jats:p>")),
+            httpx.Response(200, text="<feed><entry>"),
+        )
+        legs = (
+            ("api.crossref.org", {"doi": "10.1234/example"}, "doi.org"),
+            ("export.arxiv.org", {"arxiv": "1706.03762"}, "arxiv.org"),
+        )
+        for host, body, bibtex_host in legs:
+            for reply in upstream_failures:
+                with self.subTest(host=host, reply=reply):
+                    response, _ = self.post(
+                        {bibtex_host: httpx.Response(200, text=BIBTEX), host: reply}, body
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+                    fields = response.json()["fields"]
+                    self.assertNotIn("abstract", fields)
+                    self.assertEqual(fields["title"], "Attention Is All You Need")
+                    self.assertEqual(fields["volume"], "7")
+                    self.assertEqual(fields["number"], "2")
+                    self.assertEqual(fields["publisher"], "Example Publisher")
+
+    def test_the_import_leg_never_calls_the_abstract_endpoint(self) -> None:
+        transport = RoutingTransport({"arxiv.org": httpx.Response(200, text=BIBTEX)})
+        text = asyncio.run(
+            fetch_identifier_bibliography(
+                "1706.03762", transport=httpx.MockTransport(transport.handler)
+            )
+        )
+
+        self.assertEqual(text, BIBTEX)
+        self.assertEqual(transport.hosts, ["arxiv.org"])
+
+    def test_the_abstract_endpoints_are_pinned(self) -> None:
+        """端点就是口径本身: 换主机等于换数据来源, 必须同时改契约与网络边界文档。"""
+
+        self.assertEqual(
+            ABSTRACT_ENDPOINTS,
+            {
+                "arxiv": "https://export.arxiv.org/api/query",
+                "doi": "https://api.crossref.org/works/",
+            },
+        )
+
+
+class TotalBudgetTests(unittest.IsolatedAsyncioTestCase):
+    """普通数据腿的超时口径: connect/read 给 httpx, total 由调用方执行。
+
+    httpx 没有总时钟 (``Timeout`` 的第一个位置参数只是各相位的默认值), 所以「上游一直
+    涓流不肯结束」只能由 ``asyncio.timeout`` 兜住; 这里用一个真会让出事件循环的 handler
+    证明它确实收手, 并且折进既有的 ``PAPER_META_NETWORK_FAILED``, 不新增失败码。
+    """
+
+    async def stalling_handler(self, request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(UPSTREAM_STALL_SECONDS)
+        return httpx.Response(200, json={})
+
+    async def test_the_identifier_leg_gives_up_at_its_total_budget(self) -> None:
+        transport = httpx.MockTransport(self.stalling_handler)
+        with self.assertRaises(BibliographyError) as caught:
+            await fetch_bibliography("doi", "10.1234/example", timeout=0, transport=transport)
+        self.assertEqual(caught.exception.code, NETWORK_FAILED)
+        self.assertEqual(caught.exception.status, HTTP_BAD_GATEWAY)
+
+    async def test_the_title_leg_gives_up_at_its_total_budget(self) -> None:
+        transport = httpx.MockTransport(self.stalling_handler)
+        with self.assertRaises(BibliographyError) as caught:
+            await search_by_title(
+                "Attention Is All You Need",
+                timeout=0,
+                transport=transport,
+                environ={"OPENALEX_SEARCH_URL": OPENALEX_URL},
+            )
+        self.assertEqual(caught.exception.code, NETWORK_FAILED)
+        self.assertEqual(caught.exception.status, HTTP_BAD_GATEWAY)
+
+    def test_plain_data_requests_are_pinned_to_five_five_ten(self) -> None:
+        """常量就是口径本身: 5/5/10 被写死在这里, 改数值必须同时改契约。"""
+
+        self.assertEqual(
+            (
+                PLAIN_CONNECT_TIMEOUT_SECONDS,
+                PLAIN_READ_TIMEOUT_SECONDS,
+                PLAIN_TOTAL_TIMEOUT_SECONDS,
+            ),
+            (5.0, 5.0, 10.0),
+        )
+        phases = plain_data_timeout()
+        self.assertEqual(phases.connect, PLAIN_CONNECT_TIMEOUT_SECONDS)
+        self.assertEqual(phases.read, PLAIN_READ_TIMEOUT_SECONDS)
+        self.assertEqual(DEFAULT_TIMEOUT, PLAIN_TOTAL_TIMEOUT_SECONDS)
 
 
 if __name__ == "__main__":

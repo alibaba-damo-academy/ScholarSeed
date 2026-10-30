@@ -2,7 +2,7 @@
 
 The run directory is writable by the model, so a skill cannot vouch for its own
 authorization. This module recomputes the effective grant from the durable HIL
-decision plus the managed-object map every time it is asked, and reports which
+decision plus the task's immutable version binding every time it is asked, and reports which
 authorized refs already have bytes behind them.
 """
 
@@ -11,9 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from service.assistant.service.authorization import FulltextAuthorizer
-from service.literature.persistence import fulltexts
-from service.literature.service.fulltexts import PAPER_REF_PREFIX
+from service.assistant.service.authorization import FulltextAuthorizer, fulltext_binding_scope
+from service.literature.domain.delivery import FULLTEXT_BINDING_REQUIRED
+from service.literature.persistence.delivery import DeliveryStore
+from service.literature.service.fulltexts import PAPER_REF_PREFIX, ManagedFulltexts
+from service.platform.context import FulltextBindingScope, FulltextTaskContext
 
 RECEIPT_AUTHORIZED = "authorized"
 RECEIPT_REJECTED = "rejected"
@@ -74,43 +76,69 @@ def issue_receipt(
     turn_id: str,
     authorization_type: str,
     client_turn_id: str = "",
+    task_context: FulltextTaskContext | None = None,
+    binding_scope: FulltextBindingScope | None = None,
 ) -> FulltextReceipt:
     """Recompute this turn's effective full-text scope; never read a skill artifact."""
 
-    authorizations = authorizer.turn_scope(
+    scope = authorizer.effective_scope(
         session_id=session_id,
         snapshot_id=snapshot_id,
         turn_id=turn_id,
         authorization_type=authorization_type,
         client_turn_id=client_turn_id,
+        task_context=task_context,
     )
-    refs: list[str] = []
-    source = None
-    for authorization in authorizations:
-        granted = authorizer.granted_refs(authorization)
-        if not granted:
-            continue
-        source = source or authorization
-        refs.extend(ref for ref in granted if ref not in refs)
+    refs = scope.allowed
+    source = next((item for item in scope.authorizations if set(item.refs) & set(refs)), None)
     if refs:
         disposition = RECEIPT_AUTHORIZED
-    elif any(authorizer.decided(authorization) for authorization in authorizations):
+    elif scope.denied and not scope.unknown:
         disposition = RECEIPT_REJECTED
     else:
         disposition = RECEIPT_PENDING
     papers = []
+    if task_context is not None and (
+        task_context.session_id != session_id or task_context.workspace != run
+    ):
+        raise ValueError(FULLTEXT_BINDING_REQUIRED)
     for ref in refs:
         if not ref.startswith(PAPER_REF_PREFIX):
             continue
-        managed = fulltexts.find_fulltext_object(ref[len(PAPER_REF_PREFIX) :])
+        if task_context is None and binding_scope is None:
+            raise ValueError(FULLTEXT_BINDING_REQUIRED)
+        context = task_context or binding_scope
+        assert context is not None
+        if context.session_id != session_id:
+            raise ValueError(FULLTEXT_BINDING_REQUIRED)
+        binding = fulltext_binding_scope(
+            scope,
+            ref,
+            session_id=session_id,
+            project_id=context.project_id,
+            workspace=context.workspace,
+            task_context=task_context,
+        )
+        bindings = DeliveryStore().bindings(
+            session_id,
+            binding.project_id,
+            binding.workspace,
+            authorization_id=binding.authorization_id,
+        )
+        paper_id = ref[len(PAPER_REF_PREFIX) :]
+        managed = ManagedFulltexts().managed_fulltext_document(
+            binding.project_id, paper_id, task_context=binding
+        )
         if managed is None:
             continue
         papers.append(
             ReceiptPaper(
-                paper_id=managed.paper_id,
+                paper_id=paper_id,
                 title=managed.title,
                 revision=managed.revision,
-                source_kind=managed.source_kind,
+                source_kind=bindings[paper_id].get(
+                    "source_kind", bindings[paper_id]["identifier_kind"]
+                ),
             )
         )
     return FulltextReceipt(

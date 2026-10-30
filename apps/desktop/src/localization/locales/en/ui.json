@@ -78,6 +78,16 @@
   "refresh": "Refresh",
   "retry": "Retry",
   "open": "Open",
+  "systemTrash": {
+    "darwin": "Trash",
+    "win32": "Recycle Bin",
+    "fallback": "trash"
+  },
+  "restoreAction": {
+    "darwin": "Put Back",
+    "win32": "Restore",
+    "fallback": "Restore"
+  },
   "avatar": {
     "label": "{{name}}’s avatar"
   },
@@ -85,6 +95,7 @@
   "delete": "Delete",
   "done": "Done",
   "navigationTabs": {
+    "all": "All tabs",
     "unsaved": "Unsaved"
   },
   "markdown": {

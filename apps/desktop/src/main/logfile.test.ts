@@ -4,12 +4,110 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { gunzipSync } from 'node:zlib'
+import { API_DIAGNOSTIC_PREFIX } from '../requests.ts'
 
-import { LOG_BACKUPS, LOG_BACKUP_SUFFIX, LOG_MAX_BYTES, LineTimestamper, RotatingFileLog } from './logfile.ts'
+import {
+  LOG_BACKUPS,
+  LOG_BACKUP_SUFFIX,
+  LOG_MAX_BYTES,
+  LineTimestamper,
+  RotatingFileLog,
+  isRendererDiagnostic,
+} from './logfile.ts'
+
+test('registered renderer diagnostics persist even at info level without capturing arbitrary console text', () => {
+  for (const prefix of [
+    '[login-confirmation]',
+    '[preferences]',
+    '[office-runtime]',
+    '[session-stream]',
+    '[navigation]',
+    '[session-recovery]',
+    '[notification]',
+    '[account-menu]',
+    API_DIAGNOSTIC_PREFIX,
+  ]) {
+    assert.equal(isRendererDiagnostic(`${prefix} {"stage":"live"}`), true)
+  }
+  assert.equal(isRendererDiagnostic('unregistered private text'), false)
+  assert.equal(isRendererDiagnostic('private [session-stream] text'), false)
+})
 
 function workdir(): string {
   return mkdtempSync(join(tmpdir(), 'scholarseed-logfile-'))
 }
+
+test('log ownership is released while idle and retained through queued archives', async (t) => {
+  const dir = workdir()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'activity.log')
+  let acquired = 0
+  let closed = 0
+  const log = new RotatingFileLog(path, {
+    maxBytes: 4,
+    acquireWriter: () => {
+      acquired++
+      return {
+        close() {
+          closed++
+        },
+      }
+    },
+  })
+  assert.equal(acquired, 0)
+  log.write('first')
+  assert.equal(acquired, 1)
+  assert.equal(closed, 1)
+  log.write('next')
+  assert.equal(acquired, 2)
+  assert.equal(closed, 1)
+  const ending = log.end()
+  log.write('must not write after end')
+  await ending
+  await log.end()
+  assert.equal(closed, 2)
+  assert.equal(readFileSync(path, 'utf8'), 'next')
+  assert.equal(gunzipSync(readFileSync(`${path}.1.gz`)).toString(), 'first')
+})
+
+test('failed directory admission never creates or appends a log', async (t) => {
+  const dir = workdir()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'denied.log')
+  const log = new RotatingFileLog(path, {
+    acquireWriter: () => {
+      throw new Error('maintenance owns directory')
+    },
+  })
+  log.write('denied')
+  await log.end()
+  assert.equal(existsSync(path), false)
+})
+
+test('logging resumes after temporary maintenance releases admission', async (t) => {
+  const dir = workdir()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'resume.log')
+  let busy = true
+  let released = 0
+  const log = new RotatingFileLog(path, {
+    acquireWriter: () => {
+      if (busy) throw new Error('maintenance owns directory')
+      return {
+        close() {
+          released++
+        },
+      }
+    },
+  })
+  log.write('blocked')
+  assert.equal(existsSync(path), false)
+  busy = false
+  log.write('resumed')
+  assert.equal(released, 1)
+  await log.end()
+  assert.equal(readFileSync(path, 'utf8'), 'resumed')
+})
 
 // A write stream flushes asynchronously and a rotated generation is compressed off
 // the critical path, so assertions wait for the expected file to appear.
@@ -156,4 +254,58 @@ test('flush releases a trailing partial line with a newline', () => {
   // a second flush with an empty buffer emits nothing
   stamper.flush()
   assert.deepEqual(out, [`${FIXED_STAMP} no-newline-tail\n`])
+})
+
+test('deferred diagnostics never qualify storage until startup readiness and replay in order', async (t) => {
+  const dir = workdir()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'startup.log')
+  let acquired = 0
+  let maintenance = true
+  const log = new RotatingFileLog(path, {
+    deferred: true,
+    acquireWriter: () => {
+      acquired++
+      assert.equal(maintenance, false, 'startup diagnostics must not compete with maintenance')
+      return { close() {} }
+    },
+  })
+  log.write('before initialization\n')
+  log.write('maintenance started\n')
+  await log.flush()
+  assert.equal(acquired, 0)
+  assert.equal(existsSync(path), false)
+  maintenance = false
+  log.resume()
+  log.resume()
+  log.write('ready\n')
+  await log.end()
+  assert.equal(acquired, 2)
+  assert.equal(readFileSync(path, 'utf8'), 'before initialization\nmaintenance started\nready\n')
+})
+
+test('failed startup replays all buffered lines when the caller drains and ends diagnostics', async (t) => {
+  const dir = workdir()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'failed.log')
+  const log = new RotatingFileLog(path, { deferred: true })
+  log.write('startup error\n')
+  assert.equal(existsSync(path), false)
+  await log.end()
+  await log.end()
+  log.write('late output must be ignored')
+  assert.equal(readFileSync(path, 'utf8'), 'startup error\n')
+})
+
+test('deferred diagnostics bound retained bytes and report overflow instead of silently dropping it', async (t) => {
+  const dir = workdir()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'bounded.log')
+  const log = new RotatingFileLog(path, { deferred: true, maxBytes: 8 })
+  log.write('older\n')
+  log.write('newer\n')
+  assert.equal(existsSync(path), false)
+  await log.end()
+  assert.equal(readFileSync(path, 'utf8'), 'newer\n')
+  assert.match(gunzipSync(readFileSync(`${path}.1.gz`)).toString(), /6 bytes omitted/)
 })

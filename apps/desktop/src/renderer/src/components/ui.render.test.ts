@@ -1,17 +1,634 @@
 import assert from 'node:assert/strict'
-import net from 'node:net'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 
-import { chromium, expect, type Browser, type Page } from '@playwright/test'
-import react from '@vitejs/plugin-react'
-import { createServer, type ViteDevServer } from 'vite'
+import { chromium, expect, type BrowserContext, type Page } from '@playwright/test'
+import { RenderFailure, renderFixture } from '../../../test-helpers/render.ts'
 
 const FIXTURE_URL = '/components/ui.render.fixture.html'
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const MOTION_OBSERVATION_MS = 350
+const ISOLATION_KEYS = {
+  storage: 'ui-render-case',
+  global: 'uiRenderCase',
+  cookie: 'ui-render-case',
+}
+let preparing: ReturnType<typeof renderFixture> | undefined
+
+test('ScrollArea overlay keeps both axes outside layout and synchronizes keyboard and track clicks', async () => {
+  await withFixture(async (page) => {
+    const root = page.getByTestId('render-overlay-scroll')
+    const viewport = page.getByTestId('render-overlay-viewport')
+    await expect(root.getByRole('scrollbar')).toHaveCount(2)
+    await expect(root).toHaveAttribute('data-fade-top', 'false')
+    await expect(root).toHaveAttribute('data-fade-bottom', 'true')
+    assert.deepEqual(
+      await viewport.evaluate((element) => [element.clientWidth, element.clientHeight]),
+      [160, 80]
+    )
+    for (const orientation of ['vertical', 'horizontal']) {
+      const bar = root.locator(`[role="scrollbar"][aria-orientation="${orientation}"]`)
+      await bar.focus()
+      await page.keyboard.press('End')
+      await expect(bar).toHaveAttribute('aria-valuenow', '160')
+      if (orientation === 'vertical') {
+        await expect(root).toHaveAttribute('data-fade-top', 'true')
+        await expect(root).toHaveAttribute('data-fade-bottom', 'false')
+      }
+      await page.keyboard.press('Home')
+      await expect(bar).toHaveAttribute('aria-valuenow', '0')
+      const box = (await bar.boundingBox())!
+      await page.mouse.click(
+        box.x + (orientation === 'vertical' ? box.width / 2 : box.width - 12),
+        box.y + (orientation === 'vertical' ? box.height - 12 : box.height / 2)
+      )
+      await expect
+        .poll(async () => Number(await bar.getAttribute('aria-valuenow')))
+        .toBeGreaterThan(0)
+    }
+  })
+})
+
+test('ResizableHandle supports independent pixel offsets and releases capture', async () => {
+  await withFixture(async (page) => {
+    const handle = page.getByTestId('render-resizable-standalone')
+    await expect(handle.locator('span')).toHaveCount(0)
+    await handle.scrollIntoViewIfNeeded()
+    const bounds = await handle.boundingBox()
+    assert.ok(bounds)
+    assert.ok(bounds.width > 0 && bounds.height > 0, JSON.stringify(bounds))
+    const start = bounds.x + bounds.width / 2
+    const middle = bounds.y + bounds.height / 2
+    await page.mouse.move(start, middle)
+    await page.mouse.down()
+    await expect(handle).toHaveAttribute('data-resizing', 'true')
+    assert.equal(await handle.evaluate((element) => getComputedStyle(element).cursor), 'ew-resize')
+    assert.equal(
+      await handle.evaluate((element) => getComputedStyle(element, '::before').content),
+      'none'
+    )
+    assert.equal(
+      await handle.evaluate((element) => getComputedStyle(element, '::after').content),
+      'none'
+    )
+    await page.mouse.move(start + 80, middle)
+    await expect(page.getByTestId('render-resizable-offset')).toHaveText('80')
+    await page.mouse.up()
+    await expect(handle).not.toHaveAttribute('data-resizing', 'true')
+    await page.mouse.move(start + 100, middle)
+    await expect(page.getByTestId('render-resizable-offset')).toHaveText('80')
+    await handle.press('ArrowLeft')
+    await expect(page.getByTestId('render-resizable-offset')).toHaveText('-5')
+    await handle.press('ArrowRight')
+    await expect(page.getByTestId('render-resizable-offset')).toHaveText('5')
+  })
+})
+
+test('NavigationTabs reorders in both directions without changing selection and composes drag hooks', async () => {
+  await withFixture(async (page) => {
+    const bar = page.getByTestId('render-navigation-tabs-reorder')
+    const first = bar.getByRole('tab', { name: 'First.md' })
+    const third = bar.getByRole('tab', { name: 'Third.md' })
+    await first.dragTo(third, {
+      targetPosition: { x: (await third.boundingBox())!.width - 4, y: 16 },
+    })
+    await expect(bar.getByRole('tab')).toHaveText([
+      '总览',
+      'Second.md',
+      'Third.md',
+      'First.md',
+      'Locked.md',
+    ])
+    await expect(bar.getByRole('tab', { selected: true })).toContainText('Second.md')
+    await third.dragTo(bar.getByRole('tab', { name: /Second.md/ }), {
+      targetPosition: { x: 2, y: 16 },
+    })
+    await expect(bar.getByRole('tab')).toHaveText([
+      '总览',
+      'Third.md',
+      'Second.md',
+      'First.md',
+      'Locked.md',
+    ])
+    await expect(page.getByTestId('render-navigation-reorders')).toHaveText('2')
+    await expect(page.getByTestId('render-navigation-drag-events')).toHaveText('2')
+    await expect(page.getByTestId('render-navigation-drop-events')).toHaveText('2')
+    await expect(bar.getByRole('tab', { name: 'Locked.md' })).toHaveAttribute('draggable', 'false')
+    await expect(bar.getByRole('tab', { name: '总览', exact: true })).not.toHaveAttribute(
+      'draggable',
+      'true'
+    )
+    await expect(bar.locator('[data-slot="navigation-tab-drop-indicator"]')).toHaveCount(0)
+  })
+})
+
+test('NavigationTabs ignores external drops and clears a cancelled drag', async () => {
+  await withFixture(async (page) => {
+    const bar = page.getByTestId('render-navigation-tabs-reorder')
+    const first = bar.getByRole('tab', { name: 'First.md' })
+    const third = bar.getByRole('tab', { name: 'Third.md' })
+    await third.dispatchEvent('drop', { clientX: 0 })
+    await first.dispatchEvent('dragstart', {
+      dataTransfer: await page.evaluateHandle(() => new DataTransfer()),
+    })
+    await third.dispatchEvent('dragover', {
+      dataTransfer: await page.evaluateHandle(() => new DataTransfer()),
+    })
+    await expect(bar.locator('[data-slot="navigation-tab-drop-indicator"]')).toHaveCount(1)
+    await first.dispatchEvent('dragend')
+    await expect(bar.locator('[data-slot="navigation-tab-drop-indicator"]')).toHaveCount(0)
+    await expect(page.getByTestId('render-navigation-reorders')).toHaveText('0')
+  })
+})
+
+test('NavigationTabs ignores no-op and cross-instance drops even with matching IDs', async () => {
+  await withFixture(async (page) => {
+    const bar = page.getByTestId('render-navigation-tabs-reorder')
+    const first = bar.getByRole('tab', { name: 'First.md' })
+    await first.dragTo(bar.getByRole('tab', { name: /Second.md/ }), {
+      targetPosition: { x: 2, y: 16 },
+    })
+    await first.dragTo(
+      page
+        .getByTestId('render-navigation-tabs-reorder-other')
+        .getByRole('tab', { name: 'Third.md' })
+    )
+    await expect(page.getByTestId('render-navigation-reorders')).toHaveText('0')
+    await expect(bar.getByRole('tab')).toHaveText([
+      '总览',
+      'First.md',
+      'Second.md',
+      'Third.md',
+      'Locked.md',
+    ])
+    await expect(bar.locator('[data-slot="navigation-tab-drop-indicator"]')).toHaveCount(0)
+  })
+})
+
+function sharedFixture() {
+  preparing ??= renderFixture(path.dirname(ROOT_DIR), {
+    launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+  })
+  return preparing
+}
+
+after(async () => {
+  if (!preparing) return
+  const [prepared] = await Promise.allSettled([preparing])
+  if (prepared.status === 'fulfilled') await prepared.value.close()
+})
+
+test('split resizing follows screen direction for either sized panel and clamps both ends', async () => {
+  await withFixture(async (page) => {
+    for (const sizedPanel of ['left', 'right']) {
+      for (const reversed of [false, true]) {
+        const split = page.getByTestId(`render-split-${sizedPanel}-${reversed}`)
+        const handle = split.getByRole('button', { name: /^(Resize panels|调整面板大小)$/ })
+        await handle.scrollIntoViewIfNeeded()
+        for (const delta of [50, -50]) {
+          const before = (await handle.boundingBox())!
+          await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2)
+          await page.mouse.down()
+          await page.mouse.move(before.x + before.width / 2 + delta, before.y + before.height / 2, {
+            steps: 5,
+          })
+          await page.mouse.up()
+          assert.ok(Math.abs((await handle.boundingBox())!.x - before.x - delta) < 2)
+        }
+        for (const delta of [-2000, 2000]) {
+          const before = (await handle.boundingBox())!
+          await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2)
+          await page.mouse.down()
+          await page.mouse.move(before.x + before.width / 2 + delta, before.y + before.height / 2)
+          await page.mouse.up()
+          const width = await split.evaluate(
+            (element, side) =>
+              Number.parseFloat(
+                (element as HTMLElement).style.getPropertyValue(`--vds-resizable-${side}-width`)
+              ),
+            sizedPanel
+          )
+          const growsTowardPointer = delta > 0 !== reversed
+          assert.equal(width, growsTowardPointer === (sizedPanel === 'left') ? 640 : 260)
+        }
+      }
+    }
+  })
+})
+
+test('disabled resizing preserves enabled panel actions', async () => {
+  await withFixture(async (page) => {
+    await expect(page.getByTestId('render-resizable-disabled-action')).toBeEnabled()
+    await expect(page.getByTestId('render-resizable-disabled-handle')).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    )
+  })
+})
+
+test('split navigation highlights only the hovered action and aligns its label left', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('render-navigation-split')
+    const group = trigger.locator('..')
+    const back = group.getByRole('button', { name: '返回项目中心', exact: true })
+    const background = (locator: ReturnType<Page['locator']>) =>
+      locator.evaluate((element) => getComputedStyle(element).backgroundColor)
+    const clear = 'rgba(0, 0, 0, 0)'
+    await back.hover()
+    assert.equal(await background(group), clear)
+    assert.notEqual(await background(back), clear)
+    assert.equal(await background(trigger), clear)
+    await trigger.hover()
+    assert.equal(await background(group), clear)
+    assert.equal(await background(back), clear)
+    assert.notEqual(await background(trigger), clear)
+    assert.equal(
+      await trigger
+        .locator('[data-slot="navigation-label"]')
+        .evaluate((element) => getComputedStyle(element).textAlign),
+      'left'
+    )
+  })
+})
+
+test('split navigation preserves exact design geometry and independent actions', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('render-navigation-split')
+    const group = trigger.locator('..')
+    const back = group.getByRole('button', { name: '返回项目中心', exact: true })
+    const dimensions = await group.evaluate((element) => {
+      const label = element.querySelector('[data-slot="navigation-label"]')!
+      const icons = Array.from(element.querySelectorAll('.iconfont'))
+      const box = element.getBoundingClientRect()
+      const labelBox = label.getBoundingClientRect()
+      const left = icons[0].getBoundingClientRect()
+      const right = icons[1].getBoundingClientRect()
+      return {
+        width: box.width,
+        height: box.height,
+        label: labelBox.width,
+        left: [left.width, left.height],
+        right: [right.width, right.height],
+        gaps: [labelBox.left - left.right, right.left - labelBox.right],
+        padding: [left.left - box.left, box.right - right.right],
+        truncated: label.scrollWidth > label.clientWidth,
+      }
+    })
+    assert.deepEqual(dimensions, {
+      width: 154,
+      height: 32,
+      label: 102,
+      left: [14, 14],
+      right: [14, 14],
+      gaps: [6, 6],
+      padding: [6, 6],
+      truncated: true,
+    })
+    await back.click()
+    await expect(page.getByTestId('render-button-clicks')).toHaveText('1')
+    await trigger.focus()
+    await trigger.press('Enter')
+    await expect(page.getByTestId('render-button-clicks')).toHaveText('11')
+  })
+})
+
+test('navigation button preserves its label, keyboard activation and disabled semantics', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('render-navigation-button')
+    const typography = await trigger.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { weight: style.fontWeight, size: style.fontSize, line: style.lineHeight }
+    })
+    assert.deepEqual(typography, { weight: '600', size: '14px', line: '20px' })
+    await expect(trigger).toHaveAccessibleName('一个很长的项目名称用于验证省略与完整名称')
+    await expect(trigger).toHaveAttribute('title', '一个很长的项目名称用于验证省略与完整名称')
+    await expect(trigger.locator('.icon-a-line-switch-arrow-left-s')).toBeVisible()
+    await expect(trigger.locator('.icon-a-line-switch-arrow-down-s')).toBeVisible()
+    const geometry = await trigger.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return {
+        height: style.height,
+        width: style.width,
+        padding: style.padding,
+        gap: style.gap,
+        radius: style.borderRadius,
+      }
+    })
+    assert.deepEqual(geometry, {
+      height: '32px',
+      width: '154px',
+      padding: '6px',
+      gap: '6px',
+      radius: '8px',
+    })
+    assert.ok(
+      await trigger
+        .locator('[data-slot="navigation-label"]')
+        .evaluate((element) => element.scrollWidth > element.clientWidth)
+    )
+    await trigger.focus()
+    await trigger.press('Enter')
+    await expect(page.getByTestId('render-button-clicks')).toHaveText('1')
+    await expect(page.getByTestId('render-navigation-disabled')).toBeDisabled()
+  })
+})
+
+test('animated splits interpolate both collapse directions and retain inactive content', async () => {
+  await withFixture(async (page) => {
+    const nav = page
+      .getByTestId('render-animated-navigation')
+      .locator(':scope > .vds-resizable-split__panel--left')
+    const draft = page.getByTestId('render-navigation-draft')
+    await draft.fill('Keep this draft')
+    const sample = (testId: string, target: string) =>
+      page.evaluate(
+        async ({ testId, target }) => {
+          const pane = document.querySelector<HTMLElement>(target)!
+          const widths = [pane.getBoundingClientRect().width]
+          const committed = new Promise<void>((resolve) => {
+            const observer = new MutationObserver(() => {
+              observer.disconnect()
+              resolve()
+            })
+            observer.observe(pane, { attributes: true, attributeFilter: ['style'] })
+          })
+          document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!.click()
+          await committed
+          // Inspect the browser's real CSS timeline without relying on wall-clock frame delivery.
+          const animation = pane
+            .getAnimations()
+            .find((item) => item instanceof CSSTransition && item.transitionProperty === 'width')
+          if (!animation) throw new Error('Expected a width transition after the layout commit')
+          animation.pause()
+          const duration = Number(animation.effect!.getTiming().duration)
+          for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
+            animation.currentTime = duration * progress
+            widths.push(pane.getBoundingClientRect().width)
+          }
+          animation.finish()
+          return widths
+        },
+        { testId, target }
+      )
+    const navSelector =
+      '[data-testid="render-animated-navigation"] > .vds-resizable-split__panel--left'
+    const closing = await sample('render-navigation-toggle', navSelector)
+    assert.equal(closing.at(-1), 0)
+    assert.ok(closing.some((width) => width > 0 && width < closing[0]))
+    assert.equal(await nav.getAttribute('inert'), '')
+    assert.equal(await nav.getAttribute('aria-hidden'), 'true')
+    assert.equal(await nav.getAttribute('hidden'), null)
+    const opening = await sample('render-navigation-toggle', navSelector)
+    assert.equal(opening.at(-1), 260)
+    assert.ok(opening.some((width) => width > 0 && width < 260))
+    await expect(draft).toHaveValue('Keep this draft')
+    const conversation =
+      '[data-testid="render-conversation-split"] > .vds-resizable-split__panel--left'
+    const full = await sample('render-split-toggle', conversation)
+    assert.equal(full.at(-1), 800)
+    assert.ok(full.some((width) => width > 360 && width < 800))
+    const split = await sample('render-split-toggle', conversation)
+    assert.equal(split.at(-1), 360)
+    assert.ok(split.some((width) => width > 360 && width < 800))
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.getByTestId('render-navigation-toggle').click()
+    assert.equal(await nav.evaluate((element) => element.getAnimations().length), 0)
+    assert.equal(await nav.evaluate((element) => element.getBoundingClientRect().width), 0)
+  })
+})
+
+test('surface morph preserves its live input, cancels on reversal and follows reduced motion', async () => {
+  await withFixture(async (page) => {
+    const draft = page.getByTestId('render-morph-draft')
+    await draft.fill('Unsent conversation')
+    const morph = () =>
+      page.evaluate(async () => {
+        const surface = document.querySelector<HTMLElement>('[data-testid="render-morph-surface"]')!
+        const old = surface.getBoundingClientRect()
+        const committed = new Promise<void>((resolve) => {
+          const observer = new MutationObserver(() => {
+            observer.disconnect()
+            resolve()
+          })
+          observer.observe(surface, { attributes: true, attributeFilter: ['style'] })
+        })
+        document.querySelector<HTMLButtonElement>('[data-testid="render-morph-toggle"]')!.click()
+        await committed
+        const animations = surface.getAnimations()
+        const animation = animations[0]
+        if (animation) {
+          animation.pause()
+          animation.currentTime = 0
+        }
+        const first = surface.getBoundingClientRect()
+        const transform = new DOMMatrixReadOnly(getComputedStyle(surface).transform)
+        return {
+          count: animations.length,
+          scale: { x: transform.a, y: transform.d },
+          old: { left: old.left, width: old.width },
+          first: { left: first.left, width: first.width },
+        }
+      })
+    const first = await morph()
+    assert.equal(first.count, 1)
+    assert.deepEqual(first.scale, { x: 1, y: 1 })
+    assert.ok(Math.abs(first.old.left - first.first.left) < 1)
+    assert.ok(Math.abs(first.old.width - first.first.width) < 1)
+    await page.getByTestId('render-morph-surface').evaluate((element) => {
+      const animation = element.getAnimations()[0]
+      animation.currentTime = Number(animation.effect!.getTiming().duration) / 2
+    })
+    const reversed = await morph()
+    assert.equal(reversed.count, 1)
+    await expect(draft).toHaveValue('Unsent conversation')
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    // MediaQueryList change is asynchronous; wait for cancellation, not just emulation setup.
+    await expect
+      .poll(() =>
+        page
+          .getByTestId('render-morph-surface')
+          .evaluate((element) => element.getAnimations().length)
+      )
+      .toBe(0)
+    assert.equal((await morph()).count, 0)
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    await page.getByTestId('render-morph-drag').click()
+    assert.equal(
+      await page
+        .getByTestId('render-morph-surface')
+        .evaluate((element) => element.getAnimations().length),
+      0
+    )
+  })
+})
+
+test('conversation entry fades at its final size without deforming its contents', async () => {
+  await withFixture(async (page) => {
+    await page.getByTestId('render-morph-draft').fill('Keep minimized draft')
+    for (const expectedWidth of [64, 300]) {
+      const samples = await page.evaluate(async () => {
+        const surface = document.querySelector<HTMLElement>('[data-testid="render-morph-surface"]')!
+        const committed = new Promise<void>((resolve) => {
+          const observer = new MutationObserver(() => {
+            observer.disconnect()
+            resolve()
+          })
+          observer.observe(surface, { attributes: true, attributeFilter: ['style'] })
+        })
+        document.querySelector<HTMLButtonElement>('[data-testid="render-morph-entry"]')!.click()
+        await committed
+        const animation = surface.getAnimations()[0]
+        animation.pause()
+        const duration = Number(animation.effect!.getTiming().duration)
+        return [0, 0.5, 1].map((progress) => {
+          animation.currentTime = duration * progress
+          return {
+            width: surface.getBoundingClientRect().width,
+            transform: getComputedStyle(surface).transform,
+            opacity: Number(getComputedStyle(surface).opacity),
+          }
+        })
+      })
+      for (const sample of samples) {
+        assert.equal(sample.width, expectedWidth)
+        assert.equal(sample.transform, 'none')
+      }
+      assert.equal(samples[0].opacity, 0)
+      assert.ok(samples[1].opacity > 0 && samples[1].opacity < 1)
+      assert.equal(samples[2].opacity, 1)
+      await expect(page.getByTestId('render-morph-draft')).toHaveValue('Keep minimized draft')
+    }
+  })
+})
+
+test('restored conversation keeps its fade when docking recalculates in either direction', async () => {
+  await withFixture(async (page) => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await page.getByTestId('render-morph-entry').click()
+      const result = await page.evaluate(async () => {
+        const surface = document.querySelector<HTMLElement>('[data-testid="render-morph-surface"]')!
+        const change = async (testId: string) => {
+          const committed = new Promise<void>((resolve) => {
+            const observer = new MutationObserver(() => {
+              observer.disconnect()
+              resolve()
+            })
+            observer.observe(surface, { attributes: true, attributeFilter: ['style'] })
+          })
+          document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)!.click()
+          await committed
+        }
+        await change('render-morph-entry')
+        const fade = surface.getAnimations()[0]
+        fade.pause()
+        fade.currentTime = Number(fade.effect!.getTiming().duration) / 2
+        const before = surface.getBoundingClientRect().left
+        await change('render-morph-position')
+        return {
+          sameAnimation: surface.getAnimations()[0] === fade,
+          count: surface.getAnimations().length,
+          transform: getComputedStyle(surface).transform,
+          moved: surface.getBoundingClientRect().left !== before,
+        }
+      })
+      assert.deepEqual(result, { sameAnimation: true, count: 1, transform: 'none', moved: true })
+    }
+  })
+})
+
+test('releasing a drag still animates back to the same dock without a layout revision', async () => {
+  await withFixture(async (page) => {
+    await page.getByTestId('render-morph-drag').click()
+    const result = await page.evaluate(async () => {
+      const surface = document.querySelector<HTMLElement>('[data-testid="render-morph-surface"]')!
+      const committed = new Promise<void>((resolve) => {
+        const observer = new MutationObserver(() => {
+          observer.disconnect()
+          resolve()
+        })
+        observer.observe(surface, { attributes: true, attributeFilter: ['style'] })
+      })
+      document.querySelector<HTMLButtonElement>('[data-testid="render-morph-drop"]')!.click()
+      await committed
+      const animation = surface.getAnimations()[0]
+      animation.pause()
+      animation.currentTime = 0
+      return {
+        count: surface.getAnimations().length,
+        transform: getComputedStyle(surface).transform,
+      }
+    })
+    assert.equal(result.count, 1)
+    assert.notEqual(result.transform, 'none')
+  })
+})
+
+test('percentage split preserves half width with pixel minimum bounds', async () => {
+  await withFixture(async (page) => {
+    const split = page.getByTestId('render-resizable-mixed-units')
+    const right = page.getByTestId('render-resizable-mixed-right').locator('..')
+    assert.equal(
+      await split.evaluate((element) =>
+        element.style.getPropertyValue('--vds-resizable-right-width')
+      ),
+      '50%'
+    )
+    assert.equal(await right.evaluate((element) => getComputedStyle(element).width), '450px')
+  })
+})
+
+test('pixel conversation width survives host growth and controlled project restoration', async () => {
+  await withFixture(async (page) => {
+    const split = page.getByTestId('render-conversation-split')
+    const conversation = split.locator(':scope > .vds-resizable-split__panel--left')
+    const documents = split.locator(':scope > .vds-resizable-split__panel--right')
+    await expect(conversation).toHaveCSS('width', '360px')
+    const before = await documents.boundingBox()
+    await page.getByTestId('render-conversation-grow').click()
+    await expect(conversation).toHaveCSS('width', '360px')
+    const after = await documents.boundingBox()
+    assert.equal(after!.width - before!.width, 300)
+    await page.getByTestId('render-conversation-restore').click()
+    await expect(conversation).toHaveCSS('width', '420px')
+    await split
+      .getByRole('button', { name: /^(Resize panels|调整面板大小)$/ })
+      .scrollIntoViewIfNeeded()
+    const handle = await split
+      .getByRole('button', { name: /^(Resize panels|调整面板大小)$/ })
+      .boundingBox()
+    assert.ok(handle)
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(handle.x + handle.width / 2 + 40, handle.y + handle.height / 2)
+    await page.mouse.up()
+    await expect(conversation).toHaveCSS('width', '460px')
+  })
+})
+
+test('scroll viewport explicit height wins over inherited height in generated CSS', async () => {
+  const VIEWPORT_HEIGHT = 40
+  const ROOT_MAX_HEIGHT = 80
+  await withFixture(async (page) => {
+    const viewport = page.getByTestId('render-scroll-area-viewport')
+    const dimensions = await viewport.evaluate((element) => ({
+      height: element.clientHeight,
+      content: element.scrollHeight,
+      maximum: getComputedStyle(element).maxHeight,
+      minimum: getComputedStyle(element).minHeight,
+      rootMaximum: getComputedStyle(element.parentElement!).maxHeight,
+    }))
+    assert.equal(dimensions.maximum, `${VIEWPORT_HEIGHT}px`)
+    assert.equal(dimensions.minimum, '0px')
+    assert.equal(dimensions.rootMaximum, `${ROOT_MAX_HEIGHT}px`)
+    assert.equal(dimensions.height, VIEWPORT_HEIGHT)
+    assert.ok(dimensions.content > dimensions.height)
+    await viewport.focus()
+    await viewport.press('End')
+    await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  })
+})
 
 async function withToastFixture(run: (page: Page) => Promise<void>): Promise<void> {
   await withFixture(async (page) => {
@@ -119,69 +736,36 @@ test('toast lifecycle keeps explicit action notifications until manual dismissal
   })
 })
 
-test('update announcement opens full release notes in a centered dialog, not the side popover', async () => {
-  await withFixture(async (page) => {
-    const dialog = page.getByRole('dialog', { name: '更新内容' })
-    await expect(dialog).toBeInViewport({ ratio: 1 })
-    await expect(dialog).toHaveCSS('width', '420px')
-    await expect(
-      dialog.getByTestId('update-panel-list').locator(':scope > span').first()
-    ).toHaveCSS('font-size', '12px')
-    await expect(dialog).toContainText('完整更新说明')
-    await expect(dialog.getByTestId('update-panel-title')).toHaveText('更新内容')
-    await expect(page.locator('[data-presentation="popover"]')).toHaveCount(0)
-    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
-    await expect
-      .poll(() =>
-        dialog.evaluate((element) => {
-          const rect = element.getBoundingClientRect()
-          return Math.max(
-            Math.abs(rect.x + rect.width / 2 - innerWidth / 2),
-            Math.abs(rect.y + rect.height / 2 - innerHeight / 2)
-          )
-        })
-      )
-      .toBeLessThan(1)
-    await page.keyboard.press('Tab')
-    assert.ok(await dialog.evaluate((element) => element.contains(document.activeElement)))
-    await page.setViewportSize({ width: 480, height: 720 })
-    await expect(dialog).toBeInViewport({ ratio: 1 })
-  }, '/components/update.render.fixture.html')
+test('update application shell has no automatic announcement mount', async () => {
+  const source = await readFile(path.join(ROOT_DIR, 'App.tsx'), 'utf8')
+  assert.doesNotMatch(source, /<UpdateAnnouncement\b/)
 })
 
-test('update announcement stays above an open settings dialog and restores focus after dismissal', async () => {
+test('update readiness never interrupts the focused settings control', async () => {
   await withFixture(async (page) => {
-    const announcement = page.getByRole('dialog', { name: '更新内容' })
-    await announcement.getByTestId('update-panel-dismiss').click()
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
     const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
     const check = settings.getByRole('button', { name: 'Check for update' })
     await check.click()
-    await expect(announcement).toBeVisible()
-    await expect
-      .poll(() =>
-        announcement.getByTestId('update-panel-action').evaluate((element) => {
-          const rect = element.getBoundingClientRect()
-          return element.contains(
-            document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
-          )
-        })
-      )
-      .toBe(true)
-    await announcement.getByTestId('update-panel-dismiss').click()
-    await expect(announcement).toHaveCount(0)
+    await page.evaluate(() => {
+      ;(
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture.publish({ phase: 'ready' })
+    })
+    await expect(page.getByTestId('update-entry-ready')).toBeAttached()
+    await expect(page.getByTestId('update-panel')).toHaveCount(0)
     await expect(settings).toBeVisible()
     await expect(check).toBeFocused()
   }, '/components/update.render.fixture.html')
 })
 
-test('update entry preserves unread on outside dismissal and acknowledges an explicit trigger click', async () => {
+test('update available stays quiet and explicit entry reading acknowledges the unread candidate', async () => {
   await withFixture(async (page) => {
     const unread = page.getByTestId('update-entry-unread')
     const panel = page.getByTestId('update-panel')
     const entry = page.getByTestId('activity-update')
     await expect(unread).toBeVisible()
-    await expect(panel).toHaveCount(1)
+    await expect(panel).toHaveCount(0)
     await page.mouse.click(900, 200)
     await expect(panel).toHaveCount(0)
     await expect(unread).toBeVisible()
@@ -205,24 +789,28 @@ test('update entry preserves unread on outside dismissal and acknowledges an exp
   }, '/components/update.render.fixture.html')
 })
 
-test('update entry preserves unread when Escape dismisses an automatic announcement', async () => {
+test('update ready entry opens only on request and Escape preserves installation', async () => {
   await withFixture(async (page) => {
-    const unread = page.getByTestId('update-entry-unread')
-    await expect(unread).toBeVisible()
+    await expect(page.getByTestId('update-panel')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Ready', exact: true }).click()
+    await expect(page.getByTestId('update-panel')).toHaveCount(0)
+    await page.getByTestId('activity-update').click()
     await expect(page.getByTestId('update-panel')).toHaveCount(1)
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('update-panel')).toHaveCount(0)
-    await expect(unread).toBeVisible()
+    await expect(page.getByTestId('update-entry-ready')).toBeVisible()
+    await expect(page.getByTestId('update-actions')).toBeEmpty()
   }, '/components/update.render.fixture.html')
 })
 
-test('update entry preserves unread on announcement content and renders distinct warning and restart icons', async () => {
+test('update entry renders unread, download, warning and restart indicators without opening panels', async () => {
   await withFixture(async (page) => {
     const entry = page.getByTestId('activity-update')
     await expect(entry).toBeVisible()
     await expect(page.getByTestId('update-entry-unread')).toBeVisible()
-    await page.getByTestId('update-panel').click()
-    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await expect(page.getByTestId('update-panel')).toHaveCount(0)
+    await entry.click()
+    await expect(page.getByTestId('update-entry-unread')).toHaveCount(0)
     await expect(entry).toBeVisible()
     await page.keyboard.press('Escape')
     await page.getByRole('button', { name: 'Downloading', exact: true }).click()
@@ -259,83 +847,56 @@ test('update entry preserves unread on announcement content and renders distinct
     await expect(page.getByTestId('update-entry-unread')).toBeVisible()
     await expect(page.getByTestId('update-entry-unread')).toHaveCSS('top', '4px')
     await expect(page.getByTestId('update-entry-unread')).toHaveCSS('right', '4px')
-    await expect(page.getByRole('dialog', { name: '更新内容' })).toBeVisible()
-    await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog', { name: '更新内容' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Ready', exact: true }).click()
+    await expect(page.getByTestId('update-panel')).toHaveCount(0)
     await entry.click()
     await expect(page.getByTestId('update-entry-unread')).toHaveCount(0)
   }, '/components/update.render.fixture.html')
 })
 
-test('update announcement dismissal preserves unread and only a new build prompts again', async () => {
+test('update consecutive builds keep the workspace focused without acknowledging unseen candidates', async () => {
   await withFixture(async (page) => {
-    const dialog = page.getByRole('dialog', { name: '更新内容' })
-    await dialog.getByTestId('update-panel-dismiss').click()
-    await expect(dialog).toHaveCount(0)
-    await expect(page.getByTestId('activity-update')).toBeVisible()
-    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
-    await expect(page.getByTestId('update-actions')).toBeEmpty()
-    await page.getByRole('button', { name: 'Ready', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
-    await page.getByRole('button', { name: 'New build', exact: true }).click()
-    await expect(dialog).toBeVisible()
-    await dialog.getByTestId('update-panel-close').click()
-    await expect(dialog).toHaveCount(0)
-    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
-    await expect(page.getByTestId('update-actions')).toBeEmpty()
-  }, '/components/update.render.fixture.html')
-})
-
-test('update announcement keyboard dismissal preserves unread', async () => {
-  await withFixture(async (page) => {
-    const dialog = page.getByRole('dialog', { name: '更新内容' })
-    await dialog.getByTestId('update-panel-dismiss').focus()
-    await page.keyboard.press('Enter')
-    await expect(dialog).toHaveCount(0)
-    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
-    await page.getByRole('button', { name: 'New build', exact: true }).click()
-    await expect(dialog).toBeVisible()
-    await dialog.getByTestId('update-panel-close').focus()
-    await page.keyboard.press('Enter')
-    await expect(dialog).toHaveCount(0)
-    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    const trigger = page.getByRole('button', { name: 'New build', exact: true })
+    await trigger.focus()
+    for (const build of ['2', '3', '4']) {
+      for (const phase of ['available', 'downloading', 'preparing', 'ready']) {
+        await page.evaluate(
+          ({ phase, build }) => {
+            return window.scholarseed.getUpdateState().then((state) => {
+              ;(
+                window as unknown as {
+                  updateFixture: { publish(next: Record<string, unknown>): void }
+                }
+              ).updateFixture.publish({
+                phase,
+                candidate: { ...state.candidate, build_number: build },
+              })
+            })
+          },
+          { phase, build }
+        )
+        await expect(page.getByTestId('activity-update')).toBeVisible()
+        if (phase === 'ready') await expect(page.getByTestId('update-entry-ready')).toBeVisible()
+        await expect(page.getByTestId('update-panel')).toHaveCount(0)
+        await expect(trigger).toBeFocused()
+      }
+    }
     expect(
       await page.evaluate(async () => (await window.scholarseed.getUpdateState()).announcedKey)
     ).toBeUndefined()
     await expect(page.getByTestId('update-actions')).toBeEmpty()
+    await page.getByTestId('activity-update').click()
+    await expect(page.getByTestId('update-panel')).toBeVisible()
+    expect(
+      await page.evaluate(async () => (await window.scholarseed.getUpdateState()).announcedKey)
+    ).toBe('0.2.1-4')
   }, '/components/update.render.fixture.html')
 })
 
-test('update announcement and side notes share download, failure and restart actions', async () => {
+test('update manual entry preserves release notes, download, failure and confirmed restart actions', async () => {
   await withFixture(async (page) => {
     const dialog = page.getByRole('dialog', { name: '更新内容' })
-    await dialog.getByTestId('update-panel-action').click()
-    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update')
-    expect(
-      await page.evaluate(async () => (await window.scholarseed.getUpdateState()).announcedKey)
-    ).toBeDefined()
-    await expect(dialog).toBeVisible()
-    await expect(dialog.getByTestId('update-panel-progress')).toBeVisible()
-    await expect(dialog.getByTestId('update-panel-action')).toBeDisabled()
-    await expect(dialog.getByTestId('update-panel-dismiss')).toBeDisabled()
-    await page
-      .getByRole('button', { name: 'Failure', exact: true })
-      .evaluate((button: HTMLButtonElement) => button.click())
-    await expect(dialog.getByTestId('update-panel-error')).toBeVisible()
-    await expect(dialog.getByTestId('update-panel-action')).toHaveText('重启客户端')
-    await dialog.getByTestId('update-panel-action').click()
-    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update,install')
-    await expect(page.getByTestId('update-overlay')).toBeVisible()
-    await page.evaluate(() => {
-      ;(
-        window as unknown as { updateFixture: { publish: (next: { phase: string }) => void } }
-      ).updateFixture.publish({ phase: 'ready' })
-    })
-    await expect(page.getByTestId('update-overlay')).toHaveCount(0)
-    await dialog.getByTestId('update-panel-close').click()
-    await page.getByRole('button', { name: 'New build', exact: true }).click()
-    await expect(dialog).toBeVisible()
-    await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
     await page.getByTestId('activity-update').click()
     const panel = page.getByTestId('update-panel')
@@ -348,11 +909,125 @@ test('update announcement and side notes share download, failure and restart act
       '14px'
     )
     await panel.getByTestId('update-panel-action').click()
-    await expect(page.getByTestId('update-actions')).toHaveText(
-      'download:render-update,install,download:render-update'
-    )
+    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update')
     await expect(panel.getByTestId('update-panel-action')).toBeDisabled()
     await expect(panel.getByTestId('update-panel-progress')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'New build', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await page.getByRole('button', { name: 'Ready', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await page.getByTestId('activity-update').click()
+    await expect(page.getByTestId('update-panel-action')).toHaveText('重启客户端')
+    await page.evaluate(() => {
+      ;(
+        window as unknown as {
+          updateFixture: { publish: (next: { phase: string; errorFallback?: string }) => void }
+        }
+      ).updateFixture.publish({ phase: 'ready', errorFallback: 'install_failed' })
+    })
+    await expect(page.getByTestId('update-panel-error')).toBeVisible()
+    await expect(page.getByTestId('update-panel-retry-hint')).toBeVisible()
+    await page.getByTestId('update-panel-action').click()
+    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update')
+    await expect(page.getByTestId('update-restart-confirmation')).toContainText('中断所有项目')
+    await expect(page.getByTestId('update-restart-cancel')).toBeFocused()
+    await page.getByTestId('update-restart-cancel').click()
+    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update')
+    await page.getByTestId('update-panel-action').click()
+    await page.getByTestId('update-restart-confirm').click()
+    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update,install')
+    expect(
+      await page.evaluate(async () => (await window.scholarseed.getUpdateState()).announcedKey)
+    ).toBeDefined()
+    await expect(page.getByTestId('update-overlay')).toBeVisible()
+  }, '/components/update.render.fixture.html')
+})
+
+test('update background preparation stays quiet and the manual panel shows indeterminate work', async () => {
+  await withFixture(async (page) => {
+    const dialog = page.getByRole('dialog', { name: '更新内容' })
+    const publish = async (phase: string) =>
+      page.evaluate((phase) => {
+        ;(
+          window as unknown as { updateFixture: { publish: (next: { phase: string }) => void } }
+        ).updateFixture.publish({ phase })
+      }, phase)
+    await publish('preparing')
+    await expect(dialog).toHaveCount(0)
+    await page.getByTestId('activity-update').click()
+    await expect(page.getByTestId('update-panel-hint')).toBeVisible()
+    await expect(page.getByTestId('update-panel-progress')).not.toHaveAttribute('aria-valuenow')
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'New build', exact: true }).click()
+    await publish('ready')
+    await expect(dialog).toHaveCount(0)
+    await page.getByTestId('activity-update').click()
+    for (const phase of ['preparing', 'verifying']) {
+      await publish(phase)
+      await expect(page.getByTestId('update-panel-progress')).not.toHaveAttribute('aria-valuenow')
+      await expect(page.getByTestId('update-panel-action')).toBeDisabled()
+    }
+  }, '/components/update.render.fixture.html')
+})
+
+test('update popover restart confirmation survives real pointer clicks on portalled buttons', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      ;(
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture.publish({ phase: 'ready', announcedKey: '0.2.1-1' })
+    })
+    await page.getByTestId('activity-update').click()
+    const panel = page.getByTestId('update-panel')
+    await panel.getByTestId('update-panel-action').click()
+    await page.getByTestId('update-restart-cancel').click()
+    await expect(panel).toBeVisible()
+    await expect(page.getByTestId('update-actions')).toHaveText('')
+    await panel.getByTestId('update-panel-action').click()
+    await page.getByTestId('update-restart-confirm').dblclick()
+    await expect(page.getByTestId('update-actions')).toHaveText('install')
+  }, '/components/update.render.fixture.html')
+})
+
+test('restart confirmation follows language, rejects stale releases and submits only once', async () => {
+  await withFixture(async (page) => {
+    const publish = async (next: Record<string, unknown>) =>
+      page.evaluate((value) => {
+        ;(
+          window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+        ).updateFixture.publish(value)
+      }, next)
+    const action = page.getByTestId('update-panel-action')
+    await publish({ phase: 'ready' })
+    await page.getByTestId('activity-update').click()
+    await action.click()
+    const confirmation = page.getByTestId('update-restart-confirmation')
+    await expect(confirmation).toContainText('重启后可点击「继续」或发送新消息接着处理')
+    await expect(confirmation).not.toContainText('确认中断后发送新消息')
+    await page.evaluate(() => {
+      ;(
+        window as unknown as { updateFixture: { language(language: string): void } }
+      ).updateFixture.language('en')
+    })
+    await expect(confirmation).toContainText('click Continue or send a new message')
+    await expect(confirmation).not.toContainText('acknowledge the interruption')
+    await page.setViewportSize({ width: 480, height: 720 })
+    await expect(page.getByTestId('update-restart-cancel')).toBeInViewport()
+    await expect(page.getByTestId('update-restart-confirm')).toBeInViewport()
+    await publish({ phase: 'available' })
+    await expect(page.getByTestId('update-restart-confirm')).toBeDisabled()
+    await expect(confirmation).toContainText('The update state has changed')
+    await page.getByTestId('update-restart-cancel').click()
+    await expect(page.getByTestId('update-actions')).toHaveText('')
+    await publish({ phase: 'ready' })
+    await page.getByTestId('activity-update').click()
+    await action.click()
+    await page.getByTestId('update-restart-confirm').evaluate((button: HTMLButtonElement) => {
+      button.click()
+      button.click()
+    })
+    await expect(page.getByTestId('update-actions')).toHaveText('install')
   }, '/components/update.render.fixture.html')
 })
 
@@ -397,6 +1072,31 @@ test('alert icons center with single-line descriptions and top-align with multil
   })
 })
 
+test('catalog icons load the bundled font and render glyphs without legacy CSS', async () => {
+  await withFixture(async (page) => {
+    const glyphs = await page.locator('.iconfont').evaluateAll(async (elements) => {
+      await document.fonts.ready
+      return elements.map((element) => ({
+        glyph: element.getAttribute('data-icon-glyph'),
+        content: getComputedStyle(element, '::before').content,
+        family: getComputedStyle(element).fontFamily,
+        loaded: document.fonts.check(`${getComputedStyle(element).fontSize} iconfont`),
+        hidden: element.getAttribute('aria-hidden'),
+        text: element.textContent,
+      }))
+    })
+    assert.ok(glyphs.length > 0)
+    for (const glyph of glyphs) {
+      assert.ok(glyph.glyph)
+      assert.equal(glyph.content, JSON.stringify(glyph.glyph))
+      assert.equal(glyph.family, 'iconfont')
+      assert.equal(glyph.loaded, true)
+      assert.equal(glyph.hidden, 'true')
+      assert.equal(glyph.text, '')
+    }
+  })
+})
+
 test('compact empty state uses small centered geometry without changing the default variant', async () => {
   await withFixture(async (page) => {
     const compact = page.getByTestId('render-empty-compact')
@@ -431,6 +1131,40 @@ test('compact empty state uses small centered geometry without changing the defa
         .locator('.vds-empty-state__title')
         .evaluate((element) => getComputedStyle(element).color)
     ).toBe(await icon.evaluate((element) => getComputedStyle(element).color))
+  })
+})
+
+test('panel empty state uses a square icon and primary title without changing existing variants', async () => {
+  await withFixture(async (page) => {
+    const panel = page.getByTestId('render-empty-panel')
+    const icon = panel.locator('.vds-empty-state__icon')
+    for (const colorScheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme })
+      await expect(icon).toHaveCSS('width', '36px')
+      await expect(icon).toHaveCSS('height', '36px')
+      await expect(icon).toHaveCSS('border-radius', '8px')
+      await expect(icon.locator('svg')).toHaveCSS('width', '14px')
+      await expect(panel).toHaveCSS('row-gap', '8px')
+      await expect(panel.locator('.vds-empty-state__content')).toHaveCSS('row-gap', '8px')
+      await expect(panel.locator('.vds-empty-state__title')).toHaveCSS('font-size', '14px')
+      await expect(panel.locator('.vds-empty-state__title')).toHaveCSS('font-weight', '500')
+      const colors = {
+        primary: await page
+          .getByTestId('render-empty-state')
+          .locator('.vds-empty-state__title')
+          .evaluate((element) => getComputedStyle(element).color),
+        secondary: await icon.evaluate((element) => getComputedStyle(element).color),
+      }
+      await expect(panel.locator('.vds-empty-state__title')).toHaveCSS('color', colors.primary)
+      await expect(panel.locator('.vds-empty-state__description')).toHaveCSS(
+        'color',
+        colors.secondary
+      )
+      await expect(
+        page.getByTestId('render-empty-state').locator('.vds-empty-state__icon')
+      ).toHaveCSS('width', '48px')
+      await expect(page.getByTestId('render-empty-compact')).toHaveCSS('row-gap', '16px')
+    }
   })
 })
 
@@ -501,54 +1235,20 @@ test('animated collapsible interpolates height, closes accessibly and reverses c
   })
 })
 
-async function reservePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      if (typeof address !== 'object' || address === null) {
-        server.close(() => reject(new Error('Unable to reserve a local test port')))
-        return
-      }
-      const { port } = address
-      server.close(() => resolve(port))
-    })
-  })
-}
-
 async function withFixture(
   run: (page: Page) => Promise<void>,
   fixtureUrl = FIXTURE_URL
 ): Promise<void> {
-  let browser: Browser | undefined
-  let server: ViteDevServer | undefined
+  const runtime = await sharedFixture()
+  const context = await runtime.browser.newContext()
+  let failed = false
+  let failure: unknown
 
   try {
-    const port = await reservePort()
-    server = await createServer({
-      configFile: false,
-      // Concurrent Vite fixtures must not invalidate each other's optimized chunks.
-      cacheDir: path.join(
-        ROOT_DIR,
-        'node_modules/.vite-tests',
-        `${path.basename(fixtureUrl)}-${process.pid}`
-      ),
-      root: ROOT_DIR,
-      plugins: [react()],
-      server: {
-        host: '127.0.0.1',
-        port,
-        strictPort: true,
-      },
-    })
-    await server.listen()
-
-    const url = server.resolvedUrls?.local[0]
+    const url = runtime.url
     assert.ok(url, 'Vite test server should expose a local URL')
 
-    browser = await chromium.launch()
-    const page = await browser.newPage()
+    const page = await context.newPage()
     const startupErrors: string[] = []
     page.on('pageerror', (error) => startupErrors.push(`pageerror: ${error.message}`))
     page.on('requestfailed', (request) =>
@@ -559,7 +1259,7 @@ async function withFixture(
         startupErrors.push(`response: ${response.status()} ${response.url()}`)
     })
     try {
-      await page.goto(new URL(fixtureUrl, url).toString())
+      await page.goto(new URL(`/src${fixtureUrl}`, url).toString())
       await run(page)
     } catch (error) {
       console.error('UI fixture failure evidence', {
@@ -569,11 +1269,111 @@ async function withFixture(
       })
       throw error
     }
-  } finally {
-    await browser?.close()
-    await server?.close()
+  } catch (error) {
+    failed = true
+    failure = error
   }
+  try {
+    await context.close()
+    assert.equal(runtime.browser.contexts().includes(context), false)
+  } catch (cleanup) {
+    if (failed) throw new RenderFailure([failure, cleanup], 'UI case and context cleanup failed')
+    throw cleanup
+  }
+  if (failed) throw failure
 }
+
+test('UI fixture isolates cookies, storage and globals and closes each context before exit', async (testContext) => {
+  const runtime = await sharedFixture()
+  const contexts: BrowserContext[] = []
+  const diagnostic = await runtime.browser.newBrowserCDPSession()
+  testContext.after(() => diagnostic.detach())
+  const before = (await diagnostic.send('Target.getBrowserContexts')).browserContextIds
+  for (const value of ['first', 'second']) {
+    await withFixture(async (page) => {
+      const context = page.context()
+      contexts.push(context)
+      const active = (await diagnostic.send('Target.getBrowserContexts')).browserContextIds
+      assert.equal(active.filter((identity) => !before.includes(identity)).length, 1)
+      assert.equal(
+        await page.evaluate((key) => localStorage.getItem(key), ISOLATION_KEYS.storage),
+        null
+      )
+      assert.equal(
+        await page.evaluate((key) => Reflect.has(window, key), ISOLATION_KEYS.global),
+        false
+      )
+      assert.deepEqual(await context.cookies(), [])
+      await page.evaluate(
+        ({ keys, value }) => {
+          localStorage.setItem(keys.storage, value)
+          Reflect.set(window, keys.global, value)
+        },
+        { keys: ISOLATION_KEYS, value }
+      )
+      await context.addCookies([{ name: ISOLATION_KEYS.cookie, value, url: page.url() }])
+    })
+    assert.equal(runtime.browser.contexts().includes(contexts.at(-1)!), false)
+    assert.deepEqual((await diagnostic.send('Target.getBrowserContexts')).browserContextIds, before)
+  }
+  assert.notEqual(contexts[0], contexts[1])
+})
+
+test('UI fixture preserves callback and initialization failures and reports context cleanup faults', async () => {
+  const runtime = await sharedFixture()
+  const primary = new Error('injected UI case failure')
+  const cleanup = new Error('injected UI context cleanup failure')
+  let callbackContext: BrowserContext | undefined
+  await assert.rejects(
+    withFixture(async (page) => {
+      callbackContext = page.context()
+      throw primary
+    }),
+    (error) => error === primary
+  )
+  assert.ok(callbackContext)
+  assert.equal(runtime.browser.contexts().includes(callbackContext), false)
+
+  const createContext = runtime.browser.newContext.bind(runtime.browser)
+  for (const mode of ['normal', 'throw', 'noop']) {
+    const failCleanup = mode !== 'normal'
+    let context: BrowserContext | undefined
+    let recover: (() => Promise<void>) | undefined
+    runtime.browser.newContext = async () => {
+      context = await createContext()
+      recover = context.close.bind(context)
+      context.newPage = async () => {
+        throw primary
+      }
+      if (mode === 'throw')
+        context.close = async () => {
+          throw cleanup
+        }
+      if (mode === 'noop') context.close = async () => {}
+      return context
+    }
+    try {
+      await assert.rejects(
+        withFixture(async () => assert.fail('page initialization should reject')),
+        (error) => {
+          if (!failCleanup) return error === primary
+          assert.ok(error instanceof RenderFailure)
+          assert.ok(error.errors.includes(primary))
+          if (mode === 'throw') assert.ok(error.errors.includes(cleanup))
+          else assert.ok(error.errors.some((item) => item instanceof assert.AssertionError))
+          return true
+        }
+      )
+      assert.ok(context)
+      assert.equal(runtime.browser.contexts().includes(context), failCleanup)
+    } finally {
+      runtime.browser.newContext = createContext
+      await recover?.()
+    }
+    assert.ok(context)
+    assert.equal(runtime.browser.contexts().includes(context), false)
+  }
+})
 
 test('annotation summary fits its content in a grid instead of stretching to the composer width', async () => {
   await withFixture(async (page) => {
@@ -627,6 +1427,8 @@ test('annotation summary hover list supports editing and deleting individual ann
     await first.getByRole('button', { name: '移除注释 1' }).click()
     await expect(first).toHaveCount(0)
     await expect(summary).toContainText('1 条注释')
+    await summary.getByRole('button', { name: '1 条注释' }).hover()
+    await expect(second).toBeVisible()
     await expect(second).toContainText('第二条注释')
     await second.getByRole('button', { name: '移除注释 1' }).click()
     await expect(summary).toHaveCount(0)
@@ -675,9 +1477,12 @@ test('icon-only copy buttons retain 24px targets, 14px glyphs and clipboard feed
       'icon-copy-value'
     )
     assert.equal(await button.getAttribute('data-copy-status'), 'success')
+    await expect(button.locator('.lucide-check')).toBeVisible()
     assert.equal(await button.getAttribute('aria-label'), '已复制')
     assert.equal(await button.locator('[aria-live="polite"]').textContent(), '已复制')
     assert.deepEqual(await geometry(), expectedGeometry)
+    await expect(button).toHaveAttribute('data-copy-status', 'idle')
+    await expect(button.locator('.lucide-copy')).toBeVisible()
     await page.evaluate(() => {
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
@@ -746,9 +1551,9 @@ test('closed Sheet portals remove both content and overlay from the page', async
     assert.equal(await page.getByTestId('render-sheet-overlay').count(), 0)
     await page.getByTestId('render-sheet-open').click()
     const content = page.getByTestId('render-sheet-content')
-    assert.equal(await content.count(), 1)
+    await expect(content).toBeVisible()
     await page.getByTestId('render-sheet-close').click()
-    assert.equal(await content.getAttribute('data-state'), 'closed')
+    await expect(content).toHaveAttribute('data-state', 'closed')
     assert.equal(
       await content.evaluate((element) => getComputedStyle(element).animationName),
       'vds-sheet-out-right'
@@ -803,7 +1608,9 @@ test('DialogClose asChild preserves child classes and composes its click handler
 test('assistant host constrains the transcript to its own scroll viewport', async () => {
   await withFixture(async (page) => {
     const source = await readFile(path.join(ROOT_DIR, 'features/assistant/AiPanel.tsx'), 'utf8')
-    const hostClass = source.match(/className="([^"]+)" data-testid="ai-stream"/)?.[1]
+    const hostClass = source.match(
+      /className=\{\s*compact\s*\?\s*'hidden'\s*:\s*floatingContent\s*\?\s*'[^']+'\s*:\s*'([^']+)'\s*\}\s*id=\{contentId\}\s*data-testid="ai-stream"/
+    )?.[1]
     assert.ok(hostClass)
     await page.locator('#root').evaluate((root, className) => {
       root.innerHTML = `<div style="height:300px;display:flex;flex-direction:column"><div class="${className}"><div class="conversation-stream" style="flex:1;min-height:0;overflow-y:auto"><div style="height:1200px">Long transcript</div></div></div></div>`
@@ -948,9 +1755,54 @@ test('permission dock uses the full-access icon and text-only actions', async ()
     stream.indexOf("const scrollableQuestion = presentation === 'dock' && isQuestion && !done")
   )
   assert.match(permissionDock, /<IconFont[\s\S]*?type="icon-wanquanfangwen"/)
-  assert.match(permissionDock, /<Button\s+variant="secondary"\s+size="sm"/)
+  assert.match(
+    permissionDock,
+    /<Button\s+variant="outline"\s+size="sm"[\s\S]*?data-hil-decision="deny"/
+  )
   assert.match(permissionDock, /<Button\s+variant="primary"\s+size="sm"/)
   assert.doesNotMatch(permissionDock, /<kbd>/)
+})
+
+test('floating composer fills its available width while normal conversation stays capped', async () => {
+  const composer = await readFile(path.join(ROOT_DIR, 'components/business/Composer.tsx'), 'utf8')
+  const expression = composer.match(
+    /const readingColumnClass = ([\s\S]*?)\nconst popoverClass/
+  )?.[1]
+  assert.ok(expression)
+  const columnClass = new Function(
+    `return (${expression.replace(/: boolean/g, '').replace(/\): string =>/, ') =>')})`
+  )() as (home: boolean, inline: boolean) => string
+  await withFixture(async (page) => {
+    for (const width of [480, 900, 1440]) {
+      for (const inline of [false, true]) {
+        await page.locator('#root').evaluate(
+          (root, layout) => {
+            root.innerHTML = `<div data-testid="composer-width-host" style="width:${layout.width}px;padding-inline:var(--vds-conversation-scrollbar-width)"><div data-testid="composer-width-column" class="${layout.className}">Composer</div></div>`
+          },
+          { width, className: columnClass(false, inline) }
+        )
+        const geometry = await page.getByTestId('composer-width-host').evaluate((host) => {
+          const column = host.querySelector<HTMLElement>('[data-testid="composer-width-column"]')!
+          const bounds = host.getBoundingClientRect()
+          const content = column.getBoundingClientRect()
+          const padding = Number.parseFloat(getComputedStyle(host).paddingLeft)
+          return {
+            available: host.clientWidth - padding * 2,
+            width: content.width,
+            left: content.left - bounds.left,
+            right: bounds.right - content.right,
+            padding,
+          }
+        })
+        assert.equal(
+          geometry.width,
+          inline ? geometry.available : Math.min(760, geometry.available)
+        )
+        assert.equal(geometry.left, geometry.right)
+        if (inline) assert.equal(geometry.left, geometry.padding)
+      }
+    }
+  })
 })
 
 test('conversation and controls share a centered capped column at every panel width', async () => {
@@ -962,7 +1814,7 @@ test('conversation and controls share a centered capped column at every panel wi
   await withFixture(async (page) => {
     const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
     const columnClass = stream.match(/const READING_COLUMN_CLASS =\s*'([^']+)'/)?.[1]
-    const streamClass = stream.match(/className="(conversation-stream[^"]*)"/)?.[1]
+    const streamClass = stream.match(/className=\{cx\(\s*'(conversation-stream[^']*)'/)?.[1]
     const controlsClass = stream.match(/className="(vds-ai-composer-host[^"]*)"/)?.[1]
     assert.ok(columnClass && streamClass && controlsClass)
     for (const width of PANEL_WIDTHS) {
@@ -1050,6 +1902,114 @@ test('alert descriptions can show full instructions without changing default cla
   })
 })
 
+test('NavigationTabs preserves allocated widths while active labels use four pixels tighter padding', async () => {
+  await withFixture(async (page) => {
+    for (const fixture of ['render-navigation-tabs', 'render-navigation-tabs-scroll']) {
+      const navigation = page.getByTestId(fixture)
+      const geometry = () =>
+        navigation.evaluate((element) =>
+          Array.from(element.lastElementChild!.querySelectorAll('[role="tab"]')).map((tab) => {
+            const label = tab.querySelector('[data-slot="ellipsis-text"]')!.getBoundingClientRect()
+            const slot = tab.parentElement!.getBoundingClientRect()
+            return { left: label.left + element.scrollLeft, top: label.top, width: slot.width }
+          })
+        )
+      await navigation.scrollIntoViewIfNeeded()
+      const before = await geometry()
+      await navigation.getByRole('tab').nth(1).click()
+      const after = await geometry()
+      after.forEach((position, index) => {
+        assert.ok(
+          Math.abs(position.left - before[index].left) <= 4,
+          `${fixture}: label ${index} moved`
+        )
+        assert.ok(Math.abs(position.top - before[index].top) < 1)
+        assert.ok(Math.abs(position.width - before[index].width) < 1)
+      })
+    }
+  })
+})
+
+test('NavigationTabs joins active curved feet to the bottom seam without clipping', async () => {
+  await withFixture(async (page) => {
+    const navigation = page.getByTestId('render-navigation-tabs')
+    for (const name of ['总览', 'Beta.md']) {
+      await navigation.getByRole('tab', { name }).click()
+      const edges = await navigation.evaluate((element) => {
+        const active = element.lastElementChild!.querySelector('[aria-selected="true"]')!
+        const surface = active.querySelector('[data-slot="navigation-tab-surface"]')!
+        const outline = surface.children[1].getBoundingClientRect()
+        return {
+          seam: element.getBoundingClientRect().bottom,
+          outlineBottom: outline.bottom,
+          feet: ['left', 'right'].map((side) =>
+            active
+              .querySelector(`[data-slot="navigation-tab-${side}-foot"]`)!
+              .getBoundingClientRect()
+              .toJSON()
+          ),
+        }
+      })
+      for (const foot of edges.feet) {
+        assert.equal(foot.bottom, edges.seam)
+        assert.equal(foot.top, edges.outlineBottom)
+      }
+    }
+  })
+})
+
+test('NavigationTabs hover backgrounds leave four pixels on both sides of each separator', async () => {
+  await withFixture(async (page) => {
+    const tabs = page.getByTestId('render-navigation-tabs')
+    const beta = tabs.getByRole('tab', { name: 'Beta.md' })
+    await beta.hover()
+    const distances = await tabs.evaluate((element) => {
+      const [, alpha, beta, gamma] = element.lastElementChild!.querySelectorAll('[role="tab"]')
+      const leftLine = alpha
+        .querySelector('[data-slot="navigation-tab-divider"]')!
+        .getBoundingClientRect()
+      const rightLine = beta
+        .querySelector('[data-slot="navigation-tab-divider"]')!
+        .getBoundingClientRect()
+      return {
+        leftOfLine: leftLine.left - alpha.getBoundingClientRect().right,
+        rightOfLine: beta.getBoundingClientRect().left - leftLine.right,
+        hoverLeft: beta.getBoundingClientRect().left - leftLine.right,
+        hoverRight: rightLine.left - beta.getBoundingClientRect().right,
+        nextHoverLeft: gamma.getBoundingClientRect().left - rightLine.right,
+      }
+    })
+    assert.deepEqual(distances, {
+      leftOfLine: 4,
+      rightOfLine: 4,
+      hoverLeft: 4,
+      hoverRight: 4,
+      nextHoverLeft: 4,
+    })
+  })
+})
+
+test('NavigationTabs aligns curved active sides with the visual separator spacing', async () => {
+  await withFixture(async (page) => {
+    const tabs = page.getByTestId('render-navigation-tabs')
+    await tabs.getByRole('tab', { name: 'Beta.md' }).click()
+    for (const label of ['Alpha.md', 'Gamma.md']) {
+      await tabs.getByRole('tab', { name: label }).hover()
+      const distances = await tabs.evaluate((element) => {
+        const [, alpha, beta, gamma] = element.lastElementChild!.querySelectorAll('[role="tab"]')
+        const active = beta
+          .querySelector('[data-slot="navigation-tab-surface"]')!
+          .getBoundingClientRect()
+        return {
+          left: active.left - alpha.getBoundingClientRect().right,
+          right: gamma.getBoundingClientRect().left - active.right,
+        }
+      })
+      assert.deepEqual(distances, { left: 4, right: 4 })
+    }
+  })
+})
+
 test('NavigationTabs overview fills its allocated width in active and inactive states', async () => {
   await withFixture(async (page) => {
     const navigationTabs = page.getByTestId('render-navigation-tabs')
@@ -1123,6 +2083,9 @@ test('EllipsisText shows tooltip only when the text is truncated', async () => {
 
     const longText = page.getByTestId('render-ellipsis-long')
     await longText.hover()
+    await page
+      .getByRole('tooltip', { name: '这是一段一定会超过容器宽度并被省略的长标题' })
+      .waitFor({ state: 'visible' })
     await assert.equal(
       await page
         .getByRole('tooltip', { name: '这是一段一定会超过容器宽度并被省略的长标题' })
@@ -1136,23 +2099,29 @@ test('EllipsisText caps long tooltip content and keeps it scrollable', async () 
   await withFixture(async (page) => {
     const trigger = page.getByTestId('render-ellipsis-scrollable')
     await trigger.hover()
+    await expect(trigger).toHaveAttribute('aria-describedby', /.+/)
     const contentId = await trigger.getAttribute('aria-describedby')
     assert.ok(contentId)
     const tooltip = page.locator(`[id="${contentId}"]`)
+    await tooltip.waitFor({ state: 'visible' })
     const metrics = await tooltip.evaluate((element) => {
       const style = getComputedStyle(element)
       return {
         clientHeight: element.clientHeight,
         maxHeight: style.maxHeight,
+        tokenHeight: getComputedStyle(document.documentElement)
+          .getPropertyValue('--vds-tooltip-max-height')
+          .trim(),
         overflowY: style.overflowY,
         pointerEvents: style.pointerEvents,
         scrollHeight: element.scrollHeight,
         viewportHeight: window.innerHeight,
       }
     })
-    await assert.equal(metrics.maxHeight, `${metrics.viewportHeight * 0.8}px`)
+    await assert.equal(metrics.maxHeight, metrics.tokenHeight)
     await assert.equal(metrics.overflowY, 'auto')
     await assert.equal(metrics.pointerEvents, 'auto')
+    await assert.ok(metrics.clientHeight <= Number.parseFloat(metrics.tokenHeight))
     await assert.ok(metrics.clientHeight <= metrics.viewportHeight * 0.8)
     await assert.ok(metrics.scrollHeight > metrics.clientHeight)
 
@@ -1164,13 +2133,81 @@ test('EllipsisText caps long tooltip content and keeps it scrollable', async () 
   })
 })
 
+test('NavigationTabs widens default tabs and progressively compresses to icons with an overflow menu', async () => {
+  await withFixture(async (page) => {
+    const tabs = page.getByTestId('render-navigation-tabs')
+    await tabs.getByRole('tab', { name: '总览', exact: true }).click()
+    const widths = () =>
+      tabs
+        .getByRole('tab')
+        .evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().width))
+    const initial = await widths()
+    const alpha = tabs.getByRole('tab', { name: 'Alpha.md' })
+    const beta = tabs.getByRole('tab', { name: 'Beta.md' })
+    await expect(alpha.getByRole('button')).toBeVisible()
+    await expect(beta.getByRole('button')).toBeVisible()
+    assert.equal((await alpha.boundingBox())!.width, 285)
+    await expect(tabs.locator('..').getByTestId('navigation-tabs-overflow')).toHaveCount(0)
+    await alpha.click()
+    await expect(alpha.getByRole('button')).toBeVisible()
+    assert.deepEqual(await widths(), initial)
+    const label = await alpha.locator('[data-slot="ellipsis-text"]').boundingBox()
+    const close = await alpha.getByRole('button').boundingBox()
+    assert.ok(label!.x + label!.width > close!.x)
+    const activeBounds = (await alpha.boundingBox())!
+    assert.equal(activeBounds.x + activeBounds.width - close!.x - close!.width, 3)
+    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toHaveCSS('text-overflow', 'clip')
+    assert.match(
+      await alpha
+        .locator('[data-slot="ellipsis-text"]')
+        .evaluate((element) => getComputedStyle(element).maskImage),
+      /linear-gradient/
+    )
+    await tabs.evaluate((element) => {
+      element.style.width = '480px'
+    })
+    await expect(beta.getByRole('button')).toHaveCount(0)
+    await expect(tabs.locator('..').getByTestId('navigation-tabs-overflow')).toHaveCount(0)
+    await beta.hover()
+    await expect(beta.getByRole('button')).toHaveCount(0)
+    await beta.click()
+    await expect(alpha.getByRole('button')).toHaveCount(0)
+    await expect(beta.getByRole('button')).toBeVisible()
+    assert.ok((await beta.boundingBox())!.width < 285)
+    await tabs.evaluate((element) => {
+      element.style.width = '230px'
+    })
+    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toBeVisible()
+    await expect(beta.locator('[data-slot="ellipsis-text"]')).toBeVisible()
+    await expect(beta.getByRole('button')).toBeVisible()
+    await tabs.evaluate((element) => {
+      element.style.width = '150px'
+    })
+    await expect(alpha.locator('[data-slot="ellipsis-text"]')).toBeHidden()
+    assert.ok((await alpha.boundingBox())!.width >= 34)
+    const menu = tabs.locator('..').getByTestId('navigation-tabs-overflow')
+    await expect(menu).toBeVisible()
+    await menu.click()
+    await expect(page.getByRole('menuitem')).toHaveCount(3)
+    await page.getByRole('menuitem', { name: 'Gamma.md', exact: true }).click()
+    await expect(tabs.getByRole('tab', { name: 'Gamma.md' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    await beta.click()
+    await beta.getByRole('button').focus()
+    await beta.getByRole('button').press('Enter')
+    await expect(page.getByTestId('render-navigation-context-tab')).toHaveText('beta')
+  })
+})
+
 test('NavigationTabs caps each document tab and truncates long labels', async () => {
   await withFixture(async (page) => {
     const longLabel = 'Multimodal Fusion and Vision-Language Models for Robot Learning.md'
     const longTab = page.getByTestId('render-navigation-tabs-long-label').getByRole('tab')
     const label = longTab.locator('[data-slot="ellipsis-text"]')
     await assert.ok(
-      await longTab.evaluate((element) => element.getBoundingClientRect().width <= 190)
+      await longTab.evaluate((element) => element.getBoundingClientRect().width <= 285)
     )
     await assert.equal(
       await label.evaluate((element) => getComputedStyle(element).textOverflow),
@@ -1178,6 +2215,7 @@ test('NavigationTabs caps each document tab and truncates long labels', async ()
     )
     await longTab.hover()
     const tooltip = page.getByRole('tooltip', { name: longLabel })
+    await tooltip.waitFor({ state: 'visible' })
     await assert.equal(await tooltip.isVisible(), true)
     const positions = await Promise.all([
       label.evaluate((element) => {
@@ -1212,6 +2250,59 @@ test('NavigationTabs marks only tabs with unsaved edits', async () => {
   })
 })
 
+test('NavigationTabs scrolls with the mouse wheel across tabs and their gaps', async () => {
+  await withFixture(async (page) => {
+    const navigationTabs = page.getByTestId('render-navigation-tabs-scroll')
+    await navigationTabs.scrollIntoViewIfNeeded()
+    const first = await navigationTabs.getByRole('tab').nth(0).boundingBox()
+    const second = await navigationTabs.getByRole('tab').nth(1).boundingBox()
+    const root = await navigationTabs.boundingBox()
+    assert.ok(first && second && root)
+    for (const delta of [
+      { x: 0, y: 80 },
+      { x: 80, y: 0 },
+    ]) {
+      for (const point of [
+        { x: (first.x + first.width + second.x) / 2, y: second.y + second.height / 2 },
+        { x: second.x + second.width / 2, y: second.y + second.height / 2 },
+        { x: root.x + root.width / 2, y: root.y + 1 },
+      ]) {
+        await navigationTabs.evaluate((element) => {
+          element.scrollLeft = 0
+        })
+        await page.mouse.move(point.x, point.y)
+        await page.mouse.wheel(delta.x, delta.y)
+        await expect
+          .poll(() => navigationTabs.evaluate((element) => element.scrollLeft))
+          .toBeGreaterThan(0)
+      }
+    }
+    assert.equal(
+      await navigationTabs.getByRole('tab', { selected: true }).textContent(),
+      'Document 1.md'
+    )
+  })
+})
+
+test('NavigationTabs reserves overflow gaps for scrolling rather than native window dragging', async () => {
+  await withFixture(async (page) => {
+    const navigationTabs = page.getByTestId('render-navigation-tabs-scroll')
+    await navigationTabs.scrollIntoViewIfNeeded()
+    assert.equal(
+      await navigationTabs.evaluate((element) =>
+        getComputedStyle(element).getPropertyValue('-webkit-app-region')
+      ),
+      'no-drag'
+    )
+    assert.equal(
+      await page
+        .getByTestId('render-navigation-tabs')
+        .evaluate((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
+      'drag'
+    )
+  })
+})
+
 test('NavigationTabs preserves manual horizontal scrolling across parent rerenders', async () => {
   await withFixture(async (page) => {
     const navigationTabs = page.getByTestId('render-navigation-tabs-scroll')
@@ -1242,6 +2333,16 @@ test('NavigationTabs reveals a newly activated tab', async () => {
     })
 
     assert.ok(await navigationTabs.evaluate((element) => element.scrollLeft > 0))
+    await expect
+      .poll(async () => {
+        const viewport = (await navigationTabs.boundingBox())!
+        const foot = (await navigationTabs
+          .getByRole('tab', { selected: true })
+          .locator('[data-slot="navigation-tab-right-foot"]')
+          .boundingBox())!
+        return foot.x + foot.width - viewport.x - viewport.width
+      })
+      .toBeLessThanOrEqual(0.5)
   })
 })
 
@@ -1327,6 +2428,13 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(
       await input.locator('..').getByText('名称', { exact: true }).getAttribute('data-i18n-text'),
       'examples:input.label'
+    )
+    await assert.equal(
+      await input
+        .locator('..')
+        .getByText('名称', { exact: true })
+        .evaluate((element) => getComputedStyle(element).fontSize),
+      '14px'
     )
     await assert.equal(
       await page.locator(`[id="${messageId}"]`).getAttribute('data-i18n-text'),
@@ -2365,7 +3473,7 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
 
     const disabledResizable = page.getByTestId('render-resizable-disabled')
     const disabledResizableHandle = page.getByTestId('render-resizable-disabled-handle')
-    await assert.equal(await disabledResizable.getAttribute('aria-disabled'), 'true')
+    await assert.equal(await disabledResizable.getAttribute('aria-disabled'), null)
     await assert.equal(await disabledResizableHandle.getAttribute('tabindex'), null)
     await disabledResizableHandle.press('ArrowRight')
     await assert.equal(
@@ -2735,9 +3843,13 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
 
     const tooltip = page.getByTestId('render-tooltip')
     const tooltipTrigger = tooltip.getByRole('button', { name: '保存配置' })
-    await assert.equal(await tooltip.getByRole('tooltip').count(), 0)
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '保存当前配置', exact: true }).count(),
+      0
+    )
     await tooltipTrigger.hover()
-    const tooltipContent = tooltip.getByRole('tooltip')
+    const tooltipContent = page.getByRole('tooltip', { name: '保存当前配置', exact: true })
+    await tooltipContent.waitFor({ state: 'visible' })
     await assert.equal(await tooltipContent.textContent(), '保存当前配置')
     await assert.equal(
       await tooltipContent.getAttribute('data-i18n-text'),
@@ -2752,16 +3864,39 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     assert.ok(tooltipContentId, 'Tooltip content should receive a stable id')
     await assert.equal(await tooltipTrigger.getAttribute('aria-describedby'), tooltipContentId)
     await page.mouse.move(0, 0)
-    await assert.equal(await tooltip.getByRole('tooltip').count(), 0)
+    await page
+      .getByRole('tooltip', { name: '保存当前配置', exact: true })
+      .waitFor({ state: 'detached' })
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '保存当前配置', exact: true }).count(),
+      0
+    )
     await assert.equal(await tooltipTrigger.getAttribute('aria-describedby'), null)
 
     const focusTooltip = page.getByTestId('render-tooltip-focus')
     const focusTooltipTrigger = focusTooltip.getByRole('button', { name: '聚焦说明' })
     await focusTooltipTrigger.focus()
-    await assert.equal(await focusTooltip.getByRole('tooltip').textContent(), '聚焦时显示提示')
-    await assert.equal(await focusTooltip.getByRole('tooltip').getAttribute('data-side'), 'right')
+    await page
+      .getByRole('tooltip', { name: '聚焦时显示提示', exact: true })
+      .waitFor({ state: 'visible' })
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '聚焦时显示提示', exact: true }).textContent(),
+      '聚焦时显示提示'
+    )
+    await assert.equal(
+      await page
+        .getByRole('tooltip', { name: '聚焦时显示提示', exact: true })
+        .getAttribute('data-side'),
+      'right'
+    )
     await focusTooltipTrigger.blur()
-    await assert.equal(await focusTooltip.getByRole('tooltip').count(), 0)
+    await page
+      .getByRole('tooltip', { name: '聚焦时显示提示', exact: true })
+      .waitFor({ state: 'detached' })
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '聚焦时显示提示', exact: true }).count(),
+      0
+    )
 
     const controlledTooltip = page.getByTestId('render-tooltip-controlled')
     const controlledTooltipTrigger = controlledTooltip.getByRole('button', { name: '受控说明' })
@@ -2770,6 +3905,9 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       'closed'
     )
     await controlledTooltipTrigger.hover()
+    await page
+      .getByRole('tooltip', { name: '受控提示内容', exact: true })
+      .waitFor({ state: 'visible' })
     await assert.equal(
       await page.getByTestId('render-tooltip-controlled-value').textContent(),
       'open'
@@ -2783,8 +3921,14 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       await page.getByTestId('render-tooltip-controlled-changes').textContent(),
       '1'
     )
-    await assert.equal(await controlledTooltip.getByRole('tooltip').textContent(), '受控提示内容')
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '受控提示内容', exact: true }).textContent(),
+      '受控提示内容'
+    )
     await page.mouse.move(0, 0)
+    await page
+      .getByRole('tooltip', { name: '受控提示内容', exact: true })
+      .waitFor({ state: 'detached' })
     await assert.equal(
       await page.getByTestId('render-tooltip-controlled-value').textContent(),
       'closed'
@@ -2798,7 +3942,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       await page.getByTestId('render-tooltip-controlled-changes').textContent(),
       '2'
     )
-    await assert.equal(await controlledTooltip.getByRole('tooltip').count(), 0)
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '受控提示内容', exact: true }).count(),
+      0
+    )
 
     const customIdTooltip = page.getByTestId('render-tooltip-custom-id')
     const customIdTrigger = customIdTooltip.getByRole('button', { name: '自定义 ID 说明' })
@@ -2807,14 +3954,21 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       'tooltip-existing-help'
     )
     await customIdTrigger.hover()
-    const customIdContent = customIdTooltip.getByRole('tooltip')
+    const customIdContent = page.getByRole('tooltip', { name: '自定义 ID 提示', exact: true })
+    await customIdContent.waitFor({ state: 'visible' })
     await assert.equal(await customIdContent.getAttribute('id'), 'tooltip-custom-content')
     await assert.equal(
       await customIdTrigger.getAttribute('aria-describedby'),
       'tooltip-existing-help tooltip-custom-content'
     )
     await page.mouse.move(0, 0)
-    await assert.equal(await customIdTooltip.getByRole('tooltip').count(), 0)
+    await page
+      .getByRole('tooltip', { name: '自定义 ID 提示', exact: true })
+      .waitFor({ state: 'detached' })
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '自定义 ID 提示', exact: true }).count(),
+      0
+    )
     await assert.equal(
       await customIdTrigger.getAttribute('aria-describedby'),
       'tooltip-existing-help'
@@ -2829,8 +3983,11 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       'tooltip-trigger-wrapper-help'
     )
     await wrapperDescriptionTrigger.hover()
-    const wrapperDescriptionContentId = await wrapperDescriptionTooltip
-      .getByRole('tooltip')
+    await page
+      .getByRole('tooltip', { name: '外层描述提示', exact: true })
+      .waitFor({ state: 'visible' })
+    const wrapperDescriptionContentId = await page
+      .getByRole('tooltip', { name: '外层描述提示', exact: true })
       .getAttribute('id')
     assert.ok(wrapperDescriptionContentId, 'Tooltip content should receive an id')
     await assert.equal(
@@ -2838,16 +3995,26 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       `tooltip-trigger-wrapper-help ${wrapperDescriptionContentId}`
     )
     await page.mouse.move(0, 0)
-    await assert.equal(await wrapperDescriptionTooltip.getByRole('tooltip').count(), 0)
+    await page
+      .getByRole('tooltip', { name: '外层描述提示', exact: true })
+      .waitFor({ state: 'detached' })
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '外层描述提示', exact: true }).count(),
+      0
+    )
     await assert.equal(
       await wrapperDescriptionTrigger.getAttribute('aria-describedby'),
       'tooltip-trigger-wrapper-help'
     )
 
-    const defaultOpenTooltip = page.getByTestId('render-tooltip-default-open')
-    await assert.equal(await defaultOpenTooltip.getByRole('tooltip').textContent(), '默认提示内容')
     await assert.equal(
-      await defaultOpenTooltip.getByRole('tooltip').getAttribute('data-side'),
+      await page.getByRole('tooltip', { name: '默认提示内容', exact: true }).textContent(),
+      '默认提示内容'
+    )
+    await assert.equal(
+      await page
+        .getByRole('tooltip', { name: '默认提示内容', exact: true })
+        .getAttribute('data-side'),
       'left'
     )
 
@@ -2856,7 +4023,9 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       name: '默认自定义 ID',
     })
     await assert.equal(
-      await defaultOpenCustomIdTooltip.getByRole('tooltip').getAttribute('id'),
+      await page
+        .getByRole('tooltip', { name: '默认自定义 ID 提示', exact: true })
+        .getAttribute('id'),
       'tooltip-default-open-custom-content'
     )
     await assert.equal(
@@ -2870,12 +4039,18 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     })
     await uncontrolledEventsTrigger.hover()
     await uncontrolledEventsTrigger.focus()
+    await page
+      .getByRole('tooltip', { name: '非受控事件提示', exact: true })
+      .waitFor({ state: 'visible' })
     await assert.equal(
       await page.getByTestId('render-tooltip-uncontrolled-changes').textContent(),
       '1'
     )
     await page.mouse.move(0, 0)
     await uncontrolledEventsTrigger.blur()
+    await page
+      .getByRole('tooltip', { name: '非受控事件提示', exact: true })
+      .waitFor({ state: 'detached' })
     await assert.equal(
       await page.getByTestId('render-tooltip-uncontrolled-changes').textContent(),
       '2'
@@ -2884,7 +4059,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     const disabledTooltip = page.getByTestId('render-tooltip-disabled')
     const disabledTooltipTrigger = disabledTooltip.getByRole('button', { name: '禁用说明' })
     await disabledTooltipTrigger.hover()
-    await assert.equal(await disabledTooltip.getByRole('tooltip').count(), 0)
+    await assert.equal(
+      await page.getByRole('tooltip', { name: '禁用提示', exact: true }).count(),
+      0
+    )
     await assert.equal(await disabledTooltipTrigger.getAttribute('aria-describedby'), null)
   })
 })
@@ -2901,10 +4079,34 @@ test('floating toolbar renders an opaque accessible action surface', async () =>
   })
 })
 
+test('alert dialog close button is opt-in and cancels with keyboard focus restored', async () => {
+  await withFixture(async (page) => {
+    const confirmation = page.getByRole('alertdialog', { name: '确认操作' })
+    await page.getByTestId('render-alert-open-false').click()
+    await expect(confirmation).toBeVisible()
+    await expect(confirmation.getByRole('button', { name: '取消', exact: true })).toHaveClass(
+      /vds-button--outline/
+    )
+    await expect(confirmation.getByRole('button', { name: '关闭', exact: true })).toHaveCount(0)
+    await confirmation.getByRole('button', { name: '取消', exact: true }).click()
+    const trigger = page.getByTestId('render-alert-open-true')
+    await trigger.click()
+    const close = confirmation.getByRole('button', { name: '关闭', exact: true })
+    await expect(close).toBeVisible()
+    await close.focus()
+    await page.keyboard.press('Enter')
+    await expect(confirmation).not.toBeVisible()
+    await expect(trigger).toBeFocused()
+  })
+})
+
 test('modal dialog contains keyboard focus, dismisses only the nested layer and restores focus', async () => {
   await withFixture(async (page) => {
     const trigger = page.getByTestId('render-dialog-open')
     const outer = page.getByTestId('render-dialog-content')
+    await trigger.click()
+    await expect(outer.getByTestId('render-dialog-cancel')).toHaveClass(/vds-button--outline/)
+    await outer.getByTestId('render-dialog-cancel').click()
     await trigger.click()
     assert.equal(await outer.evaluate((el) => el.contains(document.activeElement)), true)
     for (const key of ['Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab']) {
@@ -2924,6 +4126,40 @@ test('modal dialog contains keyboard focus, dismisses only the nested layer and 
     await page.keyboard.press('Escape')
     await outer.waitFor({ state: 'hidden' })
     assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
+  })
+})
+
+test('modal dialog recovers focus when its focused action becomes disabled and remains dismissible', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('render-dialog-open')
+    const dialog = page.getByTestId('render-dialog-content')
+    await trigger.click()
+    const action = page.getByTestId('dialog-disable-focused-action')
+    await action.click()
+    await expect(action).toBeDisabled()
+    await expect
+      .poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
+      .toBe(true)
+    await page.keyboard.press('Escape')
+    await expect(dialog).not.toBeVisible()
+    await expect(trigger).toBeFocused()
+  })
+})
+
+test('modal dialog recovers focus when its focused action is removed', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('render-dialog-open')
+    const dialog = page.getByTestId('render-dialog-content')
+    await trigger.click()
+    const action = page.getByTestId('dialog-remove-focused-action')
+    await action.click()
+    await expect(action).toHaveCount(0)
+    await expect
+      .poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
+      .toBe(true)
+    await page.keyboard.press('Escape')
+    await expect(dialog).not.toBeVisible()
+    await expect(trigger).toBeFocused()
   })
 })
 
@@ -2974,8 +4210,43 @@ test('popover focuses content after positioning, restores on Escape and permits 
   })
 })
 
+test('Escape on a nested hover trigger closes only its own detail', async () => {
+  await withFixture(async (page) => {
+    await page.getByTestId('focus-popover-trigger').click()
+    await page.getByTestId('nested-hover-trigger').focus()
+    await page.getByTestId('nested-hover-content').waitFor({ state: 'visible' })
+    await page.keyboard.press('Escape')
+    await page.getByTestId('nested-hover-content').waitFor({ state: 'hidden' })
+    assert.equal(await page.getByTestId('focus-popover-content').isVisible(), true)
+  })
+})
+
+test('side hover cards stay outside their whole boundary at wide and narrow widths', async () => {
+  await withFixture(async (page) => {
+    for (const width of [1280, 640]) {
+      await page.setViewportSize({ width, height: 800 })
+      const trigger = page.getByTestId('side-hover-trigger')
+      await trigger.hover()
+      const content = page.getByTestId('side-hover-content')
+      await content.waitFor({ state: 'visible' })
+      await expect(async () => {
+        const boundary = (await page.getByTestId('side-hover-boundary').boundingBox())!
+        const detail = (await content.boundingBox())!
+        assert.ok(detail.x + detail.width <= boundary.x, JSON.stringify({ boundary, detail }))
+        assert.ok(detail.x >= 8)
+      }).toPass()
+      await page.getByTestId('side-hover-action').hover()
+      assert.equal(await content.isVisible(), true)
+      await trigger.focus()
+      await page.keyboard.press('Escape')
+      await content.waitFor({ state: 'hidden' })
+    }
+  })
+})
+
 test('tall floating content stays inside the viewport and exposes its trailing action', async () => {
   await withFixture(async (page) => {
+    await page.getByTestId('focus-popover-outside').scrollIntoViewIfNeeded()
     await page.getByTestId('viewport-hover-card-trigger').hover()
     const content = page.getByTestId('viewport-hover-card-content')
     await content.waitFor({ state: 'visible' })
@@ -3043,6 +4314,29 @@ test('menu keyboard skips disabled items, wraps and dismisses only the focused s
   })
 })
 
+test('menu trapFocus opt-in wraps Tab while ordinary menus remain nonmodal', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('trapped-menu-trigger')
+    await trigger.click()
+    await expect(page.getByTestId('trapped-menu-first')).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await expect(page.getByTestId('trapped-menu-last')).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByTestId('trapped-menu-first')).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(trigger).toBeFocused()
+    await page.getByTestId('focus-menu-trigger').click()
+    await page.getByTestId('focus-menu-last').focus()
+    await page.keyboard.press('Tab')
+    assert.equal(
+      await page
+        .getByTestId('focus-menu')
+        .evaluate((element) => element.contains(document.activeElement)),
+      false
+    )
+  })
+})
+
 test('icon buttons keep square geometry without text-button padding and loading replaces the icon', async () => {
   await withFixture(async (page) => {
     for (const [size, edge, iconEdge] of [
@@ -3076,6 +4370,46 @@ test('icon buttons keep square geometry without text-button padding and loading 
   })
 })
 
+test('default tooltips stay inside all viewport edges and escape clipped panels', async () => {
+  await withFixture(async (page) => {
+    const root = page.getByTestId('render-tooltip')
+    const trigger = root.getByRole('button')
+    const content = page.getByRole('tooltip', { name: '保存当前配置', exact: true })
+    for (const corner of ['top-left', 'top-right', 'bottom-left', 'bottom-right']) {
+      await page.mouse.move(0, 0)
+      await trigger.blur()
+      await root.evaluate((element, corner) => {
+        Object.assign(element.style, {
+          position: 'fixed',
+          left: corner.endsWith('left') ? '0' : 'auto',
+          right: corner.endsWith('right') ? '0' : 'auto',
+          top: corner.startsWith('top') ? '0' : 'auto',
+          bottom: corner.startsWith('bottom') ? '0' : 'auto',
+          overflow: 'hidden',
+        })
+      }, corner)
+      await trigger.focus()
+      await content.waitFor({ state: 'visible' })
+      await expect
+        .poll(async () =>
+          content.evaluate((element) => {
+            const bounds = element.getBoundingClientRect()
+            return (
+              bounds.left >= 0 &&
+              bounds.top >= 0 &&
+              bounds.right <= window.innerWidth &&
+              bounds.bottom <= window.innerHeight &&
+              element.parentElement === document.body
+            )
+          })
+        )
+        .toBe(true)
+      await page.keyboard.press('Escape')
+      await content.waitFor({ state: 'hidden' })
+    }
+  })
+})
+
 test('disabled tooltip forgets previous hover before being enabled again', async () => {
   await withFixture(async (page) => {
     const trigger = page.getByRole('button', { name: '点击禁用提示', exact: true })
@@ -3096,16 +4430,24 @@ test('visible tooltip dismisses on Escape without moving focused trigger', async
     const root = page.getByTestId('render-tooltip')
     const trigger = root.getByRole('button')
     await trigger.focus()
-    await root.getByRole('tooltip').waitFor({ state: 'visible' })
+    await page
+      .getByRole('tooltip', { name: '保存当前配置', exact: true })
+      .waitFor({ state: 'visible' })
     await page.keyboard.press('Escape')
-    await root.getByRole('tooltip').waitFor({ state: 'hidden' })
+    await page
+      .getByRole('tooltip', { name: '保存当前配置', exact: true })
+      .waitFor({ state: 'hidden' })
     assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
     assert.equal(await trigger.getAttribute('aria-describedby'), null)
     await page.mouse.move(0, 0)
     await trigger.hover()
-    await root.getByRole('tooltip').waitFor({ state: 'visible' })
+    await page
+      .getByRole('tooltip', { name: '保存当前配置', exact: true })
+      .waitFor({ state: 'visible' })
     await page.keyboard.press('Escape')
-    await root.getByRole('tooltip').waitFor({ state: 'hidden' })
+    await page
+      .getByRole('tooltip', { name: '保存当前配置', exact: true })
+      .waitFor({ state: 'hidden' })
   })
 })
 
@@ -3116,6 +4458,16 @@ test('composed select opens from keyboard, skips disabled options, selects and r
     await trigger.focus()
     await page.keyboard.press('ArrowDown')
     await list.waitFor({ state: 'visible' })
+    await expect(list.getByRole('option', { name: '第一项', exact: true })).toHaveClass(
+      /vds-select__item--selected/
+    )
+    const selectedBackground = await list
+      .getByRole('option', { name: '第一项', exact: true })
+      .evaluate((element) => {
+        const style = getComputedStyle(element)
+        return style.backgroundColor
+      })
+    assert.equal(selectedBackground, 'rgb(233, 238, 235)')
     assert.equal(
       await list
         .getByRole('option', { name: '第一项', exact: true })
@@ -3145,5 +4497,32 @@ test('composed select opens from keyboard, skips disabled options, selects and r
     await list.waitFor({ state: 'hidden' })
     assert.match(await trigger.innerText(), /最后项/)
     assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
+  })
+})
+
+test('end-aligned select keeps its minimum-width menu inside the viewport', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('keyboard-select')
+    const list = page.getByTestId('keyboard-options')
+    for (const viewportWidth of [1000, 480]) {
+      await page.setViewportSize({ width: viewportWidth, height: 720 })
+      await trigger.evaluate((element) => {
+        Object.assign(element.style, {
+          position: 'fixed',
+          right: '16px',
+          top: '16px',
+          width: '100px',
+          minWidth: '0',
+        })
+      })
+      await trigger.click()
+      await list.waitFor({ state: 'visible' })
+      const triggerBounds = (await trigger.boundingBox())!
+      const listBounds = (await list.boundingBox())!
+      assert.equal(listBounds.x + listBounds.width, triggerBounds.x + triggerBounds.width)
+      assert.ok(listBounds.width >= 128)
+      assert.ok(listBounds.x >= 0 && listBounds.x + listBounds.width <= viewportWidth)
+      await page.keyboard.press('Escape')
+    }
   })
 })

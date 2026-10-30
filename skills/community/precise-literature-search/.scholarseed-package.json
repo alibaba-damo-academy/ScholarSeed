@@ -16,15 +16,21 @@
   "files": [
     {
       "mode": 420,
+      "path": ".scholarseed-package.json",
+      "sha256": "dc48b89a3db0da5c3aa7999a57651e13a3e998277dfd3ea15248d8d436112d58",
+      "size": 17225
+    },
+    {
+      "mode": 420,
       "path": "SKILL.md",
-      "sha256": "c6862c798b2c026ae222e220a311861ad6f4eef7a8052c558befad947036fac6",
-      "size": 26756
+      "sha256": "0f3025f38ba36f6ef3a05ec53c083c3db88e6d4850b01175fdaa5090841f95fc",
+      "size": 30749
     },
     {
       "mode": 420,
       "path": "agents/openai.yaml",
-      "sha256": "6a2779b2b923cd47cae122ea7262f939c3a865cb547c328fd1904f060d2db09a",
-      "size": 313
+      "sha256": "dc72dfc3c8ab3e0051a87e19f01f38188745b5799232c7f80250e15bbd11d9ab",
+      "size": 306
     },
     {
       "mode": 420,
@@ -47,8 +53,8 @@
     {
       "mode": 420,
       "path": "config/paid-download.env",
-      "sha256": "c8bf2f2d59c0124511a710f3273c170f99164183b8a56c9f10044c232a88eabe",
-      "size": 2646
+      "sha256": "abb94904c86b57e984a3b567ede1535c1107833502c4b415c06755e30ca70239",
+      "size": 2744
     },
     {
       "mode": 420,
@@ -101,14 +107,14 @@
     {
       "mode": 420,
       "path": "modules/paid-download/MODULE.md",
-      "sha256": "f33233619d9da5d19ee49bfb184942ea1f579c4fdec28e01d463f978aac099f7",
-      "size": 6610
+      "sha256": "054606c2124190749d2cd48e32af343199b7450463a6184d2c5878c909b6de73",
+      "size": 6778
     },
     {
       "mode": 420,
       "path": "modules/paid-download/adapter.py",
-      "sha256": "32c82e72b5f3d2c75c2ac6b4e65cc2db1e177462dae4be3cecff1a68a7a59d04",
-      "size": 64185
+      "sha256": "bc6607379339b2e191f0eaaa487bfdbba1c5e874d6431aa09018de07896fcaee",
+      "size": 63397
     },
     {
       "mode": 420,
@@ -305,14 +311,14 @@
     {
       "mode": 420,
       "path": "references/download-runtime-maintenance.md",
-      "sha256": "c01e44b2a8748ff86d7125487c6bc35bbb4baf592aaa2330008f31f267f35ff2",
-      "size": 8091
+      "sha256": "d16be580d82f5d29930ae9e24c571624c95a7cb4f7a77934c60c9ac45fdc03b9",
+      "size": 8273
     },
     {
       "mode": 420,
       "path": "references/integration-contracts.md",
-      "sha256": "3e43e8659f362a51ca0d8ac51947369534b231e99fb5a3d62bded5097c6c03df",
-      "size": 11262
+      "sha256": "1cf6ea8462b5babf25e21169dd938d1620a23c723fefe941177a66a9dae89a87",
+      "size": 11824
     },
     {
       "mode": 420,
@@ -413,8 +419,8 @@
     {
       "mode": 420,
       "path": "references/workflow.md",
-      "sha256": "d2634836ab7f3c8fef8634db44d74d3f4d8622195da5f5c2c5216de8df5aacad",
-      "size": 14632
+      "sha256": "569111422b81e535d04f3b3315dd1c9e6e14d54aab2c6001c345794ab0d7cd97",
+      "size": 14711
     },
     {
       "mode": 420,
@@ -431,8 +437,8 @@
     {
       "mode": 493,
       "path": "scripts/browser_pool.py",
-      "sha256": "870f18c35f3ffbfb319e99223d3de3f8501aedd51ae8560219c93a187a45560c",
-      "size": 31275
+      "sha256": "bf9b6f98f14b98ec2c04bdeb51e6ac1f71f1502e0194efc41a4ba0918e9b1ace",
+      "size": 31340
     },
     {
       "mode": 493,
@@ -509,8 +515,8 @@
     {
       "mode": 493,
       "path": "scripts/stage.py",
-      "sha256": "7dd65a18ee8b47f8f818679231df17dabc9278e3dd72a2cff0b20b7733a5bc69",
-      "size": 33111
+      "sha256": "55d13dc0251419ceebb3da20fd1435e460115a2fef8936dc77eef2ad76070ad8",
+      "size": 35700
     },
     {
       "mode": 493,
@@ -566,6 +572,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "c6862c798b2c026ae222e220a311861ad6f4eef7a8052c558befad947036fac6",
-  "version": "1.0.18"
+  "source_document_sha256": "0f3025f38ba36f6ef3a05ec53c083c3db88e6d4850b01175fdaa5090841f95fc",
+  "version": "1.0.27"
 }

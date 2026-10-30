@@ -3,19 +3,18 @@
 serve 侧承接反馈上报, 而不是让 renderer 直连 Damoclaw: 日志包只在这台机器上,
 renderer 读不到 `~/.scholarseed/logs/`。
 
-身份**不由这一侧上报**: serve 转发替登录用户备好的书深 ssk- API key, 由 Damoclaw 自己
-交给账号服务的机器面 (GET /api/v1/user) 换回 user_id。serve 报一个"我已经验过了"的
-user_id 在那一跳上不作数 —— 谁都能发同样的表单字段。转发 API key 而不是用户 JWT: 后者
-是全权限凭据, 一个只需要「这是谁」的服务不该拿到。机器面也刻意不返回手机号 (PII)。
+身份**不由这一侧自报**: serve 转发替登录用户备好的书深 ssk- API key，不发送
+user_id 表单字段或用户 JWT。预期由 Damoclaw 用该 key 向账号服务核验归属；
+上游实际身份处理仍需按当前部署独立核验。
 
-对接契约 (Damoclaw-Server/.ai/04.api/Damoclaw-Server接口文档.md §4.1):
+当前发送侧请求形态（上游部署契约需独立核验）:
     POST {damoclaw}/api/v1/feedback/submit   multipart/form-data
-        Authorization: Bearer <ssk- API key>   (可选, 决定这条反馈是否有归属)
+        Authorization: Bearer <ssk- API key>   (仅在本侧取得 key 时发送)
         description / email / client_version /
         client_platform / client_arch / images[] / logs_bundle
       → { ok, id }
-不要求登录: 不带 key 也会收下, 只是落成匿名。服务端按 IP 限频 10 次/小时
-(超限 429 原样透出给用户)。
+本侧无 key 时仍发送请求；是否接受、如何归属及限频值取决于上游当前部署。
+上游返回 429 时本侧向 Desktop 透传该状态码。
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
@@ -37,8 +37,15 @@ import httpx
 from damoatrace.data.store import TraceStore
 from damoatrace.paths import APP_LOG_DIR, METRICS_DIR, TRACE_DIR
 from scholarseed_runtime.contract.session import RuntimeExecutionThread
-from service.chat.runtime.evidence import TRACE_RUNTIME_INCIDENT_PREFIX, session_trace_paths
+from service.chat.runtime.evidence import (
+    TRACE_RUNTIME_BOUND,
+    TRACE_RUNTIME_INCIDENT_PREFIX,
+    session_trace_paths,
+)
+from service.chat.service.sandbox import collect_sandbox_diagnostics
 from service.chat.service.streams import DIAGNOSTIC_EVENT, StreamEnd
+from service.chat.service.update import BUDGET as UPDATE_DIAGNOSTICS_BUDGET
+from service.chat.service.update import collect_update_diagnostics
 from service.paths import (
     CODEX_RUNTIME_HOME,
     CONFIG_PATH,
@@ -131,31 +138,51 @@ WINDOW_LOG_LABEL = "window"
 # persistUpdateLog): Authenticode 的 STATUS/SUBJECT/LANGMODE、逐步计时、安装失败分类。
 # 自更新被拦截时, 这是唯一能区分失败类别的证据; 不收它, 这类工单在线上永远无法定论。
 UPDATE_LOG: Path = LOGS_DIR / "update.log"
-UPDATE_LOG_LABEL = "update"
-# NSIS 只保留本轮最后相位及上一轮；两份一起收集才能关联更新失败与重试。
-INSTALL_LOG: Path = LOGS_DIR / "install.log"
-INSTALL_PREV_LOG: Path = LOGS_DIR / "install-prev.log"
-INSTALL_LOG_LABEL = "install"
+# collect_update_diagnostics owns this file and its installer/component siblings.
+# Never add those sources to the raw log loop: duplicate ZIP entries bypass its
+# redaction, no-follow checks and independent diagnostic budget.
 # trace 索引是可重建的旁路 sqlite, 打进去只是白占额度。
 BUNDLE_EXCLUDED_SUFFIXES = (".sqlite3", ".sqlite3-wal", ".sqlite3-shm")
 
-# 对话面: 只收**用户当前点开的那个会话**的两份记录, 按 id 精确寻址:
-#   logs/trace/scholarseed-codex-<session_id>.jsonl        —— 本侧落的 LLM trace
-#   codex/sessions/**/rollout-*-<vendor_thread_id>.jsonl —— Codex 自己的会话流水
 CODEX_SESSIONS_DIR: Path = CODEX_RUNTIME_HOME / "sessions"
 CONVERSATION_LABEL = "conversation"
 ROLLOUT_GLOB = "rollout-*.jsonl"
+SOURCE_BASELINE_ENV = "SCHOLARSEED_SOURCE_BASELINE"
+SOURCE_BASELINE_ARCNAME = "feedback/source-baseline.json"
+SOURCE_BASELINE_MAX_BYTES = 64 * 1024
 THREAD_TREE_ARCNAME = f"{CONVERSATION_LABEL}/thread-tree.json"
 SUBAGENT_LABEL = f"{CONVERSATION_LABEL}/subagents"
 THREAD_TREE_SCHEMA_VERSION = 1
 THREAD_TREE_MANIFEST_RESERVE = 128 * 1024
 THREAD_ROLLOUT_HEADER_RESERVE = 1024
 MAX_FEEDBACK_EXECUTION_THREADS = 256
+FEEDBACK_RUNTIME_ID = "codex"
+
+
+class ThreadEvidenceStatus(str, Enum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
+    LIMIT_EXCEEDED = "thread_limit_exceeded"
+    INCLUDED = "included"
+    TRUNCATED = "truncated"
+    MISSING = "missing"
+    AMBIGUOUS = "ambiguous"
+    UNREADABLE = "unreadable"
+    BUDGET_EXCLUDED = "budget_excluded"
+
+
+@dataclass(frozen=True)
+class FeedbackThreadHistory:
+    thread_ids: tuple[str, ...] = ()
+    discovery_status: str = ThreadEvidenceStatus.UNAVAILABLE.value
+
+
 # 绝不入包的东西 (即使将来有人把 codex/ 整目录加进来, 这道门也要拦住):
 #   codex/auth.json        —— 存的是 OPENAI_API_KEY 明文, 上传等于泄凭据
 #   codex/shell_snapshots/ —— shell 环境快照, 本就是一堆 export, 带着 token
 BUNDLE_FORBIDDEN_NAMES = ("auth.json", "credentials.json", ".env")
-BUNDLE_FORBIDDEN_DIRNAMES = ("shell_snapshots",)
+BUNDLE_FORBIDDEN_DIRNAMES = ("shell_snapshots", ".sandbox-secrets")
 
 # 逐块写入的块大小。预算必须在**写的过程中**判, 不能只在追加前判:
 # archive.write() 一口气写整个文件, 管不住正在写那一份的体积。
@@ -196,6 +223,7 @@ class FeedbackSubmission:
     vendor_thread_id: str = ""
     execution_threads: tuple[RuntimeExecutionThread, ...] = ()
     execution_tree_status: str = "unavailable"
+    thread_history: FeedbackThreadHistory | None = None
     images: Sequence[FeedbackImage] = field(default_factory=tuple)
     recording_report: bytes = b""
     renderer_diagnostics: bytes = b""
@@ -330,54 +358,72 @@ def _is_forbidden(path: Path) -> bool:
     return any(part in BUNDLE_FORBIDDEN_DIRNAMES for part in path.parts)
 
 
-def session_conversation_files(session_id: str, vendor_thread_id: str) -> list[tuple[str, Path]]:
-    """Resolve exactly the active session's conversation records.
+def session_thread_history(session_id: str, vendor_thread_id: str) -> FeedbackThreadHistory:
+    """Recover native roots only from the authorized product session's binding evidence."""
 
-    按 id 精确寻址, 不用「最近修改」之类的启发式: 反馈讲的是用户此刻点开的那个
-    会话, 捎带别的会话既没有诊断价值, 又是白送出去的隐私。两个 id 都缺失时返回空
-    列表 —— “无会话就不打包”是确定行为, 不是退而收全部。
-    """
-
-    found: list[tuple[str, Path]] = []
-    if session_id:
-        # 文件名直接编码了 product session_id (见 service/chat/service/trace.py),
-        # 所以无需查表就能命中唯一一份。
-        for trace in session_trace_paths(session_id, TRACE_DIR):
-            found.append((f"{CONVERSATION_LABEL}/{trace.name}", trace))
-    if vendor_thread_id:
+    thread_ids = dict.fromkeys((vendor_thread_id,) if vendor_thread_id else ())
+    paths = session_trace_paths(session_id, TRACE_DIR)
+    status = ThreadEvidenceStatus.UNAVAILABLE.value
+    for path in paths:
         try:
-            for path in CODEX_SESSIONS_DIR.rglob(ROLLOUT_GLOB):
+            store = TraceStore(path.parent, trace_file=path, offline=True)
+            records = store.session_events(session_id)
+            skipped = store.completeness(session_id).get("skipped_records", 0)
+            if skipped:
+                status = ThreadEvidenceStatus.PARTIAL.value
+            for record in records:
+                attributes = record.get("attributes")
                 if (
-                    path.name.endswith(f"-{vendor_thread_id}.jsonl")
-                    and path.is_file()
-                    and not path.is_symlink()
+                    record.get("session_id") != session_id
+                    or record.get("name") != TRACE_RUNTIME_BOUND
+                    or not isinstance(attributes, dict)
+                    or attributes.get("runtime_id") != FEEDBACK_RUNTIME_ID
                 ):
-                    found.append((f"{CONVERSATION_LABEL}/{path.name}", path))
-        except OSError:
-            logger.debug("feedback bundle could not scan %s", CODEX_SESSIONS_DIR)
-    return [(arc, path) for arc, path in found if not _is_forbidden(path)]
+                    continue
+                thread_id = attributes.get("vendor_thread_id")
+                try:
+                    if not isinstance(thread_id, str):
+                        raise ValueError("invalid native thread identity")
+                    uuid.UUID(thread_id)
+                except ValueError:
+                    status = ThreadEvidenceStatus.PARTIAL.value
+                    continue
+                if status == ThreadEvidenceStatus.UNAVAILABLE.value:
+                    status = ThreadEvidenceStatus.COMPLETE.value
+                if (
+                    thread_id not in thread_ids
+                    and len(thread_ids) >= MAX_FEEDBACK_EXECUTION_THREADS
+                ):
+                    return FeedbackThreadHistory(
+                        tuple(thread_ids), ThreadEvidenceStatus.LIMIT_EXCEEDED.value
+                    )
+                thread_ids[thread_id] = None
+        except (OSError, ValueError):
+            status = ThreadEvidenceStatus.PARTIAL.value
+    return FeedbackThreadHistory(tuple(thread_ids), status)
 
 
-def _subagent_rollout(thread_id: str) -> Path | None:
+def _rollout_paths(thread_ids: tuple[str, ...]) -> dict[str, list[Path]]:
+    matches: dict[str, list[Path]] = {
+        thread_id: []
+        for thread_id in thread_ids
+        if thread_id and all(character.isalnum() or character in "-_" for character in thread_id)
+    }
     try:
-        uuid.UUID(thread_id)
         root = CODEX_SESSIONS_DIR.resolve(strict=True)
-    except (ValueError, OSError):
-        return None
-    matches: list[Path] = []
-    try:
         for path in CODEX_SESSIONS_DIR.rglob(ROLLOUT_GLOB):
             if (
-                path.name.endswith(f"-{thread_id}.jsonl")
-                and path.is_file()
+                path.is_file()
                 and not path.is_symlink()
                 and path.resolve().is_relative_to(root)
                 and not _is_forbidden(path)
             ):
-                matches.append(path)
+                for thread_id, candidates in matches.items():
+                    if path.name.endswith(f"-{thread_id}.jsonl"):
+                        candidates.append(path)
     except OSError:
-        return None
-    return matches[0] if len(matches) == 1 else None
+        logger.debug("feedback bundle could not scan %s", CODEX_SESSIONS_DIR)
+    return matches
 
 
 def _complete_jsonl_tail(path: Path) -> tuple[bytes, bool]:
@@ -395,6 +441,51 @@ def _complete_jsonl_tail(path: Path) -> tuple[bytes, bool]:
         contents = contents[: last_line + 1] if last_line >= 0 else b""
         clipped = True
     return contents, clipped
+
+
+def _append_rollout(
+    archive: zipfile.ZipFile,
+    buffer: io.BytesIO,
+    budget: int,
+    thread_id: str,
+    paths: list[Path],
+    label: str,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "thread_id": thread_id,
+        "status": ThreadEvidenceStatus.MISSING.value,
+        "path": None,
+    }
+    if len(paths) > 1:
+        entry["status"] = ThreadEvidenceStatus.AMBIGUOUS.value
+        return entry
+    if not paths:
+        return entry
+    try:
+        contents, truncated = _complete_jsonl_tail(paths[0])
+    except OSError:
+        entry["status"] = ThreadEvidenceStatus.UNREADABLE.value
+        return entry
+    if not contents:
+        entry["status"] = ThreadEvidenceStatus.UNREADABLE.value
+        return entry
+    remaining = budget - THREAD_TREE_MANIFEST_RESERVE - BUNDLE_BUDGET_RESERVE - buffer.tell()
+    arcname = f"{label}/{paths[0].name}"
+    if len(contents) + THREAD_ROLLOUT_HEADER_RESERVE > remaining or not _append_bytes_bounded(
+        archive, contents, arcname, buffer, budget - THREAD_TREE_MANIFEST_RESERVE
+    ):
+        entry["status"] = ThreadEvidenceStatus.BUDGET_EXCLUDED.value
+        return entry
+    entry.update(
+        status=(
+            ThreadEvidenceStatus.TRUNCATED.value
+            if truncated
+            else ThreadEvidenceStatus.INCLUDED.value
+        ),
+        path=arcname,
+        bytes=len(contents),
+    )
+    return entry
 
 
 def _collect_files(root: Path) -> list[Path]:
@@ -422,6 +513,7 @@ def build_log_bundle(
     vendor_thread_id: str = "",
     execution_threads: tuple[RuntimeExecutionThread, ...] = (),
     execution_tree_status: str = "unavailable",
+    thread_history: FeedbackThreadHistory | None = None,
     recording_report: bytes = b"",
     renderer_diagnostics: bytes = b"",
     include_diagnostics: bool = True,
@@ -435,6 +527,7 @@ def build_log_bundle(
         vendor_thread_id=vendor_thread_id,
         execution_threads=execution_threads,
         execution_tree_status=execution_tree_status,
+        thread_history=thread_history,
         recording_report=recording_report,
         renderer_diagnostics=renderer_diagnostics,
         include_diagnostics=include_diagnostics,
@@ -565,6 +658,7 @@ def _build_log_bundle_contents(
     vendor_thread_id: str = "",
     execution_threads: tuple[RuntimeExecutionThread, ...] = (),
     execution_tree_status: str = "unavailable",
+    thread_history: FeedbackThreadHistory | None = None,
     recording_report: bytes = b"",
     renderer_diagnostics: bytes = b"",
     include_diagnostics: bool = True,
@@ -593,6 +687,33 @@ def _build_log_bundle_contents(
     buffer = io.BytesIO()
     archive = zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED)
     try:
+        if include_diagnostics:
+            source = os.environ.get(SOURCE_BASELINE_ENV, "")
+            if source and len(source.encode("utf-8")) <= SOURCE_BASELINE_MAX_BYTES:
+                try:
+                    identity = json.loads(source)
+                except ValueError:
+                    identity = None
+                if (
+                    isinstance(identity, dict)
+                    and identity.get("runtime_kind") == "local_dev"
+                    and identity.get("schema_version") == 1
+                ):
+                    contents = json.dumps(identity, ensure_ascii=False).encode("utf-8")
+                    if not _append_bytes_bounded(
+                        archive, contents, SOURCE_BASELINE_ARCNAME, buffer, budget
+                    ):
+                        return _finish(archive, buffer)
+        if include_diagnostics:
+            for arcname, contents in collect_sandbox_diagnostics(CODEX_RUNTIME_HOME, budget // 4):
+                if not _append_bytes_bounded(archive, contents, arcname, buffer, budget):
+                    return _finish(archive, buffer)
+        if include_diagnostics:
+            for arcname, contents in collect_update_diagnostics(
+                UPDATE_LOG, min(budget // 4, UPDATE_DIAGNOSTICS_BUDGET)
+            ):
+                if not _append_bytes_bounded(archive, contents, arcname, buffer, budget):
+                    return _finish(archive, buffer)
         if recording_report:
             if not _append_bytes_bounded(
                 archive,
@@ -613,59 +734,54 @@ def _build_log_bundle_contents(
                 return _finish(archive, buffer)
         conversation_exhausted = False
         if include_trace:
-            for arcname, path in session_conversation_files(session_id, vendor_thread_id):
+            for path in session_trace_paths(session_id, TRACE_DIR):
+                arcname = f"{CONVERSATION_LABEL}/{path.name}"
                 if not _append_bounded(
                     archive, path, arcname, buffer, budget - THREAD_TREE_MANIFEST_RESERVE
                 ):
                     conversation_exhausted = True
                     break
-            if session_id and vendor_thread_id:
+            history = thread_history or session_thread_history(session_id, vendor_thread_id)
+            if session_id and history.thread_ids:
+                roots = tuple(dict.fromkeys(history.thread_ids))[:MAX_FEEDBACK_EXECUTION_THREADS]
+                nodes = tuple(
+                    {
+                        node.thread_id: node
+                        for node in execution_threads
+                        if node.thread_id not in roots
+                    }.values()
+                )[:MAX_FEEDBACK_EXECUTION_THREADS]
+                paths = _rollout_paths((*roots, *(node.thread_id for node in nodes)))
+                root_records = [
+                    _append_rollout(
+                        archive,
+                        buffer,
+                        budget,
+                        thread_id,
+                        paths.get(thread_id, []),
+                        CONVERSATION_LABEL,
+                    )
+                    for thread_id in roots
+                ]
                 records: list[dict[str, Any]] = []
-                for node in execution_threads:
-                    entry: dict[str, Any] = {
-                        "thread_id": node.thread_id,
-                        "parent_thread_id": node.parent_thread_id,
-                        "status": "missing",
-                        "path": None,
-                    }
-                    if not conversation_exhausted:
-                        rollout_path = _subagent_rollout(node.thread_id)
-                        if rollout_path is not None:
-                            try:
-                                contents, truncated = _complete_jsonl_tail(rollout_path)
-                            except OSError:
-                                contents, truncated = b"", False
-                            if contents:
-                                arcname = f"{SUBAGENT_LABEL}/{node.thread_id}/{rollout_path.name}"
-                                remaining = (
-                                    budget
-                                    - THREAD_TREE_MANIFEST_RESERVE
-                                    - BUNDLE_BUDGET_RESERVE
-                                    - buffer.tell()
-                                )
-                                if len(contents) + THREAD_ROLLOUT_HEADER_RESERVE <= remaining:
-                                    if _append_bytes_bounded(
-                                        archive,
-                                        contents,
-                                        arcname,
-                                        buffer,
-                                        budget - THREAD_TREE_MANIFEST_RESERVE,
-                                    ):
-                                        entry["status"] = "truncated" if truncated else "included"
-                                        entry["path"] = arcname
-                                        entry["bytes"] = len(contents)
-                                    else:
-                                        entry["status"] = "budget_excluded"
-                                else:
-                                    entry["status"] = "budget_excluded"
-                    else:
-                        entry["status"] = "budget_excluded"
+                for node in nodes:
+                    entry = _append_rollout(
+                        archive,
+                        buffer,
+                        budget,
+                        node.thread_id,
+                        paths.get(node.thread_id, []),
+                        f"{SUBAGENT_LABEL}/{node.thread_id}",
+                    )
+                    entry["parent_thread_id"] = node.parent_thread_id
                     records.append(entry)
                 manifest = json.dumps(
                     {
                         "schema_version": THREAD_TREE_SCHEMA_VERSION,
                         "session_id": session_id,
                         "root_thread_id": vendor_thread_id,
+                        "history_discovery_status": history.discovery_status,
+                        "root_threads": root_records,
                         "discovery_status": execution_tree_status,
                         "threads": records,
                     },
@@ -685,9 +801,6 @@ def _build_log_bundle_contents(
                     )
         if include_diagnostics and not conversation_exhausted:
             for label, single in (
-                (INSTALL_LOG_LABEL, INSTALL_LOG),
-                (INSTALL_LOG_LABEL, INSTALL_PREV_LOG),
-                (UPDATE_LOG_LABEL, UPDATE_LOG),
                 (WINDOW_LOG_LABEL, WINDOW_LOG),
                 (BACKEND_LOG_LABEL, BACKEND_LOG),
                 (SYSTEM_LOG_LABEL, SYSTEM_LOG),
@@ -858,16 +971,7 @@ class FeedbackService:
         ]
         bundle = b""
         if submission.include_logs or recording_report or renderer_diagnostics:
-            bundle = self._bundle_builder(
-                include_trace=submission.include_trace,
-                session_id=submission.session_id,
-                vendor_thread_id=submission.vendor_thread_id,
-                execution_threads=submission.execution_threads,
-                execution_tree_status=submission.execution_tree_status,
-                recording_report=recording_report,
-                renderer_diagnostics=renderer_diagnostics,
-                include_diagnostics=submission.include_logs,
-            )
+            bundle = self.build_bundle(submission)
             if bundle:
                 data["attach_logs"] = "true"
                 name = bundle_filename(platform_name=platform_name, version=version)
@@ -903,6 +1007,19 @@ class FeedbackService:
             feedback_id=str(payload.get("id", "") or ""),
             status_code=response.status_code,
             bundle_bytes=len(bundle),
+        )
+
+    def build_bundle(self, submission: FeedbackSubmission) -> bytes:
+        return self._bundle_builder(
+            include_trace=submission.include_trace and submission.include_logs,
+            session_id=submission.session_id,
+            vendor_thread_id=submission.vendor_thread_id,
+            execution_threads=submission.execution_threads,
+            execution_tree_status=submission.execution_tree_status,
+            thread_history=submission.thread_history,
+            recording_report=submission.recording_report,
+            renderer_diagnostics=submission.renderer_diagnostics,
+            include_diagnostics=submission.include_logs,
         )
 
     def close(self) -> None:
@@ -946,5 +1063,4 @@ __all__ = [
     "build_log_bundle",
     "bundle_filename",
     "resolve_base_url",
-    "session_conversation_files",
 ]

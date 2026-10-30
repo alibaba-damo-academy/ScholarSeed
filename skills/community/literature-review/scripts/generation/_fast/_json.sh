@@ -26,7 +26,7 @@
 json_len() {
   # $1 = file, $2 = top-level key holding an array. Prints its length, or 0.
   # Replaces: jq -r '((.KEY // []) | length)'
-  scholarseed-skill-python -c '
+  python -c '
 import json, sys
 try:
     value = json.load(open(sys.argv[1], encoding="utf-8")).get(sys.argv[2])
@@ -41,7 +41,7 @@ json_get() {
   # string, or "" when anything along the path is missing. Non-scalars come out
   # as compact JSON.
   # Replaces: jq -r '.KEY' / jq -r '.A.B // ""'
-  scholarseed-skill-python -c '
+  python -c '
 import json, sys
 try:
     current = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -64,7 +64,7 @@ json_ids() {
   # invalid[] entries, which are {section_id, error} pairs). Prints a compact
   # JSON array — the form a failing stage puts in its handshake so the main
   # agent can re-delegate exactly the items that failed.
-  scholarseed-skill-python -c '
+  python -c '
 import json, sys
 field = sys.argv[3] if len(sys.argv) > 3 else ""
 try:
@@ -91,7 +91,7 @@ json_pick() {
   # CAUTION: if one of the picked keys is "status", the line is itself a valid
   # handshake as far as the driver's backwards scan is concerned. Only ever log
   # such a line BEFORE the stage's own emit_status call.
-  scholarseed-skill-python -c '
+  python -c '
 import json, sys
 try:
     data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -106,7 +106,7 @@ print(json.dumps({key: data.get(key) for key in sys.argv[2:]}, ensure_ascii=Fals
 json_dump() {
   # $1 = file. Pretty-prints it for a stderr dump on a failure path.
   # Replaces: jq . FILE
-  scholarseed-skill-python -c '
+  python -c '
 import json, sys
 try:
     print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8")),
@@ -130,7 +130,7 @@ emit_status() {
   #
   # Kept flat on purpose: the driver's extractor matches at most one level of
   # brace nesting.
-  scholarseed-skill-python -c '
+  python -c '
 import json, sys
 out = {"stage": sys.argv[1], "status": sys.argv[2], "status_reason": sys.argv[3]}
 for pair in sys.argv[4:]:

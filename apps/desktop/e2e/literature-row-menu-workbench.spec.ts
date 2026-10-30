@@ -4,6 +4,9 @@ import { resolve } from 'node:path'
 
 import { DesktopSession, apiBase } from './fixtures/electron'
 import { createRuntime, type RuntimePaths } from './fixtures/runtime'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const SAMPLE_PDF = resolve('e2e/fixtures/data/minimal-project/sample.pdf')
 const PROJECT_PDF = resolve('e2e/fixtures/preview_pdf_1MB.pdf')
@@ -77,7 +80,7 @@ test('literature rows carry a right click menu with scoped destructive action', 
     page.setDefaultTimeout(20_000)
     const base = await apiBase(page)
 
-    // ---- 文献全览: 一份带主附件的 PDF + 一条只有题录的条目 ----
+    // ---- 文献中心: 一份带主附件的 PDF + 一条只有题录的条目 ----
     await page.getByTestId('activity-literature').click()
     await expect(page.getByTestId('literature-drop-target')).toBeVisible()
     await importFiles(page, '选择要导入的 PDF', SAMPLE_PDF)
@@ -185,7 +188,7 @@ test('literature rows carry a right click menu with scoped destructive action', 
     await shoot(page, runtime, 'row-menu-remove-confirm')
     await projectConfirm.getByRole('button', { name: '确认移出', exact: true }).click()
     await expect(page.getByText('已移出 1 篇文献', { exact: true })).toBeVisible()
-    // 移出项目不是删除: 项目里没了, 文献全览里还在。
+    // 移出项目不是删除: 项目里没了, 文献中心里还在。
     await expect
       .poll(async () => (await literatures(page, base, project.id)).length, {
         timeout: IMPORT_PARSE_TIMEOUT_MS

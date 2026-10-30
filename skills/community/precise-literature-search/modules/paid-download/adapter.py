@@ -45,8 +45,9 @@ from io_utils import (  # noqa: E402
 )
 from platform_support import executable_command, venv_executable
 from post_open_gate import paid_pending, paper_arxiv_id  # noqa: E402
-from process_control import ChildProcessCancelled, run_cancellable  # noqa: E402
+from process_control import ChildProcessCancelled  # noqa: E402
 from progress import update_progress  # noqa: E402
+from stage_guard import require_download  # noqa: E402
 from browser_pool import (  # noqa: E402
     BrowserPool, abandon, cancellation_signals, run_lock, validate_config,
 )
@@ -333,10 +334,8 @@ def _optional_file_env(name: str) -> Path | None:
     if not value:
         return None
     path = Path(value).expanduser().resolve()
-    if not path.is_file() and name != "PAPER_DL_PROFILE":
+    if not path.is_file():
         raise ValueError(f"{name} does not name a file: {path}")
-    if name == "PAPER_DL_PROFILE" and not path.exists():
-        raise ValueError(f"{name} does not exist: {path}")
     return path
 
 
@@ -476,17 +475,13 @@ def build_external_command(
             raise ValueError("desktop-first Zotero mode requires an adapter-generated config")
     else:
         raise ValueError(f"unsupported Zotero mode: {zotero_mode}")
+    if not endpoint:
+        raise ValueError("paper-dl/non-arXiv download requires a browser-pool CDP endpoint")
+    command.extend(["--connect-cdp", endpoint, "--no-headless", "--keep-open"])
     if mode == "autodev":
-        command.extend(["--autodev", "--headless"])
-    else:
-        if not endpoint:
-            raise ValueError("interactive paper-dl/non-arXiv download requires a CDP endpoint")
-        command.extend(["--connect-cdp", endpoint, "--no-headless", "--keep-open"])
+        command.append("--autodev")
     if config:
         command.extend(["--config", str(config)])
-    profile = _optional_file_env("PAPER_DL_PROFILE") if mode == "autodev" else None
-    if profile and mode == "autodev":
-        command.extend(["--profile", str(profile)])
     email = os.getenv("PAPER_DL_EMAIL")
     if email:
         command.extend(["--email", email])
@@ -829,7 +824,7 @@ def make_manifest(
             "name": "paper-dl",
             "mode": mode,
             "autodev": mode == "autodev",
-            "cdp": mode == "interactive",
+            "cdp": True,
             "zotero_mode": zotero_mode,
         },
     }
@@ -842,13 +837,11 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
     lease = None
     paused = False
     try:
-        from stage_guard import require_download
         require_download(run_dir, args.input, "paid-download")
         mode = paid_download_mode()
         zotero_mode = paid_download_zotero_mode(mode)
         endpoint = None
-        if mode == "interactive":
-            validate_config()
+        validate_config()
         selection_path = require_under_run(run_dir, args.input, "selection input")
         output_path = require_under_run(run_dir, args.output, "paid output")
         selection = read_json(selection_path)
@@ -996,23 +989,22 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
             report_dir = attempt_root / "output"
             identifiers_path = attempt_root / "input.txt"
             ensure_paper_dl_paths_fit_budget(storage_dir, attempt_root)
-            if mode == "interactive":
-                last_wait_notice = [0.0]
-                def waiting_for_slot():
-                    if time.monotonic() - last_wait_notice[0] >= 10:
-                        update_progress(
-                            run_dir, stage="download", status="running",
-                            activity="Waiting for an available non-arXiv browser slot",
-                            needs_user_action=False,
-                            emit=lambda message: print(message, flush=True),
-                        )
-                        last_wait_notice[0] = time.monotonic()
-                lease = BrowserPool().acquire(run_dir, on_wait=waiting_for_slot)
-                startup_timeout = float(os.getenv("PAPER_DL_CDP_STARTUP_TIMEOUT", "15"))
-                if not math.isfinite(startup_timeout) or startup_timeout <= 0:
-                    raise ValueError("PAPER_DL_CDP_STARTUP_TIMEOUT must be a positive number")
-                lease.ensure_browser(timeout=startup_timeout)
-                endpoint = lease.endpoint
+            last_wait_notice = [0.0]
+            def waiting_for_slot():
+                if time.monotonic() - last_wait_notice[0] >= 10:
+                    update_progress(
+                        run_dir, stage="download", status="running",
+                        activity="Waiting for an available non-arXiv browser slot",
+                        needs_user_action=False,
+                        emit=lambda message: print(message, flush=True),
+                    )
+                    last_wait_notice[0] = time.monotonic()
+            lease = BrowserPool().acquire(run_dir, on_wait=waiting_for_slot)
+            startup_timeout = float(os.getenv("PAPER_DL_CDP_STARTUP_TIMEOUT", "15"))
+            if not math.isfinite(startup_timeout) or startup_timeout <= 0:
+                raise ValueError("PAPER_DL_CDP_STARTUP_TIMEOUT must be a positive number")
+            lease.ensure_browser(timeout=startup_timeout)
+            endpoint = lease.endpoint
             if mode == "interactive":
                 warnings.append(
                     "paper-dl used a user-controlled local CDP browser; login/CAPTCHA steps require manual authorized interaction and are never bypassed."
@@ -1023,7 +1015,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                     )
             else:
                 warnings.append(
-                    "paper-dl ran with --autodev and --headless; human-verification/login items were skipped, never bypassed."
+                    "paper-dl used the shared local CDP browser with --autodev; human-verification/login items were skipped, never bypassed."
                 )
             configured_paper_dl_config = _optional_file_env("PAPER_DL_CONFIG")
             if zotero_mode == "desktop-first" and configured_paper_dl_config is not None:
@@ -1078,7 +1070,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
             print(
                 f"paper-dl adapter: executable={command_label} items={len(eligible)} "
                 f"mode={mode} zotero={zotero_mode}",
-                flush=mode == "interactive",
+                flush=True,
             )
             print(
                 f"[DOWNLOAD STATUS] paper-dl/non-arXiv batch running: {len(eligible)} paper(s) queued.",
@@ -1093,27 +1085,20 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                 completed=0,
                 emit=lambda message: print(message, flush=True),
             )
+            print(f"[CDP READY] Connected workflow will use {endpoint}.", flush=True)
             if mode == "interactive":
-                print(f"[CDP READY] Connected workflow will use {endpoint}.", flush=True)
                 if zotero_mode != "off":
                     print(
                         f"[ZOTERO READY] Zotero Desktop mode is {zotero_mode}; keep Desktop and Connector available.",
                         flush=True,
                     )
                 print("[REMINDER] Keep the dedicated browser open. If CAPTCHA/login or a Zotero selector appears, resolve it manually; paper-dl will continue or report action_required.", flush=True)
+            else:
+                print("[AUTODEV] Login/CAPTCHA/manual-solve items will be skipped; no user intervention is requested.", flush=True)
             try:
-                if mode == "interactive":
-                    completed = lease.run_download(
-                        command, cwd=cwd, timeout=batch_timeout,
-                    )
-                else:
-                    completed = run_cancellable(
-                        command,
-                        cwd=str(cwd) if cwd else None,
-                        text=True,
-                        capture_output=True,
-                        timeout=batch_timeout,
-                    )
+                completed = lease.run_download(
+                    command, cwd=cwd, timeout=batch_timeout,
+                )
             except ChildProcessCancelled as exc:
                 update_progress(
                     run_dir,
@@ -1311,7 +1296,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                     f"Could not open an action page in the dedicated CDP browser: {error}"
                     for error in open_errors
                 )
-        elif mode == "interactive":
+        else:
             # Preserve verified results even if browser cleanup subsequently fails.
             # A successful cleanup notice is added only after verified release.
             atomic_write_json(output_path, manifest)
@@ -1392,7 +1377,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                 "An empty response does not mark the intervention resolved.",
                 flush=True,
             )
-    elif mode == "interactive":
+    else:
         print("[DOWNLOAD COMPLETE] paper-dl/non-arXiv batch has ended. The browser pool released this run's slot; no browser action is needed.", flush=True)
         print(
             "[NEXT ACTION] Review failed/skipped papers for an optional manual retry, or explicitly choose to continue to PDF reading.",

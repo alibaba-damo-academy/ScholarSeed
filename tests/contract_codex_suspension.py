@@ -5,19 +5,28 @@ from __future__ import annotations
 import asyncio
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from time import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.activity import NativeActivityState
+from scholarseed_codex.process import CodexProcessHost
+from scholarseed_codex.protocol.state import (
+    AppServerError,
+    CodexProcessState,
+    CodexThreadAttachmentState,
+)
 from scholarseed_codex.session import CodexRuntimeSession
-from scholarseed_runtime.contract.command import ArchiveRequest
+from scholarseed_runtime.contract import CapabilitySet, RuntimeBinding
+from scholarseed_runtime.contract.command import ArchiveRequest, CommandState
 from scholarseed_runtime.contract.resource import ResourceEvidence
 from scholarseed_runtime.contract.session import (
     RUNTIME_SUSPEND_BUSY,
     RUNTIME_SUSPEND_STALE,
     RuntimeActivitySnapshot,
     SuspendState,
+    TurnConfirmationTarget,
 )
 
 TEST_GENERATION = 1
@@ -182,6 +191,160 @@ class CodexSuspensionContracts(unittest.IsolatedAsyncioTestCase):
         receipt = await session.abort_suspend(ticket)
         self.assertIs(receipt.state, SuspendState.ABORTED)
         await session.archive(ArchiveRequest("archive-after-abort"))
+
+
+class CodexConfirmationContracts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.host = CodexProcessHost(launch_cwd=Path.cwd())
+        self.host._generation = TEST_CHANGED_GENERATION
+        self.host._proc = SimpleNamespace(returncode=None)
+        self.host.state = CodexProcessState.READY
+        self.host._exited_generations.append(TEST_GENERATION)
+        self.turn = SimpleNamespace(
+            ambiguous_submission_id="unknown-client",
+            ambiguous_incident_id="unknown-incident",
+            ambiguous_generation=TEST_GENERATION,
+            active_turn_id="",
+            interrupted_turn_id="",
+            turn_done=None,
+        )
+        self.host._threads[TEST_ROOT] = SimpleNamespace(
+            turn=self.turn,
+            registration_epoch=1,
+            attachment_state=CodexThreadAttachmentState.ATTACHED,
+            attached_generation=TEST_CHANGED_GENERATION,
+        )
+        self.session = object.__new__(CodexRuntimeSession)
+        self.session._native = SimpleNamespace(host=self.host, session_id=TEST_ROOT)
+        self.session._binding = RuntimeBinding(
+            "confirmation-product", "codex", "1", "1", "1", "schema", TEST_ROOT, CapabilitySet()
+        )
+        self.session._admission_lock = asyncio.Lock()
+        self.session._active_command_id = ""
+        self.session._active_operations = 0
+        self.session._tasks = set()
+        self.session._suspend_receipt = None
+        self.session._activity_revision = TEST_REVISION
+        self.session._watermark = TEST_WATERMARK
+        self.session._event_namespace = TEST_NAMESPACE
+        self.session._confirmation_ticket = None
+        self.session._confirmation_receipt = None
+        self.session._confirmation_host = None
+        self.session._confirmation_registration_epoch = 0
+        self.session._confirmation_admission_epoch = 0
+        self.target = TurnConfirmationTarget(
+            "confirmation-product", TEST_ROOT, "unknown-client", "unknown-incident", TEST_GENERATION
+        )
+        self.inspection = patch(
+            "scholarseed_codex.session.NativeActivity.inspect",
+            new=AsyncMock(
+                return_value=NativeActivityState(
+                    True, (), (), (TEST_ROOT,), TEST_CHANGED_GENERATION
+                )
+            ),
+        )
+        self.inspection.start()
+        self.addCleanup(self.inspection.stop)
+
+    async def test_confirmation_bypasses_freeze_but_does_not_unfreeze_configuration(self) -> None:
+        self.host.admission.freeze(1)
+        ticket = await self.session.prepare_turn_confirmation(self.target)
+        receipt = await self.session.commit_turn_confirmation(ticket, TEST_WATERMARK)
+        self.assertIs(receipt.state, CommandState.APPLIED)
+        self.assertFalse(self.turn.ambiguous_submission_id)
+        self.assertFalse(self.host.admission.accepting)
+        self.assertEqual(self.host.suspend_blockers(TEST_ROOT), ())
+
+    async def test_mismatched_or_historical_targets_never_clear_ambiguity(self) -> None:
+        for target in (
+            replace(self.target, product_session_id="wrong-product"),
+            replace(self.target, native_session_id="wrong-thread"),
+            replace(self.target, client_submission_id="wrong-client"),
+            replace(self.target, incident_id="wrong-incident"),
+            replace(self.target, process_generation=0),
+            replace(self.target, process_generation=TEST_CHANGED_GENERATION),
+        ):
+            with self.subTest(target=target), self.assertRaises(AppServerError):
+                await self.session.prepare_turn_confirmation(target)
+            self.assertEqual(self.turn.ambiguous_submission_id, self.target.client_submission_id)
+
+    async def test_generation_change_without_physical_exit_is_not_proof(self) -> None:
+        self.host._exited_generations.clear()
+        with self.assertRaises(AppServerError):
+            await self.session.prepare_turn_confirmation(self.target)
+
+    async def test_unattached_or_active_native_turn_refuses_confirmation(self) -> None:
+        attachment = self.host._threads[TEST_ROOT]
+        for attribute, value in (
+            ("attachment_state", CodexThreadAttachmentState.RESUMING),
+            ("attached_generation", TEST_GENERATION),
+        ):
+            original = getattr(attachment, attribute)
+            setattr(attachment, attribute, value)
+            with self.subTest(attribute=attribute), self.assertRaises(AppServerError):
+                await self.session.prepare_turn_confirmation(self.target)
+            setattr(attachment, attribute, original)
+        self.turn.active_turn_id = "real-active-turn"
+        with self.assertRaises(AppServerError):
+            await self.session.prepare_turn_confirmation(self.target)
+
+    async def test_native_activity_must_be_complete_and_idle(self) -> None:
+        for complete, blockers in (
+            (False, ()),
+            (True, ("native_background_terminal_active",)),
+            (True, ("native_turn_active",)),
+        ):
+            with (
+                patch(
+                    "scholarseed_codex.session.NativeActivity.inspect",
+                    new=AsyncMock(
+                        return_value=NativeActivityState(
+                            complete, blockers, (), (TEST_ROOT,), TEST_CHANGED_GENERATION
+                        )
+                    ),
+                ),
+                self.subTest(complete=complete, blockers=blockers),
+                self.assertRaises(AppServerError),
+            ):
+                await self.session.prepare_turn_confirmation(self.target)
+
+    async def test_stale_tickets_never_clear_new_activity(self) -> None:
+        mutations = (
+            lambda: self.host._record_activity(TEST_ROOT),
+            lambda: self.host.admission.freeze(2),
+            lambda: setattr(self.session, "_watermark", TEST_WATERMARK + 1),
+            lambda: setattr(self.host._threads[TEST_ROOT], "registration_epoch", 2),
+            lambda: setattr(self.turn, "ambiguous_submission_id", "new-client"),
+        )
+        for mutate in mutations:
+            await self.asyncSetUp()
+            ticket = await self.session.prepare_turn_confirmation(self.target)
+            mutate()
+            receipt = await self.session.commit_turn_confirmation(ticket, TEST_WATERMARK + 1)
+            self.assertIs(receipt.state, CommandState.REJECTED)
+            self.assertTrue(self.turn.ambiguous_submission_id)
+
+    async def test_unpersisted_or_forged_ticket_is_rejected(self) -> None:
+        ticket = await self.session.prepare_turn_confirmation(self.target)
+        for candidate, watermark in (
+            (ticket, TEST_WATERMARK - 1),
+            (replace(ticket, ticket_id="forged"), TEST_WATERMARK),
+        ):
+            receipt = await self.session.commit_turn_confirmation(candidate, watermark)
+            self.assertIs(receipt.state, CommandState.REJECTED)
+            self.assertTrue(self.turn.ambiguous_submission_id)
+
+    async def test_applied_confirmation_retry_never_clears_later_unknown(self) -> None:
+        ticket = await self.session.prepare_turn_confirmation(self.target)
+        receipt = await self.session.commit_turn_confirmation(ticket, TEST_WATERMARK)
+        self.turn.ambiguous_submission_id = "later-client"
+        self.turn.ambiguous_incident_id = "later-incident"
+        self.turn.ambiguous_generation = TEST_CHANGED_GENERATION
+        self.assertEqual(await self.session.prepare_turn_confirmation(self.target), ticket)
+        self.assertEqual(
+            await self.session.commit_turn_confirmation(ticket, TEST_WATERMARK), receipt
+        )
+        self.assertEqual(self.turn.ambiguous_submission_id, "later-client")
 
 
 if __name__ == "__main__":

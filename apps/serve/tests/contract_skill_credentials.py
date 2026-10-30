@@ -22,6 +22,8 @@ import asyncio
 import os
 import tempfile
 
+from service.platform.activity import Activities
+
 os.environ["SCHOLARSEED_HOME"] = tempfile.mkdtemp(prefix="skill-cred-home-")
 
 from typing import Any  # noqa: E402
@@ -119,6 +121,7 @@ class _Account:
 def _service(client: _Account, *, base_url: str = BASE_URL, environ: Any = None) -> Any:
     service = SkillCredentialService(
         base_url,
+        activities=Activities(),
         client=client,  # type: ignore[arg-type]
         environ={} if environ is None else environ,
     )
@@ -226,7 +229,7 @@ def test_inherited_env_wins() -> None:
 def test_display_name() -> None:
     print("[5] 工厂不依赖 home 或主机名，全局固定展示名")
     for home in ("/fixture/home-a", "/fixture/home-b"):
-        service = skill_credentials_from_env({"SCHOLARSEED_HOME": home})
+        service = skill_credentials_from_env({"SCHOLARSEED_HOME": home}, activities=Activities())
         check("未配地址不参与", not service.configured())
     client = _Account()
     asyncio.run(_service(client).environment(USER, CREDENTIAL))

@@ -1,29 +1,29 @@
 {
-  "version": "0.159.0",
+  "version": "0.165.0",
   "package": "@openai/codex",
   "artifacts": {
     "darwin-arm64": {
-      "file": "codex-0.159.0-darwin-arm64.tgz",
-      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.159.0-darwin-arm64.tgz",
-      "sha256": "36034ef21c4fd7992e3ca4d041dff869dbf8c5d742b68e5c9fad0c3636cf61ce",
-      "bytes": 133855621,
-      "integrity": "sha512-D1x+5n2y0TE43ERJs3CbBDRPLQl968hpqsInOwYNhfnTOTT53McpfFa6+VfPWwmPi0zW0aJ0C97K+6MhNHYe6A==",
+      "file": "codex-0.165.0-darwin-arm64.tgz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.165.0-darwin-arm64.tgz",
+      "sha256": "a991b0abcb6b6d2ae4d0221b55dd74afe8b87847044483ec68d290908a5a0f97",
+      "bytes": 141326129,
+      "integrity": "sha512-MQ/Z0Xw9v08DHunnzodi9NwA844MI3+RO72IM8o0Lr/UemnlEoBMCxpojstxX6mf5ZQwUrIg0yekDd9cFZ29hg==",
       "target": "aarch64-apple-darwin"
     },
     "darwin-x64": {
-      "file": "codex-0.159.0-darwin-x64.tgz",
-      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.159.0-darwin-x64.tgz",
-      "sha256": "ad19e3b706266a963e74b3cabbfa8099e95b228f04ce58867a06ba7170209b00",
-      "bytes": 142824621,
-      "integrity": "sha512-uNsvmDAYH2H7/uJi3NYtn0d+bpMHgovZyZwm62Q8q/cdd1rp5oEbk2Axe5pbyiWFwSpjdT6fbuY8gTdX2i7zjg==",
+      "file": "codex-0.165.0-darwin-x64.tgz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.165.0-darwin-x64.tgz",
+      "sha256": "311e1eaa38e403e480852d1b48a7abe8fdb30cdbdf60523c363dfdc9dc4da818",
+      "bytes": 150199720,
+      "integrity": "sha512-mxMtlntnUq0Xb8rjvHph3Ws045Q82BLbeKRRdkN70Es9mho/D/Blh1ShZvzQOnsoeVw8lbV9fOLjW1vncoufKQ==",
       "target": "x86_64-apple-darwin"
     },
     "win32-x64": {
-      "file": "codex-0.159.0-win32-x64.tgz",
-      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.159.0-win32-x64.tgz",
-      "sha256": "746fab0b0b5f3677b2db87f954b7feca9b5ab24fff2ebfd9df1c58802902f19a",
-      "bytes": 161786916,
-      "integrity": "sha512-Fp+TghoUzxOguHj/WAxOIZCIJpTOb4pB9p90tf6+g2PSTWSCvqpawwxPmDuCMxKs8Sn1gO5zP621PoCkBt5cuQ==",
+      "file": "codex-0.165.0-win32-x64.tgz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.165.0-win32-x64.tgz",
+      "sha256": "53ebec84d5a380bbb654a796e695576a4dbd2c228ec9bc02982f2013f261969d",
+      "bytes": 173677955,
+      "integrity": "sha512-f5LMyugPSnAovnTnR1N+SNHSTfWZ+ym5A4H3zZHz/zhuMGMGZD8IxUdlSUlEbiENYyPXrJ8G3Jh+CLyzTfQB6Q==",
       "target": "x86_64-pc-windows-msvc"
     }
   }

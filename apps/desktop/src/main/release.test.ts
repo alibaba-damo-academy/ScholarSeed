@@ -6,7 +6,7 @@ import {
   desktopArchType,
   identityMismatches,
   parseDownloadInfo,
-  parseUpdateCheckResult
+  parseUpdateCheckResult,
 } from './release.ts'
 import type { DesktopUpdateConfig } from './release.ts'
 
@@ -18,7 +18,7 @@ const CONFIG: DesktopUpdateConfig = {
   bundleId: 'com.scholarseed.desktop',
   expectedTeamId: 'A1B2C3D4E5',
   expectedWindowsPublisher: 'CN=ScholarSeed Test Publisher',
-  releaseLane: 'distribution'
+  releaseLane: 'distribution',
 }
 
 const LATEST = {
@@ -31,7 +31,7 @@ const LATEST = {
   team_id: 'A1B2C3D4E5',
   channel: 'release',
   file_size: 4096,
-  sha512: 'a'.repeat(128)
+  sha512: 'a'.repeat(128),
 }
 
 test('update check URL scopes product, version, build, architecture, and channel', () => {
@@ -41,6 +41,18 @@ test('update check URL scopes product, version, build, architecture, and channel
   assert.equal(url.searchParams.get('build_number'), '202608270900')
   assert.equal(url.searchParams.get('arch_type'), 'darwin-arm64')
   assert.equal(url.searchParams.get('channel'), 'release')
+  assert.equal(url.searchParams.has('updater_capability'), false)
+})
+
+test('packaged Windows selects the Velopack feed without legacy capabilities', () => {
+  const url = new URL(buildUpdateCheckUrl(CONFIG, '0.1.1', 'windows-amd64'))
+  assert.equal(url.searchParams.get('update_engine'), 'velopack')
+  assert.equal(url.searchParams.has('updater_capability'), false)
+  assert.equal(url.searchParams.has('carrier_maintenance'), false)
+  const local = new URL(
+    buildUpdateCheckUrl({ ...CONFIG, releaseLane: 'local' }, '0.1.1', 'windows-amd64')
+  )
+  assert.equal(local.searchParams.has('update_engine'), false)
 })
 
 test('an unpackaged source run reports no build stamp instead of an empty one', () => {
@@ -58,18 +70,37 @@ test('desktop update targets map only supported native architectures', () => {
 })
 
 test('release metadata is accepted only when every immutable identity field matches', () => {
-  const result = parseUpdateCheckResult({ has_update: true, latest: LATEST }, CONFIG, 'darwin-arm64')
+  const result = parseUpdateCheckResult(
+    { has_update: true, latest: LATEST },
+    CONFIG,
+    'darwin-arm64'
+  )
   assert.equal(result.latest?.id, 'package-1')
   assert.throws(
-    () => parseUpdateCheckResult({ has_update: true, latest: { ...LATEST, product_id: 'veda' } }, CONFIG, 'darwin-arm64'),
+    () =>
+      parseUpdateCheckResult(
+        { has_update: true, latest: { ...LATEST, product_id: 'veda' } },
+        CONFIG,
+        'darwin-arm64'
+      ),
     /identity/
   )
   assert.throws(
-    () => parseUpdateCheckResult({ has_update: true, latest: { ...LATEST, sha512: null } }, CONFIG, 'darwin-arm64'),
+    () =>
+      parseUpdateCheckResult(
+        { has_update: true, latest: { ...LATEST, sha512: null } },
+        CONFIG,
+        'darwin-arm64'
+      ),
     /sha512/
   )
   assert.throws(
-    () => parseUpdateCheckResult({ has_update: true, latest: { ...LATEST, file_size: 0 } }, CONFIG, 'darwin-arm64'),
+    () =>
+      parseUpdateCheckResult(
+        { has_update: true, latest: { ...LATEST, file_size: 0 } },
+        CONFIG,
+        'darwin-arm64'
+      ),
     /file_size/
   )
 })
@@ -101,7 +132,11 @@ test('identityMismatches names exactly the fields the check rejects on', () => {
     []
   )
   assert.deepEqual(
-    identityMismatches({ ...LATEST, product_id: 'veda', channel: 'preview' }, CONFIG, 'darwin-arm64'),
+    identityMismatches(
+      { ...LATEST, product_id: 'veda', channel: 'preview' },
+      CONFIG,
+      'darwin-arm64'
+    ),
     ['product_id', 'channel']
   )
 })
@@ -109,11 +144,12 @@ test('identityMismatches names exactly the fields the check rejects on', () => {
 test('a candidate without a usable build stamp cannot be ranked and is refused', () => {
   for (const build_number of [undefined, '', '2026082712', 'v0.2_202608271200']) {
     assert.throws(
-      () => parseUpdateCheckResult(
-        { has_update: true, latest: { ...LATEST, build_number } },
-        CONFIG,
-        'darwin-arm64'
-      ),
+      () =>
+        parseUpdateCheckResult(
+          { has_update: true, latest: { ...LATEST, build_number } },
+          CONFIG,
+          'darwin-arm64'
+        ),
       /build_number/
     )
   }
@@ -128,11 +164,23 @@ test('distribution download metadata requires the requested id and HTTPS', () =>
   )
   assert.match(result.download_url, /^https:/)
   assert.throws(
-    () => parseDownloadInfo({ ...LATEST, download_url: 'http://oss.example.test/package.dmg' }, CONFIG, 'darwin-arm64', 'package-1'),
+    () =>
+      parseDownloadInfo(
+        { ...LATEST, download_url: 'http://oss.example.test/package.dmg' },
+        CONFIG,
+        'darwin-arm64',
+        'package-1'
+      ),
     /HTTPS/
   )
   assert.throws(
-    () => parseDownloadInfo({ ...LATEST, id: 'other', download_url: 'https://oss.example.test/package.dmg' }, CONFIG, 'darwin-arm64', 'package-1'),
+    () =>
+      parseDownloadInfo(
+        { ...LATEST, id: 'other', download_url: 'https://oss.example.test/package.dmg' },
+        CONFIG,
+        'darwin-arm64',
+        'package-1'
+      ),
     /requested/
   )
 })
@@ -150,9 +198,13 @@ test('no-update response is explicit and cannot smuggle a candidate', () => {
 
 test('release notes are optional and only a non-blank string counts as a summary', () => {
   const parse = (latest: Record<string, unknown>): string | undefined =>
-    parseUpdateCheckResult({ has_update: true, latest }, CONFIG, 'darwin-arm64').latest?.release_notes
+    parseUpdateCheckResult({ has_update: true, latest }, CONFIG, 'darwin-arm64').latest
+      ?.release_notes
 
-  assert.equal(parse({ ...LATEST, release_notes: '检索式回看、入库选分类' }), '检索式回看、入库选分类')
+  assert.equal(
+    parse({ ...LATEST, release_notes: '检索式回看、入库选分类' }),
+    '检索式回看、入库选分类'
+  )
   // 管理台没填时服务端根本不给这个键，界面要按「无摘要」渲染。
   assert.equal(parse(LATEST), undefined)
   assert.equal(parse({ ...LATEST, release_notes: '   \n ' }), undefined)
@@ -166,19 +218,16 @@ test('release notes are optional and only a non-blank string counts as a summary
 test('Windows x64 metadata uses platform identity without an Apple Team ID', () => {
   const { team_id: _teamId, ...metadata } = LATEST
   const latest = { ...metadata, arch_type: 'windows-amd64' }
-  const result = parseUpdateCheckResult(
-    { has_update: true, latest },
-    CONFIG,
-    'windows-amd64'
-  )
+  const result = parseUpdateCheckResult({ has_update: true, latest }, CONFIG, 'windows-amd64')
   assert.equal(result.latest?.arch_type, 'windows-amd64')
   assert.equal(result.latest?.team_id, undefined)
   assert.throws(
-    () => parseUpdateCheckResult(
-      { has_update: true, latest },
-      { ...CONFIG, expectedWindowsPublisher: '' },
-      'windows-amd64'
-    ),
+    () =>
+      parseUpdateCheckResult(
+        { has_update: true, latest },
+        { ...CONFIG, expectedWindowsPublisher: '' },
+        'windows-amd64'
+      ),
     /Windows publisher/
   )
 })

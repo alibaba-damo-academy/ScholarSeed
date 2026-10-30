@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from service.paths import CONFIG_PATH
+from service.platform.privacy import protect_path
 from service.settings.catalog import (
     RETIRED_CONNECTION_KEYS,
     converge_gateway_model_config,
@@ -28,6 +33,101 @@ CONFIG_DIRECTORY_MODE = 0o700
 CONFIG_FILE_MODE = 0o600
 
 
+CONFIG_SEED_ENV = "SCHOLARSEED_CONFIG_SEED_PATH"
+SEEDED_CREDENTIAL_FIELDS = ("api_key",)
+
+
+@dataclass(frozen=True)
+class ConfigSeed:
+    target: Path
+    payload: bytes = field(repr=False)
+    dropped: tuple[str, ...]
+
+
+def config_seed_source(
+    *, target_present: bool, source: Path | None = None, target: Path = CONFIG_PATH
+) -> Path | None:
+    """Select a seed path without reading its bytes or creating storage."""
+    if target_present:
+        return None
+    if source is None:
+        source_value = os.environ.get(CONFIG_SEED_ENV, "").strip()
+        if not source_value:
+            return None
+        raw_source = Path(source_value).expanduser()
+    else:
+        raw_source = source
+    if raw_source.resolve() == target.resolve():
+        return None
+    return raw_source.absolute()
+
+
+def decode_config_seed(payload: bytes, *, source: Path, target: Path = CONFIG_PATH) -> ConfigSeed:
+    """Sanitize bytes read by the owning startup or standalone configuration path."""
+    raw_source = source
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"default config is not valid JSON: {raw_source}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"default config must be a JSON object: {raw_source}")
+    dropped = tuple(name for name in SEEDED_CREDENTIAL_FIELDS if parsed.pop(name, None) is not None)
+    payload = (json.dumps(parsed, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return ConfigSeed(target, payload, dropped)
+
+
+def prepare_config_seed(
+    *, target_present: bool, source: Path | None = None, target: Path = CONFIG_PATH
+) -> ConfigSeed | None:
+    """Read and sanitize a standalone seed without creating target storage."""
+    selected = config_seed_source(target_present=target_present, source=source, target=target)
+    if selected is None:
+        return None
+    if not selected.is_file():
+        raise RuntimeError(f"default config does not exist: {selected}")
+    return decode_config_seed(selected.read_bytes(), source=selected, target=target)
+
+
+def publish_config_seed(seed: ConfigSeed) -> bool:
+    """Publish the inspected bytes without replacing a concurrently created config."""
+    target = seed.target
+    if target.exists():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=target.parent, prefix=f"{target.name}.", delete=False
+        ) as config_file:
+            staged = Path(config_file.name)
+            protect_path(staged, CONFIG_FILE_MODE, config_file.fileno())
+            config_file.write(seed.payload)
+            config_file.flush()
+            os.fsync(config_file.fileno())
+        try:
+            # Publishing a complete same-volume inode must never replace a
+            # config which another startup or the user created meanwhile.
+            os.link(staged, target)
+        except FileExistsError:
+            return False
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+    print(f"[scholarseed serve] initialized packaged config: {target}", file=sys.stderr)
+    if seed.dropped:
+        print(
+            "[scholarseed serve] dropped packaged credential fields: " + ", ".join(seed.dropped),
+            file=sys.stderr,
+        )
+    return True
+
+
+def seed_user_config(*, source: Path | None = None, target: Path = CONFIG_PATH) -> bool:
+    """Create a missing user config from the sanitized packaged seed exactly once."""
+    seed = prepare_config_seed(target_present=target.exists(), source=source, target=target)
+    return publish_config_seed(seed) if seed is not None else False
+
+
 def config_path_for_profile(profile: RuntimeConfigProfile | None = None) -> Path:
     """Resolve the configuration owner selected by one runtime profile."""
 
@@ -42,16 +142,27 @@ def connection_store_for_path(config_path: Path) -> ModelProfileStore:
 
 
 def _read_object(path: Path, *, required: bool) -> dict[str, Any]:
-    if not path.exists():
+    try:
+        payload = path.read_bytes()
+    except FileNotFoundError:
         if required:
             raise FileNotFoundError(f"Config not found: {path}")
         return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Config is not valid JSON: {path}: {exc.msg}") from exc
     except OSError as exc:
         raise ValueError(f"Config cannot be read: {path}: {exc}") from exc
+    return decode_config_object(payload, path=path)
+
+
+def decode_config_object(payload: bytes | None, *, path: Path = CONFIG_PATH) -> dict[str, Any]:
+    """Decode an owner file or an already qualified read without writing defaults."""
+    if payload is None:
+        return {}
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except UnicodeError as exc:
+        raise ValueError(f"Config is not valid UTF-8: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Config is not valid JSON: {path}: {exc.msg}") from exc
     if not isinstance(value, dict):
         raise ValueError(f"Config must be a JSON object: {path}")
     return value
@@ -163,13 +274,20 @@ def save_setup_connection(values: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "ConfigSeed",
     "DEFAULT_CONFIG_PATH",
     "SETUP_FIELDS",
     "config_path_for_profile",
+    "config_seed_source",
+    "decode_config_seed",
     "config_status",
     "connection_store_for_path",
     "load_config_values",
+    "decode_config_object",
     "missing_setup_fields",
+    "prepare_config_seed",
+    "publish_config_seed",
     "save_setup_connection",
+    "seed_user_config",
     "strip_retired_connection_fields",
 ]

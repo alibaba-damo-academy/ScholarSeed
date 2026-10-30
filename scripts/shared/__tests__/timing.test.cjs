@@ -1,0 +1,15 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const { timed, timedAsync } = require('../timing.cjs')
+test('timing reports outcomes and propagates sync and async failures', async (t) => {
+  const lines = []
+  t.mock.method(console, 'log', line => lines.push(JSON.parse(line.slice('[stage] '.length))))
+  assert.equal(timed('sync', () => 7), 7)
+  assert.equal(await timedAsync('async', async () => 8), 8)
+  const error = new Error('private failure')
+  assert.throws(() => timed('sync-error', () => { throw error }), e => e === error)
+  await assert.rejects(timedAsync('async-error', async () => { throw error }), e => e === error)
+  assert.deepEqual(lines.filter(l => l.event === 'end').map(l => l.status), ['passed', 'passed', 'failed', 'failed'])
+  assert.ok(lines.filter(l => l.event === 'end').every(l => l.seconds >= 0))
+  assert.equal(JSON.stringify(lines).includes('private failure'), false)
+})

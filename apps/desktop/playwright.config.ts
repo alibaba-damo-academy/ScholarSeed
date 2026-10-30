@@ -4,6 +4,7 @@ const CI_RETRIES = 1
 const LIVE_TIMEOUT_MS = 600_000
 const SMOKE_TIMEOUT_MS = 90_000
 const UPDATE_TIMEOUT_MS = 90_000
+const PACKAGE_TIMEOUT_MS = 1_800_000
 
 export default defineConfig({
   testDir: './e2e',
@@ -18,17 +19,17 @@ export default defineConfig({
   projects: [
     {
       name: 'smoke',
-      testMatch: /(electron-compat|startup|selection|auth|settings|close|csp|navigation)\.spec\.ts/,
+      testMatch: /(electron-compat|startup|selection|auth|settings|close|csp|navigation|browser-feature)\.spec\.ts/,
       timeout: SMOKE_TIMEOUT_MS,
     },
     {
       name: 'live',
-      testMatch: /(live|assistant)\.spec\.ts/,
+      testMatch: /(live|assistant|lifecycle|browser-agent)\.spec\.ts/,
       timeout: LIVE_TIMEOUT_MS,
     },
     {
       name: 'workbench',
-      testMatch: /(workbench|office)\.spec\.ts/,
+      testMatch: /(workbench|office|browser-cdp|browser-history|browser-download|browser-policy|browser-address)\.spec\.ts/,
       timeout: LIVE_TIMEOUT_MS,
     },
     {
@@ -36,5 +37,11 @@ export default defineConfig({
       testMatch: /update\.spec\.ts/,
       timeout: UPDATE_TIMEOUT_MS,
     },
+    ...(process.env.SCHOLARSEED_CI_INSTALLER ? [{
+      name: 'package',
+      testMatch: /package\.spec\.ts/,
+      timeout: PACKAGE_TIMEOUT_MS,
+      use: { trace: 'on' as const },
+    }] : []),
   ],
 })

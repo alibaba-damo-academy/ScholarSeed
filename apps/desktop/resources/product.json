@@ -5,11 +5,13 @@
   "release_lane": "local",
   "update_channel": "release",
   "update_base_url": "https://scholarseed.damo.alibaba.com",
+  "feedback_base_url": "https://scholarseed.damo.alibaba.com",
   "expected_team_id": "",
   "expected_windows_publisher": "",
   "auth_mode": "account",
   "account_base_url": "https://scholarseed.damo.alibaba.com",
   "features": {
+    "browser": true,
     "feedback_recorder": true
   },
   "credential_profiles": {

@@ -12,14 +12,16 @@ deliver / release。
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Callable, Dict, TypeVar
 
 from fastapi import APIRouter, HTTPException, Request
 
 from service.identity.persistence.handoff import DeliveryStatus, HandoffClaimStore
 from service.identity.schema import HandoffDeliveryRequest, HandoffOwnerRequest
 from service.identity.utils import require_host_process
+from service.platform.activity import Activities, MaintenanceActive
 
 HANDOFF_ROUTE_PREFIX = "/api/auth/handoff"
 HTTP_BAD_REQUEST = 400
@@ -45,7 +47,20 @@ def _lease_body(
     return body
 
 
-def build_handoff_router(store: HandoffClaimStore) -> APIRouter:
+T = TypeVar("T")
+
+
+def _handoff_call(activities: Activities, operation: Callable[..., T], *args: str) -> T:
+    """Count the actual SQLite worker, without granting new execution admission."""
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(activities.observe_request())
+        except MaintenanceActive as error:
+            raise HTTPException(503, "update_maintenance", headers={"Retry-After": "1"}) from error
+        return operation(*args)
+
+
+def build_handoff_router(store: HandoffClaimStore, *, activities: Activities) -> APIRouter:
     """本机交接协调面。store 构造不做 I/O, schema 首次使用时惰性建好。"""
 
     router = APIRouter()
@@ -56,7 +71,7 @@ def build_handoff_router(store: HandoffClaimStore) -> APIRouter:
 
         require_host_process(request)
         try:
-            lease = store.claim(payload.state, payload.owner_id)
+            lease = _handoff_call(activities, store.claim, payload.state, payload.owner_id)
         except ValueError as error:
             raise HTTPException(HTTP_BAD_REQUEST, str(error)) from error
         if lease is None:
@@ -74,7 +89,7 @@ def build_handoff_router(store: HandoffClaimStore) -> APIRouter:
 
         require_host_process(request)
         try:
-            lease = store.renew(payload.state, payload.owner_id)
+            lease = _handoff_call(activities, store.renew, payload.state, payload.owner_id)
         except ValueError as error:
             raise HTTPException(HTTP_BAD_REQUEST, str(error)) from error
         if lease is None:
@@ -87,7 +102,9 @@ def build_handoff_router(store: HandoffClaimStore) -> APIRouter:
 
         require_host_process(request)
         try:
-            status = store.deliver(payload.state, payload.code, payload.delivered_by)
+            status = _handoff_call(
+                activities, store.deliver, payload.state, payload.code, payload.delivered_by
+            )
         except ValueError as error:
             raise HTTPException(HTTP_BAD_REQUEST, str(error)) from error
         outcome = (
@@ -103,7 +120,7 @@ def build_handoff_router(store: HandoffClaimStore) -> APIRouter:
 
         require_host_process(request)
         try:
-            store.release(payload.state, payload.owner_id)
+            _handoff_call(activities, store.release, payload.state, payload.owner_id)
         except ValueError as error:
             raise HTTPException(HTTP_BAD_REQUEST, str(error)) from error
         return {"status": HandoffRouteStatus.RELEASED.value}

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -86,8 +88,12 @@ class PackageContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "skill"
             extract_package(package, root)
-            self.assertEqual((root / "scripts/run").stat().st_mode & 0o777, EXECUTABLE_MODE)
-            self.assertEqual((root / "SKILL.md").stat().st_mode & 0o777, FILE_MODE)
+            for relative, expected in (("scripts/run", EXECUTABLE_MODE), ("SKILL.md", FILE_MODE)):
+                mode = (root / relative).stat().st_mode
+                if os.name == "nt":
+                    self.assertTrue(mode & stat.S_IWRITE)
+                else:
+                    self.assertEqual(mode & 0o777, expected)
             with self.assertRaises(FileExistsError):
                 extract_package(package, root)
 

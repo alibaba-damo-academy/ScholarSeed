@@ -1,20 +1,28 @@
-"""Contract coverage for desktop problem-report forwarding to Damoclaw-Server.
+"""Contract coverage for diagnostic export and standalone Serve feedback forwarding.
 
 反馈上报的三条不变量在这里钉死:
 1. 基址与 updater.ts 读同一把 `damoclaw_server_url` (跨语言错配会让两条链路指向不同环境);
 2. LLM trace 只在显式授权时才进日志包 (默认打包必须不含用户研究内容);
-3. 身份取 serve 侧权威值, 且失败按类别投影 (429 透传, 其余 502)。
+3. 独立 Serve 提交取权威身份并分类错误；Desktop 诊断导出不创建凭据或提交远端。
 """
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import zipfile
 from datetime import datetime, timezone
+from email.parser import BytesParser
+from email.policy import default as email_policy
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from threading import Thread
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -27,6 +35,8 @@ from scholarseed_runtime.contract.session import RuntimeExecutionThread
 from service.chat.api.feedback import mount_feedback_routes
 from service.chat.persistence.catalog import SessionAccessError
 from service.chat.service import feedback as fb
+from service.chat.service.update import MIN_BUDGET, collect_update_diagnostics
+from service.platform.activity import Activities
 
 PASS = 0
 FAIL = 0
@@ -90,11 +100,12 @@ def _service(
         vendor_thread_id: str = "",
         execution_threads: tuple[RuntimeExecutionThread, ...] = (),
         execution_tree_status: str = "unavailable",
+        thread_history: fb.FeedbackThreadHistory | None = None,
         recording_report: bytes = b"",
         renderer_diagnostics: bytes = b"",
         include_diagnostics: bool = True,
     ) -> bytes:
-        del execution_threads, execution_tree_status
+        del execution_threads, execution_tree_status, thread_history
         calls.append(
             {
                 "include_trace": include_trace,
@@ -347,9 +358,19 @@ def test_renderer_diagnostics_bundle() -> None:
 def test_recording_report_route() -> None:
     class _Feedback:
         submission: fb.FeedbackSubmission | None = None
+        submitted = False
+
+        def build_bundle(self, submission: fb.FeedbackSubmission) -> bytes:
+            self.submission = submission
+            return fb.build_log_bundle(
+                include_trace=False,
+                include_diagnostics=False,
+                recording_report=submission.recording_report,
+            )
 
         def submit(self, submission: fb.FeedbackSubmission) -> fb.FeedbackResult:
             self.submission = submission
+            self.submitted = True
             return fb.FeedbackResult(ok=True, feedback_id="feedback-1")
 
     class _Catalog:
@@ -357,21 +378,45 @@ def test_recording_report_route() -> None:
             return None
 
     class _Credentials:
+        calls = 0
+
         async def ensure(self, user_id: str, token: str) -> dict[str, str]:
+            self.calls += 1
             return {}
 
     app = FastAPI()
     app.state.auth_enabled = False
     app.state.ownership_axis = "machine"
     feedback = _Feedback()
+    credentials = _Credentials()
     mount_feedback_routes(
         app,
+        activities=Activities(),
         feedback=feedback,  # type: ignore[arg-type]
         catalog=_Catalog(),  # type: ignore[arg-type]
-        credentials=_Credentials(),  # type: ignore[arg-type]
+        credentials=credentials,  # type: ignore[arg-type]
     )
     report = b'{"schemaVersion":1}'
     with TestClient(app) as client:
+        prepared = client.post(
+            "/api/serve/feedback/bundle",
+            data={"description": "prepare only", "include_logs": "true"},
+            files={"recording_report": ("recording.json", report, "application/json")},
+        )
+        check(
+            "bundle preparation does not submit remotely or issue credentials",
+            prepared.status_code == 200 and not feedback.submitted and credentials.calls == 0,
+        )
+        check(
+            "bundle preparation returns private ZIP bytes",
+            prepared.headers.get("content-type") == "application/zip"
+            and prepared.headers.get("cache-control") == "no-store",
+        )
+        with zipfile.ZipFile(io.BytesIO(prepared.content)) as archive:
+            check(
+                "bundle preparation retains the recording report",
+                archive.read(fb.RECORDING_REPORT_ARCNAME) == report,
+            )
         response = client.post(
             "/api/serve/feedback",
             data={"description": "route report"},
@@ -455,7 +500,11 @@ def test_feedback_route_scopes_execution_tree_to_owned_session() -> None:
     class Runtime:
         calls: list[str] = []
 
-        async def execution_threads(self, session_id: str) -> tuple[RuntimeExecutionThread, ...]:
+        async def execution_threads(
+            self, session_id: str, *, user_id: str, root_thread_id: str = ""
+        ) -> tuple[RuntimeExecutionThread, ...]:
+            del root_thread_id
+            assert user_id
             self.calls.append(session_id)
             return (RuntimeExecutionThread("child-thread", "root-thread"),)
 
@@ -477,6 +526,7 @@ def test_feedback_route_scopes_execution_tree_to_owned_session() -> None:
     feedback = Feedback()
     mount_feedback_routes(
         app,
+        activities=Activities(),
         feedback=feedback,  # type: ignore[arg-type]
         catalog=Catalog(),  # type: ignore[arg-type]
         credentials=Credentials(),  # type: ignore[arg-type]
@@ -741,13 +791,61 @@ def _check_bundle_budget_is_hard() -> None:
             ) = original
 
 
+def test_update_log_replaced_by_fifo_does_not_block() -> None:
+    if not hasattr(os, "mkfifo"):
+        print("  SKIP FIFO rotation race is not available on this platform")
+        return
+    script = textwrap.dedent(r"""
+        import json
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from service.chat.service.update import collect_update_diagnostics
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "update.log"
+            target.write_text("old log\n")
+            original = Path.lstat
+            replaced = False
+            def rotate(path, *args, **kwargs):
+                global replaced
+                observed = original(path, *args, **kwargs)
+                if path == target and not replaced:
+                    replaced = True
+                    path.unlink()
+                    os.mkfifo(path)
+                return observed
+            with patch.object(Path, "lstat", rotate):
+                entries = dict(collect_update_diagnostics(target))
+            assert replaced
+            report = json.loads(entries["feedback/update-collection.json"])
+            print(json.dumps(next(item for item in report["sources"] if item["source"] == "update.log")))
+        """)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5, check=False
+        )
+    except subprocess.TimeoutExpired:
+        check(
+            "FIFO replacement cannot block update diagnostics", False, "open blocked for 5 seconds"
+        )
+        return
+    check(
+        "FIFO replacement cannot block update diagnostics",
+        result.returncode == 0
+        and json.loads(result.stdout)["status"] in {"changed", "rejected", "unreadable"},
+        result.stderr,
+    )
+
+
 def test_installer_diagnostics_priority() -> None:
     """Keep both installer generations and update evidence before a noisy backend."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         evidence = {
-            "install/install.log": b'{"event":"rejected","result":"ready-write-failed"}\n',
-            "install/install-prev.log": b'{"event":"start","result":"protocol"}\n',
+            "update/install.log": b'{"event":"rejected","result":"ready-write-failed"}\n',
+            "update/install-prev.log": b'{"event":"start","result":"protocol"}\n',
             "update/update.log": b"installer exited during handshake with code 2\n",
         }
         for name, body in evidence.items():
@@ -757,8 +855,6 @@ def test_installer_diagnostics_priority() -> None:
         with patch.multiple(
             fb,
             create=True,
-            INSTALL_LOG=root / "install.log",
-            INSTALL_PREV_LOG=root / "install-prev.log",
             UPDATE_LOG=root / "update.log",
             BACKEND_LOG=backend,
             WINDOW_LOG=root / "missing-window.log",
@@ -790,7 +886,8 @@ def test_installer_diagnostics_priority() -> None:
                 "platforms without installer logs still collect update and backend",
                 "update/update.log" in names
                 and "backend/backend.log" in names
-                and not any(name.startswith("install/") for name in names),
+                and "update/install.log" not in names
+                and "update/install-prev.log" not in names,
             )
 
 
@@ -808,9 +905,15 @@ def test_bundle_budget_and_scope() -> None:
         system_log.write_text("boot ok\n", encoding="utf-8")
         # 实时后端日志: Electron 写到家目录 logs/backend.log, 必须被收走。
         backend_log = root / "backend.log"
-        backend_log.write_text("serve started\n", encoding="utf-8")
+        backend_log.write_text(
+            "parent_control_failed stage=auth_receive exception_type=TimeoutError\nruntime_configuration_failed stage=lease exception_type=RuntimeError\nmcp_projection_failed exception_type=RuntimeError\n",
+            encoding="utf-8",
+        )
         window_log = root / "window.log"
-        window_log.write_text("backend stopped unexpectedly code=1 signal=null\n", encoding="utf-8")
+        window_log.write_text(
+            "backend_control event=closed reason=connection_timeout authenticated=false\n",
+            encoding="utf-8",
+        )
         # 更新链路诊断: 主进程落 logs/update.log (Authenticode STATUS/SUBJECT、计时、
         # 失败分类)。自更新被拦截的工单里, 这是唯一能定论失败类别的证据。
         update_log = root / "update.log"
@@ -904,7 +1007,32 @@ def test_bundle_budget_and_scope() -> None:
                 "update/update.log" in names,
                 str(names),
             )
+            recorder = _Recorder()
+            result = fb.FeedbackService(client=recorder).submit(
+                fb.FeedbackSubmission(description="startup diagnostics", include_logs=True)
+            )
+            attached = [meta for name, meta in recorder.files if name == "logs_bundle"]
+            check(
+                "feedback submission attaches the real diagnostic archive",
+                result.ok and len(attached) == 1,
+            )
+            with zipfile.ZipFile(io.BytesIO(attached[0][1])) as submitted:
+                check(
+                    "submitted archive retains control diagnosis without an active session",
+                    "parent_control_failed" in submitted.read("backend/backend.log").decode()
+                    and "backend_control" in submitted.read("window/window.log").decode(),
+                )
             with zipfile.ZipFile(io.BytesIO(fb.build_log_bundle(include_trace=False))) as archive:
+                diagnostic_backend = archive.read("backend/backend.log").decode()
+                diagnostic_window = archive.read("window/window.log").decode()
+                check(
+                    "feedback automatically carries control and MCP diagnostics without trace consent",
+                    "parent_control_failed stage=auth_receive" in diagnostic_backend
+                    and "runtime_configuration_failed stage=lease" in diagnostic_backend
+                    and "mcp_projection_failed" in diagnostic_backend
+                    and "backend_control event=closed reason=connection_timeout"
+                    in diagnostic_window,
+                )
                 check(
                     "desktop lifecycle log retains the exit evidence",
                     archive.read("window/window.log") == window_log.read_bytes(),
@@ -1097,6 +1225,130 @@ def test_subagent_rollouts_are_scoped_and_reported() -> None:
             fb.CODEX_SESSIONS_DIR = original_sessions
 
 
+def test_historical_roots_are_scoped_and_indexed() -> None:
+    roots = tuple(
+        f"{digit * 8}-{digit * 4}-7{digit * 3}-8{digit * 3}-{digit * 12}" for digit in "123"
+    )
+    unrelated = "44444444-4444-7444-8444-444444444444"
+    with tempfile.TemporaryDirectory() as directory:
+        home = Path(directory)
+        trace = home / "trace"
+        sessions = home / "sessions"
+        trace.mkdir()
+        sessions.mkdir()
+        records = [
+            {
+                "session_id": "owned",
+                "name": fb.TRACE_RUNTIME_BOUND,
+                "attributes": {"runtime_id": fb.FEEDBACK_RUNTIME_ID, "vendor_thread_id": thread_id},
+            }
+            for thread_id in (*roots, roots[0])
+        ]
+        records.extend(
+            [
+                {
+                    "session_id": "other",
+                    "name": fb.TRACE_RUNTIME_BOUND,
+                    "attributes": {
+                        "runtime_id": fb.FEEDBACK_RUNTIME_ID,
+                        "vendor_thread_id": unrelated,
+                    },
+                },
+                {
+                    "session_id": "owned",
+                    "name": "user.message",
+                    "attributes": {
+                        "runtime_id": fb.FEEDBACK_RUNTIME_ID,
+                        "vendor_thread_id": unrelated,
+                    },
+                },
+            ]
+        )
+        (trace / "shushen-codex-owned.jsonl").write_text(
+            "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+        )
+        for thread_id in (*roots, unrelated):
+            (sessions / f"rollout-2026-10-13T10-00-00-{thread_id}.jsonl").write_text(
+                json.dumps({"thread": thread_id}) + "\n", encoding="utf-8"
+            )
+        with patch.object(fb, "TRACE_DIR", trace), patch.object(fb, "CODEX_SESSIONS_DIR", sessions):
+            history = fb.session_thread_history("owned", roots[-1])
+            check(
+                "binding history is exact-session, event-scoped and deduplicated",
+                history.thread_ids == (roots[-1], *roots[:-1])
+                and history.discovery_status == "complete",
+                str(history),
+            )
+            bundle = fb.build_log_bundle(
+                include_trace=True,
+                include_diagnostics=False,
+                session_id="owned",
+                vendor_thread_id=roots[-1],
+            )
+            with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                tree = json.loads(archive.read(fb.THREAD_TREE_ARCNAME))
+                check(
+                    "all three roots retain independent rollout files",
+                    len(tree["root_threads"]) == 3
+                    and all(
+                        row["status"] == "included" and row["path"] in archive.namelist()
+                        for row in tree["root_threads"]
+                    )
+                    and not any(unrelated in name for name in archive.namelist()),
+                    str(tree),
+                )
+            archived = fb.build_log_bundle(
+                include_trace=True, include_diagnostics=False, session_id="owned"
+            )
+            with zipfile.ZipFile(io.BytesIO(archived)) as archive:
+                tree = json.loads(archive.read(fb.THREAD_TREE_ARCNAME))
+                check(
+                    "archived session without current binding still includes historical roots",
+                    tree["root_thread_id"] == ""
+                    and len(tree["root_threads"]) == 3
+                    and all(row["status"] == "included" for row in tree["root_threads"]),
+                    str(tree),
+                )
+            (sessions / f"rollout-2026-10-13T10-00-00-{roots[0]}.jsonl").unlink()
+            (sessions / f"rollout-2026-10-13T11-00-00-{roots[1]}.jsonl").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            bundle = fb.build_log_bundle(
+                include_trace=True,
+                include_diagnostics=False,
+                session_id="owned",
+                vendor_thread_id=roots[-1],
+            )
+            with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                rows = json.loads(archive.read(fb.THREAD_TREE_ARCNAME))["root_threads"]
+                check(
+                    "missing and ambiguous historical roots remain explicit",
+                    [row["status"] for row in rows] == ["included", "missing", "ambiguous"]
+                    and all(row["path"] is None for row in rows[1:]),
+                    str(rows),
+                )
+            with (trace / "shushen-codex-owned.jsonl").open("a", encoding="utf-8") as source:
+                source.write("invalid json\n")
+            check(
+                "malformed history never claims complete discovery",
+                fb.session_thread_history("owned", roots[-1]).discovery_status == "partial",
+            )
+            check(
+                "without conversation consent historical roots are excluded",
+                not any(
+                    name.startswith("conversation/")
+                    for name in _bundle_names(
+                        fb.build_log_bundle(
+                            include_trace=False,
+                            include_diagnostics=False,
+                            session_id="owned",
+                            vendor_thread_id=roots[-1],
+                        )
+                    )
+                ),
+            )
+
+
 def test_subagent_tail_and_budget_remain_parseable() -> None:
     child_id = "55555555-5555-7555-8555-555555555555"
     with tempfile.TemporaryDirectory() as directory:
@@ -1236,8 +1488,321 @@ def test_session_error_summary_is_additive() -> None:
             fb.TRACE_DIR = previous_trace_dir
 
 
+def test_update_evidence() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        update = root / "update.log"
+        update.write_text(
+            'Authorization: Bearer secret-token\nhttps://user:password@example.com/a?token=secret\n/Users/alice/project C:\\Users\\bob\\project\n{"phase":"prepare","event":"failed","updateId":"attempt-1","nonce":"private"}\n',
+            encoding="utf-8",
+        )
+        (root / "install.log").write_text(
+            '{"phase":"installer-ready","updateId":"attempt-1"}\n', encoding="utf-8"
+        )
+        (root / "components.log").write_text("component cache hit\n", encoding="utf-8")
+        with gzip.open(root / "update.log.1.gz", "wb") as rotated:
+            rotated.write(b'{"phase":"recover","updateId":"previous-attempt"}\n')
+        entries = dict(collect_update_diagnostics(update))
+        text = entries["update/update.log"].decode()
+        check(
+            "update evidence removes credentials and home identities",
+            all(
+                value not in text
+                for value in ("secret-token", "example.com", "alice", "bob", "private")
+            ),
+            text,
+        )
+        check(
+            "update evidence includes installer components and rotation",
+            all(
+                name in entries
+                for name in (
+                    "update/install.log",
+                    "update/components.log",
+                    "update/update.log.1.gz.txt",
+                )
+            ),
+        )
+        report = json.loads(entries["feedback/update-collection.json"])
+        check(
+            "missing install history is explicit",
+            any(
+                item["source"] == "install-prev.log" and item["status"] == "missing"
+                for item in report["sources"]
+            ),
+        )
+        check(
+            "installer evidence correctly describes snapshot",
+            any(
+                item["source"] == "install.log" and item["kind"] == "snapshot"
+                for item in report["sources"]
+            ),
+        )
+        summary = json.loads(entries["feedback/update-summary.json"])
+        check(
+            "summary correlates events without raw nonce",
+            any(event.get("updateId") == "attempt-1" for event in summary["events"])
+            and "nonce" not in str(summary),
+        )
+        update.write_text(
+            json.dumps({"password": 'quoted"private', "path": "C:\\Users\\Alice Smith\\cache"})
+            + "\nCookie: first=private; second=hidden\n",
+            encoding="utf-8",
+        )
+        text = dict(collect_update_diagnostics(update))["update/update.log"].decode()
+        check(
+            "escaped secrets and full cookie headers are redacted",
+            all(value not in text for value in ("private", "hidden", "Alice", "Smith")),
+            text,
+        )
+        (root / "update.log.2.gz").write_bytes(b"not a gzip archive")
+        report = json.loads(
+            dict(collect_update_diagnostics(update))["feedback/update-collection.json"]
+        )
+        check(
+            "corrupt archive does not prevent feedback",
+            any(
+                item["source"] == "update.log.2.gz" and item["status"] == "unreadable"
+                for item in report["sources"]
+            ),
+        )
+        (root / "install-prev.log").symlink_to(update)
+        report = json.loads(
+            dict(collect_update_diagnostics(update))["feedback/update-collection.json"]
+        )
+        check(
+            "symlink diagnostic sources are rejected",
+            any(
+                item["source"] == "install-prev.log" and item["status"] == "rejected"
+                for item in report["sources"]
+            ),
+        )
+        update.write_bytes(b"x" * (3 * 1024 * 1024) + b"\nlast complete event\npartial")
+        entries = dict(collect_update_diagnostics(update))
+        check(
+            "large update tail stays bounded and contains complete lines",
+            sum(map(len, entries.values())) <= 2 * 1024 * 1024
+            and entries["update/update.log"].endswith(b"last complete event\n"),
+        )
+        update.write_text('{"phase":"prepare","result":"failed"}\n', encoding="utf-8")
+        for budget in (MIN_BUDGET, 32 * 1024, 48 * 1024):
+            entries = dict(collect_update_diagnostics(update, budget))
+            check(
+                f"small update budget retains redacted evidence and reports ({budget})",
+                "update/update.log" in entries
+                and "feedback/update-collection.json" in entries
+                and sum(map(len, entries.values())) <= budget,
+            )
+        check(
+            "undersized updater allocation never falls back to raw",
+            not collect_update_diagnostics(update, MIN_BUDGET - 1),
+        )
+        for name in ("update.log", "install.log", "components.log"):
+            (root / name).write_text(
+                ("old diagnostic line\n" * 8192)
+                + json.dumps({"phase": "prepare", "result": "failed", "updateId": name})
+                + "\n",
+                encoding="utf-8",
+            )
+        for budget in (MIN_BUDGET, 32 * 1024, 48 * 1024):
+            entries = dict(collect_update_diagnostics(update, budget))
+            summary = json.loads(entries["feedback/update-summary.json"])
+            check(
+                f"oversized details retain each source failure summary ({budget})",
+                {event.get("updateId") for event in summary["events"]}
+                >= {"update.log", "install.log", "components.log"}
+                and "update/update.log" not in entries
+                and sum(map(len, entries.values())) <= budget,
+            )
+
+
+def test_update_bundle_single_redacted_owner() -> None:
+    """Inspect every ZIP member, including duplicate names that readers mask."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        secrets = ("secret-update", "secret-install", "secret-previous", "secret-component")
+        names = ("update.log", "install.log", "install-prev.log", "components.log")
+        for name, secret in zip(names, secrets):
+            (root / name).write_text(
+                json.dumps({"phase": "prepare", "event": "failed", "password": secret}) + "\n",
+                encoding="utf-8",
+            )
+        backend = root / "backend.log"
+        backend.write_bytes(os.urandom(256 * 1024))
+        with patch.multiple(
+            fb,
+            create=True,
+            UPDATE_LOG=root / "update.log",
+            BACKEND_LOG=backend,
+            WINDOW_LOG=root / "missing-window.log",
+            SYSTEM_LOG=root / "missing-system.log",
+            DIAGNOSTIC_SOURCES=(),
+        ):
+            for budget in (fb.BUNDLE_BUDGET_RESERVE + 64 * 1024, fb.MAX_BUNDLE_SIZE):
+                payload = fb.build_log_bundle(include_trace=False, budget=budget)
+                with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                    members = archive.namelist()
+                    check(
+                        "final feedback ZIP has unique member names",
+                        len(members) == len(set(members)),
+                    )
+                    check(
+                        "final feedback ZIP has only collector-owned update sources",
+                        all("update/" + name in members for name in names)
+                        and not any(name.startswith("install/") for name in members),
+                        str(members),
+                    )
+                    contents = b"\n".join(archive.read(info) for info in archive.infolist())
+                    check(
+                        "every final ZIP member excludes updater secrets",
+                        all(secret.encode() not in contents for secret in secrets),
+                    )
+                    check("final redacted ZIP respects budget", len(payload) <= budget)
+            # The collector's no-follow rejection cannot be bypassed by a later
+            # generic log source which follows the same path.
+            previous = root / "install-prev.log"
+            previous.unlink()
+            foreign = root / "foreign"
+            foreign.write_text("foreign-update-secret\n", encoding="utf-8")
+            previous.symlink_to(foreign)
+            with zipfile.ZipFile(io.BytesIO(fb.build_log_bundle(include_trace=False))) as archive:
+                contents = b"\n".join(archive.read(info) for info in archive.infolist())
+                check(
+                    "final ZIP cannot bypass rejected updater symlink",
+                    b"foreign-update-secret" not in contents,
+                )
+            check(
+                "final updater collection requires log consent",
+                not _bundle_names(
+                    fb.build_log_bundle(include_trace=False, include_diagnostics=False)
+                ),
+            )
+
+
+def test_update_bundle_real_http_submission() -> None:
+    """Send the actual builder's multipart body over loopback and inspect reception."""
+    received: list[dict[str, bytes]] = []
+
+    class Receiver(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            message = BytesParser(policy=email_policy).parsebytes(
+                ("Content-Type: " + self.headers["Content-Type"] + "\r\n\r\n").encode() + body
+            )
+            fields = {
+                part.get_param("name", header="content-disposition"): part.get_payload(decode=True)
+                for part in message.iter_parts()
+            }
+            received.append(fields)
+            reply = b'{"ok":true,"id":"local-feedback-contract"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    with (
+        tempfile.TemporaryDirectory() as directory,
+        HTTPServer(("127.0.0.1", 0), Receiver) as server,
+    ):
+        root = Path(directory)
+        update = root / "update.log"
+        update.write_text(
+            '{"phase":"prepare","result":"failed","nonce":"upload-secret"}\n', encoding="utf-8"
+        )
+        (root / "native-update.log").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "phase": "native-diagnostics",
+                    "event": "snapshot",
+                    "result": "disconnected",
+                    "diagnosticRevision": 7,
+                    "lastSyncedAt": "2026-09-30T12:00:00Z",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "sequence": 7,
+                    "session": "42.1790000000000000000",
+                    "phase": "gc",
+                    "event": "collected",
+                    "result": "partial",
+                    "errorCode": "collection_budget",
+                    "reclaimedBytes": 123,
+                    "removedFiles": 2,
+                    "nonce": "native-secret",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        service = fb.FeedbackService(base_url=f"http://127.0.0.1:{server.server_port}", environ={})
+        try:
+            with patch.multiple(
+                fb,
+                UPDATE_LOG=update,
+                WINDOW_LOG=root / "missing-window.log",
+                BACKEND_LOG=root / "missing-backend.log",
+                SYSTEM_LOG=root / "missing-system.log",
+                DIAGNOSTIC_SOURCES=(),
+            ):
+                result = service.submit(
+                    fb.FeedbackSubmission(description="local contract", include_logs=True)
+                )
+                check(
+                    "real HTTP feedback receives built log attachment",
+                    result.ok and "logs_bundle" in received[0],
+                )
+                with zipfile.ZipFile(io.BytesIO(received[0]["logs_bundle"])) as archive:
+                    check(
+                        "received multipart ZIP keeps one sanitized update log",
+                        archive.namelist().count("update/update.log") == 1
+                        and b"upload-secret" not in archive.read("update/update.log"),
+                    )
+                    check(
+                        "received native diagnostics preserve stale status and partial cleanup counts",
+                        archive.namelist().count("update/native-update.log") == 1
+                        and b"native-secret" not in archive.read("update/native-update.log")
+                        and any(
+                            event.get("result") == "disconnected"
+                            and event.get("diagnosticRevision") == 7
+                            for event in json.loads(archive.read("feedback/update-summary.json"))[
+                                "events"
+                            ]
+                        )
+                        and any(
+                            event.get("removedFiles") == 2 and event.get("reclaimedBytes") == 123
+                            for event in json.loads(archive.read("feedback/update-summary.json"))[
+                                "events"
+                            ]
+                        ),
+                    )
+                result = service.submit(
+                    fb.FeedbackSubmission(description="local contract", include_logs=False)
+                )
+                check(
+                    "real HTTP without log consent carries no attachment",
+                    result.ok and "logs_bundle" not in received[1],
+                )
+        finally:
+            service.close()
+            server.shutdown()
+            thread.join()
+
+
 def main() -> int:
     print("desktop feedback forwarding contract")
+    test_update_evidence()
+    test_update_bundle_single_redacted_owner()
+    test_update_bundle_real_http_submission()
     test_base_url_resolution()
     test_trace_is_opt_in()
     test_multipart_shape()
@@ -1248,14 +1813,41 @@ def main() -> int:
     test_bundle_filename()
     test_validation_and_upstream_failures()
     _check_bundle_budget_is_hard()
+    test_update_log_replaced_by_fifo_does_not_block()
     test_installer_diagnostics_priority()
     test_bundle_budget_and_scope()
     test_subagent_rollouts_are_scoped_and_reported()
+    test_historical_roots_are_scoped_and_indexed()
     test_subagent_tail_and_budget_remain_parseable()
     test_session_error_summary_is_additive()
     print(f"passed={PASS} failed={FAIL}")
     return 1 if FAIL else 0
 
 
+def test_program_source_identity_is_bundled_without_conversation_consent() -> None:
+    identity = {
+        "schema_version": 1,
+        "runtime_kind": "local_dev",
+        "commit": "a" * 40,
+        "branch": "preview",
+        "repository_url": "git@example.test:repo.git",
+        "dirty": True,
+    }
+    with patch.dict(os.environ, {"SCHOLARSEED_SOURCE_BASELINE": json.dumps(identity)}):
+        bundle = fb._build_log_bundle_contents(include_trace=False, include_diagnostics=True)
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            check(
+                "startup source identity survives without conversation logs",
+                json.loads(archive.read("feedback/source-baseline.json")) == identity,
+            )
+        bundle = fb._build_log_bundle_contents(include_trace=False, include_diagnostics=False)
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            check(
+                "no source identity without diagnostic consent",
+                "feedback/source-baseline.json" not in archive.namelist(),
+            )
+
+
 if __name__ == "__main__":
+    test_program_source_identity_is_bundled_without_conversation_consent()
     raise SystemExit(main())

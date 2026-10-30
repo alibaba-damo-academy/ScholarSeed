@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from service.literature.api import catalogue
+from service.literature.persistence import files as literature_files
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import AttachmentRole
 from service.literature.service import zotero
@@ -199,15 +200,8 @@ class ZoteroTreeImportTests(unittest.TestCase):
         self.assertEqual(len(result.items), 5)
         self.assertIn("Stale collection item", {item.title for item in result.items})
 
-    def test_imported_pdf_is_copied_in_once_under_a_content_addressed_name(self) -> None:
-        """Zotero bytes are copied into the literature store, never linked to it.
-
-        The attachment has to live in the literature-owned managed directory, or
-        deleting it could not delete the file and the item would keep pointing at
-        somebody else's Zotero storage. Naming that copy by its content digest is
-        what makes a second import of the same library attach nothing new, while
-        genuinely revised bytes land on a new file and become the primary.
-        """
+    def test_each_zotero_import_owns_an_independent_pdf_copy(self) -> None:
+        """Repeated imports append items; deleting one cannot remove another's bytes."""
         rows = ITEMS + (PDF_ATTACHMENT,)
         files = self.root / "files"
 
@@ -224,36 +218,48 @@ class ZoteroTreeImportTests(unittest.TestCase):
             ):
                 return zotero.import_zotero()
 
-        def stored(payload: bytes) -> Path:
-            return files / f"{sha256(payload).hexdigest()}.pdf"
-
         payload = b"%PDF-1.4 zotero payload"
-        first = imported(payload)
-        second = imported(payload)
-        direct = next(item for item in first.items if item.title == "Direct item")
-        self.assertEqual((first.pdfs, second.pdfs), (1, 1))
-        self.assertEqual(stored(payload).read_bytes(), payload)
-        self.assertEqual([path.name for path in files.iterdir()], [stored(payload).name])
-
-        attachments = self.repository.attachments(direct.id)
-        self.assertEqual(len(attachments), 1, attachments)
-        self.assertEqual(attachments[0]["path"], str(stored(payload)))
-        self.assertEqual(attachments[0]["role"], AttachmentRole.PRIMARY.value)
-        # 展示名保留可读的“这是哪篇论文”线索, 但它不再是存储键。
-        self.assertTrue(attachments[0]["name"].endswith("Paper name.pdf"))
-        self.assertTrue(attachments[0]["name"].startswith(f"{direct.id}-"))
-
         revised = b"%PDF-1.4 zotero payload v2"
-        imported(revised)
-        roles = {entry["path"]: entry["role"] for entry in self.repository.attachments(direct.id)}
-        self.assertEqual(
-            roles,
-            {
-                str(stored(payload)): AttachmentRole.SUPPLEMENTARY.value,
-                str(stored(revised)): AttachmentRole.PRIMARY.value,
-            },
-        )
-        self.assertEqual(stored(revised).read_bytes(), revised)
+        copies = []
+        identities = set()
+        for expected in (payload, payload, revised):
+            result = imported(expected)
+            self.assertEqual(result.pdfs, 1)
+            direct = next(item for item in result.items if item.title == "Direct item")
+            self.assertNotIn(direct.id, identities)
+            identities.add(direct.id)
+            attachments = self.repository.attachments(direct.id)
+            self.assertEqual(len(attachments), 1)
+            attachment = attachments[0]
+            path = Path(attachment["path"])
+            self.assertEqual(path.parent, files)
+            self.assertTrue(path.name.startswith(f"{direct.id}-"))
+            self.assertEqual(path.suffix, ".pdf")
+            self.assertEqual(path.read_bytes(), expected)
+            self.assertEqual(attachment["revision"], f"sha256:{sha256(expected).hexdigest()}")
+            self.assertEqual(attachment["role"], AttachmentRole.PRIMARY.value)
+            self.assertEqual(attachment["name"], "Paper name.pdf")
+            copies.append((direct.id, attachment, path, expected))
+        self.assertEqual(len({path for _, _, path, _ in copies}), 3)
+        self.assertEqual(set(files.iterdir()), {path for _, _, path, _ in copies})
+        app = FastAPI()
+        catalogue.register_global_routes(app)
+        item_id, attachment, removed, _ = copies[0]
+        with (
+            patch.object(catalogue, "LiteratureRepository", return_value=self.repository),
+            patch.object(literature_files, "SERVICE_LITERATURE_FILES_DIR", files),
+            TestClient(app) as client,
+        ):
+            response = client.delete(
+                f"/api/v1/literatures/{item_id}/attachments/{attachment['id']}"
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(removed.exists())
+        self.assertEqual(self.repository.attachments(item_id), [])
+        for remaining_id, remaining, path, expected in copies[1:]:
+            self.assertEqual(path.read_bytes(), expected)
+            self.assertEqual(self.repository.attachments(remaining_id), [remaining])
+        self.assertEqual(set(files.iterdir()), {copy[2] for copy in copies[1:]})
 
     def test_failed_pdf_copy_does_not_discard_the_bibliographic_item(self) -> None:
         attachment = {
@@ -321,9 +327,9 @@ class ZoteroTaskProjectionTests(unittest.TestCase):
                 catalogue.register_global_routes(app)
                 threads = []
 
-                def create_thread(*args, **kwargs):
+                def create_thread(*args, _threads=threads, **kwargs):
                     thread = original_thread(*args, **kwargs)
-                    threads.append(thread)
+                    _threads.append(thread)
                     return thread
 
                 with (

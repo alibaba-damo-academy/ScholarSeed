@@ -1,7 +1,11 @@
 {
   "schema": 1,
-  "reviewed": "2026-09-20",
-  "documents": ["README.md", "PILLOW.md"],
+  "reviewed": "2026-10-14",
+  "documents": [
+    "README.md",
+    "PILLOW.md",
+    "FONTCONFIG.md"
+  ],
   "supplements": [
     {
       "name": "liblzma",
@@ -10,27 +14,67 @@
       "url": "https://raw.githubusercontent.com/tukaani-project/xz/v5.8.3/COPYING.0BSD",
       "licenseFile": "xz-0bsd.txt",
       "noticeSha256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1"
+    },
+    {
+      "name": "pptx-renderer bundled THIRD_PARTY_NOTICES.md",
+      "version": "1.3.0",
+      "license": "Apache-2.0 AND MPL-2.0",
+      "url": "https://github.com/aiden0z/pptx-renderer/blob/0cf5c194b4db2cf9f2531b6a7e24a61338caabf1/THIRD_PARTY_NOTICES.md",
+      "licenseFile": "pptx-renderer/THIRD_PARTY_NOTICES.md",
+      "noticeSha256": "4e49f2e111bff02e594594abbca7924076649d9cc8826d80e42fd7ed2f4fa11c"
+    },
+    {
+      "name": "pptx-renderer bundled licenses/mtx-decompressor-MPL-2.0.txt",
+      "version": "1.3.0",
+      "license": "MPL-2.0",
+      "url": "https://github.com/aiden0z/pptx-renderer/blob/0cf5c194b4db2cf9f2531b6a7e24a61338caabf1/licenses/mtx-decompressor-MPL-2.0.txt",
+      "licenseFile": "pptx-renderer/licenses/mtx-decompressor-MPL-2.0.txt",
+      "noticeSha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+    },
+    {
+      "name": "pptx-renderer bundled licenses/ECMA-text-copyright-notice.txt",
+      "version": "1.3.0",
+      "license": "ECMA copyright policy",
+      "url": "https://github.com/aiden0z/pptx-renderer/blob/0cf5c194b4db2cf9f2531b6a7e24a61338caabf1/licenses/ECMA-text-copyright-notice.txt",
+      "licenseFile": "pptx-renderer/licenses/ECMA-text-copyright-notice.txt",
+      "noticeSha256": "9a08c202df693f91f1f3b1674a64f5989d6269d5d89f710bc65e0fb2757d8f1f"
+    },
+    {
+      "name": "pptx-renderer bundled scripts/ooxml-geometry/source-manifest.json",
+      "version": "1.3.0",
+      "license": "ECMA copyright policy",
+      "url": "https://github.com/aiden0z/pptx-renderer/blob/0cf5c194b4db2cf9f2531b6a7e24a61338caabf1/scripts/ooxml-geometry/source-manifest.json",
+      "licenseFile": "pptx-renderer/scripts/ooxml-geometry/source-manifest.json",
+      "noticeSha256": "ab675181c17d4e09acdbcfb1eb2f1f9c3d3306751d43fae197e1456e82fe3524"
+    },
+    {
+      "name": "emf-converter bundled THIRD_PARTY_NOTICES",
+      "version": "4.20.3",
+      "license": "upstream bundled third-party terms",
+      "url": "https://github.com/ChristopherVR/emf-converter/blob/ebac1db978d655df7a8fe407b0d8be4ee0b6c519/THIRD_PARTY_NOTICES",
+      "licenseFile": "emf-converter/THIRD_PARTY_NOTICES.txt",
+      "noticeSha256": "704660e21c5c53db7b50e86edc948d6121cb34019b65264411b109d6b6044c0c"
     }
   ],
-  "scope": "certifi, tqdm, pypdf, pycparser, lightningcss and Pillow CPython 3.12 desktop wheels; not a complete product SBOM",
+  "scope": "certifi, tqdm, pypdf, pycparser, lightningcss and Pillow CPython 3.12 desktop wheels; not a complete product SBOM; docx-preview, exceljs and pptx-renderer with bundled notices; emf-converter/UTIF image codecs, pako and bundled decoder notices",
   "components": [
     {
       "name": "certifi",
-      "version": "2026.6.17",
+      "version": "2026.10.19",
       "ecosystem": "pypi",
       "license": "MPL-2.0",
       "role": "runtime",
       "source": {
-        "url": "https://files.pythonhosted.org/packages/c9/c7/424b75da314c1045981bd9777432fad05a9e0c69daa4ed7e308bbaffe405/certifi-2026.6.17.tar.gz",
-        "sha256": "024c88eeec92ca068db80f02b8b07c9cef7b9fe261d1d535abfd5abd6f6af432"
+        "url": "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz",
+        "sha256": "035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae"
       },
       "artifacts": [
         {
           "platform": "any",
-          "filename": "certifi-2026.6.17-py3-none-any.whl",
-          "url": "https://files.pythonhosted.org/packages/ef/2f/c5464532e965badff2f4c4c1a3a83f5697f0d7c407ed0cda44aaa99bb451/certifi-2026.6.17-py3-none-any.whl",
-          "sha256": "2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db",
-          "licenseMember": "certifi-2026.6.17.dist-info/licenses/LICENSE",
+          "filename": "certifi-2026.10.19-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl",
+          "sha256": "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b",
+          "licenseMember": "certifi-2026.10.19.dist-info/licenses/LICENSE",
           "licenseFile": "certifi.txt",
           "licenseSha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7",
           "nativeFiles": [],
@@ -249,6 +293,150 @@
           "licenseSha256": "5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
           "noticeNormalization": "CRLF-to-LF",
           "noticeSha256": "5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
+        }
+      ]
+    },
+    {
+      "name": "docx-preview",
+      "version": "0.4.1",
+      "ecosystem": "npm",
+      "license": "Apache-2.0",
+      "role": "renderer",
+      "source": {
+        "url": "https://codeload.github.com/VolodymyrBaydalka/docxjs/tar.gz/c533f383069008d4a1e05c6171ef8777fd078385",
+        "sha256": "68352e5b129a6512062a47c7647ea494c3819eddb9b0a33879de8328c785d7a9"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "docx-preview-0.4.1.tgz",
+          "url": "https://registry.npmjs.org/docx-preview/-/docx-preview-0.4.1.tgz",
+          "integrity": "sha512-Dv4g+LeE0swHpPvNC0lAT0YsR5Zq5pAxw7d3vHQ8EChBLgIrqqe9VPL5nVt2HBJap8bEZbXUI0TJob7kBeNU9w==",
+          "licenseMember": "package/LICENSE",
+          "licenseFile": "docx-preview.txt",
+          "licenseSha256": "8668bf4417d161e4eb4d47d6044526e4914d9eb3c748573d9bb7e87708c1253f",
+          "noticeNormalization": "CRLF-to-LF; final newline normalized",
+          "noticeSha256": "0ed0b35bd10cb0d990fbecf7f1e05d113d785dfbbef8332e139fc10b84a4c3d7"
+        }
+      ]
+    },
+    {
+      "name": "exceljs",
+      "version": "4.4.0",
+      "ecosystem": "npm",
+      "license": "MIT",
+      "role": "renderer",
+      "source": {
+        "url": "https://codeload.github.com/exceljs/exceljs/tar.gz/ac96f9a61e9799c7776bd940f05c4a51d7200209",
+        "sha256": "80f60b73791f8d040742b7a3170846191b1f1592408ea94f2c8c237df65c5d6e"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "exceljs-4.4.0.tgz",
+          "url": "https://registry.npmjs.org/exceljs/-/exceljs-4.4.0.tgz",
+          "integrity": "sha512-XctvKaEMaj1Ii9oDOqbW/6e1gXknSY4g/aLCDicOXqBE4M0nRWkUu0PTp++UPNzoFY12BNHMfs/VadKIS6llvg==",
+          "licenseMember": "package/LICENSE",
+          "licenseFile": "exceljs.txt",
+          "licenseSha256": "2ed526b7e7c7681dc2347995b5036ddf73dc27d0539cdea59b6d4a72b63a57a0",
+          "noticeNormalization": "CRLF-to-LF; final newline normalized",
+          "noticeSha256": "2ee88321435317a4dbf464f275b88fe2efe6968c381f5ce34b5de539200e5855"
+        }
+      ]
+    },
+    {
+      "name": "@aiden0z/pptx-renderer",
+      "version": "1.3.0",
+      "ecosystem": "npm",
+      "license": "Apache-2.0",
+      "role": "renderer",
+      "source": {
+        "url": "https://codeload.github.com/aiden0z/pptx-renderer/tar.gz/0cf5c194b4db2cf9f2531b6a7e24a61338caabf1",
+        "sha256": "f9c15a2174e83c616902c11258ca7f7999bdf8c524760b55c6aa834983c846d2"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "pptx-renderer-1.3.0.tgz",
+          "url": "https://registry.npmjs.org/@aiden0z/pptx-renderer/-/pptx-renderer-1.3.0.tgz",
+          "integrity": "sha512-VEXSn2vmdgTwWaw96bhsEyZiSxlrhF5O5dONI+dSBXmg1WH2XM9O1eyY2LFQ68J1SY+iZnE5BVgFGGX6iox9Og==",
+          "licenseMember": "package/LICENSE",
+          "licenseFile": "pptx-renderer.txt",
+          "licenseSha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "noticeNormalization": "CRLF-to-LF; final newline normalized",
+          "noticeSha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        }
+      ]
+    },
+    {
+      "name": "emf-converter",
+      "version": "4.20.3",
+      "ecosystem": "npm",
+      "license": "Apache-2.0",
+      "role": "renderer",
+      "source": {
+        "url": "https://codeload.github.com/ChristopherVR/emf-converter/tar.gz/ebac1db978d655df7a8fe407b0d8be4ee0b6c519",
+        "sha256": "3961e45ba8b35d04ae8e6a8f4db7b0bab064628e21c3732e6460aa6504577fea"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "emf-converter-4.20.3.tgz",
+          "url": "https://registry.npmjs.org/emf-converter/-/emf-converter-4.20.3.tgz",
+          "integrity": "sha512-ldVeYFhQZswNTBCbquKR7KNZ9PqRKSgHMKcIFtwp1g7s5+3JImuxMz8YMGIro7o3ZZloX9aVpyrmcGl3OeC65A==",
+          "licenseMember": "package/LICENSE",
+          "licenseFile": "emf-converter.txt",
+          "licenseSha256": "2c27550900d2cabf83527a04600ba8042e3ba89e70ec077ff220afa48c8230a7",
+          "noticeNormalization": "CRLF-to-LF; final newline normalized",
+          "noticeSha256": "2c27550900d2cabf83527a04600ba8042e3ba89e70ec077ff220afa48c8230a7"
+        }
+      ]
+    },
+    {
+      "name": "utif",
+      "version": "3.1.0",
+      "ecosystem": "npm",
+      "license": "MIT",
+      "role": "renderer",
+      "source": {
+        "url": "https://codeload.github.com/photopea/UTIF.js/tar.gz/27f1098a67c3cfd4348c9b8fd887fcd8cd171095",
+        "sha256": "081a53b32b72b920af0a3c566174901c53ae950ce83df954817b0a2287fdb34e"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "utif-3.1.0.tgz",
+          "url": "https://registry.npmjs.org/utif/-/utif-3.1.0.tgz",
+          "integrity": "sha512-WEo4D/xOvFW53K5f5QTaTbbiORcm2/pCL9P6qmJnup+17eYfKaEhDeX9PeQkuyEoIxlbGklDuGl8xwuXYMrrXQ==",
+          "licenseMember": "package/LICENSE",
+          "licenseFile": "utif.txt",
+          "licenseSha256": "c1fb8861eca211bf5aea574358aba7039396c0c1824c2a1477cc126d398efd89",
+          "noticeNormalization": "CRLF-to-LF; final newline normalized",
+          "noticeSha256": "c1fb8861eca211bf5aea574358aba7039396c0c1824c2a1477cc126d398efd89"
+        }
+      ]
+    },
+    {
+      "name": "pako",
+      "version": "1.0.11",
+      "ecosystem": "npm",
+      "license": "MIT AND Zlib",
+      "role": "renderer",
+      "source": {
+        "url": "https://codeload.github.com/nodeca/pako/tar.gz/a718e4f6e5ce87b0964d8f84541d92a23263365b",
+        "sha256": "b0d4e301579b9b16db77343431a63a7f948e06052aff3622908c7ce41a766bab"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "pako-1.0.11.tgz",
+          "url": "https://registry.npmjs.org/pako/-/pako-1.0.11.tgz",
+          "integrity": "sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==",
+          "licenseMember": "package/LICENSE",
+          "licenseFile": "pako.txt",
+          "licenseSha256": "a04665b3b2de56c66730c1f720f528175739e4104f79073614aa611da1e85539",
+          "noticeNormalization": "CRLF-to-LF; final newline normalized",
+          "noticeSha256": "a04665b3b2de56c66730c1f720f528175739e4104f79073614aa611da1e85539"
         }
       ]
     }

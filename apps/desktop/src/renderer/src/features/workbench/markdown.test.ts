@@ -8,7 +8,6 @@ import { markdownFragmentTarget, matchesMarkdownTarget } from './anchors.ts'
 const markdownSource = readFileSync(new URL('./MarkdownDocument.tsx', import.meta.url), 'utf8')
 const monacoSource = readFileSync(new URL('./MonacoDocument.tsx', import.meta.url), 'utf8')
 const storeSource = readFileSync(new URL('../../store.tsx', import.meta.url), 'utf8')
-const editorStyles = readFileSync(new URL('./editor.css', import.meta.url), 'utf8')
 const diffSource = readFileSync(new URL('./Diff.tsx', import.meta.url), 'utf8')
 const frameSource = readFileSync(new URL('./monaco/host.tsx', import.meta.url), 'utf8')
 const frameBootstrapSource = readFileSync(new URL('./monaco/frame.ts', import.meta.url), 'utf8')
@@ -32,6 +31,23 @@ test('generated Markdown fragments resolve only through explicit anchors', () =>
   assert.equal(markdownFragmentTarget('正文只有 [1]，没有链接或锚点。', '#ref-1'), null)
 })
 
+test('numbered bibliography fragments resolve from plain generated Markdown', () => {
+  const source = [
+    '正文引用[1]。',
+    '',
+    '## 参考文献',
+    '',
+    '[1] Author. Paper title.',
+    '',
+    '[2] Another paper.',
+  ].join('\n')
+  assert.deepEqual(markdownFragmentTarget(source, '#ref-1'), {
+    fragment: 'ref-1',
+    text: '[1] Author. Paper title.',
+  })
+  assert.equal(markdownFragmentTarget(source, '#ref-3'), null)
+})
+
 test('fragment navigation does not confuse a shorter source label with the destination', () => {
   assert.equal(matchesMarkdownTarget('Reference', 'Reference destination.'), false)
   assert.equal(matchesMarkdownTarget('Reference destination.', 'Reference destination.'), true)
@@ -46,22 +62,18 @@ test('fragment navigation does not confuse a shorter source label with the desti
   assert.equal(matchesMarkdownTarget('', 'Reference destination.'), false)
 })
 
-test('Markdown header uses one toolbar with icon history/save actions', () => {
+test('Markdown header uses one toolbar without a manual save action', () => {
   assert.doesNotMatch(markdownSource, /t\('markdown\.hint'\)/u)
   assert.doesNotMatch(markdownSource, /markdown\.(?:toolbar|formatToolbar)/u)
   assert.doesNotMatch(markdownSource, /<Switch/u)
   assert.match(markdownSource, /data-testid="markdown-open-source"/u)
   assert.match(markdownSource, /data-testid="markdown-open-editor"/u)
-  assert.match(markdownSource, /data-testid="markdown-save"/u)
+  assert.doesNotMatch(markdownSource, /data-testid="markdown-save"/u)
   assert.doesNotMatch(markdownSource, /<SegmentedControl/u)
   assert.doesNotMatch(markdownSource, /markdown-page-width-/u)
-  assert.match(markdownSource, /<Tooltip[^>]*content=\{t\('markdown\.save'\)\}/u)
-  assert.match(markdownSource, /<Save/u)
-  assert.match(markdownSource, /<BadgeDot/u)
-  assert.match(markdownSource, /data-external-change=\{externalPending \? 'true'/u)
-  assert.match(markdownSource, /sealResourceSnapshot\([\s\S]*'external_confirmed'/u)
+  assert.doesNotMatch(markdownSource, /<Save|<BadgeDot/u)
   assert.match(markdownSource, /data-testid="markdown-editor-actions"/u)
-  assert.match(markdownSource, /onToolbarChange\(\s*toolbarItems\.length/u)
+  assert.match(markdownSource, /onToolbarChange\(\s*!readOnly && toolbarItems\.length/u)
   assert.doesNotMatch(markdownSource, /markdown\.more|>⋮</u)
 })
 
@@ -88,7 +100,10 @@ test('visual Markdown uses one body font with distinct heading and body weights'
 })
 
 test('visual Markdown formulas follow body font size and inline line height', () => {
-  assert.match(styles, /\.vds-markdown-crepe \.ProseMirror \.katex\s*\{[^}]*font-size: 1em/su)
+  assert.match(
+    styles,
+    /\.vds-markdown-crepe \.ProseMirror \.katex\s*\{[^}]*font-size: var\(--vds-markdown-katex-font-size\)/su
+  )
   assert.match(
     styles,
     /\.vds-markdown-crepe \.ProseMirror span\[data-type='math_inline'\]\s*\{[^}]*vertical-align: baseline[^}]*line-height: inherit/su
@@ -123,8 +138,8 @@ test('visual Markdown shows only document content while source mode uses an IDE 
     /kind: 'code',[\s\S]*toolbar: 'viewer'[\s\S]*toolbarActions=\{toolbarActions\}/u
   )
   assert.match(
-    editorStyles,
-    /\.vds-code-document\.is-actions-external\s*\{[^}]*grid-template-rows: minmax\(0, 1fr\)/su
+    monacoSource,
+    /vds-code-document is-actions-external grid grid-rows-\[minmax\(0,1fr\)\] h-full min-w-0 min-h-0 overflow-hidden/u
   )
   assert.match(monacoSource, /<Tooltip[^>]*content=\{t\('code\.undo'\)\}/u)
   assert.doesNotMatch(monacoSource, /<Button[^>]*>\{t\('code\.(?:find|replace)'\)\}<\/Button>/u)
@@ -193,11 +208,11 @@ test('Markdown switches source and visual modes inside one tab', () => {
   assert.doesNotMatch(dockSource, /tab-open-markdown-editor/)
   assert.match(markdownSource, /data-testid="markdown-open-source"/)
   assert.match(markdownSource, /data-testid="markdown-open-editor"/)
-  assert.match(markdownSource, /<Tabs/)
+  assert.match(markdownSource, /<Select/)
   assert.match(markdownSource, /workspace\.setTabView\(tabId, target\)/)
   assert.doesNotMatch(markdownSource, /workspace\.open\(session\.source, target/)
   assert.match(monacoSource, /isMarkdownSource/)
-  assert.match(markdownSource, /viewKind === 'preview'[\s\S]*MonacoDocument/)
+  assert.match(markdownSource, /viewKind === 'source'[\s\S]*MonacoDocument/)
   assert.match(
     markdownSource,
     /<MarkdownVisualEditor[\s\S]*sessionId=\{sessionId\}[\s\S]*tabId=\{tabId\}[\s\S]*onToolbarChange=\{setEditorToolbarActions\}/
@@ -220,7 +235,10 @@ test('Markdown switches source and visual modes inside one tab', () => {
   )
   assert.match(markdownSource, /listener\.markdownUpdated\([\s\S]*commitVisualEdit\(markdown\)/)
   assert.match(markdownSource, /if \(markdown === projectedMarkdownRef\.current\) return/)
-  assert.match(markdownSource, /prepare: \(\) => commitVisualEdit\(crepe\.getMarkdown\(\)\)/)
+  assert.match(
+    markdownSource,
+    /prepare: \(\) => \{\s*if \(readOnly \|\| !crepeReadyRef\.current \|\| crepeRef\.current !== crepe\) return\s*commitVisualEdit\(crepe\.getMarkdown\(\)\)/
+  )
   assert.match(
     markdownSource,
     /latest\.changeVersion !== sourceChangeVersion[\s\S]*userEditPendingRef\.current/
@@ -281,19 +299,35 @@ test('visual Markdown editing provides the approved toolbar and slash commands',
   )
   assert.match(markdownSource, /CrepeFeature\.AI\]: false/)
   assert.doesNotMatch(markdownSource, /disabled title="二期能力">[^<]*版本历史/)
-  assert.match(markdownSource, /<\/Tabs>\s*\{toolbarActions\}/)
+  assert.match(
+    markdownSource,
+    /\{toolbarActions\}\s*\{\(\(\) => \{[\s\S]*return modeControlHost \? createPortal\(control, modeControlHost\) : control\s*\}\)\(\)\}\s*<\/div>/
+  )
   assert.match(markdownSource, /<div\s+className="vds-markdown-header[^"]*flex-nowrap[^"]*"/)
   assert.match(markdownSource, /min-w-0 truncate[^"]*text-\[var\(--vds-text-tertiary\)\]/)
   assert.doesNotMatch(markdownSource, /className="vds-markdown-ai-hint"/)
   assert.match(markdownSource, /grid-rows-\[auto_minmax\(0,1fr\)\]/)
-  assert.match(markdownSource, /<Tabs\s+className="flex-none"\s+value=\{viewKind\}/)
+  assert.match(markdownSource, /<Select\s+className="flex-none"\s+size="md"\s+value=\{viewKind\}/)
   assert.match(markdownSource, /ml-auto flex shrink-0 items-center/)
   assert.doesNotMatch(markdownSource, /formatVisible|is-format-hidden/)
   assert.doesNotMatch(markdownSource, /min-w-\[700px\]|grid-rows-\[48px_minmax/)
   assert.match(markdownSource, /externallyAppliedMarkdownRef/)
   assert.match(markdownSource, /markdown === externallyAppliedMarkdownRef\.current/)
-  assert.match(styles, /\.vds-markdown-crepe \.milkdown-slash-menu\s*\{[^}]*width: 244px/s)
+  assert.match(markdownSource, /MARKDOWN_SLASH_MENU_CLASS[\s\S]*vds-markdown-slash-menu-width/u)
   assert.doesNotMatch(styles, /li\[data-index=/)
+})
+
+test('readonly Markdown notice precedes the flexible toolbar without following preview mode', () => {
+  const headerSource = markdownSource.split('function MarkdownHeader(')[1].split('function ', 1)[0]
+  const noticeIndex = headerSource.indexOf('{visualDisabled && (')
+  const toolbarIndex = headerSource.indexOf('ref={editorActionsRef}')
+  const modeIndex = headerSource.indexOf('ml-auto flex shrink-0 items-center')
+  assert.ok(noticeIndex >= 0 && noticeIndex < toolbarIndex)
+  assert.ok(toolbarIndex < modeIndex)
+  assert.match(
+    markdownSource,
+    /const visualDisabled = Boolean\(session\?\.lightweightText \|\| !session\?\.capabilities\.can_edit\)/u
+  )
 })
 
 test('visual Markdown routes configurable shortcuts to native editor commands', () => {
@@ -312,10 +346,10 @@ test('Markdown toolbars use the shared S controls and design spacing', () => {
   assert.match(markdownSource, /vds-markdown-header[^"\n]*gap-\[var\(--vds-space-2\)\]/u)
   assert.match(monacoSource, /vds-code-actions[^"\n]*gap-\[var\(--vds-toolbar-icon-gap\)\]/u)
   assert.match(monacoSource, /vds-code-actions[^"\n]*!border-b-0/u)
-  assert.match(monacoSource, /markdown-undo[^\n]*variant="ghostIcon" size="sm"/u)
+  assert.match(monacoSource, /markdown-undo[^>]*variant="ghostIcon"\s+size="sm"/u)
   assert.match(
     markdownSource,
-    /<IconButton\s+key=\{key\}\s+label=\{t\(label\)\}\s+icon=\{TOOLBAR_ICONS\[key\]\}\s+size="sm"\s+variant="ghostIcon"/u
+    /<IconButton\s+key=\{key\}\s+label=\{t\(labelKey\)\}\s+icon=\{TOOLBAR_ICONS\[key\]\}\s+size="sm"\s+variant="ghostIcon"/u
   )
   for (const level of ['h1', 'h2', 'h3']) {
     assert.ok(markdownSource.includes(`${level}: <IconFont type="icon-${level}" />`))
@@ -326,7 +360,7 @@ test('Markdown toolbars use the shared S controls and design spacing', () => {
   )
   assert.match(
     markdownSource,
-    /className="vds-markdown-crepe \[&_\.milkdown-top-bar\]:!hidden(?: [^"]*)?"/u
+    /className=\{`vds-markdown-crepe[^`]*\[&_.milkdown-top-bar\]:!hidden[^`]*\$\{MARKDOWN_SLASH_MENU_CLASS\}`\}/u
   )
   assert.doesNotMatch(
     markdownSource,
@@ -546,6 +580,13 @@ test('Monaco runtime and editor host share the frame document', () => {
   assert.doesNotMatch(frameSource, /mirrorRuntimeStyles/)
 })
 
+test('Monaco frame loads its layout utilities through a CSS entry', () => {
+  assert.match(frameBootstrapSource, /import '\.\/frame\.css'/)
+  const stylesheet = readFileSync(new URL('./monaco/frame.css', import.meta.url), 'utf8')
+  assert.match(stylesheet, /@import ['"]tailwindcss['"]/)
+  assert.match(stylesheet, /@source ['"]\.\.\/\.\.\/\.\.\/\.\.\/monaco\.html['"]/)
+})
+
 test('literal LaTeX labels use the editor locale while language IDs stay intact', () => {
   assert.equal(codeLanguageLabel('latex-source', 'LaTeX (code)'), 'LaTeX (code)')
   assert.equal(codeLanguageLabel('latex-source', 'LaTeX（代码）'), 'LaTeX（代码）')
@@ -608,14 +649,9 @@ test('Crepe image, link and language inputs receive localized labels from the fr
 
 test('localized Crepe chrome uses installed public options and retains the editor language lifetime', () => {
   const crepe = new URL('../../../../../node_modules/@milkdown/crepe/', import.meta.url)
+  const kit = new URL('../../', import.meta.resolve('@milkdown/kit/component/code-block'))
   const codeFeature = readFileSync(new URL('src/feature/code-mirror/index.ts', crepe), 'utf8')
-  const blockConfig = readFileSync(
-    new URL(
-      '../../../../../node_modules/@milkdown/components/src/code-block/config.ts',
-      import.meta.url
-    ),
-    'utf8'
-  )
+  const blockConfig = readFileSync(new URL('../components/src/code-block/config.ts', kit), 'utf8')
   for (const field of ['copyText', 'noResultText', 'previewLabel', 'previewLoading']) {
     assert.ok(
       blockConfig.includes(`${field}: string`),
@@ -634,28 +670,12 @@ test('localized Crepe chrome uses installed public options and retains the edito
   assert.match(imageFeature, /confirmButton: config\?\.blockConfirmButton/)
   assert.match(markdownSource, /const \[editorLanguage\] = useState\(requestedLanguage\)/)
   assert.match(markdownSource, /getFixedT\(editorLanguage, 'workbench'\)/)
-  assert.match(markdownSource, /requestedLanguage !== editorLanguage/)
 })
 
-test('the pending editor language notice can be dismissed until the language changes again', () => {
-  assert.match(
-    markdownSource,
-    /const \[dismissedLanguageNotice, setDismissedLanguageNotice\] = useState<string \| null>\(null\)/
-  )
-  assert.match(
-    markdownSource,
-    /useEffect\(\(\) => \{\s*setDismissedLanguageNotice\(null\)\s*\}, \[requestedLanguage\]\)/
-  )
-  assert.match(
-    markdownSource,
-    /requestedLanguage !== editorLanguage\s*&& dismissedLanguageNotice !== requestedLanguage/
-  )
-  assert.match(markdownSource, /data-testid="markdown-language-pending"/)
-  assert.match(markdownSource, /closable/)
-  assert.match(
-    markdownSource,
-    /onClose=\{\(\) => setDismissedLanguageNotice\(requestedLanguage\)\}/
-  )
+test('switching the application language does not show a pending Markdown editor notice', () => {
+  assert.doesNotMatch(markdownSource, /markdown-language-pending|markdown\.languagePending/)
+  assert.doesNotMatch(markdownSource, /dismissedLanguageNotice|setDismissedLanguageNotice/)
+  assert.match(markdownSource, /const \[editorLanguage\] = useState\(requestedLanguage\)/)
 })
 
 test('Markdown code block copy uses the desktop clipboard bridge and reports the outcome', () => {

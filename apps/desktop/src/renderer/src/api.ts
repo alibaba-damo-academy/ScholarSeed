@@ -1,6 +1,11 @@
+import { resolveContentResponse } from './app/api/content.ts'
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
-import { apiBase, apiFetch, getJson, postJson } from './app/api/client.ts'
+import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
+import { flushApiDiagnostics, reportApiFailure } from './app/api/diagnostics.ts'
+import { MODEL_PROFILES_PATH, MODEL_PROVIDERS_PATH, SESSION_CATALOG_PATH } from '../../requests.ts'
 import { sessionTitleFallback } from './session.ts'
+import { ATTENTION_PATH } from '../../attention.ts'
+import { FEEDBACK_LIMITS, type FeedbackSubmissionResult } from '../../feedback.ts'
 import type { SessionTitleFallback } from './session'
 import type { ContextLabelFallback } from './contracts/assistant'
 // api.ts — ASP client (HTTP/SSE) to the backend the Electron main spawned.
@@ -30,6 +35,20 @@ import {
   type DeviceSkillRequest,
   type SkillSurface,
 } from '../../skills.ts'
+import {
+  mcpSettingsRequest,
+  type McpSettingsRequest,
+  type ConnectorAction,
+} from '../../mcp-settings.ts'
+
+const FAILURE_CODES = {
+  invalidRecoveryCheck: 'invalid_recovery_check',
+} as const
+import {
+  RECONFIGURATION_REQUEST_TIMEOUT_MS,
+  readRuntimeReconfiguration,
+  type ReconfigurationOperation,
+} from '../../reconfiguration.ts'
 
 // fetch 自身永不超时。恢复链路 (open + history) 是「正在恢复对话」加载态的唯一写回方,
 // 请求一挂住就没人能把界面从加载态里放出来, 所以这条链路必须自己封顶。
@@ -43,6 +62,9 @@ const SESSION_LIST_DEFAULT_LIMIT = 60
 const SESSION_LIST_DEFAULT_SCOPE: SessionListScope = 'all'
 const REQUEST_TIMEOUT_MESSAGE = 'request_timeout'
 const REQUEST_FAILED_MESSAGE = 'request failed'
+const ATTENTION_REQUEST_TIMEOUT_MS = 10_000
+const BACKEND_HEALTH_PATH = '/api/healthz/backend'
+const BACKEND_HEALTH_UNSUPPORTED_STATUSES = new Set([404, 405])
 
 export { apiFetch }
 
@@ -74,21 +96,38 @@ export function requestFailureFeedback(
     : feedback('conversation', message.key)
 }
 
-export interface HealthResp {
+export interface BackendHealthResp {
   ok: boolean
   product?: string
   serve?: boolean
   stack?: string
   runtime_id: 'codex'
   service_instance_id?: string
+  workbench_ready: boolean
+}
+
+export interface HealthResp extends BackendHealthResp {
   runtime: RuntimeSnapshot
   readiness: RuntimeReadiness
   capabilities: RuntimeCapabilities
 }
 
-export async function getHealth(): Promise<HealthResp | null> {
+export async function getBackendHealth(
+  signal: AbortSignal = AbortSignal.timeout(RECONFIGURATION_REQUEST_TIMEOUT_MS)
+): Promise<BackendHealthResp | null> {
   try {
-    const r = await apiFetch('/api/healthz')
+    const response = await apiFetch(BACKEND_HEALTH_PATH, { signal })
+    if (BACKEND_HEALTH_UNSUPPORTED_STATUSES.has(response.status)) return await getHealth(signal)
+    if (!response.ok) return null
+    return (await response.json()) as BackendHealthResp
+  } catch {
+    return null
+  }
+}
+
+export async function getHealth(signal?: AbortSignal): Promise<HealthResp | null> {
+  try {
+    const r = await apiFetch('/api/healthz', { signal })
     if (!r.ok) return null
     return (await r.json()) as HealthResp
   } catch {
@@ -125,8 +164,17 @@ export type ContextChannelSnapshot = Record<string, unknown> & {
   channel: string
   entries: unknown[]
 }
-export type SessionTurnStatus =
-  'running' | 'completed' | 'failed' | 'interrupted' | 'unknown_outcome' | 'unknown_confirmed'
+const SESSION_TURN_STATUSES = [
+  'running',
+  'waiting',
+  'completed',
+  'failed',
+  'interrupted',
+  'unknown_outcome',
+  'unknown_confirmed',
+] as const
+const SESSION_TURN_STATUS_VALUES: ReadonlySet<string> = new Set(SESSION_TURN_STATUSES)
+export type SessionTurnStatus = (typeof SESSION_TURN_STATUSES)[number]
 export interface OpenResp {
   title?: string
   title_fallback?: SessionTitleFallback
@@ -154,6 +202,8 @@ export interface OpenResp {
   /** Runtime snapshot paired with last_seq; see live.ts resume logic. */
   running: boolean
   recovery_blocked?: boolean
+  recovery_incident_id?: string | null
+  recovery_source_seq?: number | null
   recovery_pending?: boolean
   interrupting?: boolean
   last_interrupt_succeeded?: boolean | null
@@ -291,7 +341,6 @@ const SESSION_RESUME_MANUAL_READINESS_ACTIONS = new Set<NonNullable<RuntimeReadi
   'configure',
 ])
 const SESSION_RESUME_TERMINAL_CODES = new Set([
-  'invalid_session_recovery_snapshot',
   'invalid_session_open_fields',
   'legacy_session_readonly',
   'resume_session_fields_immutable',
@@ -354,6 +403,12 @@ function parseSafeHil(value: unknown, correlationId: string): ProductHilData | n
     ...(typeof value.title === 'string' ? { title: value.title } : {}),
     ...(typeof value.body === 'string' ? { body: value.body } : {}),
     ...(typeof value.network_target === 'string' ? { network_target: value.network_target } : {}),
+    ...(typeof value.target_instance_id === 'string'
+      ? { target_instance_id: value.target_instance_id }
+      : {}),
+    ...(typeof value.target_generation === 'number' && Number.isSafeInteger(value.target_generation)
+      ? { target_generation: value.target_generation }
+      : {}),
     ...(isRecord(value.permissions) ? { permissions: value.permissions } : {}),
     ...(Array.isArray(value.safety_tags) ? { safety_tags: value.safety_tags as string[] } : {}),
     ...(Array.isArray(value.options)
@@ -433,19 +488,16 @@ export function parseOpenSessionResponse(value: unknown): OpenResp | OpenErrorRe
   if (!isRecord(value) || typeof value.session_id !== 'string' || !value.session_id) {
     return invalidRecoverySnapshot()
   }
-  const turnStatuses = new Set<SessionTurnStatus>([
-    'running',
-    'completed',
-    'failed',
-    'interrupted',
-    'unknown_outcome',
-    'unknown_confirmed',
-  ])
   if (
     !Array.isArray(value.uncertain_operations) ||
     typeof value.unknown_outcome !== 'boolean' ||
     typeof value.running !== 'boolean' ||
     (value.recovery_blocked !== undefined && typeof value.recovery_blocked !== 'boolean') ||
+    (value.recovery_incident_id != null && typeof value.recovery_incident_id !== 'string') ||
+    (value.recovery_source_seq != null &&
+      (typeof value.recovery_source_seq !== 'number' ||
+        !Number.isSafeInteger(value.recovery_source_seq) ||
+        value.recovery_source_seq < 0)) ||
     (value.recovery_pending !== undefined && typeof value.recovery_pending !== 'boolean') ||
     (value.recovery_blocked === true && (value.recovery_pending !== true || value.running)) ||
     (value.active_turn_id !== null &&
@@ -457,7 +509,7 @@ export function parseOpenSessionResponse(value: unknown): OpenResp | OpenErrorRe
     (value.last_turn_status !== undefined &&
       value.last_turn_status !== null &&
       (typeof value.last_turn_status !== 'string' ||
-        !turnStatuses.has(value.last_turn_status as SessionTurnStatus))) ||
+        !SESSION_TURN_STATUS_VALUES.has(value.last_turn_status))) ||
     (value.last_turn_id == null) !== (value.last_turn_status == null)
   )
     return invalidRecoverySnapshot()
@@ -530,10 +582,15 @@ export function classifySessionResumeFailure(
 export interface SessionOpenOptions {
   projectPath?: string | null
   resumeSessionId?: string
+  forkSessionId?: string
+  forkTurnId?: string
   modelId?: string
   reasoningEffort?: string
   permissionMode?: string
   requiredCapabilities?: RuntimeCapabilityRequirement[]
+  prepareRuntime?: boolean
+  serviceInstanceId?: string
+  signal?: AbortSignal
 }
 
 /** Project the frozen product-owned session-open contract at one boundary. */
@@ -542,13 +599,102 @@ export function buildSessionOpenRequest(opts: SessionOpenOptions = {}): Record<s
   if (Object.prototype.hasOwnProperty.call(opts, 'projectPath'))
     request.project_path = opts.projectPath ?? null
   if (opts.resumeSessionId) request.resume_session_id = opts.resumeSessionId
+  if (opts.forkSessionId) request.fork_session_id = opts.forkSessionId
+  if (opts.forkTurnId) request.fork_turn_id = opts.forkTurnId
   if (opts.modelId) request.model_id = opts.modelId
+  if (opts.prepareRuntime) {
+    request.prepare_runtime = true
+    request.service_instance_id = opts.serviceInstanceId
+  }
   if (opts.reasoningEffort) request.reasoning_effort = opts.reasoningEffort
   if (opts.permissionMode) request.permission_mode = opts.permissionMode
   if (opts.requiredCapabilities?.length) {
     request.required_capabilities = [...opts.requiredCapabilities]
   }
   return request
+}
+
+export interface AttentionNavigation extends NavigationSession {
+  focus: {
+    request_id: string | null
+    turn_id: string | null
+    item_id: string | null
+    incident_id?: string | null
+    kind: 'waiting' | 'completed' | 'failed' | 'progress' | 'recovery'
+  }
+}
+
+export async function readAttentionNavigation(id: string): Promise<AttentionNavigation | null> {
+  const response = await apiFetch(`${ATTENTION_PATH}/${encodeURIComponent(id)}/navigation`, {
+    cache: 'no-store',
+    timeoutMs: ATTENTION_REQUEST_TIMEOUT_MS,
+  })
+  if (!response.ok) return null
+  const opened = (await response.json()) as AttentionNavigation
+  return opened.session_id && opened.focus ? opened : null
+}
+
+export interface NavigationSession {
+  session_id: string
+  title: string
+  title_fallback: SessionTitleFallback
+  runtime_workdir: string
+  project_path: string | null
+  runtime_id: string
+  running: boolean
+}
+
+/** Navigation restores catalog metadata; only an explicit session action opens a runtime. */
+export async function readNavigationSession(
+  sessionId: string
+): Promise<NavigationSession | OpenErrorResp> {
+  try {
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sessionId)}/navigation`,
+      { cache: 'no-store', timeoutMs: RESUME_REQUEST_TIMEOUT_MS }
+    )
+    if (!response.ok) {
+      const failure = await serviceErrorDetail(response)
+      return {
+        status: response.status,
+        error: failure.message,
+        detail: failure.message,
+        code: failure.code,
+        ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}),
+      }
+    }
+    const value: unknown = await response.json()
+    if (
+      !isRecord(value) ||
+      value.session_id !== sessionId ||
+      !sessionId ||
+      typeof value.title !== 'string' ||
+      (value.title_fallback !== null && value.title_fallback !== 'new_session') ||
+      typeof value.runtime_workdir !== 'string' ||
+      (value.project_path !== null && typeof value.project_path !== 'string') ||
+      typeof value.runtime_id !== 'string' ||
+      !value.runtime_id ||
+      typeof value.running !== 'boolean'
+    )
+      return invalidRecoverySnapshot()
+    return {
+      session_id: sessionId,
+      title: value.title,
+      title_fallback: value.title_fallback,
+      runtime_workdir: value.runtime_workdir,
+      project_path: value.project_path,
+      runtime_id: value.runtime_id,
+      running: value.running,
+    }
+  } catch (error) {
+    const failure = describeRequestFailure(error)
+    return {
+      status: 0,
+      error: failure.message,
+      detail: failure.message,
+      ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}),
+    }
+  }
 }
 
 export async function openSession(
@@ -560,7 +706,9 @@ export async function openSession(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
-      timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
+      signal: opts.signal
+        ? AbortSignal.any([opts.signal, AbortSignal.timeout(RESUME_REQUEST_TIMEOUT_MS)])
+        : AbortSignal.timeout(RESUME_REQUEST_TIMEOUT_MS),
     })
     if (!r.ok) {
       if (r.status === 401) {
@@ -599,16 +747,20 @@ export async function openSession(
 }
 
 export interface ServeSession {
+  archived?: boolean
+  last_turn_status?: SessionTurnStatus | null
   title_fallback?: SessionTitleFallback
   session_id: string
   runtime_id: 'codex'
   runtime: RuntimeSnapshot
-  readiness: RuntimeReadiness
+  readiness: RuntimeReadiness | null
   capabilities: RuntimeCapabilities
   /** Durable creation order from the serve session registry (Unix seconds). */
   created_at?: number
   /** Durable last activity used for read/unread completion projection. */
   mtime?: number
+  /** Last nonempty Agent reply in the product event log (Unix seconds). */
+  last_agent_reply_at?: number | null
   /** Product-event revision captured with this catalog row. */
   last_seq?: number
   workdir: string
@@ -619,6 +771,8 @@ export interface ServeSession {
   live: boolean
   running?: boolean
   recovery_blocked?: boolean
+  recovery_incident_id?: string | null
+  recovery_source_seq?: number | null
   recovery_pending?: boolean
   /** A live run is blocked on a user question or permission decision. */
   waiting?: boolean
@@ -637,6 +791,7 @@ export interface ServeSession {
 export interface ServeSessionCatalog {
   sessions: ServeSession[]
   total: number
+  next_cursor?: string | null
 }
 
 export type SessionCatalogFailureKind = 'transport' | 'http' | 'schema'
@@ -653,10 +808,13 @@ export type SessionCatalogLoadResult =
 export type SessionListScope = 'all' | 'project' | 'unassigned'
 
 export interface SessionListOptions {
+  archived?: boolean
   limit?: number
+  cursor?: string
   scope?: SessionListScope
   projectPath?: string
   query?: string
+  includeAgentReplyAt?: boolean
 }
 
 const SESSION_CATALOG_REQUEST_TIMEOUT_STATUS = 408
@@ -680,17 +838,26 @@ export function parseSessionCatalog(value: unknown): ServeSession[] | null {
 
 export function parseSessionCatalogResult(value: unknown): ServeSessionCatalog | null {
   if (!isRecord(value) || !Array.isArray(value.sessions)) return null
+  if (
+    value.next_cursor !== undefined &&
+    value.next_cursor !== null &&
+    typeof value.next_cursor !== 'string'
+  )
+    return null
   const sessions = value.sessions as ServeSession[]
   return {
     sessions,
     total: typeof value.total === 'number' ? value.total : sessions.length,
+    ...(value.next_cursor !== undefined ? { next_cursor: value.next_cursor as string | null } : {}),
   }
 }
 
-export async function loadSessionCatalog(
-  options: SessionListOptions = {}
+async function requestSessionCatalog(
+  options: SessionListOptions = {},
+  synchronizeRoots = false
 ): Promise<SessionCatalogLoadResult> {
-  let response: Response
+  const startedAt = performance.now()
+  let response: Response | undefined
   try {
     const query = new URLSearchParams({
       limit: String(options.limit ?? SESSION_LIST_DEFAULT_LIMIT),
@@ -700,7 +867,10 @@ export async function loadSessionCatalog(
       query.set('project_path', options.projectPath)
     }
     if (options.query?.trim()) query.set('query', options.query.trim())
-    response = await apiFetch(`/api/serve/sessions?${query.toString()}`)
+    if (options.cursor) query.set('cursor', options.cursor)
+    if (options.archived !== undefined) query.set('archived', String(options.archived))
+    if (options.includeAgentReplyAt) query.set('include_last_agent_reply', 'true')
+    response = await apiFetch(`${SESSION_CATALOG_PATH}?${query.toString()}`, LIVE_CATALOG_REQUEST)
     if (!response.ok) {
       // 与本文件其余请求口同一条约定: 401 要广播出去。工作台失败屏靠它区分
       // 「没登录」与「别的故障」, 并据此把动作换成登录而不是无用的重新加载。
@@ -711,18 +881,63 @@ export async function loadSessionCatalog(
     let payload: unknown
     try {
       payload = await response.json()
-    } catch {
+    } catch (error) {
+      reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'decode', error)
       return { ok: false, failure: { kind: 'schema', retryable: false } }
     }
     const catalog = parseSessionCatalogResult(payload)
-    if (!catalog) return { ok: false, failure: { kind: 'schema', retryable: false } }
-    void window.scholarseed.syncAuthorizedRoots(
-      'session',
-      catalog.sessions.map((session) => session.runtime_workdir || session.workdir).filter(Boolean)
-    )
+    if (!catalog) {
+      reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'schema')
+      return { ok: false, failure: { kind: 'schema', retryable: false } }
+    }
+    if (synchronizeRoots) syncSessionRoots(catalog.sessions)
     return { ok: true, catalog }
-  } catch {
+  } catch (error) {
+    // apiFetch owns HTTP/transport diagnostics. A received response distinguishes
+    // subsequent client processing failures without logging its body or paths.
+    if (response)
+      reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'projection', error)
     return { ok: false, failure: { kind: 'transport', retryable: true } }
+  }
+}
+
+function syncSessionRoots(sessions: ServeSession[]): void {
+  void window.scholarseed.syncAuthorizedRoots(
+    'session',
+    sessions.map((session) => session.runtime_workdir || session.workdir).filter(Boolean)
+  )
+}
+
+export async function loadSessionCatalog(
+  options: SessionListOptions = {}
+): Promise<SessionCatalogLoadResult> {
+  return requestSessionCatalog(options, true)
+}
+
+export async function listAllSessions(
+  options: SessionListOptions = {},
+  active: () => boolean = () => true,
+  behavior: { synchronizeRoots?: boolean } = {}
+): Promise<ServeSession[] | null> {
+  const sessions = new Map<string, ServeSession>()
+  const cursors = new Set<string>()
+  let cursor = options.cursor
+  do {
+    const result = await requestSessionCatalog({ ...options, cursor })
+    if (!active() || !result.ok) return null
+    for (const session of result.catalog.sessions) {
+      if (!sessions.has(session.session_id)) sessions.set(session.session_id, session)
+    }
+    cursor = result.catalog.next_cursor || undefined
+    if (cursor && cursors.has(cursor)) return null
+    if (cursor) cursors.add(cursor)
+  } while (cursor)
+  const rows = [...sessions.values()]
+  try {
+    if (behavior.synchronizeRoots !== false) syncSessionRoots(rows)
+    return rows
+  } catch {
+    return null
   }
 }
 
@@ -734,9 +949,10 @@ export async function listSessionCatalog(
 }
 
 export async function listSessions(
-  options: SessionListOptions = {}
+  options: SessionListOptions = {},
+  behavior: { synchronizeRoots?: boolean } = {}
 ): Promise<ServeSession[] | null> {
-  const result = await loadSessionCatalog(options)
+  const result = await requestSessionCatalog(options, behavior.synchronizeRoots ?? true)
   return result.ok ? result.catalog.sessions : null
 }
 
@@ -777,7 +993,7 @@ export interface HistoryTurn {
   item_id?: string
   kind: string // thinking | text | tool | user
   role?: string
-  origin?: 'turn' | 'steer'
+  origin?: 'turn' | 'steer' | 'recovery'
   phase?: 'commentary' | 'final_answer' | null
   name?: string
   text?: string
@@ -827,6 +1043,8 @@ export interface HistoryTurn {
 export interface HistoryResult {
   turns: HistoryTurn[]
   recovery_blocked?: boolean
+  recovery_incident_id?: string | null
+  recovery_source_seq?: number | null
   recovery_pending?: boolean
   /** Persisted complete plan snapshot. */
   todos: TodoItemUI[]
@@ -859,6 +1077,8 @@ export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | 
     const data = (await r.json()) as {
       turns?: HistoryTurn[]
       recovery_blocked?: boolean
+      recovery_incident_id?: string | null
+      recovery_source_seq?: number | null
       recovery_pending?: boolean
       todos?: TodoItemUI[]
       todo_turn_id?: string | null
@@ -869,6 +1089,8 @@ export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | 
     return {
       turns: data.turns ?? [],
       recovery_blocked: data.recovery_blocked === true,
+      recovery_incident_id: data.recovery_incident_id ?? null,
+      recovery_source_seq: data.recovery_source_seq ?? null,
       recovery_pending: data.recovery_pending === true,
       todos: Array.isArray(data.todos) ? data.todos : [],
       todo_turn_id: data.todo_turn_id ?? null,
@@ -918,6 +1140,7 @@ export interface TurnResponse {
   queued_message_id?: string
   queued_depth?: number
   issues?: AssistantContextFailureIssue[]
+  preparation_error?: boolean
 }
 
 export interface SideTurnResponse {
@@ -1067,6 +1290,8 @@ export interface TurnContextAdmission {
   taskType?: ProductTaskType
   activeDocument?: ActiveDocument
   selectedLiteratureIds?: string[]
+  expectedModelId?: string
+  serviceInstanceId?: string
 }
 
 export type ActiveDocument =
@@ -1095,11 +1320,25 @@ export async function postTurn(
               task_type: admission.taskType,
               active_document: admission.activeDocument,
               selected_literature_ids: admission.selectedLiteratureIds,
+              expected_model_id: admission.expectedModelId,
+              service_instance_id: admission.serviceInstanceId,
             }
           : {}),
       }),
     })
     if (!r.ok) {
+      const preparation = (await r
+        .clone()
+        .json()
+        .catch(() => null)) as { preparation_error?: boolean; error?: string } | null
+      if (preparation?.preparation_error) {
+        return {
+          ok: false,
+          error: preparation.error,
+          preparation_error: true,
+          submissionOutcome: 'rejected',
+        }
+      }
       const failure = await serviceErrorDetail(r)
       if (turnErrorCode(failure.code ?? failure.message) === SESSION_INTERRUPTING_ERROR) {
         return {
@@ -1392,6 +1631,7 @@ export interface SessionModelResponse {
   ok: boolean
   session_id: string
   model_id: string
+  default_model_id?: string
   active_model_id?: string
   reasoning_effort?: string
   active_reasoning_effort?: string
@@ -1428,17 +1668,145 @@ async function sessionModelFailure(
   }
 }
 
+export interface RuntimePreparation {
+  request_id: string
+  session_id: null
+  model_id: string
+  state: ReconfigurationOperation['state']
+  error: string
+  service_instance_id: string
+}
+
+async function runtimePreparationRequest(
+  requestId: string,
+  options: { modelId: string; serviceInstanceId: string; persistDefault: boolean } | null,
+  signal?: AbortSignal
+): Promise<RuntimePreparation> {
+  const response = await apiFetch(
+    options
+      ? '/api/serve/runtime/prepare'
+      : `/api/serve/runtime/prepare/${encodeURIComponent(requestId)}`,
+    {
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(RECONFIGURATION_REQUEST_TIMEOUT_MS)])
+        : AbortSignal.timeout(RECONFIGURATION_REQUEST_TIMEOUT_MS),
+      ...(options
+        ? {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              request_id: requestId,
+              model_id: options.modelId,
+              service_instance_id: options.serviceInstanceId,
+              persist_default: options.persistDefault,
+            }),
+          }
+        : {}),
+    }
+  )
+  const payload = (await response.json()) as Partial<RuntimePreparation>
+  if (!response.ok)
+    throw Object.assign(new Error(payload.error || 'runtime_preparation_unknown'), {
+      status: response.status,
+    })
+  if (
+    payload.request_id !== requestId ||
+    payload.session_id !== null ||
+    typeof payload.model_id !== 'string' ||
+    !payload.model_id ||
+    typeof payload.service_instance_id !== 'string' ||
+    !payload.service_instance_id ||
+    typeof payload.error !== 'string' ||
+    !['accepted', 'applied', 'rejected', 'restart_required', 'unsupported'].includes(
+      payload.state ?? ''
+    ) ||
+    (options &&
+      (payload.model_id !== options.modelId ||
+        payload.service_instance_id !== options.serviceInstanceId))
+  ) {
+    throw new Error('runtime_preparation_unknown')
+  }
+  return payload as RuntimePreparation
+}
+
+export function prepareRuntime(
+  options: {
+    requestId: string
+    modelId: string
+    serviceInstanceId: string
+    persistDefault: boolean
+  },
+  signal?: AbortSignal
+): Promise<RuntimePreparation> {
+  return runtimePreparationRequest(options.requestId, options, signal)
+}
+
+export function getRuntimePreparation(
+  requestId: string,
+  signal?: AbortSignal
+): Promise<RuntimePreparation> {
+  return runtimePreparationRequest(requestId, null, signal)
+}
+
+export async function getSharedRuntimeReconfiguration(
+  signal: AbortSignal = AbortSignal.timeout(RECONFIGURATION_REQUEST_TIMEOUT_MS)
+): Promise<{ state: ReconfigurationOperation['state'] | null; service_instance_id: string }> {
+  const response = await apiFetch('/api/serve/runtime/reconfiguration', { signal })
+  if (!response.ok) throw new Error('runtime_reconfiguration_unknown')
+  const result = await response.json()
+  if (
+    !result ||
+    typeof result.service_instance_id !== 'string' ||
+    (result.state !== null &&
+      !['accepted', 'applied', 'rejected', 'restart_required', 'unsupported'].includes(
+        result.state
+      ))
+  ) {
+    throw new Error('runtime_reconfiguration_unknown')
+  }
+  return result
+}
+
+export async function currentRuntimeReconfiguration(
+  sessionId: string
+): Promise<ReconfigurationOperation | undefined> {
+  const response = await apiFetch(
+    `/api/serve/sessions/${encodeURIComponent(sessionId)}/runtime/reconfigure`,
+    { timeoutMs: RECONFIGURATION_REQUEST_TIMEOUT_MS }
+  )
+  if (response.status === 204) return undefined
+  if (!response.ok) throw new Error('runtime_reconfiguration_unknown')
+  return readRuntimeReconfiguration(await response.json(), sessionId)
+}
+
+export async function getRuntimeReconfiguration(
+  sessionId: string,
+  requestId: string
+): Promise<ReconfigurationOperation> {
+  const response = await apiFetch(
+    `/api/serve/sessions/${encodeURIComponent(sessionId)}/runtime/reconfigure/${encodeURIComponent(requestId)}`,
+    { timeoutMs: RECONFIGURATION_REQUEST_TIMEOUT_MS }
+  )
+  if (!response.ok) throw new Error('runtime_reconfiguration_unknown')
+  return readRuntimeReconfiguration(await response.json(), sessionId, requestId)
+}
+
 export async function setSessionModel(
   sid: string,
   modelId: string,
-  reasoningEffort = ''
+  reasoningEffort = '',
+  rememberDefault = false
 ): Promise<SessionModelResponse | null> {
   const path = `/api/serve/sessions/${encodeURIComponent(sid)}/model`
   try {
     const response = await apiFetch(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model_id: modelId, reasoning_effort: reasoningEffort }),
+      body: JSON.stringify({
+        model_id: modelId,
+        reasoning_effort: reasoningEffort,
+        ...(rememberDefault ? { remember_default: true } : {}),
+      }),
     })
     if (response.status === 401) {
       window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
@@ -1580,6 +1948,7 @@ export async function respondHil(
   requestId: string,
   body: {
     option_id?: string
+    decision?: 'deny' | 'allow_once'
     answers?: Record<string, string>
     free_text?: string
     values?: Record<string, unknown>
@@ -1677,7 +2046,7 @@ export async function checkSessionRecovery(sid: string): Promise<RecoveryCheckRe
         ok: false,
         recovery_blocked: true,
         recovery_pending: true,
-        error: 'invalid_recovery_check',
+        error: FAILURE_CODES.invalidRecoveryCheck,
       }
     }
     return result as RecoveryCheckResponse
@@ -1799,6 +2168,30 @@ export interface ProductHilData {
   suggested_prefix?: string
   prefix_kind?: string
   requested_at?: number
+  method?: string
+  tab_id?: string
+  proof_id?: string
+  target_instance_id?: string
+  target_generation?: number
+  tab_title?: string
+  tab_url?: string
+  origin?: string
+  source_origin?: string | null
+  destination_url?: string
+  destination_origin?: string
+  prepared_id?: string
+  snapshot_id?: string
+  element_ref?: string
+  browser_action?: 'click' | 'fill' | 'submit'
+  element?: { role: string; name: string }
+  action?: string
+  intent?: string
+  expires_at?: number
+  search?: string
+  offset?: number
+  limit?: number
+  query_digest?: string
+  history_revision?: number
 }
 
 export interface ProductInteraction extends ProductHilData {
@@ -1809,6 +2202,8 @@ export interface ProductInteraction extends ProductHilData {
   answers?: Record<string, string>
   created_at: number
   resolved_at?: number | null
+  decision?: 'deny' | 'allow_once'
+  reason?: string
 }
 
 export async function getPendingInteractions(): Promise<ProductInteraction[]> {
@@ -1858,6 +2253,23 @@ export interface ProductSubagentData {
   details?: Record<string, unknown>
 }
 
+/**
+ * AI 经 bridge 改动产品数据后广播的「过期数据域」。
+ *
+ * 这是粗失效: 事件只说哪个域脏了, 不说哪几条脏了, 消费方按域整片重取。于是新增一个
+ * 数据域只要在这里加一个常量、在 live.ts 的映射表里加一行, 界面组件不需要声明自己读
+ * 的是哪个实体。取值与 serve 的 `service/chat/service/invalidation.py` 一一对应。
+ *
+ * `scopes` 故意是 `string[]` 而不是常量联合: 旧界面收到新版本才有的域名时应当忽略,
+ * 而不是让类型断言变成假话。
+ */
+export const PRODUCT_DATA_SCOPE_LITERATURE = 'literature'
+export const PRODUCT_DATA_SCOPE_RESOURCES = 'resources'
+
+export interface ProductDataChangedData {
+  scopes: string[]
+}
+
 export type ProductEvent =
   | ProductEventBase<
       'session_state',
@@ -1866,6 +2278,9 @@ export type ProductEvent =
         runtime_id: string
         reason?: string
         active_turn_id?: string
+        recovery_blocked?: boolean
+        incident_id?: string | null
+        recovery_pending?: boolean
       }
     >
   | ProductEventBase<
@@ -1879,7 +2294,7 @@ export type ProductEvent =
         refs: HistoryMessageReference[]
         client_turn_id: string
         binding: 'admitted' | 'bound' | 'cancelled'
-        origin?: 'turn' | 'steer'
+        origin?: 'turn' | 'steer' | 'recovery'
       }
     >
   | ProductEventBase<
@@ -1917,7 +2332,12 @@ export type ProductEvent =
       'plan_snapshot',
       {
         items: TodoItemUI[]
-        plan?: { source: 'structured' | 'released'; plan_id: string; revision: number }
+        plan?: {
+          source: 'structured' | 'released'
+          plan_id: string
+          revision: number
+          timing_policy?: string
+        }
       }
     >
   | ProductEventBase<'tool_started', { tool_id: string; name: string; input?: unknown }>
@@ -1959,6 +2379,7 @@ export type ProductEvent =
       'file_changed',
       { change: 'add' | 'update' | 'delete'; path: string; artifact?: SessionArtifact }
     >
+  | ProductEventBase<'product_data_changed', ProductDataChangedData>
   | ProductEventBase<
       'artifact_changed',
       {
@@ -2001,6 +2422,8 @@ export type ProductEvent =
         answer?: string
         answers?: Record<string, string>
         decision_scope?: string
+        decision?: 'deny' | 'allow_once'
+        reason?: string
         resolved_at?: number | null
       }
     >
@@ -2095,14 +2518,18 @@ export function isProductEventEnvelope(value: unknown): value is AspEnvelope {
 const SSE_RECONNECT_INITIAL_DELAY_MS = 500
 const SSE_RECONNECT_MAX_DELAY_MS = 15_000
 const SSE_RECONNECT_JITTER_RATIO = 0.2
+const SSE_IDLE_TIMEOUT_MS = 60_000
+const SSE_HEARTBEAT_EVENT = 'heartbeat'
 
 export type SseConnectionState = 'connecting' | 'live' | 'retrying' | 'offline'
+export type SseRecoveryReason = 'idle' | 'foreground' | 'projection' | 'gap'
 
 export function streamEvents(
   sid: string,
   fromSeq: number,
   onEvent: (env: AspEnvelope) => void,
-  onConnectionState?: (state: SseConnectionState) => void
+  onConnectionState?: (state: SseConnectionState) => void,
+  onRecovery?: (reason: SseRecoveryReason) => void
 ): () => void {
   // seq 游标续流: 断连后带「最后收到的 seq」显式重开 (EventSource 内建重连会复用过期的
   // from_seq URL), 服务端按游标重放 backlog — 断连期间的帧不丢; 重放重叠帧按 seq 去重。
@@ -2111,8 +2538,83 @@ export function streamEvents(
   let es: EventSource | null = null
   let reconnectTimer: number | null = null
   let reconnectAttempt = 0
+  let idleTimer: number | null = null
+  let lastFrameAt = Date.now()
+  let heartbeatCount = 0
+  let appliedCount = 0
+  const diagnostic = (stage: string, detail: Record<string, unknown> = {}): void => {
+    console.info(
+      '[session-stream]',
+      JSON.stringify({
+        stage,
+        sessionId: sid,
+        sequence: last,
+        heartbeatCount,
+        appliedCount,
+        ...detail,
+      })
+    )
+  }
+  const clearIdle = (): void => {
+    if (idleTimer !== null) window.clearTimeout(idleTimer)
+    idleTimer = null
+  }
+  const dispose = (): void => {
+    closed = true
+    clearIdle()
+    if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+    reconnectTimer = null
+    es?.close()
+    es = null
+    window.removeEventListener('focus', foreground)
+    document.removeEventListener('visibilitychange', foreground)
+  }
+  const retry = (reason: string): void => {
+    if (closed || reconnectTimer !== null) return
+    clearIdle()
+    es?.close()
+    es = null
+    reconnectAttempt += 1
+    onConnectionState?.('retrying')
+    const baseDelay = Math.min(
+      SSE_RECONNECT_MAX_DELAY_MS,
+      SSE_RECONNECT_INITIAL_DELAY_MS * 2 ** (reconnectAttempt - 1)
+    )
+    const jitter = baseDelay * SSE_RECONNECT_JITTER_RATIO * (Math.random() * 2 - 1)
+    const delay = Math.max(0, baseDelay + jitter)
+    diagnostic('retry', { reason, attempt: reconnectAttempt, delayMs: delay })
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null
+      open()
+    }, delay)
+  }
+  const recover = (reason: SseRecoveryReason): void => {
+    if (closed) return
+    diagnostic('recovery', { reason, idleMs: Date.now() - lastFrameAt })
+    if (!onRecovery) {
+      retry(reason)
+      return
+    }
+    dispose()
+    onConnectionState?.('retrying')
+    onRecovery(reason)
+  }
+  const foreground = (): void => {
+    if (
+      document.visibilityState === 'visible' &&
+      es !== null &&
+      Date.now() - lastFrameAt >= SSE_IDLE_TIMEOUT_MS
+    )
+      recover('foreground')
+  }
+  const touch = (): void => {
+    lastFrameAt = Date.now()
+    clearIdle()
+    idleTimer = window.setTimeout(() => recover('idle'), SSE_IDLE_TIMEOUT_MS)
+  }
   const open = (): void => {
     if (closed) return
+    diagnostic('connecting', { attempt: reconnectAttempt })
     onConnectionState?.(reconnectAttempt > 0 ? 'retrying' : 'connecting')
     const connection = new EventSource(
       apiBase() + `/api/serve/sessions/${sid}/events?from_seq=${last}`,
@@ -2123,77 +2625,84 @@ export function streamEvents(
       }
     )
     es = connection
+    touch()
+    connection.addEventListener(SSE_HEARTBEAT_EVENT, () => {
+      if (!closed && connection === es) {
+        heartbeatCount += 1
+        touch()
+      }
+    })
     connection.onopen = () => {
-      if (connection !== es) return
+      if (closed || connection !== es) return
       reconnectAttempt = 0
+      touch()
+      diagnostic('live')
       onConnectionState?.('live')
     }
     connection.onmessage = (m) => {
+      if (closed || connection !== es) return
+      touch()
+      let candidate: unknown
       try {
-        const candidate: unknown = JSON.parse(m.data)
-        if (!isProductEventEnvelope(candidate)) {
-          console.warn('[scholarseed] ignored SSE frame with an unsupported product schema')
-          return
-        }
-        const env = candidate
-        if (env.session_id && env.session_id !== sid) {
-          console.warn('[scholarseed] ignored SSE frame with a different session', {
-            expectedSessionId: sid,
-            receivedSessionId: env.session_id,
-            sequence: env.seq,
-            type: env.type,
-          })
-          return
-        }
-        const seq = Number(env.seq ?? 0)
-        if (seq) {
-          if (seq <= last) return
-          last = seq
-        }
-        onEvent(env)
+        candidate = JSON.parse(m.data)
       } catch {
-        /* ignore malformed frame */
+        diagnostic('invalid-json')
+        return
+      }
+      if (!isProductEventEnvelope(candidate)) {
+        diagnostic('unsupported-schema')
+        return
+      }
+      const env = candidate
+      if (env.session_id !== sid) {
+        diagnostic('session-mismatch', {
+          receivedSessionId: env.session_id,
+          receivedSequence: env.seq,
+        })
+        return
+      }
+      const seq = env.seq
+      if (seq <= last) return
+      if (seq !== last + 1) {
+        diagnostic('sequence-gap', { receivedSequence: seq })
+        recover('gap')
+        return
+      }
+      try {
+        onEvent(env)
+        last = seq
+        appliedCount += 1
+      } catch (error) {
+        diagnostic('projection-failed', {
+          failedSequence: seq,
+          eventType: env.type,
+          errorName: error instanceof Error ? error.name : 'unknown',
+        })
+        recover('projection')
       }
     }
     connection.onerror = () => {
       // EventSource errors can arrive after a newer connection has been opened.
       // Only the current connection owns the retry timer and may close itself.
-      if (connection !== es) return
-      connection.close()
-      es = null
-      if (closed || reconnectTimer !== null) return
-      reconnectAttempt += 1
-      onConnectionState?.('retrying')
-      const baseDelay = Math.min(
-        SSE_RECONNECT_MAX_DELAY_MS,
-        SSE_RECONNECT_INITIAL_DELAY_MS * 2 ** (reconnectAttempt - 1)
-      )
-      const jitter = baseDelay * SSE_RECONNECT_JITTER_RATIO * (Math.random() * 2 - 1)
-      reconnectTimer = window.setTimeout(
-        () => {
-          reconnectTimer = null
-          open()
-        },
-        Math.max(0, baseDelay + jitter)
-      )
+      if (closed || connection !== es) return
+      retry('transport')
     }
   }
+  window.addEventListener('focus', foreground)
+  document.addEventListener('visibilitychange', foreground)
   open()
   return () => {
-    closed = true
+    diagnostic('disposed')
+    dispose()
     onConnectionState?.('offline')
-    if (reconnectTimer !== null) {
-      window.clearTimeout(reconnectTimer)
-      reconnectTimer = null
-    }
-    es?.close()
-    es = null
   }
 }
 
 // ── ScholarSeed projects ────────────────────────────────────────────────────────
 
 export interface Project {
+  description?: string
+  pinned?: boolean
   /**
    * content 域的项目身份。资料 / 文献 / 搜索 / 文件事件这些接口只认它，
    * 传路径会被明确拒绝（unknown_project）。
@@ -2278,10 +2787,12 @@ export async function listProjects(includeArchived = false): Promise<ProjectsRes
       available: boolean
       created_at?: number | null
       archived_at?: number | null
+      description?: string
+      pinned?: boolean
     }[]
     current: string
     workspaceRoot: string
-  }>(`/api/content/projects${query}`)
+  }>(`/api/content/projects${query}`, undefined, LIVE_CATALOG_REQUEST)
   if (!payload) return null
   const result: ProjectsResp = {
     default: payload.workspaceRoot,
@@ -2293,6 +2804,8 @@ export async function listProjects(includeArchived = false): Promise<ProjectsRes
       layout: project.layout,
       available: project.available,
       archived_at: project.archived_at ?? null,
+      description: project.description ?? '',
+      pinned: project.pinned ?? false,
     })),
   }
   void window.scholarseed.syncAuthorizedRoots(
@@ -2308,16 +2821,36 @@ export async function listProjects(includeArchived = false): Promise<ProjectsRes
  * 目录，身份键与目录名都由后端生成——前端不提交任何本机路径。
  */
 export async function createManagedProject(name: string): Promise<Project | null> {
-  const created = await postJson<{ id: string; name: string; root: string }>(
-    '/api/content/projects',
-    { name }
-  )
-  if (!created) return null
-  return {
-    id: created.id,
-    name: created.name,
-    path: created.root,
-    added_at: Math.floor(Date.now() / 1000),
+  return submitProject('/api/content/projects', { name })
+}
+
+export async function adoptProject(path: string, name: string): Promise<Project | null> {
+  return submitProject('/api/content/projects/adopt', { path, name })
+}
+
+async function submitProject(
+  endpoint: string,
+  payload: { name: string; path?: string }
+): Promise<Project | null> {
+  try {
+    const response = await resolveContentResponse(
+      await apiFetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    )
+    if (response.status === 401) window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
+    if (!response.ok) return null
+    const created = (await response.json()) as { id: string; name: string; root: string }
+    return {
+      id: created.id,
+      name: created.name,
+      path: created.root,
+      added_at: Math.floor(Date.now() / 1000),
+    }
+  } catch {
+    return null
   }
 }
 
@@ -2356,11 +2889,12 @@ async function mutateProject(
   body: unknown
 ): Promise<ProjectMutation> {
   try {
-    const response = await apiFetch(path, {
+    let response = await apiFetch(path, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
+    response = await resolveContentResponse(response)
     const payload = (await response.json().catch(() => ({}))) as {
       detail?: string | { message?: string }
     }
@@ -2420,6 +2954,7 @@ export interface SubscriptionGroup {
   label: string
 }
 export interface ModelsResp {
+  service_instance_id: string
   configured: boolean
   current_model: string
   available_models: ModelInfo[]
@@ -2470,7 +3005,7 @@ export interface PersonalApiProfile {
   pdf_input?: boolean
   authentication?: 'api_key' | 'oauth'
   oauth_provider?: string
-  oauth?: { state: string; account_label: string; billing: string }
+  oauth?: { state: string; account_label: string; billing: string; error?: string }
   id: string
   /** Resolved label: preview_name when set, otherwise the first selected model id. */
   name: string
@@ -2525,13 +3060,35 @@ export interface PersonalApiProbeResult {
 }
 
 export type ProfileRequestErrorCode = 'authentication_required' | 'http_failure' | 'network_failure'
+/**
+ * 保存校验失败时后端回传的结构化原因。`code` 固定为 connection_validation_failed;
+ * `model` 只在「真的调用了某个已选模型」时非空, `upstream` 是截断后的上游原文。
+ * 有了它弹窗才能指名失败模型, 而不是只按 422 状态码归到「检查地址与 API Key」。
+ */
+export type PersonalApiFailureDetail = {
+  code: string
+  model?: string
+  wire_api?: string
+  error_class?: string
+  upstream?: string
+}
 export type PersonalApiFailure = {
   ok: false
   error: string
   code?: ProfileRequestErrorCode
   status?: number
+  detail?: PersonalApiFailureDetail
 }
 export type PersonalApiResult<T> = { ok: true; data: T } | PersonalApiFailure
+
+/** 后端把保存校验失败回成带 `code` 的结构化 detail; 其余错误的 detail 是纯字符串。 */
+function asFailureDetail(value: unknown): PersonalApiFailureDetail | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const detail = value as Record<string, unknown>
+  return typeof detail.code === 'string'
+    ? (detail as unknown as PersonalApiFailureDetail)
+    : undefined
+}
 
 /** 端点预置：只是表单填空提示，产品不会主动连接其中任何一条。 */
 export interface ModelProviderPreset {
@@ -2567,11 +3124,14 @@ export async function profileRequest<T>(
     }
     const payload = (await r.json().catch(() => ({}))) as Record<string, unknown>
     if (!r.ok) {
+      // 保存校验失败回结构化 detail（含失败模型与上游原文）; 其余错误仍是不带结构的字符串。
+      const detail = asFailureDetail(payload.detail)
       return {
         ok: false,
-        error: String(payload.detail || ''),
+        error: detail ? detail.upstream || '' : String(payload.detail || ''),
         code: 'http_failure',
         status: r.status,
+        ...(detail ? { detail } : {}),
       }
     }
     return { ok: true, data: payload as T }
@@ -2585,46 +3145,65 @@ export async function profileRequest<T>(
 }
 
 export const getModelProviders = (): Promise<ModelProvidersResp | null> =>
-  getJson('/api/serve/model-providers')
+  getJson(MODEL_PROVIDERS_PATH)
 export const getPersonalApiProfiles = (): Promise<PersonalApiProfilesResp | null> =>
-  getJson('/api/serve/model-profiles')
+  getJson(MODEL_PROFILES_PATH)
 export const listPersonalApiModels = (
   input: PersonalApiInput,
   profileId = ''
 ): Promise<PersonalApiResult<PersonalApiProbeResult>> =>
-  profileRequest('POST', '/api/serve/model-profiles/models', { ...input, profile_id: profileId })
+  profileRequest('POST', `${MODEL_PROFILES_PATH}/models`, { ...input, profile_id: profileId })
 export const probePersonalApi = (
   input: PersonalApiInput,
   profileId = ''
 ): Promise<PersonalApiResult<PersonalApiProbeResult>> =>
-  profileRequest('POST', '/api/serve/model-profiles/probe', { ...input, profile_id: profileId })
+  profileRequest('POST', `${MODEL_PROFILES_PATH}/probe`, { ...input, profile_id: profileId })
 export const createPersonalApiProfile = (
   input: PersonalApiInput
 ): Promise<PersonalApiResult<PersonalApiMutationResp>> =>
-  profileRequest('POST', '/api/serve/model-profiles', input)
+  profileRequest('POST', MODEL_PROFILES_PATH, input)
 export const updatePersonalApiProfile = (
   id: string,
   input: PersonalApiInput
 ): Promise<PersonalApiResult<PersonalApiMutationResp>> =>
-  profileRequest('PUT', `/api/serve/model-profiles/${encodeURIComponent(id)}`, input)
+  profileRequest('PUT', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`, input)
 export const setPersonalApiProfileEnabled = (
   id: string,
   enabled: boolean
 ): Promise<PersonalApiResult<ModelSelectionResp>> =>
-  profileRequest('POST', `/api/serve/model-profiles/${encodeURIComponent(id)}/enabled`, { enabled })
+  profileRequest('POST', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}/enabled`, { enabled })
 export const setPersonalApiModelVisibility = (
   id: string,
   modelId: string,
   hidden: boolean
 ): Promise<PersonalApiResult<ModelSelectionResp>> =>
-  profileRequest('POST', `/api/serve/model-profiles/${encodeURIComponent(id)}/models/visibility`, {
+  profileRequest('POST', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}/models/visibility`, {
     model_id: modelId,
     hidden,
   })
 export const deletePersonalApiProfile = (id: string): Promise<ModelSelectionResp | null> =>
-  deleteJson(`/api/serve/model-profiles/${encodeURIComponent(id)}`)
+  deleteJson(`${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`)
 
-export interface SkillInfo {
+export interface SkillAttribution {
+  authors: string[]
+  repository_url: string | null
+  repository_name: string
+  kind: string
+  path: string
+  revision: string
+}
+
+export interface SkillAttributionInfo {
+  attribution?: SkillAttribution | null
+  attributionStatus?: 'ready' | 'missing' | 'invalid' | 'unavailable'
+}
+
+export interface SkillInfo extends SkillAttributionInfo {
+  installationSource?: 'upload' | 'marketplace' | 'created' | 'github' | 'unknown'
+  latestVersion?: string | null
+  updateStatus?: 'available' | 'current' | 'unavailable' | 'unmapped'
+  labels?: SkillLabel[] | null
+  labelsStatus?: 'ready' | 'unavailable' | 'unmapped'
   name: string
   requires_login?: boolean
   display_name?: string
@@ -2659,7 +3238,15 @@ export interface SkillInfo {
   /** PRD 2.1.6 技能列表展示用的一句话中文说明（后端专供 UI，不同于给 LLM 的 description）。 */
   blurb?: string
   /** 从技能广场安装时记录的来源；本地技能为 null。 */
-  hub?: { namespace?: string; slug?: string; version?: string; fingerprint?: string } | null
+  hub?: {
+    source?: string
+    registry?: string
+    namespace?: string
+    slug?: string
+    version?: string
+    fingerprint?: string
+    provider?: string
+  } | null
   /** 技能目录 mtime（秒）。后端取不到时不返回，前端也就不显示「更新于」。 */
   updated_at?: number | null
   removable: boolean
@@ -2677,7 +3264,158 @@ export interface SkillInfo {
 
 export type SkillGroup = 'scholarseed' | 'user'
 
-// SkillHub 相关类型与接口已移除: 官方技能随 dmg 预装, 客户端不连广场。
+export interface SkillLabel {
+  slug: string
+  type: 'RECOMMENDED' | 'PRIVILEGED'
+  displayName: string
+}
+
+export interface MarketplaceSkill extends SkillAttributionInfo {
+  labels?: SkillLabel[] | null
+  labelsStatus?: 'ready' | 'unavailable'
+  namespace?: string
+  slug: string
+  name: string
+  description: string
+  version: string
+  moderation: 'unknown' | 'blocked' | 'clean'
+  downloads?: number | null
+  provider?: string
+}
+
+export interface MarketplacePage {
+  total?: number
+  items: MarketplaceSkill[]
+  nextCursor: string | null
+  registry: string
+  registryAliases?: string[]
+}
+
+export interface MarketplaceDetail extends MarketplaceSkill {
+  document: string
+  registry: string
+  provider: string
+}
+
+const MARKETPLACE_CACHE_TTL_MS = 5 * 60 * 1000
+const MARKETPLACE_CACHE_MAX_ENTRIES = 64
+interface MarketplaceCacheEntry<Value> {
+  expiresAt: number
+  pending: boolean
+  promise: Promise<Value>
+}
+const marketplacePages = new Map<string, MarketplaceCacheEntry<MarketplacePage>>()
+const marketplaceLabels = new Map<string, MarketplaceCacheEntry<SkillLabel[]>>()
+
+function cachedMarketplace<Value>(
+  cache: Map<string, MarketplaceCacheEntry<Value>>,
+  key: string,
+  load: () => Promise<Value>
+): Promise<Value> {
+  const cached = cache.get(key)
+  if (cached && (cached.pending || cached.expiresAt > Date.now())) {
+    cache.delete(key)
+    cache.set(key, cached)
+    return cached.promise
+  }
+  const entry: MarketplaceCacheEntry<Value> = {
+    expiresAt: 0,
+    pending: true,
+    promise: load().then(
+      (value) => {
+        entry.pending = false
+        entry.expiresAt = Date.now() + MARKETPLACE_CACHE_TTL_MS
+        return value
+      },
+      (error: unknown) => {
+        if (cache.get(key) === entry) cache.delete(key)
+        throw error
+      }
+    ),
+  }
+  cache.delete(key)
+  cache.set(key, entry)
+  if (cache.size > MARKETPLACE_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!)
+  return entry.promise
+}
+
+export function clearMarketplaceCache(): void {
+  marketplacePages.clear()
+  marketplaceLabels.clear()
+}
+
+export async function getMarketplace(
+  query = '',
+  cursor = '',
+  label = '',
+  locale = 'en'
+): Promise<MarketplacePage> {
+  return cachedMarketplace(
+    marketplacePages,
+    JSON.stringify([query, cursor, label, locale]),
+    async () => {
+      const response = await deviceSkillFetch({
+        operation: 'marketplace',
+        query,
+        cursor,
+        label,
+        locale,
+      })
+      if (!response.ok) throw new Error('marketplace_unavailable')
+      return response.json() as Promise<MarketplacePage>
+    }
+  )
+}
+
+export async function getMarketplaceLabels(locale: string): Promise<SkillLabel[]> {
+  return cachedMarketplace(marketplaceLabels, locale, async () => {
+    const response = await deviceSkillFetch({ operation: 'marketplace-labels', locale })
+    if (!response.ok) throw new Error('marketplace_labels_unavailable')
+    const data = (await response.json()) as { labels: SkillLabel[] }
+    return data.labels
+  })
+}
+
+export async function getMarketplaceDetail(
+  slug: string,
+  version: string,
+  locale = 'en'
+): Promise<MarketplaceDetail> {
+  const response = await deviceSkillFetch({
+    operation: 'marketplace-detail',
+    slug,
+    version,
+    locale,
+  })
+  if (!response.ok) throw new Error('marketplace_detail_unavailable')
+  return response.json() as Promise<MarketplaceDetail>
+}
+
+export async function installMarketplaceSkill(
+  slug: string,
+  version: string,
+  enabled = true
+): Promise<SkillMutation> {
+  return mutateSkillRequest({ operation: 'marketplace-install', slug, version, enabled })
+}
+
+export async function updateMarketplaceSkill(skill: SkillInfo): Promise<SkillMutation> {
+  if (
+    skill.group !== 'user' ||
+    skill.hub?.source !== 'clawhub' ||
+    skill.updateStatus !== 'available' ||
+    !skill.latestVersion ||
+    !skill.hub.version
+  ) {
+    return { ok: false, code: 'invalid_identity' }
+  }
+  return mutateSkillRequest({
+    operation: 'marketplace-update',
+    name: skill.name,
+    version: skill.latestVersion,
+    expectedVersion: skill.hub.version,
+  })
+}
 
 export interface SkillMutation {
   ok: boolean
@@ -2709,14 +3447,31 @@ export async function deleteSkill(name: string): Promise<SkillMutation> {
   return mutateSkillRequest({ operation: 'delete', name })
 }
 
-/** 上传技能安装。`overwrite` 仅在用户于重名提示里显式选择覆盖时传 true。 */
-export async function uploadSkillFile(file: File, overwrite = false): Promise<SkillMutation> {
+export async function uploadSkillFile(file: File): Promise<SkillMutation> {
   return mutateSkillRequest({
     operation: 'upload',
     filename: file.name,
     bytes: new Uint8Array(await file.arrayBuffer()),
-    overwrite,
   })
+}
+
+export interface SkillUploadPreview {
+  name: string
+  description: string
+  document: string
+  version: string
+  provider: string
+}
+
+export async function previewSkillFile(file: File): Promise<SkillUploadPreview> {
+  const response = await deviceSkillFetch({
+    operation: 'upload-preview',
+    filename: file.name,
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  })
+  const body = await response.json()
+  if (!response.ok) throw new Error(body.detail?.message || 'invalid_package')
+  return body.preview as SkillUploadPreview
 }
 
 export async function createSkill(input: {
@@ -2793,8 +3548,8 @@ export class SkillCatalogError extends Error {
   }
 }
 
-export async function getSkills(surface?: SkillSurface): Promise<SkillInfo[]> {
-  const response = await deviceSkillFetch({ operation: 'list', surface })
+export async function getSkills(surface?: SkillSurface, locale?: string): Promise<SkillInfo[]> {
+  const response = await deviceSkillFetch({ operation: 'list', surface, locale })
   if (!response.ok) throw new SkillCatalogError(response.status)
   const data = (await response.json()) as { skills?: SkillInfo[] }
   return data?.skills ?? []
@@ -2809,12 +3564,18 @@ export async function setSkillActive(name: string, active: boolean): Promise<boo
     return false
   }
 }
-/** 彻底删除一个 serve 会话 (DELETE /api/serve/sessions/{id})。运行中 → 409。
- *  返回 status 让 UI 区分: ok / 运行中需先中断 / 其它失败。 */
 export async function deleteSession(sid: string): Promise<{ ok: boolean; status: number }> {
   try {
-    const r = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE' })
-    return { ok: r.ok, status: r.status }
+    const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}`, {
+      method: 'DELETE',
+      timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
+    })
+    if (!response.ok) return { ok: false, status: response.status }
+    const payload: unknown = await response.json()
+    return {
+      ok: isRecord(payload) && payload.ok === true && payload.session_id === sid,
+      status: response.status,
+    }
   } catch {
     return { ok: false, status: 0 }
   }
@@ -2826,6 +3587,58 @@ export async function terminateSession(sid: string): Promise<{ ok: boolean; stat
       method: 'POST',
     })
     return { ok: response.ok, status: response.status }
+  } catch {
+    return { ok: false, status: 0 }
+  }
+}
+
+export async function setSessionArchived(
+  sid: string,
+  archived: boolean
+): Promise<{ ok: boolean; status: number }> {
+  try {
+    const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/archive`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived }),
+      timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
+    })
+    if (!response.ok) return { ok: false, status: response.status }
+    const payload: unknown = await response.json()
+    return {
+      ok:
+        isRecord(payload) &&
+        payload.ok === true &&
+        payload.session_id === sid &&
+        payload.archived === archived,
+      status: response.status,
+    }
+  } catch {
+    return { ok: false, status: 0 }
+  }
+}
+
+export async function setSessionPinned(
+  sid: string,
+  pinned: boolean
+): Promise<{ ok: boolean; status: number; pinned?: boolean }> {
+  try {
+    const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/pin`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned }),
+    })
+    if (!response.ok) return { ok: false, status: response.status }
+    const payload: unknown = await response.json()
+    if (
+      !isRecord(payload) ||
+      payload.ok !== true ||
+      payload.session_id !== sid ||
+      typeof payload.pinned !== 'boolean'
+    ) {
+      return { ok: false, status: response.status }
+    }
+    return { ok: true, status: response.status, pinned: payload.pinned }
   } catch {
     return { ok: false, status: 0 }
   }
@@ -2862,13 +3675,35 @@ export interface FileItem {
   name: string
   dir: boolean
   size: number
+  updated_at?: number
+  artifact?: SessionArtifact
 }
 export interface FilesResp {
   root: string
   path: string
   crumbs: string[]
   items: FileItem[]
+  total?: number
+  offset?: number
+  project_path?: string | null
+  artifacts?: SessionArtifact[]
+  literature?: TaskDocument[]
+  has_files?: boolean
 }
+export interface TaskDocument {
+  id: string
+  title: string
+  literature_id: string
+  attachment_id: string | null
+}
+export const getTaskFiles = (
+  projectPath: string,
+  cursor = ''
+): Promise<{
+  entries: { session: ServeSession; files: FilesResp | null }[]
+  next_cursor?: string | null
+} | null> =>
+  getJson('/api/serve/task-files?' + new URLSearchParams({ project_path: projectPath, cursor }))
 export async function getWorkspaceFiles(path = '', timeoutMs?: number): Promise<FilesResp | null> {
   const result = await getJson<FilesResp>(
     '/api/research/workspace/files' + (path ? `?path=${encodeURIComponent(path)}` : ''),
@@ -2882,11 +3717,16 @@ export async function getWorkspaceFiles(path = '', timeoutMs?: number): Promise<
 export async function getSessionFiles(
   sessionId: string,
   path = '',
-  timeoutMs?: number
+  timeoutMs?: number,
+  offset = 0,
+  outputsOnly = false
 ): Promise<FilesResp | null> {
-  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  const query = new URLSearchParams()
+  if (path) query.set('path', path)
+  if (offset) query.set('offset', String(offset))
+  if (outputsOnly) query.set('outputs_only', 'true')
   const result = await getJson<FilesResp>(
-    `/api/serve/sessions/${encodeURIComponent(sessionId)}/files${query}`,
+    `/api/serve/sessions/${encodeURIComponent(sessionId)}/files` + (query.size ? `?${query}` : ''),
     timeoutMs
   )
   if (result?.root) void window.scholarseed.addAuthorizedRoot('session', result.root)
@@ -3165,6 +4005,7 @@ export async function registerLocalPaths(
 /** 浏览器降级和无真实路径的合成 File 仍可上传；Electron 本地文件走上面的直接引用。 */
 export interface UploadedAttachment {
   path: string
+  relative_path?: string
   name: string
   media_type: string
   sha256?: string
@@ -3187,6 +4028,7 @@ export async function uploadAttachmentFile(
     if (!uploaded.absolute_path) return null
     return {
       path: uploaded.absolute_path,
+      relative_path: uploaded.relative_path,
       name: uploaded.name || file.name,
       media_type: uploaded.media_type || file.type || 'application/octet-stream',
       sha256: uploaded.sha256,
@@ -3197,10 +4039,10 @@ export async function uploadAttachmentFile(
   }
 }
 
-// ── 问题反馈 (经 serve 转发到 Damoclaw-Server) ──
+// ── 问题反馈 (由宿主 bridge 提交) ──
 
 /** 截图与日志包的上限与服务端 `MAX_IMAGES` 对齐; 超过则服务端 422。 */
-export const FEEDBACK_MAX_IMAGES = 5
+export const FEEDBACK_MAX_IMAGES = FEEDBACK_LIMITS.images
 
 export interface FeedbackInput {
   description: string
@@ -3221,46 +4063,50 @@ export interface FeedbackInput {
   rendererDiagnostics?: File
 }
 
-export interface FeedbackResult {
-  ok: boolean
-  id?: string
+export interface FeedbackResult extends FeedbackSubmissionResult {
   error?: string
-  /** 上游限频 (429) 时为 true, 前端据此提示「稍后再试」而不是笼统失败。 */
-  rateLimited?: boolean
 }
 
-const FEEDBACK_RATE_LIMITED = 429
-
 /**
- * 提交一条问题反馈。日志打包在 serve 侧完成: renderer 读不到 `~/.scholarseed/logs/`。
+ * 提交一条问题反馈。Desktop 的提交、凭据和诊断采集由 Main 持有。
  *
  * 不上报任何身份字段: 归属由 Damoclaw 拿本次请求的凭据向账号服务求证得到 ——
  * 客户端自报的手机号在管理台会被当成回访号码, 不能由这一层说了算。
  */
 export async function submitFeedback(input: FeedbackInput): Promise<FeedbackResult> {
-  const fd = new FormData()
-  fd.append('description', input.description)
-  if (input.email) fd.append('email', input.email)
-  fd.append('include_logs', input.includeLogs ? 'true' : 'false')
-  fd.append('include_trace', input.includeTrace ? 'true' : 'false')
-  if (input.sessionId) fd.append('session_id', input.sessionId)
-  for (const image of input.images ?? []) fd.append('images', image)
-  if (input.recordingReport) fd.append('recording_report', input.recordingReport)
-  if (input.rendererDiagnostics) fd.append('renderer_diagnostics', input.rendererDiagnostics)
   try {
-    const r = await apiFetch('/api/serve/feedback', { method: 'POST', body: fd })
-    if (!r.ok) {
-      const detail = await r.json().catch(() => null)
-      return {
-        ok: false,
-        error: String((detail as { detail?: unknown } | null)?.detail || `HTTP ${r.status}`),
-        rateLimited: r.status === FEEDBACK_RATE_LIMITED,
-      }
-    }
-    const payload = (await r.json()) as { id?: string }
-    return { ok: true, id: payload.id }
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : '' }
+    if (input.includeLogs) flushApiDiagnostics()
+    if (
+      (input.images?.length ?? 0) > FEEDBACK_LIMITS.images ||
+      (input.images ?? []).reduce((total, file) => total + file.size, 0) >
+        FEEDBACK_LIMITS.imagesBytes ||
+      [input.recordingReport, input.rendererDiagnostics].some(
+        (file) => file && file.size > FEEDBACK_LIMITS.reportBytes
+      )
+    )
+      return { ok: false, code: 'invalid_request' }
+    return await window.scholarseed.submitFeedback({
+      description: input.description,
+      email: input.email,
+      includeLogs: Boolean(input.includeLogs),
+      includeTrace: Boolean(input.includeLogs && input.includeTrace),
+      sessionId: input.sessionId,
+      images: await Promise.all(
+        (input.images ?? []).map(async (file) => ({
+          name: file.name,
+          type: file.type,
+          bytes: new Uint8Array(await file.arrayBuffer()),
+        }))
+      ),
+      recordingReport: input.recordingReport
+        ? new Uint8Array(await input.recordingReport.arrayBuffer())
+        : undefined,
+      rendererDiagnostics: input.rendererDiagnostics
+        ? new Uint8Array(await input.rendererDiagnostics.arrayBuffer())
+        : undefined,
+    })
+  } catch {
+    return { ok: false, code: 'unavailable' }
   }
 }
 
@@ -3270,7 +4116,7 @@ export type { AuthStatus, AuthUser } from './app/api/auth.ts'
 export { getAuthStatus, getAuthMe, postAuthLogout } from './app/api/auth.ts'
 
 export const createSubscriptionProfile = (): Promise<PersonalApiResult<PersonalApiMutationResp>> =>
-  profileRequest('POST', '/api/serve/model-profiles', {
+  profileRequest('POST', MODEL_PROFILES_PATH, {
     authentication: 'oauth',
     oauth_provider: 'chatgpt',
     selected_models: [],
@@ -3279,7 +4125,7 @@ export const saveSubscriptionModels = (
   id: string,
   models: PersonalApiModel[]
 ): Promise<PersonalApiResult<PersonalApiMutationResp>> =>
-  profileRequest('PUT', `/api/serve/model-profiles/${encodeURIComponent(id)}`, {
+  profileRequest('PUT', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`, {
     selected_models: models,
   })
 export const subscriptionModels = (
@@ -3306,3 +4152,153 @@ export const disconnectSubscription = (
   id: string
 ): Promise<PersonalApiResult<PersonalApiProfilesResp>> =>
   profileRequest('DELETE', `/api/settings/model-connections/${encodeURIComponent(id)}/credentials`)
+
+// --- MCP Configuration ---
+
+export interface McpStdioServerConfig {
+  description?: string
+  timeout?: number | null
+  startup_timeout?: number | null
+  id: string
+  name: string
+  enabled: boolean
+  transport: 'stdio'
+  command: string
+  args: string[]
+  cwd?: string
+  environment?: Record<string, string>
+}
+
+export interface McpHttpServerConfig {
+  description?: string
+  timeout?: number | null
+  startup_timeout?: number | null
+  id: string
+  name: string
+  enabled: boolean
+  transport: 'http' | 'sse'
+  url: string
+  headers?: Record<string, string>
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig
+
+export interface McpServerStatus {
+  id: string
+  state: 'pending_apply' | 'connecting' | 'auth_required' | 'ready' | 'failed' | 'disabled'
+  tool_count: number | null
+  safe_error: string
+}
+
+export interface McpConfigurationView {
+  servers: McpServerStatus[]
+  configuration: {
+    revision: number
+    servers: McpServerConfig[]
+  }
+  supported: boolean
+  state: string
+  safe_error: string | null
+}
+
+/** MCP 配置路由仅宿主进程可达；渲染层经主进程 IPC 代理，非桌面环境回退直连。 */
+async function mcpSettingsFetch(request: McpSettingsRequest): Promise<Response | null> {
+  const bridge = window.scholarseed?.mcpSettings
+  if (!bridge) {
+    const { path, init } = mcpSettingsRequest(request)
+    try {
+      return await apiFetch(path, init)
+    } catch {
+      return null
+    }
+  }
+  try {
+    const result = await bridge(request)
+    return new Response(result.body, { status: result.status })
+  } catch {
+    return null
+  }
+}
+
+export async function getMcpConfiguration(): Promise<McpConfigurationView | null> {
+  const response = await mcpSettingsFetch({ operation: 'status' })
+  if (!response || !response.ok) return null
+  return (await response.json()) as McpConfigurationView
+}
+
+export interface ConnectorInfo {
+  signature?: string
+  management_url?: string
+  revocation_scope?: 'remote' | 'local' | ''
+  description?: string
+  account_context?: string
+  scopes?: string
+  expires_at?: number | null
+  tools_fetched_at?: number | null
+  reauthorization?: boolean
+  custom?: boolean
+  configuration?: McpServerConfig
+  id: string
+  name: string
+  source_url: string
+  methods: ('key' | 'oauth')[]
+  key_label: string
+  help_url: string
+  transport: 'http' | 'sse' | 'stdio'
+  installed: boolean
+  method: 'key' | 'oauth' | null
+  url: string
+  enabled: boolean
+  authorized: boolean
+  state: McpServerStatus['state'] | null
+  error: string
+  authorization_error: string
+  version: string | null
+  tools: { name: string; description?: string; inputSchema: Record<string, unknown> }[] | null
+  attempt: { authorization_url: string; expires_at: number } | null
+}
+
+export class ConnectorError extends Error {
+  constructor(readonly code: string) {
+    super(code)
+  }
+}
+
+async function connectorResponse(request: McpSettingsRequest): Promise<unknown> {
+  const response = await mcpSettingsFetch(request)
+  if (!response) throw new ConnectorError('connector_network_unavailable')
+  const body = await response.json().catch(() => null)
+  if (!response.ok)
+    throw new ConnectorError(
+      typeof body?.detail === 'string' ? body.detail : 'connector_service_unavailable'
+    )
+  return body
+}
+
+export async function getConnectors(): Promise<ConnectorInfo[]> {
+  const body = (await connectorResponse({ operation: 'connectors' })) as {
+    connectors: ConnectorInfo[]
+  }
+  return body.connectors
+}
+
+export async function updateConnector(id: string, action: ConnectorAction): Promise<ConnectorInfo> {
+  return (await connectorResponse({ operation: 'connector', id, action })) as ConnectorInfo
+}
+
+export async function saveCustomConnectors(id: string, action: ConnectorAction): Promise<void> {
+  await connectorResponse({ operation: 'connector', id, action })
+}
+
+export async function replaceMcpConfiguration(
+  expectedRevision: number,
+  servers: McpServerConfig[]
+): Promise<McpConfigurationView | null> {
+  const response = await mcpSettingsFetch({
+    operation: 'replace',
+    expectedRevision,
+    servers,
+  })
+  if (!response || !response.ok) return null
+  return (await response.json()) as McpConfigurationView
+}

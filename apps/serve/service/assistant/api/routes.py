@@ -102,6 +102,7 @@ from service.literature.domain.model import IMPORT_CONFLICT as LITERATURE_IMPORT
 from service.literature.domain.model import LIBRARY_INVALID, LiteratureError
 from service.literature.service.importer import LiteratureImportError
 from service.platform.bridge import HISTORY_MAX_LIMIT, HistoryRead
+from service.platform.citations import PDF_MEDIA_TYPE
 from service.platform.content import FileAssetRef
 from service.platform.context import (
     AssistantContextSelection,
@@ -113,6 +114,8 @@ from service.platform.inference import ModelInvocationStatus
 from service.resources.domain.model import IMPORT_CONFLICT, IMPORT_UNAVAILABLE, ResourceLocationRef
 
 ASSISTANT_ROUTE_PREFIX = "/api/assistant"
+SAVED_CITATION_ROUTE = f"{ASSISTANT_ROUTE_PREFIX}/resources/citation"
+ARTIFACT_CITATION_ROUTE = f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/artifacts/{{artifact_id}}/citations/{{handle}}"
 logger = logging.getLogger(__name__)
 HTTP_UNPROCESSABLE_CONTENT = 422
 HTTP_ACCEPTED = 202
@@ -342,6 +345,67 @@ def _invocation_status(record: AssistantInvocationRecord) -> int:
 
 
 def register_assistant_routes(app: FastAPI) -> None:
+    @app.get(ARTIFACT_CITATION_ROUTE)
+    def artifact_citation(
+        request: Request, session_id: str, artifact_id: str, handle: str, revision: str
+    ) -> dict:
+        _require_session(request, session_id)
+        try:
+            return _resources(request).resolve_artifact_citation(
+                session_id, artifact_id, revision, handle
+            )
+        except (
+            AssistantResourceError,
+            ArtifactReadError,
+            ValueError,
+            ContentError,
+            OSError,
+        ) as error:
+            raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+
+    @app.get(f"{ARTIFACT_CITATION_ROUTE}/raw")
+    def artifact_citation_raw(
+        request: Request, session_id: str, artifact_id: str, handle: str, revision: str
+    ) -> Response:
+        _require_session(request, session_id)
+        try:
+            payload = _resources(request).artifact_citation_raw(
+                session_id, artifact_id, revision, handle
+            )
+        except (
+            AssistantResourceError,
+            ArtifactReadError,
+            ValueError,
+            ContentError,
+            OSError,
+        ) as error:
+            raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+        return Response(payload, media_type=PDF_MEDIA_TYPE, headers={"Cache-Control": "no-store"})
+
+    @app.get(f"{ARTIFACT_CITATION_ROUTE}/preview")
+    def artifact_citation_preview(
+        request: Request,
+        session_id: str,
+        artifact_id: str,
+        handle: str,
+        revision: str,
+        page: int = Query(ge=1),
+    ) -> Response:
+        _require_session(request, session_id)
+        try:
+            payload = _resources(request).artifact_citation_preview(
+                session_id, artifact_id, revision, handle, page
+            )
+        except (
+            AssistantResourceError,
+            ArtifactReadError,
+            ValueError,
+            ContentError,
+            OSError,
+        ) as error:
+            raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+        return Response(payload, media_type="image/png", headers={"Cache-Control": "no-store"})
+
     @app.get(
         f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/answers/{{answer_id}}/citations/{{handle}}/raw"
     )
@@ -383,12 +447,34 @@ def register_assistant_routes(app: FastAPI) -> None:
             headers={"Cache-Control": f"private, max-age={CITATION_PREVIEW_CACHE_SECONDS}"},
         )
 
-    @app.get(f"{ASSISTANT_ROUTE_PREFIX}/resources/citation")
+    @app.get(SAVED_CITATION_ROUTE)
     def saved_resource_citation(request: Request, project: str, path: str, handle: str) -> dict:
         try:
             return _resources(request).resolve_saved_citation(project, path, handle)
         except (AssistantResourceError, ValueError) as error:
             raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+
+    @app.get(f"{SAVED_CITATION_ROUTE}/raw")
+    def saved_resource_citation_raw(request: Request, project: str, path: str, handle: str):
+        try:
+            payload = _resources(request).saved_citation_raw(project, path, handle)
+        except (AssistantResourceError, ValueError, ContentError, OSError) as error:
+            raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+        return Response(payload, media_type=PDF_MEDIA_TYPE)
+
+    @app.get(f"{SAVED_CITATION_ROUTE}/preview")
+    def saved_resource_citation_preview(
+        request: Request, project: str, path: str, handle: str, page: int = Query(ge=1)
+    ):
+        try:
+            payload = _resources(request).saved_citation_preview(project, path, handle, page)
+        except (AssistantResourceError, ValueError, ContentError, OSError) as error:
+            raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+        return Response(
+            payload,
+            media_type="image/png",
+            headers={"Cache-Control": f"private, max-age={CITATION_PREVIEW_CACHE_SECONDS}"},
+        )
 
     @app.get(f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/answers/{{answer_id}}/sources")
     def answer_sources(
@@ -500,6 +586,7 @@ def register_assistant_routes(app: FastAPI) -> None:
                 ref_id=ref.ref_id.strip() or uuid.uuid4().hex,
                 kind=ref.kind,
                 source_id=ref.source_id.strip(),
+                project_id=ref.project_id,
                 source_revision=(ref.source_revision or "").strip() or None,
                 label=ref.label.strip(),
                 label_fallback=ref.label_fallback,
@@ -665,6 +752,7 @@ def register_assistant_routes(app: FastAPI) -> None:
                 body.expected_sha256,
                 body.idempotency_key,
                 body.collection,
+                collection_id=body.collection_id,
             )
         except (
             ArtifactReadError,
