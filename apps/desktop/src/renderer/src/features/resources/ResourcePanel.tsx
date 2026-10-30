@@ -171,11 +171,6 @@ function TreeRow({
   const expanded = resource.expanded[node.path] ?? false
   const selected = resource.selected === node.path
   const renaming = resource.nameDraft?.mode === 'rename' && resource.nameDraft.target === node.path
-  const creatingHere =
-    node.kind === 'dir' &&
-    resource.nameDraft !== null &&
-    resource.nameDraft.mode !== 'rename' &&
-    resource.nameDraft.target === node.path
   const linked = node.origin === 'link'
   const linkRoot = node.linkRoot?.mountPath === node.path
   const canDrag = !linkRoot
@@ -436,28 +431,6 @@ function TreeRow({
         />
       </div>
 
-      {/* 在该目录下新建时，就地显示一行输入框，位置即最终位置。 */}
-      {creatingHere && (
-        <div
-          className={`${RESOURCE_TREE_ROW_CLASS}${resource.nameDraft?.error ? ' !h-auto min-h-[26px] items-start py-1' : ''}`}
-          style={{
-            paddingLeft: RESOURCE_TREE_BASE_INDENT + (depth + 1) * RESOURCE_TREE_INDENT_STEP,
-          }}
-        >
-          <span className="vds-tree-spacer h-[var(--vds-icon-8)] w-[var(--vds-icon-8)] flex-[0_0_var(--vds-icon-8)]" />
-          <Icon name={resource.nameDraft?.mode === 'create_folder' ? 'folder' : 'doc'} size={13} />
-          <NameEditor
-            value={resource.nameDraft?.value ?? ''}
-            suffix={resource.nameDraft?.suffix || undefined}
-            error={resource.nameDraft?.error}
-            submitting={resource.nameDraft?.submitting}
-            onChange={act.setResourceNameDraft}
-            onCommit={act.commitResourceNameDraft}
-            onCancel={act.cancelResourceNameDraft}
-          />
-        </div>
-      )}
-
       {node.kind === 'dir' &&
         expanded &&
         node.children?.map((child) => (
@@ -644,28 +617,6 @@ export function ResourcePanel(): React.JSX.Element {
   const searching = resource.searchHits !== null
   const hasExpandedDirs = Object.values(resource.expanded).some(Boolean)
 
-  const rootNameEditor =
-    resource.nameDraft !== null &&
-    resource.nameDraft.mode !== 'rename' &&
-    resource.nameDraft.target === '' ? (
-      <div
-        className={`${RESOURCE_TREE_ROW_CLASS}${resource.nameDraft.error ? ' !h-auto min-h-[26px] items-start py-1' : ''}`}
-        style={{ paddingLeft: RESOURCE_TREE_BASE_INDENT }}
-      >
-        <span className="vds-tree-spacer h-[var(--vds-icon-8)] w-[var(--vds-icon-8)] flex-[0_0_var(--vds-icon-8)]" />
-        <Icon name={resource.nameDraft.mode === 'create_folder' ? 'folder' : 'doc'} size={13} />
-        <NameEditor
-          value={resource.nameDraft.value}
-          suffix={resource.nameDraft.suffix || undefined}
-          error={resource.nameDraft.error}
-          submitting={resource.nameDraft.submitting}
-          onChange={act.setResourceNameDraft}
-          onCommit={act.commitResourceNameDraft}
-          onCancel={act.cancelResourceNameDraft}
-        />
-      </div>
-    ) : null
-
   const treeBody = ((): React.JSX.Element => {
     if (searching) {
       const hits = resource.searchHits ?? []
@@ -716,7 +667,6 @@ export function ResourcePanel(): React.JSX.Element {
       )
     }
     if (resource.tree.length === 0) {
-      if (rootNameEditor) return rootNameEditor
       // 空文件夹引导（PRD「空文件夹引导」）：给出可直接点的两条出路。
       return (
         <div
@@ -752,7 +702,6 @@ export function ResourcePanel(): React.JSX.Element {
     return (
       <>
         {/* 根级新建：输入行落在树顶部。 */}
-        {rootNameEditor}
         {resource.tree.map((node) => (
           <TreeRow
             key={node.path}

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { FolderOpen } from 'lucide-react'
 
@@ -22,6 +22,8 @@ import {
   DialogHeader,
   DialogTitle,
   EmptyState,
+  Input,
+  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -32,10 +34,115 @@ import { useApp } from '../../store'
 import { systemTrashKey } from '../../trash'
 import { hasDirtyProjectPath, useDocumentWorkspace } from '../workbench/workspace'
 import { validateResourceMove } from './lifecycle'
-import type { ResourceNode } from './state'
+import { RESOURCE_CREATE_NAME_LIMIT, type ResourceNode } from './state'
 
 /** 绝对路径没有单词边界，必须允许在任意字符处折行，否则会顶穿弹窗宽度。 */
 const PATH_TEXT_CLASS_NAME = '[overflow-wrap:anywhere]'
+
+export function CreateDialog(): React.JSX.Element | null {
+  const { t } = useTranslation('resources')
+  const { t: uiText } = useTranslation('ui')
+  const { state, act } = useApp()
+  const draft = state.resource.nameDraft
+  const input = useRef<HTMLInputElement>(null)
+  const inputId = useId()
+  const creating = draft !== null && draft.mode !== 'rename'
+  useEffect(() => {
+    if (creating) input.current?.select()
+  }, [creating, draft?.mode, draft?.target])
+  useEffect(() => {
+    if (creating && draft?.error) input.current?.focus()
+  }, [creating, draft?.error])
+  if (!creating || !draft) return null
+  const folder = draft.mode === 'create_folder'
+  const label = folder ? t('creation.folderName') : t('creation.documentName')
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !draft.submitting) act.cancelResourceNameDraft()
+      }}
+    >
+      <DialogContent
+        data-testid="resource-create-dialog"
+        aria-label={folder ? t('panel.newFolder') : t('panel.newDocument')}
+        aria-describedby={undefined}
+      >
+        <DialogHeader>
+          <DialogTitle>{folder ? t('panel.newFolder') : t('panel.newDocument')}</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-[var(--vds-space-2)]">
+          <Label htmlFor={inputId}>
+            {label}
+            <span
+              aria-hidden="true"
+              className="ml-[var(--vds-space-1)] text-[var(--vds-error-text-primary)]"
+            >
+              *
+            </span>
+          </Label>
+          <div className="flex items-start gap-[var(--vds-space-2)]">
+            <div className="relative min-w-0 flex-1">
+              <Input
+                id={inputId}
+                ref={input}
+                required
+                size="standard"
+                maxLength={RESOURCE_CREATE_NAME_LIMIT}
+                className="pr-[var(--vds-space-12)]"
+                data-testid="resource-name-input"
+                value={draft.value}
+                placeholder={
+                  folder ? t('creation.folderPlaceholder') : t('creation.documentPlaceholder')
+                }
+                disabled={draft.submitting}
+                error={draft.error ? t(draft.error) : undefined}
+                onChange={(event) => act.setResourceNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                    event.preventDefault()
+                    act.commitResourceNameDraft()
+                  }
+                }}
+              />
+              <span
+                aria-hidden="true"
+                data-testid="resource-name-count"
+                className="pointer-events-none absolute right-[var(--vds-space-3)] top-0 flex h-[var(--vds-control-height-standard)] items-center text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]"
+              >
+                {draft.value.length}/{RESOURCE_CREATE_NAME_LIMIT}
+              </span>
+            </div>
+            {draft.suffix && (
+              <span
+                data-testid="resource-name-suffix"
+                className="flex h-[var(--vds-control-height-standard)] items-center text-[var(--vds-text-secondary)]"
+              >
+                {draft.suffix}
+              </span>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            disabled={draft.submitting}
+            onClick={act.cancelResourceNameDraft}
+          >
+            {uiText('cancel')}
+          </Button>
+          <Button
+            disabled={draft.submitting || !draft.value.trim()}
+            loading={draft.submitting}
+            onClick={() => act.commitResourceNameDraft()}
+          >
+            {uiText('create')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 /** 关联目录内新建会修改外部源目录，执行前必须取得用户明确确认。 */
 export function LinkedCreateConfirm(): React.JSX.Element | null {

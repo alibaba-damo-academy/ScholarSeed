@@ -8,7 +8,9 @@ import { createRuntime } from './fixtures/runtime'
 import { createReadyProject } from './fixtures/projects'
 import { skipQuarantined } from './fixtures/quarantine'
 
-test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
+test.beforeEach(async ({}, testInfo) => {
+  skipQuarantined(testInfo)
+})
 
 const PROJECT_NAME = '目录菜单回归'
 const DIRECTORY_PATH = 'resources/目录'
@@ -60,7 +62,10 @@ test('directory create menus preserve children through draft, commit, cancel and
     await create.click()
     await expect(existing).toBeVisible()
     await page.getByTestId(`tree-new-doc-${DIRECTORY_PATH}`).click()
+    await expect(page.getByRole('dialog', { name: '新建md文档' })).toBeVisible()
     await expect(input).toBeVisible()
+    await expect(input).toHaveCount(1)
+    await expect(input).toHaveAttribute('maxlength', '20')
     await expect(existing).toBeVisible()
     await expect(create).toHaveAttribute('aria-expanded', 'false')
     await page.screenshot({ path: join(runtime.artifacts, 'expanded-document-draft.png') })
@@ -68,11 +73,15 @@ test('directory create menus preserve children through draft, commit, cancel and
     await input.press('Enter')
     const document = page.getByTestId(`tree-${DIRECTORY_PATH}/${DOCUMENT_NAME}.md`)
     await expect(document).toBeVisible()
+    await expect(
+      page.getByRole('tab', { name: `${DOCUMENT_NAME}.md`, exact: true })
+    ).toHaveAttribute('aria-selected', 'true')
     await expect(existing).toBeVisible()
     expect(readFileSync(join(directoryPath, `${DOCUMENT_NAME}.md`), 'utf8')).toBe('')
 
     await create.click()
     await page.getByTestId(`tree-new-folder-${DIRECTORY_PATH}`).click()
+    await expect(page.getByRole('dialog', { name: '新建文件夹' })).toBeVisible()
     await expect(input).toBeVisible()
     await expect(existing).toBeVisible()
     await expect(document).toBeVisible()
@@ -80,6 +89,10 @@ test('directory create menus preserve children through draft, commit, cancel and
     await input.fill(FOLDER_NAME)
     await input.press('Enter')
     await expect(page.getByTestId(`tree-${DIRECTORY_PATH}/${FOLDER_NAME}`)).toBeVisible()
+    await expect(page.getByTestId(`tree-${DIRECTORY_PATH}/${FOLDER_NAME}`)).toHaveClass(
+      /is-selected/
+    )
+    await expect(page.getByRole('tab', { name: FOLDER_NAME, exact: true })).toHaveCount(0)
     expect(existsSync(join(directoryPath, FOLDER_NAME))).toBe(true)
 
     await directory.click()

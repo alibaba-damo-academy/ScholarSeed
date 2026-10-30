@@ -255,11 +255,6 @@ export function ResourceListing(): React.JSX.Element {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {draft && draft.mode !== 'rename' && !draft.target && (
-              <TableRow>
-                <TableCell colSpan={5}>{editor()}</TableCell>
-              </TableRow>
-            )}
             {visible.map(({ node, depth }) => {
               const FileIcon = fileIconForName(node.name, node.kind)
               const expanded = Boolean(resource.expanded[node.path]) || filtered
@@ -335,18 +330,6 @@ export function ResourceListing(): React.JSX.Element {
                       </div>
                     </TableCell>
                   </TableRow>
-                  {draft && draft.mode !== 'rename' && draft.target === node.path && (
-                    <TableRow>
-                      <TableCell colSpan={5}>
-                        <div
-                          className="pl-[calc(var(--vds-library-tree-depth)*var(--vds-material-tree-indent))]"
-                          style={{ '--vds-library-tree-depth': depth + 1 } as React.CSSProperties}
-                        >
-                          {editor()}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
                 </React.Fragment>
               )
             })}

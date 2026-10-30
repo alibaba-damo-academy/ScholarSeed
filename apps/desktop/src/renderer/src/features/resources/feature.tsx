@@ -13,6 +13,7 @@ import { ResourceAgentOriginAction } from './Origin'
 import { ResourcePanel } from './ResourcePanel'
 import { ResourceListing } from './Listing'
 import { ResourceHistory } from './History'
+import { CreateDialog } from './Dialogs'
 import { WebSearchTab } from './WebSearchTab'
 import { ResourceFailure } from './Feedback'
 import { resourceErrorMessage } from './error'
@@ -31,7 +32,10 @@ const ReviewBatch = React.lazy(() =>
 export function resourcesFeature(): FeatureModule {
   return {
     id: 'resources',
-    globalSurfaces: [{ id: 'resource-history', render: () => <ResourceHistory /> }],
+    globalSurfaces: [
+      { id: 'resource-history', render: () => <ResourceHistory /> },
+      { id: 'resource-create', render: () => <CreateDialog /> },
+    ],
     taskSources: [
       {
         id: 'resource-imports',

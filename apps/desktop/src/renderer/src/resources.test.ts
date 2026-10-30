@@ -14,6 +14,7 @@ import {
   resourceStateForProjectSwitch,
   resolveResourceCreateTarget,
   resourceNameError,
+  resourceCreateNameError,
   resourceNameSuggestion,
   resourceVersionBadge,
   webSearchNoticePending,
@@ -975,6 +976,15 @@ test('created resources stay visible even when the refreshed page does not inclu
   assert.equal(findResourceNode(next, 'resources/海量')?.count, 5)
   assert.equal(findResourceNode(next, 'resources/关联目录'), before[0])
   assert.equal(withCreatedResource(next, 'resources/海量', created), next)
+})
+
+test('new resource names have a twenty-character basename limit without restricting rename', () => {
+  assert.equal(resourceCreateNameError('文'.repeat(20)), null)
+  assert.equal(resourceCreateNameError('文'.repeat(21)), 'creation.nameTooLong')
+  assert.equal(resourceCreateNameError('  研究笔记  '), null)
+  assert.equal(resourceCreateNameError(''), 'operationError.invalid_name')
+  assert.equal(resourceCreateNameError('目录/笔记'), 'operationError.invalid_name')
+  assert.equal(resourceNameError('文'.repeat(21)), null)
 })
 
 test('Markdown inline naming edits only the basename and keeps invalid drafts in place', () => {

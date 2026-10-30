@@ -93,6 +93,14 @@ const RESERVED_RESOURCE_NAMES = new Set(['.', '..'])
 const RESOURCE_NAME_SUGGESTION_SEPARATOR = ' '
 const RESOURCE_NAME_WHITESPACE_PATTERN = /\s+/gu
 export const INVALID_RESOURCE_NAME_MESSAGE = 'operationError.invalid_name' as const
+export const RESOURCE_CREATE_NAME_LIMIT = 20
+
+export function resourceCreateNameError(value: string): NameDraftState['error'] {
+  return (
+    resourceNameError(value) ??
+    (value.trim().length > RESOURCE_CREATE_NAME_LIMIT ? 'creation.nameTooLong' : null)
+  )
+}
 
 export function resourceNameError(value: string): typeof INVALID_RESOURCE_NAME_MESSAGE | null {
   const cleaned = value.trim()
@@ -333,7 +341,7 @@ export interface NameDraftState {
   value: string
   /** rename 时不可编辑的原文件后缀；新建 Markdown 时为 `.md`。 */
   suffix: string
-  error: typeof INVALID_RESOURCE_NAME_MESSAGE | null
+  error: ResourceErrorMessage['key'] | 'creation.nameTooLong' | null
   submitting: boolean
 }
 

@@ -206,6 +206,13 @@
     "migrationRequired": "Version management needs setup",
     "git": "Versions are managed by Git"
   },
+  "creation": {
+    "folderName": "Folder name",
+    "documentName": "File name",
+    "folderPlaceholder": "Enter a folder name",
+    "documentPlaceholder": "Enter a file name",
+    "nameTooLong": "Names cannot exceed 20 characters. Shorten the name and try again."
+  },
   "panel": {
     "matchName": "File name",
     "matchPath": "Path",

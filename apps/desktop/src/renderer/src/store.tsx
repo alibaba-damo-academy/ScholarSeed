@@ -278,6 +278,7 @@ import {
   resolveResourceCreateTarget,
   resolveResourceCreateTargetAt,
   resourceNameError,
+  resourceCreateNameError,
   resourceStateForProjectSwitch,
   withCreatedResource,
   withResourceChildren,
@@ -422,6 +423,7 @@ const RETRYABLE_RESOURCE_CREATE_ERRORS = new Set([
   'parent_not_writable',
   'write_failed',
 ])
+const RESOURCE_CREATE_NAME_ERRORS = new Set(['name_exists', 'name_too_long'])
 
 const RESOURCE_CONTEXT_SYNC_ATTEMPTS = 2
 const ASSISTANT_CONTEXT_ADD_ATTEMPTS = 2
@@ -3843,7 +3845,8 @@ export function StoreProvider({
         const draft = override ?? resource.nameDraft
         if (!draft || draft.submitting || resourceNameCommitRef.current) return
         const name = draft.value.trim()
-        const invalid = resourceNameError(name)
+        const invalid =
+          draft.mode === 'rename' ? resourceNameError(name) : resourceCreateNameError(name)
         if (invalid) {
           setState((current) => ({
             ...current,
@@ -3884,14 +3887,20 @@ export function StoreProvider({
           resourceNameCommitRef.current = false
           if (!result.ok) {
             const error = result.error ?? ''
-            if (error === 'invalid_name') {
+            if (
+              error === 'invalid_name' ||
+              (draft.mode !== 'rename' && RESOURCE_CREATE_NAME_ERRORS.has(error))
+            ) {
               setState((current) => ({
                 ...current,
                 resource: {
                   ...current.resource,
                   nameDraft: {
                     ...pendingDraft,
-                    error: INVALID_RESOURCE_NAME_MESSAGE,
+                    error:
+                      error === 'invalid_name'
+                        ? INVALID_RESOURCE_NAME_MESSAGE
+                        : resourceErrorMessage(error).key,
                     submitting: false,
                   },
                 },
@@ -3972,6 +3981,10 @@ export function StoreProvider({
                 : current.resource.tree,
               nameDraft: null,
               selected: createdPath ?? current.resource.selected,
+              expanded:
+                draft.mode === 'create_folder' && createdPath
+                  ? { ...current.resource.expanded, [createdPath]: true }
+                  : current.resource.expanded,
               notice: {
                 tone: 'ok',
                 text: { key: 'feedback.created', name: result.node?.name ?? submittedName },

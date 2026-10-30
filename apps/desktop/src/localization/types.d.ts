@@ -5738,6 +5738,13 @@ declare module 'i18next' {
             "migrationRequired": "版本管理待设置",
             "git": "由 Git 管理版本"
         },
+        "creation": {
+            "folderName": "文件夹名称",
+            "documentName": "文件名称",
+            "folderPlaceholder": "请输入文件夹名称",
+            "documentPlaceholder": "请输入文件名称",
+            "nameTooLong": "名称不能超过 20 字，请缩短后重试。"
+        },
         "panel": {
             "matchName": "文件名",
             "matchPath": "路径",
