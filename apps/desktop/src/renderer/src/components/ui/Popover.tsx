@@ -1,5 +1,5 @@
 import { type HTMLAttributes, type ReactNode, type RefObject } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 
 import { popoverContentClassName } from './classes'
 import {
@@ -61,17 +61,18 @@ export function PopoverContent({
   )
   useFocusScope(contentRef, open && positionedStyle?.visibility !== 'hidden', trapFocus, autoFocus)
   if (!open) return null
-  return createPortal(
-    <div
-      tabIndex={-1}
-      className={cxWithOverrides(popoverContentClassName, className)}
-      id={contentId}
-      ref={contentRef}
-      role="region"
-      style={positionedStyle}
-      {...props}
-    />,
-    document.body
+  return (
+    <Portal>
+      <div
+        tabIndex={-1}
+        className={cxWithOverrides(popoverContentClassName, className)}
+        id={contentId}
+        ref={contentRef}
+        role="region"
+        style={positionedStyle}
+        {...props}
+      />
+    </Portal>
   )
 }
 

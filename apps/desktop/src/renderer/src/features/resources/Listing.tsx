@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, ChevronRight, EllipsisVertical, Plus } from 'lucide-react'
+import { ChevronRight, EllipsisVertical, Plus } from 'lucide-react'
 
 import {
   Button,

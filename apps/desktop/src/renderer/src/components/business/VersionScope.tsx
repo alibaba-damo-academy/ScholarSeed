@@ -268,7 +268,7 @@ export function VersionScope(props: Props): React.JSX.Element {
                   value
                     .split(DIRECTORY_SUFFIX)
                     .some((part) => part === '..' || part === '.' || !part) ||
-                  /[\n\r*?!\[\]#]/.test(value)
+                  /[\n\r*?![\]#]/.test(value)
                 ) {
                   setFolderError(true)
                   return

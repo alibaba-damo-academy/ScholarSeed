@@ -13,7 +13,9 @@ from typing import Any, Mapping
 from fastapi import Depends, FastAPI
 
 from service.capabilities.api.routes import register_capability_routes
-from service.capabilities.service.skills import SkillCatalog
+from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.install import recover_plugin_installation
+from service.capabilities.service.skills import SkillCatalog, restore_skill_state
 from service.chat.api.attention import mount_attention_routes
 from service.chat.api.connectors import mount_connector_routes
 from service.chat.api.diagnostics import mount_diagnostic_routes
@@ -64,7 +66,12 @@ from service.identity.utils import (
     resolve_ownership_axis,
 )
 from service.inference.source import ContentSource
-from service.paths import SERVICE_BUNDLED_SKILLS_DIR, SERVICE_SKILLS_DIR, storage_instance_id
+from service.paths import (
+    SERVICE_BUNDLED_SKILLS_DIR,
+    SERVICE_COMPONENTS_DATABASE,
+    SERVICE_SKILLS_DIR,
+    storage_instance_id,
+)
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.platform.http_activity import ServeApplication, execution_admission
 from service.platform.lifecycle import ServiceLifecycle
@@ -318,9 +325,11 @@ def create_chat_app(
         activities=activities,
     )
     app.state.model_service = model_service
+    recover_plugin_installation(SERVICE_SKILLS_DIR, restore_state=restore_skill_state)
     skill_catalog = SkillCatalog(
         bundled_root=SERVICE_BUNDLED_SKILLS_DIR,
         user_root=SERVICE_SKILLS_DIR,
+        components=ComponentRegistry(SERVICE_COMPONENTS_DATABASE),
     )
     runtime_service = LiveSessionService(
         activities=activities,

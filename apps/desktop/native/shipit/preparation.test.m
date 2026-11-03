@@ -139,6 +139,46 @@ int main(int argc, const char **argv) {
         assert([Manager moveItemAtURL:unexpectedTarget toURL:renamedTarget error:NULL]);
         Check(SSPreparationRetire(source, renamedTarget, NULL), @"installed source bundle name retires preparation");
 
+        root = Case(@"ownership"); store = Store(root); source = Bundle([root stringByAppendingPathComponent:@"source.app"]); target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
+        candidate = Prepare(source, target, NULL); assert(candidate);
+        Check(!SSPreparationAcceptOwnership(source, target, nil, candidate, NULL), @"ownership cannot be accepted without durable intent");
+        NSString *intentSave = [store stringByAppendingPathComponent:@"journal.next"];
+        Directory(intentSave);
+        Check(!SSPreparationBeginOwnership(source, target, nil, candidate, NULL) && !Journal(store)[@"record"][@"ownership"], @"failed intent save prevents ownership mutation");
+        assert([Manager removeItemAtPath:intentSave error:NULL]);
+        Check(SSPreparationBeginOwnership(source, target, nil, candidate, NULL), @"ownership intent is durable before mutation");
+        // Model the durable pre-ownership snapshot with the same real inodes.
+        // Privileged ShipIt changes these two owners during signature validation.
+        NSMutableDictionary *ownership = Journal(store);
+        NSNumber *previousOwner = @(getuid() == 0 ? 501 : 0);
+        ownership[@"record"][@"candidate"][@"item"][@"uid"] = previousOwner;
+        ownership[@"record"][@"candidate"][@"contents"][@"uid"] = previousOwner;
+        Rewrite(store, ownership); SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+        Check(!SSPreparationValidate(source, target, nil, candidate, NULL), @"ordinary admission never ignores an owner mismatch");
+        NSString *ownershipSave = [store stringByAppendingPathComponent:@"journal.next"];
+        Directory(ownershipSave);
+        Check(!SSPreparationAcceptOwnership(source, target, nil, candidate, NULL) && [ownership isEqual:Journal(store)], @"ownership persistence failure retains the old durable snapshot");
+        assert([Manager removeItemAtPath:ownershipSave error:NULL]);
+        Check(SSPreparationAcceptOwnership(source, target, nil, candidate, NULL), @"completed installer ownership transition is recorded explicitly");
+        Check(SSPreparationValidate(source, target, nil, candidate, NULL), @"strict admission succeeds against the transitioned snapshot");
+        Check([Journal(store)[@"record"][@"candidate"][@"item"][@"uid"] isEqual:@(getuid())] &&
+              [Journal(store)[@"record"][@"candidate"][@"contents"][@"uid"] isEqual:@(getuid())], @"both bundle and Contents retain the installer owner");
+        SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+        Check(SSPreparationValidate(source, target, nil, candidate, NULL), @"accepted ownership survives helper restart");
+        for (NSURL *url in @[source, target, candidate, [candidate URLByAppendingPathComponent:@"Contents"]]) {
+            NSString *held = [url.path stringByAppendingString:@".held"];
+            assert([Manager moveItemAtPath:url.path toPath:held error:NULL]); Bundle(url.path);
+            Check(!SSPreparationAcceptOwnership(source, target, nil, candidate, NULL), @"ownership acceptance rejects a replaced request or candidate inode");
+            assert([Manager removeItemAtURL:url error:NULL]);
+            assert([Manager moveItemAtPath:held toPath:url.path error:NULL]);
+        }
+        NSDictionary *unchangedOwnership = Journal(store);
+        Check(!SSPreparationAcceptOwnership(source, target, @{@"requestId":@"other"}, candidate, NULL) &&
+              [unchangedOwnership isEqual:Journal(store)], @"another binding cannot rebase the ownership snapshot");
+        assert(chmod(candidate.path.stringByDeletingLastPathComponent.fileSystemRepresentation, 0777) == 0);
+        Check(!SSPreparationAcceptOwnership(source, target, nil, candidate, NULL), @"ownership acceptance requires the helper's private parent");
+        assert(chmod(candidate.path.stringByDeletingLastPathComponent.fileSystemRepresentation, 0700) == 0);
+
         root = Case(@"partial"); store = Store(root); source = Bundle([root stringByAppendingPathComponent:@"source.app"]); target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
         candidate = Prepare(source, target, NULL); assert(candidate);
         NSMutableDictionary *journal = Journal(store);

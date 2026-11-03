@@ -945,7 +945,7 @@ def _inspect_startup_sources(
     }
     if defer_projects:
         roots = set(core_roots)
-        unavailable_projects = ()
+        unavailable_projects: tuple[UnavailableProject, ...] = ()
         unavailable_roots = set()
         project_qualification_roots = ()
         external_roots = set()
@@ -972,7 +972,7 @@ def _inspect_startup_sources(
         if isolate_projects and seed.project_failures:
             ids = {root: project_id for project_id, root in catalog.projects}
             unavailable_projects = (
-                *unavailable_projects,
+                *(row for row in unavailable_projects if row.root not in seed.project_failures),
                 *(
                     UnavailableProject(ids.get(root, ""), root, str(root), (), None, True, reason)
                     for root, reason in seed.project_failures.items()
@@ -1074,6 +1074,14 @@ def _inspect_startup_sources(
                     if source.root not in unavailable_roots
                 ),
             )
+        # Project isolation removes business storage, but an unavailable
+        # locator still needs its ancestor selected to prove absence. That
+        # ancestor may also be a failed project's root or external mount.
+        # Qualification failures are attributed through project_root_owners;
+        # the next observation then retains an explicitly rejected locator.
+        roots.update(
+            Path(project.anchor) for project in unavailable_projects if not project.anchor_rejected
+        )
     roots.update(core_roots)
     with startup_phase("source.trace"):
         trace_sources = inspect_trace_startup(domains, TRACE_PATHS)

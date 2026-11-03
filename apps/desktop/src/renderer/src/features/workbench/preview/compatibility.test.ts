@@ -113,6 +113,94 @@ test('OPC relationship owners resolve relative, absolute and escaped part names'
   assert.throws(() => resolvePart('word/document.xml', '../../outside.emf'), /escapes package/)
 })
 
+const TABLE_RELATIONSHIP =
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/table'
+const SHEET_RELATIONSHIPS_PART = 'xl/worksheets/_rels/sheet1.xml.rels'
+
+async function tableWorkbook(target: string): Promise<Uint8Array> {
+  const book = new ExcelJS.Workbook()
+  const sheet = book.addWorksheet('测试用例')
+  sheet.addTable({
+    name: 'Cases',
+    ref: 'A1',
+    headerRow: true,
+    columns: [{ name: '编号' }, { name: '用例名称' }],
+    rows: [
+      ['S01', '拆分右侧'],
+      ['S02', '拆分下方'],
+    ],
+  })
+  const entries = unzipSync(new Uint8Array(await book.xlsx.writeBuffer()))
+  const document = new DOMParser().parseFromString(strFromU8(entries[SHEET_RELATIONSHIPS_PART]))
+  document
+    .getElementsByTagNameNS(OOXML_NS.relationships, 'Relationship')[0]
+    .setAttribute('Target', target)
+  entries[SHEET_RELATIONSHIPS_PART] = strToU8(new XMLSerializer().serializeToString(document))
+  return zipSync(entries)
+}
+
+for (const target of [
+  '/xl/tables/table1.xml',
+  '../tables/./table1.xml',
+  '../tables/table%31.xml',
+  '../tables/table1.xml',
+]) {
+  test(`XLSX table relationships resolve ${target} without changing the source`, async () => {
+    const source = await tableWorkbook(target)
+    const before = Uint8Array.from(source)
+    const book = await loadWorkbook(source)
+    const sheet = book.worksheets[0]
+    assert.equal(sheet.name, '测试用例')
+    assert.equal(sheet.getCell('B2').value, '拆分右侧')
+    assert.equal(sheet.getCell('B3').value, '拆分下方')
+    assert.equal(sheet.getTable('Cases').name, 'Cases')
+    assert.deepEqual(source, before)
+    const original = unzipSync(source)
+    const projected = unzipSync(workbookPreview(source))
+    for (const part of Object.keys(original)) {
+      if (part !== SHEET_RELATIONSHIPS_PART) assert.deepEqual(projected[part], original[part])
+    }
+    if (target === '../tables/table1.xml') assert.equal(workbookPreview(source), source)
+  })
+}
+
+test('table relationship projection preserves external, foreign and unrelated relationships', () => {
+  for (const xml of [
+    `<Relationships xmlns="${OOXML_NS.relationships}"><Relationship Type="${TABLE_RELATIONSHIP}" Target="/xl/tables/table1.xml" TargetMode="External" Id="external"/></Relationships>`,
+    `<Relationships xmlns="urn:foreign"><Relationship Type="${TABLE_RELATIONSHIP}" Target="/xl/tables/table1.xml" Id="foreign"/></Relationships>`,
+    `<Relationships xmlns="${OOXML_NS.relationships}"><Relationship Type="urn:other" Target="/xl/tables/table1.xml" Id="other"/></Relationships>`,
+  ]) {
+    const source = archive({ [SHEET_RELATIONSHIPS_PART]: xml })
+    assert.equal(workbookPreview(source), source)
+  }
+})
+
+test('prefixed table relationships are resolved without modifying unrelated attributes', () => {
+  const source = archive({
+    [SHEET_RELATIONSHIPS_PART]: `<p:Relationships xmlns:p="${OOXML_NS.relationships}"><p:Relationship Type="${TABLE_RELATIONSHIP}" Target="/xl/tables/table1.xml" Id="table" custom="keep"/></p:Relationships>`,
+  })
+  const document = new DOMParser().parseFromString(
+    strFromU8(unzipSync(workbookPreview(source))[SHEET_RELATIONSHIPS_PART])
+  )
+  const relation = document.getElementsByTagNameNS(OOXML_NS.relationships, 'Relationship')[0]
+  assert.equal(relation.getAttribute('Target'), '../tables/table1.xml')
+  assert.equal(relation.getAttribute('custom'), 'keep')
+  assert.equal(relation.getAttribute('Id'), 'table')
+})
+
+test('missing table parts and package traversal remain explicit failures', async () => {
+  await assert.rejects(loadWorkbook(await tableWorkbook('/xl/tables/table2.xml')))
+  assert.throws(
+    () =>
+      workbookPreview(
+        archive({
+          [SHEET_RELATIONSHIPS_PART]: `<Relationships xmlns="${OOXML_NS.relationships}"><Relationship Type="${TABLE_RELATIONSHIP}" Target="../../../outside.xml" Id="table"/></Relationships>`,
+        })
+      ),
+    /escapes package/
+  )
+})
+
 test('native raster packages retain their exact source bytes', async () => {
   const source = zipSync({
     'word/media/image.jpeg': new Uint8Array([0xff, 0xd8, 0xff]),

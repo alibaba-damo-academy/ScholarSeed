@@ -20,6 +20,22 @@ const source = (id: string): TaskSourceContribution => ({
   present: () => ({ title: '', detail: '', announcement: '', error: '', failures: [] })
 })
 
+test('public component slots retain their host implementation and reject duplicate owners', () => {
+  const question = { slot: 'interaction.question', render: () => null }
+  const references = { slot: 'display.literature-references', render: () => null }
+  const registry = composeFeatures([
+    { id: 'questions', publicComponents: [question] },
+    { id: 'literature', publicComponents: [references] }
+  ])
+  assert.equal(registry.publicComponents.get(question.slot), question)
+  assert.equal(registry.publicComponents.get(references.slot), references)
+  assert.throws(() => composeFeatures([
+    { id: 'questions', publicComponents: [question] },
+    { id: 'override', publicComponents: [{ ...question }] }
+  ]), /Duplicate public component: interaction.question/)
+  assert.equal(registry.publicComponents.get(question.slot), question)
+})
+
 test('task source contributions aggregate without shell domain branches', () => {
   const first = source('imports')
   const duplicate = source('imports')

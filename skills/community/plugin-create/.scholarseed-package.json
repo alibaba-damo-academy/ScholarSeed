@@ -1,0 +1,78 @@
+{
+  "dependencies": {},
+  "files": [
+    {
+      "mode": 420,
+      "path": "SKILL.md",
+      "sha256": "c58b7b58016f9a27f8a2e559ecdb206ee46cf007f022da2c58dd12b3b6817968",
+      "size": 19766
+    },
+    {
+      "mode": 420,
+      "path": "VERSION",
+      "sha256": "ac3bf208eb88be6542e3fc750b511b112cf25bc40e46dca2a50819e43cf59096",
+      "size": 6
+    },
+    {
+      "mode": 420,
+      "path": "references/contract.json",
+      "sha256": "988e732182df5689cbf4542b08444c094c9668a9b7437cdf713ced8bc8979896",
+      "size": 30362
+    },
+    {
+      "mode": 420,
+      "path": "references/evidence.md",
+      "sha256": "0d772b0e7413f78fda08748d65fbc267b8b8e0dc2979ad114d28ec831d9d37e8",
+      "size": 2061
+    },
+    {
+      "mode": 420,
+      "path": "references/interaction.md",
+      "sha256": "a8bb9c1404194fbd56f5d2fda4b4974842636e31022d4952bf20746b0f87d88a",
+      "size": 5475
+    },
+    {
+      "mode": 420,
+      "path": "references/testing.md",
+      "sha256": "a178ff5a8b97ca1a8d296592c712e5b296e85dc385312026ad1d517f3736336d",
+      "size": 2429
+    },
+    {
+      "mode": 420,
+      "path": "scripts/scaffold.py",
+      "sha256": "c3336f76e132a3c0ca7feb5ddbba5a634d0a6cd909f9fd7ac774d0e660ae6bd6",
+      "size": 7547
+    },
+    {
+      "mode": 420,
+      "path": "templates/card.js",
+      "sha256": "f6511b3d20f3de451e0975772edc206630dee3889f95c140a988060774571d2d",
+      "size": 4328
+    },
+    {
+      "mode": 420,
+      "path": "templates/comparison.md",
+      "sha256": "5cdc3f873add3845474e65b17312502378cb9555335e6932c63cf719ebc110e0",
+      "size": 809
+    },
+    {
+      "mode": 420,
+      "path": "templates/selection.md",
+      "sha256": "8f65f2170726218bca00da3a6510698d4e3db62dc2d3153238eb1952ecd2ad86",
+      "size": 724
+    },
+    {
+      "mode": 420,
+      "path": "templates/stages.md",
+      "sha256": "94859ea1967e2f5431f57335ad2f4e7de3298fcb6da7ad3c7191533c348ee9c7",
+      "size": 782
+    }
+  ],
+  "name": "plugin-create",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "c58b7b58016f9a27f8a2e559ecdb206ee46cf007f022da2c58dd12b3b6817968",
+  "version": "0.5.5"
+}

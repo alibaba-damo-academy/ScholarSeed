@@ -31,6 +31,9 @@ SEARCH_STATUS_PAPERS = 20
 SEARCH_MAX_PAPERS = 1000
 SEARCH_TEXT = 2000
 SEARCH_SHORT = 256
+SEARCH_AUTHORS = 20
+SEARCH_REASONS = 10
+SEARCH_SOURCES = 20
 SEARCH_STATE_FILE = "state.json"
 SEARCH_INTENT_FILE = "intent.json"
 SEARCH_SELECTION_FILE = "selection.json"
@@ -88,17 +91,17 @@ class SearchRecord(BaseModel):
 class SearchPaper(SearchRecord):
     id: str = Field(min_length=1, max_length=SEARCH_SHORT)
     title: str = Field(min_length=1, max_length=SEARCH_TEXT)
-    authors: list[str] = Field(default_factory=list, max_length=20)
+    authors: list[str] = Field(default_factory=list, max_length=SEARCH_AUTHORS)
     year: int | None = None
     venue: str | None = None
     doi: str | None = None
     url: str | None = None
     abstract: str | None = None
-    reasons: list[str] = Field(default_factory=list, max_length=10)
+    reasons: list[str] = Field(default_factory=list, max_length=SEARCH_REASONS)
     tier: int | None = Field(default=None, ge=1)
     citation_count: int | None = Field(default=None, ge=0)
     access: Literal["yes", "no", "unknown"] = "unknown"
-    sources: list[str] = Field(default_factory=list, max_length=20)
+    sources: list[str] = Field(default_factory=list, max_length=SEARCH_SOURCES)
     decision: Literal["included", "excluded", "candidate"] = "candidate"
     decision_reason: str | None = None
     fulltext: Literal["fulltext", "abstract", "unknown"] = "unknown"
@@ -117,6 +120,13 @@ class SearchPaper(SearchRecord):
         ):
             raise ValueError("literature_result_url_invalid")
         return value
+
+
+class SearchPaperDetail(SearchPaper):
+    title: str = Field(min_length=1)
+    authors: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
 
 
 class SearchSource(SearchRecord):
@@ -168,12 +178,18 @@ def _count(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
-def _text(value: Any, limit: int = SEARCH_TEXT) -> str:
+def _text(value: Any, limit: int | None = SEARCH_TEXT) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
-def _strings(value: Any, limit: int = 20) -> list[str]:
-    return [_text(item) for item in value[:limit] if _text(item)] if isinstance(value, list) else []
+def _strings(
+    value: Any, limit: int | None = SEARCH_AUTHORS, *, text_limit: int | None = SEARCH_TEXT
+) -> list[str]:
+    return (
+        [_text(item, text_limit) for item in value[:limit] if _text(item, text_limit)]
+        if isinstance(value, list)
+        else []
+    )
 
 
 def _object(root: Path, path: str) -> dict:
@@ -331,34 +347,54 @@ def prepare_final_delivery(
     return PreparedFinalDelivery(tuple(artifacts))
 
 
-def project_papers(raw_papers: list[dict]) -> list[SearchPaper]:
+def project_papers(raw_papers: list[dict], *, complete: bool = False) -> list[SearchPaper]:
+    paper_type = SearchPaperDetail if complete else SearchPaper
+    text_limit = None if complete else SEARCH_TEXT
+    short_limit = None if complete else SEARCH_SHORT
     papers = []
     identities = set()
     for raw in raw_papers:
         if not isinstance(raw, dict) or raw.get("is_placeholder") is not False:
             raise ValueError("literature_result_invalid_paper")
         relevance = raw.get("relevance") or {}
-        reasons = _strings(relevance.get("reasons"), 10) if isinstance(relevance, dict) else []
+        reasons = (
+            _strings(
+                relevance.get("reasons"),
+                None if complete else SEARCH_REASONS,
+                text_limit=text_limit,
+            )
+            if isinstance(relevance, dict)
+            else []
+        )
         identity = _text(raw.get("id"), SEARCH_SHORT)
-        title = _text(raw.get("title"))
+        title = _text(raw.get("title"), text_limit)
         if not identity or not title:
             raise ValueError("literature_result_invalid_paper")
-        paper = SearchPaper(
+        paper = paper_type(
             id=identity,
             title=title,
-            authors=_strings(raw.get("authors")),
+            authors=_strings(
+                raw.get("authors"), None if complete else SEARCH_AUTHORS, text_limit=text_limit
+            ),
             year=raw.get("year"),
-            venue=_text(raw.get("venue")) or None,
-            doi=_text(raw.get("doi"), SEARCH_SHORT) or None,
+            venue=_text(raw.get("venue"), text_limit) or None,
+            doi=_text(raw.get("doi"), short_limit) or None,
             url=raw.get("url"),
-            abstract=_text(raw.get("abstract") or raw.get("abstract_summary")) or None,
+            abstract=_text(raw.get("abstract") or raw.get("abstract_summary"), text_limit) or None,
             reasons=reasons,
             tier=_count(raw.get("tier")),
             citation_count=_count(raw.get("citation_count")),
             access=raw.get("open_access", "unknown"),
             sources=list(
                 dict.fromkeys(
-                    [_text(raw.get("source"), SEARCH_SHORT), *_strings(raw.get("also_found_by"))]
+                    [
+                        _text(raw.get("source"), short_limit),
+                        *_strings(
+                            raw.get("also_found_by"),
+                            None if complete else SEARCH_SOURCES,
+                            text_limit=text_limit,
+                        ),
+                    ]
                 )
             ),
         )

@@ -118,8 +118,10 @@ export function effectiveSessionModelKey(
   models: ReadonlyArray<Pick<ModelInfo, 'key' | 'disabled'>>,
   defaultModel: string,
   activeSession: string | null,
-  threads: Record<string, Thread>
+  threads: Record<string, Thread>,
+  exactDraftModelId: string | null = null
 ): string {
+  if (exactDraftModelId) return exactDraftModelId
   const sessionKey = selectedSessionModelKey(defaultModel, activeSession, threads)
   const row = models.find((model) => model.key === sessionKey)
   if (!row?.disabled) return sessionKey || defaultModel

@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
+import type { discardPreviewPreparation } from './updater.ts'
 import { planUpdatePrune, stagedInstallerName } from './staging.ts'
 
 // Exercise the production cleanup against real files, with the application and
@@ -46,7 +47,12 @@ function setup(t: test.TestContext, preview = true, handoff = false) {
   const stateRoot = join(root, 'state')
   mkdirSync(stateRoot)
   let cleared = 0
-  const exports: Record<string, (...args: any[]) => any> = {}
+  const exports = {} as {
+    cache: () => string
+    state: () => string
+    ready: () => string
+    discardPreviewPreparation: typeof discardPreviewPreparation
+  }
   runInNewContext(
     code +
       '\nexports.cache = updateCacheDir; exports.state = candidateStateDirectory; exports.ready = readyStatePath;',

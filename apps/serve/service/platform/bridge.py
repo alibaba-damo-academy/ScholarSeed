@@ -96,9 +96,24 @@ TASK_ACTIVATE_ROUTE = BRIDGE_ROUTE_PREFIX + "task/activate"
 HISTORY_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "history/"
 ARTIFACT_PUBLISH_ROUTE = BRIDGE_ROUTE_PREFIX + "artifact/publish"
 DISPLAY_CARD_ROUTE = BRIDGE_ROUTE_PREFIX + "display-card"
+COMPONENT_CAPABILITY = "component"
+PLUGIN_INSTALL_CAPABILITY = "plugin"
+PLUGIN_INSTALL_OPERATION = "install"
+PLUGIN_INSTALL_ROUTE = BRIDGE_ROUTE_PREFIX + "plugin/install"
+COMPONENT_CATALOG_OPERATION = "catalog"
+COMPONENT_PREFLIGHT_OPERATION = "preflight"
+COMPONENT_PREFLIGHT_MAX_SLOTS = 64
+COMPONENT_REQUEST_OPERATION = "request"
+COMPONENT_DISPLAY_OPERATION = "display"
+COMPONENT_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + COMPONENT_CAPABILITY + "/"
+COMPONENT_CARD_TYPE = "plugin-component"
+COMPONENT_REQUEST_MARKER = "component_request"
+COMPONENT_HOST_PLUGIN = "host"
+COMPONENT_SCHEMA_DEFAULT = {"type": "object"}
 # Acquisition waits for backend-owned downloads, which can outlast a normal RPC.
 BLOCKING_OPERATIONS = frozenset(
     {
+        (COMPONENT_CAPABILITY, COMPONENT_REQUEST_OPERATION),
         ("literature", "import"),
         ("resource", "import"),
         ("literature", "acquire"),
@@ -394,6 +409,7 @@ class ArtifactPublish(BaseModel):
 class DisplayCardContent(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    skill: str = Field(default="", max_length=TASK_NAME_CHARS)
     path: str = Field(default="", max_length=ARTIFACT_PATH_CHARS)
     data: dict[str, Any] | None = None
 
@@ -409,6 +425,42 @@ class DisplayCard(BaseModel):
 
     type: str = Field(min_length=1, max_length=DISPLAY_CARD_TYPE_CHARS)
     content: DisplayCardContent
+
+
+class PluginInstallation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    request_id: str = Field(min_length=1, max_length=BRIDGE_CALLBACK_REQUEST_CHARS)
+    path: str = Field(min_length=1, max_length=HISTORY_TEXT_CHARS)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class ComponentCatalog(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    include_ui: bool = False
+
+
+class ComponentPreflight(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    slots: list[str] = Field(min_length=1, max_length=COMPONENT_PREFLIGHT_MAX_SLOTS)
+
+    @model_validator(mode="after")
+    def bounded_slots(self) -> "ComponentPreflight":
+        if any(not slot.strip() or len(slot) > DISPLAY_CARD_TYPE_CHARS for slot in self.slots):
+            raise ValueError("component_slot_invalid")
+        return self
+
+
+class ComponentInvocation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    request_id: str = Field(min_length=1, max_length=BRIDGE_CALLBACK_REQUEST_CHARS)
+    slot: str = Field(min_length=1, max_length=DISPLAY_CARD_TYPE_CHARS)
+    data: dict[str, JsonValue]
+    title: str = Field(min_length=1, max_length=HISTORY_LABEL_CHARS)
+    prompt: str = Field(default="", max_length=HISTORY_TEXT_CHARS)
 
 
 class BridgeCaller(Protocol):
@@ -655,6 +707,20 @@ class DisplayCardPublisher(BridgeCaller, Protocol):
         self, card_type: str, content: DisplayCardContent, *, turn_id: str
     ) -> dict[str, Any]: ...
 
+    def component_catalog(self) -> list[dict[str, Any]]: ...
+
+    def component_ui_catalog(self) -> dict[str, Any]: ...
+
+    def component_preflight(self, slots: list[str]) -> dict[str, Any]: ...
+
+    async def plugin_installation(
+        self, command: PluginInstallation, *, turn_id: str
+    ) -> dict[str, Any]: ...
+
+    async def component_interaction(
+        self, command: ComponentInvocation, *, turn_id: str, waiting: bool
+    ) -> dict[str, Any]: ...
+
 
 class ArtifactPublishFailure(RuntimeError):
     """Stable failure returned by any bridge artifact execution scope."""
@@ -743,6 +809,38 @@ BRIDGE_REQUESTS[("search", "browser")] = BridgeOperation(
     guidance=SEARCH_BROWSER_GUIDANCE,
 )
 BRIDGE_REQUESTS[("display-card", "publish")] = BridgeOperation(DisplayCard, DISPLAY_CARD_ROUTE)
+BRIDGE_REQUESTS[(PLUGIN_INSTALL_CAPABILITY, PLUGIN_INSTALL_OPERATION)] = BridgeOperation(
+    PluginInstallation,
+    PLUGIN_INSTALL_ROUTE,
+    "Inspect a generated workspace ZIP and publish an independent installation card without waiting. Never installs automatically.",
+    requires_turn_context=True,
+    guidance="Pass a workspace-relative ZIP path and its checked SHA256. Publication is not installation. Continue or finish creation without waiting for card actions. Keep each revision at a distinct path and request_id; the host provides preview, consent and installation results for that exact package.",
+)
+BRIDGE_REQUESTS[(COMPONENT_CAPABILITY, COMPONENT_CATALOG_OPERATION)] = BridgeOperation(
+    ComponentCatalog,
+    COMPONENT_ROUTE_PREFIX + COMPONENT_CATALOG_OPERATION,
+    "List enabled conversation components and their input, output and action contracts.",
+    guidance="Set include_ui=true to discover the active official UI package exports and composition guidance. Discovery does not grant permissions or change existing card versions.",
+    effect=READ_EFFECT,
+    approval=NO_APPROVAL,
+    requires_turn_context=True,
+)
+BRIDGE_REQUESTS[(COMPONENT_CAPABILITY, COMPONENT_PREFLIGHT_OPERATION)] = BridgeOperation(
+    ComponentPreflight,
+    COMPONENT_ROUTE_PREFIX + COMPONENT_PREFLIGHT_OPERATION,
+    "Check proposed custom slots against current reservations; does not reserve, install or authorize.",
+    effect=READ_EFFECT,
+    approval=NO_APPROVAL,
+    requires_turn_context=True,
+)
+for component_operation in (COMPONENT_REQUEST_OPERATION, COMPONENT_DISPLAY_OPERATION):
+    BRIDGE_REQUESTS[(COMPONENT_CAPABILITY, component_operation)] = BridgeOperation(
+        ComponentInvocation,
+        COMPONENT_ROUTE_PREFIX + component_operation,
+        "Publish a custom component; request waits for a validated user result. Reuse request_id only for identical retries.",
+        requires_turn_context=True,
+        guidance="Public host components must be triggered through their owning business tools; this operation is for custom slots.",
+    )
 BRIDGE_REQUESTS[("task", "activate")] = BridgeOperation(TaskActivate, TASK_ACTIVATE_ROUTE)
 BRIDGE_REQUESTS[(SKILL_CAPABILITY, SKILL_ADMISSION_OPERATION)] = BridgeOperation(
     SkillAdmission,
@@ -818,7 +916,8 @@ class LiteratureResultPublish(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
-    checkpoint: Literal["search", "selection", "candidates", "final"] = "search"
+    checkpoint: Literal["search", "selection", "candidates", "final", "metadata"] = "search"
+    skill: str = Field(default="", max_length=TASK_NAME_CHARS)
 
 
 class LiteratureReviewPublish(BaseModel):

@@ -30,20 +30,12 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '../../components/ui'
-import { IconFont } from '../../components/primitive'
-import { useApp } from '../../store'
-import {
-  LiteratureApiError,
-  importBibliography,
-  listLiteratureCollections,
-  createLiteratureCollection,
-  type LibraryCollection,
-} from './api'
-import { catalogue } from './catalog'
+import { IconFont } from '../../components/primitive/Iconfont'
+import type { LiteratureCardPorts, CardCollection as LibraryCollection } from './ports'
 import { DestinationRows, MENU_BOUNDS } from './DestinationTree'
-import { collectionNodes, type JoinDestination } from './join'
-import { searchPapersBibtex } from './result'
+import { collectionNodes, type JoinDestination } from './hierarchy'
 import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
+import { pluginErrorCode } from '../../../../plugins'
 
 const REFERENCES_PAGE_SIZE = 5
 const REFERENCES_FULL_PAGE_LIMIT = 4
@@ -107,7 +99,7 @@ function isReference(value: unknown): value is ReferenceItem {
   )
 }
 
-function referencesContent(value: Record<string, unknown>): ReferencesContent | null {
+export function referencesContent(value: Record<string, unknown>): ReferencesContent | null {
   if (
     value.schema_version !== LITERATURE_SCHEMA_VERSION ||
     typeof value.project !== 'string' ||
@@ -128,7 +120,7 @@ function safeUrl(value: string | null): string | null {
   }
 }
 
-function referenceUrl(reference: ReferenceItem): string | null {
+export function referenceUrl(reference: ReferenceItem): string | null {
   return (
     safeUrl(reference.doi ? `https://doi.org/${reference.doi}` : null) ??
     safeUrl(reference.url) ??
@@ -136,26 +128,11 @@ function referenceUrl(reference: ReferenceItem): string | null {
   )
 }
 
-function openReference(url: string): void {
-  if (window.scholarseed?.openExternal) {
-    void window.scholarseed.openExternal(url)
-    return
-  }
-  window.open(url, '_blank', 'noreferrer')
-}
-
-const BIBLIOGRAPHY_FILENAME = 'references.bib'
-const BIBLIOGRAPHY_MIME = 'application/x-bibtex'
-
-function bibliographyFile(references: ReferenceItem[]): File {
-  return new File([searchPapersBibtex(references)], BIBLIOGRAPHY_FILENAME, {
-    type: BIBLIOGRAPHY_MIME,
-  })
-}
-
 export function LiteratureReferences({
   content,
+  ports,
 }: {
+  ports: LiteratureCardPorts
   content: Record<string, unknown>
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
@@ -169,16 +146,18 @@ export function LiteratureReferences({
         </CardHeader>
       </Card>
     )
-  return <ReferencesList payload={payload} />
+  return <ReferencesList payload={payload} ports={ports} />
 }
 
-function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.Element {
+function ReferencesList({
+  payload,
+  ports,
+}: {
+  ports: LiteratureCardPorts
+  payload: ReferencesContent
+}): React.JSX.Element {
   const { t } = useTranslation('literature')
-  const { state } = useApp()
-  // 「加入文献库」必须落在用户当前所在的作用域: 少了项目这一维, 文献会进全局分类
-  // 却不关联当前项目, 于是它在自己项目的文献库里根本看不见。分类列表同理, 只列
-  // 该作用域下的分类, 否则挑到的是别的作用域里同名的另一个分类。
-  const projectId = state.homeSelectedProjectId ?? undefined
+  const projectId = ports.projectId
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   const [open, setOpen] = useState(true)
@@ -225,11 +204,8 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
     try {
       // 文献库不判重（proposal 91）：每次「加入」都新增一条，`saved` 只记录本次
       // 会话里我刚加过哪些条目，用来给出即时反馈，不代表"库里已存在"。
-      const result = await importBibliography([bibliographyFile([reference])], {
-        collectionId,
-        projectId,
-      })
-      const id = result.items[0]?.id
+      const result = await ports.addReference(reference.ref_id, collectionId)
+      const id = result.id
       if (!id) {
         setErrors((current) => ({
           ...current,
@@ -238,12 +214,11 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
         return
       }
       setSaved((current) => ({ ...current, [reference.ref_id]: id }))
-      catalogue.reload()
     } catch (error) {
       setErrors((current) => ({
         ...current,
         [reference.ref_id]: literatureErrorMessage(
-          error instanceof LiteratureApiError ? error.failure.code : undefined,
+          pluginErrorCode(error),
           error instanceof Error ? error.message : undefined,
           'references.addFailed'
         ),
@@ -258,11 +233,11 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
     setCollectionsLoading(true)
     setCollectionsError(null)
     try {
-      setCollections(await listLiteratureCollections(projectId))
+      setCollections(await ports.collections())
     } catch (error) {
       setCollectionsError(
         literatureErrorMessage(
-          error instanceof LiteratureApiError ? error.failure.code : undefined,
+          pluginErrorCode(error),
           error instanceof Error ? error.message : undefined,
           'references.collectionsFailed'
         )
@@ -281,15 +256,14 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
       const existing = collections.find(
         (collection) => collection.name === name && (collection.parent_id || undefined) === parentId
       )
-      const collection = existing ?? (await createLiteratureCollection(name, projectId, parentId))
-      catalogue.reload()
+      const collection = existing ?? (await ports.createCollection(name, parentId))
       setCreatingFor(null)
       setCreateParent(null)
       await add(creatingFor, collection.id)
     } catch (error) {
       setCreateError(
         literatureErrorMessage(
-          error instanceof LiteratureApiError ? error.failure.code : undefined,
+          pluginErrorCode(error),
           error instanceof Error ? error.message : undefined,
           'references.createFailed'
         )
@@ -308,7 +282,11 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
 
   return (
     <>
-      <Card padding="none" className="overflow-y-hidden" data-testid="literature-references-card">
+      <Card
+        padding="none"
+        className="min-w-0 overflow-y-hidden [--vds-card-radius:var(--vds-radius-6)]"
+        data-testid="literature-references-card"
+      >
         <Collapsible className="!gap-0" open={open} onOpenChange={setOpen}>
           <CollapsibleTrigger asChild>
             <Button
@@ -370,7 +348,7 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
                               <Button
                                 unstyled
                                 className="m-0 block max-w-full break-words text-left text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-semibold)] leading-relaxed text-[var(--vds-text-primary)] hover:text-[var(--vds-link-hover)] hover:underline focus-visible:text-[var(--vds-link-hover)] focus-visible:underline active:text-[var(--vds-link-active)]"
-                                onClick={() => openReference(url)}
+                                onClick={() => void ports.openSource(reference.ref_id)}
                               >
                                 {reference.title}
                               </Button>
@@ -470,7 +448,7 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
                               size="sm"
                               unstyled
                               className="max-w-full break-all text-left font-mono text-xs text-[var(--vds-link)] hover:text-[var(--vds-link-hover)] hover:underline focus-visible:text-[var(--vds-link-hover)] active:text-[var(--vds-link-active)]"
-                              onClick={() => openReference(url)}
+                              onClick={() => void ports.openSource(reference.ref_id)}
                             >
                               {reference.doi || t('references.openSource')}
                             </Button>

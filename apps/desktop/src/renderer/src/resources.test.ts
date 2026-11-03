@@ -1296,12 +1296,18 @@ test('literature attachment tabs expose file-path actions and attach through the
 })
 
 test('literature message files retain their original preview identity before a session exists', () => {
-  assert.match(storeSource, /previewSource\?: LiteratureDocumentSource/)
+  const references = readFileSync(new URL('./contracts/assistant.ts', import.meta.url), 'utf8')
+  assert.match(references, /previewSource\?: LiteratureDocumentSource \| SessionFileSource/)
   assert.match(
     storeSource,
     /attachActiveFileToAi:[\s\S]*const literatureSource = document\.source[\s\S]*previewSource: literatureSource/
   )
-  assert.match(attachmentsSource, /source: ref\.previewSource/)
+  const attachmentList = readFileSync(
+    new URL('./components/primitive/AttachmentList.tsx', import.meta.url),
+    'utf8'
+  )
+  assert.match(attachmentsSource, /<AttachmentList \{\.\.\.props\} openPaths=\{openPaths\}/)
+  assert.match(attachmentList, /source: ref\.previewSource/)
   assert.match(
     storeSource,
     /openFilePreview: \(filePreview\)[\s\S]*if \(filePreview\.source\)[\s\S]*source = filePreview\.source/

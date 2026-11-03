@@ -3,7 +3,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { squirrelLaunchSuperseded } from './squirrelstartup.ts'
+import { squirrelLaunchSuperseded, settleSquirrelStartup } from './squirrelstartup.ts'
 
 const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('index.ts', source, ts.ScriptTarget.Latest, true)
@@ -63,6 +63,10 @@ async function launch(
       },
     },
     startupAdmissionResolved: platform !== 'darwin',
+    headless: false,
+    recoverStartupAdmission: async () => {
+      actions.push('recovery-surface')
+    },
     MACOS_PLATFORM: 'darwin',
     pushLog: () => undefined,
     watchResourceDirectory: () => () => undefined,
@@ -128,24 +132,29 @@ async function launch(
 }
 
 for (const error of ['observe', 'restore', 'select']) {
-  test(`actual entry exits without a failure surface when ${error} fails before admission completes`, async () => {
+  test(`actual entry shows isolated recovery when ${error} fails before admission completes`, async () => {
     const current = await launch({ error, observed: error === 'restore' })
-    assert.equal(current.actions.at(-1), 'exit:1')
+    assert.equal(current.actions.at(-1), 'recovery-surface')
     assert.equal(current.actions.includes('failure-surface'), false)
     assert.equal(current.actions.includes('reclamation'), false)
     assert.equal(current.scope.startupAdmissionResolved, false)
   })
 }
 
-test('an unresolved custom transaction exits before restore, default selection and product writes', async () => {
+test('an unresolved custom transaction shows recovery before restore, default selection and product writes', async () => {
   const current = await launch({ observed: true, admission: 'exit' })
-  assert.deepEqual(current.actions, ['observe', 'admission:/custom:true', 'exit:0'])
+  assert.deepEqual(current.actions, ['observe', 'admission:/custom:true', 'recovery-surface'])
   assert.deepEqual(Object.keys(current.scope.process.env), [])
 })
 
-test('default-profile unresolved handoff also exits before product writes', async () => {
+test('default-profile unresolved handoff shows recovery before product writes', async () => {
   const current = await launch({ admission: 'exit' })
-  assert.deepEqual(current.actions, ['observe', 'select', 'admission:/default:false', 'exit:0'])
+  assert.deepEqual(current.actions, [
+    'observe',
+    'select',
+    'admission:/default:false',
+    'recovery-surface',
+  ])
 })
 
 test('a terminal custom transaction restores only after its context-bound admission and rechecks the selected home', async () => {
@@ -172,9 +181,9 @@ test('Windows keeps ordinary storage selection without the macOS observation pro
   assert.equal(current.scope.startupAdmissionResolved, true)
 })
 
-test('the final context-bound check rejects changed handoffs without publishing storage or displaying errors', async () => {
+test('the final context-bound check rejects changed handoffs with isolated recovery and without publishing storage', async () => {
   const current = await launch({ observed: true, admission: ['allow', 'exit'] })
-  assert.equal(current.actions.at(-1), 'exit:0')
+  assert.equal(current.actions.at(-1), 'recovery-surface')
   assert.equal(current.actions.includes('admission:/custom:true'), true)
   assert.equal(current.actions.includes('reclamation'), false)
   assert.equal(current.actions.includes('failure-surface'), false)
@@ -182,7 +191,7 @@ test('the final context-bound check rejects changed handoffs without publishing 
 
 test('selected storage cannot escape the observed custom profile between admission checks', async () => {
   const current = await launch({ observed: true, selectedHome: '/different' })
-  assert.equal(current.actions.at(-1), 'exit:1')
+  assert.equal(current.actions.at(-1), 'recovery-surface')
   assert.equal(current.actions.includes('reclamation'), false)
   assert.equal(current.actions.includes('failure-surface'), false)
 })
@@ -232,6 +241,7 @@ async function probe(
     squirrelAdmission: (_current: unknown, _handoff: unknown, status: string) =>
       options.superseded ? 'allow' : status === 'failed' ? 'failed' : 'exit',
     squirrelLaunchSuperseded,
+    settleSquirrelStartup,
     inspectSquirrelIdle: async () => {
       inspected = true
       return options.idle !== false

@@ -2,7 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { LiteratureDeliveryChoice } from '../../contracts/literature.ts'
-import { deliveryChoiceMatches, resourceFolderNodes } from './utils.ts'
+import { deliveryChoiceMatches, deliveryProjectMatches, resourceFolderNodes } from './utils.ts'
+
+test('global delivery accepts an unbound conversation without weakening project isolation', () => {
+  assert.equal(deliveryProjectMatches('', undefined, null), true)
+  assert.equal(deliveryProjectMatches('', undefined, undefined), true)
+  assert.equal(deliveryProjectMatches('project', 'project', '/project'), true)
+  assert.equal(deliveryProjectMatches('other', 'project', '/project'), false)
+  assert.equal(deliveryProjectMatches('project', undefined, null), false)
+  assert.equal(deliveryProjectMatches('', 'project', '/project'), false)
+  assert.equal(deliveryProjectMatches('', undefined, '/missing-project'), false)
+})
 
 test('version decisions belong to the recorded destination and library choices', () => {
   const recorded: LiteratureDeliveryChoice = {

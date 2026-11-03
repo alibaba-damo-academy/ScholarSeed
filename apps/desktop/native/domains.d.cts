@@ -20,6 +20,8 @@ export interface DomainNative {
   pin(path: string, create: boolean, role?: DirectoryPinRole): unknown
   pinChild?(pin: unknown, name: string): unknown
   lineage(pin: unknown): string[]
+  /** Darwin cross-boot identity; absent on Windows. Does not replace runtime lineage. */
+  persistentIdentity?(pin: unknown): string
   createAt(pin: unknown, name: string, bytes: Buffer): void
   createChild(pin: unknown, name: string): string
   acquireAt(pin: unknown, name: string, exclusive: boolean): unknown
@@ -27,7 +29,9 @@ export interface DomainNative {
   listAt(pin: unknown, maxEntries: number, maxBytes: number): Record<string, Buffer>
   release(pin: unknown): void
 }
-export type FamilyAuthorization = (bindings: readonly DirectoryBinding[]) => Promise<Readonly<Record<string, string>>>
+export type FamilyAuthorization = (
+  bindings: readonly DirectoryBinding[]
+) => Promise<Readonly<Record<string, string>>>
 export interface Domains {
   read(root: string, name: string, maxBytes: number): Buffer | null
   occupy(): void
@@ -38,6 +42,23 @@ export interface Domains {
   admit(): void
   close(): void
 }
-export function beginDomains(native: DomainNative, coordinator: string, roots: string[], maintenance?: boolean, roles?: Readonly<Record<string, DirectoryRole>>): Domains
-export function createDirectory(native: DomainNative, coordinator: string, parent: string, name: string, role?: DirectoryRole): string
-export function ensureDirectories(native: DomainNative, coordinator: string, roots: string[], roles?: Readonly<Record<string, DirectoryRole>>): void
+export function beginDomains(
+  native: DomainNative,
+  coordinator: string,
+  roots: string[],
+  maintenance?: boolean,
+  roles?: Readonly<Record<string, DirectoryRole>>
+): Domains
+export function createDirectory(
+  native: DomainNative,
+  coordinator: string,
+  parent: string,
+  name: string,
+  role?: DirectoryRole
+): string
+export function ensureDirectories(
+  native: DomainNative,
+  coordinator: string,
+  roots: string[],
+  roles?: Readonly<Record<string, DirectoryRole>>
+): void

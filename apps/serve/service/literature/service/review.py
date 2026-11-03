@@ -21,10 +21,12 @@ from service.literature.service.metadata import parse_bibtex
 from service.literature.service.result import (
     AUTHORIZATION_ARTIFACT_PREFIX,
     LITERATURE_REVIEW_ORIGIN,
+    SEARCH_AUTHORS,
     SEARCH_CARD_PAPERS,
     SEARCH_MAX_PAPERS,
     AuthorizationSource,
     SearchPaper,
+    SearchPaperDetail,
     SearchResult,
     SearchSource,
     authorization_source,
@@ -298,7 +300,7 @@ def validate_review_card(value: Mapping[str, Any]) -> dict[str, Any]:
     return ReviewSnapshot.model_validate(value).model_dump(mode="json")
 
 
-def _text(value: object, limit: int = REVIEW_TEXT) -> str:
+def _text(value: object, limit: int | None = REVIEW_TEXT) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
@@ -344,7 +346,7 @@ def _load(
     return values, hashes, files
 
 
-def _authors(value: object) -> list[str]:
+def _authors(value: object, *, complete: bool = False) -> list[str]:
     if not isinstance(value, list):
         return []
     result = []
@@ -352,18 +354,26 @@ def _authors(value: object) -> list[str]:
         if isinstance(author, str) and author.strip():
             result.append(author.strip())
         elif isinstance(author, dict):
-            name = _text(author.get("name") or author.get("display_name"))
+            name = _text(
+                author.get("name") or author.get("display_name"), None if complete else REVIEW_TEXT
+            )
             if not name:
                 name = " ".join(
-                    filter(None, (_text(author.get("first")), _text(author.get("last"))))
+                    filter(
+                        None,
+                        (
+                            _text(author.get("first"), None if complete else REVIEW_TEXT),
+                            _text(author.get("last"), None if complete else REVIEW_TEXT),
+                        ),
+                    )
                 )
             if name:
                 result.append(name)
-    return result[:20]
+    return result[: None if complete else SEARCH_AUTHORS]
 
 
-def _venue(value: object) -> str:
-    return _text(value.get("name")) if isinstance(value, dict) else _text(value)
+def _venue(value: object, limit: int | None = REVIEW_TEXT) -> str:
+    return _text(value.get("name"), limit) if isinstance(value, dict) else _text(value, limit)
 
 
 def _sections(outline: dict, corpus: dict | None) -> tuple[int, list[ReviewSection]]:
@@ -883,7 +893,11 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     return PreparedReview(card, tuple(files))
 
 
-def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> list[SearchPaper]:
+def _slr_papers(
+    metadata: dict, corpus: dict, report: dict, fulltext: dict, *, complete: bool = False
+) -> list[SearchPaper]:
+    paper_type = SearchPaperDetail if complete else SearchPaper
+    text_limit = None if complete else REVIEW_TEXT
     raw_papers = metadata.get("papers")
     if not isinstance(raw_papers, list) or len(raw_papers) > SEARCH_MAX_PAPERS:
         raise ValueError("review_metadata_invalid")
@@ -899,7 +913,7 @@ def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> l
         if not isinstance(raw, dict):
             raise ValueError("review_metadata_invalid")
         identity = _text(raw.get("paper_id") or raw.get("id"), REVIEW_TITLE)
-        title = _text(raw.get("title"))
+        title = _text(raw.get("title"), text_limit)
         if not identity or not title or identity in seen:
             raise ValueError("review_metadata_invalid")
         seen.add(identity)
@@ -909,9 +923,15 @@ def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> l
         )
         dropped_row = dropped.get(identity, {})
         selected_reason = (
-            _text((selected or {}).get("selection_reason")) if isinstance(selected, dict) else ""
+            _text((selected or {}).get("selection_reason"), text_limit)
+            if isinstance(selected, dict)
+            else ""
         )
-        reason = selected_reason or _text(raw.get("reason")) or _text(dropped_row.get("reason"))
+        reason = (
+            selected_reason
+            or _text(raw.get("reason"), text_limit)
+            or _text(dropped_row.get("reason"), text_limit)
+        )
         row = fulltext_rows.get(identity, {})
         has_text = (_count(row.get("chars")) or 0) > 0
         record = selected if isinstance(selected, dict) else raw
@@ -919,21 +939,24 @@ def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> l
             record.get("external_ids", {}) if isinstance(record.get("external_ids"), dict) else {}
         )
         papers.append(
-            SearchPaper(
+            paper_type(
                 id=identity,
                 title=title,
-                authors=_authors(record.get("authors")),
+                authors=_authors(record.get("authors"), complete=complete),
                 year=record.get("year") if type(record.get("year")) is int else None,
-                venue=_venue(record.get("venue")) or None,
-                doi=_text(record.get("doi") or external_ids.get("DOI"), REVIEW_TITLE) or None,
-                url=_text(record.get("url")) or None,
-                abstract=_text(record.get("abstract")) or None,
+                venue=_venue(record.get("venue"), text_limit) or None,
+                doi=_text(
+                    record.get("doi") or external_ids.get("DOI"), None if complete else REVIEW_TITLE
+                )
+                or None,
+                url=_text(record.get("url"), text_limit) or None,
+                abstract=_text(record.get("abstract"), text_limit) or None,
                 reasons=[reason] if reason else [],
                 tier=_count(record.get("tier")),
                 citation_count=_count(record.get("citation_count")),
                 access="unknown",
                 sources=(
-                    [_text(record.get("source"), REVIEW_TITLE)]
+                    [_text(record.get("source"), None if complete else REVIEW_TITLE)]
                     if _text(record.get("source"))
                     else []
                 ),
@@ -1114,5 +1137,5 @@ def project_review_search_artifacts(values: dict[str, bytes]) -> list[SearchPape
     """Rebuild the full SLR candidate list from immutable session artifacts."""
     parsed = {name: json.loads(raw) for name, raw in values.items()}
     return _slr_papers(
-        parsed[METADATA], parsed[CORPUS], parsed[RETRIEVAL], parsed.get(FULLTEXT, {})
+        parsed[METADATA], parsed[CORPUS], parsed[RETRIEVAL], parsed.get(FULLTEXT, {}), complete=True
     )

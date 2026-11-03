@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Button, EllipsisText, ScrollArea, Spinner } from '../../components/ui'
 import type { LibraryCollection } from '../literature/api'
-import { collectionNodes, flattenDestinations } from '../literature/join'
+import { collectionNodes, flattenDestinations } from '../literature/hierarchy'
 
 export function LiteratureCollections({
   collections,

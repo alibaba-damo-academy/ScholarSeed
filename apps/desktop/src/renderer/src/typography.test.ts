@@ -10,6 +10,10 @@ const composerSource = readFileSync(
   new URL('./components/business/Composer.tsx', import.meta.url),
   'utf8'
 )
+const executionSource = readFileSync(
+  new URL('./components/business/Execution.tsx', import.meta.url),
+  'utf8'
+)
 const artifactsSource = readFileSync(
   new URL('./components/business/SessionArtifacts.tsx', import.meta.url),
   'utf8'
@@ -24,7 +28,10 @@ function classNameForTestId(source: string, testId: string): string {
 
 test('conversation product counts and durations use the default font', () => {
   for (const testId of ['tool-run-step-duration', 'turn-duration']) {
-    const className = classNameForTestId(streamSource, testId)
+    const className = classNameForTestId(
+      testId === 'tool-run-step-duration' ? executionSource : streamSource,
+      testId
+    )
     assert.notEqual(className, '')
     assert.doesNotMatch(className, /font-mono|tabular-nums/)
   }

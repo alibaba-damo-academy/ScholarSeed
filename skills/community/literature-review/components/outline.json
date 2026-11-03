@@ -1,0 +1,174 @@
+{
+  "data": {
+    "schema_version": "1.1",
+    "session_id": "plugin-preview",
+    "workspace": "sample-review",
+    "checkpoint": "outline",
+    "status": "outline",
+    "section_count": 2,
+    "title": "样例：长上下文信息利用综述",
+    "intent": "方法与证据对比",
+    "scope": {
+      "topic": "长上下文",
+      "time_range": "样例范围",
+      "focus": [
+        "信息位置"
+      ],
+      "requested_materials": [],
+      "project_materials": 0,
+      "external_materials": 2
+    },
+    "output": {
+      "format": "markdown",
+      "citation_style": "author_year",
+      "decided_by": "user"
+    },
+    "sections": [
+      {
+        "id": "background",
+        "title": "问题与评估设置",
+        "description": "界定上下文长度与信息位置。",
+        "papers": 1,
+        "children": [],
+        "comparison_tables": []
+      },
+      {
+        "id": "methods",
+        "title": "方法与证据对比",
+        "description": "比较位置敏感性及改进方法。",
+        "papers": 1,
+        "children": [],
+        "comparison_tables": []
+      }
+    ],
+    "included": 2,
+    "fulltext": 1,
+    "abstract_only": 1,
+    "pending_checks": 0,
+    "cited": 2,
+    "citations": [],
+    "abstract_evidence": [],
+    "checks": [],
+    "issues": [],
+    "warnings": [],
+    "source_hashes": {},
+    "artifacts": []
+  },
+  "interaction": {
+    "questions": [
+      {
+        "id": "outline",
+        "header": "综述大纲确认",
+        "question": "是否按当前大纲和 Markdown 输出设置开始撰写？",
+        "options": [
+          {
+            "label": "按当前方案开始撰写",
+            "description": "使用已展示的大纲和输出设置。"
+          },
+          {
+            "label": "修改大纲",
+            "description": "在补充输入中说明修改要求。"
+          }
+        ]
+      }
+    ]
+  },
+  "responses": {
+    "choose": {
+      "state": "resolved",
+      "data": {}
+    }
+  },
+  "cases": [
+    {
+      "label": "确认失败后重试",
+      "interaction": {
+        "questions": [
+          {
+            "id": "outline",
+            "header": "综述大纲确认",
+            "question": "是否按当前大纲和 Markdown 输出设置开始撰写？",
+            "options": [
+              {
+                "label": "按当前方案开始撰写",
+                "description": "使用已展示的大纲和输出设置。"
+              },
+              {
+                "label": "修改大纲",
+                "description": "在补充输入中说明修改要求。"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "error": "preview_submit_failed"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "确认结果未知",
+      "interaction": {
+        "questions": [
+          {
+            "id": "outline",
+            "header": "综述大纲确认",
+            "question": "是否按当前大纲和 Markdown 输出设置开始撰写？",
+            "options": [
+              {
+                "label": "按当前方案开始撰写",
+                "description": "使用已展示的大纲和输出设置。"
+              },
+              {
+                "label": "修改大纲",
+                "description": "在补充输入中说明修改要求。"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "outcome": "unknown"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "请求已过期",
+      "interaction": {
+        "questions": [
+          {
+            "id": "outline",
+            "header": "综述大纲确认",
+            "question": "是否按当前大纲和 Markdown 输出设置开始撰写？",
+            "options": [
+              {
+                "label": "按当前方案开始撰写",
+                "description": "使用已展示的大纲和输出设置。"
+              },
+              {
+                "label": "修改大纲",
+                "description": "在补充输入中说明修改要求。"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "outcome": "stale"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

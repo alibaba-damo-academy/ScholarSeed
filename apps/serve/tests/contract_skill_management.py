@@ -212,6 +212,7 @@ class SkillManagementIdentityContracts(unittest.IsolatedAsyncioTestCase):
             lambda: self.runtime,
             lambda: self.root,
             lambda: "codex-fixture",
+            activities=Activities(),
         )
         self.state_patch = patch(
             "service.capabilities.service.management.load_skill_state", return_value=self.previous
@@ -240,14 +241,17 @@ class SkillManagementIdentityContracts(unittest.IsolatedAsyncioTestCase):
                 ),
             ],
         )
-        self.runtime.cached_skill_inventory.assert_awaited_once_with(
-            cwd=self.root, state=self.previous, user_id="account-b"
-        )
+        self.runtime.cached_skill_inventory.assert_not_awaited()
 
     async def test_http_inventory_uses_middleware_identity_and_preserves_busy(self):
         manifest = self.root / "bundled" / "find-skill" / "SKILL.md"
         manifest.parent.mkdir(parents=True)
         manifest.write_text("---\nname: find-skill\ndescription: Manage skills\n---\n")
+        interface = manifest.parent / "agents" / "openai.yaml"
+        interface.parent.mkdir()
+        interface.write_text("interface:\n  display_name: Native title\n")
+        identities = []
+        self.manager.catalog.bind_authentication(lambda user_id: identities.append(user_id) or True)
         self.runtime.cached_skill_inventory.side_effect = None
         self.runtime.cached_skill_inventory.return_value = SkillInventory(
             cwd=self.root,
@@ -299,19 +303,16 @@ class SkillManagementIdentityContracts(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(row["name"], "find-skill")
                         self.assertEqual(row["path"], str(manifest))
                         self.assertEqual(row["display_name"], title)
-                        self.assertEqual(
-                            self.runtime.cached_skill_inventory.await_args.kwargs["user_id"],
-                            user_id,
-                        )
+                        self.assertEqual(identities[-1], user_id)
                         if locale is None:
                             marketplace.assert_not_called()
                         else:
                             marketplace.assert_called_once_with(locale=locale)
             self.runtime.cached_skill_inventory.side_effect = RuntimeError(RESOURCE_HOST_BUSY)
-            response = client.get("/api/capabilities/skills", params={"locale": "zh-CN"})
-            self.assertEqual(response.status_code, 409, response.text)
-            self.assertEqual(response.json(), {"detail": RESOURCE_HOST_BUSY})
-        self.assertEqual(self.runtime.cached_skill_inventory.await_count, 9)
+            response = client.get("/api/capabilities/skills")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIsNone(response.json()["skills"][0]["runtime_enabled"])
+        self.runtime.cached_skill_inventory.assert_not_awaited()
         self.runtime.configure_skills.assert_not_awaited()
 
     async def test_read_refusals_keep_the_runtime_reason_and_status(self):
@@ -321,12 +322,7 @@ class SkillManagementIdentityContracts(unittest.IsolatedAsyncioTestCase):
             (RESOURCE_HOST_CONFIGURATION_UNCERTAIN, 409),
             (RESOURCE_HOST_CONTEXT_REQUIRED, 503),
         ):
-            for method, runtime_method, options in (
-                ("inventory", "skill_inventory", {}),
-                ("list_skills", "cached_skill_inventory", {}),
-                ("list_skills", "cached_skill_inventory", {"locale": "zh-CN"}),
-                ("list_skills", "cached_skill_inventory", {"locale": "en-US"}),
-            ):
+            for method, runtime_method, options in (("inventory", "skill_inventory", {}),):
                 with self.subTest(reason=reason, method=method):
                     getattr(self.runtime, runtime_method).side_effect = RuntimeError(reason)
                     with self.assertRaises(SkillManagementError) as error:
@@ -405,6 +401,7 @@ class SkillMutationSafetyContracts(unittest.IsolatedAsyncioTestCase):
                 lambda: runtime,
                 lambda: root,
                 lambda: "",
+                activities=Activities(),
             )
             remote = SimpleNamespace(
                 base="https://registry.invalid",

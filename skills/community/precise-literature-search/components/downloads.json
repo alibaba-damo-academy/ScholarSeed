@@ -1,0 +1,81 @@
+{
+  "data": {
+    "schema_version": "1.0",
+    "session_id": "plugin-preview",
+    "run": "sample-run",
+    "project_id": "sample-project",
+    "papers": [
+      {
+        "paper_id": "sample-0",
+        "literature_id": "sample-library",
+        "attachment_id": "sample-attachment",
+        "revision": "sample-revision",
+        "title": "样例：已保存的长上下文论文"
+      }
+    ],
+    "failures": [],
+    "context": {
+      "projectId": "sample-project",
+      "projectName": "样例项目"
+    }
+  },
+  "responses": {
+    "open-fulltext": {
+      "state": "resolved",
+      "data": {
+        "result": true,
+        "view": {
+          "title": "样例全文",
+          "body": "样例文献：长上下文信息利用\n\n摘要\n本样例比较检索增强与直接长上下文阅读两种方法，用于演示文献查看交互。\n\n方法\n将同一条证据分别放在文本开头、中间和结尾，记录回答是否引用了正确证据。\n\n示例观察\n结果按证据位置分组展示；返回列表后可以继续选择其他文献。\n\n以上内容为虚构预览样例，不代表真实论文或研究结论。",
+          "identifier": {
+            "$input": "paperId",
+            "$default": ""
+          }
+        }
+      }
+    },
+    "open-library": {
+      "state": "resolved",
+      "data": {
+        "result": null,
+        "view": {
+          "title": "样例文献库",
+          "body": "样例入库文献及其保存状态，仅用于预览，不访问真实文献库。",
+          "identifier": {
+            "$input": "paperId",
+            "$default": ""
+          }
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "label": "打开全文失败后重试",
+      "responses": {
+        "open-fulltext": {
+          "state": "resolved",
+          "data": {
+            "result": true,
+            "view": {
+              "title": "样例全文",
+              "body": "样例文献：长上下文信息利用\n\n摘要\n本样例比较检索增强与直接长上下文阅读两种方法，用于演示文献查看交互。\n\n方法\n将同一条证据分别放在文本开头、中间和结尾，记录回答是否引用了正确证据。\n\n示例观察\n结果按证据位置分组展示；返回列表后可以继续选择其他文献。\n\n以上内容为虚构预览样例，不代表真实论文或研究结论。",
+              "identifier": {
+                "$input": "paperId",
+                "$default": ""
+              }
+            }
+          },
+          "steps": [
+            {
+              "state": "resolved",
+              "data": {
+                "result": false
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

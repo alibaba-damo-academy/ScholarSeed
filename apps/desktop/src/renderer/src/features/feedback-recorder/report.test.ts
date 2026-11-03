@@ -150,7 +150,7 @@ test('report preserves captured input truncation counts', () => {
 })
 
 test('maximum recording keeps bounded evidence below the report limit', () => {
-  const oversized = '中😀\\\"\n'.repeat(10_000)
+  const oversized = '中😀\\"\n'.repeat(10_000)
   const crowded: RecordingSession = {
     ...session,
     steps: Array.from({ length: 500 }, (_, index) => ({

@@ -12,6 +12,7 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
 from service.assistant.service.authorization import (
     LITERATURE_REVIEW_FULLTEXT,
 )
+from service.capabilities.service.plugins import PLUGIN_OUTLINE_SLOT
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.service.cards import DisplayCardError
 from service.chat.service.sessions import SessionService
@@ -24,6 +25,7 @@ from service.literature.persistence.files import scoped_workspace, scoped_worksp
 from service.literature.service.confirmation import (
     OUTLINE_CHECKPOINT,
     REVIEW_NEXT_ACTION,
+    confirmation_continuation,
     prepare_confirmation,
 )
 from service.literature.service.result import ARTIFACT_REFERENCE_FIELDS, SEARCH_CARD
@@ -228,6 +230,12 @@ def register_literature_review_routes(
             authorization = None
             confirmation = None
             if outline_confirmation is not None and outline_confirmation.question is not None:
+                reference = await live.component_for(
+                    PLUGIN_OUTLINE_SLOT, interaction_id=str(outline_confirmation.question["id"])
+                )
+                if reference is not None:
+                    outline_confirmation.question["component"] = reference
+                    outline_confirmation.question["component_data"] = content
                 with activities.enter(ActivityDomain.BRIDGE) as activity:
                     decision = await live.interactions.request_product_input(
                         outline_confirmation.question,
@@ -270,6 +278,10 @@ def register_literature_review_routes(
                     snapshot_id=live.active_assistant_snapshot_id,
                     authorization_type=LITERATURE_REVIEW_FULLTEXT,
                     refs=retrieval_prepared.authorization_refs,
+                    papers=tuple(
+                        {"id": source.ref_id, "label": source.title}
+                        for source in retrieval_prepared.authorization_sources
+                    ),
                     task_context=verified_authorization_context(
                         live, ProductTaskType.LITERATURE_REVIEW, workspace=workspace, run_id=run_id
                     ),
@@ -335,7 +347,11 @@ def register_literature_review_routes(
                 "status": prepared.card.status,
                 **({"authorization": authorization} if authorization is not None else {}),
                 **(
-                    {"confirmation": confirmation, "next_action": REVIEW_NEXT_ACTION}
+                    {
+                        "confirmation": confirmation,
+                        "continuation": confirmation_continuation(confirmation),
+                        "next_action": REVIEW_NEXT_ACTION,
+                    }
                     if confirmation is not None
                     else {}
                 ),

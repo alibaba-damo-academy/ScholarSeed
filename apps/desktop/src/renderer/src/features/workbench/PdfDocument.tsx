@@ -354,16 +354,6 @@ export function PdfDocument({
   const currentUndoHistory = useRef(undoHistory)
   currentUndoHistory.current = undoHistory
   const recordSaving = useMemo(() => ({ current: false }), [undoHistory])
-  const paletteLabels = {
-    yellow: t('palette.yellow'),
-    orange: t('palette.orange'),
-    green: t('palette.green'),
-    teal: t('palette.teal'),
-    blue: t('palette.blue'),
-    purple: t('palette.purple'),
-    red: t('palette.red'),
-    gray: t('palette.gray'),
-  }
   const { toast } = useToast()
   const statusText = {
     readFailed: t('status.readFailed'),

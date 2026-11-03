@@ -40,3 +40,17 @@ export function storageFailureMessage(path: string): string {
     : resources[DEFAULT_LANGUAGE][FOUNDATION_NAMESPACE].startup.storageUnavailable
   return `${message}\n\n${path}`
 }
+
+/** Bundled text only: admission failure must not read untrusted storage preferences. */
+export function startupAdmissionText(): typeof nativeZh.admissionRecovery {
+  if (!instance?.isInitialized) return resources[DEFAULT_LANGUAGE].native.admissionRecovery
+  const t = instance.getFixedT(null, 'native')
+  return {
+    title: t('admissionRecovery.title'),
+    message: t('admissionRecovery.message'),
+    detail: t('admissionRecovery.detail'),
+    retry: t('admissionRecovery.retry'),
+    copy: t('admissionRecovery.copy'),
+    quit: t('admissionRecovery.quit'),
+  }
+}

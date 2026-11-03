@@ -12,9 +12,8 @@ import {
   DialogHeader,
   DialogTitle,
   EllipsisText,
-  IconButton,
   Input,
-  useToast
+  useToast,
 } from '../../components/ui'
 import { Icon } from '../../icons'
 import { DestinationTree } from '../../components/business/Destination'
@@ -34,7 +33,7 @@ export function WebImportDestination({
   projectName,
   selectedCount,
   selectedParent,
-  tree
+  tree,
 }: {
   busy: boolean
   onConfirm: () => void
@@ -80,16 +79,18 @@ export function WebImportDestination({
         dedupeKey: JSON.stringify(['destination-create-failure', failure]),
         description: <ResourceFailure message={failure} />,
         title: <DestinationFeedback message={{ key: 'destination.failed' }} />,
-        tone: 'error'
+        tone: 'error',
       })
       return
     }
     setNewFolderOpen(false)
     setNewFolderName('')
     toast({
-      description: <DestinationFeedback message={{ key: 'destination.createdDescription', name }} />,
+      description: (
+        <DestinationFeedback message={{ key: 'destination.createdDescription', name }} />
+      ),
       title: <DestinationFeedback message={{ key: 'destination.created' }} />,
-      tone: 'success'
+      tone: 'success',
     })
   }
 
@@ -101,10 +102,7 @@ export function WebImportDestination({
         onOpenChange(next)
       }}
     >
-      <DialogContent
-        aria-label={t('destination.label')}
-        data-testid="web-search-import-dialog"
-      >
+      <DialogContent aria-label={t('destination.label')} data-testid="web-search-import-dialog">
         <DialogHeader>
           <DialogTitle>{t('destination.title')}</DialogTitle>
           <DialogDescription>
@@ -127,7 +125,11 @@ export function WebImportDestination({
               <EllipsisText wrapperClassName="flex-1" className="text-left" tooltipPortalled>
                 {t('destination.projectRoot', { name: projectName })}
               </EllipsisText>
-              {selectedParent === '' ? <span className="ml-auto shrink-0" aria-label={t('destination.selected')}>✓</span> : null}
+              {selectedParent === '' ? (
+                <span className="ml-auto shrink-0" aria-label={t('destination.selected')}>
+                  ✓
+                </span>
+              ) : null}
             </Button>
             <DestinationTree
               nodes={tree}
@@ -137,8 +139,11 @@ export function WebImportDestination({
               onSelect={(value, node) => onSelect(value, node.path)}
               selectionValue={(node) => {
                 const prefix = tree[0]?.path.endsWith(tree[0].name)
-                  ? tree[0].path.slice(0, -tree[0].name.length) : ''
-                return prefix && node.path.startsWith(prefix) ? node.path.slice(prefix.length) : node.path
+                  ? tree[0].path.slice(0, -tree[0].name.length)
+                  : ''
+                return prefix && node.path.startsWith(prefix)
+                  ? node.path.slice(prefix.length)
+                  : node.path
               }}
               disabled={busy}
             />
@@ -148,7 +153,9 @@ export function WebImportDestination({
             className="text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]"
             tooltipPortalled
           >
-            {selectedParent ? t('destination.destination', { path: selectedParent }) : t('destination.destinationRoot')}
+            {selectedParent
+              ? t('destination.destination', { path: selectedParent })
+              : t('destination.destinationRoot')}
           </EllipsisText>
         </div>
 
@@ -192,7 +199,12 @@ export function WebImportDestination({
         ) : (
           <Button
             className="justify-self-start"
-            icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
+            icon={
+              <IconFont
+                type="icon-line-operation-add"
+                className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none"
+              />
+            }
             variant="secondary"
             onClick={() => setNewFolderOpen(true)}
           >
@@ -202,7 +214,9 @@ export function WebImportDestination({
 
         <DialogFooter>
           <DialogClose asChild>
-            <Button disabled={busy || creatingFolder} variant="outline">{uiText('cancel')}</Button>
+            <Button disabled={busy || creatingFolder} variant="outline">
+              {uiText('cancel')}
+            </Button>
           </DialogClose>
           <Button
             data-testid="web-search-import-confirm"

@@ -63,6 +63,12 @@ bool directory_create(struct directory *directory, const char *name, const unsig
 bool directory_child(struct directory *directory, const char *name,
                      char identity[DIRECTORY_IDENTITY_BYTES], struct directory_error *error);
 const char *directory_identity(struct directory *directory);
+#ifndef _WIN32
+/* Cross-boot identity, read from the admitted directory handle, never a path lookup. */
+bool directory_persistent_identity(struct directory *directory,
+                                   char identity[DIRECTORY_IDENTITY_BYTES],
+                                   struct directory_error *error);
+#endif
 size_t directory_depth(struct directory *directory);
 const char *directory_ancestor(struct directory *directory, size_t index);
 uint32_t directory_close(struct directory *directory);

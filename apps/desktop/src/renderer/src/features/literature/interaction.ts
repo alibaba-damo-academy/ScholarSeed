@@ -116,6 +116,7 @@ function authorizationPolicy(
     matches,
     directDecision: () => 'respond',
     directPresentation: 'primary-secondary',
+    directSelectionRequired: option => authorizationLabel(option.label) === AUTHORIZE,
     optionLabel: option => authorizationLabel(option.label),
     replyTitle: (_question, answer, localization) =>
       authorizationLabel(answer) === AUTHORIZE

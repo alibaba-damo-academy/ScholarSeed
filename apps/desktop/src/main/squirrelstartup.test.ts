@@ -10,6 +10,7 @@ import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import {
   classifySquirrelStartup,
   inspectSquirrelStartup,
+  settleSquirrelStartup,
   SQUIRREL_INSTALLATION_WINDOW_MS,
   squirrelAdmission,
   readSquirrelFailure,
@@ -517,3 +518,31 @@ test(
     )
   }
 )
+
+test('startup waits for native launch to settle and retains terminal evidence requirements', async () => {
+  let probes = 0
+  assert.equal(
+    await settleSquirrelStartup(async () => (++probes < 3 ? 'installing' : 'failed')),
+    'failed'
+  )
+  assert.equal(probes, 3)
+  probes = 0
+  assert.equal(
+    await settleSquirrelStartup(async () => {
+      probes++
+      return 'unconfirmed'
+    }),
+    'unconfirmed'
+  )
+  assert.equal(probes, 1)
+  probes = 0
+  assert.equal(
+    await settleSquirrelStartup(async () => (++probes < 2 ? 'installing' : 'unconfirmed')),
+    'unconfirmed'
+  )
+  assert.equal(probes, 2)
+})
+
+test('native settling deadline retains installing status and never grants failure admission', async () => {
+  assert.equal(await settleSquirrelStartup(async () => 'installing'), 'installing')
+})

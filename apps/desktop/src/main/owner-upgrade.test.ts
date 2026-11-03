@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm'
 import { join } from 'node:path'
 import test from 'node:test'
 import ts from 'typescript'
+import type { checkForUpdate } from './updater.ts'
 import { isNewerRelease } from './version.ts'
 import { buildUpdateCheckUrl, parseUpdateCheckResult } from './release.ts'
 import * as preview from './preview.ts'
@@ -118,7 +119,8 @@ function harness(latest = current, platform = 'win32', forceOffer = false) {
   return {
     urls,
     records,
-    check: () => (context.exports as any).checkForUpdate(() => {}),
+    check: () =>
+      (context.exports as { checkForUpdate: typeof checkForUpdate }).checkForUpdate(() => {}),
   }
 }
 
@@ -146,8 +148,8 @@ test('Windows offers a newer build of the same product version in one check', as
   const h = harness({ ...current, id: 'new-build', build_number: '202610161300' })
   const result = await h.check()
   assert.equal(result.has_update, true)
-  assert.equal(result.latest.id, 'new-build')
-  assert.equal(result.latest.version, current.version)
+  assert.equal(result.latest!.id, 'new-build')
+  assert.equal(result.latest!.version, current.version)
   assert.equal(h.urls.length, 1)
 })
 
@@ -158,7 +160,7 @@ test('product version ordering takes precedence over build stamp without mainten
     version: '0.2.1',
     build_number: '202610151000',
   })
-  assert.equal((await newer.check()).latest.id, 'new-version')
+  assert.equal((await newer.check()).latest!.id, 'new-version')
   assert.equal(newer.urls.length, 1)
   const older = harness(
     { ...current, version: '0.1.9', build_number: '202610171200' },
@@ -171,7 +173,7 @@ test('product version ordering takes precedence over build stamp without mainten
 
 test('macOS retains one standard check without Windows engine or maintenance parameters', async () => {
   const h = harness({ ...current, id: 'mac-new', build_number: '202610161300' }, 'darwin')
-  assert.equal((await h.check()).latest.id, 'mac-new')
+  assert.equal((await h.check()).latest!.id, 'mac-new')
   assert.equal(h.urls.length, 1)
   const query = h.urls[0].searchParams
   assert.equal(query.get('arch_type'), 'darwin-arm64')

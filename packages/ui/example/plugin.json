@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "id": "method-comparison",
+  "version": "1.0.0",
+  "host": ">=0.2.0,<0.3.0",
+  "skill": "SKILL.md",
+  "ui": {"compatibility": "1.0", "exports": ["React", "mount", "Button", "Checkbox"]},
+  "capabilities": ["interaction.answer"],
+  "components": [
+    {
+      "id": "comparison",
+      "slot": "methods.comparison",
+      "entry": "custom.js",
+      "preview": "preview.json",
+      "input_schema": {
+        "type": "object",
+        "required": ["choices"],
+        "properties": {
+          "choices": {"type": "array", "items": {"type": "object", "required": ["id", "label"], "properties": {"id": {"type": "string"}, "label": {"type": "string"}, "description": {"type": "string"}}, "additionalProperties": false}},
+          "selected": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object", "required": ["selected"], "properties": {"selected": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true}}, "additionalProperties": false},
+      "actions": [{"id": "confirm", "capability": "interaction.answer", "input_schema": {"type": "object", "required": ["selected"], "properties": {"selected": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true}}, "additionalProperties": false}}]
+    }
+  ]
+}

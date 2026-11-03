@@ -5,6 +5,14 @@ import test from 'node:test'
 import { chromium, expect } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer } from 'vite'
+import type { Dispatch, SetStateAction } from 'react'
+import type { AccountMenuView, MenuValue } from '../../../../menu'
+
+interface AccountRenderTestWindow extends Window {
+  setAccountView: Dispatch<SetStateAction<AccountMenuView>>
+  accountActions: Array<{ action: string; value: MenuValue }>
+  accountClosed: boolean
+}
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
@@ -31,7 +39,7 @@ test(
             .href
         )
         await page.evaluate(() =>
-          (window as any).setAccountView((view: any) => ({
+          (window as unknown as AccountRenderTestWindow).setAccountView((view) => ({
             ...view,
             availableActions: [...view.availableActions, 'account.feedback'],
           }))
@@ -40,14 +48,18 @@ test(
         await expect(feedback).toContainText('问题反馈')
         await expect(feedback.locator('.vds-menu__shortcut')).toHaveText(platform.shortcut)
         await page.evaluate(() =>
-          (window as any).setAccountView((view: any) => ({ ...view, locale: 'en' }))
+          (window as unknown as AccountRenderTestWindow).setAccountView((view) => ({
+            ...view,
+            locale: 'en',
+          }))
         )
         await expect(feedback).toContainText('Report a problem')
         await expect(feedback.locator('.vds-menu__shortcut')).toHaveText(platform.shortcut)
         await feedback.click()
-        assert.deepEqual(await page.evaluate(() => (window as any).accountActions), [
-          { action: 'account.feedback', value: { kind: 'none' } },
-        ])
+        assert.deepEqual(
+          await page.evaluate(() => (window as unknown as AccountRenderTestWindow).accountActions),
+          [{ action: 'account.feedback', value: { kind: 'none' } }]
+        )
         await page.close()
       }
     } finally {
@@ -77,12 +89,18 @@ test(
       )
       await expect(page.getByTestId('account-menu-language')).toBeVisible()
       await page.evaluate(() =>
-        (window as any).setAccountView((view: any) => ({ ...view, logoutBusy: true }))
+        (window as unknown as AccountRenderTestWindow).setAccountView((view) => ({
+          ...view,
+          logoutBusy: true,
+        }))
       )
       await expect(page.getByTestId('account-menu-language')).toBeDisabled()
       await expect(page.getByTestId('account-menu-settings')).toBeDisabled()
       await expect(page.getByTestId('account-menu-logout')).toBeDisabled()
-      assert.deepEqual(await page.evaluate(() => (window as any).accountActions), [])
+      assert.deepEqual(
+        await page.evaluate(() => (window as unknown as AccountRenderTestWindow).accountActions),
+        []
+      )
     } finally {
       await browser.close()
       await server.close()
@@ -115,7 +133,7 @@ test(
       await expect(page.getByRole('menuitem', { name: '剩余积分' })).toBeVisible({ timeout: 2500 })
       await expect(page.getByTestId('account-menu-credits-value')).toHaveText('--')
       await page.evaluate(() =>
-        (window as any).setAccountView((view: any) => ({
+        (window as unknown as AccountRenderTestWindow).setAccountView((view) => ({
           ...view,
           credits: { phase: 'ready', value: 0, unlimited: false },
           logoutError: '退出失败，请重试',
@@ -126,9 +144,10 @@ test(
       await page.getByRole('menuitem', { name: '退出登录' }).click()
       await expect(page.getByRole('alert')).toBeVisible()
       assert.deepEqual(businessRequests, [])
-      assert.deepEqual(await page.evaluate(() => (window as any).accountActions), [
-        { action: 'account.logout', value: { kind: 'none' } },
-      ])
+      assert.deepEqual(
+        await page.evaluate(() => (window as unknown as AccountRenderTestWindow).accountActions),
+        [{ action: 'account.logout', value: { kind: 'none' } }]
+      )
     } finally {
       await browser.close()
       await server.close()
@@ -161,11 +180,17 @@ test(
       await expect(page.getByRole('menuitemradio', { name: '简体中文' })).toBeFocused()
       await page.keyboard.press('Escape')
       await expect(language).toBeFocused()
-      assert.equal(await page.evaluate(() => (window as any).accountClosed), false)
+      assert.equal(
+        await page.evaluate(() => (window as unknown as AccountRenderTestWindow).accountClosed),
+        false
+      )
       await page.keyboard.press('ArrowRight')
       await page.getByRole('menuitemradio', { name: 'English' }).click()
       await expect(page.getByRole('menuitem', { name: /Language/ })).toBeVisible()
-      assert.equal(await page.evaluate(() => (window as any).accountClosed), false)
+      assert.equal(
+        await page.evaluate(() => (window as unknown as AccountRenderTestWindow).accountClosed),
+        false
+      )
       await page.getByRole('menuitem', { name: /Language/ }).focus()
       await page.keyboard.press('Escape')
       await expect(page.getByRole('menu')).toHaveCount(0)

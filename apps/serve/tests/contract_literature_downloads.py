@@ -14,7 +14,7 @@ from contextlib import closing
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 _HOME = tempfile.mkdtemp(prefix="ss-download-admission-")
@@ -1126,6 +1126,53 @@ class LiteratureDownloadsContract(unittest.TestCase):
         self.assertNotIn("card_id", response.json())
         self.assertEqual(self.cards, [])
 
+    def test_download_copy_reads_all_scoped_historical_receipts_without_writes(self) -> None:
+        receipts = [self.admit(self.local(f"p{index}")) for index in range(5)]
+        self.repository.delete(receipts[-1].literature_id, confirm=True)
+        self.sessions.bridge_caller = lambda _key: None
+        self.live.turn_activity.close()
+        with TestClient(self.app) as client:
+            response = client.get(
+                f"/api/sessions/{self.session}/literature/downloads",
+                params={"run": self.scope.run, "project_id": self.project},
+            )
+            wrong_project = client.get(
+                f"/api/sessions/{self.session}/literature/downloads",
+                params={"run": self.scope.run, "project_id": "other-project"},
+            )
+            wrong_run = client.get(
+                f"/api/sessions/{self.session}/literature/downloads",
+                params={"run": "other-run", "project_id": self.project},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["papers"], [receipt.payload() for receipt in receipts])
+        self.assertEqual(wrong_project.json()["papers"], [])
+        self.assertEqual(wrong_run.json()["papers"], [])
+        self.assertIsNone(self.repository.get(receipts[-1].literature_id))
+        self.assertEqual(self.cards, [])
+
+    def test_download_copy_is_hidden_from_another_owner_and_maintenance(self) -> None:
+        self.admit(self.local())
+        with (
+            patch("service.literature.api.downloads.request_owner_id", return_value="other-owner"),
+            TestClient(self.app) as client,
+        ):
+            response = client.get(
+                f"/api/sessions/{self.session}/literature/downloads",
+                params={"run": self.scope.run, "project_id": self.project},
+            )
+        self.assertEqual(response.status_code, 404)
+        generation = self.activities.begin()
+        try:
+            with TestClient(self.app) as client:
+                response = client.get(
+                    f"/api/sessions/{self.session}/literature/downloads",
+                    params={"run": self.scope.run, "project_id": self.project},
+                )
+            self.assertEqual(response.status_code, 503)
+        finally:
+            self.activities.resume(generation)
+
     def test_download_receipt_reads_current_asset_without_active_task(self) -> None:
         admitted = self.admit(self.local())
         self.sessions.bridge_caller = lambda _key: None
@@ -1864,6 +1911,8 @@ class LiteratureDownloadsContract(unittest.TestCase):
         self.live.runtime_id = "codex"
         self.live.vendor_thread_id = "thread"
         self.live._trace_and_broadcast = lambda _record: None
+        self.live.component_for = AsyncMock(return_value=None)
+        self.live._publish_card = LiveSession._publish_card.__get__(self.live, LiveSession)
 
         async def display(kind, content, **kwargs):
             return await LiveSession.display_card(self.live, kind, content, **kwargs)

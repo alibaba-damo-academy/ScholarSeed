@@ -1,0 +1,129 @@
+--- a/Squirrel/ShipIt-main.m
++++ b/Squirrel/ShipIt-main.m
+@@ -107,6 +107,32 @@
+ 			return [listener waitForTermination];
+ 		}]
+ 		setNameWithFormat:@"waitForTerminationIfNecessary"];
++}
++
++// Both installed-success and restored-failure launches use the same pinned helper.
++static BOOL launchApplication(NSURL *bundleURL) {
++    if (!bundleURL.isFileURL) return NO;
++    if (@available(macOS 11.0, *)) {
++        static NSString *const helperRelativePath = @"Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
++        NSString *exe = [bundleURL URLByAppendingPathComponent:helperRelativePath].path;
++        posix_spawnattr_t attr;
++        if (posix_spawnattr_init(&attr) != 0) return NO;
++        if (responsibility_spawnattrs_setdisclaim && responsibility_spawnattrs_setdisclaim(&attr, 1) != 0) {
++            posix_spawnattr_destroy(&attr); return NO;
++        }
++        const char *args[] = { exe.fileSystemRepresentation, launchSignal.fileSystemRepresentation, bundleURL.path.fileSystemRepresentation, NULL };
++        pid_t pid = 0;
++        int result = posix_spawn(&pid, exe.fileSystemRepresentation, NULL, &attr, (char *const *)args, environ);
++        posix_spawnattr_destroy(&attr);
++        if (result != 0) return NO;
++        int status = 0;
++        while (waitpid(pid, &status, 0) < 0) { if (errno != EINTR) return NO; }
++        return WIFEXITED(status) && WEXITSTATUS(status) == 0;
++    }
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++    return [NSWorkspace.sharedWorkspace launchApplicationAtURL:bundleURL options:NSWorkspaceLaunchDefault configuration:@{} error:NULL] != nil;
++#pragma clang diagnostic pop
+ }
+ 
+ static void installRequest(RACSignal *readRequestSignal, NSString *applicationIdentifier) {
+@@ -234,75 +260,8 @@
+ 					doNext:^(SQRLShipItRequest *finalRequest) {
+ 						cleanupTarget = finalRequest.targetBundleURL;
+                         if (!SSCleanupLaunchNeeded(finalRequest.updateBundleURL, finalRequest.targetBundleURL)) return;
+-                        launchFailed = YES;
+-                        NSLog(@"On main thread and launching: %@", finalRequest.targetBundleURL);
+-						NSURL *bundleURL = finalRequest.targetBundleURL;
+-						if (bundleURL == nil) {
+-							NSLog(@"Missing target bundle URL, cannot launch application");
+-							return;
+-						}
+-
+-						NSLog(@"Bundle URL is valid");
+-
+-						NSError *error;
+-						// Temporary workaround, on Big Sur and higher the executable
+-						// using NSWorkspace needs to actually exist on disk, at this point
+-						// this executable no longer exists on disk so we need to launch the
+-						// new one (which should be in the exact same spot) and ask for it
+-						// to launch the new app bundle URL
+-						if (@available(macOS 11.0, *)) {
+-							NSLog(@"Attempting to launch app on 11.0 or higher");
+-
+-							static NSString * const helperRelativePath = @"Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
+-                            NSString *exe = [bundleURL URLByAppendingPathComponent:helperRelativePath].path;
+-							NSLog(@"Launching new ShipIt at %@ with instructions to launch %@", exe, bundleURL);
+-
+-							posix_spawnattr_t attr;
+-							CHECK_ERR(posix_spawnattr_init(&attr));
+-
+-							// Disclaim TCC responsibilities
+-							if (responsibility_spawnattrs_setdisclaim)
+-									CHECK_ERR(responsibility_spawnattrs_setdisclaim(&attr, 1));
+-
+-							pid_t pid = 0;
+-
+-							const char* launchPath = [exe fileSystemRepresentation];
+-							const char* signal = [launchSignal fileSystemRepresentation];
+-							const char* path = [bundleURL.path fileSystemRepresentation];
+-							const char* args[] = { launchPath, signal, path, 0 };
+-							int status = posix_spawn(&pid, [exe UTF8String], NULL, &attr, (char *const*)args, environ);
+-							if (status == 0) {
+-								NSLog(@"New ShipIt pid: %i", pid);
+-								do {
+-									if (waitpid(pid, &status, 0) != -1) {
+-										NSLog(@"ShipIt status %d", WEXITSTATUS(status));
+-                                        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) launchFailed = !SSCleanupMarkLaunched(finalRequest.updateBundleURL, finalRequest.targetBundleURL);
+-									} else {
+-										perror("waitpid");
+-										exit(1);
+-									}
+-								} while (!WIFEXITED(status) && !WIFSIGNALED(status));
+-							} else {
+-								NSLog(@"posix_spawn: %s", strerror(status));
+-							}
+-
+-							posix_spawnattr_destroy(&attr);
+-
+-							NSLog(@"New ShipIt exited");
+-						} else {
+-							NSLog(@"Attempting to launch app on lower than 11.0");
+-// TODO: https://github.com/electron/electron/issues/43168
+-#pragma clang diagnostic push
+-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+-							if (![NSWorkspace.sharedWorkspace launchApplicationAtURL:bundleURL options:NSWorkspaceLaunchDefault configuration:@{} error:&error]) {
+-								NSLog(@"Could not launch application at %@: %@", bundleURL, error);
+-								return;
+-							}
+-#pragma clang diagnostic pop
+-
+-							NSLog(@"Application launched at %@", bundleURL);
+-                            launchFailed = !SSCleanupMarkLaunched(finalRequest.updateBundleURL, finalRequest.targetBundleURL);
+-						}
++                        launchFailed = !launchApplication(finalRequest.targetBundleURL);
++                        if (!launchFailed) launchFailed = !SSCleanupMarkLaunched(finalRequest.updateBundleURL, finalRequest.targetBundleURL);
+ 					}];
+ 			}
+ 
+@@ -322,7 +281,14 @@
+                     }
+                     failure = SSPreparationRecoverFailure(terminalRequest.updateBundleURL, terminalRequest.targetBundleURL, terminalRequest.binding, &code, &terminalError);
+                 }
+-                if (failure != SSPreparationFailureRestored || !SSReadinessPublishBound(terminalRequest.updateBundleURL, terminalRequest.targetBundleURL, terminalRequest.binding, NO, code, &terminalError)) {
++                if (failure != SSPreparationFailureRestored || !SSPreparationFinishFailure(terminalRequest.updateBundleURL, terminalRequest.targetBundleURL, terminalRequest.binding,
++                    terminalRequest.installationAuthorized && terminalRequest.launchAfterInstallation,
++                    ^BOOL {
++                        for (NSRunningApplication *application in NSWorkspace.sharedWorkspace.runningApplications) {
++                            if ([application.bundleURL.URLByResolvingSymlinksInPath isEqual:terminalRequest.targetBundleURL.URLByResolvingSymlinksInPath]) return YES;
++                        }
++                        return NO;
++                    }, ^BOOL { return launchApplication(terminalRequest.targetBundleURL); }, &terminalError)) {
+                     NSLog(@"[shipit-admission] event=terminal-evidence-unavailable error=%@", terminalError);
+                     exit(EXIT_FAILURE);
+                 }

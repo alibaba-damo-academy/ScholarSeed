@@ -132,7 +132,7 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SkillPackageError):
             preview_skill_upload(output.getvalue(), "multiple.zip")
 
-    async def test_local_titles_reuse_localized_marketplace_names_without_changing_identity(self):
+    async def test_local_copy_reuses_marketplace_language_without_changing_identity(self):
         origin = {
             "source": "clawhub",
             "registry": BASE,
@@ -140,13 +140,24 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
             "slug": SLUG,
             "version": VERSION,
         }
-        row = {"name": "local-id", "display_name": "Old title", "hub": origin}
-        for locale, title in (("zh", "论文工具"), ("en", "Paper tools")):
+        descriptions = {"zh": "Package summary", "fr": "Résumé local"}
+        row = {
+            "name": "local-id",
+            "display_name": "Old title",
+            "description": "Original summary",
+            "descriptions": descriptions,
+            "hub": origin,
+        }
+        for locale, title, summary in (
+            ("zh", "论文工具", "中文市场说明"),
+            ("en", "Paper tools", "English marketplace summary"),
+            ("zh-CN", "论文工具", "简体中文市场说明"),
+        ):
             with self.subTest(locale=locale):
 
-                def handle(request, title=title, locale=locale):
+                def handle(request, title=title, locale=locale, summary=summary):
                     self.assertEqual(request.headers["accept-language"], locale)
-                    metadata = {**item(), "displayName": title, "labels": []}
+                    metadata = {**item(), "displayName": title, "summary": summary, "labels": []}
                     if request.url.path == "/api/web/skills":
                         return httpx.Response(200, json=catalogue([metadata]))
                     return httpx.Response(200, json=metadata)
@@ -155,9 +166,49 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
                 market = (await hub.list())["items"][0]
                 local = (await hub.enrich_local([row]))[0]
                 self.assertEqual(local["display_name"], market["name"])
+                self.assertEqual(local["descriptions"][locale.lower()], market["description"])
+                self.assertEqual(local["descriptions"]["fr"], "Résumé local")
+                self.assertEqual(local["description"], "Original summary")
                 self.assertEqual(local["name"], row["name"])
                 self.assertEqual(local["hub"], origin)
                 self.assertEqual(row["display_name"], "Old title")
+                self.assertEqual(row["descriptions"], descriptions)
+                self.assertEqual(descriptions["zh"], "Package summary")
+
+    async def test_local_descriptions_preserve_fallback_when_summary_is_unavailable(self):
+        row = {
+            "name": "local-id",
+            "description": "Original summary",
+            "descriptions": {"zh": "本地说明"},
+            "hub": {
+                "source": "clawhub",
+                "registry": BASE,
+                "namespace": "global",
+                "slug": SLUG,
+            },
+        }
+        for summary in (None, "", "   ", 42):
+            with self.subTest(summary=summary):
+                hub = ClawHub(
+                    url=BASE,
+                    locale="zh",
+                    transport=httpx.MockTransport(
+                        lambda request, summary=summary: httpx.Response(
+                            200,
+                            json={**item(), "summary": summary, "labels": []},
+                        )
+                    ),
+                )
+                result = (await hub.enrich_local([row]))[0]
+                self.assertEqual(result["descriptions"], row["descriptions"])
+                self.assertEqual(result["description"], row["description"])
+        failed = await ClawHub(
+            url=BASE,
+            locale="zh",
+            transport=httpx.MockTransport(lambda request: httpx.Response(503)),
+        ).enrich_local([row])
+        self.assertEqual(failed[0]["descriptions"], row["descriptions"])
+        self.assertEqual(failed[0]["description"], row["description"])
 
     async def test_local_titles_preserve_fallback_when_unmapped_or_metadata_unavailable(self):
         origin = {

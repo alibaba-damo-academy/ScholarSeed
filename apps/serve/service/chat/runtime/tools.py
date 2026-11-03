@@ -31,6 +31,7 @@ from service.platform.bridge import (
     SEARCH_RUN_GUIDANCE,
     ContractDescribe,
     PlanAction,
+    PlanRead,
     PlanStructure,
 )
 from service.platform.vocabulary import (
@@ -124,17 +125,35 @@ SERVICE_BRIDGE_TOOL = RuntimeServiceTool(
 
 
 def plan_tool_schema() -> dict[str, Any]:
+    read_schema = PlanRead.model_json_schema()
+    read_schema["properties"]["operation"] = {"type": "string", "enum": ["get"]}
+    read_schema["required"] = ["operation"]
     write_schema = PlanStructure.model_json_schema()
+    write_schema["properties"]["items"]["items"] = write_schema["$defs"]["PlanNode"]
     action_schema = PlanAction.model_json_schema()
-    properties = write_schema["properties"]
+    action_schema["properties"]["operation"] = action_schema["properties"].pop("action")
+    action_schema["required"] = [
+        "operation" if name == "action" else name for name in action_schema["required"]
+    ]
+    schemas = (read_schema, write_schema, action_schema)
+    properties = {name: value for schema in schemas for name, value in schema["properties"].items()}
     properties["operation"] = {"type": "string", "enum": list(PLAN_MODEL_OPERATIONS)}
-    properties["items"]["items"] = write_schema["$defs"]["PlanNode"]
-    properties["step_ids"] = action_schema["properties"]["step_ids"]
     return {
         "type": "object",
         "properties": properties,
         "required": ["operation"],
         "additionalProperties": False,
+        "anyOf": [
+            {
+                "properties": {
+                    **{name: {} for name in schema["properties"]},
+                    "operation": schema["properties"]["operation"],
+                },
+                "required": schema["required"],
+                "additionalProperties": schema["additionalProperties"],
+            }
+            for schema in schemas
+        ],
     }
 
 

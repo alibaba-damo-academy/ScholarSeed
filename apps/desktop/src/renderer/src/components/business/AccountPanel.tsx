@@ -1,6 +1,6 @@
 import { availabilityPolicy } from '../../app/policy'
 import { markAllAttentionRead } from '../../features/assistant/attention'
-import { Onboarding } from '../../contracts/onboarding'
+
 import { VersionScope } from './VersionScope'
 import {
   DEFAULT_SELECTION_PROMPTS,
@@ -58,7 +58,6 @@ import {
   TriangleAlert,
   UserShield,
   X,
-  Zap,
   type LucideIcon,
 } from 'lucide-react'
 // 暂时隐藏「账号」「偏好设置」入口，恢复时一并恢复 UserRound / Palette
@@ -236,14 +235,6 @@ const FILE_VERSION_ERROR_KEYS = {
   settings_request_failed: 'fileSettings.serviceUnavailable',
   invalid_max_file_size: 'fileSettings.fileSizeError',
 } as const
-type FileVersionNoticeKey =
-  | 'fileSettings.loadFailed'
-  | 'fileSettings.saved'
-  | 'fileSettings.limitError'
-  | 'fileSettings.fileSizeError'
-  | 'fileSettings.notLoaded'
-  | 'fileSettings.emptyInclude'
-  | 'fileSettings.unchanged'
 type RendererUpdateDiagnosis = Awaited<ReturnType<ScholarSeedBridge['diagnoseUpdate']>>
 
 // 诊断输出是协议对照（字段名即契约字段），按本地化规范不翻译。
@@ -714,7 +705,7 @@ export function DataStoragePage(): React.JSX.Element {
 function AboutPage(): React.JSX.Element {
   const { t: accountUpdateText } = useTranslation('account')
   const { t } = useTranslation('components')
-  const { state, set, act } = useApp()
+  const { state, act } = useApp()
   const update = useUpdateState()
   const [diagnosis, setDiagnosis] = React.useState<RendererUpdateDiagnosis | null>(null)
   const [mailCopied, setMailCopied] = React.useState(false)
@@ -763,11 +754,6 @@ function AboutPage(): React.JSX.Element {
     } catch {
       setMailCopied(false)
     }
-  }
-  // 关闭设置后打开统一引导中心。
-  const startGuide = (): void => {
-    act.openSettings(null)
-    Onboarding.openCenter()
   }
   const manualUrl = `${siteBase}${MANUAL_PAGE_PATH}`
   const siteLabel = siteHostLabel(siteBase)
@@ -1547,17 +1533,6 @@ const PERMISSION_STATUS_KEYS = {
   'query-error': 'permissions.query-error',
 } as const satisfies Record<SystemPermissionStatus, string>
 
-const STATUS_LABELS: Record<SystemPermissionStatus, string> = {
-  granted: '已授权',
-  denied: '未授权',
-  restricted: '受限制',
-  'not-determined': '未设置',
-  unavailable: '不可用',
-  'system-managed': '需系统检查',
-  'project-scoped': '按项目授权',
-  'query-error': '查询失败',
-}
-
 const SETTINGS_SHELL_CLASS_NAME =
   'relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--paper)] [--vds-card-radius:var(--vds-settings-card-radius)] [&_.vds-card]:!shadow-none'
 const SETTINGS_DIALOG_SHELL_CLASS_NAME = `${SETTINGS_SHELL_CLASS_NAME} h-full rounded-[inherit]`
@@ -1588,7 +1563,6 @@ const SETTINGS_PAGE_HEADER_ACTION_CLASS_NAME = 'flex flex-none items-center'
 const SETTINGS_H1_CLASS_NAME =
   'm-[var(--vds-space-0)] flex-none text-[14px] font-[var(--vds-fw-medium)] leading-[22px] text-[var(--vds-text-primary)]'
 const SETTINGS_H2_CLASS_NAME = 'mb-[10px] mt-[6px] text-[12.5px] font-[650] text-[var(--text-2)]'
-const SETTINGS_HEADING_ROW_CLASS_NAME = 'flex items-center justify-between gap-[var(--vds-space-4)]'
 const SETTINGS_LEAD_CLASS_NAME =
   'm-[var(--vds-space-0)] min-w-0 truncate text-[11.5px] leading-[18px] text-[var(--vds-text-tertiary)]'
 const SETTINGS_CARD_CLASS_NAME =
@@ -1612,9 +1586,6 @@ const SETTINGS_ROW_COPY_CLASS_NAME = 'min-w-0 flex-1'
 const SETTINGS_ROW_TITLE_CLASS_NAME = 'text-[12.5px] font-semibold text-[var(--text)]'
 const SETTINGS_ROW_DESCRIPTION_CLASS_NAME =
   'mt-[2px] text-[10.5px] leading-[1.45] text-[var(--text-3)] [overflow-wrap:anywhere]'
-const DEVELOPER_SECTION_HEADING_CLASS_NAME =
-  'mb-[10px] mt-[6px] text-[14px] font-semibold leading-[20px] text-[var(--vds-text-primary)]'
-const DEVELOPER_SECTION_HEADING_SPACED_CLASS_NAME = `${DEVELOPER_SECTION_HEADING_CLASS_NAME} !mt-[30px]`
 const DEVELOPER_ROW_TITLE_CLASS_NAME =
   'text-[14px] font-semibold leading-[20px] text-[var(--vds-text-primary)]'
 const DEVELOPER_ROW_DESCRIPTION_CLASS_NAME =
@@ -1783,7 +1754,6 @@ function ChangePhoneDialog({
   const [code, setCode] = React.useState('')
   const [cooldown, setCooldown] = React.useState(0)
   const [busy, setBusy] = React.useState(false)
-  const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
   const [notice, setNotice] = React.useState<'' | 'accountPanel.dialog.codeSent'>('')
 
@@ -1944,7 +1914,6 @@ function ResetPasswordDialog({
   const [password, setPassword] = React.useState('')
   const [cooldown, setCooldown] = React.useState(0)
   const [busy, setBusy] = React.useState(false)
-  const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
   const [notice, setNotice] = React.useState<'' | 'accountPanel.dialog.codeSent'>('')
 
@@ -2125,7 +2094,6 @@ function AccountPage({
   const [editingName, setEditingName] = React.useState(false)
   const [form, setForm] = React.useState<'phone' | 'password' | null>(null)
   const [busy, setBusy] = React.useState(false)
-  const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
   const [loadState, setLoadState] = React.useState<'loading' | 'ready' | 'error' | 'anonymous'>(
     'loading'
@@ -2503,7 +2471,6 @@ function DeveloperPage(): React.JSX.Element {
   const [fresh, setFresh] = React.useState<ApiKeyCreated | null>(null)
   const [name, setName] = React.useState('')
   const [busy, setBusy] = React.useState(false)
-  const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
   const [loadState, setLoadState] = React.useState<'loading' | 'ready' | 'error'>('loading')
 
@@ -2932,7 +2899,6 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
   const [modelQuery, setModelQuery] = React.useState('')
   const [manualOpen, setManualOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
-  const busyRef = React.useRef(false)
   const [error, setError] = React.useState<string | PersonalApiFailure | ModelPageFailure>('')
   const [probe, setProbe] = React.useState('')
   const [probeOk, setProbeOk] = React.useState(false)

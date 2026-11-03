@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { setTimeout as delay } from 'node:timers/promises'
 import {
   sameSquirrelBinding,
   validSquirrelBinding,
@@ -22,6 +23,8 @@ import {
 import { BUILD_NUMBER_PATTERN, isNewerRelease } from './version.ts'
 
 export const SQUIRREL_INSTALLATION_WINDOW_MS = 10 * 60_000
+const NATIVE_SETTLE_TIMEOUT_MS = 5000
+const NATIVE_SETTLE_INTERVAL_MS = 100
 const PROBE_TIMEOUT_MS = 2000
 const PROBE_MAX_BYTES = 1024 * 1024
 const SHIPIT_EXECUTABLE = ['Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt']
@@ -344,6 +347,19 @@ export function classifySquirrelStartup(
     )
   })
   return active ? 'installing' : 'unconfirmed'
+}
+
+/** Wait for the launching native helper to exit; absence still grants nothing. */
+export async function settleSquirrelStartup(
+  probe: () => Promise<SquirrelStartupStatus>
+): Promise<SquirrelStartupStatus> {
+  const deadline = performance.now() + NATIVE_SETTLE_TIMEOUT_MS
+  let status = await probe()
+  while (status === 'installing' && performance.now() < deadline) {
+    await delay(NATIVE_SETTLE_INTERVAL_MS)
+    status = await probe()
+  }
+  return status
 }
 
 export async function inspectSquirrelStartup(

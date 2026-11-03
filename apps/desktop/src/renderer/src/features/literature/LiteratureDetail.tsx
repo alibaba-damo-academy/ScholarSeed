@@ -221,7 +221,6 @@ const updateAffectsPanel = (update: LiteratureUpdate): boolean =>
  * 与当前值相同的行默认不勾选, 避免「确认」变成一次无意义的原值重写。
  */
 function PaperMetaDiffView({
-  item,
   rows,
   selected,
   onToggle,

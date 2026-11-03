@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+from service.capabilities.service.plugins import PLUGIN_AUTHORIZATION_SLOT, PLUGIN_SELECTION_SLOT
 from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
     SQLITE_TIMEOUT_SECONDS,
@@ -812,8 +813,23 @@ async def authorize_sources(
         refs=scope.unknown,
         task_context=task_context,
     )
+    question = authorization_question(challenge, papers)
+    reference = await live.component_for(
+        (
+            PLUGIN_SELECTION_SLOT
+            if authorization_policy(authorization_type).subset_selection
+            else PLUGIN_AUTHORIZATION_SLOT
+        ),
+        interaction_id=str(question["id"]),
+    )
+    if reference is not None:
+        question["component"] = reference
+        question["component_data"] = {
+            "papers": [dict(paper) for paper in papers if paper.get("id") in challenge.refs],
+            "scope_count": len(challenge.refs),
+        }
     decision = await live.interactions.request_product_input(
-        authorization_question(challenge, papers), turn_id=challenge.turn_id, activity=activity
+        question, turn_id=challenge.turn_id, activity=activity
     )
     scope = authorizer.effective_scope(
         session_id=live.id,

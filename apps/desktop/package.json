@@ -1,6 +1,6 @@
 {
   "name": "scholarseed-desktop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "书深 — 科研智能体桌面应用",
   "main": "out/main/index.js",
   "author": {
@@ -17,7 +17,8 @@
     "preinstall": "node ../../scripts/pre/toolchain.cjs check",
     "postinstall": "node scripts/pre/electron.cjs",
     "prepare:python": "node ../../scripts/shared/python.cjs prepare-dev",
-    "predev": "node scripts/pre/office-assets.cjs && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && node scripts/pre/identity.cjs",
+    "ui:build": "node ../../packages/ui/build.cjs --archive ../serve/service/capabilities/ui.zip",
+    "predev": "node scripts/pre/office-assets.cjs && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && npm run ui:build && node scripts/pre/identity.cjs",
     "dev": "node scripts/dev/runner.cjs desktop development",
     "predev:web": "node ../../scripts/pre/toolchain.cjs frontend",
     "dev:web": "node scripts/dev/runner.cjs modules vite --config vite.web.config.ts",
@@ -51,7 +52,7 @@
     "test:e2e:mr": "node scripts/ci/e2e.cjs mr",
     "test:e2e:live": "node scripts/ci/e2e.cjs live",
     "test:e2e:update": "node scripts/ci/e2e.cjs update",
-    "prebuild": "node scripts/security.cjs --check && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check",
+    "prebuild": "node scripts/security.cjs --check && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && npm run ui:build",
     "build": "node scripts/pre/office-assets.cjs && electron-vite build",
     "prebuild:web": "node ../../scripts/pre/toolchain.cjs frontend",
     "build:web": "vite build --config vite.web.config.ts",
@@ -136,6 +137,7 @@
     "vite": "7.3.6",
     "vfile": "6.0.3",
     "ws": "8.21.3",
+    "yaml": "2.9.1",
     "yauzl": "3.4.0",
     "zetajs": "1.2.0"
   },

@@ -261,7 +261,9 @@ class ParentControl:
             if self._generation is not None:
                 raise ParentControlError("maintenance already owned")
             idle_only = operation == IDLE_QUIESCE_OPERATION
-            generation = self._activities.begin_if_idle() if idle_only else self._activities.begin()
+            generation = (
+                self._activities.begin_if_idle() if idle_only else self._activities.begin_restart()
+            )
             if generation is None:
                 raise ParentControlError("maintenance requires idle workbench")
             self._generation = generation

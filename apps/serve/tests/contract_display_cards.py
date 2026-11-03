@@ -8,13 +8,15 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jsonschema import Draft7Validator
 
 from service.assistant.service.nextsteps import NEXT_STEPS_CARD, validate_next_steps_card
+from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.descriptor import validate_component_value
 from service.capabilities.service.skills import SkillCatalog
 from service.chat.api.cards import register_card_routes
 from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD
@@ -49,8 +51,14 @@ from service.literature.service.downloads import (
 from service.literature.service.result import SEARCH_CARD, search_card_slot, validate_search_card
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
+    BLOCKING_OPERATIONS,
+    COMPONENT_CAPABILITY,
+    COMPONENT_REQUEST_OPERATION,
+    PLUGIN_INSTALL_ROUTE,
+    ComponentInvocation,
     DisplayCard,
     DisplayCardContent,
+    PluginInstallation,
 )
 from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
@@ -112,6 +120,102 @@ class DisplayCardContract(unittest.TestCase):
             ]
         )
         self.assertEqual((args.capability, args.operation), ("display-card", "publish"))
+
+    def test_cli_component_commands_use_registered_contracts_and_request_waits(self) -> None:
+        for operation in ("catalog", "request", "display"):
+            args = parser().parse_args(["component", operation, "--json", "{}"])
+            self.assertEqual((args.capability, args.operation), ("component", operation))
+        self.assertIn((COMPONENT_CAPABILITY, COMPONENT_REQUEST_OPERATION), BLOCKING_OPERATIONS)
+
+    def test_component_display_pins_identical_request_and_rejects_reuse(self) -> None:
+        live, events = self._live()
+        components = Mock()
+        reference = {"plugin": "comparison", "component": "matrix", "fingerprint": "fixed"}
+        components.resolve.return_value = reference
+        components.snapshot.return_value = {
+            "descriptor": {"components": [{"id": "matrix", "actions": []}]}
+        }
+        live._skills = SimpleNamespace(components=components)
+        command = ComponentInvocation(
+            request_id="show", slot="custom.matrix", data={"papers": ["A"]}, title="Papers"
+        )
+        first = asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=False))
+        components.resolve.return_value = {**reference, "fingerprint": "updated"}
+        self.assertEqual(
+            asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=False)), first
+        )
+        components.resolve.assert_called_once()
+        self.assertEqual(first["type"], "plugin-component")
+        self.assertEqual(len(events.replay(SESSION_ID)), 1)
+        with self.assertRaisesRegex(ValueError, "component_request_conflict"):
+            asyncio.run(
+                live.component_interaction(
+                    command.model_copy(update={"data": {}}), turn_id=TURN_ID, waiting=False
+                )
+            )
+
+    def test_display_snapshot_retains_revision_data_and_draft_after_disable_and_update(
+        self,
+    ) -> None:
+        live, events = self._live()
+        registry = ComponentRegistry(self.root / "components.sqlite3")
+        snapshot = {
+            "fingerprint": "revision-one",
+            "descriptor": {
+                "id": "comparison",
+                "components": [{"id": "matrix", "slot": "custom.matrix", "actions": []}],
+            },
+            "files": {"card.js": "first"},
+            "scenarios": {},
+        }
+        registry.publish([snapshot])
+        live._skills.components = registry
+        command = ComponentInvocation(
+            request_id="show", slot="custom.matrix", data={"papers": ["A"]}, title="Papers"
+        )
+        first = asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=False))
+        reference = first["component"]
+        registry.draft(
+            reference,
+            session_id=SESSION_ID,
+            user_id=live.user_id,
+            values={"selected": ["A"]},
+            expected_revision=0,
+        )
+        registry.publish([])
+        registry.validate(reference, session_id=SESSION_ID, user_id=live.user_id)
+        registry.publish(
+            [{**snapshot, "fingerprint": "revision-two", "files": {"card.js": "second"}}]
+        )
+        repeated = asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=False))
+        self.assertEqual(repeated, first)
+        retained = registry.snapshot(reference, user_id=live.user_id)
+        self.assertEqual(retained["files"], {"card.js": "first"})
+        self.assertEqual(retained["interaction"]["data"], {"papers": ["A"]})
+        self.assertEqual(retained["interaction"]["state"], {"selected": ["A"]})
+        next_card = asyncio.run(
+            live.component_interaction(
+                command.model_copy(update={"request_id": "next"}), turn_id=TURN_ID, waiting=False
+            )
+        )
+        self.assertEqual(next_card["component"]["fingerprint"], "revision-two")
+        self.assertEqual(len(events.replay(SESSION_ID)), 2)
+
+    def test_generic_component_cannot_forge_host_business_card(self) -> None:
+        live, _ = self._live()
+        components = Mock()
+        components.resolve.return_value = {
+            "plugin": "host",
+            "component": "literature.authorization",
+            "fingerprint": "host-v1",
+        }
+        live._skills = SimpleNamespace(components=components)
+        command = ComponentInvocation(
+            request_id="fake", slot="literature.authorization", data={}, title="Authorize"
+        )
+        with self.assertRaisesRegex(ValueError, "component_requires_domain_publication"):
+            asyncio.run(live.component_interaction(command, turn_id=TURN_ID, waiting=False))
+        components.bind_data.assert_not_called()
 
     def test_request_requires_exactly_one_content_source(self) -> None:
         with self.assertRaises(ValueError):
@@ -293,6 +397,41 @@ class DisplayCardContract(unittest.TestCase):
         live.vendor_thread_id = VENDOR_THREAD_ID
         return live, events
 
+    def test_installation_publication_is_nonblocking_and_revision_bound(self) -> None:
+        live, _events = self._live()
+        first = PluginInstallation(request_id="revision-one", path="v1.zip", sha256="a" * 64)
+        second = PluginInstallation(request_id="revision-two", path="v2.zip", sha256="b" * 64)
+        reports = [
+            {"valid": True, "descriptor": {"id": "example", "version": version}, "sha256": digest}
+            for version, digest in [("1.0.0", first.sha256), ("1.0.1", second.sha256)]
+        ]
+
+        async def publish(command: PluginInstallation) -> dict:
+            return await asyncio.wait_for(live.plugin_installation(command, turn_id=TURN_ID), 1)
+
+        with patch.object(live._skills, "installation_report", side_effect=reports) as inspect:
+            receipt = asyncio.run(publish(first))
+            self.assertTrue(receipt["published"])
+            self.assertNotIn("installed", receipt)
+            self.assertEqual(asyncio.run(publish(first)), receipt)
+            with self.assertRaisesRegex(ValueError, "plugin_installation_request_conflict"):
+                asyncio.run(publish(first.model_copy(update={"sha256": second.sha256})))
+            updated = asyncio.run(publish(second))
+            self.assertEqual(inspect.call_count, 2)
+        self.assertEqual(live._catalog.pending_hil(SESSION_ID), ())
+        self.assertEqual(live.pending_hil_snapshot(), [])
+        self.assertEqual(asyncio.run(live.previous_turn_blockers()), ())
+        self.assertEqual(len(live.pending_hil_snapshot(blocking_only=False)), 2)
+        records = live._catalog.pending_hil(SESSION_ID, blocking_only=False)
+        self.assertEqual(len(records), 2)
+        old = live._catalog.hil(receipt["request_id"])
+        new = live._catalog.hil(updated["request_id"])
+        self.assertFalse(old.payload["blocking"])
+        self.assertEqual(old.payload["questions"][0]["installation_path"], "v1.zip")
+        self.assertEqual(new.payload["questions"][0]["installation_path"], "v2.zip")
+        self.assertEqual(receipt["package"]["version"], "1.0.0")
+        self.assertEqual(updated["package"]["version"], "1.0.1")
+
     def test_snapshot_is_idempotent_and_survives_source_deletion_and_reopen(self) -> None:
         source = self.root / "references.json"
         source.write_text(json.dumps(reference_payload()), encoding="utf-8")
@@ -318,6 +457,35 @@ class DisplayCardContract(unittest.TestCase):
         self.assertEqual(len(reopened.replay(SESSION_ID)), 1)
         self.assertEqual(snapshot[0]["type"], PRODUCT_EVENT_DISPLAY_CARD)
         self.assertEqual(snapshot[0]["data"], first)
+
+    def test_component_reference_is_durable_and_part_of_card_identity(self) -> None:
+        live, events = self._live()
+        reference = {"plugin": "example", "component": "references", "fingerprint": "first"}
+
+        async def resolve(slot, *, skill_name="", interaction_id=""):
+            self.assertEqual(slot, "display.literature-references")
+            self.assertEqual(skill_name, "example")
+            return reference.copy()
+
+        live.component_for = resolve
+        live._skills = SimpleNamespace(components=Mock())
+        content = DisplayCardContent(data=reference_payload(), skill="example")
+        first = asyncio.run(live.display_card(LITERATURE_REFERENCES_CARD, content, turn_id=TURN_ID))
+        repeated = asyncio.run(
+            live.display_card(LITERATURE_REFERENCES_CARD, content, turn_id=TURN_ID)
+        )
+        self.assertEqual(first, repeated)
+        reference["fingerprint"] = "second"
+        second = asyncio.run(
+            live.display_card(LITERATURE_REFERENCES_CARD, content, turn_id=TURN_ID)
+        )
+        self.assertNotEqual(first["card_id"], second["card_id"])
+        self.assertEqual(first["component"]["fingerprint"], "first")
+        reopened = ProductEventStore(events.database)
+        snapshot = EventService({}, reopened, SimpleNamespace()).activity_snapshot(SESSION_ID)
+        self.assertEqual(
+            [item["data"]["component"]["fingerprint"] for item in snapshot], ["first", "second"]
+        )
 
     def test_next_steps_publish_without_creating_a_pending_question(self) -> None:
         self.registry.register(NEXT_STEPS_CARD, validate_next_steps_card)
@@ -767,6 +935,160 @@ class DisplayCardContract(unittest.TestCase):
         self.assertEqual(inactive.status_code, 403)
         self.assertEqual(len(published), 1)
         self.assertEqual(published[0][2], TURN_ID)
+
+    def test_component_routes_require_scoped_turn_and_validate_payload(self) -> None:
+        activities = Activities()
+        owner = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(owner.close)
+        caller = SimpleNamespace(
+            id=SESSION_ID,
+            bridge_token=BRIDGE_TOKEN,
+            publication_turn_id=TURN_ID,
+            bridge_activity=owner,
+            component_catalog=Mock(return_value=[{"slot": "custom.matrix"}]),
+            component_ui_catalog=Mock(
+                return_value={
+                    "available": True,
+                    "authorized": False,
+                    "catalog": {"version": "1.0.3"},
+                }
+            ),
+            component_preflight=Mock(
+                return_value={"slots": [], "authorized": False, "reserved": False}
+            ),
+            component_interaction=AsyncMock(return_value={"answers": {"question": "chosen"}}),
+        )
+        app = FastAPI()
+        register_card_routes(
+            app, lambda scope: caller if scope == SESSION_ID else None, activities=activities
+        )
+        headers = {BRIDGE_SESSION_HEADER: SESSION_ID, BRIDGE_TOKEN_HEADER: BRIDGE_TOKEN}
+        command = {"request_id": "choose", "slot": "custom.matrix", "data": {}, "title": "Choose"}
+        with TestClient(app) as client:
+            preflight = "/api/internal/bridge/component/preflight"
+            self.assertEqual(
+                client.post(preflight, json={"slots": ["custom.new"]}).status_code, 403
+            )
+            self.assertEqual(
+                client.post(preflight, headers=headers, json={"slots": []}).status_code, 400
+            )
+            checked = client.post(preflight, headers=headers, json={"slots": ["custom.new"]})
+            self.assertEqual(checked.status_code, 200)
+            self.assertFalse(checked.json()["result"]["authorized"])
+            caller.component_preflight.assert_called_once_with(["custom.new"])
+            self.assertEqual(
+                client.post("/api/internal/bridge/component/catalog", json={}).status_code, 403
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/internal/bridge/component/catalog", headers=headers, json={}
+                ).json()["components"],
+                [{"slot": "custom.matrix"}],
+            )
+            caller.component_ui_catalog.assert_not_called()
+            discovery = client.post(
+                "/api/internal/bridge/component/catalog", headers=headers, json={"include_ui": True}
+            )
+            self.assertEqual(discovery.status_code, 200)
+            self.assertEqual(discovery.json()["ui"]["catalog"]["version"], "1.0.3")
+            self.assertFalse(discovery.json()["ui"]["authorized"])
+            caller.component_ui_catalog.assert_called_once_with()
+            self.assertEqual(
+                client.post(
+                    "/api/internal/bridge/component/catalog", json={"include_ui": True}
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/internal/bridge/component/request",
+                    headers=headers,
+                    json={**command, "permission": "all"},
+                ).status_code,
+                400,
+            )
+            result = client.post(
+                "/api/internal/bridge/component/request", headers=headers, json=command
+            )
+            self.assertEqual(result.status_code, 200, result.text)
+            caller.component_interaction.assert_awaited_once_with(
+                ComponentInvocation.model_validate(command), turn_id=TURN_ID, waiting=True
+            )
+            schema = {
+                "type": "object",
+                "properties": {
+                    "materials": {
+                        "type": "array",
+                        "items": {"type": "object", "required": ["ref_id"]},
+                    }
+                },
+            }
+            payload = {"materials": [{"title": "private material"}], "goal": "retain goal"}
+
+            async def validate_input(command, **kwargs):
+                validate_component_value(schema, command.data)
+
+            caller.component_interaction.side_effect = validate_input
+            rejected = client.post(
+                "/api/internal/bridge/component/request",
+                headers=headers,
+                json={**command, "data": payload},
+            )
+            self.assertEqual(rejected.status_code, 400)
+            self.assertEqual(rejected.json()["error"], "component_value_invalid")
+            self.assertEqual(rejected.json()["detail"]["path"], ["materials", 0])
+            self.assertEqual(rejected.json()["detail"]["missing"], ["ref_id"])
+            self.assertNotIn("private material", rejected.text)
+            self.assertNotIn("retain goal", rejected.text)
+            self.assertEqual(
+                payload, {"materials": [{"title": "private material"}], "goal": "retain goal"}
+            )
+            caller.publication_turn_id = ""
+            self.assertEqual(
+                client.post(preflight, headers=headers, json={"slots": ["custom.new"]}).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/internal/bridge/component/display", headers=headers, json=command
+                ).status_code,
+                403,
+            )
+
+    def test_plugin_install_route_requires_scoped_turn_and_exact_payload(self) -> None:
+        activities = Activities()
+        owner = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(owner.close)
+        caller = SimpleNamespace(
+            id=SESSION_ID,
+            bridge_token=BRIDGE_TOKEN,
+            publication_turn_id=TURN_ID,
+            bridge_activity=owner,
+            plugin_installation=AsyncMock(return_value={"answers": {"install": "receipt"}}),
+        )
+        app = FastAPI()
+        register_card_routes(
+            app, lambda scope: caller if scope == SESSION_ID else None, activities=activities
+        )
+        headers = {BRIDGE_SESSION_HEADER: SESSION_ID, BRIDGE_TOKEN_HEADER: BRIDGE_TOKEN}
+        command = {"request_id": "install", "path": "generated.zip", "sha256": "a" * 64}
+        with TestClient(app) as client:
+            self.assertEqual(client.post(PLUGIN_INSTALL_ROUTE, json=command).status_code, 403)
+            self.assertEqual(
+                client.post(
+                    PLUGIN_INSTALL_ROUTE, headers=headers, json={**command, "confirmed": True}
+                ).status_code,
+                400,
+            )
+            result = client.post(PLUGIN_INSTALL_ROUTE, headers=headers, json=command)
+            self.assertEqual(result.status_code, 200, result.text)
+            caller.plugin_installation.assert_awaited_once_with(
+                PluginInstallation.model_validate(command), turn_id=TURN_ID
+            )
+            caller.publication_turn_id = ""
+            self.assertEqual(
+                client.post(PLUGIN_INSTALL_ROUTE, headers=headers, json=command).status_code, 403
+            )
 
 
 if __name__ == "__main__":

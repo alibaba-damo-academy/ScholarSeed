@@ -86,7 +86,7 @@ import {
 
 const CONTENT_CLASS = 'mx-auto w-full max-w-[var(--vds-skills-content-width)]'
 const SEARCH_EMPTY_CLASS =
-  'min-h-[var(--vds-skills-empty-height)] w-full content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
+  'min-h-[var(--vds-skills-empty-height)] flex-1 w-full content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
 const GRID_CLASS =
   'grid grid-cols-1 gap-x-[var(--vds-space-4)] gap-y-[var(--vds-space-3)] md:grid-cols-2 lg:grid-cols-3'
 const CARD_CLASS =
@@ -96,6 +96,7 @@ const COPY_FEEDBACK_DURATION_MS = 3000
 const MASKED_CREDENTIAL_PLACEHOLDER = '••••••'
 const TOOLS_PAGE_SIZE = 5
 const CONNECTOR_DISPLAY_VERSION = '1.0.0'
+const HIDDEN_MARKET_CONNECTORS = new Set(['gitlab'])
 const DESCRIPTIONS = {
   zotero: 'connectors.descriptions.zotero',
   firecrawl: 'connectors.descriptions.firecrawl',
@@ -511,7 +512,9 @@ export function Connectors(): React.JSX.Element {
   const emptyMine = scope === 'mine' && !query.trim()
   const visible = items.filter(
     (item) =>
-      (scope === 'market' ? !item.custom : item.installed) &&
+      (scope === 'market'
+        ? !item.custom && !HIDDEN_MARKET_CONNECTORS.has(item.id)
+        : item.installed) &&
       `${item.name}\n${describe(item)}\n${item.source_url}`
         .toLocaleLowerCase()
         .includes(query.trim().toLocaleLowerCase())
@@ -876,7 +879,7 @@ export function Connectors(): React.JSX.Element {
             className="flex min-h-0 flex-1 flex-col overflow-y-auto"
           >
             <div
-              className={`${CONTENT_CLASS} ${loading ? 'flex flex-1 items-center justify-center' : ''}`}
+              className={`${CONTENT_CLASS} ${loading ? 'flex flex-1 items-center justify-center' : visible.length === 0 && !emptyMine ? 'flex flex-1 flex-col' : ''}`}
             >
               {loading ? (
                 <div

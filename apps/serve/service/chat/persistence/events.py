@@ -22,11 +22,15 @@ from service.chat.constants import (
     PRODUCT_EVENT_TOOL_OUTPUT_DELTA,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
+    PRODUCT_EVENT_TURN_INTERRUPTED,
+    PRODUCT_EVENT_TURN_UNKNOWN,
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_VERSION,
     PRODUCT_EVENT_VERSION_V1,
+    USER_MESSAGE_BINDING_ADMITTED,
     USER_MESSAGE_BINDING_BOUND,
     USER_MESSAGE_BINDING_CANCELLED,
+    USER_MESSAGE_ORIGIN_TURN,
 )
 from service.chat.persistence import attention, blocks, journal
 from service.chat.persistence.catalog import (
@@ -1456,6 +1460,34 @@ class ProductEventStore:
                 self._record(row) if row is not None and row["product_seq"] == product_seq else None
             )
 
+    def original_user_message_for_turn(
+        self, session_id: str, turn_id: str
+    ) -> ProductEventRecord | None:
+        if not turn_id.strip():
+            return None
+        with (
+            self._snapshot() as connection,
+            closing(
+                self._rows(
+                    connection,
+                    session_id=session_id,
+                    kinds=(PRODUCT_EVENT_USER_MESSAGE,),
+                    vendor_turn_id=turn_id,
+                )
+            ) as rows,
+        ):
+            records = tuple(self._record(row) for row in rows)
+        for binding in (USER_MESSAGE_BINDING_BOUND, USER_MESSAGE_BINDING_ADMITTED):
+            originals = [
+                record
+                for record in records
+                if record.payload.get("origin") == USER_MESSAGE_ORIGIN_TURN
+                and record.payload.get("binding") == binding
+            ]
+            if originals:
+                return originals[0] if len(originals) == 1 else None
+        return None
+
     def user_message_for_turn(
         self,
         session_id: str,
@@ -1635,6 +1667,163 @@ class ProductEventStore:
                 idempotency_key=SESSION_FORK_IMPORTED_KEY,
                 connection=connection,
             )
+
+    def _continuation_budget(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+        *,
+        remaining_events: int,
+        remaining_bytes: int,
+    ) -> None:
+        """Bound physical reads and prefix expansion before opening body storage."""
+
+        with closing(
+            connection.execute(
+                "SELECT length(CAST(event.payload AS BLOB)) AS inline_bytes, "
+                "length(CAST(event.payload_ref AS BLOB)) AS reference_bytes, "
+                "event.payload_ref IS NOT NULL AS referenced, "
+                "event.payload_bytes IS NULL AS no_payload_size, "
+                "event.client_turn_id IS NULL AS no_client_id, "
+                "body.offset AS body_offset, body.length AS body_bytes, "
+                "state.committed_bytes AS committed_bytes, "
+                "event.payload_ref = ? || body.digest AS valid_reference "
+                f"FROM {PRODUCT_EVENT_TABLE} AS event "
+                f"LEFT JOIN {journal.BODY_TABLE} AS body "
+                "ON body.digest = substr(event.payload_ref, length(?) + 1) "
+                f"LEFT JOIN {journal.JOURNAL_TABLE} AS state ON state.singleton = ? "
+                "WHERE event.session_id = ? AND event.product_seq > 0 "
+                "AND event.kind IN (?, ?)",
+                (
+                    journal.REFERENCE_PREFIX,
+                    journal.REFERENCE_PREFIX,
+                    journal.SINGLETON,
+                    session_id,
+                    PRODUCT_EVENT_USER_MESSAGE,
+                    PRODUCT_EVENT_MESSAGE_DELTA,
+                ),
+            )
+        ) as rows:
+            for metadata in rows:
+                inline_bytes = metadata["inline_bytes"]
+                if not isinstance(inline_bytes, int) or inline_bytes < 0:
+                    raise ValueError("invalid continuation body metadata")
+                body_bytes = inline_bytes
+                if metadata["referenced"]:
+                    physical_bytes = metadata["body_bytes"]
+                    offset = metadata["body_offset"]
+                    committed_bytes = metadata["committed_bytes"]
+                    reference_bytes = metadata["reference_bytes"]
+                    if (
+                        not metadata["valid_reference"]
+                        or not isinstance(physical_bytes, int)
+                        or physical_bytes <= 0
+                        or not isinstance(offset, int)
+                        or offset < 0
+                        or not isinstance(committed_bytes, int)
+                        or offset + physical_bytes > committed_bytes
+                        or not isinstance(reference_bytes, int)
+                        or reference_bytes <= 0
+                    ):
+                        raise ValueError("invalid continuation journal metadata")
+                    body_bytes += physical_bytes + reference_bytes
+                elif not metadata["no_payload_size"] or not metadata["no_client_id"]:
+                    raise ValueError("invalid continuation inline metadata")
+                remaining_events -= 1
+                remaining_bytes -= body_bytes
+                if remaining_events < 0 or remaining_bytes < 0:
+                    raise ValueError("continuation source budget exceeded")
+        with closing(
+            connection.execute(
+                f"SELECT offset, committed_end, count FROM {blocks.TABLE} WHERE session_id = ?",
+                (session_id,),
+            )
+        ) as rows:
+            for metadata in rows:
+                offset = metadata["offset"]
+                committed_end = metadata["committed_end"]
+                count = metadata["count"]
+                if (
+                    not isinstance(offset, int)
+                    or offset < 0
+                    or not isinstance(committed_end, int)
+                    or committed_end <= offset
+                    or not isinstance(count, int)
+                    or not 0 < count <= blocks.MAX_EVENTS
+                ):
+                    raise ValueError("invalid continuation block metadata")
+                remaining_events -= count
+                remaining_bytes -= (committed_end - offset) * count
+                if remaining_events < 0 or remaining_bytes < 0:
+                    raise ValueError("continuation source budget exceeded")
+
+    def continuation_records(
+        self, session_id: str, *, through_seq: int, limit: int, byte_limit: int
+    ) -> tuple[ProductEventRecord, ...]:
+        """Read only product user/message bodies and completed-turn identities."""
+
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit <= 0
+            or not isinstance(byte_limit, int)
+            or isinstance(byte_limit, bool)
+            or byte_limit <= 0
+        ):
+            raise ValueError("continuation requires positive resource limits")
+        with self._snapshot() as connection:
+            completed = connection.execute(
+                f"SELECT event_id, session_id, runtime_id, vendor_thread_id, vendor_turn_id, "
+                "vendor_item_id, kind, schema_version, product_seq, idempotency_key, created_at "
+                f"FROM {PRODUCT_EVENT_TABLE} WHERE session_id = ? AND kind = ? AND product_seq <= ? "
+                "ORDER BY product_seq LIMIT ?",
+                (session_id, PRODUCT_EVENT_TURN_COMPLETED, through_seq, limit + 1),
+            ).fetchall()
+            result = [self._record({**dict(row), "payload": "{}"}) for row in completed]
+            if len(result) > limit:
+                raise ValueError("continuation event limit exceeded")
+            self._continuation_budget(
+                connection,
+                session_id,
+                remaining_events=limit - len(result),
+                remaining_bytes=byte_limit,
+            )
+            body_bytes = 0
+            with closing(
+                self._rows(
+                    connection,
+                    session_id=session_id,
+                    kinds=(PRODUCT_EVENT_USER_MESSAGE, PRODUCT_EVENT_MESSAGE_DELTA),
+                )
+            ) as rows:
+                for row in rows:
+                    if row["product_seq"] > through_seq:
+                        break
+                    if len(result) >= limit:
+                        raise ValueError("continuation event limit exceeded")
+                    body_bytes += len(str(row["payload"]).encode("utf-8"))
+                    if body_bytes > byte_limit:
+                        raise ValueError("continuation body limit exceeded")
+                    result.append(self._record(row))
+            return tuple(sorted(result, key=lambda record: record.product_seq))
+
+    def continuation_terminal(self, session_id: str, *, through_seq: int) -> str:
+        """Read the latest terminal identity without opening any error payload."""
+
+        kinds = (
+            PRODUCT_EVENT_TURN_COMPLETED,
+            PRODUCT_EVENT_TURN_FAILED,
+            PRODUCT_EVENT_TURN_INTERRUPTED,
+            PRODUCT_EVENT_TURN_UNKNOWN,
+        )
+        with self._snapshot() as connection:
+            row = connection.execute(
+                f"SELECT vendor_turn_id FROM {PRODUCT_EVENT_TABLE} WHERE session_id = ? "
+                f"AND kind IN ({','.join('?' for _ in kinds)}) AND product_seq <= ? "
+                "ORDER BY product_seq DESC LIMIT 1",
+                (session_id, *kinds, through_seq),
+            ).fetchone()
+        return str(row["vendor_turn_id"] or "") if row is not None else ""
 
     def portable_history(
         self, session_id: str, *, exclude_rejected: bool = False

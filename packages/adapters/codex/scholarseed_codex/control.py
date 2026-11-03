@@ -97,7 +97,15 @@ class CodexRuntimeControl:
         self._check()
         return result
 
-    async def request(self, method: str, params: Any) -> dict[str, Any]:
+    async def request(
+        self, method: str, params: Any, *, generation: int | None = None
+    ) -> dict[str, Any]:
+        if generation is not None and (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation != self._generation
+        ):
+            raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
         if self._mutation_epoch is not None or self._readers:
             return await self._connected(method, params)
         async with self.reading():

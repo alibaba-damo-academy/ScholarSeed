@@ -218,7 +218,7 @@ def _idea_fulltext_never_observed(_workdir: Path, _trigger: str, _modified_ns: i
     return False
 
 
-def _agentic_metadata(workdir: Path, trigger: str) -> CheckpointContent | None:
+def agentic_checkpoint(workdir: Path, trigger: str) -> CheckpointContent:
     prepared = prepare_agentic_search(workdir, trigger)
     artifacts = [
         CheckpointArtifact(prepared.metadata_path, prepared.metadata_sha256, CARD_FIELD_METADATA)
@@ -259,7 +259,7 @@ CHECKPOINT_POLICIES = (
         ProductTaskType.RESEARCH_IDEA,
         RESEARCH_IDEA_FULLTEXT,
         AGENTIC_METADATA_TRIGGERS,
-        _agentic_metadata,
+        agentic_checkpoint,
         continue_on_reject=True,
         requires_task_type=True,
         consumption_started=_idea_fulltext_never_observed,

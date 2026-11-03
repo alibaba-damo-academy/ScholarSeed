@@ -150,7 +150,7 @@ function OverlayViewport({
       >
         <div
           className={cx(
-            'min-h-full min-w-0 flow-root',
+            'grid min-h-full min-w-0',
             orientation !== 'vertical' && 'w-max min-w-full'
           )}
         >

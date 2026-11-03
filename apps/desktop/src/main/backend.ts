@@ -18,7 +18,7 @@ import { BackendControl } from './backend-control.ts'
 // In a packaged .app the python env + repo live under Resources/backend; in dev
 // we use the repo's own .venv. Everything stays on 127.0.0.1 (never exposed).
 
-import { createHash, randomBytes } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import type { ChildProcess } from 'child_process'
 import { spawn } from 'child_process'
 import { createServer } from 'net'
@@ -67,6 +67,7 @@ import {
 } from './environment'
 import { LineTimestamper, RotatingFileLog } from './logfile'
 import type { BackendFailure } from './failure'
+import { redactDiagnosticError } from './redaction.ts'
 import { projectCodexRuntimeEnvironment } from './runtime'
 import { bundledCodex, CACHE_VALIDATION, resolveVendoredCodex } from '../../runtime/codex.cjs'
 import {
@@ -110,11 +111,33 @@ import { observeStorageBindings } from './storagebinding'
 import type { StorageBinding, StorageBindingNative } from './storagebinding'
 
 const SKILL_PYTHON_PROBE_MODULE = 'service.platform.executables'
-const SKILL_PYTHON_PROBE_TIMEOUT_MS = 15_000
+// Includes cold admission of the probe interpreter plus Serve's 60s launcher
+// budget (service.platform.executables); cancellation still stops the family.
+const SKILL_PYTHON_PROBE_TIMEOUT_MS = 90_000
 const SKILL_PYTHON_DIAGNOSTIC_BYTES = 8_192
 const SKILL_PYTHON_DIAGNOSTIC_PREFIX = 'scholarseed-skill-probe-'
 const SKILL_PYTHON_DIAGNOSTIC_FILE = 'stderr.log'
 const SKILL_PYTHON_DIAGNOSTIC_MODE = 0o600
+const BACKEND_STARTUP_DIAGNOSTIC = '[backend-startup]'
+const BACKEND_STARTUP_PHASE = Object.freeze({
+  port: 'port',
+  paths: 'paths',
+  source: 'source',
+  pythonEntry: 'python-entry',
+  runtimeEntries: 'runtime-entries',
+  toolchain: 'toolchain-resources',
+  pythonIdentity: 'python-identity',
+  skillLauncher: 'skill-launcher',
+  workspace: 'workspace',
+  environment: 'environment',
+  log: 'backend-log',
+  agent: 'agent-transport',
+  browser: 'browser-environment',
+  texlive: 'texlive-environment',
+  control: 'control-listen',
+  spawn: 'spawn',
+  health: 'health',
+})
 
 function openProcessFamily(pid: number): ProcessFamily {
   // eslint-disable-next-line @typescript-eslint/no-require-imports -- Packaged native primitive.
@@ -310,10 +333,15 @@ export interface BackendLaunch {
 // Environment can contain credentials. Keep it out of enumerable handles and diagnostics.
 const backendFamilies = new WeakMap<BackendHandle, ProcessFamily>()
 const backendLaunches = new WeakMap<ChildProcess, Readonly<BackendLaunch>>()
+const backendDiagnosticWriters = new WeakMap<BackendHandle, (line: string) => boolean>()
 let activeBackendLaunch: Readonly<BackendLaunch> | null = null
 /** Exact spawned child only; this observation grants no data or activation authority. */
 export function backendLaunch(handle: BackendHandle): Readonly<BackendLaunch> | null {
   return handle.proc ? (backendLaunches.get(handle.proc) ?? null) : null
+}
+
+export function writeBackendDiagnostic(handle: BackendHandle | null, line: string): boolean {
+  return handle ? (backendDiagnosticWriters.get(handle)?.(line) ?? false) : false
 }
 
 export interface BackendHandle {
@@ -748,29 +776,82 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
 
   backendDrains.set(handle, drained)
   backendPreparationStops.set(handle, preparationStop)
+  const attemptId = randomUUID()
+  const startedAt = performance.now()
+  let phase: string = BACKEND_STARTUP_PHASE.port
+  let phaseStartedAt = startedAt
+  let startupError: unknown
+  const diagnostic = (event: 'started' | 'failed' | 'ready'): void => {
+    // Diagnostics cannot replace the original startup result, including when a sink fails.
+    try {
+      const now = performance.now()
+      const line = `${BACKEND_STARTUP_DIAGNOSTIC} ${JSON.stringify({
+        schema: 1,
+        attemptId,
+        pid: process.pid,
+        platform: process.platform,
+        arch: process.arch,
+        version: app.getVersion(),
+        phase,
+        event,
+        elapsedMs: Math.round(now - startedAt),
+        phaseElapsedMs: Math.round(now - phaseStartedAt),
+        backendPid: handle.proc?.pid ?? null,
+        port: handle.port,
+        failure: handle.error?.kind ?? null,
+        ...(event === 'failed'
+          ? { error: redactDiagnosticError(startupError ?? handle.error) }
+          : {}),
+      })}\n`
+      // Call independently: unavailable stdout/renderer must not lose persistent evidence.
+      try {
+        log(line)
+      } catch {
+        /* best-effort diagnostic sink */
+      }
+      try {
+        options.lifecycleLog?.(line)
+      } catch {
+        /* best-effort diagnostic sink */
+      }
+    } catch {
+      /* diagnostics never affect startup */
+    }
+  }
+  const enterPhase = (next: string): void => {
+    phase = next
+    phaseStartedAt = performance.now()
+    diagnostic('started')
+  }
   handle.ready = (async () => {
+    diagnostic('started')
     const port = options.port ?? (await pickPort())
     const baseUrl = `http://${LOOPBACK_HOST}:${port}`
     handle.port = port
     handle.baseUrl = baseUrl
 
+    enterPhase(BACKEND_STARTUP_PHASE.paths)
     const backendPaths = await resolveBackendPaths()
     const { cwd, hookBin, skillBin } = backendPaths
+    enterPhase(BACKEND_STARTUP_PHASE.source)
     const sourceIdentity = await captureSourceBaseline(
       cwd,
       clientVersion(app.getVersion(), readProductConfig(log).config.buildNumber),
       app.isPackaged
     )
+    enterPhase(BACKEND_STARTUP_PHASE.pythonEntry)
     const python = toNamespacedPath(backendPaths.python)
     if (!existsSync(python)) {
       handle.error = { kind: 'pythonMissing', path: python }
       log(`[shell] ERROR python not found: ${python}\n`)
       return false
     }
+    enterPhase(BACKEND_STARTUP_PHASE.runtimeEntries)
     if (backendPaths.windowsRuntime) {
       accessSync(backendPaths.windowsRuntime.powershell, fsConstants.X_OK)
       accessSync(join(backendPaths.windowsRuntime.texlive, WINDOWS_TEXLIVE_ENTRY), fsConstants.X_OK)
     }
+    enterPhase(BACKEND_STARTUP_PHASE.toolchain)
     const vendoredCodex = app.isPackaged
       ? null
       : resolveVendoredCodex(
@@ -832,6 +913,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       return false
     })
     preparations.push(texlivePreparation)
+    enterPhase(BACKEND_STARTUP_PHASE.pythonIdentity)
     let pythonIdentity
     const pythonStartedAt = performance.now()
     log('[shell] Python identity check started\n')
@@ -847,11 +929,13 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
         `[shell] Python ${pythonIdentity.python}, SQLite ${pythonIdentity.sqlite}, base=${pythonIdentity.base_prefix}\n`
       )
     } catch (error) {
+      startupError = error
       const detail = error instanceof Error ? error.message : String(error)
       handle.error = { kind: 'pythonInvalid', detail }
       log(`[shell] ERROR ${detail}\n`)
       return false
     }
+    enterPhase(BACKEND_STARTUP_PHASE.skillLauncher)
     try {
       if (app.isPackaged && !existsSync(skillPythonLauncherPath(skillBin))) {
         throw new Error(
@@ -860,12 +944,15 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       }
       if (!app.isPackaged) writeSkillPythonLauncher(skillBin, python)
     } catch (error) {
+      startupError = error
       const detail = error instanceof Error ? error.message : String(error)
       handle.error = { kind: 'startupFailed', detail }
       log(`[shell] ERROR Skill Python launcher setup failed: ${detail}\n`)
       return false
     }
+    enterPhase(BACKEND_STARTUP_PHASE.workspace)
     configureDesktopEnvironment(log)
+    enterPhase(BACKEND_STARTUP_PHASE.environment)
     const inheritedExecutablePath = process.env[PATH_ENV] || ''
     const standardPath = app.isPackaged ? standardExecutablePath() : ''
     const bundledCodexExecutable = app.isPackaged
@@ -956,6 +1043,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       logLevel,
     ]
 
+    enterPhase(BACKEND_STARTUP_PHASE.log)
     let logFile: RotatingFileLog | null = null
     try {
       logFile = new RotatingFileLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE), {
@@ -968,15 +1056,18 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       /* logging to file is best-effort */
     }
     const stamper = logFile ? new LineTimestamper((line) => logFile?.write(line)) : null
+    if (logFile) backendDiagnosticWriters.set(handle, (line) => logFile?.write(line) ?? false)
     finishLog = async () => {
       stamper?.flush()
       // Called only after the owned output pipes close (or no child was spawned).
       await logFile?.end()
+      backendDiagnosticWriters.delete(handle)
     }
     if (sourceIdentity) persist(`[source-baseline] ${sourceIdentity}\n`)
     backendStopLogs.set(handle, persist)
 
     persist(`[shell] spawning backend: ${python} ${args.join(' ')}\n[shell] cwd=${cwd}\n`)
+    enterPhase(BACKEND_STARTUP_PHASE.agent)
     const agentTransport = productConfig.features.browser
       ? await createAgentTransport(
           options.browserList ?? (() => []),
@@ -990,6 +1081,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
         )
       : null
     handle.agentTransport = agentTransport
+    enterPhase(BACKEND_STARTUP_PHASE.browser)
     const env: NodeJS.ProcessEnv = {
       ...browserEnvironment(
         codexRuntime.environment,
@@ -1024,6 +1116,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
           ? join(applicationResources(app), ...SANDBOX_RECOVERY_HELPER_PARTS)
           : '',
     }
+    enterPhase(BACKEND_STARTUP_PHASE.texlive)
     let texliveEnvironmentReady = false
     let texliveOptions: TexliveEnvironmentOptions | undefined
     if (texliveExecutableDirectory) {
@@ -1092,6 +1185,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       persist(`[shell] backend_control ${JSON.stringify(event)}\n`)
     )
     backendControls.set(handle, control)
+    enterPhase(BACKEND_STARTUP_PHASE.control)
     const bootstrap = await control.listen()
     if (handle.stopping) {
       bootstrap.fill(0)
@@ -1121,6 +1215,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
         : ['-B', ...args]
     const spawnStarted = performance.now()
     persist(`[startup] backend spawn requested parentPid=${process.pid} unixMs=${Date.now()}\n`)
+    enterPhase(BACKEND_STARTUP_PHASE.spawn)
     const proc = spawn(pythonExecutablePath(python), childArgs, {
       cwd,
       env,
@@ -1261,8 +1356,9 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       })
     preparations.push(toolchainReceipt)
 
+    enterPhase(BACKEND_STARTUP_PHASE.health)
     const firstRun = isFirstRun(desktopHome(), applicationIdentity)
-    const healthBudget = resolveStartupBudgetMs(firstRun, false)
+    const healthBudget = resolveStartupBudgetMs(firstRun, false, SKILL_PYTHON_PROBE_TIMEOUT_MS)
     persist(`[shell] health budget=${healthBudget}ms (first-run=${firstRun})\n`)
     const startup = await Promise.race([
       waitForHealth(baseUrl, healthBudget, log).then((ok) => ({ kind: 'health' as const, ok })),
@@ -1303,9 +1399,11 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     } catch (error) {
       log(`[shell] WARN startup marker not written: ${String(error)}\n`)
     }
+    diagnostic('ready')
     return true
   })()
     .catch((error: unknown) => {
+      startupError = error
       backendControls.get(handle)?.close()
       const detail = String(error)
       handle.error = { kind: 'startupFailed', detail }
@@ -1313,6 +1411,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       return false
     })
     .finally(async () => {
+      if (handle.error) diagnostic('failed')
       if (!handle.proc || handle.stopping) await handle.agentTransport?.close()
       if (!handle.proc) await finish()
     })

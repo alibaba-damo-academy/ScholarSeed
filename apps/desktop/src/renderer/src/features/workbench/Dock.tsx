@@ -8,8 +8,6 @@ import { History, Save } from 'lucide-react'
 import { featureRegistry } from '../../app/composition'
 import {
   Alert,
-  AlertDescription,
-  AlertTitle,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -31,7 +29,7 @@ import {
   type NavigationTabItem,
 } from '../../components/ui'
 import type { DocumentPanelContext, DocumentPanelContribution } from '../../contracts/features'
-import { Icon } from '../../icons'
+
 import { Pending } from '../../shell/Pending'
 import { resourceFileIcon } from '../resources/icons'
 import { selectedProject, useApp } from '../../store'

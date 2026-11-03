@@ -4,7 +4,7 @@ description: "Use when the user wants to generate or develop research ideas, res
 description_zh: "当用户想生成或发展研究想法、研究方向或研究计划时使用——面向任何领域,不只 AI/ML。触发信号:一个研究主题、一个问题陈述、一个待探索的模糊方向、一篇要在其上延伸的论文,或用户自己在推进的工作。它是科研合作者:生成时笃定有主见,交付与决策时让权给用户。当用户在要紧场合前需要严谨核查时,它也会核验自己生成的想法里引用的忠实度。不要用于:写论文全文、替用户跑实验、或普通的非科研编程任务。"
 metadata:
   short-description: Generate & develop research ideas
-version: "1.2.15"
+version: "1.2.18"
 ---
 
 # Research Idea Partner

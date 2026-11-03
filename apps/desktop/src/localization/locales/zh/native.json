@@ -1,4 +1,5 @@
 {
+  "plugin": { "preview": "隔离预览", "installed": "已安装插件" },
   "notifications": {
     "title": "新任务",
     "waiting": "需要你处理：{{summary}}",
@@ -39,6 +40,14 @@
   "updateRecovery": {
     "title": "书深更新恢复",
     "message": "更新保护进程已全部异常退出。请先保存工作，重启电脑后重新打开书深尝试恢复。现有数据已保留，此提示不会自动重启电脑。"
+  },
+  "admissionRecovery": {
+    "title": "书深启动恢复",
+    "message": "暂时无法安全启动书深",
+    "detail": "更新可能尚未完成，或启动安全校验未通过。工作台尚未启动，更新记录已保留，数据目录未切换。请确认更新安装已结束后重试；若仍失败，请复制诊断信息并联系支持人员。",
+    "retry": "重试启动",
+    "copy": "复制诊断信息",
+    "quit": "退出"
   },
   "browserDownload": {
     "recoveryTitle": "浏览器下载需要处理",

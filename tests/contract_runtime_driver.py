@@ -20,10 +20,17 @@ from scholarseed_runtime.contract import (
     RuntimeEventKind,
     TurnRequest,
 )
+from scholarseed_runtime.contract.command import ThreadReplacementProof
 from scholarseed_runtime.contract.session import (
     RUNTIME_CONFIRMATION_UNSUPPORTED,
+    RUNTIME_THREAD_REPLACEMENT_BUSY,
+    RUNTIME_THREAD_REPLACEMENT_UNSUPPORTED,
     RuntimeActivitySnapshot,
+    RuntimeThreadReplacement,
     RuntimeTurnConfirmation,
+    ThreadReplacementReceipt,
+    ThreadReplacementTarget,
+    ThreadReplacementTicket,
     TurnConfirmationReceipt,
     TurnConfirmationTarget,
     TurnConfirmationTicket,
@@ -45,7 +52,9 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 
 class ContractSession:
-    def __init__(self, *, auto_complete: bool = True) -> None:
+    def __init__(
+        self, *, auto_complete: bool = True, detach_error: Exception | None = None
+    ) -> None:
         self.binding = RuntimeBinding(
             product_session_id="product-1",
             runtime_id="contract",
@@ -60,6 +69,7 @@ class ContractSession:
         self.queue: asyncio.Queue[RuntimeEvent] = asyncio.Queue()
         self.detached = False
         self.auto_complete = auto_complete
+        self.detach_error = detach_error
 
     async def events(self) -> AsyncIterator[RuntimeEvent]:
         while True:
@@ -116,6 +126,8 @@ class ContractSession:
 
     async def detach(self) -> None:
         self.detached = True
+        if self.detach_error is not None:
+            raise self.detach_error
 
 
 class ConfirmationSession(ContractSession):
@@ -156,6 +168,51 @@ class ConfirmationSession(ContractSession):
         raise AssertionError("confirmation must not replay a turn")
 
 
+class ReplacementSession(ContractSession):
+    def __init__(self, *, watermark: int = 0, allow_submission: bool = False) -> None:
+        super().__init__(auto_complete=False)
+        self.capabilities = CapabilitySet(
+            (
+                RuntimeCapability(
+                    RuntimeCapabilityName.THREAD_REPLACEMENT.value, CapabilityState.SUPPORTED
+                ),
+            )
+        )
+        self.binding = replace(self.binding, capabilities=self.capabilities)
+        self.target = ThreadReplacementTarget(self.binding, "client-1", "incident-1", 1)
+        self.proof = ThreadReplacementProof(
+            "proof-1", self.binding, "client-1", "incident-1", 1, 2, watermark
+        )
+        self.ticket = ThreadReplacementTicket(self.proof, "host-1:2", 3, watermark)
+        self.receipt = ThreadReplacementReceipt(self.ticket, CommandState.APPLIED)
+        self.prepared = asyncio.Event()
+        self.submitted = asyncio.Event()
+        self.allow_submission = allow_submission
+        self.preparations = 0
+        self.commits: list[tuple[ThreadReplacementTicket, int]] = []
+
+    async def prepare_thread_replacement(
+        self, target: ThreadReplacementTarget
+    ) -> ThreadReplacementTicket:
+        if target != self.target:
+            raise AssertionError("replacement target changed before preparation")
+        self.preparations += 1
+        self.prepared.set()
+        return self.ticket
+
+    async def commit_thread_replacement(
+        self, ticket: ThreadReplacementTicket, persisted_watermark: int
+    ) -> ThreadReplacementReceipt:
+        self.commits.append((ticket, persisted_watermark))
+        return self.receipt
+
+    async def submit(self, request: TurnRequest) -> CommandReceipt:
+        if self.allow_submission:
+            self.submitted.set()
+            return await super().submit(request)
+        raise AssertionError("thread replacement must not replay a turn")
+
+
 async def successful_turn() -> tuple:
     session = ContractSession()
     observed = []
@@ -187,7 +244,13 @@ async def mismatched_binding() -> bool:
     try:
         await task
     except RuntimeDriverError:
-        failed = True
+        failed = not driver.projection_failed
+        try:
+            await driver.recover_projection()
+        except RuntimeDriverError:
+            pass
+        else:
+            failed = False
     else:
         failed = False
     await driver.close()
@@ -294,7 +357,148 @@ async def failed_projection_is_visible_and_closed() -> bool:
             and logged.args[-1] == "RuntimeError"
             and "secret-projection-payload" not in str(logged)
         )
-    driver._consumer = None
+    try:
+        await driver.close()
+    except RuntimeError as error:
+        return result and error is observed_error and session.detached
+    return False
+
+
+async def failed_projection_still_detaches(*, detach_failure: bool = False) -> bool:
+    projection_error = ValueError("invalid runtime incident observation")
+    detach_error = OSError("runtime detach failed") if detach_failure else None
+    session = ContractSession(auto_complete=False, detach_error=detach_error)
+
+    async def observe(_event):
+        raise projection_error
+
+    driver = RuntimeDriver(session, observe)
+    with patch("scholarseed_runtime.gateway.driver.logger") as logger:
+        driver.start()
+        submission = asyncio.create_task(driver.submit(TurnRequest("command-1", ("hello",))))
+        await asyncio.sleep(0)
+        await session.queue.put(session.event(1, RuntimeEventKind.TURN_UNKNOWN, "command-1"))
+        results = await asyncio.gather(submission, driver._consumer, return_exceptions=True)
+        try:
+            await driver.close()
+        except ValueError as error:
+            return (
+                error is projection_error
+                and session.detached
+                and all(result is projection_error for result in results)
+                and driver._consumer_error is projection_error
+                and not driver._terminals
+                and (
+                    not detach_failure
+                    or (
+                        error.__cause__ is None
+                        and error.__context__ is None
+                        and logger.error.call_count == 2
+                        and logger.error.call_args.args[-1] == "OSError"
+                        and "runtime detach failed" not in str(logger.error.call_args)
+                    )
+                )
+            )
+        return False
+
+
+async def failed_projection_preserves_exception_chain(*, explicit_cause: bool) -> bool:
+    original_error = LookupError("secret-consumer-source")
+    projection_error = ValueError("secret-runtime-projection")
+    detach_error = OSError("secret-runtime-detach")
+    session = ContractSession(auto_complete=False, detach_error=detach_error)
+
+    async def observe(_event):
+        try:
+            raise original_error
+        except LookupError:
+            if explicit_cause:
+                raise projection_error from original_error
+            raise projection_error
+
+    driver = RuntimeDriver(session, observe)
+    session.queue.put_nowait(session.event(1, RuntimeEventKind.TURN_UNKNOWN, "command-1"))
+    with patch("scholarseed_runtime.gateway.driver.logger") as logger:
+        driver.start()
+        results = await asyncio.gather(driver._consumer, return_exceptions=True)
+        try:
+            await driver.close()
+        except ValueError as error:
+            return (
+                results[0] is projection_error
+                and error is projection_error
+                and error.__cause__ is (original_error if explicit_cause else None)
+                and error.__context__ is original_error
+                and error.__suppress_context__ is explicit_cause
+                and session.detached
+                and logger.error.call_count == 2
+                and logger.error.call_args.args[-1] == "OSError"
+                and "secret-" not in str(logger.error.call_args)
+            )
+    return False
+
+
+async def detachment_failure_is_visible() -> bool:
+    detach_error = OSError("runtime detach failed")
+    session = ContractSession(auto_complete=False, detach_error=detach_error)
+
+    async def observe(_event):
+        return None
+
+    driver = RuntimeDriver(session, observe)
+    driver.start()
+    submission = asyncio.create_task(driver.submit(TurnRequest("command-1", ("hello",))))
+    await asyncio.sleep(0)
+    try:
+        await driver.close()
+    except OSError as error:
+        results = await asyncio.gather(submission, return_exceptions=True)
+        return (
+            error is detach_error
+            and session.detached
+            and isinstance(results[0], RuntimeDriverError)
+            and not driver._terminals
+        )
+    return False
+
+
+async def projection_recovery_preserves_failed_and_prefetched_events(*, batched: bool) -> bool:
+    session = ContractSession(auto_complete=False)
+    observed = []
+    fail = True
+
+    async def observe(event):
+        if fail and event.sequence == 2:
+            raise OSError("projection unavailable")
+        observed.append(event.sequence)
+
+    async def observe_batch(events):
+        for event in events:
+            await observe(event)
+
+    driver = RuntimeDriver(session, observe, on_observations=observe_batch if batched else None)
+    for sequence in range(1, 5):
+        session.queue.put_nowait(session.event(sequence, RuntimeEventKind.TOOL_STARTED, "old"))
+    driver.start()
+    try:
+        await driver._consumer
+    except OSError:
+        pass
+    if not driver.projection_failed or observed != [1]:
+        return False
+    try:
+        await driver.recover_projection()
+    except OSError:
+        if not driver.projection_failed or observed != [1]:
+            return False
+    else:
+        return False
+    fail = False
+    await driver.recover_projection()
+    async with asyncio.timeout(2):
+        while driver._projected_sequence < 4:
+            await asyncio.sleep(0)
+    result = observed == [1, 2, 3, 4] and not driver.projection_failed
     await driver.close()
     return result
 
@@ -381,9 +585,11 @@ async def confirmation_rejects_failed_consumer() -> bool:
             pass
         else:
             rejected = False
-    driver._consumer = None
-    await driver.close()
-    return rejected and not session.commits
+    try:
+        await driver.close()
+    except RuntimeError as error:
+        return rejected and error is projection_error and session.detached and not session.commits
+    return False
 
 
 async def confirmation_requires_capability_and_protocol() -> bool:
@@ -448,6 +654,314 @@ async def confirmation_rejects_mismatched_target_and_receipt() -> bool:
     return True
 
 
+async def replacement_waits_for_projection_and_explicit_commit() -> bool:
+    session = ReplacementSession(watermark=1)
+    durable = asyncio.Event()
+    projecting = asyncio.Event()
+    observed = []
+
+    async def observe(event):
+        projecting.set()
+        await durable.wait()
+        observed.append(event)
+
+    driver = RuntimeDriver(session, observe)
+    driver.start()
+    preparation = asyncio.create_task(driver.prepare_thread_replacement(session.target))
+    try:
+        await session.prepared.wait()
+        unknown = session.event(1, RuntimeEventKind.TURN_UNKNOWN, "client-1")
+        await session.queue.put(unknown)
+        await projecting.wait()
+        await asyncio.sleep(0)
+        held = not preparation.done() and not session.commits
+        durable.set()
+        ticket = await preparation
+        separate = not session.commits and driver._projected_sequence == 1
+        same_ticket = await driver.prepare_thread_replacement(session.target)
+        submission_blocked = False
+        try:
+            await driver.submit(TurnRequest("another-command", ("hello",)))
+        except RuntimeDriverError as error:
+            submission_blocked = str(error) == RUNTIME_THREAD_REPLACEMENT_BUSY
+        except AssertionError:
+            pass
+        receipt = await driver.commit_thread_replacement(ticket)
+        same_receipt = await driver.commit_thread_replacement(ticket)
+        return (
+            held
+            and separate
+            and submission_blocked
+            and isinstance(session, RuntimeThreadReplacement)
+            and ticket is same_ticket
+            and session.preparations == 1
+            and receipt is same_receipt
+            and receipt.state is CommandState.APPLIED
+            and session.commits == [(ticket, 1)]
+            and observed == [unknown]
+            and not driver._terminals
+            and not driver._proofs
+        )
+    finally:
+        durable.set()
+        await driver.close()
+        await asyncio.gather(preparation, return_exceptions=True)
+
+
+async def replacement_requires_supported_capability_and_protocol() -> bool:
+    unsupported = ReplacementSession()
+    unsupported.capabilities = CapabilitySet()
+    degraded = ReplacementSession()
+    degraded.capabilities = CapabilitySet(
+        (
+            RuntimeCapability(
+                RuntimeCapabilityName.THREAD_REPLACEMENT.value, CapabilityState.DEGRADED
+            ),
+        )
+    )
+    missing_protocol = ContractSession(auto_complete=False)
+    missing_protocol.capabilities = ReplacementSession().capabilities
+    for session in (unsupported, degraded, missing_protocol):
+
+        async def observe(_event):
+            raise AssertionError("unsupported replacement must not emit events")
+
+        driver = RuntimeDriver(session, observe)
+        try:
+            await driver.prepare_thread_replacement(unsupported.target)
+        except RuntimeDriverError as error:
+            if str(error) != RUNTIME_THREAD_REPLACEMENT_UNSUPPORTED:
+                return False
+        else:
+            return False
+        finally:
+            await driver.close()
+    return not unsupported.prepared.is_set() and not degraded.prepared.is_set()
+
+
+async def replacement_rejects_invalid_targets_and_tickets() -> bool:
+    mismatches = (
+        "binding",
+        "command",
+        "incident",
+        "failed_generation",
+        "proof_id",
+        "absence_generation",
+        "watermark",
+        "proof_watermark",
+        "revision",
+        "generation",
+        "receipt",
+        "unprepared",
+    )
+    for mismatch in mismatches:
+        session = ReplacementSession()
+        target = session.target
+        if mismatch == "binding":
+            target = replace(target, binding=replace(target.binding, opaque_session_ref="other"))
+        elif mismatch == "command":
+            session.ticket = replace(
+                session.ticket, proof=replace(session.proof, command_id="other")
+            )
+        elif mismatch == "incident":
+            session.ticket = replace(
+                session.ticket, proof=replace(session.proof, incident_id="other")
+            )
+        elif mismatch == "failed_generation":
+            session.ticket = replace(
+                session.ticket, proof=replace(session.proof, failed_generation=0)
+            )
+        elif mismatch == "proof_id":
+            session.ticket = replace(session.ticket, proof=replace(session.proof, proof_id=""))
+        elif mismatch == "absence_generation":
+            session.ticket = replace(
+                session.ticket, proof=replace(session.proof, absence_generation=1)
+            )
+        elif mismatch == "watermark":
+            session.ticket = replace(session.ticket, watermark=-1)
+        elif mismatch == "proof_watermark":
+            session.ticket = replace(session.ticket, proof=replace(session.proof, watermark=1))
+        elif mismatch == "revision":
+            session.ticket = replace(session.ticket, revision=-1)
+        elif mismatch == "generation":
+            session.ticket = replace(session.ticket, generation="")
+        elif mismatch == "receipt":
+            session.receipt = replace(session.receipt, ticket=replace(session.ticket, revision=4))
+
+        async def observe(_event):
+            raise AssertionError("invalid replacement must not emit events")
+
+        driver = RuntimeDriver(session, observe)
+        driver.start()
+        try:
+            if mismatch == "unprepared":
+                await driver.commit_thread_replacement(session.ticket)
+            else:
+                ticket = await driver.prepare_thread_replacement(target)
+                await driver.commit_thread_replacement(ticket)
+        except RuntimeDriverError:
+            if len(session.commits) != int(mismatch == "receipt"):
+                return False
+        else:
+            return False
+        finally:
+            await driver.close()
+    return True
+
+
+async def replacement_rejects_failed_projection(*, after_preparation: bool = False) -> bool:
+    session = ReplacementSession(watermark=0 if after_preparation else 1)
+    projection_error = ValueError("invalid replacement projection")
+
+    async def observe(_event):
+        raise projection_error
+
+    driver = RuntimeDriver(session, observe)
+    driver.start()
+    preparation = asyncio.create_task(driver.prepare_thread_replacement(session.target))
+    await session.prepared.wait()
+    if after_preparation:
+        await preparation
+    await session.queue.put(session.event(1, RuntimeEventKind.TURN_UNKNOWN, "client-1"))
+    with patch("scholarseed_runtime.gateway.driver.logger"):
+        results = await asyncio.gather(preparation, driver._consumer, return_exceptions=True)
+    rejected = (after_preparation or isinstance(results[0], RuntimeDriverError)) and results[
+        1
+    ] is projection_error
+    try:
+        await driver.commit_thread_replacement(session.ticket)
+    except RuntimeDriverError:
+        pass
+    else:
+        rejected = False
+    try:
+        await driver.close()
+    except ValueError as error:
+        return rejected and error is projection_error and session.detached and not session.commits
+    return False
+
+
+async def replacement_preserves_pending_commands() -> bool:
+    session = ReplacementSession(allow_submission=True)
+
+    async def observe(_event):
+        return None
+
+    driver = RuntimeDriver(session, observe)
+    driver.start()
+    submission = asyncio.create_task(driver.submit(TurnRequest("client-1", ("hello",))))
+    preparation = None
+    try:
+        await session.submitted.wait()
+        try:
+            async with asyncio.timeout(0):
+                await driver.prepare_thread_replacement(session.target)
+        except TimeoutError:
+            held = (
+                session.target.command_id in driver._terminals
+                and not submission.done()
+                and not session.prepared.is_set()
+                and not session.commits
+            )
+        except RuntimeDriverError:
+            return False
+        else:
+            return False
+        preparation = asyncio.create_task(driver.prepare_thread_replacement(session.target))
+        await asyncio.sleep(0)
+        held = held and not preparation.done() and not session.prepared.is_set()
+        await session.queue.put(session.event(1, RuntimeEventKind.TURN_UNKNOWN, "client-1"))
+        result, ticket = await asyncio.gather(submission, preparation)
+        return (
+            held
+            and result.outcome is RuntimeTurnOutcome.UNKNOWN
+            and ticket == session.ticket
+            and session.preparations == 1
+            and not driver._terminals
+            and not session.commits
+        )
+    finally:
+        await driver.close()
+        await asyncio.gather(
+            submission, *([preparation] if preparation is not None else []), return_exceptions=True
+        )
+
+
+async def replacement_waits_for_unknown_reduction_with_batched_observations() -> bool:
+    session = ReplacementSession(watermark=2, allow_submission=True)
+    preparation = None
+    held = False
+    observed = []
+
+    async def observe(_event):
+        raise AssertionError("batch projection must use the batch handler")
+
+    async def observe_batch(events):
+        nonlocal preparation, held
+        observed.extend(events)
+        if preparation is not None:
+            return
+        preparation = asyncio.create_task(driver.prepare_thread_replacement(session.target))
+        await asyncio.sleep(0)
+        held = (
+            session.target.command_id in driver._terminals
+            and not preparation.done()
+            and not session.prepared.is_set()
+        )
+
+    driver = RuntimeDriver(session, observe, on_observations=observe_batch)
+    driver.start()
+    submission = asyncio.create_task(driver.submit(TurnRequest("client-1", ("hello",))))
+    try:
+        await session.submitted.wait()
+        session.queue.put_nowait(session.event(1, RuntimeEventKind.TURN_UNKNOWN, "client-1"))
+        session.queue.put_nowait(
+            replace(
+                session.event(
+                    2,
+                    RuntimeEventKind.RUNTIME_INCIDENT,
+                    "client-1",
+                    payload={
+                        "incident": {
+                            "incident_id": "incident-1",
+                            "scope": "thread",
+                            "state": "failed",
+                            "kind": "resume_failed",
+                            "strategy": "auto_resume",
+                            "retryability": "terminal",
+                            "safe_error": "codex_thread_history_missing",
+                            "process_generation": 2,
+                        }
+                    },
+                ),
+                process_generation=2,
+                native_turn_id="",
+            )
+        )
+        result = await submission
+        if preparation is None:
+            return False
+        try:
+            ticket = await preparation
+        except RuntimeDriverError:
+            return False
+        return (
+            held
+            and result.outcome is RuntimeTurnOutcome.UNKNOWN
+            and ticket == session.ticket
+            and driver._projected_sequence == 2
+            and [event.kind for event in observed]
+            == [RuntimeEventKind.TURN_UNKNOWN, RuntimeEventKind.RUNTIME_INCIDENT]
+            and session.preparations == 1
+            and not session.commits
+        )
+    finally:
+        await driver.close()
+        await asyncio.gather(
+            submission, *([preparation] if preparation is not None else []), return_exceptions=True
+        )
+
+
 def main() -> int:
     result, observed, detached = asyncio.run(successful_turn())
     check("receipt and terminal remain separate", len(observed) == 4)
@@ -471,6 +985,33 @@ def main() -> int:
         asyncio.run(failed_projection_is_visible_and_closed()),
     )
     check(
+        "failed consumer still detaches and preserves the projection failure",
+        asyncio.run(failed_projection_still_detaches()),
+    )
+    check(
+        "detach failure does not replace the original projection failure",
+        asyncio.run(failed_projection_still_detaches(detach_failure=True)),
+    )
+    check(
+        "detach failure preserves an explicit projection cause without logging sensitive errors",
+        asyncio.run(failed_projection_preserves_exception_chain(explicit_cause=True)),
+    )
+    check(
+        "detach failure preserves implicit projection context without suppressing it",
+        asyncio.run(failed_projection_preserves_exception_chain(explicit_cause=False)),
+    )
+    check(
+        "detach failure remains visible after pending submissions settle",
+        asyncio.run(detachment_failure_is_visible()),
+    )
+    check(
+        "explicit projection recovery preserves FIFO without replaying committed events",
+        all(
+            asyncio.run(projection_recovery_preserves_failed_and_prefetched_events(batched=value))
+            for value in (False, True)
+        ),
+    )
+    check(
         "confirmation and drain wait for durable projection without replay or terminal fabrication",
         asyncio.run(confirmation_waits_for_durable_projection()),
     )
@@ -485,6 +1026,34 @@ def main() -> int:
     check(
         "confirmation rejects mismatched target, negative watermark and mismatched receipt",
         asyncio.run(confirmation_rejects_mismatched_target_and_receipt()),
+    )
+    check(
+        "thread replacement waits for projection and explicit commit without replay",
+        asyncio.run(replacement_waits_for_projection_and_explicit_commit()),
+    )
+    check(
+        "thread replacement requires supported capability and typed protocol",
+        asyncio.run(replacement_requires_supported_capability_and_protocol()),
+    )
+    check(
+        "thread replacement rejects stale targets, tickets and receipts",
+        asyncio.run(replacement_rejects_invalid_targets_and_tickets()),
+    )
+    check(
+        "thread replacement fails closed when projection fails",
+        asyncio.run(replacement_rejects_failed_projection()),
+    )
+    check(
+        "thread replacement commit rejects a consumer failure after preparation",
+        asyncio.run(replacement_rejects_failed_projection(after_preparation=True)),
+    )
+    check(
+        "thread replacement waits for pending commands without cancelling or clearing them",
+        asyncio.run(replacement_preserves_pending_commands()),
+    )
+    check(
+        "thread replacement waits for unknown reduction with batched observations",
+        asyncio.run(replacement_waits_for_unknown_reduction_with_batched_observations()),
     )
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0

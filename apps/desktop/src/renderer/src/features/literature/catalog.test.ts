@@ -38,8 +38,10 @@ test('switching download batches replaces project, exclusions, and selection', (
 })
 
 test('fulltext admission invalidates the visible catalogue, not only the legacy store', () => {
-  const source = readFileSync(new URL('./Delivery.tsx', import.meta.url), 'utf8')
-  assert.match(source, /paper\.library === 'saved'\)\) catalogue\.reload\(\)/)
+  const source = readFileSync(new URL('./Card.tsx', import.meta.url), 'utf8')
+  const delivery = readFileSync(new URL('./Delivery.tsx', import.meta.url), 'utf8')
+  assert.match(delivery, /const result = await ports\.save\(/)
+  assert.match(source, /saveDelivery\([\s\S]*?if \(reply\.ok\) \{\s*catalogue\.reload\(\)/)
   for (const projectId of [null, 'delivery-project']) {
     catalogue.scope(projectId)
     catalogue.query({ q: 'retained filter' })

@@ -5,7 +5,6 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkBreaks from 'remark-breaks'
 import remarkCjkFriendly from 'remark-cjk-friendly'
-import 'katex/dist/katex.min.css'
 
 import type { EvidenceAnnotation, EvidencePriority } from '../../model'
 import { isCitationUrl, type CitationLinkRange } from '../../contracts/citations'
@@ -32,7 +31,18 @@ import {
 } from '../markdown/citations'
 import { relativeSessionFilePath } from '../markdown/links'
 import { prepareMarkdownSource, prepareMathSource, visibleMarkdownText } from '../markdown/source'
-import { remarkAnswerMath } from '../markdown/math'
+import { FORMULA_SOURCE, rehypeAnswerMath, remarkAnswerMath } from '../markdown/math'
+import { Code } from './Code'
+import { Formula } from './Formula'
+import { Tabulation } from './Tabulation'
+import {
+  rehypeTabulation,
+  remarkTabulation,
+  TABLE_COPY,
+  TABLE_INVALID,
+  TABLE_NUMERIC,
+} from '../markdown/tabulation'
+import { writeClipboard, writeClipboardContent } from './clipboard'
 import { createMarkdownParseCache } from '../markdown/parser'
 
 export { visibleMarkdownText }
@@ -73,14 +83,8 @@ const MARKDOWN_QUOTE_CLASS_NAME =
 const MARKDOWN_HR_CLASS_NAME =
   'md-hr my-4 border-0 border-t border-solid border-t-[var(--border-soft)]'
 const MARKDOWN_TABLE_CLASS_NAME = [
-  'md-table my-2.5 block box-border max-w-full overflow-x-auto border-collapse font-[var(--font-sans)] text-[13.5px]',
-  '[.conversation-stream_&]:!my-0 [.conversation-stream_&]:!table [.conversation-stream_&]:!overflow-visible',
-  '[.conversation-stream_&_tr]:!border-b-0 [.conversation-stream_&_tr>*:first-child]:!border-l-0 [.conversation-stream_&_tr>*:last-child]:!border-r-0',
-  '[.conversation-stream_&_thead>tr:first-child>*]:!border-t-0 [.conversation-stream_&_tbody:last-child>tr:last-child>*]:!border-b-0',
-  '[.conversation-stream_&_th]:!bg-[var(--vds-other-overlay-1)]',
-  '[&_th]:border [&_td]:border [&_th]:border-[var(--border)] [&_td]:border-[var(--border)]',
-  '[&_th]:px-[11px] [&_td]:px-[11px] [&_th]:py-1.5 [&_td]:py-1.5',
-  '[&_th]:text-left [&_td]:text-left [&_th]:bg-[var(--bg-2)] [&_th]:font-semibold [&_th]:text-[var(--text-2)]',
+  'md-table m-0 table border-collapse font-[family-name:var(--font-sans)] text-[length:var(--vds-font-body-lv2)]',
+  '[&_th]:bg-[var(--vds-surface-muted)] [&_th]:font-[var(--vds-fw-medium)] [&_th]:text-[var(--vds-text-secondary)]',
 ].join(' ')
 const MARKDOWN_ANSWER_ANNOTATION_CLASS_NAME =
   'md-answer-annotation rounded-[3px] bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-inherit'
@@ -200,6 +204,7 @@ function EvidenceReferenceSpan({
   children: React.ReactNode
 }): React.JSX.Element {
   const { t } = useTranslation('assistant')
+  const { onOpenExternal } = React.useContext(MarkdownRenderContext)
   const [hovered, setHovered] = React.useState(false)
   const [expanded, setExpanded] = React.useState(false)
   const color = EVIDENCE_COLORS[annotation.priority]
@@ -214,7 +219,7 @@ function EvidenceReferenceSpan({
   const openExternal = (event: React.MouseEvent, url: string): void => {
     event.preventDefault()
     event.stopPropagation()
-    openExternalSource(url)
+    onOpenExternal?.(url)
   }
   return (
     <span
@@ -414,6 +419,8 @@ function EvidenceReferenceSpan({
 }
 
 interface MarkdownRenderOptions {
+  onCopy?: (source: string, html?: string) => Promise<void>
+  onOpenExternal?: (url: string) => void
   evidence: Map<string, EvidenceAnnotation>
   annotations: Map<string, MarkdownAnswerAnnotation>
   renderMarker?: (annotation: MarkdownAnswerAnnotation) => React.ReactNode
@@ -446,6 +453,18 @@ function PendingCitation(): React.JSX.Element {
 
 function markdownComponents(): Components {
   return {
+    div: ({ node, ...props }) => {
+      const { onCopy } = React.useContext(MarkdownRenderContext)
+      const source = node?.properties[FORMULA_SOURCE]
+      const invalidTable = node?.properties[TABLE_INVALID]
+      if (typeof invalidTable === 'string')
+        return <Tabulation invalidSource={invalidTable} onCopy={onCopy} />
+      return typeof source === 'string' ? (
+        <Formula source={source} onCopy={onCopy} />
+      ) : (
+        <div {...props} />
+      )
+    },
     p: ({ node: _node, ...props }) => <p className={MARKDOWN_PARAGRAPH_CLASS_NAME} {...props} />,
     h1: ({ node: _node, ...props }) => (
       <h1
@@ -493,19 +512,49 @@ function markdownComponents(): Components {
       <blockquote className={MARKDOWN_QUOTE_CLASS_NAME} {...props} />
     ),
     hr: ({ node: _node, ...props }) => <hr className={MARKDOWN_HR_CLASS_NAME} {...props} />,
-    pre: ({ node: _node, ...props }) => <pre className={MARKDOWN_PRE_CLASS_NAME} {...props} />,
-    table: ({ node: _node, ...props }) => (
-      <div className="contents [.conversation-stream_&]:block [.conversation-stream_&]:my-[var(--vds-space-3)] [.conversation-stream_&]:min-w-0 [.conversation-stream_&]:max-w-full [.conversation-stream_&]:overflow-hidden [.conversation-stream_&]:rounded-[var(--vds-radius-6)] [.conversation-stream_&]:border [.conversation-stream_&]:border-solid [.conversation-stream_&]:border-[var(--vds-border-default)]">
-        <div className="contents [.conversation-stream_&]:block [.conversation-stream_&]:max-w-full [.conversation-stream_&]:overflow-x-auto">
+    pre: ({ node: _node, children, ...props }) => {
+      const { onCopy } = React.useContext(MarkdownRenderContext)
+      const child = React.Children.toArray(children)[0]
+      if (
+        !React.isValidElement<{ className?: string; children?: React.ReactNode }>(child) ||
+        typeof child.props.children !== 'string'
+      ) {
+        return (
+          <pre className={MARKDOWN_PRE_CLASS_NAME} {...props}>
+            {children}
+          </pre>
+        )
+      }
+      const language = child.props.className
+        ?.split(' ')
+        .find((value) => value.startsWith('language-'))
+        ?.slice('language-'.length)
+      return <Code code={child.props.children} language={language} onCopy={onCopy} />
+    },
+    table: ({ node, ...props }) => {
+      const { onCopy } = React.useContext(MarkdownRenderContext)
+      const source = node?.properties[TABLE_COPY]
+      return (
+        <Tabulation copyText={typeof source === 'string' ? source : undefined} onCopy={onCopy}>
           <Table className={MARKDOWN_TABLE_CLASS_NAME} density="compact" {...props} />
-        </div>
-      </div>
-    ),
+        </Tabulation>
+      )
+    },
     thead: ({ node: _node, ...props }) => <TableHeader {...props} />,
     tbody: ({ node: _node, ...props }) => <TableBody {...props} />,
     tr: ({ node: _node, ...props }) => <TableRow {...props} />,
-    th: ({ node: _node, ...props }) => <TableHead {...props} />,
-    td: ({ node: _node, ...props }) => <TableCell {...props} />,
+    th: ({ node, ...props }) => (
+      <TableHead
+        {...props}
+        className={node?.properties[TABLE_NUMERIC] ? '!text-right' : undefined}
+      />
+    ),
+    td: ({ node, ...props }) => (
+      <TableCell
+        {...props}
+        className={node?.properties[TABLE_NUMERIC] ? '!text-right' : undefined}
+      />
+    ),
     input: ({ node: _node, checked }) => {
       const { t } = useTranslation('ui')
       return (
@@ -518,8 +567,13 @@ function markdownComponents(): Components {
       )
     },
     a: ({ node: _node, href, children, ...props }) => {
-      const { renderCitation, onOpenSessionFile, renderSessionFileLink, renderSourceLink } =
-        React.useContext(MarkdownRenderContext)
+      const {
+        renderCitation,
+        onOpenSessionFile,
+        renderSessionFileLink,
+        renderSourceLink,
+        onOpenExternal,
+      } = React.useContext(MarkdownRenderContext)
       if (_node?.properties[CITATION_PENDING]) return <PendingCitation />
       if (renderCitation && href && _node?.properties[CITATION_MARKER]) {
         const start = _node?.position?.start.offset
@@ -554,7 +608,7 @@ function markdownComponents(): Components {
           rel="noopener noreferrer"
           onClick={(event) => {
             event.preventDefault()
-            openExternalSource(url)
+            onOpenExternal?.(url)
           }}
         >
           {children}
@@ -607,8 +661,21 @@ function markdownComponents(): Components {
 
 const MARKDOWN_COMPONENTS = markdownComponents()
 
-export function Markdown({
+function copyMarkdownSource(source: string, html?: string): Promise<void> {
+  return html === undefined ? writeClipboard(source) : writeClipboardContent(source, html)
+}
+
+export function Markdown(
+  props: Omit<React.ComponentProps<typeof MarkdownContent>, 'onOpenExternal' | 'onCopy'>
+): React.JSX.Element {
+  return (
+    <MarkdownContent {...props} onOpenExternal={openExternalSource} onCopy={copyMarkdownSource} />
+  )
+}
+
+export function MarkdownContent({
   text,
+  onCopy,
   className,
   math,
   texMath = false,
@@ -621,12 +688,14 @@ export function Markdown({
   onOpenSessionFile,
   renderSessionFileLink,
   renderSourceLink,
+  onOpenExternal,
   citationUrls = EMPTY_CITATION_URLS,
   citationReferences = EMPTY_CITATION_REFERENCES,
   citationOccurrences = EMPTY_CITATION_OCCURRENCES,
   citationPending = false,
 }: {
   text: string
+  onCopy?: (source: string, html?: string) => Promise<void>
   className?: string
   math?: boolean
   texMath?: boolean
@@ -643,6 +712,7 @@ export function Markdown({
   onOpenSessionFile?: (path: string) => void
   renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
   renderSourceLink?: (href: string, children: React.ReactNode) => React.ReactNode
+  onOpenExternal: (url: string) => void
   citationUrls?: string[]
   citationReferences?: MarkdownCitationReference[]
   citationOccurrences?: MarkdownCitationOccurrence[]
@@ -671,6 +741,8 @@ export function Markdown({
       onOpenSessionFile,
       renderSessionFileLink,
       renderSourceLink,
+      onOpenExternal,
+      onCopy,
     }),
     [
       answersById,
@@ -680,6 +752,8 @@ export function Markdown({
       onOpenSessionFile,
       renderSessionFileLink,
       renderSourceLink,
+      onOpenExternal,
+      onCopy,
     ]
   )
   const decoration = React.useMemo(
@@ -712,11 +786,22 @@ export function Markdown({
       <div className={`${MARKDOWN_CLASS_NAME} ${className ?? ''}`}>
         <ReactMarkdown
           components={MARKDOWN_COMPONENTS}
-          rehypePlugins={renderMath ? [decoration, rehypeKatex] : [decoration]}
+          rehypePlugins={
+            renderMath
+              ? [decoration, rehypeTabulation, rehypeAnswerMath, rehypeKatex]
+              : [decoration, rehypeTabulation]
+          }
           remarkPlugins={
             renderMath
-              ? [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, remarkAnswerMath, parseCache]
-              : [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, parseCache]
+              ? [
+                  GFM_PLUGIN,
+                  remarkTabulation,
+                  remarkCjkFriendly,
+                  remarkBreaks,
+                  remarkAnswerMath,
+                  parseCache,
+                ]
+              : [GFM_PLUGIN, remarkTabulation, remarkCjkFriendly, remarkBreaks, parseCache]
           }
           skipHtml
           urlTransform={(url, key) =>

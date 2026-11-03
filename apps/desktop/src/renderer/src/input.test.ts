@@ -6,7 +6,7 @@ import en from '../../localization/locales/en/assistant.json' with { type: 'json
 import zhComponents from '../../localization/locales/zh/components.json' with { type: 'json' }
 import enComponents from '../../localization/locales/en/components.json' with { type: 'json' }
 
-import { buildSessionOpenRequest } from './api.ts'
+import { buildSessionOpenRequest, getSessionContinuation } from './api.ts'
 import { renderFeedback } from './contracts/feedback.ts'
 import { pendingAssistantContextRefs, type AssistantContextRef } from './contracts/assistant.ts'
 import {
@@ -19,11 +19,113 @@ import {
   composerObscured,
   composerTrigger,
   describeTurnAdmissionFailure,
+  isAbsoluteInputPath,
   queuedReferenceLabel,
   queuedReferenceSummary,
   replaceComposerTrigger,
   turnAdmissionFeedback,
 } from './input.ts'
+
+test('input paths accept absolute platform paths without rewriting their spelling', () => {
+  const paths = [
+    '/Users/research/论文/SKILL.md',
+    'C:\\研究资料\\skills\\SKILL.md',
+    'c:/Research Files/skills/SKILL.md',
+    '\\\\?\\C:\\研究资料\\skills\\SKILL.md',
+    '\\\\server\\share',
+    '\\\\server\\share\\skills\\SKILL.md',
+    '\\\\?\\UNC\\server\\share\\skills\\SKILL.md',
+    '\\\\?\\unc\\server\\share\\skills\\SKILL.md',
+  ]
+  for (const path of paths) {
+    assert.equal(isAbsoluteInputPath(path), true, path)
+    assert.deepEqual(
+      buildTurnInput('', [{ type: 'skill', id: 'paper-search', title: 'Paper Search', path }]),
+      [{ type: 'skill', name: 'paper-search', path, version: undefined }]
+    )
+  }
+})
+
+test('input paths reject relative paths, incomplete UNC roots and device namespaces', () => {
+  for (const path of [
+    undefined,
+    '',
+    'skills/SKILL.md',
+    'C:skills\\SKILL.md',
+    '\\skills\\SKILL.md',
+    '\\\\server',
+    '\\\\server\\',
+    '\\\\?\\C:skills\\SKILL.md',
+    '\\\\?\\UNC\\server',
+    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\SKILL.md',
+    '\\\\.\\pipe\\skills',
+    'file:///C:/skills/SKILL.md',
+  ]) {
+    assert.equal(isAbsoluteInputPath(path), false, String(path))
+  }
+})
+
+test('continuation preview is an abortable read with strict source and role validation', async (context) => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => 'http://local.test' } },
+  })
+  context.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'window', descriptor)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  const calls: { url: string; init?: RequestInit }[] = []
+  const preview = {
+    source_session_id: 'source/one',
+    source_product_seq: 42,
+    source_title: 'Old task',
+    project_path: '/project',
+    model_id: 'personal-oauth-model',
+    messages: [{ role: 'user', text: 'Visible goal' }],
+    included_messages: 1,
+    omitted_messages: 0,
+    omitted_characters: 0,
+    truncated: false,
+    excluded_categories: ['reasoning', 'tools'],
+  }
+  let body: unknown = preview
+  let status = 200
+  context.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    calls.push({ url, init })
+    return new Response(JSON.stringify(body), { status })
+  })
+  const controller = new AbortController()
+  assert.deepEqual(
+    await getSessionContinuation('source/one', 'turn?one', controller.signal),
+    preview
+  )
+  assert.equal(
+    calls[0].url,
+    'http://local.test/api/serve/sessions/source%2Fone/continuation?turn_id=turn%3Fone'
+  )
+  assert.equal(calls[0].init?.method ?? 'GET', 'GET')
+  assert.equal(calls[0].init?.body, undefined)
+  assert.equal(calls[0].init?.cache, 'no-store')
+  controller.abort()
+  assert.equal(calls[0].init?.signal?.aborted, true)
+  for (const invalid of [
+    { ...preview, source_session_id: 'other' },
+    { ...preview, messages: [{ role: 'system', text: 'Elevated instruction' }] },
+    { ...preview, messages: [{ role: 'user', text: 123 }] },
+    { ...preview, source_product_seq: -1 },
+    { ...preview, included_messages: 2 },
+  ]) {
+    body = invalid
+    await assert.rejects(
+      getSessionContinuation('source/one', 'turn'),
+      /session_continuation_invalid/
+    )
+  }
+  body = { code: 'session_continuation_busy' }
+  status = 409
+  await assert.rejects(getSessionContinuation('source/one', 'turn'), /session_continuation_busy/)
+})
 
 test('draft auto-send belongs to the ready project composer and is consumed once', () => {
   const ready = {
@@ -482,7 +584,7 @@ test('fails closed instead of treating a skill name or relative file as a path',
           type: 'file',
           id: 'data.csv',
           title: 'data.csv',
-          path: 'data\/data.csv',
+          path: 'data/data.csv',
         },
       ]),
     /canonical absolute path/

@@ -38,6 +38,7 @@ from scholarseed_codex.permission import (
 )
 from scholarseed_codex.pool import CodexHostPool, PoolReservation
 from scholarseed_codex.profile import (
+    CODEX_MULTI_AGENT_V2_ENABLED_CONFIG,
     CODEX_PROTOCOL_SCHEMA_HASH,
     CODEX_PROTOCOL_VERSION,
     CODEX_WEB_SEARCH_DISABLED_MODE,
@@ -113,7 +114,7 @@ from scholarseed_runtime.contract import (
     TurnRequest,
     service_tool_profile,
 )
-from scholarseed_runtime.contract.command import SubmissionRetryProof
+from scholarseed_runtime.contract.command import SubmissionRetryProof, ThreadReplacementProof
 from scholarseed_runtime.contract.incident import (
     RUNTIME_TURN_NOT_SUBMITTED,
     RuntimeIncident,
@@ -146,10 +147,16 @@ from scholarseed_runtime.contract.session import (
     RUNTIME_SUSPEND_STALE,
     RUNTIME_SUSPEND_UNPERSISTED,
     RUNTIME_SUSPEND_UNSUPPORTED,
+    RUNTIME_THREAD_REPLACEMENT_BUSY,
+    RUNTIME_THREAD_REPLACEMENT_STALE,
+    RUNTIME_THREAD_REPLACEMENT_UNPERSISTED,
     RuntimeActivitySnapshot,
     SuspendReceipt,
     SuspendState,
     SuspendTicket,
+    ThreadReplacementReceipt,
+    ThreadReplacementTarget,
+    ThreadReplacementTicket,
     TurnConfirmationReceipt,
     TurnConfirmationTarget,
     TurnConfirmationTicket,
@@ -329,6 +336,11 @@ class CodexRuntimeSession:
         self._confirmation_host: object | None = None
         self._confirmation_registration_epoch = 0
         self._confirmation_admission_epoch = 0
+        self._replacement_ticket: ThreadReplacementTicket | None = None
+        self._replacement_receipt: ThreadReplacementReceipt | None = None
+        self._replacement_host: object | None = None
+        self._replacement_registration_epoch = 0
+        self._replacement_admission_epoch = 0
         self._suspend_task: asyncio.Task[None] | None = None
         self._suspend_generation: int | None = None
         self._released_evidence: ResourceEvidence | None = None
@@ -600,6 +612,195 @@ class CodexRuntimeSession:
             self._confirmation_receipt = receipt
             return receipt
 
+    def _replacement_current(self, ticket: ThreadReplacementTicket) -> bool:
+        host = self._native.host
+        proof = ticket.proof
+        return (
+            self._confirmation_idle()
+            and host is self._replacement_host
+            and self._replacement_ticket == ticket
+            and proof.binding == self.binding
+            and proof.binding.opaque_session_ref == self._native.session_id
+            and ticket.generation == f"{self._event_namespace}:{host.process_generation}"
+            and ticket.revision == self._current_activity_revision()
+            and proof.watermark == ticket.watermark == self._watermark
+            and self._replacement_admission_epoch == host.admission.epoch
+            and host.thread_replacement_current(
+                self._native.session_id,
+                proof.command_id,
+                proof.incident_id,
+                proof.failed_generation,
+                proof.absence_generation,
+                self._replacement_registration_epoch,
+                host.thread_activity_revision(self._native.session_id),
+            )
+        )
+
+    async def prepare_thread_replacement(
+        self, target: ThreadReplacementTarget
+    ) -> ThreadReplacementTicket:
+        async with self._admission_lock:
+            receipt = self._replacement_receipt
+            if receipt is not None:
+                previous = receipt.ticket.proof
+                if target == ThreadReplacementTarget(
+                    previous.binding,
+                    previous.command_id,
+                    previous.incident_id,
+                    previous.failed_generation,
+                ):
+                    return receipt.ticket
+            if (
+                target.binding != self.binding
+                or not isinstance(target.command_id, str)
+                or not target.command_id.strip()
+                or not isinstance(target.incident_id, str)
+                or not target.incident_id.strip()
+            ):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_STALE, safe_error=RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            host = self._native.host
+            try:
+                async with asyncio.timeout(host.recovery_total_timeout):
+                    recovery = host.recovery_task
+                    if recovery is not None and not recovery.done():
+                        await host.start()
+                    if self._native.host is not host:
+                        raise AppServerError(
+                            RUNTIME_THREAD_REPLACEMENT_STALE,
+                            safe_error=RUNTIME_THREAD_REPLACEMENT_STALE,
+                        )
+                    if (
+                        self._suspend_receipt is not None
+                        or self._active_operations
+                        or self._active_command_id not in ("", target.command_id)
+                    ):
+                        raise AppServerError(
+                            RUNTIME_THREAD_REPLACEMENT_BUSY,
+                            safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY,
+                        )
+                    pending = tuple(task for task in self._tasks if not task.done())
+                    if pending:
+                        generation, registration_epoch, revision = host.turn_confirmation_identity(
+                            self._native.session_id
+                        )
+                        if not host.thread_replacement_current(
+                            self._native.session_id,
+                            target.command_id,
+                            target.incident_id,
+                            target.failed_generation,
+                            generation,
+                            registration_epoch,
+                            revision,
+                        ):
+                            raise AppServerError(
+                                RUNTIME_THREAD_REPLACEMENT_BUSY,
+                                safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY,
+                            )
+                        await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+                    if not self._confirmation_idle():
+                        raise AppServerError(
+                            RUNTIME_THREAD_REPLACEMENT_BUSY,
+                            safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY,
+                        )
+                    return await self._prepare_thread_replacement_ticket(target)
+            except TimeoutError as error:
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_BUSY, safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY
+                ) from error
+
+    async def _prepare_thread_replacement_ticket(
+        self, target: ThreadReplacementTarget
+    ) -> ThreadReplacementTicket:
+        host = self._native.host
+        generation, registration_epoch, _revision = host.turn_confirmation_identity(
+            self._native.session_id
+        )
+        self._replacement_host = host
+        self._replacement_registration_epoch = registration_epoch
+        self._replacement_admission_epoch = host.admission.epoch
+        for _attempt in range(host.max_recovery_attempts):
+            if (
+                self._native.host is not host
+                or host.process_generation != generation
+                or host.admission.epoch != self._replacement_admission_epoch
+            ):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_STALE, safe_error=RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            proof = ThreadReplacementProof(
+                uuid.uuid4().hex,
+                self.binding,
+                target.command_id,
+                target.incident_id,
+                target.failed_generation,
+                generation,
+                self._watermark,
+            )
+            ticket = ThreadReplacementTicket(
+                proof,
+                f"{self._event_namespace}:{generation}",
+                self._current_activity_revision(),
+                self._watermark,
+            )
+            self._replacement_ticket = ticket
+            if not self._replacement_current(ticket):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_STALE, safe_error=RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            native = await NativeActivity(
+                host, self._native.session_id, known_roots=host.known_roots
+            ).inspect_absence()
+            if (
+                not native.complete
+                or native.blockers
+                or native.execution_tree_blockers
+                or native.process_generation != generation
+                or self._native.session_id in native.loaded_thread_ids
+            ):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_BUSY, safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY
+                )
+            if self._replacement_current(ticket):
+                return ticket
+        raise AppServerError(
+            RUNTIME_THREAD_REPLACEMENT_BUSY, safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY
+        )
+
+    async def commit_thread_replacement(
+        self, ticket: ThreadReplacementTicket, persisted_watermark: int
+    ) -> ThreadReplacementReceipt:
+        async with self._admission_lock:
+            receipt = self._replacement_receipt
+            if receipt is not None and receipt.ticket == ticket:
+                return receipt
+            if persisted_watermark < ticket.watermark:
+                return ThreadReplacementReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_THREAD_REPLACEMENT_UNPERSISTED
+                )
+            if not self._replacement_current(ticket):
+                return ThreadReplacementReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            host = self._native.host
+            proof = ticket.proof
+            if not host.seal_thread_replacement(
+                self._native.session_id,
+                proof.command_id,
+                proof.incident_id,
+                proof.failed_generation,
+                proof.absence_generation,
+                self._replacement_registration_epoch,
+                host.thread_activity_revision(self._native.session_id),
+            ):
+                return ThreadReplacementReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            receipt = ThreadReplacementReceipt(ticket, CommandState.APPLIED)
+            self._replacement_receipt = receipt
+            return receipt
+
     async def prepare_suspend(self, expected_revision: int) -> SuspendTicket:
         async with self._admission_lock:
             if (
@@ -793,6 +994,8 @@ class CodexRuntimeSession:
         )
         if not native_web_search_supported(intent):
             config[CODEX_WEB_SEARCH_MODE_KEY] = CODEX_WEB_SEARCH_DISABLED_MODE
+        if intent.capabilities.native_agent_messages is False:
+            config[CODEX_MULTI_AGENT_V2_ENABLED_CONFIG] = False
         config.update(session_skill_config(self._skill_configurations))
         config.update(self._permission_config)
         config.update(

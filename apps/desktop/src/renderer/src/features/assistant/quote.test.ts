@@ -9,6 +9,10 @@ test('Assistant selection references use an Assistant-owned composition of publi
     new URL('../../components/business/Stream.tsx', import.meta.url),
     'utf8'
   )
+  const failure = readFileSync(
+    new URL('../../components/business/Failure.tsx', import.meta.url),
+    'utf8'
+  )
   const workbenchCss = readFileSync(new URL('../../shell/workbench.css', import.meta.url), 'utf8')
 
   assert.match(panel, /<AssistantContextQuote/)
@@ -98,16 +102,17 @@ test('Assistant selection references use an Assistant-owned composition of publi
   assert.match(stream, /data-testid="sent-selection-reference"/)
   assert.match(stream, /act\.openResourceFile\(reference\.sourceId, project\.id\)/)
   assert.doesNotMatch(stream, />\{r\.status\}</)
-  assert.match(stream, /data-testid="turn-continue"[\s\S]*variant="outline"/)
+  assert.match(stream, /<Failure[\s\S]*onContinue=\{onContinue\}/)
+  assert.match(failure, /data-testid="turn-continue"[\s\S]*variant="outline"/)
   assert.match(stream, /<div role="status" aria-live="polite" className="sr-only">/)
   const activity = stream.slice(
     stream.indexOf('data-testid="turn-activity"'),
     stream.indexOf('<CollapsibleTrigger', stream.indexOf('data-testid="turn-activity"'))
   )
   assert.doesNotMatch(activity, /aria-live=/)
-  const continueAction = stream.slice(
-    stream.indexOf('data-testid="turn-continue"'),
-    stream.indexOf('</Button>', stream.indexOf('data-testid="turn-continue"'))
+  const continueAction = failure.slice(
+    failure.indexOf('data-testid="turn-continue"'),
+    failure.indexOf('</Button>', failure.indexOf('data-testid="turn-continue"'))
   )
   assert.match(continueAction, /size="sm"/)
 })

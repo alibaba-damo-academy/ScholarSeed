@@ -1,23 +1,8 @@
 import React, { useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { useTranslation } from 'react-i18next'
 
-import {
-  Alert,
-  AlertDescription,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  Textarea,
-} from '../../components/ui'
+import { Suggestions } from './Recommendations'
 import { activeThread, useApp } from '../../store'
-import {
-  createNextStepSender,
-  nextStepMessage,
-  nextStepsAvailable,
-  parseNextSteps,
-} from './suggestions'
+import { createNextStepSender, nextStepsAvailable, parseNextSteps } from './suggestions'
 
 export function NextSteps({
   cardId,
@@ -29,7 +14,6 @@ export function NextSteps({
   content: Record<string, unknown>
 }): React.JSX.Element | null {
   const { state, composerSubmission } = useApp()
-  const { t } = useTranslation('conversation')
   const thread = activeThread(state)
   const readySession = useSyncExternalStore(
     composerSubmission.subscribe,
@@ -83,46 +67,14 @@ export function NextSteps({
   }
 
   return (
-    <Card data-testid="next-steps-card" aria-busy={busy}>
-      <CardHeader>
-        <CardTitle>{payload.title}</CardTitle>
-      </CardHeader>
-      <CardContent className="grid gap-[var(--vds-space-3)]">
-        {payload.options.map((option) => (
-          <Button
-            key={option.label}
-            variant="secondary"
-            size="content"
-            className="w-full min-w-0 flex-col items-start !whitespace-normal text-left"
-            disabled={!available || busy}
-            onClick={() => void send(nextStepMessage(option))}
-          >
-            <span className="w-full break-words">{option.label}</span>
-            <span className="w-full break-words">{option.description}</span>
-          </Button>
-        ))}
-        <Textarea
-          label={payload.free_text_label}
-          value={draft}
-          rows={2}
-          disabled={!available || busy}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        {failed && (
-          <Alert tone="error">
-            <AlertDescription>{t('retry.continueUnconfirmed')}</AlertDescription>
-          </Alert>
-        )}
-        <div className="flex justify-end">
-          <Button
-            loading={busy}
-            disabled={!available || !draft.trim()}
-            onClick={() => void send(draft)}
-          >
-            {payload.submit_label}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+    <Suggestions
+      payload={payload}
+      available={available}
+      busy={busy}
+      failed={failed}
+      draft={draft}
+      onDraft={setDraft}
+      onSend={send}
+    />
   )
 }

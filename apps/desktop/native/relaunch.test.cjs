@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { EventEmitter } = require('node:events')
+const { execFileSync } = require('node:child_process')
 const native = require(process.env.SCHOLARSEED_LEASE_LIBRARY)
 const {
   SquirrelInstallation,
@@ -52,6 +53,67 @@ function fixture(t) {
     record: path.join(updateLaunchDirectory(coordinator, identity.application), 'context.json'),
   }
 }
+
+test(
+  'persistent identity comes from the pinned directory and survives a new process',
+  { skip: process.platform !== 'darwin' },
+  (t) => {
+    const f = fixture(t)
+    const pin = native.pin(f.selection.workspace, false)
+    const stable = native.persistentIdentity(pin)
+    assert.match(stable, /^darwin:[a-f0-9]{32}:[a-f0-9]{16}:[a-f0-9]{16}:[a-f0-9]{8}$/)
+    const metadata = fs.statSync(f.selection.workspace, { bigint: true })
+    assert.equal(BigInt(`0x${stable.split(':')[2]}`), metadata.ino)
+    const child = execFileSync(
+      process.execPath,
+      [
+        '-e',
+        'const n=require(process.argv[1]);const p=n.pin(process.argv[2],false);try{process.stdout.write(n.persistentIdentity(p))}finally{n.release(p)}',
+        process.env.SCHOLARSEED_LEASE_LIBRARY,
+        f.selection.workspace,
+      ],
+      { encoding: 'utf8' }
+    )
+    assert.equal(child, stable)
+    fs.renameSync(f.selection.workspace, `${f.selection.workspace}-old`)
+    fs.mkdirSync(f.selection.workspace, { mode: 0o700 })
+    // The existing pin must still observe the original inode, not reopen the path.
+    assert.equal(native.persistentIdentity(pin), stable)
+    native.release(pin)
+    assert.throws(() => native.persistentIdentity(pin), { code: 'ERR_LEASE_CLOSED' })
+    const replacement = native.pin(f.selection.workspace, false)
+    try {
+      assert.notEqual(native.persistentIdentity(replacement), stable)
+    } finally {
+      native.release(replacement)
+    }
+  }
+)
+
+test(
+  'native update context restores when only runtime device numbers are renumbered',
+  { skip: process.platform !== 'darwin' },
+  (t) => {
+    const f = fixture(t)
+    f.persist()
+    const changedDevice = Object.create(native)
+    Object.defineProperty(changedDevice, 'lineage', {
+      value: (pin) =>
+        native.lineage(pin).map((id) => id.replace(/^posix:[^:]+:/, 'posix:ffffffffffffffff:')),
+    })
+    const restored = restoreUpdateLaunch(
+      changedDevice,
+      f.coordinator,
+      { ...f.identity, build: TARGET },
+      {}
+    )
+    assert.equal(restored.context.schema, 2)
+    assert.equal(restored.context.workspace, f.selection.workspace)
+    restored.complete()
+    assert.equal(fs.existsSync(f.record), false)
+  }
+)
+
 test(
   'native one-shot restore preserves physical home/profile/workspace and waits for target',
   { skip: process.platform !== 'darwin' },

@@ -58,6 +58,7 @@
     "src/notifications.ts",
     "src/attention.ts",
     "src/skills.ts",
+    "src/plugins.ts",
     "src/mcp-settings.ts",
     "src/reconfiguration.ts",
     "src/updates.ts",

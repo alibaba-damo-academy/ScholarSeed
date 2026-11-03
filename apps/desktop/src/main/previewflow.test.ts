@@ -14,6 +14,20 @@ import {
 } from './release.ts'
 import { isNewerRelease } from './version.ts'
 import type { LatestVersionMeta, PreviewUpdatePolicy } from '../updates.ts'
+import type * as Updater from './updater.ts'
+
+type PreviewFixtureExports = Pick<
+  typeof Updater,
+  | 'checkForUpdate'
+  | 'getDownloadInfo'
+  | 'getPreviewUpdatePolicy'
+  | 'isCurrentPreviewResult'
+  | 'listPreviewUpdateLines'
+  | 'previewCandidateValidated'
+  | 'previewTarget'
+  | 'validatePreviewCandidate'
+  | 'writePreviewUpdatePolicy'
+>
 
 // Execute the real updater functions with controlled HTTP/storage boundaries.
 // These are protocol integration tests, not signed installation acceptance.
@@ -108,7 +122,7 @@ function harness(channel = 'preview', stored?: unknown) {
     parseUpdateCheckResult,
     buildUpdateCheckUrl,
     UPDATE_PATH_PREFIX,
-    exports: {} as Record<string, (...args: any[]) => any>,
+    exports: {} as PreviewFixtureExports,
     previewPolicy: null as PreviewUpdatePolicy | null,
     previewRevision: 0,
     previewLines: [],
@@ -180,7 +194,7 @@ test('release request and cache behavior do not consume preview controls', async
   const h = harness('release', { broken: true })
   h.response({ has_update: true, latest: artifact('0.3.0', 'release') })
   const result = await h.api.checkForUpdate(log)
-  assert.equal(result.latest.version, '0.3.0')
+  assert.equal(result.latest!.version, '0.3.0')
   assert.equal(result.previewRevision, undefined)
   assert.equal(h.requests[0].searchParams.has('preview_scope'), false)
   assert.equal(h.reads(), 0)
@@ -197,7 +211,7 @@ test('preview defaults to current line and rejects a server cross-line response'
   h.response({ has_update: true, latest: artifact() })
   const result = await h.api.checkForUpdate(log)
   assert.equal(h.requests[0].searchParams.get('preview_scope'), 'current-line')
-  assert.equal(result.latest.version, '0.2.1')
+  assert.equal(result.latest!.version, '0.2.1')
   assert.equal(h.writes.length, 0)
   h.response({ has_update: true, latest: artifact('0.3.0') })
   await assert.rejects(h.api.checkForUpdate(log), /outside/)
@@ -214,7 +228,7 @@ test('manual preview discovery and selection bind the exact published artifact',
   const selected = h.api.previewTarget(target.id, log)
   h.api.writePreviewUpdatePolicy({ scope: 'current-version', target: selected }, log)
   h.response({ has_update: true, latest: target })
-  assert.equal((await h.api.checkForUpdate(log)).latest.id, target.id)
+  assert.equal((await h.api.checkForUpdate(log)).latest!.id, target.id)
   assert.equal(h.requests.at(-1)!.searchParams.get('target_id'), target.id)
   assert.equal(h.requests.at(-1)!.searchParams.get('target_line'), '0.3')
   h.response({ ...target, download_url: 'https://cdn.example/fixed' })

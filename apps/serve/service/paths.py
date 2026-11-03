@@ -118,16 +118,19 @@ USER_MEMORY_CONFIG_FILE: Path = SCHOLARSEED_HOME / "memory.yaml"
 USER_MEMORY_DIR: Path = SCHOLARSEED_HOME / "memory"
 SERVICE_SKILLS_DIR: Path = SCHOLARSEED_HOME / "skills"
 SERVICE_BUNDLED_SKILLS_DIR: Path = Path(__file__).resolve().parent / "capabilities" / "skills"
+SERVICE_BUNDLED_UI: Path = Path(__file__).resolve().parent / "capabilities" / "ui.zip"
 SERVICE_SKILL_ROOTS: tuple[Path, ...] = (SERVICE_BUNDLED_SKILLS_DIR, SERVICE_SKILLS_DIR)
 TASK_PYTHON_PARTS = (PROJECT_STATE_DIRNAME, "python", "venv")
 TASK_PYTHON_COMMAND_PARTS = (*TASK_PYTHON_PARTS[:-1], "commands")
 SERVICE_SKILL_STATE_FILE: Path = SERVICE_DIR / "skills.json"
+SERVICE_COMPONENTS_DATABASE: Path = SERVICE_DIR / "components.sqlite3"
 SERVICE_PROJECTS_FILE: Path = SERVICE_DIR / "projects.json"
 SERVICE_CASES_DIR: Path = SCHOLARSEED_HOME / "test_sessions"
 
 #: SQLite 的边车文件名后缀: WAL 里是最新写入, 只 deny 主库等于留一个读口。
 SQLITE_SIDE_CAR_SUFFIXES: tuple[str, ...] = ("-wal", "-shm")
 SERVICE_DATABASES: tuple[Path, ...] = (
+    SERVICE_COMPONENTS_DATABASE,
     MODEL_CREDENTIALS_DB,
     SERVICE_LITERATURE_DATABASE,
     SERVICE_ACTIONS_DB,
@@ -299,8 +302,10 @@ __all__ = [
     "USER_MEMORY_DIR",
     "SERVICE_SKILLS_DIR",
     "SERVICE_BUNDLED_SKILLS_DIR",
+    "SERVICE_BUNDLED_UI",
     "SERVICE_SKILL_ROOTS",
     "SERVICE_SKILL_STATE_FILE",
+    "SERVICE_COMPONENTS_DATABASE",
     "SERVICE_PROJECTS_FILE",
     "SERVICE_CASES_DIR",
     "PROJECT_SERVICE_DIRNAME",

@@ -30,11 +30,13 @@ from typing import Any  # noqa: E402
 
 import httpx  # noqa: E402
 
+from scholarseed_runtime.contract import LaunchSecretScope  # noqa: E402
 from service.chat.runtime.secrets import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
     _launch_secret_contract,
 )
 from service.identity.service.account_token import AccountTokenHolder  # noqa: E402
 from service.identity.service.skill_credentials import (  # noqa: E402
+    ACCOUNT_TOKEN_ENV,
     GLOBAL_SLOT,
     KEY_NAME,
     SKILL_API_KEY_ENV,
@@ -258,6 +260,22 @@ def test_session_uses_opaque_launch_secret_contract() -> None:
     check(
         "无产品凭据时不创建 resolver",
         empty_intent.bindings == () and empty_port is None,
+    )
+    credentials = {SKILL_API_KEY_ENV: "ssk-test", ACCOUNT_TOKEN_ENV: "test.jwt.token"}
+    scoped_intent, scoped_port = _launch_secret_contract(
+        {**credentials, "UNRELATED_SECRET": "private"}, include_skill_credentials=True
+    )
+    assert scoped_port is not None
+    projected = {
+        entry.name: asyncio.run(scoped_port.resolve(entry.secret_ref)).value
+        for entry in scoped_intent.bindings
+        if entry.scope is LaunchSecretScope.TOOL
+    }
+    check("技能凭据显式进入工具作用域，其他进程秘密不泄漏", projected == credentials)
+    inspection, _ = _launch_secret_contract(credentials)
+    check(
+        "库存检查不创建工具凭据",
+        all(entry.scope is LaunchSecretScope.PROCESS for entry in inspection.bindings),
     )
 
 

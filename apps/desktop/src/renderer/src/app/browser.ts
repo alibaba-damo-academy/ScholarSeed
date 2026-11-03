@@ -65,6 +65,7 @@ export function createBrowserBridge(environment: BrowserEnvironment): BrowserBri
     },
     subscriptionLogin: async () => ({ available: false }),
     getApiBase: () => SAME_ORIGIN_API_BASE,
+    onPluginRevoked: unsubscribe,
     deviceSkills: async (request) => {
       const { path, init } = skillRequest(request)
       const response = await environment.fetch(`${SAME_ORIGIN_API_BASE}${path}`, {

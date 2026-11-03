@@ -149,9 +149,9 @@ const MORE_CHIP_CLASS = 'shrink-0 max-w-none tabular-nums'
 // 行元素类名: 既是样式钩子, 也是「这次按下是否落在行上」的判定依据, 只此一处定义。
 const ROW_SELECTOR_CLASS = 'lit-row'
 const ROW_CLASS =
-  'lit-row relative grid min-w-max library-narrow:min-w-[var(--vds-library-table-narrow-min-width)] items-center min-h-[var(--vds-library-row-height)] text-[length:var(--vds-font-body-lv2)] border-b border-[var(--vds-border-default)] cursor-default bg-[var(--vds-bg-gray-default)] hover:bg-[var(--vds-bg-gray-hover)] [&.is-focused]:bg-[var(--vds-bg-gray-hover)] [&.is-selected]:bg-[var(--vds-brand-light-bg-default)] [&>span]:px-[var(--vds-library-table-cell-padding-inline)] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap'
+  'lit-row relative grid min-w-[var(--literature-grid-width)] library-narrow:min-w-[max(var(--vds-library-table-narrow-min-width),var(--literature-grid-width))] items-center min-h-[var(--vds-library-row-height)] text-[length:var(--vds-font-body-lv2)] border-b border-[var(--vds-border-default)] cursor-default bg-[var(--vds-bg-gray-default)] hover:bg-[var(--vds-bg-gray-hover)] [&.is-focused]:bg-[var(--vds-bg-gray-hover)] [&.is-selected]:bg-[var(--vds-brand-light-bg-default)] [&>span]:px-[var(--vds-library-table-cell-padding-inline)] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap'
 const ATTACHMENT_ROW_CLASS =
-  'lit-attachment-row flex min-h-[var(--vds-library-attachment-row-min-height)] cursor-pointer items-center gap-[var(--vds-space-2)] bg-[var(--vds-bg-gray-default)] py-0 pr-[var(--vds-library-attachment-row-padding-inline-end)] pl-[var(--vds-library-attachment-row-padding-inline-start)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-primary)] font-[var(--vds-fw-regular)] [&+.lit-row]:border-t [&+.lit-row]:border-[var(--vds-border-default)] [&_span]:overflow-hidden [&_span]:text-ellipsis [&_span]:whitespace-nowrap'
+  'lit-attachment-row flex min-w-[var(--literature-grid-width)] library-narrow:min-w-[max(var(--vds-library-table-narrow-min-width),var(--literature-grid-width))] min-h-[var(--vds-library-attachment-row-min-height)] cursor-pointer items-center gap-[var(--vds-space-2)] bg-[var(--vds-bg-gray-default)] py-0 pr-[var(--vds-library-attachment-row-padding-inline-end)] pl-[var(--vds-library-attachment-row-padding-inline-start)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-primary)] font-[var(--vds-fw-regular)] [&+.lit-row]:border-t [&+.lit-row]:border-[var(--vds-border-default)] [&_span]:overflow-hidden [&_span]:text-ellipsis [&_span]:whitespace-nowrap'
 const STICKY_CELLS_CLASS = String.raw`lit-sticky-cells sticky left-0 z-[var(--vds-z-local-decoration)] grid h-full grid-cols-[var(--vds-library-sticky-cells-columns)] items-center gap-[var(--vds-library-sticky-cells-gap)] bg-inherit px-[var(--vds-library-sticky-cells-padding-inline)] [&_.vds-checkbox\_\_label]:hidden [&_.vds-checkbox]:min-h-[var(--vds-control-height-xs)]`
 const STICKY_HEADER_CELLS_CLASS = `${STICKY_CELLS_CLASS} z-[var(--vds-z-local-top)]`
 const TABLE_EMPTY_STATE_CLASS =
@@ -328,7 +328,6 @@ type ListEntry =
 function Row({
   item,
   columns,
-  projectPresentation,
   grid,
   checked,
   expanded,
@@ -1180,21 +1179,6 @@ export function LiteratureList({
     event.preventDefault()
     setKeyRowIndex(next)
     focusRow(next)
-  }
-  const runBulk = async (operation: string): Promise<void> => {
-    try {
-      await bulkLiteratures(selected, operation)
-      catalogue.clear()
-      catalogue.reload()
-    } catch (reason) {
-      setError(
-        literatureErrorMessage(
-          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
-          reason instanceof Error ? reason.message : undefined,
-          'batch.bulkFailed'
-        )
-      )
-    }
   }
   const openBatch = (kind: Exclude<BatchDialog, null>): void => {
     setBatchLoading(true)
@@ -2197,7 +2181,7 @@ export function LiteratureList({
             ref={tableScroll}
           >
             <div
-              className="lit-table-head sticky top-0 z-[var(--vds-z-local-top)] h-[var(--vds-library-header-height)] relative grid min-w-max library-narrow:min-w-[var(--vds-library-table-narrow-min-width)] items-center border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-hover)] text-[var(--vds-text-tertiary)] text-[length:var(--vds-font-body-lv2)] [&>span]:px-[var(--vds-library-table-cell-padding-inline)] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap"
+              className="lit-table-head sticky top-0 z-[var(--vds-z-local-top)] h-[var(--vds-library-header-height)] relative grid min-w-[var(--literature-grid-width)] library-narrow:min-w-[max(var(--vds-library-table-narrow-min-width),var(--literature-grid-width))] items-center border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-hover)] text-[var(--vds-text-tertiary)] text-[length:var(--vds-font-body-lv2)] [&>span]:px-[var(--vds-library-table-cell-padding-inline)] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap"
               style={{ gridTemplateColumns: grid }}
             >
               <div className={STICKY_HEADER_CELLS_CLASS}>

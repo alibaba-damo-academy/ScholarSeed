@@ -31,10 +31,10 @@
 //
 // 日志只记录状态、原因与 state 的摘要指纹；不记录登录 URL、code 或 token。
 
-import { createHash } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 
 import { type HandoffLocalCoordinator } from './handoff-local.ts'
-import { newHandoffState, parseCallbackUrl } from './handoff-url.ts'
+import { handoffFingerprint, newHandoffState, parseCallbackUrl } from './handoff-url.ts'
 
 const FAILURE_CODES = {
   handoffUnclaimed: 'handoff_unclaimed',
@@ -45,7 +45,6 @@ const LOGIN_PAGE_PATH = '/web/login.html'
 const EXCHANGE_PATH = '/api/desktop/token'
 const LOGIN_EXPIRED = 'login_expired'
 const EXPIRED_STATE_MEMORY = 16
-const DIAGNOSTIC_STATE_LENGTH = 16
 const LOGIN_CANCELLED = 'login_cancelled'
 const LOGIN_VERIFY_FAILED = 'verify_failed'
 export const STATE_TTL_MS = 10 * 60 * 1000
@@ -113,7 +112,8 @@ export class DesktopHandoff {
   private generation = 0
   private exchanging = false
   private activeOperations = 0
-  private confirmation: { id: number; state: string; token: string } | null = null
+  private confirmation: { id: number; state: string; token: string; startedAt: number } | null =
+    null
   private confirmationTimer: ReturnType<typeof setTimeout> | null = null
   private expiryTimer: ReturnType<typeof setTimeout> | null = null
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -144,12 +144,26 @@ export class DesktopHandoff {
   }
 
   private diagnose(event: string, state: string, detail = ''): void {
-    const fingerprint = state
-      ? createHash('sha256').update(state).digest('hex').slice(0, DIAGNOSTIC_STATE_LENGTH)
-      : 'none'
+    const fingerprint = handoffFingerprint(state)
     this.deps.log(
       `[shell] desktop handoff event=${event} attempt=${fingerprint} generation=${this.generation} phase=${this.snapshot.phase} ${detail} ${this.deps.identity()}\n`
     )
+  }
+
+  private async measure<T>(event: string, state: string, operation: () => Promise<T>): Promise<T> {
+    const started = performance.now()
+    let result = 'failed'
+    try {
+      const value = await operation()
+      result = 'completed'
+      return value
+    } finally {
+      this.diagnose(
+        event,
+        state,
+        `elapsed_ms=${(performance.now() - started).toFixed(3)} result=${result}`
+      )
+    }
   }
 
   /** UI phases are intent, not evidence that credential work has finished. */
@@ -262,6 +276,11 @@ export class DesktopHandoff {
     )
       return false
     this.clearConfirmation()
+    this.diagnose(
+      'renderer_confirmation',
+      pending.state,
+      `elapsed_ms=${(performance.now() - pending.startedAt).toFixed(3)} confirmed=${confirmed}`
+    )
     this.reportOutcome(id, pending.state, confirmed ? 'adopted' : 'adopt_failed', pending.token)
     this.deps.log(`[shell] desktop login verification ${confirmed ? 'confirmed' : 'failed'}\n`)
     if (confirmed) this.publish({ phase: 'idle' })
@@ -285,6 +304,7 @@ export class DesktopHandoff {
       this.publish({ phase: 'failed', error: 'bad_callback', terminal: true })
       return
     }
+    this.diagnose('callback_received', parsed.state)
     this.deps.revealWindow('desktop login callback received')
     if (this.adoptedStates.includes(parsed.state)) {
       // 同一条回调可能被送达两次：单实例通知成功的机器上，二次实例取锁失败仍会把回调
@@ -312,7 +332,9 @@ export class DesktopHandoff {
       // 内存不命中**不等于**这次登录无效：它可能属于本机另一个书深实例。深链归属由
       // OS 决定，所以接管方唯一能做的正确动作是把 code 转交给真正的发起方。
       const generation = this.generation
-      const delivered = await this.deps.local.deliver(parsed.state, parsed.code)
+      const delivered = await this.measure('local_forward', parsed.state, () =>
+        this.deps.local.deliver(parsed.state, parsed.code)
+      )
       this.diagnose('forward', parsed.state, `result=${delivered} request_generation=${generation}`)
       if (
         generation !== this.generation ||
@@ -482,12 +504,14 @@ export class DesktopHandoff {
   ): void {
     if (generation !== this.generation) return
     void this.track(() =>
-      this.deps.reportOutcome(state, outcome, token, () => generation === this.generation)
+      this.measure('receipt', state, () =>
+        this.deps.reportOutcome(state, outcome, token, () => generation === this.generation)
+      )
     )
   }
 
   private async exchange(code: string, state: string, generation: number): Promise<void> {
-    const base = await this.deps.accountBaseUrl()
+    const base = await this.measure('account_base', state, () => this.deps.accountBaseUrl())
     if (!base) {
       this.settle(generation, { phase: 'failed', error: 'account_base_unavailable' }, false)
       return
@@ -498,14 +522,17 @@ export class DesktopHandoff {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), EXCHANGE_TIMEOUT_MS)
     try {
-      const resp = await fetch(base + EXCHANGE_PATH, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code, state, ...this.deps.deviceFields() }),
-        signal: ctl.signal,
+      const { resp, body } = await this.measure('exchange_http', state, async () => {
+        const resp = await fetch(base + EXCHANGE_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code, state, ...this.deps.deviceFields() }),
+          signal: ctl.signal,
+        })
+        clearTimeout(timer)
+        const body = (await resp.json().catch(() => ({}))) as Record<string, unknown>
+        return { resp, body }
       })
-      clearTimeout(timer)
-      const body = (await resp.json().catch(() => ({}))) as Record<string, unknown>
       if (!resp.ok) {
         // 非 2xx：没有 token，无法回报（proposal 73 §6.3 的硬约束，不是遗漏）。
         this.settle(
@@ -526,7 +553,9 @@ export class DesktopHandoff {
       const isCurrent = (): boolean =>
         generation === this.generation && state === this.pendingState && !this.stateExpired()
       if (!isCurrent()) return
-      const adopted = await this.deps.adoptTokens(token, refreshToken, isCurrent)
+      const adopted = await this.measure('credential_adoption', state, () =>
+        this.deps.adoptTokens(token, refreshToken, isCurrent)
+      )
       if (!isCurrent()) return
       if (!adopted) {
         // adopt 失败时 token 仍在手且服务端签发的 access token 有效（refresh 已落盘、
@@ -537,7 +566,7 @@ export class DesktopHandoff {
       }
       this.deps.log('[shell] desktop login credentials stored; awaiting local verification\n')
       this.adoptedStates = [...this.adoptedStates, state].slice(-ADOPTED_STATE_MEMORY)
-      this.confirmation = { id: generation, state, token }
+      this.confirmation = { id: generation, state, token, startedAt: performance.now() }
       this.confirmationTimer = setTimeout(() => {
         this.deps.log('[shell] desktop login verification failed reason=confirmation_timeout\n')
         this.resetAfterAdopted(generation, false)

@@ -73,7 +73,7 @@ import { HOST_CONFIGURATION_CONFLICT } from '../../../../reconfiguration'
 import { PREPARATION_SUPERSEDED_ERROR, waitForPreparation } from '../../preparation'
 import { LoginPrompt } from './LoginPrompt'
 import { modelDefaultEffort, reasoningPreference } from '../../reasoning'
-import { ContextOption } from './Context'
+
 import { ReferencePicker } from './References'
 import { SkillAdd } from './Skills'
 import { StatusStrip } from './StatusStrip'
@@ -127,6 +127,7 @@ import {
   canContinueFailedTurn,
   canOfferTurnRecovery,
   effectiveReadiness,
+  hasCurrentTurnCapabilityFailure,
   permissionModeFeedback,
   permissionModeNeedsConfirmation,
   permissionModeShowsNextTurn,
@@ -228,9 +229,6 @@ const PERMISSION_MODE_ICON_TYPES: Record<string, string> = {
 const UNKNOWN_MODE_TONE: ModeTone = 'neutral'
 const DEFAULT_MODE = 'ask'
 const MODE_CONFIRMATION_REQUIRED_ERROR = 'session_permission_confirmation_required'
-// 选择已记下但还没换到运行时 —— 换 sandbox 要重开 vendor thread, 只能等当前 turn 结束。
-// PRD 2.1.2 ③: 加号是输入框左下角的**圆形描边按钮**, 位于最左。
-const HOME_COMPOSER_MIN_HEIGHT_PX = 105
 const HOME_COMPOSER_MAX_HEIGHT_PX = 105
 const COMPOSER_MAX_HEIGHT_PX = 132
 const INLINE_COMPOSER_MAX_ROWS = 10
@@ -335,10 +333,6 @@ const referenceTrayScrollerClass =
 const PLUS_MENU_PAGE_SIZE = 10
 const contextPaneClass =
   'max-h-[var(--vds-composer-reference-picker-max-height)] min-h-0 w-[268px] flex-none overflow-hidden bg-[var(--bg-2)]'
-const contextOptionButtonClass =
-  'flex h-auto min-h-8 w-full min-w-0 items-start justify-start gap-[var(--vds-space-2)] rounded-[var(--vds-radius-2)] border-0 bg-transparent px-[var(--vds-space-2)] py-[6px] text-left text-[var(--text-2)] hover:bg-[var(--vds-bg-white-hover)] hover:text-[var(--text)] focus-visible:bg-[var(--vds-bg-white-hover)] focus-visible:text-[var(--text)]'
-const contextOptionCopyClass =
-  'grid min-w-0 gap-[var(--vds-space-1)] [&>small]:whitespace-normal [&>small]:break-words [&>small]:text-[length:var(--vds-font-caption)] [&>small]:leading-relaxed [&>small]:text-[var(--vds-text-tertiary)] [&>span]:whitespace-normal [&>span]:break-words [&>span]:font-medium'
 const skillPanelClass = [
   'flex max-h-[min(420px,70vh)] w-[268px] min-w-0 flex-col overflow-hidden bg-[var(--vds-surface-raised)] p-0',
 ].join(' ')
@@ -399,7 +393,8 @@ function composerReasoningEffort(state: AppState): string {
     state.catalog.models,
     state.model,
     state.activeSession,
-    state.threads
+    state.threads,
+    state.draftModelId
   )
   const model = state.catalog.models.find((entry) => entry.key === modelKey)
   return state.activeSession
@@ -533,8 +528,10 @@ export function Composer({
     state.catalog.models,
     state.model,
     state.activeSession,
-    state.threads
+    state.threads,
+    state.draftModelId
   )
+  const exactDraftModelId = state.draftModelId
   const sidNow = thread.sessionId
   const selectedEffort = composerReasoningEffort(state)
   const running = Boolean(thread.running)
@@ -938,7 +935,9 @@ export function Composer({
   const creditBlocked = creditsBlockBuiltInModel(state.credits, selectedModel)
   // 目录里一个可选模型都没有（未登录且未配置自有连接时内置/订阅行全被置灰）: 草稿发出去
   // 只会在执行面被拒, 所以发送在这里就闭门, 并在卡片上方给出两条出路。
-  const modelAvailable = hasSelectableModel(state.catalog.models)
+  const modelAvailable = exactDraftModelId
+    ? Boolean(selectedModel && !selectedModel.disabled)
+    : hasSelectableModel(state.catalog.models)
   const canSend =
     !thread.readOnly &&
     canSubmitComposer({
@@ -991,6 +990,10 @@ export function Composer({
     setSkillPanelOpen(false)
   }, [atQuery, nonConversationSurfaceOpen])
   const ensureAttachmentSession = async (): Promise<string | null> => {
+    if (exactDraftModelId && !modelAvailable) {
+      set({ foregroundError: feedback('conversation', 'continuation.modelUnavailable') })
+      return null
+    }
     if (sidNow) return sidNow
     if (!state.runtimeReadiness?.ready) {
       set({
@@ -1004,9 +1007,9 @@ export function Composer({
     const openingPermissionMode = pendingMode ?? state.globalPermissionMode
     const opened = await openSession({
       projectPath,
-      modelId: state.model || undefined,
+      modelId: exactDraftModelId || state.model || undefined,
       reasoningEffort: reasoningPreference(
-        state.catalog.models.find((model) => model.key === state.model),
+        state.catalog.models.find((model) => model.key === (exactDraftModelId || state.model)),
         state.reasoningPreferences
       ),
       permissionMode: openingPermissionMode,
@@ -1024,6 +1027,19 @@ export function Composer({
             ? opened.readiness.message || feedback('components', 'composer.runtimeUnavailable')
             : feedback('components', 'composer.attachmentSession'),
       })
+      return null
+    }
+    if (
+      exactDraftModelId &&
+      (opened.runtime.model_id !== exactDraftModelId ||
+        getSnapshot().draftModelId !== exactDraftModelId ||
+        getSnapshot().draftGeneration !== state.draftGeneration ||
+        getSnapshot().modelSelectionGeneration !== state.modelSelectionGeneration ||
+        !getSnapshot().catalog.models.some(
+          (model) => model.key === exactDraftModelId && !model.disabled
+        ))
+    ) {
+      set({ foregroundError: feedback('conversation', 'continuation.modelUnavailable') })
       return null
     }
     const runtimeRoot = opened.runtime_workdir || opened.workdir
@@ -1654,12 +1670,17 @@ export function Composer({
         current.draftGeneration === state.draftGeneration &&
         current.modelSelectionGeneration === state.modelSelectionGeneration &&
         current.modelSelectionPending === 0 &&
+        (!exactDraftModelId ||
+          current.catalog.models.some(
+            (model) => model.key === exactDraftModelId && !model.disabled
+          )) &&
         composerReasoningEffort(current) === selectedEffort &&
         effectiveSessionModelKey(
           current.catalog.models,
           current.model,
           current.activeSession,
-          current.threads
+          current.threads,
+          current.draftModelId
         ) === selectedModelKey &&
         (!sid ||
           (current.aiPanel.sessionId === sid &&
@@ -1694,7 +1715,8 @@ export function Composer({
             current.catalog.models,
             current.model,
             current.activeSession,
-            current.threads
+            current.threads,
+            current.draftModelId
           ) !== selectedModelKey ||
           (sid &&
             (current.aiPanel.sessionId !== sid ||
@@ -1748,7 +1770,7 @@ export function Composer({
       const openingPermissionMode = pendingMode ?? state.globalPermissionMode
       const opened = await openSession({
         projectPath,
-        modelId: state.model || undefined,
+        modelId: exactDraftModelId || state.model || undefined,
         reasoningEffort: selectedEffort,
         permissionMode: openingPermissionMode,
         prepareRuntime: true,
@@ -1769,6 +1791,14 @@ export function Composer({
         set({
           turnLaunch: null,
           foregroundError: failure || feedback('components', 'composer.createFailed'),
+        })
+        return false
+      }
+      if (exactDraftModelId && opened.runtime.model_id !== exactDraftModelId) {
+        restoreDraft()
+        set({
+          turnLaunch: null,
+          foregroundError: feedback('conversation', 'continuation.modelUnavailable'),
         })
         return false
       }
@@ -1829,6 +1859,16 @@ export function Composer({
       if (presentAsUserMessage) rollbackImmediatePresentation()
       set({ foregroundError: feedback('components', 'composer.sessionUnavailable') })
       return false
+    }
+    const acceptDraftModel = (): void => {
+      if (!exactDraftModelId) return
+      set((current) =>
+        current.draftModelId === exactDraftModelId &&
+        current.draftGeneration === state.draftGeneration &&
+        current.activeSession === targetThreadId
+          ? { draftModelId: null }
+          : {}
+      )
     }
     let submittedReferences = references
     const registrations = references.filter(
@@ -2022,6 +2062,7 @@ export function Composer({
         ),
       })
       if (accepted || applied) {
+        acceptDraftModel()
         hideSubmittedAssistantRefs()
         return true
       }
@@ -2056,6 +2097,7 @@ export function Composer({
         : {}),
     }))
     releaseQueuedOutbox(targetSessionId, clientUserMessageId)
+    acceptDraftModel()
     hideSubmittedAssistantRefs()
     return true
   }
@@ -2460,10 +2502,10 @@ export function Composer({
     <>
       {header?.({
         continueTurn: () =>
-          continueDisabled
+          continueDisabled || hasCurrentTurnCapabilityFailure(thread)
             ? Promise.resolve(false)
             : submit(t('stream.continueTaskPrompt'), [], true),
-        continueDisabled,
+        continueDisabled: continueDisabled || hasCurrentTurnCapabilityFailure(thread),
       })}
       <div
         className={`relative z-20 isolate flex-none border-t-0 bg-transparent ${inline ? 'p-0' : composerRootPaddingClass(home, surface)}`}

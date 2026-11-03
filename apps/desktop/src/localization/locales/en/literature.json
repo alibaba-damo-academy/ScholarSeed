@@ -1,4 +1,5 @@
 {
+  "copyRegistrationFailed": "Could not save the card's copyable text. Retry or reopen the card.",
   "tagFilter": {
     "label": "Filter tags",
     "loading": "Loading tags",
@@ -8,6 +9,11 @@
   },
   "delivery": {
     "title": "Save full texts",
+    "chooseLocalDirectory": "Choose a local folder…",
+    "addToGlobalLibrary": "Ensure papers are in the global library (reuse existing full texts; restore deleted items)",
+    "globalLibraryScope": "Papers are saved to the global library without linking to any project.",
+    "loadFailed": "Could not load full-text delivery information. Please retry.",
+    "scopeChanged": "The full-text delivery belongs to a different project scope. Return to the original conversation and retry.",
     "cardTitle": "Also save to resources (optional)",
     "help": "Saving details",
     "description": "{{count}} full texts acquired. Library results appear in the task card. Choose where to save a separate copy; canceling does not remove library items or interrupt authorized reading.",

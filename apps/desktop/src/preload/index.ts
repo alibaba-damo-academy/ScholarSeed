@@ -1,4 +1,5 @@
 import { UPDATE_HEALTH_CHANNEL, PREVIEW_UPDATE_IPC } from '../updates'
+import { PLUGIN_NAVIGATION_CHANNEL, PLUGIN_REVOKED_CHANNEL } from '../plugins'
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
 import type { PreferenceSubmission, PreferenceReceipt } from '../preference-diagnostics'
 import { TRAY_CHANNEL, type TrayNavigation, type TrayReply } from '../tray'
@@ -336,6 +337,16 @@ const bridge = {
   },
   deviceSkills(request: DeviceSkillRequest): Promise<DeviceSkillResponse> {
     return ipcRenderer.invoke(SKILLS_CHANNEL, request)
+  },
+  onPluginNavigation(callback: () => void): () => void {
+    const handler = (): void => callback()
+    ipcRenderer.on(PLUGIN_NAVIGATION_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(PLUGIN_NAVIGATION_CHANNEL, handler)
+  },
+  onPluginRevoked(callback: (lease: string) => void): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, lease: string): void => callback(lease)
+    ipcRenderer.on(PLUGIN_REVOKED_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(PLUGIN_REVOKED_CHANNEL, handler)
   },
   mcpSettings(request: McpSettingsRequest): Promise<McpSettingsResponse> {
     return ipcRenderer.invoke(MCP_SETTINGS_CHANNEL, request)

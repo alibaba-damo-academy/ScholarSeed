@@ -40,6 +40,7 @@ from service.chat.runtime.reconfiguration import (
 )
 from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
+from service.platform.parent_control import ParentControl
 
 
 class ReconfigurationContracts(unittest.IsolatedAsyncioTestCase):
@@ -389,6 +390,32 @@ class PreparationContracts(unittest.IsolatedAsyncioTestCase):
         self.warm.side_effect = RuntimeError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
         with self.assertLogs(__name__, level="ERROR"):
             await self.assert_uncertain_fence()
+
+    async def test_failed_preparation_can_handoff_to_update_without_reopening(self):
+        self.warm.side_effect = RuntimeError("runtime_rpc_timeout")
+        with self.assertLogs(__name__, level="ERROR"):
+            await self.assert_uncertain_fence()
+        fence = self.activities.snapshot().generation
+        interrupt = AsyncMock()
+        drain = AsyncMock(return_value=())
+        control = ParentControl(
+            self.activities, interrupt_running=interrupt, drain_attachments=drain
+        )
+        for _attempt in range(2):
+            response = await control._command({"operation": "quiesce", "generation": None})
+            self.assertEqual(response[:1], b"\x01")
+            generation = response[1:].decode("ascii")
+            self.assertNotEqual(generation, fence)
+            with self.assertRaises(MaintenanceActive):
+                self.activities.enter(ActivityDomain.TURN, root=True)
+            await control._command({"operation": "resume", "generation": generation})
+            self.assertEqual(self.activities.snapshot().generation, fence)
+            self.assertIs(self.activities.snapshot().phase, ActivityPhase.DRAINING)
+            with self.assertRaises(MaintenanceActive):
+                self.activities.enter(ActivityDomain.RUNTIME, root=True)
+        self.assertEqual(interrupt.await_count, 2)
+        self.assertEqual(drain.await_count, 2)
+        self.assertIs(self.manager.state, CommandState.RESTART_REQUIRED)
 
     async def test_unknown_warm_value_error_fences_admission(self):
         self.warm.side_effect = ValueError("native outcome unavailable")

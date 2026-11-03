@@ -1,4 +1,6 @@
 import type { ForegroundMessage } from './feedback'
+import type { PublicComponentContribution } from './components'
+import type { PluginReference } from '../../../plugins'
 /**
  * Feature 统一贡献协议（开发 7 拥有，开发 1～6 实现）。
  *
@@ -251,6 +253,7 @@ export interface DisplayCardContribution {
   render: (props: {
     cardId: string
     content: Record<string, unknown>
+    component?: PluginReference
     presentationSource?: 'live' | 'history'
     turnId?: string
   }) => ReactNode
@@ -279,6 +282,7 @@ export interface InteractionPolicyContribution {
   ) => 'respond' | 'cancel'
   /** Optional visual hierarchy for immediate decisions. The default remains the ordinary option list. */
   directPresentation?: InteractionDirectPresentation
+  directSelectionRequired?: (option: InteractionQuestion['options'][number]) => boolean
   /** Optional canonical label for immediate decisions whose native protocol adds presentation suffixes. */
   optionLabel?: (option: InteractionQuestion['options'][number]) => string
   replyTitle?: (
@@ -326,6 +330,7 @@ export interface FeatureModule {
   documentPanels?: DocumentPanelContribution[]
   assistantSources?: AssistantSourceContribution[]
   displayCards?: DisplayCardContribution[]
+  publicComponents?: PublicComponentContribution[]
   interactionPolicies?: InteractionPolicyContribution[]
   taskSources?: TaskSourceContribution[]
   globalSurfaces?: GlobalSurfaceContribution[]
@@ -341,6 +346,7 @@ export interface FeatureRegistry {
   documentPanels: DocumentPanelContribution[]
   assistantSources: AssistantSourceContribution[]
   displayCards: Map<string, DisplayCardContribution>
+  publicComponents: Map<string, PublicComponentContribution>
   interactionPolicies: InteractionPolicyContribution[]
   taskSources: TaskSourceContribution[]
   globalSurfaces: GlobalSurfaceContribution[]
@@ -365,6 +371,7 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
   const assistantSources: AssistantSourceContribution[] = []
   const assistantSourceIds = new Set<string>()
   const displayCards = new Map<string, DisplayCardContribution>()
+  const publicComponents = new Map<string, PublicComponentContribution>()
   const interactionPolicies: InteractionPolicyContribution[] = []
   const interactionPolicyIds = new Set<string>()
   const taskSources: TaskSourceContribution[] = []
@@ -411,6 +418,10 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
       assistantSourceIds.add(source.id)
       assistantSources.push(source)
     }
+    for (const component of module.publicComponents ?? []) {
+      if (publicComponents.has(component.slot)) throw new Error(`Duplicate public component: ${component.slot}`)
+      publicComponents.set(component.slot, component)
+    }
     for (const card of module.displayCards ?? []) {
       if (displayCards.has(card.type)) {
         console.warn(`[features] 对话卡片 ${card.type} 重复注册，忽略 ${module.id} 的贡献`)
@@ -456,6 +467,7 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
     documentPanels,
     assistantSources,
     displayCards,
+    publicComponents,
     interactionPolicies,
     taskSources,
     globalSurfaces,

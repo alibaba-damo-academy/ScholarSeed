@@ -15,6 +15,15 @@ from service.platform import executables
 
 
 class CommandProbeContracts(unittest.TestCase):
+    def test_skill_python_cold_start_can_exceed_generic_command_deadline(self) -> None:
+        with (
+            patch.object(executables, "resolve_command", return_value=Path(sys.executable)),
+            patch.object(
+                executables, "SKILL_PYTHON_PROBE_ARGUMENTS", ("-c", "import time; time.sleep(6)")
+            ),
+        ):
+            self.assertEqual(executables.skill_python_probe([str(Path.cwd())]), 0)
+
     def test_probe_does_not_read_parent_control_stdin(self) -> None:
         # Keep the host's stdin pipe open, as Desktop does for parent control.
         code = (
@@ -29,6 +38,18 @@ class CommandProbeContracts(unittest.TestCase):
             finally:
                 if host.poll() is None:
                     host.kill()
+
+    def test_skill_python_deadline_exhaustion_still_fails(self) -> None:
+        with (
+            patch.object(executables, "resolve_command", return_value=Path(sys.executable)),
+            patch.object(executables, "SKILL_PYTHON_PROBE_TIMEOUT_SECONDS", 0.1),
+            patch.object(
+                executables, "SKILL_PYTHON_PROBE_ARGUMENTS", ("-c", "import time; time.sleep(6)")
+            ),
+            self.assertLogs(executables.__name__, level="WARNING") as logs,
+        ):
+            self.assertEqual(executables.skill_python_probe([str(Path.cwd())]), 1)
+        self.assertIn("TimeoutExpired", "\n".join(logs.output))
 
     def test_timeout_does_not_wait_for_descendant_stderr(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

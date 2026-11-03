@@ -37,6 +37,7 @@ let dependencies
 
 const DESKTOP = path.resolve(__dirname, '../..')
 const REPO = path.resolve(DESKTOP, '../..')
+const UI_BUILD_SCRIPT = path.join(REPO, 'packages/ui/build.cjs')
 const PACKAGE = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'package.json')))
 const { PYLIBS_DIRNAME, WINDOWS_BUNDLED_RUNTIME_DIRS } = require('../../runtime/components.cjs')
 const PRODUCT_SOURCE = path.join(DESKTOP, 'resources', 'product.json')
@@ -924,6 +925,7 @@ async function main(argv = process.argv.slice(2)) {
       SCHOLARSEED_PRODUCT_MANIFEST: productPath,
       SCHOLARSEED_BUNDLE_CODEX_EXECUTABLE: binaries.codex.path,
     })
+    await timedAsync('ui.bundle', async () => run(process.execPath, [UI_BUILD_SCRIPT, '--archive', path.join(REPO, 'apps/serve/service/capabilities/ui.zip')], { cwd: REPO, env: environment }))
     context.velopackTools = await timedAsync('velopack.prepare', () => velopack.prepare({
       platform: args.platform, stage: args.stage, runDirectory, environment, args,
     }))

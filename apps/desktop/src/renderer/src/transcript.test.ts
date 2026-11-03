@@ -566,12 +566,15 @@ test('delivery replay is distinguishable from a fresh live event without changin
       card_id: 'delivery-card',
       type: 'literature-delivery',
       content: { delivery_id: 'batch' },
+      component: { plugin: 'example', component: 'result', fingerprint: 'version-one' },
     },
   }
   const live = projectDisplayCardEvent([], event, 'live')[0]
   const history = projectDisplayCardEvent([], event)[0]
   assert.equal(live.kind === 'display_card' && live.card.presentationSource, 'live')
   assert.equal(history.kind === 'display_card' && history.card.presentationSource, 'history')
+  assert.deepEqual(live.kind === 'display_card' && live.card.component, event.data.component)
+  assert.deepEqual(history.kind === 'display_card' && history.card.component, event.data.component)
   assert.equal(
     live.kind === 'display_card' && live.card.cardId,
     history.kind === 'display_card' && history.card.cardId

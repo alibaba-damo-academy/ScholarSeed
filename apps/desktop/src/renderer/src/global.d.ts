@@ -86,6 +86,8 @@ declare global {
     onTrayNavigate?: (callback: (target: TrayNavigation) => void) => () => void
     respondWindowClose?: (reply: WindowCloseReply) => Promise<boolean>
     deviceSkills: (request: DeviceSkillRequest) => Promise<DeviceSkillResponse>
+    onPluginNavigation?: (callback: () => void) => () => void
+    onPluginRevoked: (callback: (lease: string) => void) => () => void
     mcpSettings: (request: McpSettingsRequest) => Promise<McpSettingsResponse>
     getStartup?: () => StartupSnapshot
     onStartup?: (callback: (snapshot: StartupSnapshot) => void) => () => void

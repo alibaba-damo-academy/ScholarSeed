@@ -29,6 +29,9 @@ _WINDOWS_EXECUTABLE_SUFFIX = ".exe"
 SKILL_PYTHON_COMMAND = "scholarseed-skill-python"
 BRIDGE_DIR_ENV = "SCHOLARSEED_BRIDGE_DIR"
 COMMAND_PROBE_TIMEOUT_SECONDS = 5
+# A fresh signed interpreter/launcher can spend tens of seconds in OS admission.
+# Keep ordinary tool probes short; only the startup receipt gets this budget.
+SKILL_PYTHON_PROBE_TIMEOUT_SECONDS = 60
 COMMAND_PROBE_ERROR_LIMIT = 4096
 COMMAND_HELP_ARGUMENTS = ("--help",)
 SKILL_PYTHON_PROBE_ARGUMENTS = ("--version",)
@@ -71,7 +74,12 @@ def command_directories(*, inherit_path: bool = True) -> tuple[Path, ...]:
     return tuple(unique.values())
 
 
-def probe_command(path: Path, arguments: tuple[str, ...] = COMMAND_HELP_ARGUMENTS) -> bool:
+def probe_command(
+    path: Path,
+    arguments: tuple[str, ...] = COMMAND_HELP_ARGUMENTS,
+    *,
+    timeout_seconds: float | None = None,
+) -> bool:
     """Probe a trusted local launcher with fixed, caller-owned arguments."""
     _LOGGER.info("Command probe starting at %s with arguments %s", path, arguments)
     error_message = ""
@@ -88,7 +96,11 @@ def probe_command(path: Path, arguments: tuple[str, ...] = COMMAND_HELP_ARGUMENT
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=diagnostics,
-                    timeout=COMMAND_PROBE_TIMEOUT_SECONDS,
+                    timeout=(
+                        COMMAND_PROBE_TIMEOUT_SECONDS
+                        if timeout_seconds is None
+                        else timeout_seconds
+                    ),
                     check=False,
                 )
             finally:
@@ -137,7 +149,15 @@ def skill_python_probe(arguments: list[str]) -> int:
         )
         return 1
     _LOGGER.info("Skill Python probe resolved launcher: %s", launcher)
-    return 0 if probe_command(launcher, SKILL_PYTHON_PROBE_ARGUMENTS) else 1
+    return (
+        0
+        if probe_command(
+            launcher,
+            SKILL_PYTHON_PROBE_ARGUMENTS,
+            timeout_seconds=SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
+        )
+        else 1
+    )
 
 
 if __name__ == "__main__":

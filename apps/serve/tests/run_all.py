@@ -85,6 +85,17 @@ os.environ.setdefault(brand.PROJECT_DIRNAME_ENV, brand.PROJECT_DIRNAME)
 # bc6992e2 "refactor: remove legacy research runtime" 删除。依赖 work.scholar.* /
 # service.research.* / ActionActor 的 42 个套件同批移除 —— 门不再挂不可导入的套件。
 SUITES = [
+    "contract_component_registry",
+    "contract_ui_dependency",
+    "contract_plugin_revision",
+    "contract_plugin_descriptor",
+    "contract_plugin_components",
+    "contract_plugin_packages",
+    "contract_plugin_authoring",
+    "contract_plugin_candidates",
+    "contract_plugin_admission",
+    "contract_plugin_delivery",
+    "contract_skill_browsing",
     "contract_python",
     "contract_connectors",
     "contract_resource_listing",

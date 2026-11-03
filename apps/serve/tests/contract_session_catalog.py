@@ -1398,6 +1398,44 @@ class SessionCatalogContract(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_nonblocking_product_card_survives_turn_and_resolves_without_waiter(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "independent-card")
+            events = []
+
+            async def publish(kind: str, data: Mapping[str, Any], **kwargs) -> ProductEventRecord:
+                events.append((kind, data))
+                return published_event(kind, data)
+
+            interactions = SessionInteractions("independent-card", catalog, publish)
+            question = {"id": "package-v1", "question": "Install version one"}
+            await interactions.publish_product_input(question, turn_id="turn-1")
+            self.assertFalse(catalog.hil("package-v1").payload["blocking"])
+            self.assertNotEqual(catalog.get("independent-card").status, SessionStatus.WAITING_HIL)
+            self.assertIsNone(interactions.product_activity("package-v1"))
+            self.assertEqual(catalog.pending_hil("independent-card"), ())
+            self.assertEqual(len(catalog.pending_hil("independent-card", blocking_only=False)), 1)
+            self.assertEqual(catalog.expire_pending_hil("independent-card"), ())
+            await interactions.cancel_product_requests()
+            self.assertEqual(catalog.hil("package-v1").status, HilStatus.PENDING)
+            catalog.update_status(
+                "independent-card",
+                SessionStatus.COMPLETED,
+                turn_id="turn-2",
+                turn_status="completed",
+            )
+            restored = SessionInteractions("independent-card", catalog, publish)
+            result = await restored.resolve(
+                None, "package-v1", {"answers": {"package-v1": "receipt"}}, active_turn_id="turn-2"
+            )
+            self.assertEqual(result["state"], "resolved")
+            self.assertEqual(catalog.get("independent-card").status, SessionStatus.COMPLETED)
+            self.assertEqual(catalog.hil("package-v1").payload["questions"], [question])
+            self.assertEqual(len(events), 2)
+
+        asyncio.run(scenario())
+
     def test_late_product_question_preserves_terminal_status(self) -> None:
         async def scenario() -> None:
             catalog = SessionCatalogStore(self.database)

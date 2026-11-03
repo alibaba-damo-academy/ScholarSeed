@@ -108,6 +108,8 @@ class _Adapter:
 
 
 class _Driver:
+    projection_failed = False
+
     def __init__(self, adapter: _Adapter) -> None:
         self._adapter = adapter
 

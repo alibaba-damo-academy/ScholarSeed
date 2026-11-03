@@ -41,6 +41,7 @@ import {
 import {
   bindSquirrelRequest,
   inspectSquirrelStartup,
+  settleSquirrelStartup,
   inspectSquirrelIdle,
   squirrelLaunchSuperseded,
   squirrelAdmission,
@@ -1891,11 +1892,13 @@ export async function macStartupAdmission(
       log(`[update] startup admission=superseded candidate=${handoff!.candidate}\n`)
       return 'superseded'
     }
-    const status = await inspectSquirrelStartup(
-      handoff!,
-      systemCacheDir(),
-      config.bundleId,
-      resolve(dirname(process.execPath), '..', '..')
+    const status = await settleSquirrelStartup(() =>
+      inspectSquirrelStartup(
+        handoff!,
+        systemCacheDir(),
+        config.bundleId,
+        resolve(dirname(process.execPath), '..', '..')
+      )
     )
     if (JSON.stringify(readSquirrelHandoff(squirrelHandoffPath(home))) !== JSON.stringify(handoff))
       throw new Error('Mac handoff changed during startup admission')

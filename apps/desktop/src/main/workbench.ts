@@ -830,26 +830,6 @@ async function waitForFileVersionSettings(
   return settings
 }
 
-/** 选中页面上某个元素的全部文本（用于验证划词类功能）。 */
-async function selectTextOf(win: BrowserWindow, selector: string): Promise<boolean> {
-  return Boolean(
-    await win.webContents.executeJavaScript(`
-      (() => {
-        const el = document.querySelector(${JSON.stringify(selector)})
-        if (!(el instanceof HTMLElement)) return false
-        const range = document.createRange()
-        range.selectNodeContents(el)
-        const sel = window.getSelection()
-        if (!sel) return false
-        sel.removeAllRanges()
-        sel.addRange(range)
-        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
-        return sel.toString().trim().length > 0
-      })()
-    `)
-  )
-}
-
 /** 读取输入框/文本区当前值。 */
 async function valueOf(win: BrowserWindow, selector: string): Promise<string> {
   return String(
@@ -1024,23 +1004,6 @@ async function treePaths(win: BrowserWindow): Promise<string[]> {
     nodes?: unknown
   } | null
   return flatten(payload?.nodes)
-}
-
-/** 在 select 上选中指定 value（受控 select 同样需要走 setter + change）。 */
-async function selectOption(win: BrowserWindow, selector: string, value: string): Promise<boolean> {
-  return Boolean(
-    await win.webContents.executeJavaScript(`
-      (() => {
-        const el = document.querySelector(${JSON.stringify(selector)})
-        if (!(el instanceof HTMLSelectElement)) return false
-        Object.getOwnPropertyDescriptor(
-          window.HTMLSelectElement.prototype, 'value'
-        )?.set?.call(el, ${JSON.stringify(value)})
-        el.dispatchEvent(new Event('change', { bubbles: true }))
-        return true
-      })()
-    `)
-  )
 }
 
 /**

@@ -4,9 +4,13 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import type { BrowserWindow, IpcMainInvokeEvent, Session, WebContentsView } from 'electron'
+import type { BrowserWindow, IpcMain, IpcMainInvokeEvent, Session, WebContentsView } from 'electron'
 import { createMenuOwner, MenuActionRegistry } from './menuhost.ts'
 import { MENU_CHANNEL, parseMenuEvent, parseMenuModel } from '../menu.ts'
+import type { MenuActionResult } from '../menu.ts'
+import type { FindState } from '../browser.ts'
+
+type IpcHandler = Parameters<IpcMain['handle']>[1]
 
 const model = {
   sessionId: 'session',
@@ -230,8 +234,8 @@ async function fixture(
   writeFileSync(join(directory, 'menu.html'), '')
   writeFileSync(join(directory, 'assets', 'menu.js'), '')
   context.after(() => rmSync(directory, { recursive: true, force: true }))
-  const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>()
-  const messages: { channel: string; payload: any }[] = []
+  const handlers = new Map<string, IpcHandler>()
+  const messages: { channel: string; payload: unknown }[] = []
   const operations: string[] = []
   const diagnostics: string[] = []
   let visible = false
@@ -241,7 +245,7 @@ async function fixture(
   let size = [500, 300]
   let resolveLoad!: () => void
   let rejectLoad!: (error: Error) => void
-  let guard: any
+  let guard!: (details: { url: string }, callback: (result: { cancel: boolean }) => void) => void
   let cleared = 0
   let menuFocused = false
   const product = Object.assign(new EventEmitter(), {
@@ -302,7 +306,7 @@ async function fixture(
     setPermissionRequestHandler: () => undefined,
     setPermissionCheckHandler: () => undefined,
     webRequest: {
-      onBeforeRequest: (handler: unknown) => {
+      onBeforeRequest: (handler: typeof guard) => {
         guard = handler
       },
     },
@@ -325,12 +329,12 @@ async function fixture(
   })
   const actions: unknown[] = []
   const findQueries: unknown[] = []
-  let found: ((state: any) => void) | null = null
+  let found: ((state: FindState) => void) | null = null
   const registry = new MenuActionRegistry()
   registry.register('browser.devtools', {
     surface: 'browser-menu',
     close: keepOpen ? 'keep-open' : 'before',
-    validateValue: (value: any) => value.kind === 'boolean',
+    validateValue: (value) => value.kind === 'boolean',
     validateTarget: (target) => target.kind === 'browser',
     execute: (event: unknown) => {
       actions.push(event)
@@ -391,7 +395,7 @@ async function fixture(
       return view as unknown as WebContentsView
     },
     ipc: {
-      handle: (channel: string, handler: any) => handlers.set(channel, handler),
+      handle: (channel: string, handler: IpcHandler) => handlers.set(channel, handler),
       removeHandler: (channel: string) => handlers.delete(channel),
     },
   })
@@ -399,11 +403,11 @@ async function fixture(
   const invoke = (
     channel: string,
     args: unknown[] = [],
-    sender = contents as unknown,
-    senderFrame = (sender as any).mainFrame
-  ): any =>
+    sender: unknown = contents,
+    senderFrame: unknown = (sender as { mainFrame?: unknown }).mainFrame
+  ) =>
     handlers.get(`scholarseed:menu-${channel}`)!(
-      { sender, senderFrame } as IpcMainInvokeEvent,
+      { sender, senderFrame } as unknown as IpcMainInvokeEvent,
       ...args
     )
   const paint = () => invoke('paint-ready', [{ sessionId: 'session', revision: 1 }])
@@ -449,7 +453,7 @@ async function fixture(
     messages,
     handlers,
     findQueries,
-    found: (state: unknown) => found?.(state),
+    found: (state: FindState) => found?.(state),
     visible: () => visible,
     closed: () => closed,
     resolveLoad: () => resolveLoad(),
@@ -469,7 +473,7 @@ async function fixture(
     },
     request: (url: string) => {
       let result: unknown
-      guard({ url }, (reply: unknown) => {
+      guard({ url }, (reply) => {
         result = reply
       })
       return result
@@ -545,7 +549,7 @@ test('find result during theme repaint is retained until the new paint and focus
     },
   ])
   const updating = probe.owner.publish({ ...scene, revision: 2, theme: 'dark' })
-  const state = {
+  const state: FindState = {
     querySequence: 1,
     requestId: 1,
     phase: 'ready',
@@ -776,7 +780,7 @@ for (const outcome of ['succeeded', 'failed'] as const)
         (message) => message.channel === 'scholarseed:menu-result'
       )
       assert.deepEqual(
-        results.map((message) => message.payload.outcome),
+        results.map((message) => (message.payload as MenuActionResult).outcome),
         lifecycle === 'crash' ? [] : ['revoked']
       )
     })

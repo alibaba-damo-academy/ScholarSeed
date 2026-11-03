@@ -22,6 +22,11 @@ PROVIDER_MODEL_CONFIG_MESSAGE = "The endpoint does not support this model; check
 PROVIDER_UNAVAILABLE_MESSAGE = "The model provider is temporarily unavailable."
 PROVIDER_CONTENT_POLICY_MESSAGE = "The request did not pass content safety review."
 PROVIDER_CREDITS_MESSAGE = "The account credit balance is exhausted."
+PROVIDER_SUBSCRIPTION_CAPABILITY_MESSAGE = (
+    "The ChatGPT subscription connection does not support this request capability. "
+    "Use a compatible model source or start a task without that capability; "
+    "retrying unchanged will fail."
+)
 CODEX_QUOTA_EXCEEDED_MESSAGE = "Quota exceeded. Check your plan and billing details."
 
 _SSE_EVENT_ERROR = "event:error"
@@ -110,6 +115,11 @@ _CREDIT_CODES = frozenset(
         "credit_balance_exhausted",
     }
 )
+_SUBSCRIPTION_CAPABILITY_CODES = frozenset(
+    {
+        "subscription_sharing_unsupported_capability",
+    }
+)
 _TERMINAL_CODES = (
     _QUOTA_CODES
     | _AUTH_CODES
@@ -117,6 +127,7 @@ _TERMINAL_CODES = (
     | _MODEL_CONFIG_CODES
     | _CONTENT_POLICY_CODES
     | _CREDIT_CODES
+    | _SUBSCRIPTION_CAPABILITY_CODES
 )
 _CODE_BY_MESSAGE = {
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
@@ -145,6 +156,7 @@ _SAFE_MESSAGES = {
     **dict.fromkeys(_MODEL_CONFIG_CODES, PROVIDER_MODEL_CONFIG_MESSAGE),
     **dict.fromkeys(_UNAVAILABLE_CODES, PROVIDER_UNAVAILABLE_MESSAGE),
     **dict.fromkeys(_CREDIT_CODES, PROVIDER_CREDITS_MESSAGE),
+    **dict.fromkeys(_SUBSCRIPTION_CAPABILITY_CODES, PROVIDER_SUBSCRIPTION_CAPABILITY_MESSAGE),
 }
 
 

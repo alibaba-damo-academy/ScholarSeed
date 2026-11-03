@@ -29,6 +29,51 @@ WAIT_SECONDS = 10
 
 
 class ActivityContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_claim_requires_terminal_owner_and_preserves_fence(self):
+        gate = Activities()
+        fence = gate.begin()
+        with self.assertRaises(MaintenanceActive):
+            gate.begin_restart()
+        with self.assertRaises(MaintenanceStale):
+            gate.release_for_restart("stale")
+        gate.release_for_restart(fence)
+        with self.assertRaises(MaintenanceActive):
+            gate.resume(fence)
+        with self.assertRaises(MaintenanceActive):
+            gate.begin()
+        self.assertIsNone(gate.begin_if_idle())
+        generation = gate.begin_restart()
+        self.assertNotEqual(generation, fence)
+        with self.assertRaises(MaintenanceActive):
+            gate.begin_restart()
+        with self.assertRaises(MaintenanceStale):
+            gate.resume(fence)
+        gate.resume(generation)
+        self.assertEqual(gate.snapshot().generation, fence)
+        with self.assertRaises(MaintenanceActive):
+            gate.enter(ActivityDomain.TURN, root=True)
+        next_generation = gate.begin_restart()
+        with self.assertRaises(MaintenanceStale):
+            gate.resume(generation)
+        gate.resume(next_generation)
+        self.assertEqual(gate.snapshot().generation, fence)
+
+    async def test_observed_thread_during_drain_cannot_admit_execution(self):
+        gate = Activities(workbench_ready=lambda: False)
+        generation = gate.begin()
+
+        def read_catalogue():
+            self.assertEqual(gate.snapshot().counts, {ActivityDomain.REQUEST.value: 1})
+            with self.assertRaises(MaintenanceActive):
+                gate.enter(ActivityDomain.RUNTIME)
+            self.assertFalse(gate.seal(generation))
+            return "catalogue"
+
+        self.assertEqual(await gate.observe_thread(read_catalogue), "catalogue")
+        self.assertTrue(gate.seal(generation))
+        with self.assertRaises(MaintenanceActive):
+            await gate.observe_thread(lambda: self.fail("sealed read executed"))
+
     async def test_resource_drain_requires_exact_live_owner_and_generation(self):
         gate = Activities()
         owner = gate.enter(ActivityDomain.RESOURCE, root=True)

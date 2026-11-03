@@ -90,6 +90,7 @@ from scholarseed_runtime.contract.session import (
     SuspendTicket,
 )
 from service.assistant.service.context import INTERNAL_CONTEXT_BLOCKED_ANSWER, protect_answer
+from service.capabilities.service.components import ComponentRegistry
 from service.capabilities.service.skills import SkillCatalog
 from service.chat.active import (
     DEVELOPER_PROMPT_FILE,
@@ -135,6 +136,7 @@ from service.chat.persistence import blocks
 from service.chat.persistence.artifacts import SessionArtifactStore
 from service.chat.persistence.catalog import (
     QueuedMessageState,
+    SessionBindingConflictError,
     SessionCatalogStore,
     SessionPrincipal,
     SessionStatus,
@@ -166,7 +168,7 @@ from service.chat.runtime.projection import (
     readiness_payload,
 )
 from service.chat.runtime.secrets import _launch_secret_contract
-from service.chat.runtime.tools import SESSION_SERVICE_TOOLS
+from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL, SESSION_SERVICE_TOOLS
 from service.chat.service.artifacts import ArtifactService
 from service.chat.service.completions import CHAT_COMPLETIONS_SUFFIX, CompletionBridge
 from service.chat.service.events import EventService
@@ -190,6 +192,7 @@ from service.platform.activity import (
     MaintenanceActive,
     MaintenanceStale,
 )
+from service.platform.bridge import ComponentInvocation, PluginInstallation
 from service.platform.citations import CITATION_SCHEME
 from service.platform.content import ArtifactScopeKind, RootKind
 from service.platform.files import FILE_ACCESS_DENIED, FILE_ACCESS_FAILED, read_file_raw
@@ -1149,6 +1152,20 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("**Examples:**", prompt)
         self.assertNotIn("Add CLI entry with file args", prompt)
 
+    def test_skill_loading_uses_inventory_paths_and_stops_on_failure(self) -> None:
+        prompt = base_instructions()
+        for rule in (
+            "Use the exact SKILL.md locator in the current skill inventory",
+            "Resolve root aliases only through its current root table",
+            "Never guess a user, bundled, or project directory",
+            "invalid path",
+            "file missing",
+            "skill unavailable",
+            "Do not list roots or search the filesystem after a loading failure",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, " ".join(prompt.split()))
+
     def test_nonresearch_prompt_does_not_require_capability_promotion(self) -> None:
         prompt = developer_instructions()
         self.assertIn(
@@ -1211,7 +1228,35 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("For precise literature retrieval", prompt)
 
     def test_developer_prompt_stays_within_progressive_loading_budget(self) -> None:
-        self.assertLessEqual(len(developer_instructions()), MAX_DEVELOPER_INSTRUCTION_CHARS)
+        prompt = developer_instructions()
+        skill = (PRODUCT_OPERATIONS_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        guide = (PRODUCT_OPERATIONS_ROOT / "references" / "mcp.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(prompt), MAX_DEVELOPER_INSTRUCTION_CHARS)
+        self.assertIn("MCP configuration", prompt)
+        self.assertIn("Read `scholarseed-product-operations`", prompt)
+        self.assertIn("operation guide before acting", prompt)
+        self.assertIn("[MCP configuration](references/mcp.md)", skill)
+        self.assertNotIn("`mcp/apply`", prompt)
+        for boundary in (
+            "never read or write configuration files directly",
+            "mcp/status",
+            "mcp/plan",
+            "mcp/apply",
+            "plan_id",
+            "plan_digest",
+            "permission checks at commit time",
+            "The product ignores personal runtime MCP settings",
+            "single source of truth",
+            "saved or pending does not mean tools are ready",
+            "current turn does not use newly added tools",
+            "use only ScholarSeed product terms",
+            "Do not repeat internal engine names",
+            "managed runtime paths",
+            "external-client installer commands",
+            "Report the actual product state and safe error",
+        ):
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, " ".join(guide.split()))
 
     def test_project_pdf_discovery_does_not_require_resending_existing_resources(self) -> None:
         skill = (PRODUCT_OPERATIONS_ROOT.parent / "pdf-evidence" / "SKILL.md").read_text(
@@ -2035,6 +2080,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 },
             ),
             release_session=Mock(),
+            suspend_session=AsyncMock(),
         )
         runtime = LiveSessionService(
             activities=Activities(),
@@ -2066,6 +2112,74 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             logger=self.logger,
         )
 
+    async def test_suspend_awaits_bridge_pause_and_close_permanently_releases(self) -> None:
+        entered, finished = asyncio.Event(), asyncio.Event()
+
+        async def pause(session_id: str) -> None:
+            self.assertEqual(session_id, self.live.id)
+            entered.set()
+            await finished.wait()
+
+        suspend = AsyncMock(side_effect=pause)
+        release = Mock()
+        with (
+            patch.object(self.live, "_on_suspend", new=suspend),
+            patch.object(self.live, "_on_release", new=release),
+        ):
+            task = asyncio.create_task(self.live.suspend_runtime())
+            try:
+                await asyncio.wait_for(entered.wait(), 1)
+                self.assertFalse(task.done())
+                release.assert_not_called()
+                finished.set()
+                self.assertTrue(await task)
+                suspend.assert_awaited_once_with(self.live.id)
+                release.assert_not_called()
+                await self.live.aclose()
+                release.assert_called_once_with(self.live.id)
+                suspend.assert_awaited_once()
+            finally:
+                finished.set()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_suspend_callback_failure_does_not_claim_pause_complete(self) -> None:
+        suspend = AsyncMock(side_effect=OSError("bridge cleanup remains unknown"))
+        release = Mock()
+        with (
+            patch.object(self.live, "_on_suspend", new=suspend),
+            patch.object(self.live, "_on_release", new=release),
+        ):
+            with self.assertRaisesRegex(OSError, "bridge cleanup remains unknown"):
+                await self.live.suspend_runtime()
+            suspend.assert_awaited_once_with(self.live.id)
+            release.assert_not_called()
+
+    async def test_suspend_without_pause_callback_keeps_legacy_release(self) -> None:
+        release = Mock()
+        with (
+            patch.object(self.live, "_on_suspend", new=None),
+            patch.object(self.live, "_on_release", new=release),
+        ):
+            self.assertTrue(await self.live.suspend_runtime())
+            release.assert_called_once_with(self.live.id)
+
+    async def test_runtime_composition_separates_bridge_suspend_and_close_ports(self) -> None:
+        runtime, _provider = self.runtime_service()
+        with patch.object(runtime_module, "LiveSession", return_value=self.live) as constructor:
+            await runtime.open(
+                session_id=self.live.id,
+                user_id=OWNER.user_id,
+                cwd=self.workdir,
+                project_path=None,
+                output_root=self.output_root,
+                resume_vendor_thread_id=VENDOR_THREAD_ID,
+                model_id="gpt-5-codex",
+                permission_mode=RuntimePermissionMode.ASK.value,
+                executable="codex",
+            )
+        self.assertIs(constructor.call_args.kwargs["on_suspend"], runtime._models.suspend_session)
+        self.assertIs(constructor.call_args.kwargs["on_release"], runtime._models.release_session)
+
     def attachment_activation(self) -> SessionActivation:
         activation = SessionActivation(
             activities=self.attachment_activities,
@@ -2079,6 +2193,67 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         )
         activation.bind_sessions({self.live.id: self.live})
         return activation
+
+    async def _legacy_service_tool_binding(self) -> RuntimeBinding:
+        self.assertTrue(await self.live.suspend_runtime())
+        previous = self.catalog.runtime_binding(PRODUCT_SESSION_ID)
+        legacy = replace(
+            previous,
+            opaque_session_ref="legacy-service-tools-thread",
+            profile=service_tool_profile((SERVICE_BRIDGE_TOOL,)),
+        )
+        self.catalog.replace_runtime_binding(previous, legacy)
+        self.live.runtime_binding = legacy
+        self.live.rebind_vendor_thread(legacy.opaque_session_ref)
+        return legacy
+
+    async def test_legacy_service_tool_profile_opens_new_identity_and_preserves_history(
+        self,
+    ) -> None:
+        legacy = await self._legacy_service_tool_binding()
+        await self.live.record_user_history(
+            "Preserve this research question", turn_id="legacy-turn", item_id="legacy-message"
+        )
+        runtime, provider = self.runtime_service()
+        await runtime.ensure_active(self.live)
+        self.assertEqual(provider.resumed, [])
+        self.assertEqual(len(provider.opened), 1)
+        request = provider.opened[0]
+        self.assertEqual(request.service_tools, SESSION_SERVICE_TOOLS)
+        self.assertTrue(
+            any(
+                entry.text == "Preserve this research question" for entry in request.initial_history
+            )
+        )
+        current = self.catalog.runtime_binding(PRODUCT_SESSION_ID)
+        self.assertNotEqual(current.opaque_session_ref, legacy.opaque_session_ref)
+        self.assertEqual(current.product_session_id, legacy.product_session_id)
+        self.assertEqual(current.runtime_id, legacy.runtime_id)
+        self.assertEqual(current.profile, service_tool_profile(SESSION_SERVICE_TOOLS))
+        self.assertEqual(self.live.runtime_binding, current)
+
+    async def test_legacy_profile_replacement_cannot_reuse_previous_native_identity(self) -> None:
+        legacy = await self._legacy_service_tool_binding()
+
+        async def invalid_factory(request):
+            runtime_session = FakeRuntimeSession(
+                FakeAdapter(self.skill_file), request.product_session_id
+            )
+            runtime_session.binding = replace(
+                runtime_session.binding, opaque_session_ref=legacy.opaque_session_ref
+            )
+            return runtime_session
+
+        runtime, provider = self.runtime_service(invalid_factory)
+        with self.assertRaisesRegex(
+            SessionBindingConflictError, "invalid runtime replacement identity"
+        ):
+            await runtime.ensure_active(self.live)
+        self.assertEqual(provider.resumed, [])
+        self.assertEqual(len(provider.opened), 1)
+        self.assertEqual(self.catalog.runtime_binding(PRODUCT_SESSION_ID), legacy)
+        self.assertEqual(self.live.runtime_binding, legacy)
+        self.assertIsNone(self.live.runtime_session)
 
     async def test_idle_attachment_is_a_resource_not_unfinished_business(self) -> None:
         self.assertIs(self.live.attachment_activity.domain, ActivityDomain.RESOURCE)
@@ -2727,6 +2902,15 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 if binding.scope is LaunchSecretScope.PROCESS
             }
             self.assertEqual(process_bindings.get("SCHOLARSEED_API_KEY", ""), credential)
+            tool_bindings = {
+                binding.name: (await request.secret_port.resolve(binding.secret_ref)).value
+                for binding in request.launch_secrets.bindings
+                if binding.scope is LaunchSecretScope.TOOL and binding.name == "SCHOLARSEED_API_KEY"
+            }
+            self.assertEqual(
+                tool_bindings,
+                {"SCHOLARSEED_API_KEY": credential} if credential else {},
+            )
             self.assertTrue(
                 any(
                     binding.scope is LaunchSecretScope.TOOL
@@ -4893,6 +5077,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             "turn-write",
             payload["input"],
             generation=f"codex:{VENDOR_THREAD_ID}:1",
+            event_id="projection:5",
         )
 
     async def test_read_tool_call_does_not_record_resource_candidate(self) -> None:
@@ -5126,6 +5311,338 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(waiter, return_exceptions=True)
             owner.close()
         self.assertTrue(gate.seal(generation))
+
+    async def test_revoked_component_cannot_resolve_product_hil(self) -> None:
+        gate = Activities()
+        runtime, _ = self.runtime_service()
+        service = self.session_service(runtime, activities=gate)
+        components = Mock()
+        components.validate.side_effect = ValueError("plugin_component_stale")
+        self.live._skills = SimpleNamespace(components=components)
+        owner = gate.enter(ActivityDomain.BRIDGE)
+        question = {
+            "id": "plugin-revoked",
+            "header": "Selection",
+            "question": "Confirm selection?",
+            "options": [{"label": "Allow", "description": "Read"}],
+            "component": {"plugin": "removed", "component": "selection", "fingerprint": "old"},
+        }
+        waiter = asyncio.create_task(
+            self.live.interactions.request_product_input(
+                question,
+                turn_id="finished-turn",
+                activity=owner,
+            )
+        )
+        try:
+            while not self.catalog.pending_hil(PRODUCT_SESSION_ID):
+                await asyncio.sleep(0)
+            self.assertTrue(service.requires_host_for_hil("plugin-revoked"))
+            with patch.object(self.live, "skill_state_by_name", new=AsyncMock(return_value=None)):
+                result, status = await service.respond_hil(
+                    PRODUCT_SESSION_ID,
+                    "plugin-revoked",
+                    {"answers": {"plugin-revoked": "Allow"}},
+                )
+            self.assertEqual(status, 409)
+            self.assertEqual(result["error"], "plugin_component_stale")
+            self.assertFalse(waiter.done())
+            self.assertEqual(len(self.catalog.pending_hil(PRODUCT_SESSION_ID)), 1)
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+            owner.close()
+
+    async def test_component_request_pins_retry_and_validates_action_before_resuming(self) -> None:
+        gate = Activities()
+        runtime, _ = self.runtime_service()
+        service = self.session_service(runtime, activities=gate)
+        owner = gate.enter(ActivityDomain.TURN)
+        self.live.turn_activity = owner
+        reference = {
+            "plugin": "comparison",
+            "component": "matrix",
+            "fingerprint": "version-one",
+            "binding": "fixed",
+        }
+        components = Mock()
+        components.resolve.return_value = reference
+        components.snapshot.return_value = {
+            "descriptor": {
+                "capabilities": ["interaction.answer"],
+                "components": [
+                    {
+                        "id": "matrix",
+                        "input_schema": {"type": "object"},
+                        "output_schema": {"type": "object", "required": ["selected"]},
+                        "actions": [{"id": "select", "capability": "interaction.answer"}],
+                    }
+                ],
+            },
+        }
+        self.live._skills = SimpleNamespace(components=components)
+        command = ComponentInvocation(
+            request_id="compare-step",
+            slot="custom.matrix",
+            data={"papers": ["A", "B"]},
+            title="Choose papers",
+        )
+        waiter = asyncio.create_task(
+            self.live.component_interaction(command, turn_id="compare-turn", waiting=True)
+        )
+        retry = None
+        try:
+            while not self.catalog.pending_hil(PRODUCT_SESSION_ID):
+                await asyncio.sleep(0)
+            record = self.catalog.pending_hil(PRODUCT_SESSION_ID)[0]
+            retry = asyncio.create_task(
+                self.live.component_interaction(command, turn_id="compare-turn", waiting=True)
+            )
+            await asyncio.sleep(0)
+            components.resolve.assert_called_once()
+            self.assertEqual(record.payload["questions"][0]["component"], reference)
+            for answer in (
+                {"action": "undeclared", "values": {}},
+                {"action": "select", "values": {}},
+            ):
+                result, status = await service.respond_hil(
+                    PRODUCT_SESSION_ID,
+                    record.product_request_id,
+                    {"answers": {record.product_request_id: json.dumps(answer)}},
+                )
+                self.assertEqual(status, 409, result)
+                self.assertFalse(waiter.done())
+            values = {
+                "answers": {
+                    record.product_request_id: json.dumps(
+                        {"action": "select", "values": {"selected": ["B"]}}
+                    )
+                }
+            }
+            result, status = await service.respond_hil(
+                PRODUCT_SESSION_ID, record.product_request_id, values
+            )
+            self.assertEqual(status, 200, result)
+            self.assertEqual(await waiter, values)
+            self.assertEqual(await retry, values)
+            components.finish.assert_called_once_with(reference)
+            components.validate.assert_called_with(
+                reference, session_id=PRODUCT_SESSION_ID, user_id=self.live.user_id
+            )
+            self.assertEqual(
+                await self.live.component_interaction(
+                    command, turn_id="compare-turn", waiting=True
+                ),
+                values,
+            )
+            components.resolve.assert_called_once()
+            with self.assertRaisesRegex(ValueError, "component_request_conflict"):
+                await self.live.component_interaction(
+                    command.model_copy(update={"data": {"papers": ["C"]}}),
+                    turn_id="compare-turn",
+                    waiting=True,
+                )
+            components.snapshot.side_effect = ValueError("component_permission_revoked")
+            with self.assertRaisesRegex(ValueError, "component_permission_revoked"):
+                await self.live.component_interaction(command, turn_id="compare-turn", waiting=True)
+        finally:
+            waiter.cancel()
+            if retry is not None:
+                retry.cancel()
+            await asyncio.gather(
+                waiter, *([retry] if retry is not None else []), return_exceptions=True
+            )
+            owner.close()
+
+    async def test_independent_installation_still_requires_exact_host_receipt(self) -> None:
+        gate = Activities()
+        runtime, _ = self.runtime_service()
+        service = self.session_service(runtime, activities=gate)
+        owner = gate.enter(ActivityDomain.TURN)
+        self.live.turn_activity = owner
+        report = {
+            "valid": True,
+            "candidate": "candidate",
+            "sha256": "a" * 64,
+            "descriptor": {
+                "id": "generated",
+                "version": "1.0.0",
+                "capabilities": [],
+                "components": [],
+            },
+        }
+        receipt = {"name": "generated", "version": "1.0.0", "enabled": True, "sha256": "a" * 64}
+        skills = SimpleNamespace(
+            components=None,
+            installation_report=Mock(return_value=report),
+            installation_receipt=Mock(return_value=None),
+        )
+        self.live._skills = skills
+        command = PluginInstallation(request_id="install", path="generated.zip", sha256="a" * 64)
+        waiter = asyncio.create_task(self.live.plugin_installation(command, turn_id="install-turn"))
+        try:
+            published = await asyncio.wait_for(waiter, 1)
+            self.assertTrue(published["published"])
+            record = self.catalog.pending_hil(PRODUCT_SESSION_ID, blocking_only=False)[0]
+            self.assertTrue(service.requires_host_for_hil(record.product_request_id))
+            question = record.payload["questions"][0]
+            with self.assertRaisesRegex(ValueError, "plugin_installation_receipt_invalid"):
+                self.live.validate_installation_answer(
+                    question, {"answers": {record.product_request_id: json.dumps(receipt)}}
+                )
+            self.assertTrue(waiter.done())
+            self.assertEqual(self.catalog.pending_hil(PRODUCT_SESSION_ID), ())
+            self.assertEqual(
+                [
+                    row.product_request_id
+                    for row in self.catalog.pending_hil(PRODUCT_SESSION_ID, blocking_only=False)
+                ],
+                [record.product_request_id],
+            )
+            skills.installation_receipt.return_value = receipt
+            response = {"answers": {record.product_request_id: json.dumps(receipt)}}
+            self.assertTrue(self.live.interactions.is_product_request(record.product_request_id))
+            self.assertIs(self.live.interactions._catalog, self.catalog)
+            self.assertNotIn(record.product_request_id, self.live.interactions._product_waiters)
+            self.live.validate_installation_answer(question, response)
+            self.assertEqual(question["installation_path"], "generated.zip")
+            self.catalog.installation_state(
+                record.product_request_id, {"status": "installed", "receipt": receipt}
+            )
+            skills.installation_receipt.return_value = None
+            self.live.validate_installation_answer(question, response)
+            with self.assertRaisesRegex(ValueError, "plugin_installation_receipt_invalid"):
+                self.live.validate_installation_answer(question, {"cancelled": True})
+            result, status = await service.respond_hil(
+                PRODUCT_SESSION_ID, record.product_request_id, response
+            )
+            self.assertEqual(status, 200, result)
+            self.assertEqual(await waiter, published)
+            self.assertEqual(self.catalog.hil(record.product_request_id).decision, response)
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+            owner.close()
+
+    async def test_runtime_component_response_uses_fixed_binding_validation(self) -> None:
+        components = Mock()
+        reference = {
+            "plugin": "host",
+            "component": "interaction.question",
+            "fingerprint": "host-v1",
+        }
+        components.resolve.return_value = reference
+        self.live._skills = SimpleNamespace(components=components)
+        await self.emit(
+            CallbackKind.USER_INPUT,
+            sequence=1,
+            payload={
+                "request_id": "runtime-component",
+                "questions": [
+                    {"id": "choice", "question": "Choose", "options": [{"label": "Yes"}]}
+                ],
+            },
+        )
+        runtime, _ = self.runtime_service()
+        service = self.session_service(runtime)
+        components.validate.side_effect = ValueError("component_permission_revoked")
+        result, status = await service.respond_hil(
+            PRODUCT_SESSION_ID, "runtime-component", {"answers": {"choice": "Yes"}}
+        )
+        self.assertEqual(status, 409, result)
+        self.assertEqual(result["error"], "component_permission_revoked")
+        self.assertEqual(len(self.catalog.pending_hil(PRODUCT_SESSION_ID)), 1)
+
+    async def test_registered_request_survives_disable_with_empty_data_and_resolves_real_waiter(
+        self,
+    ) -> None:
+        registry = ComponentRegistry(self.root / "components.sqlite3")
+        registry.publish(
+            [
+                {
+                    "fingerprint": "revision-one",
+                    "descriptor": {
+                        "id": "comparison",
+                        "capabilities": ["interaction.answer"],
+                        "components": [
+                            {
+                                "id": "matrix",
+                                "slot": "custom.matrix",
+                                "actions": [{"id": "confirm", "capability": "interaction.answer"}],
+                            }
+                        ],
+                    },
+                    "files": {},
+                    "scenarios": {},
+                }
+            ]
+        )
+        self.live._skills.components = registry
+        runtime, _ = self.runtime_service()
+        service = self.session_service(runtime)
+        command = ComponentInvocation(
+            request_id="select", slot="custom.matrix", data={}, title="Choose"
+        )
+        waiter = asyncio.create_task(
+            self.live.component_interaction(command, turn_id="select-turn", waiting=True)
+        )
+        try:
+            while not self.catalog.pending_hil(PRODUCT_SESSION_ID):
+                if waiter.done():
+                    await waiter
+                await asyncio.sleep(0)
+            record = self.catalog.pending_hil(PRODUCT_SESSION_ID)[0]
+            reference = record.payload["questions"][0]["component"]
+            registry.publish([])
+            self.assertIsNone(
+                await self.live.component_for("custom.matrix", interaction_id="new-question")
+            )
+            body = {
+                "answers": {
+                    record.product_request_id: json.dumps(
+                        {"action": "confirm", "values": {"choice": "A"}}
+                    )
+                }
+            }
+            result, status = await service.respond_hil(
+                PRODUCT_SESSION_ID, record.product_request_id, body
+            )
+            self.assertEqual(status, 200, result)
+            self.assertEqual(await waiter, body)
+            stored = registry.snapshot(reference, user_id=self.live.user_id)
+            self.assertEqual(stored["interaction"]["data"], {})
+            self.assertEqual(stored["interaction"]["status"], "resolved")
+            self.assertEqual(
+                await self.live.component_interaction(command, turn_id="select-turn", waiting=True),
+                body,
+            )
+            duplicate, duplicate_status = await service.respond_hil(
+                PRODUCT_SESSION_ID, record.product_request_id, body
+            )
+            self.assertEqual(duplicate_status, 200, duplicate)
+            self.assertEqual(duplicate["interaction"], result["interaction"])
+            _, conflict_status = await service.respond_hil(
+                PRODUCT_SESSION_ID,
+                record.product_request_id,
+                {"answers": {record.product_request_id: "different"}},
+            )
+            self.assertEqual(conflict_status, 409)
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
+    async def test_runtime_questions_pin_independent_host_state_without_skill(self) -> None:
+        registry = ComponentRegistry(self.root / "components.sqlite3")
+        self.live._skills.components = registry
+        questions = [{"id": "first", "question": "First?"}, {"id": "second", "question": "Second?"}]
+        payload = {"request_id": "two-questions", "questions": questions}
+        await self.emit(CallbackKind.USER_INPUT, sequence=1, payload=payload)
+        stored = self.catalog.hil("two-questions").payload["questions"]
+        self.assertNotEqual(stored[0]["component"]["binding"], stored[1]["component"]["binding"])
+        for question in stored:
+            snapshot = registry.snapshot(question["component"], user_id=self.live.user_id)
+            self.assertEqual(snapshot["interaction"]["data"]["question"], question["question"])
+            self.assertEqual(question["component"]["plugin"], "host")
 
     async def test_hil_is_durable_and_resolved_once(self) -> None:
         await self.emit(
@@ -6711,11 +7228,14 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(resume_request.secret_port)
                 self.assertEqual(
                     tuple(
-                        binding.name
+                        (binding.name, binding.scope)
                         for binding in resume_request.launch_secrets.bindings
-                        if binding.scope is LaunchSecretScope.PROCESS
+                        if binding.name == "SCHOLARSEED_API_KEY"
                     ),
-                    ("SCHOLARSEED_API_KEY",),
+                    (
+                        ("SCHOLARSEED_API_KEY", LaunchSecretScope.PROCESS),
+                        ("SCHOLARSEED_API_KEY", LaunchSecretScope.TOOL),
+                    ),
                 )
                 resume_secret = await resume_request.secret_port.resolve(
                     resume_request.launch_secrets.bindings[0].secret_ref

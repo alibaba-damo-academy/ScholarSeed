@@ -55,7 +55,7 @@ from scholarseed_runtime.contract.session import (
     TurnConfirmationTarget,
     TurnConfirmationTicket,
 )
-from scholarseed_runtime.gateway.driver import RuntimeTurnNotSubmittedError
+from scholarseed_runtime.gateway.driver import RuntimeTurnNotSubmittedError, RuntimeTurnOutcome
 from service.capabilities.service.skills import SkillCatalog
 from service.chat.active import RUNTIME_ID
 from service.chat.api.sessions import mount_session_routes
@@ -94,6 +94,7 @@ from service.chat.service.rejections import (
 from service.chat.service.sessions import SessionService
 from service.chat.service.streams import CONTENT_SAFETY_BLOCKED, CONTENT_SAFETY_MESSAGE
 from service.chat.service.turns import TurnResult, TurnService
+from service.persistence.project import DatabaseBindingError
 from service.platform.activity import Activities, MaintenanceActive
 
 from ._directories import directory
@@ -107,6 +108,8 @@ SETTLEMENT_TIMEOUT_SECONDS = 2.0
 
 
 class _Adapter:
+    resource_evidence = None
+
     runtime_id = RUNTIME_ID
 
     def __init__(
@@ -210,6 +213,44 @@ class _EvidenceControl:
 
 
 class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
+    async def test_projection_recovery_replays_committed_event_once_without_resubmission(
+        self,
+    ) -> None:
+        driver = self.live.runtime_driver
+        adapter = self.live.runtime_session
+        event = RuntimeEvent(
+            schema_version=1,
+            event_id="projection-retry-original",
+            product_session_id=PRODUCT_SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            native_session_id=VENDOR_THREAD_ID,
+            kind=RuntimeEventKind.TOOL_STARTED,
+            native_turn_id=VENDOR_TURN_ID,
+            native_item_id="retained-tool",
+            sequence=1,
+            process_generation=3,
+            delivery=DeliveryClass.MUST_PERSIST,
+            observed_at="2026-09-07T00:00:00Z",
+            payload={"name": "update_plan", "input": {}},
+        )
+        append = self.events.append
+
+        def fail_after_commit(*args, **kwargs):
+            append(*args, **kwargs)
+            raise DatabaseBindingError("storage failed after durable commit")
+
+        with patch.object(self.events, "append", side_effect=fail_after_commit):
+            adapter.queue.put_nowait(event)
+            with self.assertRaises(DatabaseBindingError):
+                await driver._consumer
+        self.assertTrue(driver.projection_failed)
+        self.assertEqual(len(self.events.replay(PRODUCT_SESSION_ID)), 1)
+        await self.live.recover_runtime_projection()
+        self.assertFalse(driver.projection_failed)
+        self.assertEqual(len(self.events.replay(PRODUCT_SESSION_ID)), 1)
+        self.assertEqual(adapter.sequence, 0)
+        self.assertEqual(self.live._broadcast_sequence, 1)
+
     async def test_recovery_block_notification_can_retry_after_publication_failure(self) -> None:
         self.live.active_product_turn_id = "notification-retry"
         await self.emit(RuntimeEventKind.TURN_UNKNOWN)
@@ -466,6 +507,89 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
                 observed_at="2026-09-07T00:00:00Z",
                 payload=data,
             )
+        )
+
+    async def test_observer_resumes_late_settlement_without_resubmitting_native_turn(self) -> None:
+        client_turn_id = "late-projection-settlement"
+        self.catalog.enqueue_message(PRODUCT_SESSION_ID, client_turn_id, {"text": "once"})
+        self.catalog.begin_queued_submission(PRODUCT_SESSION_ID, client_turn_id)
+        self.catalog.mark_queue_running(PRODUCT_SESSION_ID, client_turn_id, VENDOR_TURN_ID)
+        await self.emit(RuntimeEventKind.TURN_STARTED)
+        await self.live.ledger.record_unknown_submission(
+            VENDOR_TURN_ID, safe_error="projection failed"
+        )
+        self.catalog.fail_queued_submission(
+            PRODUCT_SESSION_ID, client_turn_id, unknown=True, safe_error="projection failed"
+        )
+        self.assertEqual(
+            self.catalog.uncertainty(
+                PRODUCT_SESSION_ID, UncertaintyKind.TURN, VENDOR_TURN_ID
+            ).process_generation,
+            3,
+        )
+        self.assertTrue(self.live.ledger.has_unknown_outcome)
+        self.live.active_product_turn_id = client_turn_id
+        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger, activities=Activities())
+        self.live.settlement_observer = turns.resume_pending_settlement
+        await self.emit(RuntimeEventKind.TURN_COMPLETED)
+        task = self.live.current_task
+        self.assertIsNotNone(task)
+        self.assertTrue(self.live.running)
+        await asyncio.wait_for(asyncio.shield(task), 5)
+        self.assertIsNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
+        self.assertFalse(self.live.ledger.has_unknown_outcome)
+        self.assertEqual(
+            self.catalog.queued_message(PRODUCT_SESSION_ID, client_turn_id).state,
+            QueuedMessageState.COMPLETED,
+        )
+        self.assertEqual(
+            self.catalog.uncertainty(
+                PRODUCT_SESSION_ID, UncertaintyKind.TURN, VENDOR_TURN_ID
+            ).state,
+            UncertaintyState.RECONCILED,
+        )
+        self.assertEqual(
+            [record.kind for record in self.events.replay(PRODUCT_SESSION_ID)].count(
+                PRODUCT_EVENT_TURN_RECONCILED
+            ),
+            1,
+        )
+        self.assertEqual(self.live.runtime_session.sequence, 0)
+
+    async def test_late_settlement_requires_reconciled_matching_queue_binding(self) -> None:
+        client_turn_id = "unreconciled-submission"
+        self.catalog.enqueue_message(PRODUCT_SESSION_ID, client_turn_id, {"text": "once"})
+        self.catalog.begin_queued_submission(PRODUCT_SESSION_ID, client_turn_id)
+        self.catalog.mark_queue_running(PRODUCT_SESSION_ID, client_turn_id, VENDOR_TURN_ID)
+        self.catalog.fail_queued_submission(
+            PRODUCT_SESSION_ID, client_turn_id, unknown=True, safe_error="unknown"
+        )
+        await self.live.ledger.record_unknown_submission(VENDOR_TURN_ID, safe_error="unknown")
+        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger, activities=Activities())
+        await turns._settle_queued_outcome(
+            self.live,
+            client_turn_id,
+            RuntimeTurnOutcome.COMPLETED,
+            "",
+            native_turn_id=VENDOR_TURN_ID,
+        )
+        self.assertEqual(
+            self.catalog.queued_message(PRODUCT_SESSION_ID, client_turn_id).state,
+            QueuedMessageState.OUTCOME_UNKNOWN,
+        )
+        self.catalog.transition_uncertainty(
+            PRODUCT_SESSION_ID, UncertaintyKind.TURN, VENDOR_TURN_ID, UncertaintyState.RECONCILED
+        )
+        await turns._settle_queued_outcome(
+            self.live,
+            client_turn_id,
+            RuntimeTurnOutcome.COMPLETED,
+            "",
+            native_turn_id="other-native",
+        )
+        self.assertEqual(
+            self.catalog.queued_message(PRODUCT_SESSION_ID, client_turn_id).state,
+            QueuedMessageState.OUTCOME_UNKNOWN,
         )
 
     async def test_pending_settlement_keeps_recovery_task_while_database_is_locked(self) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import json
 import logging
 import mimetypes
 import os
@@ -45,6 +46,14 @@ from scholarseed_runtime.contract.session import (
     TurnConfirmationReceipt,
     TurnConfirmationTarget,
 )
+from service.capabilities.domain import COMPONENT_ANSWER_CAPABILITY
+from service.capabilities.service.delivery import INSTALLATION_FIELD
+from service.capabilities.service.descriptor import (
+    ComponentValidationError,
+    validate_component_submission,
+)
+from service.capabilities.service.plugins import component_action
+from service.capabilities.service.presentation import PLUGIN_COMPONENT_STALE
 from service.chat.constants import (
     ASK_PERMISSION_MODE,
     AUTOMATIC_CRASH_RETRY,
@@ -91,6 +100,7 @@ from service.chat.persistence.artifacts import ArtifactStatus, SessionArtifactSt
 from service.chat.persistence.catalog import (
     LEGACY_RUNTIME_ID,
     UNCERTAINTY_CONFIRMATION_KEY,
+    HilStatus,
     SessionAccessError,
     SessionCatalogRecord,
     SessionCatalogStore,
@@ -137,6 +147,15 @@ from service.chat.runtime.reconfiguration import (
     PreparationError,
 )
 from service.chat.schema import thinking_from_payload
+from service.chat.service.handoff import (
+    CONTINUATION_BUSY,
+    CONTINUATION_MAX_SOURCE_BYTES,
+    CONTINUATION_MAX_SOURCE_EVENTS,
+    CONTINUATION_MODEL_UNAVAILABLE,
+    CONTINUATION_STALE,
+    CONTINUATION_UNAVAILABLE,
+    continuation_snapshot,
+)
 from service.chat.service.models import RETIRED_NATIVE_MODEL_KEY, SessionModelUnavailableError
 from service.chat.service.settings import SettingsService
 from service.chat.service.workspaces import SessionWorkspaceService
@@ -151,6 +170,9 @@ from service.paths import (
     SESSION_RUNTIME_DIR,
 )
 from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
+from service.platform.bridge import (
+    COMPONENT_REQUEST_MARKER,
+)
 from service.platform.files import (
     MAX_DIRECTORY_ITEMS,
     guess_media_type,
@@ -534,6 +556,62 @@ class SessionService:
         self.require_access(session_id, principal)
         live = self._sessions.get(session_id)
         return bool(live and live.running)
+
+    async def continuation(
+        self,
+        session_id: str,
+        principal: SessionPrincipal,
+        *,
+        turn_id: str = "",
+    ) -> tuple[dict[str, Any], int]:
+        """Read a bounded draft snapshot without opening or mutating either task."""
+
+        async with self._open_lock:
+            self.require_access(session_id, principal)
+            async with AsyncExitStack() as guards:
+                live = self._sessions.get(session_id)
+                if live is not None:
+                    await guards.enter_async_context(live.lifecycle_lock)
+                    if (
+                        live.running
+                        or live.closing
+                        or live.interrupting
+                        or live.steer_lock.locked()
+                        or live.active_product_turn_id
+                        or live.ledger.has_unknown_outcome
+                        or (live.resource_task is not None and not live.resource_task.done())
+                    ):
+                        return {"ok": False, "error": CONTINUATION_BUSY}, HTTP_CONFLICT
+                source = self._access.get(session_id)
+                if source is None:
+                    raise SessionAccessError("session not found")
+                model_id, blocked = self._access.continuation_state(session_id)
+                if (
+                    blocked
+                    or source.status in {SessionStatus.RUNNING, SessionStatus.WAITING_HIL}
+                    or source.last_turn_status == PRODUCT_TURN_OUTCOME_UNKNOWN
+                ):
+                    return {"ok": False, "error": CONTINUATION_BUSY}, HTTP_CONFLICT
+                if not model_id:
+                    return {"ok": False, "error": CONTINUATION_MODEL_UNAVAILABLE}, HTTP_CONFLICT
+                terminal = self._events.continuation_terminal(
+                    session_id, through_seq=source.last_product_seq
+                )
+                if not terminal:
+                    return {"ok": False, "error": CONTINUATION_UNAVAILABLE}, HTTP_CONFLICT
+                if turn_id and terminal != turn_id:
+                    return {"ok": False, "error": CONTINUATION_STALE}, HTTP_CONFLICT
+                try:
+                    records = self._events.continuation_records(
+                        session_id,
+                        through_seq=source.last_product_seq,
+                        limit=CONTINUATION_MAX_SOURCE_EVENTS,
+                        byte_limit=CONTINUATION_MAX_SOURCE_BYTES,
+                    )
+                    payload = continuation_snapshot(source, model_id, records)
+                except (ValueError, UnicodeError):
+                    return {"ok": False, "error": CONTINUATION_UNAVAILABLE}, HTTP_CONFLICT
+                return payload, HTTP_OK
 
     async def open(
         self,
@@ -1214,7 +1292,7 @@ class SessionService:
             "project_path": str(live.project_path) if live.project_path else None,
             "resumed": live.resumed,
             "last_seq": live.last_seq,
-            "pending_hil": live.pending_hil_snapshot(),
+            "pending_hil": live.pending_hil_snapshot(blocking_only=False),
             "uncertain_operations": live.ledger.uncertainty_snapshot(),
             "unknown_outcome": live.ledger.has_unknown_outcome,
             "running": live.turn_active and not recovery_blocked,
@@ -1470,9 +1548,24 @@ class SessionService:
             if await live.cancel_resource_wait():
                 return {"ok": True, "idle": True, "interrupting": False, "cancelled_waiting": True}
         if not live.running:
-            return {"ok": True, "idle": True, "interrupting": False}
+            if live.runtime_session is None:
+                return {"ok": True, "idle": True, "interrupting": False}
+            try:
+                activity = await live.runtime_session.activity()
+            except Exception:
+                return {
+                    "ok": False,
+                    "error": "previous_turn_activity_unavailable",
+                    "interrupting": False,
+                }
+            if activity.idle and not (
+                live.runtime_driver is not None and live.runtime_driver.projection_failed
+            ):
+                return {"ok": True, "idle": True, "interrupting": False}
         try:
             await live.interrupt(cleanup_background_processes=True)
+            if not live.running:
+                await live.recover_runtime_projection()
         except Exception as exc:
             self._logger.error(
                 "session_interrupt_failed session_id=%s failure_type=%s safe_error=%s",
@@ -1599,7 +1692,12 @@ class SessionService:
 
     def requires_host_for_hil(self, request_id: str) -> bool:
         try:
-            return self._access.hil(request_id).method in {
+            record = self._access.hil(request_id)
+            return any(
+                isinstance(question, Mapping)
+                and bool(question.get("component") or question.get(INSTALLATION_FIELD))
+                for question in record.payload.get("questions", [])
+            ) or record.method in {
                 BROWSER_APPROVAL_METHOD,
                 BROWSER_HISTORY_APPROVAL_METHOD,
             }
@@ -1615,6 +1713,29 @@ class SessionService:
         live = self._sessions.get(session_id)
         if live is None:
             return {"ok": False, "error": "session_not_live"}, HTTP_CONFLICT
+        try:
+            stored = self._access.hil(request_id)
+            if stored.session_id != session_id:
+                return {"ok": False, "error": "hil_request_stale"}, HTTP_CONFLICT
+            if stored.status is HilStatus.RESOLVED and any(
+                isinstance(question, Mapping) and question.get("component")
+                for question in stored.payload.get("questions", [])
+            ):
+                for question in stored.payload.get("questions", []):
+                    reference = question.get("component") if isinstance(question, Mapping) else None
+                    if reference:
+                        snapshot = live.component_registry.snapshot(reference, user_id=live.user_id)
+                        if snapshot["interaction"]["session_id"] != session_id:
+                            raise ValueError("component_binding_invalid")
+                if dict(stored.decision or {}) != dict(body):
+                    return {"ok": False, "error": "hil_response_conflict"}, HTTP_CONFLICT
+                return {
+                    "ok": True,
+                    "request_id": request_id,
+                    "interaction": interaction_snapshot(stored),
+                }, HTTP_OK
+        except (SessionAccessError, ValueError, OSError, KeyError, TypeError) as error:
+            return {"ok": False, "error": str(error)}, HTTP_CONFLICT
         activity = live.interactions.product_activity(request_id) or live.turn_activity
         lease = (
             self._activities.continue_from(activity, ActivityDomain.TURN)
@@ -1622,6 +1743,46 @@ class SessionService:
             else self._activities.enter(ActivityDomain.TURN, root=True)
         )
         with lease:
+            try:
+                record = self._access.hil(request_id)
+                if record.session_id != session_id:
+                    return {"ok": False, "error": "hil_request_stale"}, HTTP_CONFLICT
+                for question in record.payload.get("questions", []):
+                    if isinstance(question, Mapping) and question.get(INSTALLATION_FIELD):
+                        live.validate_installation_answer(question, body)
+                    reference = question.get("component") if isinstance(question, Mapping) else None
+                    if not reference:
+                        continue
+                    if not isinstance(reference, Mapping):
+                        raise ValueError(PLUGIN_COMPONENT_STALE)
+                    live.component_registry.validate(
+                        reference, session_id=session_id, user_id=live.user_id
+                    )
+                    if question.get(COMPONENT_REQUEST_MARKER) and not body.get("cancelled"):
+                        answers = body.get("answers")
+                        if not isinstance(answers, Mapping) or set(answers) != {question["id"]}:
+                            raise ValueError("component_answer_invalid")
+                        answer = json.loads(answers[question["id"]])
+                        if not isinstance(answer, dict) or set(answer) != {"action", "values"}:
+                            raise ValueError("component_answer_invalid")
+                        snapshot = live.component_registry.snapshot(reference, user_id=live.user_id)
+                        action = component_action(
+                            snapshot["descriptor"], reference["component"], answer["action"]
+                        )
+                        if action is None or action["capability"] != COMPONENT_ANSWER_CAPABILITY:
+                            raise ValueError("component_action_denied")
+                        definition = next(
+                            item
+                            for item in snapshot["descriptor"]["components"]
+                            if item["id"] == reference["component"]
+                        )
+                        validate_component_submission(
+                            definition, answer["action"], answer["values"]
+                        )
+            except ComponentValidationError as error:
+                return {"ok": False, "error": str(error), "detail": error.detail}, HTTP_CONFLICT
+            except (SessionAccessError, ValueError, OSError, KeyError, TypeError) as error:
+                return {"ok": False, "error": str(error)}, HTTP_CONFLICT
             if live.interactions.is_product_request(request_id):
                 interaction = await live.interactions.resolve(
                     None, request_id, body, active_turn_id=live.ledger.active_turn_id

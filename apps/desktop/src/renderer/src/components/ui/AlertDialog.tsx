@@ -1,5 +1,5 @@
 import { type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 
 import { Button, type ButtonVariant } from './Button'
 import { dialogContentClassName, dialogOverlayClassName } from './classes'
@@ -121,5 +121,5 @@ export function AlertDialogOverlay({
 }
 export const AlertDialogPortal = ({ children }: { children?: ReactNode }): JSX.Element => {
   if (typeof document === 'undefined') return <>{children}</>
-  return createPortal(children, document.body)
+  return <Portal>{children}</Portal>
 }

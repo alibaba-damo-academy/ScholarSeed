@@ -229,6 +229,15 @@ class LiteratureEvidenceService:
         target = RecordTarget(RecordOwner.LITERATURE_ATTACHMENT, item.id, primary.id)
         return replace(document, record_target=target)
 
+    def is_primary_attachment(self, project_id: str, source_id: str, attachment_id: str) -> bool:
+        self._scoped_item(project_id, source_id)
+        primary = self._repository.primary_attachment(source_id)
+        return (
+            primary is not None
+            and primary.id == attachment_id
+            and primary.media_type == PDF_MEDIA_TYPE
+        )
+
     def catalog(self, project_id: str, offset: int, limit: int) -> dict:
         items = self._repository.list(project_id=project_id, offset=offset, limit=limit + 1)
         sources = []

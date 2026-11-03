@@ -28,6 +28,7 @@ const FEEDBACK_KEYS = {
     'request.httpFailure': 'status',
     'request.diagnostic': 'detail',
     'request.resourceReviewRequired': 'none',
+    'continuation.modelUnavailable': 'none',
     'models.deferred': 'none',
     'models.effortReset': 'none',
     'models.nextTurn': 'none',

@@ -61,7 +61,10 @@ test('citation display does not change the source or its citation matching URLs'
 })
 
 test('citation evidence renders the server projection and keeps an explicit original entry', () => {
-  const source = readFileSync(new URL('./Citations.tsx', import.meta.url), 'utf8')
+  const source =
+    readFileSync(new URL('./Citations.tsx', import.meta.url), 'utf8') +
+    '\n' +
+    readFileSync(new URL('../../components/business/Citation.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /presentation\.mode === 'structured_text'/)
   assert.match(source, /presentation\.mode === 'region_image'/)
@@ -74,7 +77,10 @@ test('citation evidence renders the server projection and keeps an explicit orig
 })
 
 test('source popover renders a directory and defers evidence to each citation card', () => {
-  const source = readFileSync(new URL('./Citations.tsx', import.meta.url), 'utf8')
+  const source =
+    readFileSync(new URL('./Citations.tsx', import.meta.url), 'utf8') +
+    '\n' +
+    readFileSync(new URL('../../components/business/Citation.tsx', import.meta.url), 'utf8')
   const directory = source.slice(
     source.indexOf('projected.map'),
     source.indexOf('</PopoverContent></Popover></div>')
@@ -90,7 +96,10 @@ test('source popover renders a directory and defers evidence to each citation ca
 })
 
 test('web citations reuse the citation trigger and open only the projected source URL', () => {
-  const source = readFileSync(new URL('./Citations.tsx', import.meta.url), 'utf8')
+  const source =
+    readFileSync(new URL('./Citations.tsx', import.meta.url), 'utf8') +
+    '\n' +
+    readFileSync(new URL('../../components/business/Citation.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /function openWebSource/)
   assert.match(source, /window\.scholarseed\.openExternal\(url\)/)
@@ -117,4 +126,21 @@ test('Markdown offers only registered citation URLs to the citation renderer', (
 
   assert.match(anchor, /properties\[CITATION_MARKER\]/)
   assert.doesNotMatch(anchor, /citationUrls\.has\(href\)/)
+})
+
+test('citation adapters retain answer hashing, range binding and authenticated navigation outside shared views', () => {
+  const host = readFileSync(new URL('./Citations.tsx', import.meta.url), 'utf8')
+  const view = readFileSync(
+    new URL('../../components/business/Citation.tsx', import.meta.url),
+    'utf8'
+  )
+  assert.match(host, /await sha256Text\(text\)/)
+  assert.match(host, /range\?\.start \?\? 0/)
+  assert.match(host, /range\?\.end \?\? 0/)
+  assert.match(host, /workspace\.revealCitation\(source, source\.matches\[0\]\)/)
+  assert.match(host, /previewUrl=\{citationPreviewUrl\}/)
+  assert.doesNotMatch(
+    view,
+    /window\.scholarseed|resolveCitation|sha256Text|from ['"].*\/(?:api|store|workspace)['"]|useApp\(/
+  )
 })

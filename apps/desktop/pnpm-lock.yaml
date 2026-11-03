@@ -231,6 +231,9 @@ importers:
       ws:
         specifier: 8.21.3
         version: 8.21.3
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
       yauzl:
         specifier: 3.4.0
         version: 3.4.0
@@ -9011,8 +9014,7 @@ snapshots:
 
   yallist@5.0.0: {}
 
-  yaml@2.9.1:
-    optional: true
+  yaml@2.9.1: {}
 
   yargs-parser@21.1.1: {}
 

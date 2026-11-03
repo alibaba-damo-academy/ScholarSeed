@@ -1221,7 +1221,9 @@ function ForegroundNotice(): null {
       title: t('notice.completed'),
       description:
         typeof message === 'object' && !('ns' in message)
-          ? skills('installed', { name: message.name })
+          ? message.key === 'plugin.uiUpdated'
+            ? skills('plugin.uiUpdated')
+            : skills(message.key, { name: message.name })
           : renderFeedback(i18n, message),
     })
     set({ foregroundNotice: null })

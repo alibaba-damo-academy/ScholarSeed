@@ -90,12 +90,17 @@ test('headless project center consumes declared scenarios, page actions and shar
       throw error
     }
   }
+  const expectTasksHidden = async () => {
+    await expect(page.locator('#home-tasks-heading')).toHaveCount(0)
+    await expect(page.getByTestId('home-tasks-list')).toHaveCount(0)
+    await expect(page.getByTestId('home-tasks-previous')).toHaveCount(0)
+    await expect(page.getByTestId('home-tasks-next')).toHaveCount(0)
+  }
   await open('home-empty')
   await expect(page.getByTestId('home-projects-empty')).toBeVisible()
-  await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
-  await page.screenshot({ path: join(OUTPUT, 'empty-projects-and-tasks.png') })
-  await page.getByTestId('home-tasks-empty').scrollIntoViewIfNeeded()
-  await page.screenshot({ path: join(OUTPUT, 'empty-task-detail.png') })
+  await expectTasksHidden()
+  await expect(page.getByTestId('home-project-create-empty')).toBeVisible()
+  await page.screenshot({ path: join(OUTPUT, 'empty-project-guidance.png') })
   await open('home-create')
   await page.getByTestId('home-project-create-empty').click()
   await expect(page.getByTestId('project-new-modal')).toBeVisible()
@@ -112,12 +117,13 @@ test('headless project center consumes declared scenarios, page actions and shar
   assert.equal((await retained.json()).projects[0].id, createdProjects[0].id)
   await open('home-empty')
   await expect(page.getByTestId('home-projects-empty')).toBeVisible()
-  await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
+  await expectTasksHidden()
 
   await open('home-no-tasks')
   await expect(page.getByTestId('home-projects-grid').locator('button[data-testid^="home-project-"]:not([aria-haspopup])')).toHaveCount(3)
-  await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
-  await page.screenshot({ path: join(OUTPUT, 'projects-with-empty-tasks.png') })
+  await expectTasksHidden()
+  await expect(page.getByTestId('home-projects-grid').locator('../..')).toHaveClass(/grid-cols-1/)
+  await page.screenshot({ path: join(OUTPUT, 'projects-expanded-without-tasks.png') })
 
   await open('home-long-content')
   await expect(page.getByTestId('home-projects-grid').locator('button[data-testid^="home-project-"]:not([aria-haspopup])')).toHaveCount(3)
@@ -357,7 +363,7 @@ test('headless project center consumes declared scenarios, page actions and shar
     assert.equal(await control.evaluate(() => document.documentElement.dataset.testReloads ?? null), null)
     await control.screenshot({ animations: 'disabled', path: join(OUTPUT, 'controls-operations-' + combination.language + '.png') })
     await page.reload()
-    await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
+    await expectTasksHidden()
     await expect(page.locator('html')).toHaveAttribute('data-theme', combination.theme)
     await page.getByTestId('activity-account').click()
     if (combination.login === 'anonymous') await expect(page.getByTestId('account-menu-anonymous-login')).toBeVisible()
@@ -466,15 +472,20 @@ test('headless project center consumes declared scenarios, page actions and shar
     }
     if (policy.projects === 0) await expect(page.getByTestId('home-projects-empty')).toBeVisible()
     await expect(projects).toHaveCount(Math.min(policy.projects, PREVIEW_HOME.projectPage))
-    if (policy.tasks === 0) await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
-    await expect(tasks).toHaveCount(Math.min(policy.tasks, PREVIEW_HOME.taskPage))
+    const showTasks = policy.projects > 0 && policy.tasks > 0
+    if (!showTasks) await expectTasksHidden()
+    if (policy.projects > 0) await expect(page.getByTestId('home-projects-grid').locator('../..')).toHaveClass(showTasks ? /grid-cols-2/ : /grid-cols-1/)
+    await expect(page.getByTestId('home-tasks-list')).toHaveCount(showTasks ? 1 : 0)
+    await expect(tasks).toHaveCount(showTasks ? Math.min(policy.tasks, PREVIEW_HOME.taskPage) : 0)
     if (policy.projects > 0) await expect(page.getByTestId('home-projects-previous')).toBeDisabled()
     else await expect(page.getByTestId('home-projects-previous')).toHaveCount(0)
-    await expect(page.getByTestId('home-tasks-previous')).toBeDisabled()
+    if (showTasks) await expect(page.getByTestId('home-tasks-previous')).toBeDisabled()
+    else await expect(page.getByTestId('home-tasks-previous')).toHaveCount(0)
     if (policy.projects > PREVIEW_HOME.projectPage) await expect(page.getByTestId('home-projects-next')).toBeEnabled()
     else if (policy.projects > 0) await expect(page.getByTestId('home-projects-next')).toBeDisabled()
     else await expect(page.getByTestId('home-projects-next')).toHaveCount(0)
-    if (policy.tasks > PREVIEW_HOME.taskPage) await expect(page.getByTestId('home-tasks-next')).toBeEnabled()
+    if (!showTasks) await expect(page.getByTestId('home-tasks-next')).toHaveCount(0)
+    else if (policy.tasks > PREVIEW_HOME.taskPage) await expect(page.getByTestId('home-tasks-next')).toBeEnabled()
     else await expect(page.getByTestId('home-tasks-next')).toBeDisabled()
     observations.push({ id: scenario.id, section: scenario.section, policy, visibleProjectRows: await projects.count(), visibleTaskRows: await tasks.count() })
   }

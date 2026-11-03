@@ -20,6 +20,7 @@ class RuntimeCapabilityName(str, Enum):
     HOST_RECONFIGURATION = "host_reconfiguration"
     SHARED_HOST_CONTROL = "shared_host_control"
     TURN_CONFIRMATION = "turn_confirmation"
+    THREAD_REPLACEMENT = "thread_replacement"
     TURN_ADMISSION = "turn_admission"
     RESUME = "resume"
     FORK = "fork"

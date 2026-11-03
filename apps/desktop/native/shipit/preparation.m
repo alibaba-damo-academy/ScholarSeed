@@ -91,6 +91,16 @@ static BOOL ValidCapture(id value, BOOL contents) {
         [value[@"path"] hasPrefix:@"/"] && ValidIdentity(value[@"parent"]) && ValidIdentity(value[@"item"]) &&
         (!contents || ValidIdentity(value[@"contents"]));
 }
+static BOOL CandidateOwnershipMatches(NSDictionary *expected, NSDictionary *current) {
+    if (!current || ![current[@"path"] isEqual:expected[@"path"]] ||
+        ![current[@"parent"] isEqual:expected[@"parent"]]) return NO;
+    for (NSString *key in @[@"item", @"contents"]) {
+        NSDictionary *before = expected[key], *after = current[key];
+        if (![before[@"dev"] isEqual:after[@"dev"]] || ![before[@"ino"] isEqual:after[@"ino"]] ||
+            (![before[@"uid"] isEqual:after[@"uid"]] && ![after[@"uid"] isEqual:@(getuid())])) return NO;
+    }
+    return YES;
+}
 static BOOL Save(NSError **error) {
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:@{@"schema":SSPreparationSchema, @"record":SSPreparationRecord ?: @{}} format:NSPropertyListBinaryFormat_v1_0 options:0 error:error];
     if (!data) return NO;
@@ -153,8 +163,10 @@ BOOL SSPreparationOpenDirectory(NSString *directory, NSError **error) {
             [[record[@"directory"][@"path"] lastPathComponent] hasPrefix:SSPreparationPrefix] &&
             (!record[@"candidate"] || ValidCapture(record[@"candidate"], YES)) &&
             (!record[@"binding"] || SSBindingValid(record[@"binding"])) &&
+            (!record[@"ownership"] || [record[@"ownership"] isEqual:@YES]) &&
             (!record[@"failure"] || ([record[@"failure"] isKindOfClass:NSDictionary.class] &&
                 [record[@"failure"][@"code"] isKindOfClass:NSNumber.class] &&
+                (!record[@"failure"][@"launched"] || [record[@"failure"][@"launched"] isEqual:@YES]) &&
                 ValidCapture(record[@"failure"][@"target"], YES) &&
                 [record[@"failure"][@"target"][@"parent"] isEqual:record[@"target"][@"parent"]] &&
                 [record[@"failure"][@"target"][@"item"] isEqual:record[@"target"][@"item"]] &&
@@ -276,6 +288,7 @@ static BOOL FailurePublished(void) {
 NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSError **error) {
     if (SSPreparationFD < 0) { Fail(error, EBADF); return nil; }
     if (!sourceURL.isFileURL || !targetURL.isFileURL) { Fail(error, EINVAL); return nil; }
+    if (SSPreparationRecord[@"ownership"]) { Fail(error, ECANCELED); return nil; }
     NSDictionary *source = Capture(sourceURL.path, YES);
     if (!source) { Fail(error, errno); return nil; }
     NSDictionary *target = Capture(targetURL.path, YES);
@@ -348,15 +361,15 @@ NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bindi
     NSLog(@"[shipit-preparation] event=ready attempt=%lu", (unsigned long)attempts + 1);
     return candidateURL;
 }
-BOOL SSPreparationValidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
+static BOOL ValidatePreparation(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSError **error) {
     if (SSPreparationFD < 0) return Fail(error, EBADF);
     if (SSPreparationRecord[@"failure"]) return Fail(error, ECANCELED);
     if (![(binding ?: @{}) isEqual:(SSPreparationRecord[@"binding"] ?: @{})]) return Fail(error, ESTALE);
-    if (!sourceURL.isFileURL || !targetURL.isFileURL || !candidateURL.isFileURL) return Fail(error, EINVAL);
+    if (!sourceURL.isFileURL || !targetURL.isFileURL) return Fail(error, EINVAL);
     if (![SSPreparationRecord[@"state"] isEqual:SSPreparationReady]) return Fail(error, ESTALE);
-    for (NSString *key in @[@"source", @"target", @"candidate", @"directory"]) {
+    for (NSString *key in @[@"source", @"target", @"directory"]) {
         NSDictionary *expected = SSPreparationRecord[key];
-        NSURL *url = [key isEqual:@"source"] ? sourceURL : [key isEqual:@"target"] ? targetURL : [key isEqual:@"candidate"] ? candidateURL : [NSURL fileURLWithPath:expected[@"path"]];
+        NSURL *url = [key isEqual:@"source"] ? sourceURL : [key isEqual:@"target"] ? targetURL : [NSURL fileURLWithPath:expected[@"path"]];
         NSDictionary *current = Capture(url.path, ![key isEqual:@"directory"]);
         if (!current || ![current isEqual:expected]) return Fail(error, ESTALE);
     }
@@ -368,14 +381,46 @@ BOOL SSPreparationValidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bin
     if (!inspected) return Fail(error, code);
     return info.st_uid == geteuid() && !(info.st_mode & (S_IRWXG | S_IRWXO)) ? YES : Fail(error, EPERM);
 }
+BOOL SSPreparationValidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
+    if (!candidateURL.isFileURL) return Fail(error, EINVAL);
+    if (!ValidatePreparation(sourceURL, targetURL, binding, error)) return NO;
+    NSDictionary *expected = SSPreparationRecord[@"candidate"], *current = Capture(candidateURL.path, YES);
+    if ([current isEqual:expected]) return YES;
+    NSLog(@"[shipit-preparation] event=validation-failed subject=candidate ownership-transition=%@",
+        CandidateOwnershipMatches(expected, current) ? @"yes" : @"no");
+    return Fail(error, ESTALE);
+}
+BOOL SSPreparationBeginOwnership(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *candidate, NSError **error) {
+    if (!SSPreparationValidate(source, target, binding, candidate, error)) return NO;
+    if (SSPreparationRecord[@"ownership"]) return Fail(error, ECANCELED);
+    SSPreparationRecord[@"ownership"] = @YES;
+    if (Save(error)) return YES;
+    [SSPreparationRecord removeObjectForKey:@"ownership"];
+    return NO;
+}
+BOOL SSPreparationAcceptOwnership(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
+    if (!candidateURL.isFileURL) return Fail(error, EINVAL);
+    if (!ValidatePreparation(sourceURL, targetURL, binding, error)) return NO;
+    NSDictionary *before = SSPreparationRecord[@"candidate"], *after = Capture(candidateURL.path, YES);
+    if (!CandidateOwnershipMatches(before, after)) return Fail(error, ESTALE);
+    // SQRLInstaller.takeOwnershipOfFileSecurity uses the real UID, not a
+    // request-supplied account. Its private copy remains under our EUID-owned parent.
+    if (![after[@"item"][@"uid"] isEqual:@(getuid())] || ![after[@"contents"][@"uid"] isEqual:@(getuid())]) return Fail(error, EPERM);
+    if (!SSPreparationRecord[@"ownership"]) return Fail(error, EPERM);
+    SSPreparationRecord[@"candidate"] = after;
+    [SSPreparationRecord removeObjectForKey:@"ownership"];
+    if (!Save(error)) { SSPreparationRecord[@"candidate"] = before; SSPreparationRecord[@"ownership"] = @YES; return NO; }
+    NSLog(@"[shipit-preparation] event=ownership-accepted uid=%u bundle-changed=%d contents-changed=%d",
+        getuid(), ![before[@"item"] isEqual:after[@"item"]], ![before[@"contents"] isEqual:after[@"contents"]]);
+    return SSPreparationValidate(sourceURL, targetURL, binding, candidateURL, error);
+}
 static BOOL FailureTrusted(NSURL *source, NSError **error) {
     if (SSPreparationFD < 0) return Fail(error, EBADF);
     if (!source.isFileURL || ![SSPreparationRecord[@"state"] isEqual:SSPreparationReady]) return Fail(error, ESTALE);
     if (![Capture(source.path, YES) isEqual:SSPreparationRecord[@"source"]]) return Fail(error, ESTALE);
-    for (NSString *key in @[@"candidate", @"directory"]) {
-        NSDictionary *expected = SSPreparationRecord[key];
-        if (![Capture(expected[@"path"], [key isEqual:@"candidate"]) isEqual:expected]) return Fail(error, ESTALE);
-    }
+    if (!CandidateOwnershipMatches(SSPreparationRecord[@"candidate"], Capture(SSPreparationRecord[@"candidate"][@"path"], YES))) return Fail(error, ESTALE);
+    NSDictionary *expected = SSPreparationRecord[@"directory"];
+    if (![Capture(expected[@"path"], NO) isEqual:expected]) return Fail(error, ESTALE);
     int directory = OpenDirectory(SSPreparationRecord[@"directory"][@"path"]);
     if (directory < 0) return Fail(error, errno);
     struct stat info;
@@ -392,13 +437,28 @@ BOOL SSPreparationRecordFailure(NSURL *source, NSURL *actualTarget, NSDictionary
         ![actual[@"item"] isEqual:expected[@"item"]] || ![actual[@"contents"] isEqual:expected[@"contents"]] ||
         ![[actual[@"path"] stringByDeletingLastPathComponent] isEqual:[expected[@"path"] stringByDeletingLastPathComponent]]) return Fail(error, ESTALE);
     id previous = SSPreparationRecord[@"failure"];
+    id previousOwnership = SSPreparationRecord[@"ownership"];
+    NSDictionary *previousCandidate = SSPreparationRecord[@"candidate"];
+    NSDictionary *candidate = Capture(previousCandidate[@"path"], YES);
+    if (!CandidateOwnershipMatches(previousCandidate, candidate)) return Fail(error, ESTALE);
+    // A failed signature/permission operation can have completed ownership first.
+    // Persist that snapshot only with the terminal fence; this never admits install.
+    SSPreparationRecord[@"candidate"] = candidate;
     SSPreparationRecord[@"failure"] = @{@"target":actual, @"code":@(code)};
+    [SSPreparationRecord removeObjectForKey:@"ownership"];
     if (Save(error)) return YES;
+    SSPreparationRecord[@"candidate"] = previousCandidate;
+    if (previousOwnership) SSPreparationRecord[@"ownership"] = previousOwnership;
     if (previous) SSPreparationRecord[@"failure"] = previous; else [SSPreparationRecord removeObjectForKey:@"failure"];
     return NO;
 }
 SSPreparationFailure SSPreparationRecoverFailure(NSURL *source, NSURL *target, NSDictionary *binding, NSInteger *code, NSError **error) {
-    if (!SSPreparationRecord[@"failure"]) return SSPreparationFailureNone;
+    if (!SSPreparationRecord[@"failure"]) {
+        if (!SSPreparationRecord[@"ownership"]) return SSPreparationFailureNone;
+        // No target acquisition is permitted until ownership intent is cleared
+        // together with the verified candidate snapshot. Never resume this attempt.
+        if (!SSPreparationRecordFailure(source, target, binding, ECANCELED, error)) return SSPreparationFailureInvalid;
+    }
     if (!source.isFileURL || !target.isFileURL) { Fail(error, EINVAL); return SSPreparationFailureInvalid; }
     char sourceParent[PATH_MAX];
     if (!realpath(source.path.stringByDeletingLastPathComponent.fileSystemRepresentation, sourceParent)) {
@@ -442,6 +502,22 @@ SSPreparationFailure SSPreparationRecoverFailure(NSURL *source, NSURL *target, N
     }
     if (code) *code = [failure[@"code"] integerValue];
     return SSPreparationFailureRestored;
+}
+BOOL SSPreparationFinishFailure(NSURL *source, NSURL *target, NSDictionary *binding, BOOL authorized,
+    BOOL (^running)(void), BOOL (^launch)(void), NSError **error) {
+    NSInteger code = 0;
+    if (SSPreparationRecoverFailure(source, target, binding, &code, error) != SSPreparationFailureRestored) return NO;
+    if (!SSReadinessPublishBound(source, target, binding, NO, code, error)) return NO;
+    if (!authorized || [SSPreparationRecord[@"failure"][@"launched"] boolValue]) return YES;
+    if (!running || !launch) return Fail(error, EINVAL);
+    if (!running() && !launch()) return Fail(error, EIO);
+    NSMutableDictionary *failure = [SSPreparationRecord[@"failure"] mutableCopy];
+    failure[@"launched"] = @YES;
+    id before = SSPreparationRecord[@"failure"];
+    SSPreparationRecord[@"failure"] = failure;
+    if (Save(error)) return YES;
+    SSPreparationRecord[@"failure"] = before;
+    return NO;
 }
 BOOL SSPreparationRetire(NSURL *sourceURL, NSURL *targetURL, NSError **error) {
     if (SSPreparationFD < 0) return Fail(error, EBADF);

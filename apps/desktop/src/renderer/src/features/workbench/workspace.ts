@@ -14,7 +14,6 @@ import {
   type CitationResolution,
 } from '../../contracts/citations.ts'
 import {
-  DOCUMENT_LOAD_FAILURE_KIND,
   commitDocument,
   createManagedCopy,
   documentIdFor,

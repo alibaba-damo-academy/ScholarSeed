@@ -34,17 +34,26 @@ export const WINDOWS_BACKEND_BOOTSTRAP = [
 ].join('\n')
 export const FAMILY_START_BYTE = Buffer.from([1])
 
-/** Returns false if descendants needed forced exit; that attempt cannot install. */
+async function waitForFamilyExit(family: ProcessFamily): Promise<boolean> {
+  const deadline = Date.now() + FAMILY_DRAIN_TIMEOUT_MS
+  while (family.active() !== 0) {
+    if (Date.now() >= deadline) return false
+    await delay(FAMILY_POLL_MS)
+  }
+  return true
+}
+
+/** Allow natural exit before forcing descendants; a forced attempt cannot install. */
 export async function drainProcessFamily(family: ProcessFamily): Promise<boolean> {
+  if (!forcedFamilies.has(family)) {
+    await waitForFamilyExit(family)
+  }
   if (family.active() !== 0) {
     forcedFamilies.add(family)
     family.terminate()
   }
-  const deadline = Date.now() + FAMILY_DRAIN_TIMEOUT_MS
-  while (family.active() !== 0) {
-    if (Date.now() >= deadline) throw new Error('Owned runtime process family did not exit')
-    await delay(FAMILY_POLL_MS)
-  }
+  if (!(await waitForFamilyExit(family)))
+    throw new Error('Owned runtime process family did not exit')
   family.close()
   return !forcedFamilies.has(family)
 }

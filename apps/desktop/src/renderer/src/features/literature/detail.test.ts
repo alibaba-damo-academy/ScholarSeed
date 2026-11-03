@@ -68,7 +68,6 @@ test('a newer detail read stays authoritative after the disposed request rejects
 })
 
 const detailSource = readFileSync(new URL('./LiteratureDetail.tsx', import.meta.url), 'utf8')
-const literatureStyles = readFileSync(new URL('./literature.css', import.meta.url), 'utf8')
 
 test('attachment icon buttons do not forward unsupported tooltip attributes', () => {
   const iconButtons = detailSource.match(/<IconButton\b[\s\S]*?(?=\sicon=)/g) ?? []
@@ -135,7 +134,7 @@ test('attachment marks show source framing only when comments exist', () => {
   assert.match(detailSource, /const hasComments = markComments\.length > 0/)
   assert.match(
     detailSource,
-    /\{hasComments \?\s*\(?\s*<span className="lit-attachment-mark-label[^\"]*">\s*\{literature\('attachment\.sourceLabel'\)\}\s*<\/span>\s*\)?\s*: null\}/
+    /\{hasComments \?\s*\(?\s*<span className="lit-attachment-mark-label[^"]*">\s*\{literature\('attachment\.sourceLabel'\)\}\s*<\/span>\s*\)?\s*: null\}/
   )
   assert.match(
     detailSource,

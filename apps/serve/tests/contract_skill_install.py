@@ -53,6 +53,8 @@ from service.capabilities.api.routes import (  # noqa: E402
     SKILL_ERROR_DUPLICATE,
     SKILL_ERROR_INVALID,
 )
+from service.capabilities.service.descriptor import PLUGIN_DESCRIPTOR  # noqa: E402
+from service.capabilities.service.package import PACKAGE_MANIFEST  # noqa: E402
 from service.capabilities.service.skills import (  # noqa: E402
     SKILL_CATEGORY_USER,
     load_skill_state,
@@ -116,7 +118,51 @@ def main() -> int:
         assert preview.json()["preview"]["name"] == "preview-only"
         assert preview.json()["preview"]["description"] == "uploaded by contract test"
         assert "steps here" in preview.json()["preview"]["document"]
+        assert preview.json()["preview"]["plugin"] is False
         assert not (TEST_HOME / "skills" / "preview-only").exists()
+        for prefix in ("", "wrapped/"):
+            for metadata in ({}, {PLUGIN_DESCRIPTOR: "not JSON"}, {PACKAGE_MANIFEST: "not JSON"}):
+                name = f"portable-{len(prefix)}-{len(metadata)}-{'plugin' if PLUGIN_DESCRIPTOR in metadata else 'skill'}"
+                payload = zip_bytes(
+                    {
+                        prefix + MANIFEST_NAME: manifest(name),
+                        prefix + "references/guide.md": "Reference content",
+                        **{prefix + path: value for path, value in metadata.items()},
+                    }
+                )
+                preview = client.post(
+                    f"{UPLOAD_URL}/preview", files={"file": ("portable.zip", payload)}
+                )
+                assert preview.status_code == 200, preview.text
+                assert preview.json()["preview"]["plugin"] is False
+                result = upload(client, "portable.zip", payload)
+                assert result.status_code == 200, result.text
+                root = TEST_HOME / "skills" / name
+                assert not (root / PLUGIN_DESCRIPTOR).exists()
+                assert (root / "references/guide.md").read_text() == "Reference content"
+                assert listed(client)[name]["enabled"] is True
+                assert not listed(client)[name].get("plugin")
+
+        payload = zip_bytes(
+            {
+                MANIFEST_NAME: manifest("declared-plugin"),
+                PACKAGE_MANIFEST: "not JSON",
+                PLUGIN_DESCRIPTOR: "not JSON",
+            }
+        )
+        preview = client.post(f"{UPLOAD_URL}/preview", files={"file": ("plugin.zip", payload)})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["preview"]["plugin"] is True
+        refused = upload(client, "plugin.zip", payload)
+        assert refused.status_code == 422, refused.text
+        assert detail(refused)["message"] == "plugin_confirmation_required"
+        assert not (TEST_HOME / "skills" / "declared-plugin").exists()
+        existing = TEST_HOME / "skills" / "declared-plugin"
+        existing.mkdir()
+        (existing / MANIFEST_NAME).write_text(manifest("declared-plugin"), encoding="utf-8")
+        preview = client.post(f"{UPLOAD_URL}/preview", files={"file": ("plugin.zip", payload)})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["preview"]["plugin"] is True
         for entries in (
             {"a/SKILL.md": manifest("one"), "b/SKILL.md": manifest("two")},
             {"SKILL.md": manifest("one"), "other/SKILL.md": manifest("two")},

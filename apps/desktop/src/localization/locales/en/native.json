@@ -1,4 +1,5 @@
 {
+  "plugin": { "preview": "Isolated preview", "installed": "Installed plugin" },
   "notifications": {
     "title": "New task",
     "waiting": "Action needed: {{summary}}",
@@ -39,6 +40,14 @@
   "updateRecovery": {
     "title": "ScholarSeed update recovery",
     "message": "All update protection processes have stopped unexpectedly. Save your work, restart your computer, then open ScholarSeed again to retry recovery. Your existing data has been retained. This dialog will not restart your computer."
+  },
+  "admissionRecovery": {
+    "title": "ScholarSeed startup recovery",
+    "message": "ScholarSeed cannot start safely yet",
+    "detail": "The update may still be in progress, or startup security checks did not pass. The workbench has not started, update records have been retained, and the data location has not changed. Wait until installation has finished, then retry. If this continues, copy the diagnostics and contact support.",
+    "retry": "Retry startup",
+    "copy": "Copy diagnostics",
+    "quit": "Quit"
   },
   "browserDownload": {
     "recoveryTitle": "A browser download needs your attention",

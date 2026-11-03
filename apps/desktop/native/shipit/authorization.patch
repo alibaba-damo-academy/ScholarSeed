@@ -17,16 +17,17 @@
              return candidate ? [RACSignal return:candidate] : [RACSignal error:error];
          }]
  		flattenMap:^(NSURL *bundleURL) {
-@@ -283,11 +284,11 @@
+@@ -283,11 +284,12 @@
              };
              return [SSAdmission(occupied, ^RACSignal *{
                  NSError *validationError = nil;
 -                if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, updateBundleURL, &validationError)) return [RACSignal error:validationError];
-+                if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &validationError)) return [RACSignal error:validationError];
++                if (!SSPreparationBeginOwnership(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &validationError)) return [RACSignal error:validationError];
                  return [[[self verifyBundleAtURL:updateBundleURL usingSignature:codeSignature] ignoreValues]
                      then:^RACSignal *{
                          NSError *error = nil;
 -                        if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, updateBundleURL, &error)) return [RACSignal error:error];
++                        if (!SSPreparationAcceptOwnership(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &error)) return [RACSignal error:error];
 +                        if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &error)) return [RACSignal error:error];
                          if (occupied()) return [RACSignal error:[NSError errorWithDomain:SQRLInstallerErrorDomain code:SQRLInstallerErrorAppStillRunning userInfo:nil]];
                          return [RACSignal empty];

@@ -23,6 +23,7 @@ from scholarseed_runtime.contract.command import (
     RuntimeInventory,
     SteerRequest,
     TerminateSessionRequest,
+    ThreadReplacementProof,
     TurnRequest,
 )
 from scholarseed_runtime.contract.event import RuntimeEvent, RuntimeValue
@@ -38,6 +39,10 @@ RUNTIME_CONFIRMATION_UNSUPPORTED = "runtime_turn_confirmation_unsupported"
 RUNTIME_CONFIRMATION_STALE = "runtime_turn_confirmation_stale"
 RUNTIME_CONFIRMATION_BUSY = "runtime_turn_confirmation_busy"
 RUNTIME_CONFIRMATION_UNPERSISTED = "runtime_turn_confirmation_unpersisted"
+RUNTIME_THREAD_REPLACEMENT_UNSUPPORTED = "runtime_thread_replacement_unsupported"
+RUNTIME_THREAD_REPLACEMENT_STALE = "runtime_thread_replacement_stale"
+RUNTIME_THREAD_REPLACEMENT_BUSY = "runtime_thread_replacement_busy"
+RUNTIME_THREAD_REPLACEMENT_UNPERSISTED = "runtime_thread_replacement_unpersisted"
 RUNTIME_OBSERVATION_PENDING = "runtime_observation_pending"
 RUNTIME_ACTIVITY_CHANGED = "runtime_activity_changed"
 RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS = frozenset(
@@ -79,6 +84,40 @@ class RuntimeTurnConfirmation(Protocol):
     async def commit_turn_confirmation(
         self, ticket: TurnConfirmationTicket, persisted_watermark: int
     ) -> TurnConfirmationReceipt: ...
+
+
+@dataclass(frozen=True)
+class ThreadReplacementTarget:
+    binding: RuntimeBinding
+    command_id: str
+    incident_id: str
+    failed_generation: int
+
+
+@dataclass(frozen=True)
+class ThreadReplacementTicket:
+    proof: ThreadReplacementProof
+    generation: str
+    revision: int
+    watermark: int
+
+
+@dataclass(frozen=True)
+class ThreadReplacementReceipt:
+    ticket: ThreadReplacementTicket
+    state: CommandState
+    safe_error: str = ""
+
+
+@runtime_checkable
+class RuntimeThreadReplacement(Protocol):
+    async def prepare_thread_replacement(
+        self, target: ThreadReplacementTarget
+    ) -> ThreadReplacementTicket: ...
+
+    async def commit_thread_replacement(
+        self, ticket: ThreadReplacementTicket, persisted_watermark: int
+    ) -> ThreadReplacementReceipt: ...
 
 
 class SuspendState(str, Enum):
@@ -188,6 +227,14 @@ class RuntimeSession(Protocol):
 
 
 __all__ = [
+    "RuntimeThreadReplacement",
+    "ThreadReplacementTarget",
+    "ThreadReplacementTicket",
+    "ThreadReplacementReceipt",
+    "RUNTIME_THREAD_REPLACEMENT_UNSUPPORTED",
+    "RUNTIME_THREAD_REPLACEMENT_STALE",
+    "RUNTIME_THREAD_REPLACEMENT_BUSY",
+    "RUNTIME_THREAD_REPLACEMENT_UNPERSISTED",
     "RuntimeTurnConfirmation",
     "TurnConfirmationTarget",
     "TurnConfirmationTicket",

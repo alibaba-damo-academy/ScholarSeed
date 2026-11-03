@@ -31,7 +31,6 @@ import {
   webSearchOutputMissing,
 } from './search'
 import {
-  WEB_SEARCH_CANDIDATES_MODE,
   webSearchNoticePending,
   withWebSearchNotice,
   type ResourceWebSearch,

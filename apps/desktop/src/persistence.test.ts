@@ -300,8 +300,7 @@ test('an applied fresh array cannot feed an equivalent preference snapshot back 
     recentFiles: [{ projectId: 'project', path: 'paper.pdf', openedAt: 3 }],
   })
   let saves = 0
-  let writer!: PreferenceWriter
-  writer = new PreferenceWriter(disk, {
+  const writer: PreferenceWriter = new PreferenceWriter(disk, {
     save: async (value) => {
       saves += 1
       disk = sanitizeRendererPreferences(value)

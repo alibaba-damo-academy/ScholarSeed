@@ -61,6 +61,50 @@ test('skill references display friendly titles while retaining invocation identi
   }
 })
 
+test('all research starters preserve Windows absolute skill paths', () => {
+  for (const starter of AI_TASK_STARTERS) {
+    for (const root of [
+      'C:\\Research Files\\skills',
+      '\\\\?\\C:\\Research Files\\skills',
+      '\\\\server\\share\\skills',
+      '\\\\?\\UNC\\server\\share\\skills',
+    ]) {
+      const path = `${root}\\${starter.skillName}\\SKILL.md`
+      const selected = skill({ name: starter.skillName, path, version: '1.0.0' })
+      assert.deepEqual(resolveTaskStarterSkill([selected], starter.skillName), {
+        reference: {
+          type: 'skill',
+          id: starter.skillName,
+          title: starter.skillName,
+          path,
+          version: selected.version,
+        },
+      })
+    }
+  }
+})
+
+test('Windows skill paths do not bypass research starter availability checks', () => {
+  for (const starter of AI_TASK_STARTERS) {
+    for (const [restriction, failure] of [
+      [{ enabled: false }, 'disabled'],
+      [{ active: false }, 'disabled'],
+      [{ dependency_status: 'missing' }, 'dependencies'],
+      [
+        { requires_login: true, active: false, unavailable_reason: 'login_required' },
+        'login_required',
+      ],
+    ] as const) {
+      const selected = skill({
+        name: starter.skillName,
+        path: '\\\\?\\C:\\skills\\SKILL.md',
+        ...restriction,
+      })
+      assert.deepEqual(resolveTaskStarterSkill([selected], starter.skillName), { failure })
+    }
+  }
+})
+
 test('every research starter is login-gated by the product catalog', () => {
   const catalog = JSON.parse(
     readFileSync(

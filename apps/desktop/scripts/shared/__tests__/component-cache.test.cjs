@@ -6,11 +6,14 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const cache = require('../component-cache.cjs')
 const state = require('../build-state.cjs')
+const { developmentPython } = require('../../../../../scripts/shared/python.cjs')
+const REPO = path.resolve(__dirname, '../../../../..')
+const PYTHON = process.env.TEST_PYTHON || developmentPython(REPO, process.env.VENV, { context: process.env.CI ? 'ci' : 'local' })
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-cache-contract-')))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const archive = path.join(root, 'source.zip')
-  const python = process.env.TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3')
+  const python = PYTHON
   execFileSync(python, ['-c', 'import zipfile,sys;z=zipfile.ZipFile(sys.argv[1],"w");z.writestr("python/Lib/example.py","value=42\\n");z.close()', archive])
   const inputs = {kind:'python',target:'win32-x86_64',contentId:'a'.repeat(64),recipe:{tool:'locked'},skillWheels:[]}
   return {root,archive,python,inputs,measured:cache.measure(python,archive,process.env)}

@@ -33,6 +33,7 @@ CODEX_WEB_SEARCH_DISABLED_MODE = "disabled"
 CODEX_PLAN_TOOL_ENABLED_CONFIG = "tools.update_plan.enabled"
 CODEX_PLAN_TOOL_NAME = "update_plan"
 CODEX_USER_INPUT_ENABLED_CONFIG = "features.default_mode_request_user_input"
+CODEX_MULTI_AGENT_V2_ENABLED_CONFIG = "features.multi_agent_v2"
 
 _SUPPORTED_CAPABILITIES = frozenset(
     {
@@ -62,6 +63,7 @@ _SUPPORTED_CAPABILITIES = frozenset(
         RuntimeCapabilityName.HOST_RECONFIGURATION,
         RuntimeCapabilityName.SHARED_HOST_CONTROL,
         RuntimeCapabilityName.TURN_CONFIRMATION,
+        RuntimeCapabilityName.THREAD_REPLACEMENT,
         RuntimeCapabilityName.TURN_ADMISSION,
     }
 )

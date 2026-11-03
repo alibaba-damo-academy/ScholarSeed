@@ -850,20 +850,32 @@ class CitationService:
         attachment_id = request.attachment_id or (
             str(active.surface["attachment_id"]) if active is not None and not explicit else None
         )
-        if attachment_id and not any(
-            item.state in READABLE_STATES
-            and item.authority is ContextAuthority.SOURCE_MATERIAL
-            and item.ref.kind is ContextRefKind.LITERATURE
-            and item.ref.source_id == source_id
-            and (
-                item.ref.origin is ContextOrigin.EXPLICIT
-                and item.ref.anchor is None
-                or item.ref.origin is ContextOrigin.CURRENT_DOCUMENT
-                and item.surface.get("attachment_id") == attachment_id
-                or item.ref.anchor is not None
-                and item.ref.anchor.document_id == attachment_id
+        if (
+            attachment_id
+            and not any(
+                item.state in READABLE_STATES
+                and item.authority is ContextAuthority.SOURCE_MATERIAL
+                and item.ref.kind is ContextRefKind.LITERATURE
+                and item.ref.source_id == source_id
+                and (
+                    item.ref.origin is ContextOrigin.EXPLICIT
+                    and item.ref.anchor is None
+                    or item.ref.origin is ContextOrigin.CURRENT_DOCUMENT
+                    and item.surface.get("attachment_id") == attachment_id
+                    or item.ref.anchor is not None
+                    and item.ref.anchor.document_id == attachment_id
+                )
+                for item in snapshot.items
             )
-            for item in snapshot.items
+            and not (
+                not any(
+                    item.ref.kind is ContextRefKind.LITERATURE and item.ref.source_id == source_id
+                    for item in snapshot.items
+                )
+                and self._literature.is_primary_attachment(
+                    snapshot.project_id or "", source_id, attachment_id
+                )
+            )
         ):
             raise ValueError("citation_source_not_authorized")
         if attachment_id:

@@ -2,13 +2,22 @@
 name: agentic-search
 description: Tiered academic paper discovery for quick search-bar lookup, balanced interactive research, or maximum-quality multi-round retrieval. Infer hidden entities, search PaperHub with keyword/title/citation paths, optionally use public web evidence, and return a precision-first tiered metadata set. Use for natural-language research needs that ask to find relevant papers, including requests with a time budget or speed/quality preference.
 description_zh: "分档发现学术论文：支持搜索框快速查找、均衡的交互式研究，以及质量优先的多轮检索。推断查询中的隐含实体，通过 PaperHub 的关键词、标题和引用路径检索，按需补充公网证据，并返回以精准度优先、按档位组织的论文元数据。适用于用自然语言查找相关论文的需求，包括指定时间预算或速度与质量偏好的请求。"
-version: "1.1.1"
+version: "1.1.8"
 ---
 
 # Agentic Literature Search
 
 Return relevant papers in `metadata.json`. Do not generate a narrative report
 unless the user explicitly asks for one.
+
+For a standalone conversation search, after producing real non-empty `metadata.json`, publish the result with
+`scholarseed-bridge literature result --json '{"run":"RESULT_DIR","checkpoint":"metadata","skill":"agentic-search"}'`,
+replacing RESULT_DIR with the session-relative result directory. This displays the host's
+conversation component and the host's full-result actions; it does not authorize full-text access.
+The dedicated search-bar invocation owns its result tab and does not need this conversation call.
+When invoked by another research Skill, leave publication to that parent's checkpoint
+(for example research-idea-partner's candidates or literature-review's retrieval); do not publish twice.
+Never invent papers to obtain a card; report an empty or blocked search as such.
 
 ## Select one mode
 

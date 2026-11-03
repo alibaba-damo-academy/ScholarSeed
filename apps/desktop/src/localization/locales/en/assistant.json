@@ -127,6 +127,7 @@
     "title": "AI assistant"
   },
   "attachments": {
+    "openImage": "Open original image",
     "actions": "Attachment actions for {{title}}",
     "save": "Save to library",
     "title": "Save attachment to library",

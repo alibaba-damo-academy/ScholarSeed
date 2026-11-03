@@ -83,11 +83,8 @@ export function resolveDeveloperToolsEnabled(
   )
 }
 
-export function requiresSingleInstanceLock(
-  rendererUrl: string | undefined,
-  headless: boolean
-): boolean {
-  return !rendererUrl && !headless
+export function requiresSingleInstanceLock(headless: boolean): boolean {
+  return !headless
 }
 
 export function parseLoginShellPath(output: string): string {

@@ -37,6 +37,7 @@
     "src/permissions.ts",
     "src/notifications.ts",
     "src/skills.ts",
+    "src/plugins.ts",
     "src/mcp-settings.ts",
     "src/reconfiguration.ts",
     "src/storage.ts",

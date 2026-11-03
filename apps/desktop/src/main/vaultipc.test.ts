@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { randomBytes } from 'node:crypto'
 import { stripTypeScriptTypes } from 'node:module'
+import type { IpcMain, IpcMainInvokeEvent } from 'electron'
 import {
   createVaultIpc,
   protectedDigest,
@@ -132,14 +133,16 @@ async function ipcFixture(derive: () => Promise<Buffer> = async () => randomByte
     getContentSize: () => [1000, 700],
     contentView: { addChildView: () => undefined, removeChildView: () => undefined },
   })
-  const handlers = new Map<string, (event: any, value?: unknown) => any>()
+  const handlers = new Map<string, Parameters<IpcMain['handle']>[1]>()
   let view: {
     webContents: Contents
     setVisible(value: boolean): void
     setBounds(value: unknown): void
   } | null = null
-  let network: (details: any, callback: (result: { cancel: boolean }) => void) => void = () =>
-    undefined
+  let network: (
+    details: { url: string; resourceType: string },
+    callback: (result: { cancel: boolean }) => void
+  ) => void = () => undefined
   let body: Buffer | null = null
   const port: StorePort = {
     kind: 'vault',
@@ -183,7 +186,7 @@ async function ipcFixture(derive: () => Promise<Buffer> = async () => randomByte
   await vault.bindStore(port)
   const isolated = Object.assign(new EventEmitter(), {
     webRequest: {
-      onBeforeRequest: (handler: any) => {
+      onBeforeRequest: (handler: typeof network) => {
         network = handler
       },
     },
@@ -225,7 +228,11 @@ async function ipcFixture(derive: () => Promise<Buffer> = async () => randomByte
     contents: Contents,
     value?: unknown,
     frame = contents.mainFrame
-  ) => handlers.get(channel)!({ sender: contents, senderFrame: frame }, value)
+  ) =>
+    handlers.get(channel)!(
+      { sender: contents, senderFrame: frame } as unknown as IpcMainInvokeEvent,
+      value
+    )
   return {
     product,
     window,
@@ -351,7 +358,7 @@ for (const node of [
         connections: 'closeAllConnections',
         storage: 'clearStorageData',
       }[node]
-      const mutable = target as any
+      const mutable = target as unknown as Record<string, unknown>
       const original = mutable[method]
       mutable[method] = () => {
         throw new Error('secret must never enter report')
@@ -516,7 +523,7 @@ test('actual Main custody helpers retain disposed owner, guard new authority and
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(composition.retiredProtectedOwners.has(fixture.owner), false)
     assert.equal(composition.secretCustodyReady(), false)
-    assert.equal((notices.at(-1) as any).error, 'storage_unavailable')
+    assert.equal((notices.at(-1) as { error: string }).error, 'storage_unavailable')
   } finally {
     fixture.dispose()
   }

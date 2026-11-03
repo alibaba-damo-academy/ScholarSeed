@@ -17,6 +17,9 @@ from service.platform.bridge import (
     CONTRACT_GUIDANCE_KEY,
     CONTRACT_PREREQUISITES_KEY,
     PdfQuery,
+    PlanAction,
+    PlanRead,
+    PlanStructure,
 )
 
 TOOL_BYTES_LIMIT = 5000
@@ -103,6 +106,72 @@ class BridgeToolContracts(unittest.TestCase):
             self.assertFalse(validator.is_valid({**request, "items": [wrong_item]}))
         request["items"][1].pop("id")
         self.assertTrue(list(validator.iter_errors(request)))
+
+    def test_plan_tool_schema_matches_operation_request_contracts(self):
+        validator = Draft202012Validator(SERVICE_PLAN_TOOL.input_schema)
+        Draft202012Validator.check_schema(SERVICE_PLAN_TOOL.input_schema)
+        metadata = {
+            "plan_id": "plan",
+            "expected_revision": 0,
+            "request_id": "request",
+            "turn_id": "turn",
+        }
+        contracts = (
+            (PlanRead, {"operation": "get"}),
+            *(
+                (
+                    PlanStructure,
+                    {
+                        **metadata,
+                        "operation": operation,
+                        "items": [{"id": "step", "content": "work"}],
+                    },
+                )
+                for operation in PlanStructure.model_json_schema()["properties"]["operation"][
+                    "enum"
+                ]
+            ),
+            *(
+                (PlanAction, {**metadata, "operation": operation, "step_ids": ["step"]})
+                for operation in PlanAction.model_json_schema()["properties"]["action"]["enum"]
+            ),
+        )
+        invalid_values = (None, "", -1, True, [], {}, [""], [None])
+        for contract, valid in contracts:
+            candidates = [valid, {**valid, "reason": "observed reason"}]
+            candidates.extend(
+                {key: value for key, value in valid.items() if key != missing} for missing in valid
+            )
+            candidates.extend({**valid, key: value} for key in valid for value in invalid_values)
+            candidates.extend(
+                {**valid, key: value}
+                for key, value in {
+                    **metadata,
+                    "items": [{"id": "step", "content": "work"}],
+                    "step_ids": ["step"],
+                    "action": "start",
+                    "status": "completed",
+                    "request": {},
+                    "unknown": "value",
+                }.items()
+            )
+            for candidate in candidates:
+                request = dict(candidate)
+                if contract is PlanRead:
+                    operation = request.pop("operation", None)
+                    valid_operation = operation == "get"
+                elif contract is PlanAction:
+                    valid_operation = "operation" in request and "action" not in request
+                    request["action"] = request.pop("operation", None)
+                else:
+                    valid_operation = True
+                try:
+                    contract.model_validate(request)
+                    accepted = valid_operation
+                except ValueError:
+                    accepted = False
+                with self.subTest(operation=valid["operation"], candidate=candidate):
+                    self.assertEqual(validator.is_valid(candidate), accepted)
 
     def test_mcp_stdio_argument_types_remain_strict(self):
         for arguments in ([42], "probe.py", [None], {"script": "probe.py"}):

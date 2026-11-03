@@ -34,7 +34,7 @@ test('body summaries do not split Chinese or emoji and count omitted bytes', () 
 })
 
 test('small JSON retains its original whitespace and escapes', () => {
-  const body = '{ "message": "\\\"你好\\\"" }'
+  const body = '{ "message": "\\"你好\\"" }'
   assert.equal(summarizeText(body), body)
 })
 

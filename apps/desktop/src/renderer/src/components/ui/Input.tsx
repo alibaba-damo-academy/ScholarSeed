@@ -142,11 +142,6 @@ export const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
     const inputId = id ?? generatedId
     const message = error ?? helperText
     const labelSource = import.meta.env.DEV ? props['data-i18n-label'] : undefined
-    const messageSource = import.meta.env.DEV
-      ? error
-        ? props['data-i18n-error']
-        : props['data-i18n-helper-text']
-      : undefined
     const isInvalid = Boolean(error) || invalid
     const messageId = message ? `${inputId}-message` : undefined
     const [visible, setVisible] = useState(false)

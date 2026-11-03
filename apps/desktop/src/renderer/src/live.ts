@@ -48,6 +48,7 @@ import {
   hilEventResolution,
   settlePendingHil,
   hilResolvedRunState,
+  hilRequestedRunState,
 } from './hil'
 import type {
   Cognitive,
@@ -75,7 +76,6 @@ import {
   projectHistorySnapshot,
   snapshotTurnActivity,
   projectNativeActivityEvent,
-  type NativeActivityEvent,
   projectPaperSearchEvent,
   projectReviewReadyEvent,
   placeFinalAssistantLast,
@@ -265,17 +265,6 @@ function reportSessionResume(
   const conversation = [...thread.conversation]
   conversation[index] = notice
   return { conversation }
-}
-
-function toSessionStatus(
-  status: Extract<AspEnvelope, { type: 'session_state' }>['data']['state']
-): SessionStatus {
-  if (status === 'starting' || status === 'running') return 'running'
-  if (status === 'waiting') return 'waiting'
-  if (status === 'failed') return 'failed'
-  if (status === 'interrupted') return 'abandon'
-  if (status === 'closed') return 'done'
-  return 'dormant'
 }
 
 function appendDelta(
@@ -706,8 +695,7 @@ export function onEvent(
         return
       }
       patchThread(threadId, (thread) => ({
-        running: event.data.lifetime === 'session' ? thread.running : true,
-        status: event.data.lifetime === 'session' && !thread.running ? thread.status : 'waiting',
+        ...hilRequestedRunState(thread, event.data),
         conversation: thread.conversation.some(
           (item) => item.kind === 'hil' && item.requestId === event.data.request_id
         )
@@ -1600,7 +1588,7 @@ export function useLiveSession(): void {
         cancelMetadataRetry()
         metadataRetryAttempt.current = 0
       }
-      set((current) => ({
+      set(() => ({
         workspaceLoadState: projection.workspaceLoadState,
         ...(projection.workspaceLoadState === 'ready'
           ? {

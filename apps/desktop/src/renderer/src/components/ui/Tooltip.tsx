@@ -23,7 +23,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 
 import {
   tooltipClassName,
@@ -650,7 +650,7 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
       </span>
     )
 
-    return context.portalled ? createPortal(content, document.body) : content
+    return context.portalled ? <Portal>{content}</Portal> : content
   }
 )
 

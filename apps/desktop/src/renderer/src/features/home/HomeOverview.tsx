@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronLeft, ChevronRight, Folder, MessageCircle, Plus } from 'lucide-react'
 
-import { listProjects, listAllSessions, type Project, type ServeSession } from '../../api'
+import { listAllSessions, type Project, type ServeSession } from '../../api'
 import brandMark from '../../assets/logo.svg'
 import projectEmpty from '../../assets/project-empty.webp'
 import emptyFolder from '../../assets/empty_img.webp'
@@ -76,11 +76,6 @@ export function HomeOverview(): React.JSX.Element {
       active = false
     }
   }, [state.backendReady, state.sessionCatalogRevision, revision])
-  const refresh = async (): Promise<void> => {
-    const listing = await listProjects()
-    if (listing) set({ projects: listing.projects })
-    setRevision((current) => current + 1)
-  }
   const activity = projectActivity(sessions)
   const projects = orderedProjects(state.projects, query, activity)
   const recent = recentTasks(state.projects, sessions, '')

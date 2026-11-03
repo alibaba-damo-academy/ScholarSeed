@@ -5,7 +5,12 @@ import { runInNewContext } from 'node:vm'
 import * as React from 'react'
 import { transformSync } from 'esbuild'
 
-type Element = React.ReactElement<Record<string, any>>
+type Element = React.ReactElement<
+  React.PropsWithChildren<Record<string, unknown>> & {
+    className: string
+    onValueChange: (value: string) => void
+  }
+>
 
 test('Markdown retains only the visited source runtime across mode switches', () => {
   const source = readFileSync(new URL('./MarkdownDocument.tsx', import.meta.url), 'utf8')

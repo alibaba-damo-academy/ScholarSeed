@@ -85,6 +85,18 @@ state (`saved`) and the new configuration.
 3. **Apply** — call `mcp/apply` with the returned plan_id and plan_digest
 4. **Verify** — call `mcp/status` again to confirm the new state
 
+Always create a plan first, then apply it. Never bypass the plan workflow by
+writing configuration files directly. The single source of truth is the
+product-owned configuration file, not personal runtime settings.
+
+## Reporting the Result
+
+For ordinary MCP product-operation replies, use only ScholarSeed product terms.
+Do not repeat internal engine names, managed runtime paths, or external-client
+installer commands, even when explaining what was not changed. Report the actual
+product state and safe error; saved or pending does not mean tools are ready.
+New tools become available after this turn ends, not during installation.
+
 ## Important Boundaries
 
 - Never write `mcp.json` or any Codex configuration file directly

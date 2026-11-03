@@ -57,6 +57,32 @@ def reviewed_script(directory: str, source: str = "print('run')") -> Path:
 
 
 class SkillPythonContracts(unittest.TestCase):
+    def test_authoring_contract_uses_product_launcher_without_arbitrary_modules(self) -> None:
+        snapshot = (
+            Path(__file__).resolve().parents[3]
+            / "skills/community/plugin-create/references/contract.json"
+        )
+        response = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "service.cli.skill_python",
+                "-m",
+                "service.cli.plugins",
+                "prepare",
+                str(snapshot),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TEST_TIMEOUT_SECONDS,
+            check=False,
+        )
+        self.assertEqual(response.returncode, 0, response.stderr)
+        result = json.loads(response.stdout)
+        self.assertTrue(result["matched"])
+        self.assertFalse(result["authorized"])
+        self.assertFalse(result["runtime_verified"])
+
     def test_frozen_diagnostic_does_not_admit_or_run_user_code(self):
         with (
             redirect_stdout(io.StringIO()) as output,
@@ -159,7 +185,11 @@ class SkillPythonContracts(unittest.TestCase):
         ):
             self.assertEqual(executables.skill_python_probe([str(directory)]), 0)
             resolve.assert_called_once_with(executables.SKILL_PYTHON_COMMAND, directory)
-            probe.assert_called_once_with(launcher, executables.SKILL_PYTHON_PROBE_ARGUMENTS)
+            probe.assert_called_once_with(
+                launcher,
+                executables.SKILL_PYTHON_PROBE_ARGUMENTS,
+                timeout_seconds=executables.SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
+            )
         for arguments in [[], ["relative"], [str(directory), "--help"]]:
             with patch.object(executables, "probe_command") as probe:
                 self.assertEqual(executables.skill_python_probe(arguments), 2)
@@ -286,7 +316,12 @@ class SkillPythonContracts(unittest.TestCase):
                 admit.assert_not_called()
 
     def test_product_launcher_rejects_user_code_and_installation(self) -> None:
-        for arguments in (["-c", "print('user')"], ["-m", "pip", "install", "package"]):
+        for arguments in (
+            ["-c", "print('user')"],
+            ["-m", "pip", "install", "package"],
+            ["-m", "service.cli.serve"],
+            ["-m", "service.cli.plugins.injected", "prepare"],
+        ):
             with (
                 self.subTest(arguments=arguments),
                 patch.object(skill_python.os, "execv") as execute,
@@ -296,6 +331,23 @@ class SkillPythonContracts(unittest.TestCase):
                 self.assertEqual(skill_python.main(arguments), 1)
                 execute.assert_not_called()
                 run.assert_not_called()
+
+        response = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "service.cli.skill_python",
+                "-m",
+                "service.cli.plugins",
+                "install",
+                "package",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TEST_TIMEOUT_SECONDS,
+            check=False,
+        )
+        self.assertEqual(response.returncode, 2, response.stderr)
 
     def test_runtime_discovery_failure_prevents_probe_and_composition(self) -> None:
         with (
@@ -744,7 +796,11 @@ class SkillPythonContracts(unittest.TestCase):
                     os.environ["PATH"].split(os.pathsep), [str(product), str(installed)]
                 )
                 resolve.assert_called_once_with(executables.SKILL_PYTHON_COMMAND, product)
-                probe.assert_called_once_with(launcher, executables.SKILL_PYTHON_PROBE_ARGUMENTS)
+                probe.assert_called_once_with(
+                    launcher,
+                    executables.SKILL_PYTHON_PROBE_ARGUMENTS,
+                    timeout_seconds=executables.SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
+                )
 
     def test_failed_skill_probe_does_not_reorder_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

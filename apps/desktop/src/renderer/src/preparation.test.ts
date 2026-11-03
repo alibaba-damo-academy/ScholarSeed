@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
+import ts from 'typescript'
 import type { RuntimePreparation } from './api'
 import {
   PREPARATION_INSTANCE_CHANGED_ERROR,
@@ -9,6 +12,73 @@ import {
   waitForPreparation,
   type PreparationSnapshot,
 } from './preparation.ts'
+
+test('confirmed login invalidates old preparation before the new account catalog arrives', () => {
+  const source = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
+  const marker = '// Confirmed login replaces the authority of pending and completed preparations.'
+  const start = source.indexOf(marker)
+  assert.notEqual(start, -1)
+  const end = source.indexOf('  }, [setState])', start)
+  assert.notEqual(end, -1)
+  const listeners = new Map<string, () => void>()
+  let disposed = false
+  let state = {
+    modelCatalogInstanceId: 'instance',
+    runtimePreparation: { state: 'applied' },
+    runtimePreparationTarget: 'personal-model',
+    modelSelectionGeneration: 3,
+  }
+  const refs = {
+    preparationControllerRef: {
+      current: {
+        dispose: () => {
+          disposed = true
+        },
+      },
+    },
+    preparationIntentRef: { current: {} },
+    preparationPublicationRef: { current: {} },
+    preparationSequenceRef: { current: 4 },
+    startupPreparation: { current: { started: true } },
+  }
+  const script = ts.transpile(`(function () { ${source.slice(start, end)} })()`)
+  const cleanup = runInNewContext(script, {
+    ...refs,
+    setState: (update: (previous: typeof state) => typeof state) => {
+      state = update(state)
+    },
+    window: {
+      addEventListener: (name: string, listener: () => void) => listeners.set(name, listener),
+      removeEventListener: (name: string) => listeners.delete(name),
+    },
+  }) as () => void
+  assert.equal(disposed, false)
+  listeners.get('scholarseed:auth-restored')!()
+  assert.equal(disposed, true)
+  assert.equal(refs.preparationControllerRef.current, null)
+  assert.equal(refs.preparationIntentRef.current, null)
+  assert.equal(refs.preparationPublicationRef.current, null)
+  assert.equal(refs.startupPreparation.current, null)
+  assert.equal(refs.preparationSequenceRef.current, 5)
+  assert.equal(state.modelCatalogInstanceId, null)
+  assert.equal(state.runtimePreparation, null)
+  assert.equal(state.runtimePreparationTarget, null)
+  assert.equal(state.modelSelectionGeneration, 4)
+  cleanup()
+  assert.equal(listeners.size, 0)
+})
+
+test('discarding an old account controller cannot publish a late applied receipt', async () => {
+  const probe = fixture()
+  const pending = deferred<RuntimePreparation>()
+  probe.handlers.prepare = () => pending.promise
+  const old = probe.controller.prepare('model-a')
+  const rejected = assert.rejects(old, { message: PREPARATION_SUPERSEDED_ERROR })
+  probe.controller.dispose()
+  pending.resolve(probe.operation('applied'))
+  await rejected
+  assert.equal(probe.publications.length, 0)
+})
 
 function deferred<Value>() {
   let resolve: (value: Value) => void = () => undefined

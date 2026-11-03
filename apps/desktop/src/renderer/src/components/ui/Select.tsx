@@ -19,7 +19,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 
 import { IconFont } from '../primitive/Iconfont'
 import {
@@ -432,49 +432,50 @@ export const SelectContent = forwardRef<HTMLDivElement, SelectContentProps>(
       ...style,
     }
 
-    return createPortal(
-      <div
-        className={cx(selectContentClassName, className)}
-        ref={contentRef}
-        role="listbox"
-        id={context.contentId}
-        tabIndex={-1}
-        style={positionedStyle}
-        {...props}
-        onKeyDown={(event) => {
-          onKeyDown?.(event)
-          if (event.defaultPrevented) return
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            context.setOpen(false)
-            return
-          }
-          const items = [
-            ...event.currentTarget.querySelectorAll<HTMLElement>(SELECT_OPTION_SELECTOR),
-          ].filter(visibleContent)
-          if (!items.length) return
-          const index = items.indexOf(document.activeElement as HTMLElement)
-          if (event.key === 'Enter' || event.key === ' ') {
-            if (index >= 0) {
+    return (
+      <Portal>
+        <div
+          className={cx(selectContentClassName, className)}
+          ref={contentRef}
+          role="listbox"
+          id={context.contentId}
+          tabIndex={-1}
+          style={positionedStyle}
+          {...props}
+          onKeyDown={(event) => {
+            onKeyDown?.(event)
+            if (event.defaultPrevented) return
+            if (event.key === 'Escape') {
               event.preventDefault()
-              items[index].click()
+              context.setOpen(false)
+              return
             }
-            return
-          }
-          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-          event.preventDefault()
-          const next =
-            event.key === 'Home'
-              ? 0
-              : event.key === 'End'
-                ? items.length - 1
-                : event.key === 'ArrowDown'
-                  ? (index + 1) % items.length
-                  : (index - 1 + items.length) % items.length
-          items[next].focus()
-        }}
-      />,
-      document.body
+            const items = [
+              ...event.currentTarget.querySelectorAll<HTMLElement>(SELECT_OPTION_SELECTOR),
+            ].filter(visibleContent)
+            if (!items.length) return
+            const index = items.indexOf(document.activeElement as HTMLElement)
+            if (event.key === 'Enter' || event.key === ' ') {
+              if (index >= 0) {
+                event.preventDefault()
+                items[index].click()
+              }
+              return
+            }
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+            event.preventDefault()
+            const next =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? items.length - 1
+                  : event.key === 'ArrowDown'
+                    ? (index + 1) % items.length
+                    : (index - 1 + items.length) % items.length
+            items[next].focus()
+          }}
+        />
+      </Portal>
     )
   }
 )

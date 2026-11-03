@@ -1,0 +1,1137 @@
+{
+  "descriptor": ".scholarseed-plugin.json",
+  "schema": {
+    "$defs": {
+      "PluginAction": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "capability": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*$",
+            "title": "Capability",
+            "type": "string"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "title": "Input Schema",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "capability"
+        ],
+        "title": "PluginAction",
+        "type": "object"
+      },
+      "PluginComponent": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "slot": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slot"
+          },
+          "public": {
+            "default": false,
+            "title": "Public",
+            "type": "boolean"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Package-relative compiled JavaScript component entry",
+            "title": "Entry"
+          },
+          "preview": {
+            "description": "Package-relative conversation scenario JSON",
+            "title": "Preview",
+            "type": "string"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/$defs/PluginAction"
+            },
+            "maxItems": 64,
+            "title": "Actions",
+            "type": "array"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "title": "Input Schema",
+            "type": "object"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "title": "Output Schema",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "preview"
+        ],
+        "title": "PluginComponent",
+        "type": "object"
+      },
+      "PluginConfiguration": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "title": "Key",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "string",
+              "integer",
+              "boolean"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "label"
+        ],
+        "title": "PluginConfiguration",
+        "type": "object"
+      },
+      "UIDependency": {
+        "additionalProperties": false,
+        "properties": {
+          "compatibility": {
+            "const": "1.0",
+            "title": "Compatibility",
+            "type": "string"
+          },
+          "exports": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Exports",
+            "type": "array"
+          }
+        },
+        "required": [
+          "compatibility",
+          "exports"
+        ],
+        "title": "UIDependency",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "schema": {
+        "maximum": 2,
+        "minimum": 2,
+        "title": "Schema",
+        "type": "integer"
+      },
+      "id": {
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+        "title": "Id",
+        "type": "string"
+      },
+      "version": {
+        "title": "Version",
+        "type": "string"
+      },
+      "host": {
+        "description": "Explicit PEP 440 host version range, for example >=0.2.0,<0.3.0",
+        "title": "Host",
+        "type": "string"
+      },
+      "skill": {
+        "const": "SKILL.md",
+        "title": "Skill",
+        "type": "string"
+      },
+      "ui": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/UIDependency"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "capabilities": {
+        "items": {
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*$",
+          "type": "string"
+        },
+        "maxItems": 64,
+        "title": "Capabilities",
+        "type": "array"
+      },
+      "components": {
+        "items": {
+          "$ref": "#/$defs/PluginComponent"
+        },
+        "maxItems": 64,
+        "title": "Components",
+        "type": "array"
+      },
+      "configuration": {
+        "items": {
+          "$ref": "#/$defs/PluginConfiguration"
+        },
+        "maxItems": 64,
+        "title": "Configuration",
+        "type": "array"
+      }
+    },
+    "required": [
+      "schema",
+      "id",
+      "version",
+      "host",
+      "skill",
+      "capabilities"
+    ],
+    "title": "PluginDescriptor",
+    "type": "object"
+  },
+  "scenario_schema": {
+    "$defs": {
+      "ScenarioCase": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "responses": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/$defs/ScenarioResponse"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Responses"
+          },
+          "interaction": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ScenarioInteraction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "ScenarioCase",
+        "type": "object"
+      },
+      "ScenarioInteraction": {
+        "additionalProperties": false,
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/$defs/ScenarioQuestion"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Questions",
+            "type": "array"
+          },
+          "respond": {
+            "items": {
+              "$ref": "#/$defs/ScenarioStep"
+            },
+            "maxItems": 64,
+            "title": "Respond",
+            "type": "array"
+          },
+          "interrupt": {
+            "items": {
+              "$ref": "#/$defs/ScenarioStep"
+            },
+            "maxItems": 64,
+            "title": "Interrupt",
+            "type": "array"
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "title": "ScenarioInteraction",
+        "type": "object"
+      },
+      "ScenarioOption": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "ScenarioOption",
+        "type": "object"
+      },
+      "ScenarioPaper": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "ScenarioPaper",
+        "type": "object"
+      },
+      "ScenarioQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "header": {
+            "title": "Header",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/$defs/ScenarioOption"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "papers": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/ScenarioPaper"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Papers"
+          },
+          "multiSelect": {
+            "default": false,
+            "title": "Multiselect",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "header",
+          "question",
+          "options"
+        ],
+        "title": "ScenarioQuestion",
+        "type": "object"
+      },
+      "ScenarioResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "resolved",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "set": {
+            "additionalProperties": true,
+            "title": "Set",
+            "type": "object"
+          },
+          "append": {
+            "additionalProperties": true,
+            "title": "Append",
+            "type": "object"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/ScenarioStep"
+            },
+            "maxItems": 64,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "state",
+          "data"
+        ],
+        "title": "ScenarioResponse",
+        "type": "object"
+      },
+      "ScenarioStep": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "resolved",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "set": {
+            "additionalProperties": true,
+            "title": "Set",
+            "type": "object"
+          },
+          "append": {
+            "additionalProperties": true,
+            "title": "Append",
+            "type": "object"
+          }
+        },
+        "required": [
+          "state",
+          "data"
+        ],
+        "title": "ScenarioStep",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "additionalProperties": true,
+        "title": "Data",
+        "type": "object"
+      },
+      "state": {
+        "additionalProperties": true,
+        "title": "State",
+        "type": "object"
+      },
+      "responses": {
+        "additionalProperties": {
+          "$ref": "#/$defs/ScenarioResponse"
+        },
+        "title": "Responses",
+        "type": "object"
+      },
+      "interaction": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ScenarioInteraction"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "cases": {
+        "items": {
+          "$ref": "#/$defs/ScenarioCase"
+        },
+        "maxItems": 64,
+        "title": "Cases",
+        "type": "array"
+      },
+      "submissions": {
+        "additionalProperties": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "title": "Submissions",
+        "type": "object"
+      }
+    },
+    "required": [
+      "data",
+      "responses"
+    ],
+    "title": "ComponentScenario",
+    "type": "object"
+  },
+  "grants_permissions": false,
+  "runtime_verified": false,
+  "public_slots": [
+    "display.literature-delivery",
+    "display.literature-downloads",
+    "display.literature-references",
+    "display.literature-search",
+    "interaction.question",
+    "literature.authorization",
+    "literature.selection",
+    "preview.literature-results"
+  ],
+  "public_providers": {
+    "interaction.question": "host",
+    "display.literature-search": "host",
+    "preview.literature-results": "host",
+    "literature.selection": "official-ui",
+    "literature.authorization": "host",
+    "display.literature-downloads": "host",
+    "display.literature-delivery": "host",
+    "display.literature-references": "host"
+  },
+  "component_invocation_schema": {
+    "$defs": {
+      "JsonValue": {}
+    },
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "maxLength": 128,
+        "minLength": 1,
+        "title": "Request Id",
+        "type": "string"
+      },
+      "slot": {
+        "maxLength": 64,
+        "minLength": 1,
+        "title": "Slot",
+        "type": "string"
+      },
+      "data": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "title": "Data",
+        "type": "object"
+      },
+      "title": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Title",
+        "type": "string"
+      },
+      "prompt": {
+        "default": "",
+        "maxLength": 2000,
+        "title": "Prompt",
+        "type": "string"
+      }
+    },
+    "required": [
+      "request_id",
+      "slot",
+      "data",
+      "title"
+    ],
+    "title": "ComponentInvocation",
+    "type": "object"
+  },
+  "component_preflight_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "slots": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 64,
+        "minItems": 1,
+        "title": "Slots",
+        "type": "array"
+      }
+    },
+    "required": [
+      "slots"
+    ],
+    "title": "ComponentPreflight",
+    "type": "object"
+  },
+  "component_sdk": {
+    "global": "window.plugin",
+    "state": {
+      "data": "JSON object: immutable business input, with saved draft fields projected by host",
+      "draft": "JSON object: saved user choices, not a status string",
+      "revision": "integer: current persisted draft revision; copy content is pinned to it",
+      "status": "pending enables submission; submitting/resolved/cancelled/stale/unknown do not",
+      "language": "locale string",
+      "slot": "registered slot string",
+      "theme": "light or dark"
+    },
+    "onState": "callback receives latest state and returns an unsubscribe function; updates are not resets",
+    "save": "Promise of {state: JSON object, revision: integer}; does not advance AI or authorize business",
+    "setCopyContent": "Promise: register {text: non-empty string, markdown?: string} for the current draft revision; persisted with the card, no clipboard access or AI continuation; refresh after save",
+    "submit": "void; action and values are validated by host; completion comes via onState, not return value",
+    "request": "Promise of host result; requires declared capability and a handler in the current context"
+  },
+  "planning": {
+    "operations": {
+      "get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "PlanRead",
+        "type": "object"
+      },
+      "write": {
+        "$defs": {
+          "PlanItem": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Id",
+                "type": "string"
+              },
+              "content": {
+                "maxLength": 512,
+                "minLength": 1,
+                "title": "Content",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "needs_confirmation",
+                  "completed",
+                  "partial",
+                  "blocked",
+                  "failed"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "parent_id": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Parent Id"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "group",
+                      "step"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Kind"
+              }
+            },
+            "required": [
+              "id",
+              "content",
+              "status"
+            ],
+            "title": "PlanItem",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "description": "request.operation is the plan mutation, not action; outer operation is always write.",
+            "enum": [
+              "create",
+              "update",
+              "revise",
+              "release"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "plan_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "turn_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PlanItem"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "plan_id",
+          "expected_revision",
+          "request_id",
+          "turn_id",
+          "items"
+        ],
+        "title": "PlanWrite",
+        "type": "object",
+        "x-bridge-guidance": "First call plan/get with request={} for the current turn_id, plan and revision. Call plan/write: outer operation is always write; request.operation is create, update, revise or release, not action. Create a new plan_id with expected_revision=0 only when no structured plan exists. Otherwise reuse plan_id and the current revision. Send complete flat items with stable ids and optional parent_id; Keep ids unchanged when renaming steps. Start each leaf with in_progress before performing its work; never batch pending leaves directly to completed. Parents aggregate child execution time, and parallel leaves may be in_progress together. Declare a container as kind=group before starting it; its children may be refined later. Groups only aggregate children and cannot complete without children. Refine an ordinary leaf before starting it, not after. No children field is supported. Use a new request_id per mutation, reusing it only for an identical retry, and the current turn_id. Update changes progress without changing root content or existing parent links. Revise changes structure and requires a non-empty reason. For normal completion, use update to mark finished items completed. Release opts out of structured planning, requires a non-empty reason and preserves items; it is not ordinary completion. On revision conflict, reread plan/get before a changed retry.",
+        "x-bridge-prerequisites": [
+          {
+            "capability": "plan",
+            "operation": "get"
+          }
+        ]
+      },
+      "structure": {
+        "$defs": {
+          "PlanNode": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Id",
+                "type": "string"
+              },
+              "content": {
+                "maxLength": 512,
+                "minLength": 1,
+                "title": "Content",
+                "type": "string"
+              },
+              "parent_id": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Parent Id"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "group",
+                      "step"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Kind"
+              }
+            },
+            "required": [
+              "id",
+              "content"
+            ],
+            "title": "PlanNode",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "turn_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Reason",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "create",
+              "update",
+              "revise",
+              "release"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PlanNode"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plan_id",
+          "expected_revision",
+          "request_id",
+          "turn_id",
+          "operation",
+          "items"
+        ],
+        "title": "PlanStructure",
+        "type": "object",
+        "x-bridge-guidance": "Read plan/get first. Send complete flat nodes without status. Existing execution states are preserved and new nodes are pending. Use plan/action for execution, not structure edits. Revision, identity and started-leaf constraints still apply.",
+        "x-bridge-prerequisites": [
+          {
+            "capability": "plan",
+            "operation": "get"
+          }
+        ]
+      },
+      "action": {
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "turn_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Reason",
+            "type": "string"
+          },
+          "action": {
+            "enum": [
+              "start",
+              "finish",
+              "pause",
+              "block",
+              "fail",
+              "partial"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "step_ids": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Step Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plan_id",
+          "expected_revision",
+          "request_id",
+          "turn_id",
+          "action",
+          "step_ids"
+        ],
+        "title": "PlanAction",
+        "type": "object",
+        "x-bridge-guidance": "Read plan/get and choose from actions for the stable step IDs. Start before work, finish after actual work, pause for a checkpoint and start before handling its result. If work happened without a start, block with the observed reason; never fabricate a bookkeeping start/finish. These actions preserve the entire tree and real timing rules.",
+        "x-bridge-prerequisites": [
+          {
+            "capability": "plan",
+            "operation": "get"
+          }
+        ]
+      }
+    },
+    "grants_permissions": false
+  },
+  "native_contract_discovery": {
+    "capability": "contract",
+    "operation": "describe",
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "target_capability": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target Capability",
+          "type": "string"
+        },
+        "target_operation": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target Operation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_capability",
+        "target_operation"
+      ],
+      "title": "ContractDescribe",
+      "type": "object"
+    },
+    "example": {
+      "target_capability": "literature",
+      "target_operation": "read"
+    },
+    "grants_permissions": false
+  },
+  "installation": {
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "path",
+        "sha256"
+      ],
+      "title": "PluginInstallation",
+      "type": "object"
+    },
+    "blocking": false,
+    "result": "published is not installed; independent card actions never gate creation",
+    "revision": "immutable workspace-relative ZIP path and SHA256 per request_id"
+  },
+  "bridge_request_max_bytes": 16384,
+  "identity": {
+    "version": "1.0.0",
+    "sha256": "9aee13ecb83195947894ba1bd7bc20c8d1da41f40d511d832bfc1766aebab9b6"
+  }
+}

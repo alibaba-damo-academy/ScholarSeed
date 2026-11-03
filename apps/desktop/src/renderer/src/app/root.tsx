@@ -15,6 +15,8 @@ import { Startup } from './Startup'
 import { WindowCloseDialog } from '../shell/Close'
 import { LocalizationProvider } from './localization'
 import { DisplayCardProvider } from '../components/business/Cards'
+import { AnswerCopyContext } from '../components/business/clipboard'
+import { copyAnswer } from '../features/assistant/copy'
 import { InteractionPolicyProvider } from '../components/business/Interactions'
 import { TaskCenterProvider } from '../components/business/Tasks'
 import { Toaster, ToastProvider } from '../components/ui'
@@ -56,9 +58,14 @@ export function RendererProviders({ children }: { children: React.ReactNode }): 
               >
                 <ProjectWorkspaceProvider>
                   <TaskCenterProvider sources={featureRegistry.taskSources}>
-                    <DisplayCardProvider cards={featureRegistry.displayCards}>
+                    <DisplayCardProvider
+                      cards={featureRegistry.displayCards}
+                      publicComponents={featureRegistry.publicComponents}
+                    >
                       <InteractionPolicyProvider policies={featureRegistry.interactionPolicies}>
-                        {children}
+                        <AnswerCopyContext.Provider value={copyAnswer}>
+                          {children}
+                        </AnswerCopyContext.Provider>
                       </InteractionPolicyProvider>
                     </DisplayCardProvider>
                   </TaskCenterProvider>

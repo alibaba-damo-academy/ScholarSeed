@@ -124,7 +124,7 @@ function renderMainSurface(
  * features/<domain>/ 下由各自负责人维护。
  */
 export function WorkbenchShell(): React.JSX.Element {
-  const { state, set, act } = useApp()
+  const { state, act } = useApp()
   const { t, i18n } = useTranslation('shell')
   const page = featureRegistry.panels.find(
     (panel) => panel.slot === 'page' && panel.key === state.mainView

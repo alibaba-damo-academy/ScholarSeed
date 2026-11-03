@@ -22,7 +22,13 @@ static RACSignal *SSAdmissionAttempt(SSAdmissionOccupied occupied, SSAdmissionOp
       return occupied() ? [RACSignal empty] : [RACSignal return:@YES];
     }];
   return [[[[available take:1] ignoreValues] then:operation] catch:^RACSignal *(NSError *error) {
-    if (!retryable(error)) return [RACSignal error:error];
+    if (!retryable(error)) {
+      // This scope ends before target acquisition. The terminal handler must
+      // still prove restoration and publish bound evidence before reopening.
+      NSError *terminal = [error.domain isEqual:SSAdmissionErrorDomain] ? error :
+        [NSError errorWithDomain:SSAdmissionErrorDomain code:error.code userInfo:@{NSUnderlyingErrorKey:error}];
+      return [RACSignal error:terminal];
+    }
     return [[[[RACSignal interval:SSAdmissionInterval onScheduler:scheduler] take:1] ignoreValues] then:^RACSignal *{
       return SSAdmissionAttempt(occupied, operation, retryable, scheduler, deadline);
     }];

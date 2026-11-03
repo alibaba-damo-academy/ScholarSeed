@@ -30,6 +30,7 @@ class ModelCapabilities:
     input_modalities: tuple[str, ...] | None = None
     reasoning_efforts: tuple[str, ...] = ()
     native_web_search: bool | None = None
+    native_agent_messages: bool | None = None
 
 
 @dataclass(frozen=True)

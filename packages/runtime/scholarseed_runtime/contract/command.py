@@ -131,6 +131,19 @@ class EmptyThreadReplacementProof:
 
 
 @dataclass(frozen=True)
+class ThreadReplacementProof:
+    """A missing, exited native attachment can be replaced; its outcome stays unknown."""
+
+    proof_id: str
+    binding: RuntimeBinding
+    command_id: str
+    incident_id: str
+    failed_generation: int
+    absence_generation: int
+    watermark: int
+
+
+@dataclass(frozen=True)
 class SubmissionRetryProof:
     binding: RuntimeBinding
     command_id: str

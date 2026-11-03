@@ -15,7 +15,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Coroutine, Iterator
 from concurrent.futures import Executor, Future
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
@@ -122,6 +122,7 @@ class Activities:
         self._phase = ActivityPhase.OPEN
         self._maintenance_parent: ActivityLease | None = None
         self._generation: str | None = None
+        self._restart_generation: str | None = None
         self._maintenance_revision = 0
         self._waiters: set[asyncio.Future[None]] = set()
         self._drain_waiters: set[asyncio.Future[None]] = set()
@@ -307,6 +308,47 @@ class Activities:
             self._notify_drain_waiters()
             return self._generation
 
+    def release_for_restart(self, generation: str) -> None:
+        """Retain a terminal owner's fence, permitting explicit restart takeover.
+
+        This is not a drain receipt: existing execution/resources must still be
+        settled by the restart owner. Ordinary maintenance cannot take it over.
+        """
+        with self._lock:
+            self._check_generation(generation)
+            if self._phase is not ActivityPhase.DRAINING or self._maintenance_parent is not None:
+                raise MaintenanceActive("update_maintenance")
+            if self._restart_generation is not None:
+                raise MaintenanceActive("update_maintenance")
+            self._restart_generation = generation
+            logging.getLogger(__name__).info(
+                "maintenance_restart_fence instance_id=%s generation=%s",
+                self.instance_id,
+                generation,
+            )
+
+    def begin_restart(self) -> str:
+        """Claim open admission or a terminal restart fence without opening it."""
+        with self._lock:
+            if self._phase is ActivityPhase.OPEN:
+                return self.begin()
+            if (
+                self._phase is not ActivityPhase.DRAINING
+                or self._restart_generation is None
+                or self._generation != self._restart_generation
+            ):
+                raise MaintenanceActive("update_maintenance")
+            self._generation = uuid4().hex
+            self._maintenance_revision += 1
+            self._notify_drain_waiters()
+            logging.getLogger(__name__).info(
+                "maintenance_restart_claim instance_id=%s fence=%s generation=%s",
+                self.instance_id,
+                self._restart_generation,
+                self._generation,
+            )
+            return self._generation
+
     def begin_if_idle(self) -> str | None:
         """Atomically defer scheduled maintenance while business execution is live.
 
@@ -418,6 +460,19 @@ class Activities:
                 raise MaintenanceStale("update_maintenance_stale")
             if self._maintenance_parent is not None:
                 raise MaintenanceActive("maintenance callback has not finished")
+            if self._restart_generation is not None:
+                if generation == self._restart_generation:
+                    raise MaintenanceActive("update_maintenance")
+                self._phase = ActivityPhase.DRAINING
+                self._generation = self._restart_generation
+                self._notify_drain_waiters()
+                logging.getLogger(__name__).info(
+                    "maintenance_restart_restore instance_id=%s fence=%s generation=%s",
+                    self.instance_id,
+                    self._restart_generation,
+                    generation,
+                )
+                return
             self._phase = ActivityPhase.OPEN
             self._generation = None
             self._notify_drain_waiters()
@@ -517,6 +572,9 @@ class Activities:
     ) -> T:
         return await asyncio.shield(self._thread(domain, operation, *args, **kwargs))
 
+    async def observe_thread(self, operation: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        return await asyncio.shield(self._thread(None, operation, *args, **kwargs))
+
     async def finish(
         self, domain: ActivityDomain, operation: Callable[[], Coroutine[Any, Any, T]]
     ) -> T:
@@ -544,24 +602,36 @@ class Activities:
             return result
 
     def _thread(
-        self, domain: ActivityDomain, operation: Callable[..., T], *args: Any, **kwargs: Any
+        self, domain: ActivityDomain | None, operation: Callable[..., T], *args: Any, **kwargs: Any
     ) -> asyncio.Future[T]:
         self._reject_maintenance_async()
-        lease = self.enter(domain)
+        barrier = ExitStack()
+        if domain is None:
+            barrier.enter_context(self.observe_request())
+            lease = None
+        else:
+            lease = self.enter(domain)
         context = contextvars.copy_context()
 
         def execute() -> T:
-            with lease:
-                return operation(*args, **kwargs)
+            if lease is not None:
+                with lease:
+                    return operation(*args, **kwargs)
+            return operation(*args, **kwargs)
+
+        def close() -> None:
+            if lease is not None:
+                lease.close()
+            barrier.close()
 
         try:
             future = asyncio.get_running_loop().run_in_executor(None, partial(context.run, execute))
         except BaseException:
-            lease.close()
+            close()
             raise
 
         def completed(done: asyncio.Future[T]) -> None:
-            lease.close()
+            close()
             # A cancelled waiter must not leave an unobserved thread exception.
             if not done.cancelled():
                 done.exception()

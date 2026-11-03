@@ -41,7 +41,7 @@ from service.identity.utils import request_owner_id
 from service.literature.api.gate import FulltextGate, publish_checkpoint_card
 from service.literature.persistence.files import scoped_relative
 from service.literature.service.agentic import project_agentic_papers
-from service.literature.service.checkpoint import policy_for
+from service.literature.service.checkpoint import agentic_checkpoint, policy_for
 from service.literature.service.receipt import issue_receipt
 from service.literature.service.result import (
     AGENTIC_SEARCH_ORIGIN,
@@ -76,6 +76,7 @@ from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 RESULT_STATUS_ROUTE = "/api/sessions/{session_id}/literature/result-status"
 RESULT_REPORT_ROLE = "supporting"
 AGENTIC_CANDIDATES_CHECKPOINT = "candidates"
+AGENTIC_METADATA_CHECKPOINT = "metadata"
 AGENTIC_METADATA_FILE = "metadata.json"
 FINAL_DELIVERY_CHECKPOINT: Literal["final"] = "final"
 SELECTION_CHECKPOINT: Literal["selection"] = "selection"
@@ -85,6 +86,15 @@ RESULT_ARTIFACT_INVALID = "literature_result_artifact_invalid"
 RESULT_PUBLICATION_FAILED = "literature_result_publication_failed"
 SELECTION_PREPARE_ACTION = "prepare and register the confirmed selection before retrying"
 RESULT_RETRY_ACTION = "check the search run artifacts and retry"
+AUTHORIZED_SOURCE_GUIDANCE = (
+    "Only when disposition is authorized, use the exact sources[].ref_id for pdf/read. "
+    "If managed full text is not available, use literature/acquire with the same run, "
+    "sources[].id as paper_id and the identifier from the published metadata, then retry pdf/read. "
+    "Inspect contract/describe for each operation's request schema. "
+    "A paper: ref and a literature: catalogue ref are different authorization scopes; "
+    "do not substitute a catalogue ref or treat title matches as authorization. "
+    "Rejected or interrupted authorization does not permit either acquisition or reading."
+)
 UNKNOWN_CHECKPOINT = "unknown"
 
 logger = logging.getLogger(__name__)
@@ -121,6 +131,26 @@ def register_result_routes(
         try:
             command = LiteratureResultPublish.model_validate(json.loads(raw))
             checkpoint = command.checkpoint
+            if command.checkpoint == AGENTIC_METADATA_CHECKPOINT:
+                if not command.skill:
+                    raise ValueError("plugin_skill_required")
+                content = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    agentic_checkpoint,
+                    live.runtime_workdir,
+                    scoped_relative(command.run, AGENTIC_METADATA_FILE),
+                )
+                if (
+                    sessions.bridge_caller(live.id) is not live
+                    or live.publication_turn_id != turn_id
+                ):
+                    raise PermissionError("bridge_access_denied")
+                card = await publish_checkpoint_card(
+                    live, content, turn_id, skill_name=command.skill
+                )
+                return JSONResponse(
+                    {"ok": True, "card_id": card["card_id"], "retained": content.card.retained}
+                )
             if command.checkpoint == AGENTIC_CANDIDATES_CHECKPOINT:
                 return await publish_candidates(live, turn_id, command.run)
             active_task_type = getattr(live, "active_task_type", "")
@@ -384,6 +414,9 @@ def register_result_routes(
             snapshot_id=live.active_assistant_snapshot_id,
             authorization_type=RESEARCH_IDEA_FULLTEXT,
             refs=content.refs,
+            papers=tuple(
+                {"id": source.ref_id, "label": source.title} for source in content.sources
+            ),
             source_count=len(content.sources),
         )
         return JSONResponse(
@@ -396,9 +429,11 @@ def register_result_routes(
                     "authorization_type": challenge.authorization_type,
                     "scope_digest": challenge.scope_digest,
                     "sources": [
-                        {"id": source.id, "title": source.title} for source in content.sources
+                        {"id": source.id, "ref_id": source.ref_id, "title": source.title}
+                        for source in content.sources
                     ],
                     "disposition": disposition.value,
+                    "guidance": AUTHORIZED_SOURCE_GUIDANCE,
                 },
             }
         )
@@ -471,14 +506,14 @@ def register_result_routes(
                 raw, _ = artifacts.export_bytes(
                     session_id, reference["artifact_id"], reference["sha256"]
                 )
-                papers = project_agentic_papers(json.loads(raw))
+                papers = project_agentic_papers(json.loads(raw), complete=True)
             else:
                 reference = value["metadata"]
                 raw, _ = artifacts.export_bytes(
                     session_id, reference["artifact_id"], reference["sha256"]
                 )
                 metadata = json.loads(raw)
-                papers = project_papers(metadata["papers"])
+                papers = project_papers(metadata["papers"], complete=True)
                 selection_reference = value.get("selection")
                 if isinstance(selection_reference, dict) and selection_reference.get("artifact_id"):
                     selection_raw, _ = artifacts.export_bytes(

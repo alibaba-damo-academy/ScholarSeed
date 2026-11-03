@@ -8,6 +8,8 @@
  */
 
 import type { ResourceCapability } from './resources.ts'
+import type { RecordTarget } from './records'
+export type { RecordTarget, RecordOwner } from './records'
 
 /** Viewer 种类。与后端 `ViewerKind` 同名。 */
 export {
@@ -77,14 +79,6 @@ export interface OpenDocumentRequest {
   path: string
   title: string
   page?: number
-}
-
-export type RecordOwner = 'project_asset' | 'literature_attachment'
-
-export interface RecordTarget {
-  owner: RecordOwner
-  scope_id: string
-  subject_id: string
 }
 
 export interface LiteratureDocumentSource {

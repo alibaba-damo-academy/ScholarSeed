@@ -1,10 +1,14 @@
 import ExcelJS from 'exceljs'
 import { unzipSync, zipSync } from 'fflate'
 
-import { OOXML_NS, readXml, writeXml } from './xml.ts'
+import { OOXML_NS, readXml, relationshipOwner, resolvePart, writeXml } from './xml.ts'
 
 const TABLE_PART = /^xl\/tables\/table\d+\.xml$/
 const WORKBOOK_XML_PART = /^xl\/.*\.xml$/
+const WORKSHEET_RELATIONSHIPS_PART = /^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/
+const TABLE_TARGET = /^xl\/tables\/(table\d+\.xml)$/
+const TABLE_RELATIONSHIP =
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/table'
 const XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/'
 const TABLE_READ_FILTERS = new Set(['iconFilter'])
 const DEFAULT_ICON_SET = '3TrafficLights1'
@@ -46,11 +50,40 @@ function normalizeSpreadsheetNamespaces(document: XMLDocument): boolean {
   return prefixed.length > 0
 }
 
+function normalizeTableRelationships(document: XMLDocument, owner: string): boolean {
+  let changed = false
+  for (const relation of Array.from(
+    document.getElementsByTagNameNS(OOXML_NS.relationships, 'Relationship')
+  )) {
+    if (
+      relation.getAttribute('Type') !== TABLE_RELATIONSHIP ||
+      relation.getAttribute('TargetMode') === 'External'
+    )
+      continue
+    const target = relation.getAttribute('Target') || ''
+    const table = TABLE_TARGET.exec(resolvePart(owner, target))
+    if (!table) continue
+    const relative = `../tables/${table[1]}`
+    if (target === relative) continue
+    relation.setAttribute('Target', relative)
+    changed = true
+  }
+  return changed
+}
+
 /** ExcelJS rejects iconFilter in tables. The grid does not execute table filters. */
 export function workbookPreview(bytes: Uint8Array): Uint8Array {
   const entries = unzipSync(bytes)
   let changed = false
   for (const [path, content] of Object.entries(entries)) {
+    if (WORKSHEET_RELATIONSHIPS_PART.test(path)) {
+      const document = readXml(content)
+      if (normalizeTableRelationships(document, relationshipOwner(path))) {
+        entries[path] = writeXml(document)
+        changed = true
+      }
+      continue
+    }
     if (!WORKBOOK_XML_PART.test(path)) continue
     const document = readXml(content)
     let partChanged = normalizeSpreadsheetNamespaces(document)

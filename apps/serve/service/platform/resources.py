@@ -688,6 +688,7 @@ class AgentResourceChangeSink(Protocol):
         tool_input: object,
         *,
         generation: str,
+        event_id: str = "",
     ) -> None:
         """Match write-capable tool input against the admitted file inventory."""
         raise NotImplementedError

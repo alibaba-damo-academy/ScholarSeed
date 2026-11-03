@@ -21,6 +21,7 @@ from scholarseed_runtime.contract import CapabilitySet, CommandReceipt, CommandS
 from scholarseed_runtime.contract.command import (
     EmptyThreadReplacementProof,
     SubmissionRetryProof,
+    ThreadReplacementProof,
     TurnRequest,
 )
 from scholarseed_runtime.contract.event import DeliveryClass, RuntimeEvent, RuntimeEventKind
@@ -39,15 +40,18 @@ from scholarseed_runtime.gateway.driver import (
     RuntimeDriverError,
     RuntimeTurnNotSubmittedError,
 )
-from service.chat.constants import PRODUCT_EVENT_USER_MESSAGE
+from service.chat.constants import PRODUCT_EVENT_USER_MESSAGE, PRODUCT_TURN_OUTCOME_UNKNOWN
 from service.chat.persistence.catalog import (
     SESSION_MESSAGE_QUEUE_TABLE,
     SESSION_REPLACEMENT_TABLE,
     QueuedMessageState,
+    ReplacementKind,
     ReplacementState,
     SessionBindingConflictError,
     SessionCatalogStore,
     SessionPrincipal,
+    UncertaintyKind,
+    UncertaintyState,
 )
 from service.chat.persistence.events import ProductEventStore
 from service.chat.persistence.utils import WriteBusy
@@ -460,6 +464,151 @@ class ReplacementContracts(unittest.TestCase):
             )
         self.catalog.recover_inflight()
         self.assertEqual(self.catalog.runtime_binding("product"), self.candidate)
+
+
+class ThreadRebuildingContracts(unittest.TestCase):
+    def setUp(self):
+        ReplacementContracts.setUp(self)
+        self.proof = ThreadReplacementProof(
+            "rebuild", self.original, "command", "resume-missing", 1, 2, 1
+        )
+        self.catalog.mark_queue_running("product", "command", "native-turn")
+        self.catalog.fail_queued_submission(
+            "product", "command", unknown=True, safe_error="process_exit"
+        )
+        self.unknown = replace(
+            evidence(),
+            kind=RuntimeEventKind.TURN_UNKNOWN,
+            native_turn_id="native-turn",
+            process_generation=1,
+            payload={"incident": {"incident_id": "process-exit"}},
+        )
+        self.catalog.record_unknown_turn(
+            "product", "native-turn", self.unknown, safe_error="process_exit"
+        )
+        self.catalog.record_turn_settlement("product", "command", self.unknown)
+
+    def claim(self):
+        self.catalog.record_replacement(self.proof, "revision")
+        self.catalog.begin_replacement(self.proof, "revision", "reservation")
+
+    def bind(self):
+        self.claim()
+        self.catalog.settle_replacement(
+            "product", "rebuild", ReplacementState.OPENING, self.candidate
+        )
+        self.catalog.replace_runtime_binding(
+            self.original, self.candidate, proof=self.proof, revision="revision"
+        )
+
+    def test_rebuild_preserves_unknown_source_and_uses_a_distinct_proof_kind(self):
+        original = self.catalog.queued_message("product", "command")
+        self.bind()
+        self.assertEqual(self.catalog.runtime_binding("product"), self.candidate)
+        self.assertEqual(self.catalog.queued_message("product", "command"), original)
+        self.assertEqual(
+            self.catalog.replacement("product")["kind"], ReplacementKind.HISTORY_REBUILD
+        )
+        self.assertIsNotNone(self.catalog.pending_turn_settlement("product"))
+        self.assertIs(
+            self.catalog.uncertainty("product", UncertaintyKind.TURN, "native-turn").state,
+            UncertaintyState.UNKNOWN,
+        )
+
+    def test_confirmation_preserves_unknown_audit_and_does_not_resubmit_the_source(self):
+        self.bind()
+        self.assertTrue(self.catalog.confirm_thread_replacement(self.proof))
+        uncertainty = self.catalog.uncertainty("product", UncertaintyKind.TURN, "native-turn")
+        self.assertIs(uncertainty.state, UncertaintyState.CONFIRMED)
+        self.assertEqual(uncertainty.payload["outcome"], PRODUCT_TURN_OUTCOME_UNKNOWN)
+        self.assertEqual(uncertainty.payload["runtime_event"]["native_session_id"], "empty")
+        self.assertEqual(uncertainty.payload["resolution"], ReplacementKind.HISTORY_REBUILD.value)
+        self.assertIsNone(self.catalog.pending_turn_settlement("product"))
+        self.assertIs(
+            self.catalog.queued_message("product", "command").state,
+            QueuedMessageState.OUTCOME_UNKNOWN,
+        )
+        self.assertTrue(self.catalog.confirm_thread_replacement(self.proof))
+
+    def test_ack_loss_and_process_restart_never_authorize_a_second_creation(self):
+        self.claim()
+        self.catalog.recover_inflight()
+        reopened = SessionCatalogStore(self.catalog.database)
+        self.assertIs(reopened.replacement("product")["state"], ReplacementState.UNKNOWN)
+        with self.assertRaises(SessionBindingConflictError):
+            reopened.begin_replacement(self.proof, "revision", "second")
+        self.assertFalse(reopened.confirm_thread_replacement(self.proof))
+
+    def test_hil_and_unrelated_uncertainty_block_rebuilding(self):
+        self.catalog.claim_uncertainty(
+            "product", UncertaintyKind.TOOL_RESPONSE, "tool", state=UncertaintyState.UNKNOWN
+        )
+        with self.assertRaises(SessionBindingConflictError):
+            self.catalog.record_replacement(self.proof, "revision")
+
+    def test_changed_configuration_and_stale_proof_do_not_replace_binding(self):
+        self.claim()
+        self.catalog.settle_replacement(
+            "product", "rebuild", ReplacementState.OPENING, self.candidate
+        )
+        with closing(sqlite3.connect(self.catalog.database)) as connection, connection:
+            connection.execute("UPDATE session_catalog SET policy_id = ?", ("changed",))
+        with self.assertRaises(SessionBindingConflictError):
+            self.catalog.replace_runtime_binding(
+                self.original, self.candidate, proof=self.proof, revision="revision"
+            )
+        self.assertFalse(self.catalog.confirm_thread_replacement(self.proof))
+
+    def test_wrong_failure_generation_cannot_claim_an_unknown_request(self):
+        with self.assertRaises(SessionBindingConflictError):
+            self.catalog.record_replacement(
+                replace(self.proof, failed_generation=2, absence_generation=3), "revision"
+            )
+
+    def test_confirmation_rechecks_new_hil_after_binding(self):
+        self.bind()
+        self.catalog.record_hil(
+            product_request_id="new-approval",
+            session_id="product",
+            vendor_request_id="native-request",
+            vendor_turn_id="native-turn",
+            vendor_item_id="item",
+            method="exec",
+            payload={},
+        )
+        self.assertFalse(self.catalog.confirm_thread_replacement(self.proof))
+        self.assertIs(
+            self.catalog.uncertainty("product", UncertaintyKind.TURN, "native-turn").state,
+            UncertaintyState.UNKNOWN,
+        )
+
+    def test_new_user_queue_blocks_confirmation_after_binding(self):
+        self.bind()
+        self.catalog.enqueue_message("product", "new-user", {"content": "new task"})
+        self.assertFalse(self.catalog.confirm_thread_replacement(self.proof))
+
+    def test_later_explicit_task_can_rebuild_without_erasing_the_previous_audit(self):
+        self.bind()
+        self.assertTrue(self.catalog.confirm_thread_replacement(self.proof))
+        original = self.catalog.queued_message("product", "command")
+        self.catalog.remove_reconciled_unknown_message("product", "command", original.operation_seq)
+        self.catalog.enqueue_message("product", "later", {"content": "later task"})
+        self.catalog.begin_queued_submission("product", "later")
+        self.catalog.mark_queue_running("product", "later", "later-native")
+        self.catalog.fail_queued_submission("product", "later", unknown=True, safe_error="exit")
+        later = replace(
+            self.proof,
+            proof_id="later-proof",
+            binding=self.candidate,
+            command_id="later",
+            failed_generation=2,
+            absence_generation=3,
+        )
+        self.catalog.record_replacement(later, "later-revision")
+        record = self.catalog.replacement("product")
+        self.assertEqual(record["proof_id"], "later-proof")
+        self.assertEqual(record["previous"]["proof_id"], "rebuild")
+        self.assertEqual(record["previous"]["candidate"]["opaque_session_ref"], "replacement")
 
 
 class ProofContracts(unittest.IsolatedAsyncioTestCase):

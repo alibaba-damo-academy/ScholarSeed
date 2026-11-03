@@ -41,7 +41,7 @@ const first = { id: 'first', version: '0.2.0', build_number: '202610152235' } as
 const newer = { ...first, id: 'newer', build_number: '202610160100' }
 
 async function harness(platform: 'win32' | 'darwin' = 'win32') {
-  const ipc = new Map<string, (...args: any[]) => Promise<any>>()
+  const ipc = new Map<string, (...args: unknown[]) => Promise<unknown>>()
   let prepares = 0
   const timers: number[] = []
   const policy =
@@ -59,9 +59,12 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
   preparation.offer(first)
   await preparation.settled()
   const context = {
+    latest: first,
     process: { platform },
     previewPolicyChanging: false,
-    ipcMain: { handle: (name: string, fn: (...args: any[]) => Promise<any>) => ipc.set(name, fn) },
+    ipcMain: {
+      handle: (name: string, fn: (...args: unknown[]) => Promise<unknown>) => ipc.set(name, fn),
+    },
     preparationPolicy: policy,
     lastPreparationDeferral: null,
     latestUpdateCandidate: null,
@@ -110,7 +113,7 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
   runInNewContext(code, context)
   const invoke = (name: string) => ipc.get('scholarseed:update-' + name)!(null)
   const check = (latest = first) => {
-    ;(context as any).latest = latest
+    context.latest = latest
     return runInNewContext('publishUpdateCheckResult({has_update: true, latest})', context)
   }
   return {

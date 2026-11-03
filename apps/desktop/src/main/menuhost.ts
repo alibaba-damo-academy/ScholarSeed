@@ -161,7 +161,7 @@ export function createMenuOwner(window: BrowserWindow, options: MenuOptions): Me
   const listen = (
     emitter: NodeJS.EventEmitter,
     name: string,
-    listener: (...args: any[]) => void,
+    listener: Parameters<NodeJS.EventEmitter['on']>[1],
     scope = removers
   ): void => {
     emitter.on(name, listener)

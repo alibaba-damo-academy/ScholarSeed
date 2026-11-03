@@ -15,14 +15,17 @@ import shutil
 import stat
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PureWindowsPath
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 from uuid import uuid4
 
 import yaml
 
-from service.capabilities.domain import SKILL_MANIFEST_NAME
+from service.capabilities.domain import PACKAGE_MANIFEST, SKILL_MANIFEST_NAME
+from service.capabilities.service.descriptor import PLUGIN_DESCRIPTOR
 from service.platform.storage import open_directory, remove_tree
 
 MAX_PACKAGE_BYTES = 20 * 1024 * 1024
@@ -35,6 +38,32 @@ APPLEDOUBLE_PREFIX = "._"
 #: 记录来源，供技能页区分「书深技能（hub 官方）」与「用户安装」。
 ORIGIN_FILE_NAME = ".origin.json"
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+PLUGIN_INSTALL_JOURNAL = ".plugin-install.json"
+PLUGIN_INSTALL_PREFIX = ".plugin-"
+PLUGIN_INSTALL_COMMITTED = "committed"
+PLUGIN_INSTALL_PREPARED = "prepared"
+PLUGIN_INSTALL_ROLLED_BACK = "rolled_back"
+PLUGIN_INSTALL_SCHEMA = 1
+PLUGIN_INSTALL_OWNER = ".owner"
+PLUGIN_INSTALL_PREVIOUS = "previous"
+PLUGIN_INSTALL_JOURNAL_LIMIT = 64 * 1024
+PLUGIN_INSTALL_FIELDS = frozenset(
+    {
+        "schema",
+        "name",
+        "directory",
+        "update",
+        "phase",
+        "candidate_digest",
+        "previous_digest",
+        "previous_state",
+    }
+)
+PLUGIN_INSTALL_PHASES = frozenset(
+    {PLUGIN_INSTALL_PREPARED, PLUGIN_INSTALL_COMMITTED, PLUGIN_INSTALL_ROLLED_BACK}
+)
+PLUGIN_INSTALL_DIGEST = re.compile(r"[0-9a-f]{64}")
+PLUGIN_INSTALL_DIRECTORY = re.compile(r"\.plugin-[0-9a-f]{32}")
 UPDATE_STAGING_PREFIX = ".skill-update-"
 UPDATE_BACKUP_NAME = "previous"
 
@@ -172,7 +201,8 @@ def _skill_identity(manifest_path: Path, fallback: str) -> tuple[str, str]:
     return name, description
 
 
-def preview_skill_upload(payload: bytes, filename: str) -> dict[str, str]:
+def preview_skill_upload(payload: bytes, filename: str) -> dict[str, Any]:
+    plugin = False
     if filename.lower().endswith(".zip"):
         try:
             with zipfile.ZipFile(io.BytesIO(payload)) as archive:
@@ -191,6 +221,10 @@ def preview_skill_upload(payload: bytes, filename: str) -> dict[str, str]:
                 if manifest.file_size > MAX_DOCUMENT_BYTES:
                     raise SkillPackageError("SKILL.md 超出说明文档安全上限")
                 document = archive.read(manifest).decode("utf-8")
+                paths = {
+                    Path(item.filename).relative_to(root).as_posix().casefold() for item in members
+                }
+                plugin = {PACKAGE_MANIFEST.casefold(), PLUGIN_DESCRIPTOR.casefold()} <= paths
         except (zipfile.BadZipFile, RuntimeError, UnicodeError, OSError) as exc:
             raise SkillPackageError("技能包损坏或说明文件不是有效 UTF-8 文本") from exc
     elif filename.casefold() == SKILL_MANIFEST_NAME.casefold():
@@ -216,6 +250,7 @@ def preview_skill_upload(payload: bytes, filename: str) -> dict[str, str]:
         "document": document,
         "version": str(metadata.get("version") or ""),
         "provider": str(metadata.get("author") or ""),
+        "plugin": plugin,
     }
 
 
@@ -240,6 +275,7 @@ def install_skill_archive(
     origin: Optional[Dict[str, Any]] = None,
     overwrite: bool = False,
     reserved_names: frozenset[str] = frozenset(),
+    include_plugin: bool = True,
 ) -> InstalledSkill:
     """把技能包 zip 安装到 `skills_root/<name>/`，返回安装结果。
 
@@ -265,6 +301,10 @@ def install_skill_archive(
 
         root = _manifest_root(staging)
         name, description = _skill_identity(root / SKILL_MANIFEST_NAME, fallback_name)
+        if not include_plugin:
+            for path in root.iterdir():
+                if path.name.casefold() == PLUGIN_DESCRIPTOR.casefold():
+                    path.unlink()
         if name in reserved_names:
             raise SkillDuplicateError(name)
         if origin is not None:
@@ -276,6 +316,8 @@ def install_skill_archive(
         skills_root.mkdir(parents=True, exist_ok=True)
         if target.exists() and not overwrite:
             raise SkillDuplicateError(name)
+        if target.exists() and (target / PLUGIN_DESCRIPTOR).exists():
+            raise SkillPackageError("installed_plugin_cannot_be_overwritten")
         if target.exists():
             shutil.rmtree(target)
         shutil.move(str(root), str(target))
@@ -316,6 +358,8 @@ def update_skill_archive(
     try:
         previous = parent.directory(name)
         try:
+            if (previous.path / PLUGIN_DESCRIPTOR).exists():
+                raise SkillPackageError("installed_plugin_cannot_be_overwritten")
             observed = read_skill_origin(skills_root, name)
             if observed != expected_origin:
                 raise SkillPackageError("Installed skill changed; check for updates again")
@@ -376,7 +420,208 @@ def install_skill_document(
         skills_root.mkdir(parents=True, exist_ok=True)
         if target.exists() and not overwrite:
             raise SkillDuplicateError(name)
+        if target.exists() and (target / PLUGIN_DESCRIPTOR).exists():
+            raise SkillPackageError("installed_plugin_cannot_be_overwritten")
         if target.exists():
             shutil.rmtree(target)
         shutil.move(str(staging), str(target))
         return InstalledSkill(name=name, path=target, description=description)
+
+
+def _plugin_tree_digest(root: Path) -> str:
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
+        raise SkillPackageError("plugin_install_identity_invalid")
+    signature = sha256()
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or path.is_junction() or not (path.is_dir() or path.is_file()):
+            raise SkillPackageError("plugin_install_identity_invalid")
+        relative = path.relative_to(root).as_posix()
+        signature.update(json.dumps([relative, path.is_dir()], ensure_ascii=False).encode())
+        if path.is_file():
+            with path.open("rb") as stream:
+                content = sha256()
+                while chunk := stream.read(MAX_DOCUMENT_BYTES):
+                    content.update(chunk)
+                signature.update(content.digest())
+    return signature.hexdigest()
+
+
+def _plugin_journal_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise SkillPackageError("plugin_install_journal_invalid")
+    return result
+
+
+def _plugin_journal_constant(value: str) -> None:
+    raise SkillPackageError("plugin_install_journal_invalid")
+
+
+def _plugin_journal(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or path.is_junction() or not path.is_file():
+        raise SkillPackageError("plugin_install_journal_invalid")
+    with path.open("rb") as stream:
+        payload = stream.read(PLUGIN_INSTALL_JOURNAL_LIMIT + 1)
+    if len(payload) > PLUGIN_INSTALL_JOURNAL_LIMIT:
+        raise SkillPackageError("plugin_install_journal_invalid")
+    try:
+        record = json.loads(
+            payload,
+            object_pairs_hook=_plugin_journal_object,
+            parse_constant=_plugin_journal_constant,
+        )
+        valid = (
+            isinstance(record, dict)
+            and set(record) == PLUGIN_INSTALL_FIELDS
+            and type(record["schema"]) is int
+            and record["schema"] == PLUGIN_INSTALL_SCHEMA
+            and isinstance(record["name"], str)
+            and SKILL_NAME_PATTERN.fullmatch(record["name"])
+            and isinstance(record["directory"], str)
+            and PLUGIN_INSTALL_DIRECTORY.fullmatch(record["directory"])
+            and type(record["update"]) is bool
+            and isinstance(record["phase"], str)
+            and record["phase"] in PLUGIN_INSTALL_PHASES
+            and isinstance(record["candidate_digest"], str)
+            and PLUGIN_INSTALL_DIGEST.fullmatch(record["candidate_digest"])
+            and (
+                isinstance(record["previous_digest"], str)
+                and PLUGIN_INSTALL_DIGEST.fullmatch(record["previous_digest"])
+                if record["update"]
+                else record["previous_digest"] is None
+            )
+            and (record["previous_state"] is None or isinstance(record["previous_state"], dict))
+        )
+    except (TypeError, ValueError, KeyError) as error:
+        raise SkillPackageError("plugin_install_journal_invalid") from error
+    if not valid:
+        raise SkillPackageError("plugin_install_journal_invalid")
+    return record
+
+
+def recover_plugin_installation(
+    skills_root: Path, *, restore_state: Callable[[dict[str, Any]], None] | None = None
+) -> bool:
+    journal = skills_root / PLUGIN_INSTALL_JOURNAL
+    if journal.is_symlink() or journal.is_junction():
+        raise SkillPackageError("plugin_install_journal_invalid")
+    if not journal.exists():
+        return False
+    record = _plugin_journal(journal)
+    name = record["name"]
+    directory = record["directory"]
+    staging = skills_root.parent / directory
+    target = skills_root / name
+    previous = staging / PLUGIN_INSTALL_PREVIOUS
+    candidate = staging / name
+    owner = staging / PLUGIN_INSTALL_OWNER
+    if any(
+        path.is_symlink() or path.is_junction()
+        for path in (staging, target, previous, candidate, owner)
+    ):
+        raise SkillPackageError("plugin_install_link_rejected")
+    if not staging.is_dir() or not owner.is_file() or owner.read_text() != directory:
+        raise SkillPackageError("plugin_install_identity_invalid")
+    if {path.name for path in staging.iterdir()} - {
+        PLUGIN_INSTALL_OWNER,
+        PLUGIN_INSTALL_PREVIOUS,
+        name,
+    }:
+        raise SkillPackageError("plugin_install_identity_invalid")
+    for path, digest in (
+        (candidate, record["candidate_digest"]),
+        (previous, record["previous_digest"]),
+    ):
+        if path.exists() and (digest is None or _plugin_tree_digest(path) != digest):
+            raise SkillPackageError("plugin_install_identity_invalid")
+    target_digest = _plugin_tree_digest(target) if target.exists() else None
+    committed = record["phase"] == PLUGIN_INSTALL_COMMITTED
+    if committed:
+        if target_digest != record["candidate_digest"] or candidate.exists():
+            raise SkillPackageError("plugin_install_identity_invalid")
+    else:
+        if record["previous_state"] is not None and restore_state is None:
+            raise SkillPackageError("plugin_install_recovery_handler_required")
+        if target_digest not in {None, record["candidate_digest"], record["previous_digest"]}:
+            raise SkillPackageError("plugin_install_identity_invalid")
+        if previous.exists():
+            if target.exists():
+                if target_digest != record["candidate_digest"] or candidate.exists():
+                    raise SkillPackageError("plugin_install_identity_invalid")
+                shutil.rmtree(target)
+            previous.rename(target)
+        elif record["update"]:
+            if target_digest != record["previous_digest"]:
+                raise SkillPackageError("plugin_install_identity_invalid")
+        elif target.exists():
+            if candidate.exists() or target_digest != record["candidate_digest"]:
+                raise SkillPackageError("plugin_install_identity_invalid")
+            shutil.rmtree(target)
+        _install_journal(journal, {**record, "phase": PLUGIN_INSTALL_ROLLED_BACK})
+        if record["previous_state"] is not None:
+            restore_state(record["previous_state"])
+    journal.unlink()
+    shutil.rmtree(staging)
+    return True
+
+
+def _install_journal(path: Path, record: dict[str, Any]) -> None:
+    if path.is_symlink() or path.is_junction():
+        raise SkillPackageError("plugin_install_journal_invalid")
+    payload = json.dumps(record, allow_nan=False)
+    if len(payload.encode("utf-8")) > PLUGIN_INSTALL_JOURNAL_LIMIT:
+        raise SkillPackageError("plugin_install_journal_invalid")
+    temporary = path.with_name(path.name + "." + uuid4().hex)
+    with temporary.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+@contextmanager
+def plugin_installation(
+    payload: bytes,
+    skills_root: Path,
+    *,
+    origin: dict[str, Any],
+    update: bool,
+    previous_state: dict[str, Any] | None = None,
+    restore_state: Callable[[dict[str, Any]], None] | None = None,
+) -> Iterator[InstalledSkill]:
+    skills_root.mkdir(parents=True, exist_ok=True)
+    recover_plugin_installation(skills_root, restore_state=restore_state)
+    staging = skills_root.parent / (PLUGIN_INSTALL_PREFIX + uuid4().hex)
+    staging.mkdir()
+    (staging / PLUGIN_INSTALL_OWNER).write_text(staging.name)
+    journal = skills_root / PLUGIN_INSTALL_JOURNAL
+    try:
+        candidate = install_skill_archive(payload, staging, origin=origin)
+        target = skills_root / candidate.name
+        if target.is_symlink() or target.is_junction():
+            raise SkillPackageError("plugin_install_link_rejected")
+        if target.exists() and not update:
+            raise SkillDuplicateError(candidate.name)
+        if update and not target.is_dir():
+            raise SkillPackageError("plugin_update_target_missing")
+        record = {
+            "schema": PLUGIN_INSTALL_SCHEMA,
+            "name": candidate.name,
+            "directory": staging.name,
+            "update": update,
+            "phase": PLUGIN_INSTALL_PREPARED,
+            "candidate_digest": _plugin_tree_digest(candidate.path),
+            "previous_digest": _plugin_tree_digest(target) if update else None,
+            "previous_state": previous_state,
+        }
+        _install_journal(journal, record)
+        if target.exists():
+            target.rename(staging / PLUGIN_INSTALL_PREVIOUS)
+        candidate.path.rename(target)
+        yield InstalledSkill(candidate.name, target, candidate.description)
+        _install_journal(journal, {**record, "phase": PLUGIN_INSTALL_COMMITTED})
+    finally:
+        if journal.exists():
+            recover_plugin_installation(skills_root, restore_state=restore_state)
+        elif staging.exists():
+            shutil.rmtree(staging)

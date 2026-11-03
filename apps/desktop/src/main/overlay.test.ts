@@ -114,7 +114,7 @@ function fixture(context: test.TestContext, tooltip = false) {
     details: { url: string },
     callback: (reply: { cancel: boolean }) => void
   ) => void
-  let permissionRequest!: (...args: any[]) => void
+  let permissionRequest!: (...args: unknown[]) => void
   let permissionCheck!: () => boolean
   let opening!: () => { action: string }
   const product = Object.assign(new EventEmitter(), {

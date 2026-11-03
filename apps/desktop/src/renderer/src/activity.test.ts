@@ -4,6 +4,9 @@ import test from 'node:test'
 import type { ConvItem, SessionArtifact } from './model.ts'
 import type { ActivityRow } from './activity.ts'
 import {
+  processRows,
+  webSearchRecordData,
+  externalResultUrl,
   answerInteractionCapabilities,
   subagentActivityItem,
   subagentIdentities,
@@ -19,6 +22,41 @@ import {
   hasVisibleTurnProgress,
   workingIndicatorVisible,
 } from './activity.ts'
+
+test('web record projection preserves submitted query order and rejects non-web destinations', () => {
+  const item: Extract<ConvItem, { kind: 'web_search' }> = {
+    kind: 'web_search',
+    searchId: 'search-record',
+    status: 'done',
+    query: 'fallback query',
+    action: {
+      type: 'search',
+      queries: ['first', 'second'],
+      url: 'https://page.test/source',
+      pattern: 'literal <pattern>',
+    },
+    results: [
+      { title: 'Paper', url: 'https://SOURCE.test/paper#section' },
+      { title: 'Denied', url: 'file:///private/paper' },
+      { title: 'Script', url: 'javascript:alert(1)' },
+    ],
+  }
+  const snapshot = structuredClone(item)
+  const result = webSearchRecordData(item)
+  assert.deepEqual(result.queries, ['first', 'second'])
+  assert.equal(result.page, 'https://page.test/source')
+  assert.equal(result.pattern, 'literal <pattern>')
+  assert.equal(result.results.length, 3)
+  assert.equal(result.results[0].url, 'https://source.test/paper#section')
+  assert.equal(result.results[0].site, 'source.test')
+  assert.equal(result.results[1].url, undefined)
+  assert.equal(result.results[2].url, undefined)
+  assert.notEqual(result.results[1].id, result.results[2].id)
+  assert.deepEqual(item, snapshot)
+  assert.equal(externalResultUrl('data:text/html,unsafe'), null)
+  assert.equal(externalResultUrl('not a URL'), null)
+  assert.equal(externalResultUrl('http://source.test'), 'http://source.test/')
+})
 
 const childActivity: Extract<ConvItem, { kind: 'native_activity' }> = {
   kind: 'native_activity',
@@ -462,6 +500,99 @@ test('marks only the turn group that can still receive activity as live tail', (
   assert.deepEqual(
     closed.filter(isActivity).map((group) => group.tail),
     [false]
+  )
+})
+
+test('process projection groups explicit commentary and batches without swallowing answers or interactions', () => {
+  const items: ConvItem[] = [
+    { kind: 'user', text: '开始', turnId: 'turn-a' },
+    { kind: 'thinking', commentary: true, text: '先读资料', turnId: 'turn-a' },
+    { kind: 'tool', toolId: 'read-a', name: 'read', status: 'done', turnId: 'turn-a' },
+    { kind: 'thinking', commentary: true, text: '继续核实', turnId: 'turn-a' },
+    { kind: 'tool', toolId: 'read-b', name: 'read', status: 'done', turnId: 'turn-a' },
+    {
+      kind: 'hil',
+      requestId: 'confirm',
+      hilKind: 'question',
+      hilState: 'pending',
+      turnId: 'turn-a',
+    },
+    { kind: 'tool', toolId: 'read-c', name: 'read', status: 'done', turnId: 'turn-a' },
+    { kind: 'agent', text: '最终回答', turnId: 'turn-a' },
+    { kind: 'user', text: '新任务', turnId: 'turn-b' },
+    { kind: 'thinking', commentary: true, text: '只有说明', turnId: 'turn-b' },
+  ]
+  const rows = activityRows(items)
+  const snapshot = structuredClone(rows)
+  const projected = processRows(rows)
+  assert.deepEqual(
+    projected.map((row) => row.kind),
+    ['row', 'process', 'row', 'process', 'row', 'row', 'row']
+  )
+  const groups = projected.filter((row) => row.kind === 'process')
+  assert.equal(groups[0].entries.length, 4)
+  assert.equal(groups[1].entries.length, 1)
+  assert.equal(groups[0].turnId, 'turn-a')
+  assert.deepEqual(
+    projected.flatMap((section) =>
+      section.kind === 'process' ? section.entries.map((entry) => entry.row) : [section.row]
+    ),
+    rows
+  )
+  assert.deepEqual(
+    projected.flatMap((section) =>
+      section.kind === 'process' ? section.entries.map((entry) => entry.index) : [section.index]
+    ),
+    rows.map((_, index) => index)
+  )
+  assert.deepEqual(rows, snapshot)
+  const more = activityRows([
+    ...items.slice(0, 5),
+    { kind: 'tool', toolId: 'read-new', name: 'read', status: 'running', turnId: 'turn-a' },
+  ])
+  assert.equal(processRows(more)[1].key, projected[1].key)
+  assert.equal(
+    processRows(activityRows([{ kind: 'tool', toolId: 'legacy', name: 'read', status: 'done' }]))[0]
+      .kind,
+    'row'
+  )
+})
+
+test('process boundaries preserve cards, deliveries, errors and mixed turn ownership', () => {
+  const rows: ActivityRow[] = [
+    { kind: 'activity', key: 'batch-a', turnId: 'a', tail: false, items: [] },
+    {
+      kind: 'item',
+      key: 'card',
+      item: {
+        kind: 'display_card',
+        turnId: 'a',
+        card: { cardId: 'card', type: 'custom', content: {} },
+      },
+    },
+    { kind: 'artifacts', key: 'files', turnId: 'a', items: [] },
+    {
+      kind: 'item',
+      key: 'error',
+      item: { kind: 'error', turnId: 'a', title: '失败', message: '需要处理', action: '重试' },
+    },
+    {
+      kind: 'item',
+      key: 'narration-a',
+      item: { kind: 'thinking', commentary: true, turnId: 'a', text: '原轮次说明' },
+    },
+    { kind: 'activity', key: 'batch-b', turnId: 'b', tail: true, items: [] },
+  ]
+  const result = processRows(rows)
+  assert.deepEqual(
+    result.map((section) => section.kind),
+    ['process', 'row', 'row', 'row', 'row', 'process']
+  )
+  assert.equal(result[0].kind === 'process' && result[0].turnId, 'a')
+  assert.equal(result[5].kind === 'process' && result[5].turnId, 'b')
+  assert.deepEqual(
+    result.filter((section) => section.kind === 'row').map((section) => section.row.key),
+    ['card', 'files', 'error', 'narration-a']
   )
 })
 

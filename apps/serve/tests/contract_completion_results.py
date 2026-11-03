@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import errno as errno_module
+import gc
 import json
 import socket
 import ssl
@@ -16,12 +17,14 @@ import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from scholarseed_runtime.contract.model import ModelWireProtocol
+from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
 from service.chat.service.completions import (
     CompletionBridge,
+    CompletionCleanupUnknown,
     mount_completion_bridge,
     normalize_response_input,
 )
+from service.chat.service.models import _codex_provider
 from service.chat.service.rejections import terminal_provider_failure
 from service.chat.service.streams import (
     INPUT_SHAPE_LIMIT,
@@ -30,6 +33,555 @@ from service.chat.service.streams import (
     StreamObservation,
 )
 from service.chat.service.transport import transport_diagnostics
+from service.identity.service.account_token import AccountTokenHolder
+
+
+class CompletionRenewalContracts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.bridge = CompletionBridge("http://127.0.0.1")
+        self.addAsyncCleanup(self.bridge.close)
+        self.source = {"model": "selected", "policy": {"allowed": ["selected"]}, "credential": 7}
+
+    def register(self, **changes):
+        values = {
+            "endpoint": "https://provider.example/v1/responses",
+            "responses_endpoint": "https://provider.example/v1/responses",
+            "wire_protocol": ModelWireProtocol.RESPONSES,
+            "api_key": "private-renewal-key",
+            "owner_id": "owner",
+            "connection_id": "connection",
+            "session_id": "session",
+            "renewal_source": lambda: self.source,
+        }
+        values.update(changes)
+        registration = self.bridge.register(**values)
+        upstream = self.bridge._upstreams[registration.bridge_id]
+        authority = self.bridge._request_authority(
+            upstream, upstream.responses_endpoint, ModelWireProtocol.RESPONSES
+        )
+        if authority.capture_renewal is not None:
+            authority.capture_renewal()
+        return registration, authority
+
+    def register_resumable(self, **changes):
+        async def credentials(owner, connection):
+            return ModelCredential(api_key=f"{owner}:{connection}:{self.source['credential']}")
+
+        values = {
+            "api_key": "",
+            "credential_resolver": credentials,
+            "resume_scope": "subscription-catalog-scope",
+        }
+        values.update(changes)
+        return self.register(**values)
+
+    async def test_resumable_active_reuse_is_captured_without_replacing_authority(self):
+        original, authority = self.register_resumable()
+        upstream = self.bridge._upstreams[original.bridge_id]
+        renewal = authority.prepare_renewal("active-successor")
+        self.assertIsNotNone(renewal)
+        with renewal.capture():
+            reused, _fresh_authority = self.register_resumable()
+        self.assertEqual(reused, original)
+        self.assertIs(self.bridge._upstreams[original.bridge_id], upstream)
+        self.assertIs(renewal._candidate, upstream)
+        retained = renewal.complete()
+        self.assertIsNotNone(retained)
+        self.assertEqual(retained.identity, authority.identity)
+        self.assertTrue(retained.current())
+        self.assertTrue(authority.current())
+        self.assertIsNone(renewal.complete())
+
+    async def test_resumable_suspend_inside_capture_preserves_url_not_old_authority(self):
+        original, authority = self.register_resumable()
+        upstream = self.bridge._upstreams[original.bridge_id]
+        renewal = authority.prepare_renewal("paused-successor")
+        self.assertIsNotNone(renewal)
+        with renewal.capture():
+            await self.bridge.suspend("session")
+            self.assertEqual(self.bridge.registration_count(), 0)
+            self.assertEqual(self.bridge._references[original.bridge_id].state.value, "paused")
+            self.assertFalse(authority.current())
+            resumed, expected = self.register_resumable()
+        self.assertEqual(resumed, original)
+        self.assertIsNot(self.bridge._upstreams[original.bridge_id], upstream)
+        renewed = renewal.complete()
+        self.assertIsNotNone(renewed)
+        self.assertEqual(renewed.identity, expected.identity)
+        self.assertTrue(renewed.current())
+        self.assertFalse(authority.current())
+
+    async def test_resumable_paused_revocation_invalidates_held_epochs_and_reference(self):
+        for scope in ("owner", "connection"):
+            with self.subTest(scope=scope):
+                self.bridge.release("session")
+                original, authority = self.register_resumable()
+                upstream = self.bridge._upstreams[original.bridge_id]
+                epoch = self.bridge._renewal_epoch(upstream)
+                renewal = authority.prepare_renewal(f"revoked-{scope}")
+                self.assertIsNotNone(renewal)
+                with renewal.capture():
+                    await self.bridge.suspend("session")
+                    gc.collect()
+                    if scope == "owner":
+                        self.bridge.revoke_owner("owner")
+                    else:
+                        self.bridge.revoke_connection("owner", "connection")
+                    self.assertNotEqual(self.bridge._renewal_epoch(upstream), epoch)
+                    self.assertNotIn(original.bridge_id, self.bridge._references)
+                    replacement, _replacement_authority = self.register_resumable()
+                self.assertNotEqual(replacement.bridge_id, original.bridge_id)
+                self.assertIsNone(renewal.complete())
+                self.assertFalse(authority.current())
+
+    async def test_resumable_hard_release_of_paused_reference_inside_capture(self):
+        original, authority = self.register_resumable()
+        renewal = authority.prepare_renewal("hard-release-successor")
+        with renewal.capture():
+            await self.bridge.suspend("session")
+            self.assertEqual(self.bridge.release("session"), 1)
+            self.assertNotIn(original.bridge_id, self.bridge._references)
+            replacement, expected = self.register_resumable()
+        self.assertNotEqual(replacement.bridge_id, original.bridge_id)
+        renewed = renewal.complete()
+        self.assertIsNotNone(renewed)
+        self.assertEqual(renewed.identity, expected.identity)
+        self.assertTrue(renewed.current())
+        self.assertFalse(authority.current())
+
+    async def test_resumable_reuse_cannot_hide_child_tasks_or_multiple_candidates(self):
+        for registration_mode in ("child", "active_duplicate", "paused_duplicate"):
+            with self.subTest(registration_mode=registration_mode):
+                self.bridge.release("session")
+                _original, authority = self.register_resumable()
+                renewal = authority.prepare_renewal(registration_mode)
+                self.assertIsNotNone(renewal)
+
+                async def register_child():
+                    self.register_resumable()
+
+                with renewal.capture():
+                    if registration_mode == "child":
+                        await asyncio.create_task(register_child())
+                    else:
+                        if registration_mode == "paused_duplicate":
+                            await self.bridge.suspend("session")
+                        self.register_resumable()
+                        self.register_resumable()
+                self.assertIsNone(renewal.complete())
+
+    async def test_resumable_refresh_rejects_old_proof_but_allows_a_new_turn_baseline(self):
+        for suspended in (False, True):
+            with self.subTest(suspended=suspended):
+                self.bridge.release("session")
+                original, authority = self.register_resumable()
+                renewal = authority.prepare_renewal("before-refresh")
+                self.assertIsNotNone(renewal)
+                with renewal.capture():
+                    if suspended:
+                        await self.bridge.suspend("session")
+                    self.source["credential"] += 1
+                    refreshed, _refreshed_authority = self.register_resumable()
+                self.assertEqual(refreshed, original)
+                self.assertIsNone(renewal.complete())
+                current, current_authority = self.register_resumable()
+                self.assertEqual(current, original)
+                current_renewal = current_authority.prepare_renewal("after-refresh")
+                self.assertIsNotNone(current_renewal)
+                with current_renewal.capture():
+                    self.register_resumable()
+                retained = current_renewal.complete()
+                self.assertIsNotNone(retained)
+                self.assertTrue(retained.current())
+
+    async def test_resumable_cleanup_failure_and_close_cannot_reactivate_old_proof(self):
+        original, authority = self.register_resumable()
+        renewal = authority.prepare_renewal("cleanup-failed")
+        self.assertIsNotNone(renewal)
+        with self.assertRaisesRegex(OSError, "cleanup unknown"):
+            with renewal.capture():
+                with patch.object(
+                    self.bridge, "_close_calls", side_effect=OSError("cleanup unknown")
+                ):
+                    await self.bridge.suspend("session")
+        self.assertEqual(self.bridge._references[original.bridge_id].state.value, "pausing")
+        self.assertIsNone(renewal.complete())
+        self.assertFalse(authority.current())
+        with self.assertRaises(CompletionCleanupUnknown):
+            self.register_resumable()
+        self.bridge.release("session")
+        _current, current_authority = self.register_resumable()
+        current_renewal = current_authority.prepare_renewal("closed-during-pause")
+        self.assertIsNotNone(current_renewal)
+        with current_renewal.capture():
+            await self.bridge.suspend("session")
+            await self.bridge.close()
+            with self.assertRaisesRegex(ValueError, "model_bridge_closed"):
+                self.register_resumable()
+        self.assertIsNone(current_renewal.complete())
+        self.assertEqual(self.bridge._references, {})
+        self.assertFalse(current_authority.current())
+
+    async def test_physical_release_renews_only_exact_scoped_registration_once(self):
+        _old, authority = self.register()
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            self.assertFalse(authority.current())
+            self.register(session_id="unrelated-inventory")
+            _new, expected = self.register()
+        renewed = renewal.complete()
+        self.assertIsNotNone(renewed)
+        self.assertEqual(renewed.identity, expected.identity)
+        self.assertTrue(renewed.current())
+        self.assertFalse(authority.current())
+        self.assertIsNone(renewal.complete())
+        self.assertIsNone(authority.prepare_renewal("successor"))
+        with self.assertRaises(RuntimeError):
+            with renewal.capture():
+                pass
+        self.assertNotIn("private-renewal-key", repr(renewal))
+        self.assertNotIn("private-renewal-key", repr(renewed))
+        self.bridge.revoke_connection("owner", "connection")
+        self.assertFalse(renewed.current())
+
+    async def test_gap_revocation_and_account_switch_prevent_renewal(self):
+        for change in (
+            lambda: self.bridge.revoke_owner("owner"),
+            lambda: self.bridge.revoke_connection("owner", "connection"),
+            lambda: self.bridge.rebind_owner("session", "different-owner"),
+        ):
+            with self.subTest(change=change):
+                self.bridge.release("session")
+                _old, authority = self.register()
+                renewal = authority.prepare_renewal("successor")
+                with renewal.capture():
+                    self.bridge.release("session")
+                    change()
+                    self.register()
+                self.assertIsNone(renewal.complete())
+                self.assertFalse(authority.current())
+
+    async def test_source_changes_and_multiple_candidates_fail_closed(self):
+        variants = (
+            {"api_key": "changed-private-key"},
+            {"headers": {"private": "changed"}},
+            {"endpoint": "https://different.example/v1/responses"},
+            {"wire_protocol": ModelWireProtocol.CHAT_COMPLETIONS},
+            {"model_routes": {"selected": "different"}},
+            {"owner_id": "different"},
+            {"connection_id": "different"},
+            {"reasoning_effort": "high"},
+            {"provider": "different"},
+            {"renewal_source": None},
+        )
+        for variant in variants:
+            with self.subTest(variant=tuple(variant)):
+                self.bridge.release("session")
+                _old, authority = self.register()
+                renewal = authority.prepare_renewal("successor")
+                with renewal.capture():
+                    self.bridge.release("session")
+                    self.register(**variant)
+                self.assertIsNone(renewal.complete())
+        self.bridge.release("session")
+        _old, authority = self.register()
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            self.register()
+            self.register()
+        self.assertIsNone(renewal.complete())
+
+    async def test_source_is_deeply_frozen_and_rechecked_after_registration(self):
+        _old, authority = self.register()
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            self.register()
+            self.source["policy"]["allowed"].append("changed")
+        self.assertIsNone(renewal.complete())
+
+    async def test_non_none_thinking_is_compared_as_immutable_intent(self):
+        thinking = ModelThinking(enabled=True, budget=1024)
+        _old, authority = self.register(thinking=thinking)
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            self.register(thinking=thinking)
+        self.assertTrue(renewal.complete().current())
+
+    async def test_candidate_from_an_inherited_child_task_is_not_authorized(self):
+        _old, authority = self.register()
+        renewal = authority.prepare_renewal("successor")
+
+        async def register_child():
+            self.register()
+
+        with renewal.capture():
+            self.bridge.release("session")
+            await asyncio.create_task(register_child())
+        self.assertIsNone(renewal.complete())
+
+    async def test_shared_subscription_owner_is_not_the_interactive_actor(self):
+        self.bridge = CompletionBridge("http://127.0.0.1", shared_ownership=True)
+        self.addAsyncCleanup(self.bridge.close)
+
+        async def credentials(_owner, _connection):
+            return ModelCredential(api_key="subscription-private-key")
+
+        _old, authority = self.register(owner_id="machine", credential_resolver=credentials)
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            self.assertEqual(self.bridge.rebind_owner("session", "interactive-actor"), 0)
+            self.register(owner_id="machine", credential_resolver=credentials)
+        self.assertTrue(renewal.complete().current())
+        self.bridge.release("session")
+        _old, authority = self.register(owner_id="machine", credential_resolver=credentials)
+        renewal = authority.prepare_renewal("different-successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            self.register(owner_id="different-machine", credential_resolver=credentials)
+        self.assertIsNone(renewal.complete())
+
+    async def test_unchanged_attachment_retains_only_guarded_authority(self):
+        _old, authority = self.register()
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            pass
+        retained = renewal.complete()
+        self.assertIsNotNone(retained)
+        self.assertEqual(retained.identity, authority.identity)
+        self.assertTrue(retained.current())
+        self.assertTrue(authority.current())
+        self.source["policy"]["allowed"].append("different")
+        self.assertFalse(retained.current())
+        self.assertTrue(authority.current())
+        _plain, plain = self.register(session_id="unsupported", renewal_source=None)
+        self.assertIsNone(plain.prepare_renewal)
+
+    async def test_no_registration_does_not_hide_private_source_or_epoch_drift(self):
+        for change in (
+            lambda: self.source["policy"]["allowed"].append("changed"),
+            lambda: self.bridge.revoke_owner("owner"),
+        ):
+            with self.subTest(change=change):
+                self.bridge.release("session")
+                _old, authority = self.register()
+                renewal = authority.prepare_renewal("successor")
+                with renewal.capture():
+                    change()
+                self.assertIsNone(renewal.complete())
+
+    async def test_source_drift_before_capture_cannot_mint_a_new_baseline(self):
+        _old, authority = self.register()
+        self.source["credential"] += 1
+        self.assertIsNone(authority.prepare_renewal("successor"))
+
+    async def test_model_owner_uses_regular_registration_and_detects_credential_rotation(self):
+        holder = AccountTokenHolder()
+        holder.remember("owner", "old.account.token")
+        config = {
+            "base_url": "https://provider.example/v1",
+            "provider": "openai",
+            "model_name": "selected",
+        }
+
+        def register():
+            provider, _environment = _codex_provider(
+                config, self.bridge, session_id="session", user_id="owner", account_tokens=holder
+            )
+            upstream = self.bridge._upstreams[provider["base_url"].rsplit("/", 2)[1]]
+            authority = self.bridge._request_authority(
+                upstream, upstream.responses_endpoint, ModelWireProtocol.RESPONSES
+            )
+            authority.capture_renewal()
+            return authority
+
+        authority = register()
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            register()
+        self.assertTrue(renewal.complete().current())
+        authority = register()
+        renewal = authority.prepare_renewal("next-successor")
+        with renewal.capture():
+            self.bridge.release("session")
+            holder.remember("owner", "new.account.token")
+            register()
+        self.assertIsNone(renewal.complete())
+        self.bridge.release("session")
+        authority = register()
+        renewal = authority.prepare_renewal("same-attachment-successor")
+        with renewal.capture():
+            holder.remember("owner", "another.account.token")
+        self.assertIsNone(renewal.complete())
+        self.assertTrue(authority.current())
+
+    async def test_renewal_fingerprint_retains_no_plaintext_credentials_or_intent(self):
+        bearer_calls = []
+
+        def bearer(_owner):
+            bearer_calls.append(True)
+            return "private-account-bearer"
+
+        registration, _authority = self.register(
+            token_provider=bearer,
+            headers={"Authorization": "private-header-value"},
+            renewal_source=lambda: {"nested": ["private-config-value"]},
+        )
+        upstream = self.bridge._upstreams[registration.bridge_id]
+        bearer_calls.clear()
+        fingerprint = self.bridge._renewal_source(upstream)
+        self.assertEqual(len(fingerprint), 64)
+        self.assertTrue(all(character in "0123456789abcdef" for character in fingerprint))
+        for secret in (
+            "private-renewal-key",
+            "private-account-bearer",
+            "private-header-value",
+            "private-config-value",
+        ):
+            self.assertNotIn(secret, fingerprint)
+        self.assertEqual(len(bearer_calls), 1)
+
+    async def test_renewal_source_failure_is_visible_without_secret_exception_text(self):
+        def unavailable():
+            raise ValueError("private-error-token")
+
+        with self.assertLogs("service.chat.service.completions", level="WARNING") as captured:
+            _registration, authority = self.register(renewal_source=unavailable)
+            self.assertIsNone(authority.prepare_renewal("successor"))
+        output = "\n".join(captured.output)
+        self.assertIn("model_bridge_renewal_source_failed", output)
+        self.assertIn("session_id=session", output)
+        self.assertIn("ValueError", output)
+        self.assertNotIn("private-error-token", output)
+        self.assertTrue(all(record.exc_info is None for record in captured.records))
+
+    async def test_invalid_serialized_intent_fails_closed_without_logging_its_values(self):
+        for intent in (
+            {"private-token": "private-config-secret", "value": float("nan")},
+            {1: "private-config-secret", "value": 2},
+        ):
+            with self.subTest(intent=intent):
+                with self.assertLogs("service.chat.service.completions", level="WARNING") as logs:
+                    _registration, authority = self.register(renewal_source=lambda: intent)
+                    self.assertIsNone(authority.prepare_renewal("successor"))
+                self.assertIn("model_bridge_renewal_source_failed", "\n".join(logs.output))
+                self.assertNotIn("private-config-secret", "\n".join(logs.output))
+                self.assertTrue(all(record.exc_info is None for record in logs.records))
+
+    async def test_released_session_scopes_do_not_accumulate_revocation_tombstones(self):
+        for index in range(40):
+            owner = f"owner-{index}"
+            connection = f"connection-{index}"
+            self.bridge.register(
+                endpoint="https://provider.example/v1/responses",
+                api_key="private-key",
+                owner_id=owner,
+                connection_id=connection,
+                session_id=f"session-{index}",
+                renewal_source=lambda: "unchanged",
+            )
+            self.bridge.revoke_owner(owner)
+            self.bridge.revoke_connection(owner, connection)
+        gc.collect()
+        self.assertEqual(self.bridge.registration_count(), 0)
+        self.assertEqual(len(self.bridge._owner_epochs), 0)
+        self.assertEqual(len(self.bridge._connection_epochs), 0)
+        self.assertEqual(len(self.bridge._session_epochs), 0)
+
+    async def test_close_releases_epoch_indexes_without_revalidating_old_authority(self):
+        _registration, authority = self.register()
+        renewal = authority.prepare_renewal("successor")
+        self.bridge.revoke_owner("owner")
+        self.bridge.revoke_connection("owner", "connection")
+        await self.bridge.close()
+        self.assertFalse(authority.current())
+        self.assertIsNone(renewal.complete())
+        self.assertEqual(len(self.bridge._owner_epochs), 0)
+        self.assertEqual(len(self.bridge._connection_epochs), 0)
+        self.assertEqual(len(self.bridge._session_epochs), 0)
+
+    async def test_uncaptured_authority_fails_closed_and_capture_is_idempotent(self):
+        reads = []
+
+        def source():
+            reads.append(self.source["credential"])
+            return self.source
+
+        registration = self.bridge.register(
+            endpoint="https://provider.example/v1/responses",
+            responses_endpoint="https://provider.example/v1/responses",
+            api_key="private-key",
+            session_id="session",
+            renewal_source=source,
+        )
+        upstream = self.bridge._upstreams[registration.bridge_id]
+        authority = self.bridge._request_authority(
+            upstream, upstream.responses_endpoint, ModelWireProtocol.RESPONSES
+        )
+        self.assertTrue(authority.current())
+        self.assertIsNone(authority.prepare_renewal("uncaptured"))
+        self.assertEqual(reads, [])
+        self.source["credential"] += 1
+        authority.capture_renewal()
+        self.assertEqual(reads, [8])
+        self.source["credential"] += 1
+        authority.capture_renewal()
+        self.assertEqual(reads, [8])
+        self.assertIsNone(authority.prepare_renewal("changed-after-capture"))
+
+    async def test_gap_revocation_survives_collection_of_the_removed_registration(self):
+        for revoke in (
+            lambda: self.bridge.revoke_owner("owner"),
+            lambda: self.bridge.revoke_connection("owner", "connection"),
+            lambda: self.bridge.rebind_owner("session", "different-owner"),
+        ):
+            with self.subTest(revoke=revoke):
+                self.bridge.release("session")
+                _registration, authority = self.register()
+                renewal = authority.prepare_renewal("successor")
+                with renewal.capture():
+                    self.bridge.release("session")
+                    gc.collect()
+                    revoke()
+                    self.register()
+                self.assertIsNone(renewal.complete())
+
+    async def test_prepare_renewal_never_replaces_the_original_request_baseline(self):
+        reads = []
+
+        def source():
+            revision = 1 if len(reads) < 2 else 2
+            reads.append(revision)
+            return {"credential": revision}
+
+        _registration, authority = self.register(renewal_source=source)
+        renewal = authority.prepare_renewal("successor")
+        self.assertIsNotNone(renewal)
+        with self.assertRaisesRegex(RuntimeError, "completion_renewal_stale"):
+            with renewal.capture():
+                self.fail("a new credential revision must not become the renewal baseline")
+
+    async def test_revocation_during_source_read_cannot_enter_renewal_capture(self):
+        reads = []
+
+        def source():
+            reads.append(True)
+            if len(reads) == 3:
+                self.bridge.revoke_owner("owner")
+            return {"credential": 1}
+
+        _registration, authority = self.register(renewal_source=source)
+        renewal = authority.prepare_renewal("successor")
+        self.assertIsNotNone(renewal)
+        self.assertEqual(len(reads), 2)
+        with self.assertRaisesRegex(RuntimeError, "completion_renewal_stale"):
+            with renewal.capture():
+                self.fail("revocation during a source read must invalidate the frozen epoch")
 
 
 class BrokenBody(httpx.AsyncByteStream):
@@ -302,6 +854,13 @@ class CompletionBridgeContract(unittest.TestCase):
 
     def test_http_known_rejections_restore_terminal_product_semantics(self):
         cases = (
+            (
+                400,
+                "subscription_sharing_unsupported_capability",
+                "The ChatGPT subscription connection does not support this request capability. "
+                "Use a compatible model source or start a task without that capability; "
+                "retrying unchanged will fail.",
+            ),
             (401, "invalid_api_key", "The model provider rejected the credentials."),
             (401, "authentication_error", "The model provider rejected the credentials."),
             (400, "InvalidParameter", "The model is not supported by this endpoint."),

@@ -15,7 +15,8 @@ import type { ComposerReference, SessionSurface } from './store'
 import type { MainView } from '../../navigation'
 import type { AssistantContextRef } from './contracts/assistant'
 
-const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/
+const WINDOWS_ABSOLUTE_PATH = /^(?:\\\\\?\\)?[A-Za-z]:[\\/]/
+const WINDOWS_UNC_ABSOLUTE_PATH = /^\\\\(?:\?\\UNC\\)?(?!\.{1,2}\\)[^\\/?]+\\[^\\/?]+(?:\\|$)/i
 export const COMPOSER_SKILL_KIND = 'skill'
 const ASSISTANT_CONTEXT_UNAVAILABLE = 'assistant_context_unavailable'
 const RESOURCE_REVIEW_REQUIRED = 'resource_review_required'
@@ -228,7 +229,12 @@ function contextAdmissionFeedback(failure: TurnAdmissionFailure): TurnAdmissionF
 }
 
 export function isAbsoluteInputPath(path: string | undefined): path is string {
-  return Boolean(path && (path.startsWith('/') || WINDOWS_ABSOLUTE_PATH.test(path)))
+  return Boolean(
+    path &&
+    (path.startsWith('/') ||
+      WINDOWS_ABSOLUTE_PATH.test(path) ||
+      WINDOWS_UNC_ABSOLUTE_PATH.test(path))
+  )
 }
 
 type QueuedReference = {

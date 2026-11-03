@@ -291,7 +291,6 @@ test('session Python artifacts use the existing code viewer', () => {
 test('content-inferred code viewer remains editable without a known extension', async () => {
   const workspace = new DocumentWorkspace({
     async load(requested): Promise<LoadedDocument> {
-      const markdown = requested.path.endsWith('.md')
       return {
         documentId: 'project:current:Dockerfile',
         source: requested,

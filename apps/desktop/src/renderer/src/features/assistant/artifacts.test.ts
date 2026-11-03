@@ -5,7 +5,12 @@ import test from 'node:test'
 import { block } from '../../../../test-helpers/source-contract.ts'
 import { listLiteratureCollections, type LibraryCollection } from '../literature/api.ts'
 
-const source = readFileSync(new URL('./Artifacts.tsx', import.meta.url), 'utf8')
+const host = readFileSync(new URL('./Artifacts.tsx', import.meta.url), 'utf8')
+const view = readFileSync(
+  new URL('../../components/business/Artifact.tsx', import.meta.url),
+  'utf8'
+)
+const source = host + '\n' + view
 const zh = JSON.parse(
   readFileSync(
     new URL('../../../../localization/locales/zh/assistant.json', import.meta.url),
@@ -19,6 +24,22 @@ const en = JSON.parse(
   )
 )
 
+test('artifact host wires the shared view without moving integrity or file operations into the UI package', () => {
+  assert.match(
+    host,
+    /import\s+\{\s*Artifact,\s*ArtifactGroup,\s*ArtifactMenuItems,\s*MENU_CLASS_NAME,?\s*\}\s+from\s+['"].*Artifact['"]/
+  )
+  assert.match(
+    host,
+    /<ArtifactGroup>[\s\S]*artifactVersionGroups\(items\)\.map[\s\S]*<ArtifactEntry/
+  )
+  for (const callback of ['preview', 'previewVersion', 'openImport'])
+    assert.ok(host.includes(callback + '={' + callback + '}'))
+  assert.match(host, /expectedSha256: currentSha256/)
+  assert.match(host, /fetchArtifactSha256\(thread.sessionId, primary.artifact_id\)/)
+  assert.doesNotMatch(view, /from ['"].*\/(?:api|store|fileOpen)['"]|window\.scholarseed/)
+})
+
 test('artifact filename tooltip contains the full filename without repeating its path', () => {
   assert.match(source, /tooltip=\{primary.name\}/)
   assert.doesNotMatch(source, /tooltip=\{[^\n]*primary.path/)
@@ -26,6 +47,14 @@ test('artifact filename tooltip contains the full filename without repeating its
     source,
     /tooltip=\{primary.name\}[\s\S]*?tooltipContentClassName="whitespace-pre-wrap"[\s\S]*?tooltipPortalled/
   )
+})
+
+test('image batches retain full artifact cards and bind viewer menus to the selected revision', () => {
+  assert.match(host, /<GeneratedImages/)
+  assert.match(host, /key=\{artifact.artifact_id \+ ':' \+ artifact.sha256\}/)
+  assert.match(host, /primary=\{artifact\}[\s\S]*mode="actions"/)
+  assert.match(host, /\{feedback\}\s*<\/div>\s*<\/DropdownMenuContent>/)
+  assert.match(host, /const feedback =/)
 })
 
 test('artifact import uses the inline collection list with the selected ID and retry', () => {

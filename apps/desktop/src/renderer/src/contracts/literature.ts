@@ -1,5 +1,5 @@
 /** Public renderer contract for the global literature catalogue. */
-import type { RecordTarget } from './workbench'
+import type { RecordTarget } from './records'
 
 export interface LiteratureDownloadPaper {
   paper_id: string

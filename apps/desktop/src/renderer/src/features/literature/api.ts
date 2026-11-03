@@ -3,6 +3,7 @@ import type {
   ConversationSearchResult,
   LiteratureCounts,
   LiteratureDetail,
+  LiteratureDownloadCard,
   LiteratureFacets,
   LiteratureNote,
   LiteraturePage,
@@ -20,6 +21,7 @@ import type {
 import type { PaperMetaPayload, PaperMetaQuery } from './metadata'
 import type { LiteratureCollection, LiteratureItem, LiteratureTag } from './state'
 import type { LiteratureDeliveryBatch, LiteratureDeliveryChoice } from '../../contracts/literature'
+import { parseDownloadCard } from './admission.ts'
 
 const API_ROOT = '/api/v1'
 const FIRST_PAGE = 1
@@ -70,6 +72,37 @@ export async function resolveDownloadedFulltext(
   )
     throw new Error(DOWNLOAD_REQUEST_FAILED)
   return receipt
+}
+
+export async function requestDownloadCard(
+  card: LiteratureDownloadCard
+): Promise<LiteratureDownloadCard> {
+  const query = new URLSearchParams({ run: card.run, project_id: card.project_id })
+  const response = await fetch(
+    `${base()}/api/sessions/${encodeURIComponent(card.session_id)}/literature/downloads?${query}`,
+    { credentials: 'include', cache: 'no-store' }
+  )
+  if (!response.ok) throw await apiFailure(response, DOWNLOAD_REQUEST_FAILED)
+  const result = await response.json()
+  const complete = parseDownloadCard({ ...card, papers: result.papers, omitted_papers: 0 })
+  if (
+    result.session_id !== card.session_id ||
+    result.run !== card.run ||
+    result.project_id !== card.project_id ||
+    !complete ||
+    complete.papers.length !== card.papers.length + (card.omitted_papers ?? 0) ||
+    !card.papers.every((preview) =>
+      complete.papers.some(
+        (paper) =>
+          paper.paper_id === preview.paper_id &&
+          paper.literature_id === preview.literature_id &&
+          paper.attachment_id === preview.attachment_id &&
+          paper.revision === preview.revision
+      )
+    )
+  )
+    throw new Error(DOWNLOAD_REQUEST_FAILED)
+  return complete
 }
 
 export async function requestLiteratureDelivery<T = LiteratureDeliveryBatch>(
@@ -840,6 +873,23 @@ interface ResultLibraryStatus {
 }
 
 /** Load the saved result; library lookup failure must never discard retrieved papers. */
+export async function requestConversationSearch(
+  session: string,
+  card: string,
+  signal?: AbortSignal
+): Promise<ConversationSearchResult> {
+  const endpoint = `${base()}/api/sessions/${encodeURIComponent(session)}/literature`
+  const response = await fetch(`${endpoint}/results/${encodeURIComponent(card)}`, {
+    credentials: 'include',
+    signal,
+  })
+  if (!response.ok) throw new Error('literature_result_unavailable')
+  const result = (await response.json()) as ConversationSearchResult
+  if (result.session_id !== session || !Array.isArray(result.papers))
+    throw new Error('literature_result_invalid')
+  return result
+}
+
 export async function loadConversationSearch(
   session: string,
   card: string,
@@ -851,15 +901,8 @@ export async function loadConversationSearch(
   warning: boolean
   libraryStatuses: Record<string, ResultLibraryState>
 }> {
+  const result = await requestConversationSearch(session, card, signal)
   const endpoint = `${base()}/api/sessions/${encodeURIComponent(session)}/literature`
-  const response = await fetch(`${endpoint}/results/${encodeURIComponent(card)}`, {
-    credentials: 'include',
-    signal,
-  })
-  if (!response.ok) throw new Error('literature_result_unavailable')
-  const result = (await response.json()) as ConversationSearchResult
-  if (result.session_id !== session || !Array.isArray(result.papers))
-    throw new Error('literature_result_invalid')
   const saved: string[] = []
   const libraryStatuses: Record<string, ResultLibraryState> = Object.fromEntries(
     result.papers.map((paper) => [paper.id, 'unavailable'])

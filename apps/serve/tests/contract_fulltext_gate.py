@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from service.assistant.service.authorization import (
     AUTHORIZATION_REQUIRED,
@@ -97,6 +97,38 @@ class RecordingTurns:
 
 
 class FulltextGateContract(unittest.TestCase):
+    def test_idea_authorization_uses_turn_component_without_task_lease(self) -> None:
+        live = self.live(ProductTaskType.RESEARCH_IDEA.value)
+        reference = {
+            "plugin": "research-idea-partner",
+            "component": "authorization",
+            "fingerprint": "verified",
+        }
+        live.component_for.return_value = reference
+        live.interactions = SimpleNamespace(request_product_input=AsyncMock(return_value={}))
+        papers = (
+            {"id": "paper-one", "label": "First paper"},
+            {"id": "outside", "label": "Excluded"},
+        )
+        asyncio.run(
+            authorize_sources(
+                live,
+                self.authorizer,
+                turn_id="native-turn-1",
+                snapshot_id="snapshot-1",
+                authorization_type=RESEARCH_IDEA_FULLTEXT,
+                refs=("paper-one",),
+                papers=papers,
+            )
+        )
+        question = live.interactions.request_product_input.call_args.args[0]
+        live.component_for.assert_awaited_once_with(
+            "literature.authorization", interaction_id=question["id"]
+        )
+        self.assertEqual(question["component"], reference)
+        self.assertEqual(question["component_data"], {"papers": [papers[0]], "scope_count": 1})
+        self.assertNotIn("papers", question)
+
     def test_duplicate_bridge_checkpoint_shares_one_authorization_wait(self) -> None:
         async def scenario() -> None:
             live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
@@ -197,8 +229,11 @@ class FulltextGateContract(unittest.TestCase):
                     await asyncio.sleep(POLL_SECONDS)
             pending = self.catalog.pending_hil(SESSION_ID)
             published = []
+            finished = []
+            live.interactions._finish_component = finished.append
 
             async def failed_publish(kind, payload, **kwargs):
+                self.assertEqual(len(finished), len(requests))
                 published.append(payload)
                 raise RuntimeError("notification unavailable")
 
@@ -219,6 +254,13 @@ class FulltextGateContract(unittest.TestCase):
             )
             self.assertEqual(live.interactions._product_waiters, {})
             self.assertEqual(live.interactions._product_activities, {})
+            self.assertCountEqual(
+                [question["id"] for question in finished],
+                [row.payload["questions"][0]["id"] for row in pending],
+            )
+            await live.interactions.cancel_product_requests()
+            self.assertEqual(len(finished), len(requests))
+            self.assertEqual(len(published), len(requests))
             self.assertEqual(turns.posts, [])
             self.assertTrue(self.activities.seal(generation))
 
@@ -228,6 +270,8 @@ class FulltextGateContract(unittest.TestCase):
         async def scenario() -> None:
             live = self.live("literature_review")
             decision = {"answers": {"recovered-question": REJECT}}
+            finished = []
+            live.interactions._finish_component = finished.append
             request = asyncio.create_task(
                 live.interactions.request_product_input(
                     {"id": "recovered-question", "questions": []},
@@ -242,6 +286,7 @@ class FulltextGateContract(unittest.TestCase):
             self.assertEqual(await asyncio.wait_for(request, WAIT_SECONDS), decision)
             self.assertEqual(self.catalog.hil("recovered-question").decision, decision)
             self.assertEqual(live.interactions._product_waiters, {})
+            self.assertEqual([question["id"] for question in finished], ["recovered-question"])
 
         asyncio.run(scenario())
 
@@ -438,6 +483,7 @@ class FulltextGateContract(unittest.TestCase):
 
         live = SimpleNamespace(
             id=SESSION_ID,
+            component_for=AsyncMock(return_value=None),
             runtime_id="codex",
             runtime_workdir=self.root,
             catalog=self.catalog,
@@ -1436,6 +1482,7 @@ class CrossTurnGrantContract(unittest.TestCase):
         live = SimpleNamespace(
             id="s1",
             active_product_turn_id="client-t2",
+            component_for=AsyncMock(return_value=None),
             interactions=SimpleNamespace(request_product_input=request_product_input),
         )
         challenge, disposition, decision = asyncio.run(
@@ -1480,6 +1527,7 @@ class CrossTurnGrantContract(unittest.TestCase):
         live = SimpleNamespace(
             id="s1",
             active_product_turn_id="client-t1",
+            component_for=AsyncMock(return_value=None),
             interactions=SimpleNamespace(request_product_input=request_product_input),
         )
         _challenge, disposition, decision = asyncio.run(
@@ -1563,6 +1611,7 @@ class TaskConsentContract(CrossTurnGrantContract):
         live = SimpleNamespace(
             id="s1",
             active_product_turn_id="client-t2",
+            component_for=AsyncMock(return_value=None),
             interactions=SimpleNamespace(request_product_input=request),
         )
         scope = self.scope()
@@ -1637,6 +1686,7 @@ class TaskConsentContract(CrossTurnGrantContract):
         live = SimpleNamespace(
             id="s1",
             active_product_turn_id="client-t2",
+            component_for=AsyncMock(return_value=None),
             interactions=SimpleNamespace(request_product_input=request),
         )
         scope = self.scope()

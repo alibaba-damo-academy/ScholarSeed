@@ -27,6 +27,7 @@ import type {
 } from './model'
 import { projectHilCard, hilResolution, hilSubmissionFailure } from './hil.ts'
 import { insertTurnRuntimeItem, settleInterruptedActivities } from './transcript.ts'
+import { SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE } from './failures.ts'
 
 const SERVICE_TRANSPORT_INCIDENT_ID = 'service-transport'
 const UNKNOWN_RESPONSE_RPC_METHODS = new Set(['server-response/hil', 'server-response/tool'])
@@ -86,7 +87,17 @@ const TURN_UNKNOWN_MESSAGE_KEYS = {
   agent_runtime_exit: 'processExit',
 } as const
 export const SESSION_RESUME_REQUEST_EVENT = 'scholarseed:session-resume-request'
+const SANDBOX_INCIDENT_MESSAGE_KEYS = {
+  windows_sandbox_setup_failed: 'runtime.reason.windows_sandbox_setup_failed',
+  windows_sandbox_setup_in_progress: 'runtime.reason.windows_sandbox_setup_in_progress',
+  windows_sandbox_setup_unknown: 'runtime.reason.windows_sandbox_setup_unknown',
+  windows_sandbox_policy_rejected: 'runtime.reason.windows_sandbox_policy_rejected',
+  windows_sandbox_setup_cancelled: 'runtime.reason.windows_sandbox_setup_cancelled',
+  windows_sandbox_tool_access_failed: 'runtime.reason.windows_sandbox_tool_access_failed',
+} as const
 const INCIDENT_MESSAGE_KEYS = {
+  ...SANDBOX_INCIDENT_MESSAGE_KEYS,
+  [SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE]: 'runtime.reason.subscription_capability_unsupported',
   agent_runtime_exit: 'runtime.reason.agent_runtime_exit',
   runtime_transport_lost: 'runtime.reason.runtime_transport_lost',
   runtime_rpc_timeout: 'runtime.reason.runtime_rpc_timeout',
@@ -224,6 +235,13 @@ export function canContinueFailedTurn(
     !canOfferTurnRecovery(thread) ||
     thread.terminated ||
     thread.recoveryPending ||
+    failure.failure?.kind === 'capability' ||
+    thread.conversation.some(
+      (item) =>
+        item.kind === 'error' &&
+        item.turnId === failure.turnId &&
+        item.failure?.kind === 'capability'
+    ) ||
     !failure.turnId ||
     failure.runtimeAction !== 'continue_turn' ||
     failure.actionState === 'submitting' ||
@@ -235,6 +253,17 @@ export function canContinueFailedTurn(
   return (
     latest?.turnId === failure.turnId &&
     (thread.turnOutcomes?.[failure.turnId] ?? thread.status) === 'failed'
+  )
+}
+
+export function hasCurrentTurnCapabilityFailure(thread: Pick<Thread, 'conversation'>): boolean {
+  const turnId = [...thread.conversation].reverse().find((item) => Boolean(item.turnId))?.turnId
+  return Boolean(
+    turnId &&
+    thread.conversation.some(
+      (item) =>
+        item.kind === 'error' && item.turnId === turnId && item.failure?.kind === 'capability'
+    )
   )
 }
 
@@ -552,7 +581,11 @@ export function formatRuntimeStatus(
       ? t('runtime.retryingCount', message)
       : message.key === 'resume.retrying'
         ? t('resume.retrying', message)
-        : t(message.key)
+        : message.key === 'runtime.recoveryFailed' &&
+            typeof reason === 'string' &&
+            Object.prototype.hasOwnProperty.call(SANDBOX_INCIDENT_MESSAGE_KEYS, reason)
+          ? t('runtime.sandboxRecoveryFailed')
+          : t(message.key)
   return text + (detail ? t('runtime.detail', { detail }) : '')
 }
 
@@ -560,7 +593,10 @@ function runtimeIncidentText(data: RuntimeIncidentData): {
   text: RuntimeStatusMessage
   tone: Cognitive
 } {
-  const reason = data.safe_error
+  const reason =
+    data.provider_error_code === SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE
+      ? SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE
+      : data.safe_error
   if (data.state === 'retrying') {
     if (data.kind === 'provider_retry' || data.strategy === 'vendor_retry') {
       return { text: { key: 'runtime.providerRetrying', reason }, tone: 'inference' }

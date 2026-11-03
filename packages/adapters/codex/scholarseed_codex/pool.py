@@ -1431,13 +1431,41 @@ class CodexHostPool:
     def authorize_scope(self, scope: str) -> None:
         if self._control_error:
             raise AppServerError(self._control_error, safe_error=self._control_error)
-        if self._execution_authority is not None and self._execution_authority != self._digest(
-            scope
-        ):
+        if not self.matches_scope(scope):
             raise AppServerError(
                 RESOURCE_HOST_CONFIGURATION_CONFLICT,
                 safe_error=RESOURCE_HOST_CONFIGURATION_CONFLICT,
             )
+
+    def matches_scope(self, scope: str) -> bool:
+        return self._execution_authority is None or self._execution_authority == self._digest(scope)
+
+    async def replace_execution_scope(self, scope: str) -> None:
+        """Commit an explicit identity handover only after physical resource drain.
+
+        Ordinary reset keeps its authority. A new scope cannot reuse any old host,
+        pending reservation, command, or cleanup; late old requests fail admission.
+        Uncertain control state is never recoverable through this operation.
+        """
+        async with self._lock:
+            if self._control_error:
+                raise AppServerError(self._control_error, safe_error=self._control_error)
+            if not scope.strip():
+                raise AppServerError(
+                    RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
+                )
+            if (
+                self._closed
+                or self._hosts
+                or self._commands
+                or any(not task.done() for task in self._background_tasks)
+                or any(row.state in PENDING_RESOURCE_STATES for row in self._reservations.values())
+            ):
+                raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
+            self._execution_key = None
+            self._execution_catalog = None
+            self._execution_authority = self._digest(scope)
+            self._readiness_cache.clear()
 
     def prepare_home(self) -> Path:
         return prepare_codex_runtime_home()

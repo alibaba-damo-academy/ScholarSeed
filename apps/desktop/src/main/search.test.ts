@@ -347,8 +347,7 @@ test('regional search cannot publish results from the originally authorized orig
 
 test('form submission rechecks policy and scope and never extracts on revocation', async () => {
   for (const change of ['retire', 'replace', 'changePolicy'] as const) {
-    let state: ReturnType<typeof fixture>
-    state = fixture({
+    const state: ReturnType<typeof fixture> = fixture({
       submit: async () => {
         state[change]()
       },
@@ -529,8 +528,7 @@ test('homepage and result settling remain cancellable without publishing or repl
 test('a skipped result is scrolled before a new stable read and cannot survive revocation', async () => {
   for (const revoked of [false, true]) {
     let scrolled = false
-    let state: ReturnType<typeof fixture>
-    state = fixture({
+    const state: ReturnType<typeof fixture> = fixture({
       evaluate: async (expression) => {
         if (expression.includes('.scrollIntoView(')) {
           scrolled = true
@@ -570,8 +568,7 @@ test('result input must match the requested query even when the URL is correct',
 
 test('scope, target or policy revocation during extraction cannot publish cards', async () => {
   for (const change of ['retire', 'replace', 'changePolicy'] as const) {
-    let state: ReturnType<typeof fixture>
-    state = fixture({
+    const state: ReturnType<typeof fixture> = fixture({
       evaluate: async () => {
         state[change]()
         return { url: RESULT_URL, cards: [CARD], challenge: false, ready: true }
@@ -586,8 +583,7 @@ test('scope, target or policy revocation during extraction cannot publish cards'
 })
 
 test('cancel during page read immediately disposes its target and rejects the late result', async () => {
-  let state: ReturnType<typeof fixture>
-  state = fixture({
+  const state: ReturnType<typeof fixture> = fixture({
     evaluate: async () => {
       state.abort.abort()
       assert.equal(state.status().closed, true)

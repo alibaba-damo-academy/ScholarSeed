@@ -1,20 +1,26 @@
+import { PluginInteraction } from './Frame'
+import { Failure } from './Failure'
+import { Continuation } from './Continuation'
+import { Message } from '../primitive/Message'
+import { PluginInstallation } from './Skills'
+import { QuestionOption } from './Options'
+import type { PluginMount } from '../../../../plugins'
 import { availabilityPolicy } from '../../app/policy'
 import { attentionRequest, matchingAttentionAnchors } from '../../attention'
 import { referenceBaseLabel } from '../../features/assistant/text'
 import { markInteractionAttentionRead } from '../../features/assistant/attention'
 import { deliveryLabel } from '../../delivery'
-import {
-  authenticationRecoveryAction,
-  formatTurnFailure,
-  isRecoverableTurnFailure,
-} from '../../failures'
+import { authenticationRecoveryAction, formatTurnFailure } from '../../failures'
 import { feedback, renderFeedback } from '../../contracts/feedback'
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { ReplyCopy, CardOnlyReplyCopy } from './Copy'
+import { AnswerCopyContext, CopyItemsContext, CopySessionContext } from './clipboard'
+import { hasCopyCard } from './copying'
 import type { BrowserApprovalResponseReply } from '../../../../approval'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ChevronRight, Copy, GitBranch } from 'lucide-react'
+import { Check, ChevronRight, Copy, GitBranch } from 'lucide-react'
 import { streamingTextClassName } from '../../design/motion'
 import aiThinking from '../../assets/ai-thinking.gif'
 import { conversationInlinePadding, createFollowScroll, createScrollbarVisibility } from './scroll'
@@ -31,11 +37,12 @@ import type {
   TurnOutcome,
   TurnTiming,
 } from '../../model'
-import { SessionArtifact, type HilResolvedMessage } from '../../model'
+import { type HilResolvedMessage } from '../../model'
 import { Icon, type IconName } from '../../icons'
 import { TONE } from '../../tone'
-import { openByDefault } from '../../fileOpen'
+
 import {
+  componentOptionAnswers,
   browserApprovalCardRole,
   browserApprovalSubmission,
   browserHistoryApprovalSubmission,
@@ -76,6 +83,9 @@ import {
 import { projectPlanSnapshots } from '../../todo'
 import {
   answerInteractionCapabilities,
+  externalResultUrl,
+  webSearchQuery,
+  webSearchRecordData,
   subagentActivityItem,
   subagentIdentities,
   collaborationStatusKey,
@@ -84,9 +94,10 @@ import {
   activityIdentity,
   activityRunState,
   activityRows,
+  processRows,
+  type ActivityRow,
   hasVisibleTurnProgress,
   type ActivityItem,
-  type ArtifactItem,
   workingIndicatorVisible,
 } from '../../activity'
 import {
@@ -102,6 +113,25 @@ import { AnnotatedAnswer } from '../../features/assistant/Annotations'
 import { ArtifactCard } from '../../features/assistant/Artifacts'
 import { AnnotationSummary, annotationDisplay } from '../../features/assistant/Notes'
 import { SessionReference } from '../../features/assistant/SessionReference'
+import { WebSearchRecord } from './Retrieval'
+import {
+  ToolExecution,
+  ExecutionBatch,
+  ExecutionProcess,
+  ExecutionStatus as ActivityStatusIcon,
+  ExecutionIO as IoBlock,
+  TOOL_RUN_STEP_STATUS_CLASS,
+  TOOL_RUN_STATUS_TONE_CLASS,
+  TOOL_RUN_CONTENT_INNER_CLASS,
+  TOOL_RUN_STEP_CLASS,
+  TOOL_RUN_STEP_TRIGGER_CLASS,
+  TOOL_RUN_STEP_NAME_CLASS,
+  TOOL_RUN_STEP_CARET_CLASS,
+  TOOL_RUN_STEP_CONTENT_CLASS,
+  TOOL_RUN_IO_STACK_CLASS,
+  TOOL_RUN_IO_LABEL_CLASS,
+  TOOL_RUN_IO_CLASS,
+} from './Execution'
 import {
   DisplayCardView,
   useCardArtifacts,
@@ -117,12 +147,7 @@ import {
 } from './duration'
 import { Finalizations } from '../../features/resources/Finalizations'
 import { ReviewCard } from '../../features/resources/ReviewCard'
-import {
-  buildTurnInput,
-  composerSubmissionOutcome,
-  isComposerSubmissionAccepted,
-  turnAdmissionFeedback,
-} from '../../input'
+import { buildTurnInput, composerSubmissionOutcome, turnAdmissionFeedback } from '../../input'
 import {
   hasQueuedMessageAwaitingRuntime,
   markOptimisticQueueOutcomeUnknown,
@@ -134,9 +159,6 @@ import {
 import { releaseQueuedOutbox, retainQueuedOutbox } from '../../outbox'
 import {
   Alert,
-  AlertDescription,
-  AlertTitle,
-  Badge,
   Button,
   Checkbox,
   Card,
@@ -147,7 +169,7 @@ import {
   CopyButton,
   EllipsisText,
   IconButton,
-  Radio,
+  Pagination,
   ScrollArea,
   Skeleton,
   Spinner,
@@ -167,7 +189,6 @@ const SUBAGENT_ACTION_KEYS = {
   plan: { key: 'subagent.action.plan' },
   work: { key: 'subagent.action.work' },
 } as const
-const EXTERNAL_RESULT_PROTOCOLS = new Set(['http:', 'https:'])
 const HIL_OUTCOME_UNKNOWN_MESSAGE = 'stream.hil.outcomeUnknown'
 const SHOW_SCROLL_TO_BOTTOM_DISTANCE_PX = 140
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
@@ -221,42 +242,10 @@ const TOOL_RUN_SUMMARY_CLASS =
   'overflow-hidden text-ellipsis whitespace-nowrap text-[10.5px] text-[var(--text-3)]'
 const TOOL_RUN_STATE_CLASS =
   'inline-flex items-center justify-end gap-[5px] overflow-hidden text-ellipsis whitespace-nowrap text-[10.5px] text-[var(--text-3)]'
-const TOOL_RUN_STEP_STATUS_CLASS =
-  'inline-flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]'
-const TOOL_RUN_STATUS_TONE_CLASS: Record<string, string> = {
-  'is-running': 'text-[var(--c-fact)]',
-  'is-done': 'text-[var(--c-experience)]',
-  'is-error': 'text-[var(--c-tension)]',
-  'is-cancelled': 'text-[var(--text-3)]',
-}
 const TOOL_RUN_PULSE_CLASS =
   'size-[6px] flex-none rounded-full bg-current [animation:tool-run-pulse_1.2s_ease-in-out_infinite] motion-reduce:animate-none'
-const TOOL_RUN_CARET_CLASS =
-  'inline-flex items-center text-[var(--text-3)] transition-[transform,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-[.is-open]:rotate-90 group-[.is-open]:text-[var(--text-2)]'
-const TOOL_RUN_CONTENT_CLASS =
-  'grid min-h-0 grid-rows-[0fr] opacity-0 pointer-events-none transition-[grid-template-rows,opacity] duration-[260ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-[.is-open]:grid-rows-[1fr] group-[.is-open]:opacity-100 group-[.is-open]:pointer-events-auto'
-const TOOL_RUN_CONTENT_INNER_CLASS = 'min-h-0 overflow-hidden'
-const TOOL_RUN_STEPS_CLASS =
-  'mb-[var(--vds-space-3)] min-w-0 border-l border-[var(--vds-border-default)] pl-[var(--vds-space-2)]'
-const TOOL_RUN_STEP_CLASS = 'group/step min-w-0 !gap-0 !border-0 !bg-transparent'
-const TOOL_RUN_STEP_TRIGGER_CLASS =
-  'group/trigger !flex min-h-[var(--vds-control-height-md)] w-full cursor-pointer items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-2)] !border-0 !bg-transparent px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-left text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] transition-colors duration-[var(--vds-duration-fast)] hover:!bg-[var(--vds-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vds-brand-text-primary)]'
-const TOOL_RUN_STEP_NAME_CLASS =
-  'shrink-0 font-[var(--vds-fw-regular)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]'
-const TOOL_RUN_STEP_CARET_CLASS =
-  'inline-flex items-center text-[var(--text-3)] transition-[transform,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-aria-expanded/trigger:rotate-90 group-aria-expanded/trigger:text-[var(--text-2)]'
-const TOOL_RUN_STEP_CONTENT_CLASS =
-  'grid min-h-0 grid-rows-[0fr] opacity-0 pointer-events-none transition-[grid-template-rows,opacity] duration-[260ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none aria-[hidden=false]:grid-rows-[1fr] aria-[hidden=false]:opacity-[var(--vds-opacity-full)] aria-[hidden=false]:pointer-events-auto'
-const TOOL_RUN_IO_STACK_CLASS =
-  'ml-[calc(var(--vds-space-4)*2)] mr-[var(--vds-space-2)] mb-[var(--vds-space-3)] flex flex-col gap-[var(--vds-space-3)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)]'
 const TOOL_RUN_MARKDOWN_CLASS =
   '!font-[var(--vds-font-code)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-secondary)] [&_code]:!text-[length:var(--vds-font-body-lv1)] [&_code]:!leading-[var(--vds-lh-body-lv1)] [&_table]:!text-[length:var(--vds-font-body-lv1)] [&_.md-p]:!my-[var(--vds-space-2)] [&_.md-p:first-child]:!mt-0 [&_.md-p:last-child]:!mb-0'
-const TOOL_RUN_IO_LABEL_CLASS =
-  'mb-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] font-medium text-[var(--vds-text-secondary)]'
-const TOOL_RUN_IO_CLASS =
-  'm-[var(--vds-space-0)] max-h-[240px] overflow-auto rounded-[var(--vds-radius-3)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] font-mono text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
-const ACTIVITY_LINE_CLASS =
-  'group/activity m-0 !flex !min-h-[var(--vds-control-height-sm)] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-0 text-left text-[12.5px] !font-[var(--vds-fw-regular)] leading-[1.45] !text-[var(--vds-text-tertiary)] shadow-none transition-colors duration-150 hover:!bg-transparent hover:!text-[var(--vds-text-primary)]'
 const LEGACY_USER_STOPPED_STATUS = '已停止'
 
 type ToolItem = Extract<ConvItem, { kind: 'tool' }>
@@ -863,127 +852,166 @@ export function Stream({
         cursor: 'auto',
       }}
     >
-      {turnAnnouncement && (
-        <div role="status" aria-live="polite" className="sr-only">
-          {turnAnnouncement}
-        </div>
-      )}
-      <div
-        ref={columnRef}
-        key={threadKey}
-        className={READING_COLUMN_CLASS}
-        data-testid="conversation-content"
-        style={{ animation: 'overlayIn .32s cubic-bezier(.4,0,.2,1) both' }}
-      >
-        {thread.recoveryBlocked && !home && (
-          <Alert
-            layout="stacked"
-            data-testid="session-recovery-blocked"
-            data-recovery-session-id={thread.sessionId}
-            data-recovery-incident-id={thread.recoveryIncidentId ?? undefined}
-            tone="warning"
-            className="mb-[var(--vds-space-4)]"
-            title={t('stream.recoveryBlocked')}
-            description={t(
-              recoveryError ? 'stream.recoveryCheckFailed' : 'stream.recoveryBlockedDetail'
-            )}
-            action={
-              <Button
-                data-testid="session-recovery-check"
-                size="sm"
-                variant="outline"
-                disabled={thread.readOnly || recoveryChecking}
-                loading={recoveryChecking}
-                onClick={() => void checkRecovery()}
-              >
-                {t('stream.recoveryCheck')}
-              </Button>
-            }
-          />
-        )}
-        {conv.length === 0 &&
-          (thread.resumeState === 'pending' ? <Loading /> : <Empty home={home} />)}
-        {rows.map((row, index) => {
-          const previous = rows[index - 1]
-          const next = rows[index + 1]
-          const attachedArtifacts =
-            row.kind === 'item' &&
-            row.item.kind === 'agent' &&
-            next?.kind === 'artifacts' &&
-            next.turnId === row.item.turnId
-              ? next
-              : undefined
-          if (
-            row.kind === 'artifacts' &&
-            previous?.kind === 'item' &&
-            previous.item.kind === 'agent' &&
-            previous.item.turnId === row.turnId
-          )
-            return null
-          if (row.kind === 'activity')
-            return (
-              <ActivityRun
-                key={row.key}
-                agentIdentities={agentIdentities}
-                items={row.items}
-                turnId={row.turnId}
-                tail={row.tail}
-                outcome={row.turnId ? thread.turnOutcomes?.[row.turnId] : undefined}
-                timing={row.turnId ? thread.turnTimings?.[row.turnId] : undefined}
-              />
-            )
-          if (row.kind === 'artifacts')
-            return <ArtifactCard key={row.key} items={row.items} turnId={row.turnId} />
-          return (
-            <div
-              key={row.key}
-              className="contents"
-              data-message-turn-id={row.item.turnId || undefined}
-              data-message-item-id={row.item.itemId || undefined}
-              data-message-kind={row.item.kind}
-            >
-              <Item
-                item={row.item}
-                trailingContent={
-                  attachedArtifacts ? (
-                    <ArtifactCard
-                      items={attachedArtifacts.items}
-                      turnId={attachedArtifacts.turnId}
-                    />
-                  ) : undefined
-                }
-                running={busy}
-                turnOutcome={row.item.turnId ? thread.turnOutcomes?.[row.item.turnId] : undefined}
-                turnTiming={
-                  finalAgentRows.has(index) && row.item.turnId
-                    ? thread.turnTimings?.[row.item.turnId]
-                    : undefined
-                }
-                onRewind={rewindPrompt}
-                onContinue={continueTurn}
-                onOpenDelivery={onOpenDelivery}
-              />
+      <CopySessionContext.Provider value={thread.sessionId ?? ''}>
+        <CopyItemsContext.Provider value={currentConv}>
+          {turnAnnouncement && (
+            <div role="status" aria-live="polite" className="sr-only">
+              {turnAnnouncement}
             </div>
-          )
-        })}
-        {resourceProject && thread.sessionId && (
-          <Finalizations
-            key={`${resourceProject.id}:${thread.sessionId}`}
-            project={resourceProject.id}
-            sessionId={thread.sessionId}
-            running={busy}
-            revision={thread.lastSeq}
-          />
-        )}
-        {showWorking && (
-          <Working
-            waiting={thread.status === 'waiting'}
-            recovering={thread.readiness?.process_state === 'recovering'}
-          />
-        )}
-        <div ref={endRef} />
-        <div ref={focusSpacerRef} aria-hidden="true" />
-      </div>
+          )}
+          <div
+            ref={columnRef}
+            key={threadKey}
+            className={READING_COLUMN_CLASS}
+            data-testid="conversation-content"
+            style={{ animation: 'overlayIn .32s cubic-bezier(.4,0,.2,1) both' }}
+          >
+            {thread.recoveryBlocked && !home && (
+              <Alert
+                layout="stacked"
+                data-testid="session-recovery-blocked"
+                data-recovery-session-id={thread.sessionId}
+                data-recovery-incident-id={thread.recoveryIncidentId ?? undefined}
+                tone="warning"
+                className="mb-[var(--vds-space-4)]"
+                title={t('stream.recoveryBlocked')}
+                description={t(
+                  recoveryError ? 'stream.recoveryCheckFailed' : 'stream.recoveryBlockedDetail'
+                )}
+                action={
+                  <Button
+                    data-testid="session-recovery-check"
+                    size="sm"
+                    variant="outline"
+                    disabled={thread.readOnly || recoveryChecking}
+                    loading={recoveryChecking}
+                    onClick={() => void checkRecovery()}
+                  >
+                    {t('stream.recoveryCheck')}
+                  </Button>
+                }
+              />
+            )}
+            {conv.length === 0 &&
+              (thread.resumeState === 'pending' ? <Loading /> : <Empty home={home} />)}
+            {processRows(rows).map((section) => {
+              const renderRow = (row: ActivityRow, index: number): React.ReactNode => {
+                const previous = rows[index - 1]
+                const next = rows[index + 1]
+                const attachedArtifacts =
+                  row.kind === 'item' &&
+                  row.item.kind === 'agent' &&
+                  next?.kind === 'artifacts' &&
+                  next.turnId === row.item.turnId
+                    ? next
+                    : undefined
+                if (
+                  row.kind === 'artifacts' &&
+                  previous?.kind === 'item' &&
+                  previous.item.kind === 'agent' &&
+                  previous.item.turnId === row.turnId
+                )
+                  return null
+                if (row.kind === 'activity')
+                  return (
+                    <ActivityRun
+                      key={row.key}
+                      agentIdentities={agentIdentities}
+                      items={row.items}
+                      turnId={row.turnId}
+                      tail={row.tail}
+                      outcome={row.turnId ? thread.turnOutcomes?.[row.turnId] : undefined}
+                      timing={row.turnId ? thread.turnTimings?.[row.turnId] : undefined}
+                    />
+                  )
+                if (row.kind === 'artifacts')
+                  return <ArtifactCard key={row.key} items={row.items} turnId={row.turnId} />
+                return (
+                  <div
+                    key={row.key}
+                    className="contents"
+                    data-message-turn-id={row.item.turnId || undefined}
+                    data-message-item-id={row.item.itemId || undefined}
+                    data-message-kind={row.item.kind}
+                  >
+                    <Item
+                      item={row.item}
+                      trailingContent={
+                        attachedArtifacts ? (
+                          <ArtifactCard
+                            items={attachedArtifacts.items}
+                            turnId={attachedArtifacts.turnId}
+                          />
+                        ) : undefined
+                      }
+                      running={busy}
+                      turnOutcome={
+                        row.item.turnId ? thread.turnOutcomes?.[row.item.turnId] : undefined
+                      }
+                      turnTiming={
+                        finalAgentRows.has(index) && row.item.turnId
+                          ? thread.turnTimings?.[row.item.turnId]
+                          : undefined
+                      }
+                      onRewind={rewindPrompt}
+                      onContinue={continueTurn}
+                      onOpenDelivery={onOpenDelivery}
+                    />
+                    {row.item.turnId && thread.turnOutcomes?.[row.item.turnId] !== 'running' && (
+                      <CardOnlyReplyCopy item={row.item} />
+                    )}
+                  </div>
+                )
+              }
+              if (section.kind === 'row') return renderRow(section.row, section.index)
+              const focus = state.aiPanel.messageFocus
+              const reveal =
+                focus?.sessionId === thread.sessionId &&
+                matchingAttentionAnchors(
+                  section.entries.flatMap((entry) =>
+                    entry.row.kind === 'item'
+                      ? [
+                          {
+                            messageItemId: entry.row.item.itemId,
+                            messageTurnId: entry.row.item.turnId,
+                            messageKind: entry.row.item.kind,
+                          },
+                        ]
+                      : []
+                  ),
+                  focus
+                ).length > 0
+              return (
+                <ExecutionProcess
+                  key={section.key}
+                  turnId={section.turnId}
+                  outcome={thread.turnOutcomes?.[section.turnId]}
+                  reveal={reveal}
+                >
+                  {section.entries.map((entry) => renderRow(entry.row, entry.index))}
+                </ExecutionProcess>
+              )
+            })}
+            {resourceProject && thread.sessionId && (
+              <Finalizations
+                key={`${resourceProject.id}:${thread.sessionId}`}
+                project={resourceProject.id}
+                sessionId={thread.sessionId}
+                running={busy}
+                revision={thread.lastSeq}
+              />
+            )}
+            {showWorking && (
+              <Working
+                waiting={thread.status === 'waiting'}
+                recovering={thread.readiness?.process_state === 'recovering'}
+              />
+            )}
+            <div ref={endRef} />
+            <div ref={focusSpacerRef} aria-hidden="true" />
+          </div>
+        </CopyItemsContext.Provider>
+      </CopySessionContext.Provider>
       {showScrollToBottom && (
         <Button
           unstyled
@@ -1048,9 +1076,17 @@ export function ConversationControls({
 }: {
   children: React.ReactNode
 }): React.JSX.Element {
+  const { state } = useApp()
+  const thread = activeThread(state)
+  const hasPendingHil = !thread.readOnly && pendingHilItems(thread.conversation).length > 0
   return (
     // 禁 overflow-hidden: composer 的 @/技能弹层是 absolute 向上弹出、会超出本容器盒子被裁成一条边; 高度收敛靠 composer 内部限高滚动。
-    <div className="vds-ai-composer-host flex min-h-0 max-h-full flex-[0_1_auto] flex-col px-[var(--vds-conversation-scrollbar-width)]">
+    <div
+      className={cx(
+        'vds-ai-composer-host flex min-h-0 flex-[0_1_auto] flex-col px-[var(--vds-conversation-scrollbar-width)]',
+        hasPendingHil ? 'max-h-3/4' : 'max-h-full'
+      )}
+    >
       <PendingHilDock />
       <div className="flex-none">{children}</div>
     </div>
@@ -1349,36 +1385,6 @@ const TOOL_ACTION_LABELS: Partial<
   image: 'toolActions.image',
 }
 
-const ACTIVITY_ERROR_STATUS: ToolItem['status'] = 'error'
-const ACTIVITY_STATUS_ICONS: Record<ToolItem['status'], string> = {
-  done: 'a-line-status-success',
-  [ACTIVITY_ERROR_STATUS]: 'a-line-status-error',
-  cancelled: 'a-line-status-notfull',
-  running: 'fill-status-loading',
-}
-
-function ActivityStatusIcon({ status }: { status: ToolItem['status'] }): React.JSX.Element {
-  if (status === 'running') {
-    return (
-      <Spinner
-        imageSrc={aiThinking}
-        size="sm"
-        className="!size-[var(--vds-icon-7)] shrink-0"
-        aria-hidden="true"
-      />
-    )
-  }
-  return (
-    <IconFont
-      type={ACTIVITY_STATUS_ICONS[status]}
-      className={cx(
-        'inline-flex size-[var(--vds-icon-7)] shrink-0 items-center justify-center !text-[length:var(--vds-icon-7)]',
-        TOOL_RUN_STATUS_TONE_CLASS[`is-${status}`]
-      )}
-    />
-  )
-}
-
 const TOOL_SUMMARY_FIELDS = ['command', 'cmd', 'file_path', 'path', 'filename'] as const
 
 function toolInputSummary(item: ToolItem): string {
@@ -1598,24 +1604,6 @@ function webSearchActionLabel(item: WebSearchItem, t: TFunction<'components'>): 
   return t('stream.web.search')
 }
 
-function webSearchQuery(item: WebSearchItem): string {
-  if (item.query) return item.query
-  if (typeof item.action.query === 'string') return item.action.query
-  if (Array.isArray(item.action.queries)) return item.action.queries.join(' · ')
-  if (typeof item.action.url === 'string') return item.action.url
-  return ''
-}
-
-function externalResultUrl(value: string | undefined): string | null {
-  if (!value) return null
-  try {
-    const url = new URL(value)
-    return EXTERNAL_RESULT_PROTOCOLS.has(url.protocol) ? url.href : null
-  } catch {
-    return null
-  }
-}
-
 // Consecutive tool calls are a rendering projection, not a transcript mutation.
 // The outer group owns the noisy list; each step still keeps its own input/output
 // disclosure for users who need the exact call evidence.
@@ -1712,96 +1700,55 @@ function ActivityRun({
       : t('stream.processed')
   const accessibleState = state || (running && !toolCount ? stateLabel : '')
   return (
-    <Collapsible
-      animated
-      open={expanded}
-      onOpenChange={setUserExpanded}
-      className={cx(
-        'group my-[var(--vds-space-2)] min-w-0 [--vds-collapsible-content-gap:0px]',
-        expanded && 'is-open'
-      )}
-      data-testid="turn-activity"
-      data-turn-id={turnId}
+    <ExecutionBatch
+      label={lineLabel}
+      state={state}
+      expanded={expanded}
+      onExpandedChange={setUserExpanded}
+      turnId={turnId}
+      failed={hasFailure || presentation.failed}
+      running={running || presentation.running}
+      accessibleLabel={
+        accessibleState
+          ? t('stream.activityLabel', { label: lineLabel, state: accessibleState })
+          : lineLabel
+      }
+      title={state ? `${presentation.label} · ${state}` : presentation.label}
     >
-      <CollapsibleTrigger asChild>
-        <Button
-          type="button"
-          size="content"
-          variant="ghost"
-          className={cx(
-            ACTIVITY_LINE_CLASS,
-            (hasFailure || presentation.failed) && '!text-[var(--c-tension)]',
-            (running || presentation.running) && '!text-[var(--c-fact)]'
-          )}
-          data-testid="turn-activity-trigger"
-          aria-label={
-            accessibleState
-              ? t('stream.activityLabel', { label: lineLabel, state: accessibleState })
-              : lineLabel
-          }
-          title={state ? `${presentation.label} · ${state}` : presentation.label}
-        >
-          <Badge
-            size="sm"
-            tone="neutral"
-            className="!inline-flex !size-6 shrink-0 !justify-center !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-bg-white-default)] !p-0"
-          >
-            {expanded ? (
-              <ChevronDown size={13} strokeWidth={1.8} />
-            ) : (
-              <ChevronRight size={13} strokeWidth={1.8} />
-            )}
-          </Badge>
-          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-            {lineLabel}
-          </span>
-          {/* 与 label 同款收缩约束：w-fit 触发按钮的 min-content 否则被 nowrap 状态文案撑宽，
-              窄对话区会出现横向滚动条。 */}
-          {state && (
-            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-              · {state}
-            </span>
-          )}
-        </Button>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="ml-[var(--vds-space-3)] !rounded-none !border-0 !bg-transparent !p-0">
-        <div className={TOOL_RUN_STEPS_CLASS}>
-          {items.map((item, index) => {
-            if (item.kind === 'thinking') {
-              return (
-                <ThinkingActivityStep
-                  key={activityIdentity(item, index)}
-                  item={item}
-                  groupOpen={expanded}
-                  autoExpand={item === visibleThinking}
-                />
-              )
-            }
-            if (item.kind === 'web_search') {
-              return <WebSearchStep key={item.searchId} item={item} groupOpen={expanded} />
-            }
-            if (item.kind === 'paper_search') {
-              return <PaperSearchStep key={item.searchId} item={item} groupOpen={expanded} />
-            }
-            if (item.kind === 'skill') {
-              return <SkillActivityStep key={item.skillId} item={item} groupOpen={expanded} />
-            }
-            if (item.kind === 'native_activity') {
-              return (
-                <NativeActivityStep
-                  key={item.activityId}
-                  agentIdentity={agentIdentities.get(item.activityId)}
-                  item={item}
-                  groupOpen={expanded}
-                  now={now}
-                />
-              )
-            }
-            return <ToolStep key={item.toolId} item={item} groupOpen={expanded} now={now} />
-          })}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+      {items.map((item, index) => {
+        if (item.kind === 'thinking') {
+          return (
+            <ThinkingActivityStep
+              key={activityIdentity(item, index)}
+              item={item}
+              groupOpen={expanded}
+              autoExpand={item === visibleThinking}
+            />
+          )
+        }
+        if (item.kind === 'web_search') {
+          return <WebSearchStep key={item.searchId} item={item} groupOpen={expanded} />
+        }
+        if (item.kind === 'paper_search') {
+          return <PaperSearchStep key={item.searchId} item={item} groupOpen={expanded} />
+        }
+        if (item.kind === 'skill') {
+          return <SkillActivityStep key={item.skillId} item={item} groupOpen={expanded} />
+        }
+        if (item.kind === 'native_activity') {
+          return (
+            <NativeActivityStep
+              key={item.activityId}
+              agentIdentity={agentIdentities.get(item.activityId)}
+              item={item}
+              groupOpen={expanded}
+              now={now}
+            />
+          )
+        }
+        return <ToolStep key={item.toolId} item={item} groupOpen={expanded} now={now} />
+      })}
+    </ExecutionBatch>
   )
 }
 
@@ -2100,17 +2047,8 @@ function WebSearchStep({
   groupOpen: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('components')
-  const [open, setOpen] = useState(false)
-  const query = webSearchQuery(item)
-  const url = typeof item.action.url === 'string' ? item.action.url : ''
-  const pattern = typeof item.action.pattern === 'string' ? item.action.pattern : ''
-  const results = item.results
-    .map((result) => ({
-      ...result,
-      externalUrl: externalResultUrl(result.url),
-    }))
-    .filter((result) => Boolean(result.title || result.url))
-  const hasBody = Boolean(query || url || pattern || results.length)
+  const data = webSearchRecordData(item)
+  const results = data.results
   const status =
     item.status === 'running'
       ? t('stream.search.searching')
@@ -2118,90 +2056,21 @@ function WebSearchStep({
         ? t('stream.search.results', { count: results.length })
         : t(TOOL_STATUS_KEYS.done.messageKey)
   return (
-    <div className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')} data-testid="web-search-step">
-      <Button
-        unstyled
-        type="button"
-        className={TOOL_RUN_STEP_TRIGGER_CLASS}
-        aria-expanded={hasBody ? open : undefined}
-        tabIndex={groupOpen ? 0 : -1}
-        onClick={() => hasBody && setOpen((value) => !value)}
-      >
-        <span
-          className={cx(
-            TOOL_RUN_STEP_NAME_CLASS,
-            'inline-flex items-center gap-[6px] text-[var(--c-fact)] [&_svg]:flex-none'
-          )}
-        >
+    <WebSearchRecord
+      title={webSearchActionLabel(item, t)}
+      {...data}
+      groupOpen={groupOpen}
+      status={
+        <span className="inline-flex items-center gap-[var(--vds-space-1)]">
           <ActivityStatusIcon status={item.status} />
-          {webSearchActionLabel(item, t)}
-        </span>
-        <span
-          className={cx(
-            TOOL_RUN_STEP_STATUS_CLASS,
-            TOOL_RUN_STATUS_TONE_CLASS[item.status === 'running' ? 'is-running' : 'is-done']
-          )}
-        >
-          {item.status === 'running' && <span className={TOOL_RUN_PULSE_CLASS} />}
           {status}
         </span>
-        {hasBody && (
-          <span className={TOOL_RUN_STEP_CARET_CLASS}>
-            <Icon name="chevron-right" size={12} sw={1.8} />
-          </span>
-        )}
-      </Button>
-      {hasBody && (
-        <div className={TOOL_RUN_STEP_CONTENT_CLASS} aria-hidden={!open}>
-          <div className={TOOL_RUN_CONTENT_INNER_CLASS}>
-            <div
-              className={cx(
-                TOOL_RUN_IO_STACK_CLASS,
-                'bg-[color-mix(in_oklch,var(--c-fact)_5%,var(--bg-2))]'
-              )}
-            >
-              {query && <IoBlock label={t('stream.search.query')} text={query} />}
-              {url && url !== query && <IoBlock label={t('stream.search.page')} text={url} />}
-              {pattern && <IoBlock label={t('stream.search.pattern')} text={pattern} />}
-              {results.length > 0 && (
-                <div
-                  className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-2)]"
-                  data-testid="web-search-results"
-                >
-                  {results.map((result, index) => (
-                    <div
-                      className="grid min-w-0 grid-cols-1 gap-[2px] rounded-md border border-[var(--border-soft)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
-                      key={`${result.url || result.title || 'result'}-${index}`}
-                    >
-                      <span className="min-w-0 whitespace-pre-wrap break-all text-[var(--text)]">
-                        {result.title || result.url}
-                      </span>
-                      {result.url && (
-                        <span className="min-w-0 whitespace-pre-wrap break-all text-[var(--text-3)]">
-                          {result.url}
-                        </span>
-                      )}
-                      {result.externalUrl && (
-                        <Button
-                          unstyled
-                          type="button"
-                          className="justify-self-start text-[var(--accent-ink)] hover:underline"
-                          onClick={() =>
-                            void window.scholarseed.openExternal(result.externalUrl as string)
-                          }
-                        >
-                          {t('stream.search.openOriginal')}
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      }
+      onOpenResult={(result) => {
+        const destination = externalResultUrl(result.url)
+        if (destination) return window.scholarseed.openExternal(destination)
+      }}
+    />
   )
 }
 
@@ -2312,14 +2181,10 @@ function ToolStep({
   const { t } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
   const { act } = useApp()
-  const [open, setOpen] = useState(false)
-  const [technicalOpen, setTechnicalOpen] = useState(false)
   const skillName = loadedSkillName(item)
   const outcome = commandOutcome(item)
   const neutralSearch = outcome === 'noMatches'
   const displayStatus = neutralSearch ? 'done' : item.status
-  const hasBody =
-    item.status === 'error' || item.input != null || (item.result != null && item.result !== '')
   const outcomeKey = {
     commandNotFound: 'toolOutcome.commandNotFound',
     permissionDenied: 'toolOutcome.permissionDenied',
@@ -2331,164 +2196,57 @@ function ToolStep({
   } as const
   const outcomeText =
     item.status === 'error' ? conversation(outcomeKey[outcome], { code: item.exitCode ?? 0 }) : ''
-  const stateTone =
-    displayStatus === 'error'
-      ? 'is-error'
-      : displayStatus === 'done'
-        ? 'is-done'
-        : displayStatus === 'cancelled'
-          ? 'is-cancelled'
-          : 'is-running'
-  const resultPreview = toolPreview(item)
+  const summary = item.status !== 'error' ? toolInputSummary(item) : ''
+  const action = activityAction(item)
   const duration = compactDurationLabel(
     item.startedAt,
     item.status === 'running' ? now : item.completedAt,
     item.status !== 'running'
   )
   return (
-    <div className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')} data-testid="tool-run-step">
-      <Button
-        unstyled
-        type="button"
-        className={TOOL_RUN_STEP_TRIGGER_CLASS}
-        aria-expanded={hasBody ? open : undefined}
-        tabIndex={groupOpen ? 0 : -1}
-        onClick={() => hasBody && setOpen((value) => !value)}
-      >
-        <ActivityStatusIcon status={displayStatus} />
-        <span className={TOOL_RUN_STEP_NAME_CLASS} title={item.name}>
-          {toolLabel(item, conversation)}
-        </span>
-        <span className={cx(TOOL_RUN_STEP_STATUS_CLASS, TOOL_RUN_STATUS_TONE_CLASS[stateTone])}>
-          <span className="shrink-0">
-            {neutralSearch
-              ? outcomeText
-              : item.status === 'done'
-                ? t('stream.ran')
-                : t(TOOL_STATUS_KEYS[item.status].messageKey)}
-          </span>
-          {item.status === 'error' && !neutralSearch && (
-            <span className="min-w-0 truncate" title={outcomeText}>
-              · {outcomeText}
-            </span>
-          )}
-          {item.status !== 'error' &&
-            toolInputSummary(item) &&
-            (activityAction(item) === 'read' || activityAction(item) === 'edit' ? (
-              <Badge
-                size="sm"
-                tone="neutral"
-                className="min-w-0 truncate"
-                title={toolInputSummary(item)}
-              >
-                {toolInputSummary(item)}
-              </Badge>
-            ) : (
-              <span
-                className="min-w-0 truncate text-[var(--vds-text-tertiary)]"
-                title={toolInputSummary(item)}
-              >
-                · {toolInputSummary(item)}
-              </span>
-            ))}
-          {item.status === 'done' && resultPreview && (
-            <span
-              className="min-w-0 truncate text-[var(--vds-text-tertiary)]"
-              title={resultPreview}
-            >
-              · {resultPreview}
-            </span>
-          )}
-          {duration && (
-            <span
-              className="flex-none border-l border-[var(--border-soft)] pl-[6px]"
-              data-testid="tool-run-step-duration"
-            >
-              {duration}
-            </span>
-          )}
-        </span>
-        {hasBody && (
-          <span className={TOOL_RUN_STEP_CARET_CLASS}>
-            <Icon name="chevron-right" size={12} sw={1.8} />
-          </span>
-        )}
-      </Button>
-      {hasBody && (
-        <div className={TOOL_RUN_STEP_CONTENT_CLASS} aria-hidden={!open}>
-          <div className={TOOL_RUN_CONTENT_INNER_CLASS}>
-            <div className={TOOL_RUN_IO_STACK_CLASS}>
-              {item.status === 'error' && (
-                <div>
-                  {neutralSearch
-                    ? conversation('toolOutcome.noMatchesHelp')
-                    : conversation('toolOutcome.failedHelp')}
-                </div>
-              )}
-              {item.status === 'error' && (
-                <Button
-                  unstyled
-                  type="button"
-                  onClick={() => setTechnicalOpen((value) => !value)}
-                  aria-expanded={technicalOpen}
-                >
-                  {conversation('toolOutcome.technicalDetails')}
-                </Button>
-              )}
-              {(item.status !== 'error' || technicalOpen) && (
-                <>
-                  <div className={TOOL_RUN_IO_LABEL_CLASS}>{item.name}</div>
-                  {typeof item.exitCode === 'number' && (
-                    <div>{conversation('toolOutcome.exitCode', { code: item.exitCode })}</div>
-                  )}
-                  {item.input != null && (
-                    <IoBlock label={t('stream.input')} text={toolValue(item.input)} />
-                  )}
-                  {item.result != null && item.result !== '' && (
-                    <IoBlock label={t('stream.output')} text={item.result} />
-                  )}
-                </>
-              )}
-              {skillName && item.status === 'done' && (
-                <Button
-                  unstyled
-                  type="button"
-                  className={CHIP_BUTTON_CLASS}
-                  data-testid="load-skill-open-files"
-                  onClick={() => act.openCap('skill')}
-                >
-                  {t('stream.skill.open')}
-                </Button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function IoBlock({
-  label,
-  text,
-  err,
-}: {
-  label: string
-  text: string
-  err?: boolean
-}): React.JSX.Element {
-  return (
-    <div>
-      <div className={TOOL_RUN_IO_LABEL_CLASS}>{label}</div>
-      <pre
-        className={cx(
-          TOOL_RUN_IO_CLASS,
-          err && 'shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--c-tension)_72%,var(--border))]'
-        )}
-      >
-        {text}
-      </pre>
-    </div>
+    <ToolExecution
+      groupOpen={groupOpen}
+      data={{
+        name: item.name,
+        label: toolLabel(item, conversation),
+        status: displayStatus,
+        statusLabel: neutralSearch
+          ? outcomeText
+          : item.status === 'done'
+            ? t('stream.ran')
+            : t(TOOL_STATUS_KEYS[item.status].messageKey),
+        failure:
+          item.status === 'error'
+            ? {
+                summary: neutralSearch ? undefined : outcomeText,
+                help: conversation(
+                  neutralSearch ? 'toolOutcome.noMatchesHelp' : 'toolOutcome.failedHelp'
+                ),
+              }
+            : undefined,
+        summary: summary
+          ? { text: summary, badge: action === 'read' || action === 'edit' }
+          : undefined,
+        preview: item.status === 'done' ? toolPreview(item) : undefined,
+        duration: duration ?? undefined,
+        input: item.input != null ? toolValue(item.input) : undefined,
+        output: item.result != null && item.result !== '' ? item.result : undefined,
+        exitCode: typeof item.exitCode === 'number' ? item.exitCode : undefined,
+      }}
+      actions={
+        skillName && item.status === 'done' ? (
+          <Button
+            unstyled
+            type="button"
+            className={CHIP_BUTTON_CLASS}
+            data-testid="load-skill-open-files"
+            onClick={() => act.openCap('skill')}
+          >
+            {t('stream.skill.open')}
+          </Button>
+        ) : undefined
+      }
+    />
   )
 }
 
@@ -2687,7 +2445,7 @@ function BrowserAwareHilCard(props: {
     ) : !availabilityPolicy.hilAvailable(props.item.hilKind ?? '') ? (
       <UnavailableHilCard />
     ) : (
-      <HilCard {...props} />
+      <HilCardView {...props} />
     )
   return activeThread(state).readOnly ? (
     <fieldset disabled className="min-w-0 border-0 p-0">
@@ -3369,25 +3127,69 @@ function BrowserApprovalCard({
   )
 }
 
+export interface HilController {
+  readOnly?: boolean
+  sessionId: string | null
+  threadId: string | null
+  patchThread: ReturnType<typeof useApp>['patchThread']
+  respond: typeof respondHil
+  interrupt: typeof interruptSession
+}
+
+interface HilCardProps {
+  item: HilItem
+  presentation?: 'history' | 'dock'
+  queueCount?: number
+  controller?: HilController
+  previewMount?: PluginMount
+}
+
+function HilCardView(props: HilCardProps): React.JSX.Element {
+  return props.controller ? (
+    <HilCard {...props} controller={props.controller} />
+  ) : (
+    <ConnectedHilCard {...props} />
+  )
+}
+
+export { HilCardView as HilCard }
+
+function ConnectedHilCard(props: HilCardProps): React.JSX.Element {
+  const app = useApp()
+  return (
+    <HilCard
+      {...props}
+      controller={{
+        readOnly: activeThread(app.state).readOnly,
+        sessionId: activeThread(app.state).sessionId,
+        threadId: app.state.activeSession,
+        patchThread: app.patchThread,
+        respond: respondHil,
+        interrupt: interruptSession,
+      }}
+    />
+  )
+}
+
 function HilCard({
   item,
   presentation = 'history',
   queueCount = 1,
-}: {
-  item: HilItem
-  presentation?: 'history' | 'dock'
-  queueCount?: number
-}): React.JSX.Element {
+  controller,
+  previewMount,
+}: HilCardProps & { controller: HilController }): React.JSX.Element {
+  const { t: skillT } = useTranslation('skills')
   const { t, i18n: localization } = useTranslation('components')
   const { t: hilT } = useTranslation('conversation')
-  const { state, patchThread } = useApp()
-  const sid = activeThread(state).sessionId
-  const tid = state.activeSession
+  const patchThread = controller.patchThread
+  const sid = controller.sessionId
+  const tid = controller.threadId
   const [picks, setPicks] = useState<Record<number, string[]>>({})
   const [subsetPicks, setSubsetPicks] = useState<Record<number, string[]>>({})
   const [texts, setTexts] = useState<Record<number, string>>({})
   const [codeOpen, setCodeOpen] = useState(false)
   const [questionOpen, setQuestionOpen] = useState(true)
+  const [questionPage, setQuestionPage] = useState(1)
   const [lastAction, setLastAction] = useState<HilAction | null>(null)
   const [now, setNow] = useState(Date.now())
   const submissionInFlight = useRef(false)
@@ -3418,19 +3220,27 @@ function HilCard({
     item.hilState === 'cancelled' && questionPolicy?.cancelledLabel && questions[0]
       ? questionPolicy.cancelledLabel(questions[0])
       : undefined
-  const resolutionItem = cancelledLabel
-    ? {
-        ...item,
-        resolved: cancelledLabel,
-        resolvedMessage: undefined,
-      }
-    : item
+  const resolutionItem =
+    done && questions.some((question) => question.installation)
+      ? {
+          ...item,
+          resolved: skillT('installation.title'),
+          resolvedMessage: undefined,
+          hilState: 'resolved' as const,
+        }
+      : cancelledLabel
+        ? {
+            ...item,
+            resolved: cancelledLabel,
+            resolvedMessage: undefined,
+          }
+        : item
 
   useEffect(() => {
-    if (done) return () => undefined
+    if (done || item.blocking === false) return () => undefined
     const timer = window.setInterval(() => setNow(Date.now()), HIL_WAIT_TICK_MS)
     return () => window.clearInterval(timer)
-  }, [done])
+  }, [done, item.blocking])
 
   const patchHil = (patch: Partial<HilItem>): void =>
     patchThread(tid, (t) => ({
@@ -3499,8 +3309,22 @@ function HilCard({
   }
 
   const submitAction = async (action: HilAction): Promise<void> => {
-    if (activeThread(state).readOnly || !sid || submitting || done || submissionInFlight.current)
-      return
+    console.info(
+      '[hil-submit]',
+      JSON.stringify({
+        stage: 'received',
+        requestId: item.requestId,
+        sessionId: sid,
+        itemSessionId: item.sessionId,
+        action: action.kind,
+        readOnly: Boolean(controller.readOnly),
+        submitting,
+        done,
+        inFlight: submissionInFlight.current,
+      })
+    )
+    if (controller.readOnly || !sid || submitting || done || submissionInFlight.current) return
+    if (item.sessionId && item.sessionId !== sid) return
     submissionInFlight.current = true
     void markInteractionAttentionRead(sid, item.requestId).catch((error) =>
       console.warn('[attention] interaction read unavailable', error)
@@ -3513,7 +3337,7 @@ function HilCard({
       submissionRequestFailure: undefined,
     })
     if (action.kind === 'cancel') {
-      const response = await interruptSession(sid)
+      const response = await controller.interrupt(sid)
       if (response.ok) {
         patchThread(tid, (thread) => ({
           running: false,
@@ -3539,7 +3363,25 @@ function HilCard({
       }
       return
     }
-    const response = await respondHil(sid, item.requestId, action.body)
+    console.info(
+      '[hil-submit]',
+      JSON.stringify({ stage: 'dispatched', requestId: item.requestId, sessionId: sid })
+    )
+    const response = await controller.respond(
+      sid,
+      item.requestId,
+      action.body,
+      questions.some((question) => Boolean(question.component || question.installation))
+    )
+    console.info(
+      '[hil-submit]',
+      JSON.stringify({
+        stage: 'completed',
+        requestId: item.requestId,
+        sessionId: sid,
+        ok: response.ok,
+      })
+    )
     if (!response.ok) {
       if (response.outcome === 'unknown') {
         submissionInFlight.current = false
@@ -3644,6 +3486,12 @@ function HilCard({
     }
   }
   const qs = item.questions ?? []
+  const pagedQuestions =
+    !done &&
+    !questionPolicy?.directDecision &&
+    qs.length > 1 &&
+    qs.every((question) => !question.installation && question.options.length > 0)
+  const visibleQuestionPage = Math.min(questionPage, qs.length)
   const presentedQuestions = qs.map((question) =>
     questionPolicy?.presentQuestion?.(question, localization)
   )
@@ -3826,6 +3674,23 @@ function HilCard({
     presentation,
     submitting,
   ])
+
+  if (item.blocking === false && questions.every((question) => question.installation)) {
+    return (
+      <>
+        {questions.map((question) => (
+          <PluginInstallation
+            key={question.id}
+            report={question.installation!}
+            done={false}
+            busy={Boolean(controller.readOnly)}
+            session={sid}
+            request={item.requestId ?? ''}
+          />
+        ))}
+      </>
+    )
+  }
 
   if (presentation === 'dock' && !isQuestion && !done) {
     const summary = permissionSummary(item, t)
@@ -4044,7 +3909,51 @@ function HilCard({
                       <div className="min-w-0 whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
                         {presentedQuestions[qi]?.question ?? q.question}
                       </div>
-                      {!done && q.papers && q.papers.length > 0 && (
+                      {q.component && (
+                        <PluginInteraction
+                          reference={q.component}
+                          previewMount={previewMount}
+                          onRestore={(values) => {
+                            if (
+                              Array.isArray(values.selected_paper_ids) &&
+                              values.selected_paper_ids.every(
+                                (id) =>
+                                  typeof id === 'string' &&
+                                  q.papers?.some((paper) => paper.id === id)
+                              )
+                            )
+                              setSubsetPicks((previous) => ({
+                                ...previous,
+                                [qi]: values.selected_paper_ids as string[],
+                              }))
+                          }}
+                          data={{
+                            ...q.componentData,
+                            ...(q.papers
+                              ? { papers: q.papers, selected_paper_ids: subsetIds }
+                              : {}),
+                          }}
+                          status={done ? 'resolved' : submitting ? 'submitting' : 'pending'}
+                          onAction={(_action, values) => {
+                            const selected = values.selected_paper_ids
+                            if (
+                              !Array.isArray(selected) ||
+                              selected.some(
+                                (id) =>
+                                  typeof id !== 'string' ||
+                                  !q.papers?.some((paper) => paper.id === id)
+                              ) ||
+                              new Set(selected).size !== selected.length
+                            )
+                              return
+                            setSubsetPicks((previous) => ({
+                              ...previous,
+                              [qi]: selected as string[],
+                            }))
+                          }}
+                        />
+                      )}
+                      {!q.component && !done && q.papers && q.papers.length > 0 && (
                         <div
                           aria-label={localization.t('review.authorization.subsetHint', {
                             ns: 'literature',
@@ -4110,6 +4019,8 @@ function HilCard({
                         >
                           {q.options.map((option, optionIndex) => {
                             const decision = questionPolicy.directDecision?.(q, option)
+                            const requiresSelection =
+                              questionPolicy.directSelectionRequired?.(option) ?? false
                             const primary = decision === 'respond'
                             const subset = q.papers?.length ? subsetIds : undefined
                             return (
@@ -4121,7 +4032,7 @@ function HilCard({
                                 }
                                 data-hil-decision={decision}
                                 data-testid={`hil-question-option-${qi}-${optionIndex}`}
-                                disabled={submitting || (primary === true && subset?.length === 0)}
+                                disabled={submitting || (requiresSelection && subset?.length === 0)}
                                 key={optionIndex}
                                 onClick={() => decideQuestion(q, option, subset)}
                                 size={primary ? 'md' : 'sm'}
@@ -4142,7 +4053,11 @@ function HilCard({
               </div>
             ) : (
               qs.map((q, qi) => (
-                <div key={qi} style={{ marginBottom: qi < qs.length - 1 ? 16 : 0 }}>
+                <div
+                  key={qi}
+                  hidden={pagedQuestions && qi !== visibleQuestionPage - 1}
+                  style={{ marginBottom: qi < qs.length - 1 ? 16 : 0 }}
+                >
                   <div
                     style={{
                       minWidth: 0,
@@ -4156,64 +4071,187 @@ function HilCard({
                   >
                     {presentedQuestions[qi]?.question ?? q.question}
                   </div>
-                  {q.options.length > 0 ? (
+                  {q.installation ? (
+                    <PluginInstallation
+                      report={q.installation}
+                      done={done}
+                      busy={submitting}
+                      session={sid}
+                      request={item.requestId ?? ''}
+                      answer={item.answers?.[q.id || q.question]}
+                      onAnswer={async (receipt) => {
+                        const answers = receipt
+                          ? { [q.id || q.question]: JSON.stringify(receipt) }
+                          : undefined
+                        await submitAction({
+                          kind: 'respond',
+                          body: answers ? { answers } : { cancelled: true },
+                          answers,
+                          label: t('stream.hil.answered'),
+                          resolvedMessage: { kind: 'answered' },
+                        })
+                      }}
+                    />
+                  ) : q.component && q.options.length === 0 ? (
+                    <PluginInteraction
+                      reference={q.component}
+                      previewMount={previewMount}
+                      data={q.componentData ?? {}}
+                      status={
+                        item.hilState === 'cancelled'
+                          ? 'cancelled'
+                          : done
+                            ? 'resolved'
+                            : submitting
+                              ? 'submitting'
+                              : 'pending'
+                      }
+                      onAction={(action, values) => {
+                        const answers = {
+                          [q.id || q.header || q.question]: JSON.stringify({ action, values }),
+                        }
+                        void submitAction({
+                          kind: 'respond',
+                          body: { answers },
+                          answers,
+                          label: t('stream.hil.answered'),
+                          resolvedMessage: { kind: 'answered' },
+                        })
+                      }}
+                    />
+                  ) : q.options.length > 0 ? (
                     <div
                       aria-label={presentedQuestions[qi]?.header || q.header || q.question}
                       className="flex flex-col gap-[var(--vds-space-3)]"
                       role={q.multiSelect ? 'group' : 'radiogroup'}
                     >
-                      {q.options.map((o, i) => {
-                        // 已答态按会话项里的 answers 回显勾选 (多选按 ', ' 拆回 label 列表);
-                        // 未答态才用组件本地 picks —— 否则 resolved 后勾选被清空, 卡片像没答过。
-                        const answered = done
-                          ? String((item.answers ?? {})[q.id || q.header || q.question] ?? '')
-                          : ''
-                        const on = done
-                          ? answered
-                              .split('\n')[0]
-                              .split(', ')
-                              .includes(questionPolicy?.optionLabel?.(o) ?? o.label)
-                          : (picks[qi] || []).includes(o.label)
-                        const OptionControl = q.multiSelect ? Checkbox : Radio
-                        return (
-                          <OptionControl
-                            align="first-line"
-                            type="button"
-                            key={i}
-                            data-testid={`hil-question-option-${qi}-${i}`}
-                            disabled={done || submitting}
-                            onCheckedChange={() => {
-                              if (questionPolicy?.directDecision) {
-                                decideQuestion(q, o)
-                                return
+                      {q.component && (
+                        <PluginInteraction
+                          reference={q.component}
+                          previewMount={previewMount}
+                          onRestore={(values) => {
+                            const answers = componentOptionAnswers(q, values)
+                            if (answers) setPicks((previous) => ({ ...previous, [qi]: answers }))
+                            if (typeof values.text === 'string')
+                              setTexts((previous) => ({ ...previous, [qi]: values.text as string }))
+                          }}
+                          prepareDraft={(values) => ({
+                            ...values,
+                            ...(!q.multiSelect ? { text: '' } : {}),
+                          })}
+                          supplement={(save) =>
+                            !done && !questionPolicy?.directDecision ? (
+                              <Textarea
+                                data-testid={`hil-question-other-${qi}`}
+                                aria-label={t('stream.otherAnswer')}
+                                placeholder={t('stream.otherAnswerPlaceholder')}
+                                rows={2}
+                                disabled={submitting}
+                                value={texts[qi] || ''}
+                                className="mt-[var(--vds-space-1)] w-full resize-y"
+                                onChange={(event) => {
+                                  const value = event.target.value
+                                  setTexts((previous) => ({ ...previous, [qi]: value }))
+                                  const clear = !q.multiSelect && Boolean(value.trim())
+                                  if (clear) setPicks((previous) => ({ ...previous, [qi]: [] }))
+                                  void save({
+                                    text: value,
+                                    ...(clear ? { answers: [] } : {}),
+                                  }).catch(() => undefined)
+                                }}
+                              />
+                            ) : null
+                          }
+                          data={{
+                            ...q.componentData,
+                            question: q.question,
+                            options: q.options.map((option, index) => ({
+                              ...option,
+                              displayLabel:
+                                presentedQuestions[qi]?.options[index]?.label ??
+                                questionPolicy?.optionLabel?.(option) ??
+                                option.label,
+                              displayDescription:
+                                presentedQuestions[qi]?.options[index]?.description ??
+                                option.description,
+                            })),
+                            multiSelect: q.multiSelect,
+                            answers: done
+                              ? q.options
+                                  .filter((option) =>
+                                    String(item.answers?.[q.id || q.header || q.question] ?? '')
+                                      .split('\n')[0]
+                                      .split(', ')
+                                      .includes(
+                                        questionPolicy?.optionLabel?.(option) ?? option.label
+                                      )
+                                  )
+                                  .map((option) => option.label)
+                              : (picks[qi] ?? []),
+                          }}
+                          status={
+                            item.hilState === 'cancelled'
+                              ? 'cancelled'
+                              : done
+                                ? 'resolved'
+                                : submitting
+                                  ? 'submitting'
+                                  : 'pending'
+                          }
+                          onAction={(_action, values) => {
+                            const answers = componentOptionAnswers(q, values)
+                            if (!answers) return
+                            if (questionPolicy?.directDecision && answers.length === 1) {
+                              decideQuestion(
+                                q,
+                                q.options.find((option) => option.label === answers[0])!
+                              )
+                              return
+                            }
+                            setPicks((previous) => ({ ...previous, [qi]: answers }))
+                            if (!q.multiSelect) setTexts((previous) => ({ ...previous, [qi]: '' }))
+                          }}
+                        />
+                      )}
+                      {!q.component &&
+                        q.options.map((o, i) => {
+                          // 已答态按会话项里的 answers 回显勾选 (多选按 ', ' 拆回 label 列表);
+                          // 未答态才用组件本地 picks —— 否则 resolved 后勾选被清空, 卡片像没答过。
+                          const answered = done
+                            ? String((item.answers ?? {})[q.id || q.header || q.question] ?? '')
+                            : ''
+                          const on = done
+                            ? answered
+                                .split('\n')[0]
+                                .split(', ')
+                                .includes(questionPolicy?.optionLabel?.(o) ?? o.label)
+                            : (picks[qi] || []).includes(o.label)
+                          return (
+                            <QuestionOption
+                              key={i}
+                              testId={`hil-question-option-${qi}-${i}`}
+                              disabled={done || submitting}
+                              checked={on}
+                              multiSelect={q.multiSelect}
+                              label={
+                                presentedQuestions[qi]?.options[i]?.label ??
+                                questionPolicy?.optionLabel?.(o) ??
+                                o.label
                               }
-                              if (!q.multiSelect) setTexts((t) => ({ ...t, [qi]: '' }))
-                              toggle(qi, o.label, !!q.multiSelect)
-                            }}
-                            checked={on}
-                            aria-label={`${presentedQuestions[qi]?.options[i]?.label ?? questionPolicy?.optionLabel?.(o) ?? o.label}${o.description ? ` ${presentedQuestions[qi]?.options[i]?.description ?? o.description}` : ''}`}
-                            className={cx(
-                              'flex w-full gap-[var(--vds-space-2)] rounded-[var(--vds-radius-6)] border border-solid text-left disabled:cursor-default',
-                              on
-                                ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
-                                : 'border-[var(--border)] bg-transparent'
-                            )}
-                          >
-                            <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
-                              <span className="mr-[var(--vds-space-2)] font-medium text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
-                                {presentedQuestions[qi]?.options[i]?.label ??
-                                  questionPolicy?.optionLabel?.(o) ??
-                                  o.label}
-                              </span>
-                              {o.description && (
-                                <span className="text-[var(--vds-text-secondary)] [overflow-wrap:anywhere]">
-                                  {presentedQuestions[qi]?.options[i]?.description ?? o.description}
-                                </span>
-                              )}
-                            </span>
-                          </OptionControl>
-                        )
-                      })}
+                              description={
+                                presentedQuestions[qi]?.options[i]?.description ?? o.description
+                              }
+                              onSelect={() => {
+                                if (questionPolicy?.directDecision) {
+                                  decideQuestion(q, o)
+                                  return
+                                }
+                                if (!q.multiSelect) setTexts((t) => ({ ...t, [qi]: '' }))
+                                toggle(qi, o.label, !!q.multiSelect)
+                              }}
+                            />
+                          )
+                        })}
                       {done ? (
                         item.answers?.[q.id || q.header || q.question] && (
                           <p className="m-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
@@ -4225,7 +4263,7 @@ function HilCard({
                             ) ?? item.answers[q.id || q.header || q.question]}
                           </p>
                         )
-                      ) : questionPolicy?.directDecision ? null : (
+                      ) : questionPolicy?.directDecision || q.component ? null : (
                         <Textarea
                           data-testid={`hil-question-other-${qi}`}
                           aria-label={t('stream.otherAnswer')}
@@ -4267,41 +4305,62 @@ function HilCard({
               ))
             )}
           </ScrollArea>
-          {!done && !questionPolicy?.directDecision && (
+          {pagedQuestions && (
             <div
-              className="mt-[var(--vds-space-4)] flex flex-none items-center justify-end gap-[var(--vds-space-2)]"
-              data-testid="hil-question-actions"
+              className="mt-[var(--vds-space-3)] flex flex-wrap items-center justify-between gap-[var(--vds-space-2)]"
+              data-testid="hil-question-pages"
             >
-              <Button
-                variant="outline"
-                size="sm"
-                type="button"
-                data-testid="hil-question-skip"
+              <span className="text-[length:var(--vds-font-caption)] text-[var(--vds-text-secondary)]">
+                {visibleQuestionPage} / {qs.length}
+              </span>
+              <Pagination
+                page={visibleQuestionPage}
+                pageCount={qs.length}
                 disabled={submitting}
-                onClick={() => {
-                  const answers = questionPolicy?.defaults?.(qs) ?? {}
-                  void submitAction({
-                    kind: 'respond',
-                    body: { answers },
-                    label: questionPolicy?.defaultLabel ?? t('stream.hil.skipped'),
-                    answers,
-                  })
-                }}
-              >
-                {t('stream.hil.skip')}
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                type="button"
-                data-testid="hil-question-confirm"
-                disabled={submitting || !questionComplete}
-                onClick={submitQuestion}
-              >
-                {t('stream.hil.confirm')}
-              </Button>
+                onPageChange={setQuestionPage}
+              />
             </div>
           )}
+          {!done &&
+            !questionPolicy?.directDecision &&
+            !questions.every(
+              (question) =>
+                question.installation || (question.component && question.options.length === 0)
+            ) && (
+              <div
+                className="mt-[var(--vds-space-4)] flex flex-none items-center justify-end gap-[var(--vds-space-2)]"
+                data-testid="hil-question-actions"
+              >
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  data-testid="hil-question-skip"
+                  disabled={submitting}
+                  onClick={() => {
+                    const answers = questionPolicy?.defaults?.(qs) ?? {}
+                    void submitAction({
+                      kind: 'respond',
+                      body: { answers },
+                      label: questionPolicy?.defaultLabel ?? t('stream.hil.skipped'),
+                      answers,
+                    })
+                  }}
+                >
+                  {t('stream.hil.skip')}
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  type="button"
+                  data-testid="hil-question-confirm"
+                  disabled={submitting || !questionComplete}
+                  onClick={submitQuestion}
+                >
+                  {t('stream.hil.confirm')}
+                </Button>
+              </div>
+            )}
         </CollapsibleContent>
       ) : (
         <>
@@ -4506,24 +4565,29 @@ function HilCard({
           )}
         </>
       )}
-      {!done && item.hilState === 'failed' && lastAction && (
-        <div className="mt-[var(--vds-space-3)] flex gap-[var(--vds-space-2)]">
-          {item.hilState === 'failed' && lastAction && (
-            <Button
-              unstyled
-              type="button"
-              data-testid="hil-retry"
-              className={cx(
-                ACCENT_HOVER_BUTTON_CLASS,
-                'rounded-lg border-0 bg-[var(--accent)] px-[13px] py-[7px] text-xs text-[var(--on-accent)]'
-              )}
-              onClick={() => void submitAction(lastAction)}
-            >
-              {t('stream.hil.resubmit')}
-            </Button>
-          )}
-        </div>
-      )}
+      {!done &&
+        item.hilState === 'failed' &&
+        lastAction &&
+        !questions.some((question) => question.installation) &&
+        (item.hilKind !== 'question' ||
+          questions.every((question) => question.component && question.options.length === 0)) && (
+          <div className="mt-[var(--vds-space-3)] flex gap-[var(--vds-space-2)]">
+            {item.hilState === 'failed' && lastAction && (
+              <Button
+                unstyled
+                type="button"
+                data-testid="hil-retry"
+                className={cx(
+                  ACCENT_HOVER_BUTTON_CLASS,
+                  'rounded-lg border-0 bg-[var(--accent)] px-[13px] py-[7px] text-xs text-[var(--on-accent)]'
+                )}
+                onClick={() => void submitAction(lastAction)}
+              >
+                {t('stream.hil.resubmit')}
+              </Button>
+            )}
+          </div>
+        )}
     </Collapsible>
   )
 }
@@ -4681,50 +4745,6 @@ function Reentry({ item }: { item: Extract<ConvItem, { kind: 'reentry' }> }): Re
   )
 }
 
-function Avatar({ kind, who }: { kind: 'user' | 'agent'; who?: string }): React.JSX.Element {
-  const user = kind === 'user'
-  // team 成员: 用名字首字母的彩色头像区分说话人 (群聊感)
-  if (who) {
-    return (
-      <span
-        style={{
-          width: 30,
-          height: 30,
-          flex: 'none',
-          borderRadius: '50%',
-          display: 'grid',
-          placeItems: 'center',
-          background: 'var(--accent-soft)',
-          border: '1px solid var(--accent)',
-          color: 'var(--accent-ink)',
-          fontSize: 12,
-          fontWeight: 600,
-          textTransform: 'uppercase',
-        }}
-      >
-        {who.replace(/[^a-z0-9]/gi, '').slice(0, 1) || '@'}
-      </span>
-    )
-  }
-  return (
-    <span
-      style={{
-        width: 30,
-        height: 30,
-        flex: 'none',
-        borderRadius: '50%',
-        display: 'grid',
-        placeItems: 'center',
-        background: user ? 'var(--accent-soft)' : 'var(--bg-3)',
-        border: `1px solid ${user ? 'var(--accent)' : 'var(--border)'}`,
-        color: user ? 'var(--accent-ink)' : 'var(--text-2)',
-      }}
-    >
-      <Icon name={kind} size={16} />
-    </span>
-  )
-}
-
 function UserBubble({
   item,
   running,
@@ -4799,7 +4819,7 @@ function UserBubble({
   return (
     <>
       <div className="mb-[22px] flex justify-end">
-        <div className="relative grid w-max min-w-0 max-w-[var(--conversation-user-message-max)] justify-items-end">
+        <div className="relative grid w-full min-w-0 justify-items-end">
           {steer && (
             <div className="mx-[var(--vds-space-1)] mb-[6px] flex items-center justify-end gap-[7px] text-[9px] font-[650] uppercase tracking-[0.08em] text-[var(--text-3)]">
               <span>{item.steerLabel}</span>
@@ -4808,171 +4828,212 @@ function UserBubble({
               </span>
             </div>
           )}
-          <div
-            className={cx(
-              'relative box-border w-auto max-w-full overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--border-soft)] bg-[var(--vds-other-overlay-2)] px-[15px] pb-[12px] pt-[11px]',
-              steer && 'border-dashed border-[var(--accent)]'
-            )}
-            data-testid="user-bubble"
-          >
-            {canRewind && !confirming && (
-              <Button
-                unstyled
-                type="button"
-                className={cx(
-                  OUTLINE_HOVER_BUTTON_CLASS,
-                  'absolute right-[10px] top-[-10px] grid size-[24px] place-items-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] p-[var(--vds-space-0)] text-[var(--text-3)]'
-                )}
-                onClick={() => setConfirming(true)}
-                data-testid="rewind-prompt"
-                title={t('stream.rewindHere')}
-                aria-label={t('stream.rewindHere')}
-              >
-                <Icon name="rewind" size={13} />
-              </Button>
-            )}
-            {contextRefs.length > 0 ? (
-              <div
-                className="mb-[var(--vds-space-2)] flex flex-wrap justify-end gap-[var(--vds-space-1)]"
-                data-testid="sent-context-references"
-              >
-                {contextRefs.map((reference) => {
-                  const selection = Boolean(reference.anchor)
-                  const canOpen = Boolean(
-                    reference.sourceId &&
-                    (project || (reference.kind === LITERATURE_CONTEXT_KIND && reference.anchor))
-                  )
-                  const expanded = expandedReferenceId === reference.id
-                  if (reference.kind === SESSION_CONTEXT_KIND) {
-                    return (
-                      <SessionReference
-                        currentSessionId={activeThread(state).sessionId}
-                        key={reference.id}
-                        reference={reference}
-                      />
-                    )
-                  }
-                  return selection ? (
-                    <div
-                      className="grid w-full justify-items-end gap-[var(--vds-space-1)]"
-                      key={reference.id}
-                    >
-                      <Button
-                        unstyled
-                        variant="ghost"
-                        size="content"
-                        className="inline-flex max-w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-brand-text-primary)]"
-                        aria-expanded={expanded}
-                        onClick={() => setExpandedReferenceId(expanded ? null : reference.id)}
-                      >
-                        <Icon name="quote" size={12} />
-                        <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
-                          {contextSourceLabel(reference)}
-                        </span>
-                        <span className="border-l border-[var(--vds-brand-light-border)] pl-[var(--vds-space-2)] text-[var(--vds-text-tertiary)]">
-                          {t('stream.fragment')}
-                        </span>
-                      </Button>
-                      {expanded ? (
-                        <Card
-                          className="w-full text-left"
-                          padding="sm"
-                          data-testid="sent-selection-reference"
-                        >
-                          <CardContent className="grid gap-[var(--vds-space-2)]">
-                            <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
-                              <Icon name="quote" size={13} />
-                              <Button
-                                unstyled
-                                variant="link"
-                                size="content"
-                                disabled={!canOpen}
-                                className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-[var(--vds-text-primary)]"
-                                onClick={() => openContextSource(reference)}
-                              >
-                                {contextSourceLabel(reference)}
-                              </Button>
-                              <IconButton
-                                label={t('stream.collapseReference')}
-                                icon={<Icon name="close" size={12} />}
-                                size="sm"
-                                variant="ghostIcon"
-                                onClick={() => setExpandedReferenceId(null)}
-                              />
-                            </div>
-                            <ScrollArea
-                              className="max-h-[120px]"
-                              viewportClassName="max-h-[120px] whitespace-pre-wrap break-words border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]"
-                            >
-                              {reference.anchor?.previewText || t('stream.unavailableFragment')}
-                            </ScrollArea>
-                          </CardContent>
-                        </Card>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <Button
-                      key={reference.id}
-                      unstyled
-                      variant="outline"
-                      size="content"
-                      disabled={!canOpen}
-                      className="inline-flex max-w-full items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
-                      onClick={() => openContextSource(reference)}
-                    >
-                      <Icon
-                        name={reference.kind === LITERATURE_CONTEXT_KIND ? 'books' : 'doc'}
-                        size={12}
-                      />
-                      <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
-                        {contextSourceLabel(reference)}
-                      </span>
-                    </Button>
-                  )
-                })}
-              </div>
-            ) : null}
-            {item.refs?.some(
-              (reference) =>
-                ((reference.type !== 'file' && reference.type !== 'directory') ||
-                  !reference.path) &&
-                reference.type !== 'assistant_context'
-            ) && (
-              <div className="mb-[var(--vds-space-2)] flex flex-wrap gap-[6px]">
-                {item
-                  .refs!.filter(
-                    (reference) =>
-                      ((reference.type !== 'file' && reference.type !== 'directory') ||
-                        !reference.path) &&
-                      reference.type !== 'assistant_context'
-                  )
-                  .map((reference) => (
-                    <span
-                      key={reference.type + reference.id}
-                      className="inline-flex max-w-full items-center gap-[6px] rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[2px] text-[10.5px]"
-                      title={t('stream.referenceSent', {
-                        type: reference.type,
-                        id: reference.id,
-                      })}
-                    >
-                      <span className="flex-none font-semibold text-[var(--accent-ink)]">
-                        {userMessageRefType(reference.type, t)}
-                      </span>
-                      <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text-2)]">
-                        {reference.title}
-                      </span>
-                      {reference.status && (
-                        <span className="flex-none text-[9px] text-[var(--text-3)]">
-                          {reference.status}
-                        </span>
+          <Message
+            text={item.text}
+            timestamp={item.startedAt}
+            steering={steer}
+            onCopy={writeDesktopClipboard}
+            onOpenExternal={(url) => window.scholarseed.openExternal(url)}
+            header={
+              <>
+                {item.refs?.some(
+                  (reference) =>
+                    (reference.type === 'file' || reference.type === 'directory') && reference.path
+                ) && (
+                  <div className="mb-[var(--vds-space-2)] flex w-full min-w-0 flex-wrap gap-[var(--vds-space-2)]">
+                    <SentAttachments
+                      key={activeThread(state).sessionId}
+                      refs={item.refs.flatMap<ComposerReference>(
+                        (reference): ComposerReference[] => {
+                          if (!reference.path) return []
+                          if (reference.type === 'directory')
+                            return [
+                              {
+                                type: 'directory' as const,
+                                id: reference.id,
+                                title: reference.title,
+                                status: reference.status,
+                                path: reference.path,
+                              },
+                            ]
+                          if (reference.type === 'file')
+                            return [
+                              {
+                                type: 'file' as const,
+                                id: reference.id,
+                                title: reference.title,
+                                status: reference.status,
+                                path: reference.path,
+                                mediaType: reference.mediaType,
+                                sha256: reference.sha256,
+                                size: reference.size,
+                              },
+                            ]
+                          return []
+                        }
                       )}
-                    </span>
-                  ))}
-              </div>
-            )}
-            <div className="whitespace-pre-wrap font-[var(--vds-font-serif)] font-[var(--vds-fw-regular)] text-[length:var(--vds-font-body-lv2)] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
-              {item.text}
-            </div>
+                    />
+                  </div>
+                )}
+                {canRewind && !confirming && (
+                  <Button
+                    unstyled
+                    type="button"
+                    className={cx(
+                      OUTLINE_HOVER_BUTTON_CLASS,
+                      'absolute right-[10px] top-[-10px] grid size-[24px] place-items-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] p-[var(--vds-space-0)] text-[var(--text-3)]'
+                    )}
+                    onClick={() => setConfirming(true)}
+                    data-testid="rewind-prompt"
+                    title={t('stream.rewindHere')}
+                    aria-label={t('stream.rewindHere')}
+                  >
+                    <Icon name="rewind" size={13} />
+                  </Button>
+                )}
+                {contextRefs.length > 0 ? (
+                  <div
+                    className="mb-[var(--vds-space-2)] flex flex-wrap justify-end gap-[var(--vds-space-1)]"
+                    data-testid="sent-context-references"
+                  >
+                    {contextRefs.map((reference) => {
+                      const selection = Boolean(reference.anchor)
+                      const canOpen = Boolean(
+                        reference.sourceId &&
+                        (project ||
+                          (reference.kind === LITERATURE_CONTEXT_KIND && reference.anchor))
+                      )
+                      const expanded = expandedReferenceId === reference.id
+                      if (reference.kind === SESSION_CONTEXT_KIND) {
+                        return (
+                          <SessionReference
+                            currentSessionId={activeThread(state).sessionId}
+                            key={reference.id}
+                            reference={reference}
+                          />
+                        )
+                      }
+                      return selection ? (
+                        <div
+                          className="grid w-full justify-items-end gap-[var(--vds-space-1)]"
+                          key={reference.id}
+                        >
+                          <Button
+                            unstyled
+                            variant="ghost"
+                            size="content"
+                            className="inline-flex max-w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-brand-text-primary)]"
+                            aria-expanded={expanded}
+                            onClick={() => setExpandedReferenceId(expanded ? null : reference.id)}
+                          >
+                            <Icon name="quote" size={12} />
+                            <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
+                              {contextSourceLabel(reference)}
+                            </span>
+                            <span className="border-l border-[var(--vds-brand-light-border)] pl-[var(--vds-space-2)] text-[var(--vds-text-tertiary)]">
+                              {t('stream.fragment')}
+                            </span>
+                          </Button>
+                          {expanded ? (
+                            <Card
+                              className="w-full text-left"
+                              padding="sm"
+                              data-testid="sent-selection-reference"
+                            >
+                              <CardContent className="grid gap-[var(--vds-space-2)]">
+                                <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
+                                  <Icon name="quote" size={13} />
+                                  <Button
+                                    unstyled
+                                    variant="link"
+                                    size="content"
+                                    disabled={!canOpen}
+                                    className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-[var(--vds-text-primary)]"
+                                    onClick={() => openContextSource(reference)}
+                                  >
+                                    {contextSourceLabel(reference)}
+                                  </Button>
+                                  <IconButton
+                                    label={t('stream.collapseReference')}
+                                    icon={<Icon name="close" size={12} />}
+                                    size="sm"
+                                    variant="ghostIcon"
+                                    onClick={() => setExpandedReferenceId(null)}
+                                  />
+                                </div>
+                                <ScrollArea
+                                  className="max-h-[120px]"
+                                  viewportClassName="max-h-[120px] whitespace-pre-wrap break-words border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]"
+                                >
+                                  {reference.anchor?.previewText || t('stream.unavailableFragment')}
+                                </ScrollArea>
+                              </CardContent>
+                            </Card>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <Button
+                          key={reference.id}
+                          unstyled
+                          variant="outline"
+                          size="content"
+                          disabled={!canOpen}
+                          className="inline-flex max-w-full items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+                          onClick={() => openContextSource(reference)}
+                        >
+                          <Icon
+                            name={reference.kind === LITERATURE_CONTEXT_KIND ? 'books' : 'doc'}
+                            size={12}
+                          />
+                          <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
+                            {contextSourceLabel(reference)}
+                          </span>
+                        </Button>
+                      )
+                    })}
+                  </div>
+                ) : null}
+                {item.refs?.some(
+                  (reference) =>
+                    ((reference.type !== 'file' && reference.type !== 'directory') ||
+                      !reference.path) &&
+                    reference.type !== 'assistant_context'
+                ) && (
+                  <div className="mb-[var(--vds-space-2)] flex flex-wrap gap-[6px]">
+                    {item
+                      .refs!.filter(
+                        (reference) =>
+                          ((reference.type !== 'file' && reference.type !== 'directory') ||
+                            !reference.path) &&
+                          reference.type !== 'assistant_context'
+                      )
+                      .map((reference) => (
+                        <span
+                          key={reference.type + reference.id}
+                          className="inline-flex max-w-full items-center gap-[6px] rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[2px] text-[10.5px]"
+                          title={t('stream.referenceSent', {
+                            type: reference.type,
+                            id: reference.id,
+                          })}
+                        >
+                          <span className="flex-none font-semibold text-[var(--accent-ink)]">
+                            {userMessageRefType(reference.type, t)}
+                          </span>
+                          <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text-2)]">
+                            {reference.title}
+                          </span>
+                          {reference.status && (
+                            <span className="flex-none text-[9px] text-[var(--text-3)]">
+                              {reference.status}
+                            </span>
+                          )}
+                        </span>
+                      ))}
+                  </div>
+                )}
+              </>
+            }
+          >
             <AnnotationSummary
               annotations={annotations}
               className="mt-[var(--vds-space-1)]"
@@ -4991,43 +5052,6 @@ function UserBubble({
               onOpenOriginal={(annotationId) => void act.focusAnswerAnnotation(annotationId)}
               testId="user-message-annotations"
             />
-            {item.refs?.some(
-              (reference) =>
-                (reference.type === 'file' || reference.type === 'directory') && reference.path
-            ) && (
-              <div className="mb-[6px] flex w-min max-w-full flex-nowrap justify-start gap-[2px] overflow-x-auto overflow-y-hidden py-[var(--vds-space-1)] pl-[var(--vds-space-0)] pr-[2px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                <SentAttachments
-                  key={activeThread(state).sessionId}
-                  refs={item.refs.flatMap<ComposerReference>((reference): ComposerReference[] => {
-                    if (!reference.path) return []
-                    if (reference.type === 'directory')
-                      return [
-                        {
-                          type: 'directory' as const,
-                          id: reference.id,
-                          title: reference.title,
-                          status: reference.status,
-                          path: reference.path,
-                        },
-                      ]
-                    if (reference.type === 'file')
-                      return [
-                        {
-                          type: 'file' as const,
-                          id: reference.id,
-                          title: reference.title,
-                          status: reference.status,
-                          path: reference.path,
-                          mediaType: reference.mediaType,
-                          sha256: reference.sha256,
-                          size: reference.size,
-                        },
-                      ]
-                    return []
-                  })}
-                />
-              </div>
-            )}
             {confirming &&
               createPortal(
                 <RewindConfirmation
@@ -5038,26 +5062,7 @@ function UserBubble({
                 />,
                 document.body
               )}
-          </div>
-          {item.text && (
-            <div className={cx(MESSAGE_ACTIONS_CLASS, 'justify-end')}>
-              <CopyButton
-                type="button"
-                size="xs"
-                variant="ghostIcon"
-                value={item.text}
-                writeText={writeDesktopClipboard}
-                idleLabel={t('stream.copyMessage')}
-                copiedLabel={t('stream.copied')}
-                copiedIcon={<Check size={14} />}
-                showLoading={false}
-                statusStyle={false}
-                tooltip
-              >
-                <Copy size={14} />
-              </CopyButton>
-            </div>
-          )}
+          </Message>
         </div>
       </div>
       {item.cancelled && (
@@ -5074,6 +5079,7 @@ function InteractionReply({
 }): React.JSX.Element {
   const { i18n: localization } = useTranslation('literature')
   const { t: conversation } = useTranslation('conversation')
+  const [open, setOpen] = useState(false)
   const interactionPolicies = useInteractionPolicies()
   const questionPolicy = interactionPolicies.find((policy) => policy.matches(item.questions))
   const question = item.questions[0]
@@ -5083,34 +5089,22 @@ function InteractionReply({
   const replyTitle =
     question && answer ? questionPolicy?.replyTitle?.(question, answer, localization) : undefined
   const title = replyTitle ?? questionPolicy?.title ?? conversation('reply.title')
-  if (replyText) {
-    return (
-      <div
-        className="mt-[var(--vds-space-2)] mb-[var(--vds-space-5)] flex justify-start"
-        data-testid="interaction-reply"
-        data-interaction-request-id={item.requestId}
-      >
-        <div className="box-border w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
-          <div className="mb-[var(--vds-space-3)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
-            <IconFont
-              type="line-tool-batch-follow-up"
-              className="shrink-0 text-[length:var(--vds-icon-6)]"
-            />
-            <span>{title}</span>
-          </div>
-          <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
-            {replyText}
-          </div>
-        </div>
-      </div>
-    )
-  }
   const rows = item.questions.map((question) => {
     const key = question.id || question.header || question.question
     const answer = item.answers[key]
+    const presented = questionPolicy?.presentQuestion?.(question, localization)
     return {
-      question:
-        questionPolicy?.presentQuestion?.(question, localization).question ?? question.question,
+      question: presented?.question ?? question.question,
+      multiSelect: question.multiSelect,
+      options: question.options.map((option, index) => ({
+        label:
+          presented?.options[index]?.label ?? questionPolicy?.optionLabel?.(option) ?? option.label,
+        description: presented?.options[index]?.description ?? option.description,
+        checked: (answer ?? '')
+          .split('\n')[0]
+          .split(', ')
+          .includes(questionPolicy?.optionLabel?.(option) ?? option.label),
+      })),
       answer: answer
         ? (questionPolicy?.presentAnswer?.(question, answer, localization) ?? answer)
         : conversation('reply.skipped'),
@@ -5122,29 +5116,81 @@ function InteractionReply({
       data-testid="interaction-reply"
       data-interaction-request-id={item.requestId}
     >
-      <div className="grid w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] gap-[var(--vds-space-3)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
-        <div className="flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
-          <IconFont
-            type="line-tool-batch-follow-up"
-            className="shrink-0 text-[length:var(--vds-icon-6)]"
-          />
-          <span>{title}</span>
-        </div>
-        {rows.map((row, index) => (
-          <div
-            key={`${row.question}:${index}`}
-            className="grid min-w-0 gap-[var(--vds-space-1)]"
-            aria-label={conversation('reply.answerLabel', row)}
+      <Collapsible
+        open={open}
+        onOpenChange={setOpen}
+        className="w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] !gap-0 rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]"
+      >
+        <CollapsibleTrigger asChild>
+          <Button
+            unstyled
+            aria-label={conversation('reply.toggleDetails')}
+            className="!grid w-full min-w-0 cursor-pointer !gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] !border-0 !bg-transparent !p-[var(--vds-space-4)] text-left focus-visible:shadow-[var(--vds-focus-brand)]"
           >
-            <span className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
-              {index + 1}. {row.question}
+            <span className="flex min-w-0 items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-secondary)]">
+              <IconFont
+                type="line-tool-batch-follow-up"
+                className="shrink-0 text-[length:var(--vds-icon-6)]"
+              />
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{title}</span>
+              <ChevronRight
+                aria-hidden="true"
+                className={cx('size-[var(--vds-icon-5)] shrink-0', open && 'rotate-90')}
+              />
             </span>
-            <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
-              {row.answer}
-            </span>
-          </div>
-        ))}
-      </div>
+            {replyText ? (
+              <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
+                {replyText}
+              </span>
+            ) : (
+              !open &&
+              rows.map((row, index) => (
+                <span
+                  key={`${row.question}:${index}`}
+                  className="grid min-w-0 gap-[var(--vds-space-1)]"
+                  aria-label={conversation('reply.answerLabel', row)}
+                >
+                  <span className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+                    {index + 1}. {row.question}
+                  </span>
+                  <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
+                    {row.answer}
+                  </span>
+                </span>
+              ))
+            )}
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="grid min-w-0 gap-[var(--vds-space-4)] !rounded-none !border-0 !bg-transparent !p-[var(--vds-space-4)] !pt-0">
+          <p className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+            {conversation('reply.readOnly')}
+          </p>
+          {rows.map((row, index) => (
+            <div
+              key={index}
+              className="grid min-w-0 gap-[var(--vds-space-2)]"
+              aria-label={conversation('reply.answerLabel', row)}
+            >
+              <div className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+                {index + 1}. {row.question}
+              </div>
+              {row.options.map((option, optionIndex) => (
+                <QuestionOption
+                  key={optionIndex}
+                  {...option}
+                  disabled
+                  readOnly
+                  multiSelect={row.multiSelect}
+                  onSelect={() => undefined}
+                />
+              ))}
+              <p className="m-0 whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
+                {row.answer}
+              </p>
+            </div>
+          ))}
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   )
 }
@@ -5279,6 +5325,18 @@ function AgentMsg({
   const { t } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
   const { state, set, act } = useApp()
+  const copyItems = useContext(CopyItemsContext)
+  const sessionId = useContext(CopySessionContext)
+  const copyAnswer = useContext(AnswerCopyContext)
+  const mergeCards =
+    item.turnId &&
+    copyItems
+      .filter(
+        (candidate) =>
+          candidate.turnId === item.turnId && candidate.kind === 'agent' && candidate.text
+      )
+      .at(-1) === item &&
+    copyItems.some((candidate) => candidate.turnId === item.turnId && hasCopyCard(candidate))
   const [forking, setForking] = useState(false)
   const [forkError, setForkError] = useState<string | null>(null)
   const forkPending = useRef(false)
@@ -5345,21 +5403,25 @@ function AgentMsg({
         )}
         {item.text && copyEnabled && (
           <div className={MESSAGE_ACTIONS_CLASS}>
-            <CopyButton
-              type="button"
-              size="xs"
-              variant="ghostIcon"
-              value={visibleMarkdownText(item.text || '')}
-              writeText={writeDesktopClipboard}
-              idleLabel={t('stream.copyReply')}
-              copiedLabel={t('stream.copied')}
-              copiedIcon={<Check size={14} />}
-              showLoading={false}
-              statusStyle={false}
-              tooltip
-            >
-              <Copy size={14} />
-            </CopyButton>
+            {mergeCards ? (
+              <ReplyCopy items={copyItems} turnId={item.turnId!} sessionId={sessionId} />
+            ) : (
+              <CopyButton
+                type="button"
+                size="xs"
+                variant="ghostIcon"
+                getValue={() => copyAnswer(item, sessionId)}
+                writeText={writeDesktopClipboard}
+                idleLabel={t('stream.copyReply')}
+                copiedLabel={t('stream.copied')}
+                copiedIcon={<Check size={14} />}
+                showLoading={false}
+                statusStyle={false}
+                tooltip
+              >
+                <Copy size={14} />
+              </CopyButton>
+            )}
             {forkEnabled && item.turnId ? (
               <Tooltip content={t('stream.forkTask')} portalled>
                 <IconButton
@@ -5493,7 +5555,7 @@ function ErrorCard({
   item: Extract<ConvItem, { kind: 'error' }>
   onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
 }): React.JSX.Element {
-  const { t, i18n } = useTranslation('components')
+  const { i18n } = useTranslation('components')
   const { state, act } = useApp()
   const recoveryThread = activeThread(state)
   const authenticationFailed = item.failure?.kind === 'auth'
@@ -5571,177 +5633,27 @@ function ErrorCard({
     : item.turnUnknown
       ? formatTurnUnknown(item, conversation)
       : formatTurnFailure(item, conversation)
-  const confirming = item.actionState === 'submitting'
-  const continuing = item.runtimeAction === 'continue_turn' && item.actionState === 'submitting'
-  const continueUnknown =
-    item.runtimeAction === 'continue_turn' && item.actionState === 'outcome_unknown'
-  const turnUnknown = item.runtimeAction === 'confirm_turn_unknown'
-  const recoverableFailure = isRecoverableTurnFailure(item)
-  const failureDescription =
-    item.failure?.kind === 'unknown'
-      ? failureText.action
-      : failureText.action && failureText.action !== failureText.message
-        ? `${failureText.message} ${failureText.action}`
-        : failureText.message || failureText.action
-  if (turnUnknown) {
-    return (
-      <Alert
-        action={
-          recoveryAvailable ? (
-            <Button
-              data-testid="turn-unknown-continue"
-              disabled={confirming || item.actionState === 'outcome_unknown'}
-              loading={confirming}
-              loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-              onClick={() => void onContinue(item)}
-              size="sm"
-              variant="outline"
-            >
-              {item.actionState === 'outcome_unknown'
-                ? t('stream.continuePending')
-                : t('stream.continueInterrupted')}
-            </Button>
-          ) : null
-        }
-        className="mb-[var(--vds-space-3)] w-full !gap-[var(--vds-space-half)] !rounded-[var(--vds-radius-6)] px-[var(--vds-space-3)] py-[var(--vds-space-3)]"
-        data-testid="turn-interrupted-notice"
-        layout="stacked"
-        title={failureText.title}
-        tone="warning"
-      >
-        <AlertDescription truncate={false}>{failureDescription}</AlertDescription>
-        {item.actionError ? (
-          <span className="text-[var(--vds-error-text-primary)]">
-            {item.actionErrorMessage
-              ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
-              : renderFeedback(i18n, item.actionError)}
-          </span>
-        ) : null}
-      </Alert>
-    )
-  }
-  if (recoverableFailure) {
-    return (
-      <div
-        className="mb-[var(--vds-space-5)] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
-        data-testid="turn-recoverable-notice"
-        role="status"
-      >
-        <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
-          <IconFont type="fill-status-tips" className="shrink-0" />
-          <span className="min-w-0 break-words">
-            {item.failure?.kind === 'unknown'
-              ? conversation('failure.interrupted.message')
-              : failureText.message}
-          </span>
-        </div>
-        {recoveryAvailable ? (
-          <Button
-            data-testid="turn-continue"
-            disabled={continuing || continueUnknown}
-            loading={continuing}
-            loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-            onClick={() => void onContinue(item)}
-            size="sm"
-            variant="outline"
-          >
-            {continueUnknown ? t('stream.continuePending') : t('stream.continueInterrupted')}
-          </Button>
-        ) : null}
-        {item.actionError ? (
-          <span
-            className="col-span-full break-words text-[var(--vds-error-text-primary)]"
-            data-testid="turn-continue-error"
-          >
-            {item.actionErrorMessage
-              ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
-              : renderFeedback(i18n, item.actionError)}
-          </span>
-        ) : null}
-      </div>
-    )
-  }
   return (
-    <Card
-      className="mb-[var(--vds-space-5)] grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-[var(--vds-space-2)] gap-y-[var(--vds-space-2)] border border-solid border-[var(--vds-error-light-border)] !bg-[var(--vds-error-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] [--vds-card-radius:var(--vds-radius-6)]"
-      data-testid="turn-failure-card"
-      padding="none"
-      role="alert"
-      variant="tinted"
-    >
-      <div className="flex min-w-0 items-center gap-[var(--vds-space-1)]">
-        <IconFont
-          type="fill-status-error"
-          aria-hidden="true"
-          className="shrink-0 text-[length:var(--vds-icon-8)] text-[var(--vds-error-bg-default)]"
-        />
-        <h5 className="m-0 text-[length:var(--vds-font-body-lv2)] font-medium leading-[var(--vds-lh-body-lv2)] text-[var(--vds-error-bg-default)]">
-          {failureText.title}
-        </h5>
-      </div>
-      {item.runtimeAction === 'continue_turn' && (authenticationFailed || recoveryAvailable) ? (
-        <Button
-          data-testid="turn-continue"
-          disabled={!recoveryAvailable || continuing || continueUnknown || authenticationChecking}
-          loading={continuing || authenticationChecking}
-          loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-          onClick={() => {
-            if (authenticationFailed) void recoverAuthentication(true)
-            else void onContinue(item)
-          }}
-          size="sm"
-          variant="outline"
-        >
-          {continueUnknown
-            ? t('stream.continuePending')
-            : authenticationFailed
-              ? t('stream.continueInterrupted')
-              : t('stream.retry')}
-        </Button>
-      ) : null}
-      {failureDescription ? (
-        <p
-          data-testid="turn-failure-description"
-          className="col-span-2 m-0 min-w-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-secondary)]"
-        >
-          {failureDescription}
-        </p>
-      ) : null}
-      {authenticationFailed ? (
-        <Button
-          className="col-span-2 justify-self-start"
-          data-testid="turn-authentication-repair"
-          disabled={authenticationChecking}
-          onClick={() => void recoverAuthentication(false)}
-          size="sm"
-          variant="ghost"
-        >
-          {authenticationAction === 'login'
-            ? conversation('failure.auth.login')
-            : conversation('failure.auth.configure')}
-        </Button>
-      ) : null}
-      {authenticationCheckFailed ? (
-        <p className="col-span-2 m-0 text-[var(--vds-error-text-primary)]" role="status">
-          {t('composer.checkFailed')}
-        </p>
-      ) : null}
-      {item.actionError ? (
-        <div
-          className="col-span-2 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-error-text-primary)]"
-          data-testid={
-            item.runtimeAction === 'continue_turn'
-              ? 'turn-continue-error'
-              : 'turn-unknown-confirm-error'
-          }
-        >
-          {item.actionErrorMessage
+    <Failure
+      item={item}
+      failureText={failureText}
+      recoveryAvailable={recoveryAvailable}
+      onContinue={onContinue}
+      authenticationAction={authenticationAction}
+      authenticationChecking={authenticationChecking}
+      authenticationCheckFailed={authenticationCheckFailed}
+      onRepair={recoverAuthentication}
+      actionError={
+        item.actionError
+          ? item.actionErrorMessage
             ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
-            : renderFeedback(i18n, item.actionError)}
-        </div>
-      ) : null}
+            : renderFeedback(i18n, item.actionError)
+          : undefined
+      }
+    >
+      <Continuation item={item} />
       <LoginPrompt open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
-    </Card>
+    </Failure>
   )
 }
 

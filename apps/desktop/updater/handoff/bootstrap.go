@@ -149,7 +149,10 @@ func (p Policy) Bootstrap(ctx context.Context, root, baseURL string, progress fu
 		return result, err
 	}
 	defer selfFile.Close()
-	if err = verifyAuthenticode(self, p.Signing); err != nil {
+	endSignature := timing.start(timingSignature)
+	err = verifyAuthenticode(self, p.Signing)
+	endSignature()
+	if err != nil {
 		return result, err
 	}
 	// An unpacked current directory has neither installation marker. If either

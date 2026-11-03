@@ -21,6 +21,7 @@ const TEST_FILES = Object.freeze([
   'scripts/dev/__tests__/lease.test.cjs',
   'scripts/shared/__tests__/temporary-cleanup.test.cjs',
   'scripts/cd/__tests__/build.test.cjs',
+  'scripts/cd/__tests__/signer.test.cjs',
   'scripts/cd/__tests__/wheels.test.cjs',
   'scripts/cd/__tests__/velobundle.test.mjs',
   'scripts/cd/__tests__/fonts.test.cjs',

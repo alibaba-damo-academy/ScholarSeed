@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 from typing import Any, Callable, Mapping
 
 from scholarseed_runtime.contract import CommandState, DeliveryClass, RuntimeEvent, RuntimeEventKind
+from scholarseed_runtime.contract.command import ThreadReplacementProof
 from scholarseed_runtime.contract.history import TurnStatus
 from scholarseed_runtime.contract.incident import (
     RuntimeIncident,
@@ -43,6 +44,7 @@ from service.chat.constants import (
 )
 from service.chat.persistence.catalog import (
     UNCERTAINTY_RUNTIME_EVENT_KEY,
+    UNCERTAINTY_THREAD_REPLACEMENT_KEY,
     SessionCatalogStore,
     SessionStatus,
     SessionUncertaintyRecord,
@@ -82,6 +84,7 @@ class SessionLedger:
         self._terminal_waiters: dict[str, set[asyncio.Future[str]]] = {}
         self._unknown_admission: dict[str, tuple[int, str]] = {}
         self._active_vendor_turn_id = ""
+        self._active_turn_generation = 0
         self._runtime_incidents: dict[str, RuntimeIncident] = {}
         record = self._catalog.get(self.id)
         persisted_uncertainties = self._catalog.uncertainties(self.id)
@@ -147,6 +150,7 @@ class SessionLedger:
             turn_status=PRODUCT_SESSION_STATE_RUNNING,
         )
         self._active_vendor_turn_id = turn_id
+        self._active_turn_generation = 0
 
     async def wait_terminal(self, turn_id: str) -> str:
         """Wait until one exact vendor turn has completed all product terminal effects."""
@@ -177,6 +181,7 @@ class SessionLedger:
     async def started(self, event: RuntimeEvent) -> None:
         await self._publish_resolved_incidents(event, await self._release_resolved_unknown(event))
         await self.activate_turn(event.native_turn_id)
+        self._active_turn_generation = self._process_generation(event)
 
     def uncertainty_snapshot(self) -> list[dict[str, Any]]:
         return [
@@ -275,6 +280,30 @@ class SessionLedger:
             await self._publish_turn_confirmation(
                 turn_id, current.incident_id or "", automatic_retry=automatic_retry
             )
+            return True
+
+    async def confirm_thread_replacement(self, proof: ThreadReplacementProof) -> bool:
+        async with self.lock:
+            confirmed = await self._persistence.run(self._catalog.confirm_thread_replacement, proof)
+            if not confirmed:
+                return False
+            for turn_id in tuple(self._unknown_admission):
+                uncertainty = self._catalog.uncertainty(self.id, UncertaintyKind.TURN, turn_id)
+                provenance = (
+                    uncertainty.payload.get(UNCERTAINTY_THREAD_REPLACEMENT_KEY)
+                    if uncertainty is not None
+                    else None
+                )
+                if (
+                    uncertainty is not None
+                    and uncertainty.state is UncertaintyState.CONFIRMED
+                    and isinstance(provenance, Mapping)
+                    and provenance.get("proof_id") == proof.proof_id
+                ):
+                    self._unknown_admission.pop(turn_id, None)
+                    await self._publish_turn_confirmation(
+                        turn_id, uncertainty.incident_id or "", automatic_retry=True
+                    )
             return True
 
     def _turn_confirmation_provenance(
@@ -521,6 +550,24 @@ class SessionLedger:
                 self._terminal_turn_id(event), (0, "")
             )
             if generation > 0 and generation == event.process_generation:
+                if not incident_id:
+                    turn_id = self._terminal_turn_id(event)
+                    await self._persistence.run(
+                        self._catalog.transition_uncertainty,
+                        self.id,
+                        UncertaintyKind.TURN,
+                        turn_id,
+                        UncertaintyState.RECONCILED,
+                        payload={"resolved_event_id": event.event_id},
+                    )
+                    await self.publish(
+                        PRODUCT_EVENT_TURN_RECONCILED,
+                        {"turn_id": turn_id, "resolution": event.kind.value},
+                        turn_id=turn_id,
+                        idempotency_key=self._terminal_key(event, "reconciled"),
+                    )
+                    self._unknown_admission.pop(turn_id, None)
+                    return ()
                 resolved_incident_id = incident_id
         if not resolved_incident_id:
             return ()
@@ -628,6 +675,9 @@ class SessionLedger:
                 UncertaintyKind.TURN,
                 turn_id,
                 state=UncertaintyState.UNKNOWN,
+                process_generation=(
+                    self._active_turn_generation if self._active_vendor_turn_id == turn_id else 0
+                ),
                 payload={"outcome": PRODUCT_TURN_OUTCOME_UNKNOWN, "safe_error": safe_error},
             )
             if previous is not None and previous.state is UncertaintyState.EXECUTING:

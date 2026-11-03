@@ -255,7 +255,8 @@ export function ModelMenu({
     models,
     state.model,
     state.activeSession,
-    state.threads
+    state.threads,
+    state.draftModelId
   )
   const controlled = onModelSelect !== undefined
   const selectedModelKey = controlled ? (modelKey ?? '') : sessionModelKey
@@ -269,7 +270,7 @@ export function ModelMenu({
   const modelAvailable = hasSelectableModel(visibleModels)
   // 未选择模型(无可选模型, 或默认键未命中任何可选行, 如登出后仅剩置灰行): 强度入口
   // 整体禁用、回显占位符并隐藏其上方分割线。目录里的置灰行不算当前模型。
-  const hasCurrentModel = modelAvailable && Boolean(selectedModel)
+  const hasCurrentModel = modelAvailable && Boolean(selectedModel && !selectedModel.disabled)
   // 选中的模型可能已不在目录里(用户在模型管理里关掉了它的显示、停用了那条连接, 或删了它)。
   // 此时**不自动换成别的模型** —— 如实标不可用, 由用户决定。渲染必须走模型段而不是整串,
   // 否则复合 key 会以 `personal-<hex>:<model>` 的形态泄漏成用户可见文案。
@@ -399,7 +400,8 @@ export function ModelMenu({
           current.catalog.models,
           current.model,
           current.activeSession,
-          current.threads
+          current.threads,
+          current.draftModelId
         )
         if (model.key !== currentModelKey) {
           const effort = reasoningPreference(target, current.reasoningPreferences)
@@ -458,10 +460,11 @@ export function ModelMenu({
             })
             return
           }
-          set({
+          set((latest) => ({
+            draftModelId: latest.draftModelId ? model.key : null,
             ...(remembered ? { foregroundError: null } : {}),
             foregroundNotice: result.deferred ? feedback('conversation', 'models.nextTurn') : null,
-          })
+          }))
           return
         }
         const effort = current.threads[sessionId]?.runtime?.reasoning_effort

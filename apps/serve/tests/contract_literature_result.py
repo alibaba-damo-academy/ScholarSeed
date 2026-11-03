@@ -10,7 +10,7 @@ from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import get_args
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 _HOME = tempfile.mkdtemp(prefix="ss-result-")
 os.environ["SCHOLARSEED_HOME"] = _HOME
@@ -43,7 +43,9 @@ from service.literature.persistence.files import LiteratureFileBatch, payload_re
 from service.literature.persistence.store import LiteratureRepository, connect  # noqa: E402
 from service.literature.schema import LiteratureItem  # noqa: E402
 from service.literature.service.result import (  # noqa: E402
+    AGENTIC_SEARCH_ORIGIN,
     SEARCH_CARD,
+    SEARCH_TEXT,
     AuthorizedFulltext,
     prepare_final_delivery,
     prepare_result,
@@ -268,6 +270,22 @@ class LiteratureResultContract(unittest.TestCase):
             "Host context never bypasses the mandatory start confirmation", " ".join(skill.split())
         )
         self.assertNotIn("skip its additional clarification and confirmation", prompt)
+
+    def test_precise_start_confirmation_uses_the_product_question_card(self) -> None:
+        skill = PRECISE_SKILL.read_text(encoding="utf-8")
+        confirmation = skill.split("## Before starting — mandatory confirmation", 1)[1]
+        confirmation = " ".join(confirmation.split("## Complete workflow", 1)[0].split())
+
+        for requirement in (
+            "request_user_input",
+            "开始检索",
+            "暂不开始",
+            "host-confirmed card answer",
+            "Do not ask the user to type",
+            "Skipped, cancelled, timed-out or unanswered cards are not approval",
+            "do not initialize a run",
+        ):
+            self.assertIn(requirement, confirmation)
 
     def test_precise_skill_owns_search_publication_and_authorization_recovery(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
@@ -885,6 +903,7 @@ class LiteratureResultContract(unittest.TestCase):
             publish_artifact=publish_artifact,
             display_card=display_card,
             interactions=SimpleNamespace(request_product_input=request_product_input),
+            component_for=AsyncMock(return_value=None),
         )
         sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
         prepare_authorization = Mock(
@@ -1158,12 +1177,41 @@ class LiteratureResultContract(unittest.TestCase):
                 created_at=1.0,
             )
         events = ProductEventStore(database)
-        self.metadata["papers"] = [{**self.paper, "id": f"p{index}"} for index in range(25)]
+        authors = [f"Research Author {index}" for index in range(54)]
+        abstract = "Full abstract evidence. " * 180 + "ABSTRACT END"
+        reasons = ["Complete selection rationale. " * 100 + "RATIONALE END"] + [
+            f"Additional reason {index}" for index in range(10)
+        ]
+        self.metadata["papers"] = [
+            {
+                **self.paper,
+                "id": f"p{index}",
+                **(
+                    {
+                        "authors": authors,
+                        "abstract": abstract,
+                        "relevance": {"reasons": reasons},
+                        "reason": reasons[0],
+                        "url": "https://example.org/public/paper-long-fields",
+                    }
+                    if index == 0
+                    else {}
+                ),
+            }
+            for index in range(25)
+        ]
         self.write(self.work.parent / "metadata.json", self.metadata)
         selected_ids = [f"p{index}" for index in range(12)]
         self.write_selection(selected_ids)
         prepared = prepare_result(self.root, "run", "selection")
         self.assertEqual(len(prepared.card.papers), 3)
+        self.assertEqual(prepared.card.papers[0].authors, authors[:20])
+        self.assertEqual(prepared.card.papers[0].abstract, abstract[:SEARCH_TEXT])
+        self.assertEqual(len(prepared.card.papers[0].reasons), 10)
+        oversized_preview = prepared.card.model_dump(mode="json")
+        oversized_preview["papers"][0]["authors"] = authors
+        with self.assertRaises(ValueError):
+            validate_search_card(oversized_preview)
         metadata_snapshot = (self.work.parent / "metadata.json").read_bytes()
         selection_snapshot = (self.run / "selection.json").read_bytes()
         content = prepared.card.model_dump(mode="json")
@@ -1192,6 +1240,21 @@ class LiteratureResultContract(unittest.TestCase):
             self.assertEqual((artifact, digest), ("selected", prepared.selection_sha256))
             return selection_snapshot, "selection.json"
 
+        events.append(
+            session_id="s1",
+            runtime_id="codex",
+            vendor_thread_id="s1",
+            vendor_turn_id="t1",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_DISPLAY_CARD,
+            payload={
+                "type": SEARCH_CARD,
+                "card_id": "agentic",
+                "content": {**content, "origin": AGENTIC_SEARCH_ORIGIN, "selection": {}},
+            },
+            idempotency_key="agentic",
+        )
+
         app = FastAPI()
         activities = Activities()
         register_result_routes(
@@ -1209,6 +1272,9 @@ class LiteratureResultContract(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(len(response.json()["papers"]), 12)
             self.assertEqual([paper["id"] for paper in response.json()["papers"]], selected_ids)
+            self.assertEqual(response.json()["papers"][0]["authors"], authors)
+            self.assertEqual(response.json()["papers"][0]["abstract"], abstract)
+            self.assertEqual(response.json()["papers"][0]["reasons"], reasons)
             self.assertTrue(
                 all(paper["decision"] == "included" for paper in response.json()["papers"])
             )
@@ -1217,6 +1283,15 @@ class LiteratureResultContract(unittest.TestCase):
             )
             self.assertEqual(
                 client.get("/api/sessions/s1/literature/results/missing").status_code, 404
+            )
+            agentic = client.get("/api/sessions/s1/literature/results/agentic")
+            self.assertEqual(agentic.status_code, 200, agentic.text)
+            self.assertEqual(len(agentic.json()["papers"]), 25)
+            self.assertEqual(agentic.json()["papers"][0]["authors"], authors)
+            self.assertEqual(agentic.json()["papers"][0]["abstract"], abstract)
+            self.assertEqual(agentic.json()["papers"][0]["reasons"], [reasons[0]])
+            self.assertEqual(
+                agentic.json()["papers"][0]["url"], "https://example.org/public/paper-long-fields"
             )
 
     def test_domain_card_cannot_use_generic_publication(self) -> None:
@@ -1280,6 +1355,7 @@ class LiteratureResultContract(unittest.TestCase):
             publish_artifact=publish_artifact,
             display_card=display_card,
             interactions=SimpleNamespace(request_product_input=request_product_input),
+            component_for=AsyncMock(return_value=None),
         )
         sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
         prepare_authorization = Mock(
@@ -1324,11 +1400,31 @@ class LiteratureResultContract(unittest.TestCase):
             response = client.post(LITERATURE_RESULT_ROUTE, headers=headers, json=payload)
             live.active_task_type = "precise_search"
             wrong_task = client.post(LITERATURE_RESULT_ROUTE, headers=headers, json=payload)
+            live.active_task_type = ""
+            metadata = client.post(
+                LITERATURE_RESULT_ROUTE,
+                headers=headers,
+                json={**payload, "checkpoint": "metadata", "skill": "agentic-search"},
+            )
+            missing_skill = client.post(
+                LITERATURE_RESULT_ROUTE, headers=headers, json={**payload, "checkpoint": "metadata"}
+            )
+        self.assertEqual(metadata.status_code, 200, metadata.text)
+        self.assertEqual(metadata.json()["retained"], 1)
+        self.assertNotIn("authorization", metadata.json())
+        self.assertEqual(missing_skill.status_code, 400)
+        self.assertEqual(len(questions), 1)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(wrong_task.status_code, 400, wrong_task.text)
         authorization = response.json()["authorization"]
         self.assertEqual(authorization["disposition"], "authorized")
-        self.assertEqual(authorization["sources"], [{"id": "a1", "title": "Idea One"}])
+        self.assertEqual(
+            authorization["sources"],
+            [{"id": "a1", "ref_id": "paper:a1", "title": "Idea One"}],
+        )
+        self.assertIn("literature/acquire", authorization["guidance"])
+        self.assertIn("pdf/read", authorization["guidance"])
+        self.assertIn("not", authorization["guidance"])
         self.assertEqual(cards[0][0], SEARCH_CARD)
         self.assertEqual(cards[0][1]["origin"], "agentic-search")
         self.assertTrue(cards[0][1]["metadata"]["artifact_id"])

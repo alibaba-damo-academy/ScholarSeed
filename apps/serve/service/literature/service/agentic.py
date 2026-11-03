@@ -11,6 +11,7 @@ from typing import Any, Literal
 from service.literature.persistence.files import read_scoped_file, scoped_parent, scoped_relative
 from service.literature.service.result import (
     AGENTIC_SEARCH_ORIGIN,
+    SEARCH_AUTHORS,
     SEARCH_CARD_PAPERS,
     SEARCH_FILE_BYTES,
     SEARCH_MAX_PAPERS,
@@ -18,6 +19,7 @@ from service.literature.service.result import (
     SEARCH_TEXT,
     AuthorizationSource,
     SearchPaper,
+    SearchPaperDetail,
     SearchResult,
     SearchSource,
     authorization_source,
@@ -43,7 +45,7 @@ class PreparedAgenticSearch:
         return tuple(source.ref_id for source in self.authorization_sources)
 
 
-def _text(value: Any, limit: int = SEARCH_TEXT) -> str:
+def _text(value: Any, limit: int | None = SEARCH_TEXT) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
@@ -60,7 +62,7 @@ def _access(value: Any) -> Literal["yes", "no", "unknown"]:
     return "unknown"
 
 
-def project_agentic_papers(metadata: object) -> list[SearchPaper]:
+def project_agentic_papers(metadata: object, *, complete: bool = False) -> list[SearchPaper]:
     """Validate the agentic-search `metadata.json` contract without inventing identities."""
 
     if not isinstance(metadata, dict):
@@ -68,6 +70,9 @@ def project_agentic_papers(metadata: object) -> list[SearchPaper]:
     raw_papers = metadata.get("papers")
     if not isinstance(raw_papers, list) or not raw_papers or len(raw_papers) > SEARCH_MAX_PAPERS:
         raise ValueError("agentic_search_metadata_invalid")
+    paper_type = SearchPaperDetail if complete else SearchPaper
+    text_limit = None if complete else SEARCH_TEXT
+    short_limit = None if complete else SEARCH_SHORT
     papers: list[SearchPaper] = []
     identities: set[str] = set()
     for raw in raw_papers:
@@ -78,25 +83,30 @@ def project_agentic_papers(metadata: object) -> list[SearchPaper]:
             raise ValueError("agentic_search_paper_identity_invalid")
         identities.add(identity)
         authors = raw.get("authors")
-        reason = _text(raw.get("reason"))
+        reason = _text(raw.get("reason"), text_limit)
         papers.append(
-            SearchPaper(
+            paper_type(
                 id=identity,
-                title=_text(raw.get("title")) or identity,
+                title=_text(raw.get("title"), text_limit) or identity,
                 authors=(
-                    [_text(author) for author in authors[:20] if _text(author)]
+                    [
+                        _text(author, text_limit)
+                        for author in authors[: None if complete else SEARCH_AUTHORS]
+                        if _text(author, text_limit)
+                    ]
                     if isinstance(authors, list)
                     else []
                 ),
                 year=_count(raw.get("year")),
-                venue=_text(raw.get("venue")) or None,
-                doi=_text(raw.get("doi"), SEARCH_SHORT) or None,
-                abstract=_text(raw.get("abstract")) or None,
+                venue=_text(raw.get("venue"), text_limit) or None,
+                doi=_text(raw.get("doi"), short_limit) or None,
+                url=raw.get("url") if complete else None,
+                abstract=_text(raw.get("abstract"), text_limit) or None,
                 reasons=[reason] if reason else [],
                 tier=_count(raw.get("tier")) or None,
                 citation_count=_count(raw.get("citation_count")),
                 access=_access(raw.get("access")),
-                sources=[_text(raw.get("source"), SEARCH_SHORT) or AGENTIC_SOURCE_DEFAULT],
+                sources=[_text(raw.get("source"), short_limit) or AGENTIC_SOURCE_DEFAULT],
             )
         )
     return papers

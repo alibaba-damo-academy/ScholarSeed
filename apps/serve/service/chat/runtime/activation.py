@@ -15,7 +15,7 @@ from scholarseed_runtime.contract import (
     RuntimeBinding,
     RuntimeProvider,
 )
-from scholarseed_runtime.contract.command import EmptyThreadReplacementProof
+from scholarseed_runtime.contract.command import EmptyThreadReplacementProof, ThreadReplacementProof
 from scholarseed_runtime.contract.evidence import RuntimeTimingPort
 from scholarseed_runtime.contract.resource import (
     RESOURCE_CANCELLED,
@@ -29,6 +29,7 @@ from scholarseed_runtime.contract.resource import (
     ResourceRequest,
     ResourceState,
 )
+from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
 from service.chat.provenance import ModelRun
 from service.chat.runtime.live import PENDING_HIL_BLOCKER, LiveSession
 from service.chat.runtime.timing import ActivationStage
@@ -58,6 +59,7 @@ ACTIVATION_SAFE_ERRORS = frozenset(
         RESOURCE_WAIT_ACTIVITY_UNAVAILABLE,
         SESSION_OPEN_UNKNOWN,
         SESSION_ACTIVATION_CLOSED,
+        *SANDBOX_STARTUP_ERRORS,
     }
 )
 RESOURCE_SWEEP_INTERVAL_SECONDS = 1.0
@@ -83,7 +85,7 @@ class ActivationPlan:
     revision: tuple[object, ...]
     model_run: ModelRun | None = None
     replaces: RuntimeBinding | None = None
-    replacement_proof: EmptyThreadReplacementProof | None = None
+    replacement_proof: EmptyThreadReplacementProof | ThreadReplacementProof | None = None
     replacement_manual: bool = False
 
 

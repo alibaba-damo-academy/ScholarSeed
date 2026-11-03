@@ -35,30 +35,23 @@ import {
   TooltipTrigger,
 } from '../../components/ui'
 import type { LiteratureDeliveryBatch, LiteratureDeliveryChoice } from '../../contracts/literature'
-import { useApp } from '../../store'
 import { Icon } from '../../icons'
-import { fetchResourceTree } from '../resources/api'
-import { listLiteratureCollections, requestLiteratureDelivery, type LibraryCollection } from './api'
-import { catalogue } from './catalog'
-import { RESOURCE_ROOT, deliveryChoiceMatches, resourceFolderNodes } from './utils'
+import type { LiteratureCardPorts, CardCollection as LibraryCollection } from './ports'
+import {
+  RESOURCE_ROOT,
+  deliveryChoiceMatches,
+  resourceFolderNodes,
+  DELIVERY_STATUS_KEYS as STATUS_KEYS,
+} from './utils'
 
 export const LITERATURE_DELIVERY_CARD = 'literature-delivery'
 const DELIVERY_SCHEMA = '1.0'
 const DESTINATION = { project: 'project', directory: 'directory' } as const
-const ACTION = { cancel: 'cancel' } as const
 const UNFILED = '__unfiled__'
 const NO_FOLDER = '__none__'
 const ERROR_MESSAGE = 'delivery.failed'
 const VERSION_UNDECIDED = '__undecided__'
 const VERSION_ACTIONS = { keep: 'keep_both', skip: 'skip' } as const
-const STATUS_KEYS = {
-  acquiring: 'delivery.status.acquiring',
-  pending: 'delivery.status.pending',
-  saving: 'delivery.status.saving',
-  saved: 'delivery.status.saved',
-  partial: 'delivery.status.partial',
-  canceled: 'delivery.status.canceled',
-} as const
 
 function replaceChildren(
   nodes: DestinationNode[],
@@ -77,16 +70,22 @@ function replaceChildren(
 
 export function LiteratureDeliveryCard({
   content,
+  ports,
+  onCopyContent,
 }: {
+  ports: LiteratureCardPorts
   content: Record<string, unknown>
+  onCopyContent?: (batch: LiteratureDeliveryBatch) => void
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
-  const { state, act } = useApp()
+  const hasProject = Boolean(ports.projectId)
   const [batch, setBatch] = useState<LiteratureDeliveryBatch | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [target, setTarget] = useState<LiteratureDeliveryChoice['target']>(DESTINATION.project)
+  const [target, setTarget] = useState<LiteratureDeliveryChoice['target']>(
+    hasProject ? DESTINATION.project : DESTINATION.directory
+  )
   const [parent, setParent] = useState('')
   const [foldersOpen, setFoldersOpen] = useState(false)
   const [ticket, setTicket] = useState('')
@@ -113,8 +112,12 @@ export function LiteratureDeliveryCard({
   const deliveryId = typeof content.delivery_id === 'string' ? content.delivery_id : ''
   const valid = content.schema_version === DELIVERY_SCHEMA && Boolean(sessionId && deliveryId)
 
+  useEffect(() => {
+    if (batch) onCopyContent?.(batch)
+  }, [batch, onCopyContent])
+
   const refresh = async (): Promise<LiteratureDeliveryBatch> => {
-    const value = await requestLiteratureDelivery(sessionId, deliveryId)
+    const value = await ports.delivery()
     setBatch(value)
     return value
   }
@@ -122,7 +125,8 @@ export function LiteratureDeliveryCard({
   useEffect(() => {
     if (!valid) return
     let active = true
-    void requestLiteratureDelivery(sessionId, deliveryId)
+    void ports
+      .delivery()
       .then((value) => {
         if (active) setBatch(value)
       })
@@ -145,34 +149,40 @@ export function LiteratureDeliveryCard({
     setFoldersOpen(false)
     setVersions({})
     if (batch.choice) {
-      setTarget(batch.choice.target)
+      setTarget(hasProject ? batch.choice.target : DESTINATION.directory)
       setParent(batch.choice.parent)
       setAddToLibrary(batch.choice.add_to_library)
       setCollection(batch.choice.collection_id || UNFILED)
       setDirectory(batch.choice.directory || '')
     } else {
-      setTarget(DESTINATION.project)
+      setTarget(hasProject ? DESTINATION.project : DESTINATION.directory)
       setParent('')
       setAddToLibrary(false)
       setCollection(UNFILED)
       setDirectory('')
     }
-    setTreeBusy(true)
-    void fetchResourceTree(batch.project_id)
-      .then((page) => {
-        if (current !== generation.current) return
-        if (!page || typeof page.resourceRoot !== 'string') {
-          setError(t(ERROR_MESSAGE))
-          return
-        }
-        setNodes(resourceFolderNodes(page.nodes, page.resourceRoot))
-        setRemaining({ '': page.total - page.nodes.length })
-        setOffsets({ '': page.nodes.length })
-      })
-      .finally(() => {
-        if (current === generation.current) setTreeBusy(false)
-      })
-    void listLiteratureCollections(batch.project_id)
+    setTreeBusy(hasProject)
+    if (hasProject)
+      void ports
+        .folders()
+        .then((page) => {
+          if (current !== generation.current) return
+          if (!page || typeof page.resourceRoot !== 'string') {
+            setError(t(ERROR_MESSAGE))
+            return
+          }
+          setNodes(resourceFolderNodes(page.nodes, page.resourceRoot))
+          setRemaining({ '': page.total - page.nodes.length })
+          setOffsets({ '': page.nodes.length })
+        })
+        .catch(() => {
+          if (current === generation.current) setError(t(ERROR_MESSAGE))
+        })
+        .finally(() => {
+          if (current === generation.current) setTreeBusy(false)
+        })
+    void ports
+      .collections()
       .then((value) => {
         if (current === generation.current) setCollections(value)
       })
@@ -182,12 +192,12 @@ export function LiteratureDeliveryCard({
     return () => {
       generation.current++
     }
-  }, [open, batch?.id])
+  }, [open, batch?.id, hasProject])
 
   const loadDirectory = async (path: string, more = false): Promise<void> => {
     if (!batch) return
     const current = generation.current
-    const page = await fetchResourceTree(batch.project_id, path, more ? (offsets[path] ?? 0) : 0)
+    const page = await ports.folders(path, more ? (offsets[path] ?? 0) : 0)
     if (current !== generation.current) return
     if (!page || typeof page.resourceRoot !== 'string') {
       setError(t(ERROR_MESSAGE))
@@ -221,7 +231,7 @@ export function LiteratureDeliveryCard({
     setBusy(true)
     setError('')
     try {
-      const result = await window.scholarseed?.pickDeliveryDirectory({ sessionId, deliveryId })
+      const result = await ports.pickDirectory()
       if (result?.ok && result.ticket && result.label) {
         setTicket(result.ticket)
         setDirectory(result.label)
@@ -239,23 +249,14 @@ export function LiteratureDeliveryCard({
     setBusy(true)
     setError('')
     try {
-      const result = await window.scholarseed?.saveDelivery({
-        sessionId,
-        deliveryId,
-        choice: {
-          ...choice,
-          versions: choiceMatches ? versions : {},
-        },
+      const result = await ports.save({
+        ...choice,
+        versions: choiceMatches ? versions : {},
       })
       if (!result?.ok || !result.value) throw new Error(ERROR_MESSAGE)
       const value = result.value as LiteratureDeliveryBatch
       setBatch(value)
       setVersions({})
-      if (value.papers.some((paper) => paper.library === 'saved')) catalogue.reload()
-      if (state.homeSelectedProjectId === value.project_id) {
-        await act.reloadResourceTree(undefined, value.project_id)
-        await act.reloadLiterature()
-      }
       if (value.state === 'saved') setOpen(false)
     } catch {
       setError(t(ERROR_MESSAGE))
@@ -268,7 +269,7 @@ export function LiteratureDeliveryCard({
     if (busy) return
     setOpen(false)
     try {
-      setBatch(await requestLiteratureDelivery(sessionId, deliveryId, ACTION.cancel))
+      setBatch(await ports.cancel())
     } catch {
       setError(t(ERROR_MESSAGE))
     }
@@ -279,13 +280,19 @@ export function LiteratureDeliveryCard({
     try {
       await refresh()
       setOpen(true)
-    } catch {
-      setError(t(ERROR_MESSAGE))
+    } catch (error) {
+      setError(
+        t(
+          error instanceof Error && error.message === 'plugin_card_scope_changed'
+            ? 'delivery.scopeChanged'
+            : 'delivery.loadFailed'
+        )
+      )
     }
   }
 
   const openDirectory = async (): Promise<void> => {
-    const result = await window.scholarseed?.openDeliveryDirectory({ sessionId, deliveryId })
+    const result = await ports.openDirectory()
     if (!result?.ok) setError(t('delivery.openFailed'))
   }
 
@@ -307,20 +314,23 @@ export function LiteratureDeliveryCard({
   const conflicts = choiceMatches
     ? (batch?.papers.filter((paper) => paper.versions?.length) ?? [])
     : []
-  const projectName =
-    state.projects.find((project) => project.id === batch?.project_id)?.name ??
-    t('delivery.project')
+  const projectName = ports.projectName ?? t('delivery.project')
   const projectPath = t('delivery.projectPath', { path: parent })
   return (
     <>
-      <Card data-testid="literature-delivery-card">
+      <Card
+        className="min-w-0 [--vds-card-radius:var(--vds-radius-6)]"
+        data-testid="literature-delivery-card"
+      >
         <CardHeader>
           <CardTitle>{t('delivery.cardTitle')}</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-[var(--vds-space-3)]">
-          <p>{t('delivery.counts', { acquired, saved, admitted })}</p>
+          <p className="m-0 text-[var(--vds-text-secondary)]">
+            {t('delivery.counts', { acquired, saved, admitted })}
+          </p>
           {batch && (
-            <p>
+            <p className="m-0 font-[number:var(--vds-fw-medium)]" role="status">
               {t(
                 batch.state === 'saved' && skipped === acquired
                   ? 'delivery.allSkipped'
@@ -354,8 +364,8 @@ export function LiteratureDeliveryCard({
               <Button
                 key={paper.paper_id}
                 variant="ghost"
-                className="w-full min-w-0 !justify-start text-left"
-                onClick={() => void act.openLiteratureItem(paper.literature_id, batch.project_id)}
+                className="w-full min-w-0 !justify-start rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-hover)] text-left"
+                onClick={() => void ports.openLibrary(paper.paper_id)}
               >
                 <EllipsisText
                   wrapperClassName="min-w-0 flex-1"
@@ -392,56 +402,58 @@ export function LiteratureDeliveryCard({
               viewportProps={{ 'data-testid': 'literature-delivery-body' }}
             >
               <div className="grid grid-cols-1 gap-[var(--vds-space-3)] [&>*]:min-w-0">
-                <Popover open={foldersOpen} onOpenChange={setFoldersOpen}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className="w-full min-w-0 !justify-between"
-                      data-testid="delivery-project-folder"
-                      disabled={busy || treeBusy}
-                      aria-label={t('delivery.chooseProjectFolder')}
+                {hasProject && (
+                  <Popover open={foldersOpen} onOpenChange={setFoldersOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className="w-full min-w-0 !justify-between"
+                        data-testid="delivery-project-folder"
+                        disabled={busy || treeBusy}
+                        aria-label={t('delivery.chooseProjectFolder')}
+                      >
+                        <EllipsisText wrapperClassName="min-w-0 flex-1" tooltipPortalled>
+                          {target === DESTINATION.project
+                            ? projectPath
+                            : t('delivery.chooseProjectFolder')}
+                        </EllipsisText>
+                        <Icon name="chevron-down" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      className="w-[var(--vds-popover-width-md)] max-w-full"
+                      data-testid="delivery-project-tree"
                     >
-                      <EllipsisText wrapperClassName="min-w-0 flex-1" tooltipPortalled>
-                        {target === DESTINATION.project
-                          ? projectPath
-                          : t('delivery.chooseProjectFolder')}
-                      </EllipsisText>
-                      <Icon name="chevron-down" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    className="w-[var(--vds-popover-width-md)] max-w-full"
-                    data-testid="delivery-project-tree"
-                  >
-                    <DestinationTree
-                      nodes={[
-                        {
-                          path: RESOURCE_ROOT,
-                          name: t('delivery.projectRoot'),
-                          kind: 'dir',
-                          children: nodes,
-                        },
-                      ]}
-                      selected={target === DESTINATION.project ? parent : NO_FOLDER}
-                      expanded={{ [RESOURCE_ROOT]: true, ...expanded }}
-                      disabled={busy || treeBusy}
-                      onSelect={(path) => {
-                        setParent(path)
-                        setTarget(DESTINATION.project)
-                        setFoldersOpen(false)
-                      }}
-                      onToggle={(path) => {
-                        setExpanded((value) => ({
-                          ...value,
-                          [path]: !(value[path] ?? path === RESOURCE_ROOT),
-                        }))
-                        void loadDirectory(path)
-                      }}
-                      remaining={remaining}
-                      onLoadMore={(path) => void loadDirectory(path, true)}
-                    />
-                  </PopoverContent>
-                </Popover>
+                      <DestinationTree
+                        nodes={[
+                          {
+                            path: RESOURCE_ROOT,
+                            name: t('delivery.projectRoot'),
+                            kind: 'dir',
+                            children: nodes,
+                          },
+                        ]}
+                        selected={target === DESTINATION.project ? parent : NO_FOLDER}
+                        expanded={{ [RESOURCE_ROOT]: true, ...expanded }}
+                        disabled={busy || treeBusy}
+                        onSelect={(path) => {
+                          setParent(path)
+                          setTarget(DESTINATION.project)
+                          setFoldersOpen(false)
+                        }}
+                        onToggle={(path) => {
+                          setExpanded((value) => ({
+                            ...value,
+                            [path]: !(value[path] ?? path === RESOURCE_ROOT),
+                          }))
+                          void loadDirectory(path)
+                        }}
+                        remaining={remaining}
+                        onLoadMore={(path) => void loadDirectory(path, true)}
+                      />
+                    </PopoverContent>
+                  </Popover>
+                )}
                 {target === DESTINATION.directory && (
                   <EllipsisText tooltipPortalled>
                     {t('delivery.localDestination', {
@@ -450,14 +462,18 @@ export function LiteratureDeliveryCard({
                   </EllipsisText>
                 )}
                 <Button variant="secondary" disabled={busy} onClick={() => void chooseDirectory()}>
-                  {t('delivery.chooseDirectory')}
+                  {t(hasProject ? 'delivery.chooseDirectory' : 'delivery.chooseLocalDirectory')}
                 </Button>
                 <div className="flex min-w-0 items-center justify-between gap-[var(--vds-space-2)]">
                   <Checkbox
                     checked={addToLibrary}
                     onCheckedChange={setAddToLibrary}
                     disabled={busy}
-                    label={t('delivery.addToLibrary', { project: projectName })}
+                    label={
+                      hasProject
+                        ? t('delivery.addToLibrary', { project: projectName })
+                        : t('delivery.addToGlobalLibrary')
+                    }
                   />
                   <Tooltip portalled side="bottom">
                     <TooltipTrigger asChild>
@@ -474,7 +490,9 @@ export function LiteratureDeliveryCard({
                         {target === DESTINATION.project && (
                           <span>{t('delivery.projectNotice')}</span>
                         )}
-                        <span>{t('delivery.libraryScope')}</span>
+                        <span>
+                          {t(hasProject ? 'delivery.libraryScope' : 'delivery.globalLibraryScope')}
+                        </span>
                         <span>{t('delivery.noOverwrite')}</span>
                       </span>
                     </TooltipContent>

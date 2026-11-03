@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import os
 import re
 import secrets
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import urlparse
 
@@ -1052,6 +1053,9 @@ class ModelService:
                     session_id,
                     {},
                     reasoning_effort=reasoning_effort,
+                    catalog_identity=json.dumps(
+                        [asdict(entry) for entry in catalog_models], sort_keys=True
+                    ),
                     catalog_activity=catalog_activity,
                     catalog_resolver=self._catalog_resolver(
                         config,
@@ -1073,6 +1077,7 @@ class ModelService:
                         tool_protocol=ModelToolProtocol.PROVIDER_NATIVE,
                         input_modalities=capabilities.input_modalities,
                         reasoning_efforts=capabilities.reasoning_efforts,
+                        native_agent_messages=False,
                     ),
                     catalog_models=catalog_models,
                     approval_model_name=approval_model_name,
@@ -1104,6 +1109,12 @@ class ModelService:
                 thinking=thinking,
                 turn_id_provider=resolve_turn_id,
                 source_text=source_text,
+                renewal_source=lambda: (
+                    owner_id,
+                    selected,
+                    self._config(),
+                    self._profiles.profile(personal_profile_id, owner_id=owner_id),
+                ),
                 catalog_resolver=self._catalog_resolver(
                     config,
                     document,
@@ -1143,6 +1154,7 @@ class ModelService:
             thinking=thinking,
             turn_id_provider=resolve_turn_id,
             source_text=source_text,
+            renewal_source=lambda: (owner_id, selected, self._config()),
             approval_model_ref=approval_model_name,
             catalog_resolver=self._catalog_resolver(
                 config,
@@ -1177,6 +1189,9 @@ class ModelService:
         """
 
         return self._completions.rebind_owner(session_id, user_id)
+
+    async def suspend_session(self, session_id: str) -> None:
+        await self._completions.suspend(session_id)
 
     def release_session(self, session_id: str) -> int:
         """Drop the bridge registrations a closed session owned.
@@ -1274,7 +1289,11 @@ class ModelService:
     def _catalog_entry(row: Mapping[str, Any]) -> ModelCatalogEntry:
         capabilities = _runtime_capabilities(row)
         if row.get("billing") == SUBSCRIPTION_BILLING:
-            capabilities = replace(capabilities, tool_protocol=ModelToolProtocol.PROVIDER_NATIVE)
+            capabilities = replace(
+                capabilities,
+                tool_protocol=ModelToolProtocol.PROVIDER_NATIVE,
+                native_agent_messages=False,
+            )
         return ModelCatalogEntry(
             model_ref=wire_model_name(str(row.get("model_id") or row.get("model_name") or "")),
             capabilities=capabilities,
@@ -1650,6 +1669,7 @@ def _codex_provider(
     source_text: str | None = None,
     approval_model_ref: str = "",
     catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+    renewal_source: Callable[[], object] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     base_url = _base_url(config)
     if not base_url:
@@ -1691,6 +1711,15 @@ def _codex_provider(
                 raise SessionModelUnavailableError(MODEL_UNAVAILABLE_ERROR)
             return dict(payload)
 
+        def renewal_intent() -> object:
+            return (
+                config,
+                sorted(allowed_models),
+                user_id,
+                account_tokens.revision if account_tokens is not None else None,
+                renewal_source() if renewal_source is not None else None,
+            )
+
         registration = completions.register(
             endpoint=call_url or responses_endpoint,
             responses_endpoint=responses_endpoint,
@@ -1713,6 +1742,7 @@ def _codex_provider(
             approval_model_ref=approval_model_ref,
             catalog_resolver=catalog_resolver,
             request_policy=request_policy,
+            renewal_source=renewal_intent,
         )
         return {
             "name": SCHOLARSEED_CODEX_PROVIDER_NAME,

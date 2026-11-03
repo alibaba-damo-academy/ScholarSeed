@@ -72,6 +72,7 @@ from service.platform.activity import Activities, ActivityDomain  # noqa: E402
 from service.platform.executables import (  # noqa: E402
     SKILL_PYTHON_COMMAND,
     SKILL_PYTHON_PROBE_ARGUMENTS,
+    SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
     command_directories,
     probe_command,
     resolve_command,
@@ -92,7 +93,11 @@ def _find_skill_python_launcher() -> Path | None:
             candidate
             for directory in command_directories()
             if (candidate := resolve_command(SKILL_PYTHON_COMMAND, directory)) is not None
-            and probe_command(candidate, SKILL_PYTHON_PROBE_ARGUMENTS)
+            and probe_command(
+                candidate,
+                SKILL_PYTHON_PROBE_ARGUMENTS,
+                timeout_seconds=SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
+            )
         ),
         None,
     )

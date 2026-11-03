@@ -28,7 +28,7 @@ from scholarseed_runtime.contract import (
     RuntimeEvent,
     RuntimeEventKind,
 )
-from scholarseed_runtime.contract.command import EmptyThreadReplacementProof
+from scholarseed_runtime.contract.command import EmptyThreadReplacementProof, ThreadReplacementProof
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
 from scholarseed_runtime.contract.incident import (
     INCIDENT_ID_KEY,
@@ -41,6 +41,7 @@ from scholarseed_runtime.contract.incident import (
 )
 from scholarseed_runtime.contract.inventory import SkillPolicy
 from service.chat.constants import (
+    PRODUCT_INTERACTION_BLOCKING,
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
     SessionTitleFallback,
@@ -73,6 +74,7 @@ SESSION_BROWSER_ACTION_WATERMARK_TABLE = "session_browser_action_watermark"
 SESSION_UNCERTAINTY_TABLE = "session_uncertainty"
 UNCERTAINTY_RUNTIME_EVENT_KEY = "runtime_event"
 UNCERTAINTY_CONFIRMATION_KEY = "turn_confirmation"
+UNCERTAINTY_THREAD_REPLACEMENT_KEY = "thread_replacement"
 SESSION_MODEL_TABLE = "session_model_state"
 # 开关/预算形态的思考选择按结构化 JSON 存这两列；NULL 表示「没选」。
 SESSION_THINKING_COLUMNS = ("selected_thinking_json", "active_thinking_json")
@@ -322,6 +324,11 @@ class ReplacementState(str, Enum):
     BOUND = "bound"
     UNKNOWN = "unknown"
     NOT_APPLIED = "not_applied"
+
+
+class ReplacementKind(str, Enum):
+    EMPTY_THREAD = "empty_thread"
+    HISTORY_REBUILD = "history_rebuild"
 
 
 @dataclass(frozen=True)
@@ -1774,7 +1781,11 @@ class SessionCatalogStore:
             or not isinstance(payload.get("revision"), str)
         ):
             raise ValueError("invalid runtime replacement record")
-        return {**payload, "state": state}
+        return {
+            **payload,
+            "kind": ReplacementKind(payload.get("kind", ReplacementKind.EMPTY_THREAD.value)),
+            "state": state,
+        }
 
     def replacement(self, session_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as connection:
@@ -1804,13 +1815,159 @@ class SessionCatalogStore:
         return hashlib.sha256(encoded.encode()).hexdigest()
 
     @classmethod
+    def _rebuilding_blocked(
+        cls,
+        connection: sqlite3.Connection,
+        session_id: str,
+        command_id: str,
+        operation_seq: int,
+    ) -> bool:
+        return (
+            connection.execute(
+                f"SELECT 1 FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id != ? "
+                "AND (state IN (?, ?, ?, ?, ?) OR operation_seq > ?) UNION ALL "
+                f"SELECT 1 FROM {SESSION_HIL_TABLE} WHERE session_id = ? AND status IN (?, ?, ?) UNION ALL "
+                f"SELECT 1 FROM {SESSION_TASK_BINDING_TABLE} WHERE session_id = ? UNION ALL "
+                f"SELECT 1 FROM {SESSION_CATALOG_TABLE} WHERE session_id = ? AND archived != 0 LIMIT 1",
+                (
+                    session_id,
+                    command_id,
+                    QueuedMessageState.QUEUED.value,
+                    QueuedMessageState.WAITING_RESOURCES.value,
+                    QueuedMessageState.SUBMITTING.value,
+                    QueuedMessageState.RUNNING.value,
+                    QueuedMessageState.OUTCOME_UNKNOWN.value,
+                    operation_seq,
+                    session_id,
+                    HilStatus.PENDING.value,
+                    HilStatus.UNKNOWN.value,
+                    HilStatus.STALE.value,
+                    session_id,
+                    session_id,
+                ),
+            ).fetchone()
+            is not None
+        )
+
+    @classmethod
+    def _rebuilding_source(
+        cls,
+        connection: sqlite3.Connection,
+        proof: ThreadReplacementProof,
+    ) -> tuple[int, int]:
+        session_id = proof.binding.product_session_id
+        binding = cls._runtime_binding(
+            connection.execute(
+                f"SELECT * FROM {SESSION_RUNTIME_BINDING_TABLE} WHERE product_session_id = ?",
+                (session_id,),
+            ).fetchone()
+        )
+        queue = connection.execute(
+            f"SELECT * FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id = ?",
+            (session_id, proof.command_id),
+        ).fetchone()
+        activation = cls._activation(
+            connection.execute(
+                f"SELECT * FROM {SESSION_ACTIVATION_TABLE} WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        )
+        uncertainties = connection.execute(
+            f"SELECT * FROM {SESSION_UNCERTAINTY_TABLE} WHERE session_id = ? AND state IN (?, ?, ?)",
+            (
+                session_id,
+                UncertaintyState.EXECUTING.value,
+                UncertaintyState.UNKNOWN.value,
+                UncertaintyState.STALE.value,
+            ),
+        ).fetchall()
+        pending = cls._turn_settlement(
+            _materialize_row(
+                connection,
+                connection.execute(
+                    f"SELECT * FROM {SESSION_TURN_SETTLEMENT_TABLE} WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone(),
+            )
+        )
+        blocked = cls._rebuilding_blocked(
+            connection, session_id, proof.command_id, queue["operation_seq"] if queue else 0
+        )
+        source_ids = {proof.command_id, queue["native_turn_id"] if queue is not None else ""}
+        if (
+            binding != proof.binding
+            or not proof.proof_id
+            or not proof.incident_id
+            or not 0 < proof.failed_generation < proof.absence_generation
+            or queue is None
+            or queue["state"] != QueuedMessageState.OUTCOME_UNKNOWN.value
+            or queue["operation_seq"] is None
+            or activation is None
+            or activation.open_state is not OpenState.BOUND
+            or blocked
+            or any(
+                row["kind"] != UncertaintyKind.TURN.value
+                or row["state"] != UncertaintyState.UNKNOWN.value
+                or row["correlation_id"] not in source_ids
+                or row["process_generation"] != proof.failed_generation
+                for row in uncertainties
+            )
+            or (
+                pending is not None
+                and (
+                    pending.client_turn_id != proof.command_id
+                    or pending.event.kind is not RuntimeEventKind.TURN_UNKNOWN
+                    or pending.event.native_session_id != proof.binding.opaque_session_ref
+                    or pending.event.runtime_id != proof.binding.runtime_id
+                    or pending.event.process_generation != proof.failed_generation
+                    or pending.native_turn_id not in source_ids
+                )
+            )
+        ):
+            raise SessionBindingConflictError(
+                "thread replacement source is not the failed operation"
+            )
+        return int(queue["operation_seq"]), activation.generation
+
+    @staticmethod
+    def _replacement_identity(
+        proof: EmptyThreadReplacementProof | ThreadReplacementProof,
+    ) -> tuple[ReplacementKind, str]:
+        if isinstance(proof, ThreadReplacementProof):
+            return ReplacementKind.HISTORY_REBUILD, proof.proof_id
+        return ReplacementKind.EMPTY_THREAD, proof.call_id
+
+    @classmethod
+    def _replacement_matches(
+        cls,
+        payload: Mapping[str, Any],
+        proof: EmptyThreadReplacementProof | ThreadReplacementProof,
+    ) -> bool:
+        kind, call_id = cls._replacement_identity(proof)
+        return (
+            payload["kind"] is kind
+            and payload["proof_id"] == proof.proof_id
+            and payload["call_id"] == call_id
+            and payload["command_id"] == proof.command_id
+            and payload["binding"] == cls._binding_fingerprint(proof.binding)
+            and payload["failed_generation"] == proof.failed_generation
+            and payload["absence_generation"] == proof.absence_generation
+            and payload["watermark"] == proof.watermark
+            and payload["event_id"]
+            == (proof.incident_id if isinstance(proof, ThreadReplacementProof) else proof.event_id)
+        )
+
+    @classmethod
     def _replacement_source(
         cls,
         connection: sqlite3.Connection,
-        proof: EmptyThreadReplacementProof,
+        proof: EmptyThreadReplacementProof | ThreadReplacementProof,
         *,
         manual: bool = False,
     ) -> tuple[int, int]:
+        if isinstance(proof, ThreadReplacementProof):
+            if manual:
+                raise SessionBindingConflictError("thread rebuilding is not an unsubmitted retry")
+            return cls._rebuilding_source(connection, proof)
         session_id = proof.binding.product_session_id
         binding_row = connection.execute(
             f"SELECT * FROM {SESSION_RUNTIME_BINDING_TABLE} WHERE product_session_id = ?",
@@ -1877,15 +2034,23 @@ class SessionCatalogStore:
             raise SessionBindingConflictError("empty replacement source is not unsubmitted")
         return int(queue["operation_seq"]), activation.generation
 
-    def record_replacement(self, proof: EmptyThreadReplacementProof, revision: str) -> None:
+    def record_replacement(
+        self, proof: EmptyThreadReplacementProof | ThreadReplacementProof, revision: str
+    ) -> None:
         with closing(self._connect()) as connection, connection:
             begin_write(connection, self._database)
             operation_seq, generation = self._replacement_source(connection, proof)
-            payload = {
+            kind, call_id = self._replacement_identity(proof)
+            payload: dict[str, Any] = {
+                "kind": kind.value,
                 "proof_id": proof.proof_id,
                 "command_id": proof.command_id,
-                "call_id": proof.call_id,
-                "event_id": proof.event_id,
+                "call_id": call_id,
+                "event_id": (
+                    proof.incident_id
+                    if isinstance(proof, ThreadReplacementProof)
+                    else proof.event_id
+                ),
                 "watermark": proof.watermark,
                 "failed_generation": proof.failed_generation,
                 "absence_generation": proof.absence_generation,
@@ -1896,12 +2061,37 @@ class SessionCatalogStore:
                 "configuration": self._replacement_configuration(
                     connection, proof.binding.product_session_id
                 ),
-                "submission_attempts": proof.submission_attempts,
-                "submission_deadline": proof.submission_deadline,
             }
+            if isinstance(proof, EmptyThreadReplacementProof):
+                payload.update(
+                    submission_attempts=proof.submission_attempts,
+                    submission_deadline=proof.submission_deadline,
+                )
+            previous = self._replacement(
+                _materialize_row(
+                    connection,
+                    connection.execute(
+                        f"SELECT * FROM {SESSION_REPLACEMENT_TABLE} WHERE session_id = ?",
+                        (proof.binding.product_session_id,),
+                    ).fetchone(),
+                )
+            )
+            if previous is not None:
+                if (
+                    previous["state"] is not ReplacementState.BOUND
+                    or previous["proof_id"] == proof.proof_id
+                    or previous["command_id"] == proof.command_id
+                    or previous["operation_seq"] >= operation_seq
+                    or previous.get("candidate")
+                    != json.loads(json.dumps(dataclasses.asdict(proof.binding)))
+                ):
+                    raise SessionBindingConflictError("runtime replacement is already fenced")
+                payload["previous"] = previous
             connection.execute(
                 f"INSERT INTO {SESSION_REPLACEMENT_TABLE} (session_id, proof_id, state, payload, payload_ref, updated_at) "
-                "VALUES (?, ?, ?, '', ?, ?)",
+                "VALUES (?, ?, ?, '', ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
+                "proof_id = excluded.proof_id, state = excluded.state, payload = '', "
+                "payload_ref = excluded.payload_ref, updated_at = excluded.updated_at",
                 (
                     proof.binding.product_session_id,
                     proof.proof_id,
@@ -1913,7 +2103,7 @@ class SessionCatalogStore:
 
     def begin_replacement(
         self,
-        proof: EmptyThreadReplacementProof,
+        proof: EmptyThreadReplacementProof | ThreadReplacementProof,
         revision: str,
         reservation_id: str,
         *,
@@ -1930,8 +2120,7 @@ class SessionCatalogStore:
             if (
                 payload is None
                 or payload.pop("state") is not ReplacementState.PROVEN
-                or payload["proof_id"] != proof.proof_id
-                or payload["call_id"] != proof.call_id
+                or not self._replacement_matches(payload, proof)
                 or (not manual and payload["revision"] != revision)
                 or payload["generation"] != generation
                 or payload["operation_seq"] != operation_seq
@@ -1962,7 +2151,11 @@ class SessionCatalogStore:
                 f"SELECT * FROM {SESSION_REPLACEMENT_TABLE} WHERE session_id = ?", (session_id,)
             ).fetchone()
             payload = self._replacement(_materialize_row(connection, row))
-            if payload is None or payload.pop("state") is not ReplacementState.NOT_APPLIED:
+            if (
+                payload is None
+                or payload.pop("state") is not ReplacementState.NOT_APPLIED
+                or payload["kind"] is not ReplacementKind.EMPTY_THREAD
+            ):
                 return
             queued = connection.execute(
                 f"SELECT * FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id = ?",
@@ -2022,6 +2215,7 @@ class SessionCatalogStore:
         if (
             payload is None
             or payload["state"] is not ReplacementState.PROVEN
+            or payload["kind"] is not ReplacementKind.EMPTY_THREAD
             or not payload.get("manual_retry")
             or payload["command_id"] != command_id
             or binding is None
@@ -2079,6 +2273,129 @@ class SessionCatalogStore:
                     session_id,
                 ),
             )
+
+    def confirm_thread_replacement(self, proof: ThreadReplacementProof) -> bool:
+        session_id = proof.binding.product_session_id
+        with closing(self._connect()) as connection, connection:
+            begin_write(connection, self._database)
+            record = self._replacement(
+                _materialize_row(
+                    connection,
+                    connection.execute(
+                        f"SELECT * FROM {SESSION_REPLACEMENT_TABLE} WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone(),
+                )
+            )
+            current = self._runtime_binding(
+                connection.execute(
+                    f"SELECT * FROM {SESSION_RUNTIME_BINDING_TABLE} WHERE product_session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            )
+            queue = connection.execute(
+                f"SELECT * FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id = ?",
+                (session_id, proof.command_id),
+            ).fetchone()
+            activation = self._activation(
+                connection.execute(
+                    f"SELECT * FROM {SESSION_ACTIVATION_TABLE} WHERE session_id = ?", (session_id,)
+                ).fetchone()
+            )
+            if (
+                record is None
+                or record["state"] is not ReplacementState.BOUND
+                or not self._replacement_matches(record, proof)
+                or current is None
+                or record.get("candidate") != json.loads(json.dumps(dataclasses.asdict(current)))
+                or current.opaque_session_ref == proof.binding.opaque_session_ref
+                or queue is None
+                or queue["state"] != QueuedMessageState.OUTCOME_UNKNOWN.value
+                or queue["operation_seq"] != record["operation_seq"]
+                or activation is None
+                or activation.generation != record["generation"] + 1
+                or record["configuration"]
+                != self._replacement_configuration(connection, session_id)
+                or self._rebuilding_blocked(
+                    connection, session_id, proof.command_id, record["operation_seq"]
+                )
+            ):
+                return False
+            pending = self._turn_settlement(
+                _materialize_row(
+                    connection,
+                    connection.execute(
+                        f"SELECT * FROM {SESSION_TURN_SETTLEMENT_TABLE} WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone(),
+                )
+            )
+            source_ids = {proof.command_id, str(queue["native_turn_id"] or "")}
+            if pending is not None and (
+                pending.client_turn_id != proof.command_id
+                or pending.native_turn_id not in source_ids
+                or pending.event.kind is not RuntimeEventKind.TURN_UNKNOWN
+                or pending.event.native_session_id != proof.binding.opaque_session_ref
+                or pending.event.runtime_id != proof.binding.runtime_id
+                or pending.event.process_generation != proof.failed_generation
+            ):
+                return False
+            rows = connection.execute(
+                f"SELECT * FROM {SESSION_UNCERTAINTY_TABLE} WHERE session_id = ? AND "
+                "(state IN (?, ?, ?) OR (kind = ? AND correlation_id IN (?, ?)))",
+                (
+                    session_id,
+                    UncertaintyState.EXECUTING.value,
+                    UncertaintyState.UNKNOWN.value,
+                    UncertaintyState.STALE.value,
+                    UncertaintyKind.TURN.value,
+                    proof.command_id,
+                    str(queue["native_turn_id"] or ""),
+                ),
+            ).fetchall()
+            uncertainties = []
+            for row in rows:
+                uncertainty = self._uncertainty_record(_materialize_row(connection, row))
+                if uncertainty is None:
+                    return False
+                uncertainties.append(uncertainty)
+            provenance = json.loads(json.dumps(dataclasses.asdict(proof)))
+            if any(
+                uncertainty.kind is not UncertaintyKind.TURN
+                or uncertainty.correlation_id not in source_ids
+                or uncertainty.process_generation != proof.failed_generation
+                or uncertainty.state not in (UncertaintyState.UNKNOWN, UncertaintyState.CONFIRMED)
+                or (
+                    uncertainty.state is UncertaintyState.CONFIRMED
+                    and uncertainty.payload.get(UNCERTAINTY_THREAD_REPLACEMENT_KEY) != provenance
+                )
+                for uncertainty in uncertainties
+            ):
+                return False
+            for uncertainty in uncertainties:
+                values = {
+                    **uncertainty.payload,
+                    "resolution": ReplacementKind.HISTORY_REBUILD.value,
+                    UNCERTAINTY_THREAD_REPLACEMENT_KEY: provenance,
+                }
+                connection.execute(
+                    f"UPDATE {SESSION_UNCERTAINTY_TABLE} SET state = ?, payload = '', payload_ref = ?, resolved_at = ? "
+                    "WHERE session_id = ? AND kind = ? AND correlation_id = ?",
+                    (
+                        UncertaintyState.CONFIRMED.value,
+                        _store_body(connection, json.dumps(values, ensure_ascii=False)),
+                        time.time(),
+                        session_id,
+                        UncertaintyKind.TURN.value,
+                        uncertainty.correlation_id,
+                    ),
+                )
+            if pending is not None:
+                connection.execute(
+                    f"DELETE FROM {SESSION_TURN_SETTLEMENT_TABLE} WHERE session_id = ? AND client_turn_id = ? AND native_turn_id = ?",
+                    (session_id, proof.command_id, pending.native_turn_id),
+                )
+            return True
 
     @classmethod
     def _create_turn_settlement(cls, connection: sqlite3.Connection) -> None:
@@ -3452,7 +3769,7 @@ class SessionCatalogStore:
         previous: RuntimeBinding,
         replacement: RuntimeBinding,
         *,
-        proof: EmptyThreadReplacementProof | None = None,
+        proof: EmptyThreadReplacementProof | ThreadReplacementProof | None = None,
         revision: str = "",
         manual: bool = False,
     ) -> None:
@@ -3491,8 +3808,7 @@ class SessionCatalogStore:
                     proof.binding != previous
                     or record is None
                     or record["state"] is not ReplacementState.OPENING
-                    or record["proof_id"] != proof.proof_id
-                    or record["call_id"] != proof.call_id
+                    or not self._replacement_matches(record, proof)
                     or record["revision"] != revision
                     or record["generation"] != generation
                     or record["operation_seq"] != operation_seq
@@ -3847,6 +4163,64 @@ class SessionCatalogStore:
         if cursor.rowcount != 1:
             raise SessionAccessError("session not found")
         return self.model_state(session_id)
+
+    def continuation_state(self, session_id: str) -> tuple[str, bool]:
+        """Read selected intent and safety gates without materializing private bodies."""
+
+        queue_states = (
+            QueuedMessageState.QUEUED,
+            QueuedMessageState.WAITING_RESOURCES,
+            QueuedMessageState.SUBMITTING,
+            QueuedMessageState.RUNNING,
+            QueuedMessageState.OUTCOME_UNKNOWN,
+        )
+        unresolved = (
+            UncertaintyState.EXECUTING,
+            UncertaintyState.UNKNOWN,
+            UncertaintyState.STALE,
+        )
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
+            model = connection.execute(
+                f"SELECT selected_model_id FROM {SESSION_MODEL_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            gates = (
+                (
+                    SESSION_MESSAGE_QUEUE_TABLE,
+                    "state",
+                    tuple(state.value for state in queue_states),
+                ),
+                (SESSION_HIL_TABLE, "status", (HilStatus.PENDING.value,)),
+                (SESSION_UNCERTAINTY_TABLE, "state", tuple(state.value for state in unresolved)),
+                (
+                    SESSION_ACTIVATION_TABLE,
+                    "open_state",
+                    (OpenState.OPENING.value, OpenState.OPEN_UNKNOWN.value),
+                ),
+                (
+                    SESSION_REPLACEMENT_TABLE,
+                    "state",
+                    (ReplacementState.OPENING.value, ReplacementState.UNKNOWN.value),
+                ),
+            )
+            blocked = any(
+                connection.execute(
+                    f"SELECT 1 FROM {table} WHERE session_id = ? AND {column} IN ({','.join('?' for _ in values)}) LIMIT 1",
+                    (session_id, *values),
+                ).fetchone()
+                is not None
+                for table, column, values in gates
+            )
+            blocked = (
+                blocked
+                or connection.execute(
+                    f"SELECT 1 FROM {SESSION_TURN_SETTLEMENT_TABLE} WHERE session_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                is not None
+            )
+        return (str(model["selected_model_id"] or "").strip() if model else "", blocked)
 
     def model_state(
         self,
@@ -4357,7 +4731,23 @@ class SessionCatalogStore:
             raise SessionAccessError("HIL request not found")
         return record
 
-    def pending_hil(self, session_id: str) -> tuple[SessionHilRecord, ...]:
+    def installation_state(self, request_id: str, state: dict[str, Any]) -> None:
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                f"SELECT * FROM {SESSION_HIL_TABLE} WHERE product_request_id = ?", (request_id,)
+            ).fetchone()
+            record = self._hil_record(_materialize_row(connection, row))
+            if record is None:
+                raise SessionAccessError("HIL request not found")
+            payload = {**record.payload, "installation_state": state}
+            connection.execute(
+                f"UPDATE {SESSION_HIL_TABLE} SET payload = '', payload_ref = ? WHERE product_request_id = ?",
+                (_store_body(connection, json.dumps(payload, ensure_ascii=False)), request_id),
+            )
+
+    def pending_hil(
+        self, session_id: str, *, blocking_only: bool = True
+    ) -> tuple[SessionHilRecord, ...]:
         with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 f"""
@@ -4367,7 +4757,12 @@ class SessionCatalogStore:
                 (session_id, HilStatus.PENDING.value),
             ).fetchall()
             rows = _materialize_rows(connection, rows)
-        return tuple(record for row in rows if (record := self._hil_record(row)) is not None)
+        return tuple(
+            record
+            for row in rows
+            if (record := self._hil_record(row)) is not None
+            and (not blocking_only or record.payload.get(PRODUCT_INTERACTION_BLOCKING, True))
+        )
 
     def turn_hil(self, session_id: str, vendor_turn_id: str) -> tuple[SessionHilRecord, ...]:
         """Return durable HIL decisions for one native turn, including terminal states."""
@@ -4405,7 +4800,12 @@ class SessionCatalogStore:
                 (*owner_params, HilStatus.PENDING.value),
             ).fetchall()
             rows = _materialize_rows(connection, rows)
-        return tuple(record for row in rows if (record := self._hil_record(row)) is not None)
+        return tuple(
+            record
+            for row in rows
+            if (record := self._hil_record(row)) is not None
+            and record.payload.get(PRODUCT_INTERACTION_BLOCKING, True)
+        )
 
     def acknowledge_hil(
         self,
@@ -4933,21 +5333,30 @@ class SessionCatalogStore:
                 (session_id, HilStatus.PENDING.value),
             ).fetchall()
             rows = _materialize_rows(connection, rows)
+            rows = [
+                row
+                for row in rows
+                if (record := self._hil_record(row)) is not None
+                and record.payload.get(PRODUCT_INTERACTION_BLOCKING, True)
+            ]
             if not rows:
                 return ()
             begin_write(connection, self._database)
-            connection.execute(
+            connection.executemany(
                 f"""
                 UPDATE {SESSION_HIL_TABLE}
                 SET status = ?, resolved_at = ?
-                WHERE session_id = ? AND status = ?
+                WHERE product_request_id = ? AND status = ?
                 """,
-                (
-                    HilStatus.EXPIRED.value,
-                    timestamp,
-                    session_id,
-                    HilStatus.PENDING.value,
-                ),
+                [
+                    (
+                        HilStatus.EXPIRED.value,
+                        timestamp,
+                        row["product_request_id"],
+                        HilStatus.PENDING.value,
+                    )
+                    for row in rows
+                ],
             )
         expired: list[SessionHilRecord] = []
         for row in rows:

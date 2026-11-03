@@ -21,10 +21,24 @@ import { projectActivityEvents } from './transcript.ts'
 import { hilEventResolution, projectHilCard } from './hil.ts'
 import type { ProductEvent } from './api.ts'
 
-const TODO_PANEL_SOURCE = readFileSync(
+const TODO_HOST_SOURCE = readFileSync(
   new URL('./components/business/TodoPanel.tsx', import.meta.url),
   'utf8'
 )
+const TODO_VIEW_SOURCE = readFileSync(
+  new URL('./components/business/Plan.tsx', import.meta.url),
+  'utf8'
+)
+const TODO_PANEL_SOURCE = `${TODO_HOST_SOURCE}\n${TODO_VIEW_SOURCE}`
+
+test('host projects timed items into the shared plan without exposing its store to the view', () => {
+  assert.match(TODO_HOST_SOURCE, /items=\{timedItems\(thread, items, now\)\}/)
+  assert.match(TODO_HOST_SOURCE, /onContinue=\{onContinue\}/)
+  assert.doesNotMatch(
+    TODO_VIEW_SOURCE,
+    /useApp|activeThread|from ['"].*store['"]|window\.scholarseed/
+  )
+})
 const AI_PANEL_SOURCE = readFileSync(
   new URL('./features/assistant/AiPanel.tsx', import.meta.url),
   'utf8'
@@ -1110,7 +1124,8 @@ test('plan header preserves elapsed time and result hints before optional detail
   )
   assert.match(TODO_PANEL_SOURCE, /estimateLabel && headerWidth >= PLAN_ESTIMATE_MIN_WIDTH/)
   assert.match(TODO_PANEL_SOURCE, /summary.status !== 'running' && summary.status !== 'done'/)
-  assert.match(TODO_PANEL_SOURCE, /observer\.observe\(button\)[\s\S]*if \(currentTurnOnly/)
+  assert.match(TODO_VIEW_SOURCE, /observer\.observe\(button\)[\s\S]*if \(total === 0/)
+  assert.match(TODO_HOST_SOURCE, /if \(currentTurnOnly[\s\S]*return\s*\(?\s*<Plan/)
   const toggleStart = TODO_PANEL_SOURCE.indexOf('data-testid="todo-toggle"')
   const chevron = TODO_PANEL_SOURCE.indexOf('<ChevronRight ', toggleStart)
   const title = TODO_PANEL_SOURCE.indexOf("{t('todo.title')}", toggleStart)

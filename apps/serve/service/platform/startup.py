@@ -29,6 +29,7 @@ from service.platform.storage import (
 )
 
 _log = logging.getLogger(__name__)
+SQLITE_SNAPSHOT_ATTEMPTS = 8
 
 
 def prepare_private_root(native: DomainNative, coordinator: str, root: Path) -> None:
@@ -115,7 +116,7 @@ def acquire_startup_domains(
     discovery_roots: Sequence[str],
     read_snapshot: Callable[[DataInspection], Snapshot],
     *,
-    attempts: int = 8,
+    attempts: int = SQLITE_SNAPSHOT_ATTEMPTS,
     maintenance: bool = False,
     busy_timeout: float = 0.0,
     prepare_structure: Callable[[Snapshot], None] | None = None,

@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next'
 import type {
   ConvItem,
   HilOption,
+  HilQuestion,
   HilPermissionScope,
   HilResolvedMessage,
   HilSubmissionMessage,
@@ -10,6 +11,24 @@ import type {
 } from './model'
 
 export type HilItem = Extract<ConvItem, { kind: 'hil' }>
+
+export function componentOptionAnswers(
+  question: HilQuestion,
+  values: Record<string, unknown>
+): string[] | null {
+  const answers = values.answers
+  if (
+    !Array.isArray(answers) ||
+    (!question.multiSelect && answers.length > 1) ||
+    new Set(answers).size !== answers.length ||
+    answers.some(
+      (answer) =>
+        typeof answer !== 'string' || !question.options.some((option) => option.label === answer)
+    )
+  )
+    return null
+  return answers as string[]
+}
 
 const TERMINAL_HIL_STATES = new Set(['resolved', 'cancelled', 'stale', 'unknown'])
 const DENY_OPTION_IDS = new Set(['n', 'no', 'deny', 'decline', 'reject', 'cancel'])
@@ -220,8 +239,10 @@ export function projectHilCard(
 ): HilItem {
   return {
     kind: 'hil',
+    sessionId: data.session_id,
     requestId: data.request_id,
     lifetime: data.lifetime,
+    blocking: data.blocking,
     hilKind: data.kind,
     ...(validHistoryApproval(data)
       ? {
@@ -293,6 +314,9 @@ export function projectHilCard(
       options: question.options ?? [],
       multiSelect: question.multiSelect,
       papers: question.papers,
+      component: question.component,
+      componentData: question.component_data,
+      installation: question.plugin_installation,
     })),
     options: data.options,
     allowFreeText: data.allow_free_text,
@@ -326,6 +350,7 @@ export function settlePendingHil(
 ): ConvItem[] {
   return conversation.map((item) =>
     item.kind === 'hil' &&
+    item.blocking !== false &&
     item.turnId === turnId &&
     !(preserveSession && item.lifetime === 'session') &&
     (item.hilState === 'pending' || item.hilState === 'submitting')
@@ -348,7 +373,21 @@ export function isTerminalHil(item: HilItem): boolean {
 }
 
 export function pendingHilItems(items: ConvItem[]): HilItem[] {
-  return items.filter((item): item is HilItem => item.kind === 'hil' && !isTerminalHil(item))
+  return items.filter(
+    (item): item is HilItem =>
+      item.kind === 'hil' && item.blocking !== false && !isTerminalHil(item)
+  )
+}
+
+export function hilRequestedRunState(
+  thread: Pick<Thread, 'running' | 'status'>,
+  data: ProductHilData
+): Pick<Thread, 'running' | 'status'> {
+  if (data.blocking === false) return { running: thread.running, status: thread.status }
+  return {
+    running: data.lifetime === 'session' ? thread.running : true,
+    status: data.lifetime === 'session' && !thread.running ? thread.status : 'waiting',
+  }
 }
 
 export function pendingPermissionItems(items: ConvItem[]): HilItem[] {
@@ -376,6 +415,7 @@ export function pendingQuestionItems(items: ConvItem[]): HilItem[] {
 export function transcriptPresentationItems(items: ConvItem[]): ConvItem[] {
   return items.flatMap((item): ConvItem[] => {
     if (item.kind !== 'hil') return [item]
+    if (item.blocking === false) return [item]
     if (item.hilKind === 'browser_approval' || item.hilKind === 'browser_history_approval')
       return isTerminalHil(item) ? [item] : []
     if (isQuestionHil(item)) {

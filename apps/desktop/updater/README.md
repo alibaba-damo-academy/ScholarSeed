@@ -341,8 +341,16 @@ explicitly. Missing admission means preparation is pending, not proof of first i
 The native launcher uses the same readiness boundary for an existing Electron component,
 while retaining installation identity, signed frozen manifest, lock and cancellation checks.
 Helper executable trust remains separate: all pinned executables still undergo exact
-publisher and Authenticode verification, batched within one PowerShell process without
-caching trust results. Final signed launcher/helper startup acceptance is required in
+publisher and Authenticode verification through native Windows trust APIs, with
+each input held by a no-follow, single-link, read-only pinned handle throughout
+validation. No PowerShell process or trust-result cache is used by the Go handoff.
+System-directory DLLs provide catalog verification (SHA-256, then SHA-1) and embedded
+WinVerifyTrust fallback; a trusted catalog's publisher cannot fall back to another
+signer on mismatch. The exact, case-sensitive certificate Subject comes from the
+verified provider's signer certificate. UI is disabled; revocation/provider policy
+flags retain the previous WinVerifyTrust defaults, not offline/cache-only shortcuts.
+The installer-owned PowerShell cmdlet verifier is unchanged.
+Final signed launcher/helper startup acceptance is required in
 addition to native readiness probes.
 Existing pre-Velopack component directories are left untouched.
 The authenticated manifest accepts 1–32 uniquely named component kinds. Current
@@ -428,6 +436,49 @@ Per-component `readiness`, `download`, `preflight`, and `prepare` summaries dist
 `reused`, `retained` (verified cached archive), `passed`, and `failed`. Failure
 summaries close outstanding measurements; `last_phase` is the last measured
 operation, not a claim about the root cause.
+
+For complete login callbacks the launcher also forwards a bounded, versioned
+`--scholarseed-callback-timing` diagnostic to Electron. It contains a 16-hex SHA-256
+state fingerprint, launcher PID/start time, activation, bootstrap, nested signature
+and readiness durations, and time before spawning Electron. The existing
+second-instance and inbox paths preserve this record. Desktop validates its shape,
+limits and callback fingerprint before logging `[callback-timing]` with the delivery
+source, receiver PID and remaining launcher-to-receipt wall-clock gap. The gap
+includes engine startup/IPC/queueing, not browser time; clock changes can invalidate
+it. Argument diagnostics are untrusted observations, never authentication evidence
+or input to authorization, callback routing, state TTL or token exchange.
+Failures before Electron starts still have only the native stderr/package-check
+channel; a browser invocation cannot guarantee durable evidence for that interval.
+
+The account handoff logs monotonic durations for account-base resolution, HTTP
+exchange, credential adoption, local forwarding, renderer confirmation and receipt
+completion using the same fingerprint. No code, raw state, token or callback URL is
+added to timing logs. These phases are not interchangeable with login success.
+If window.log cannot be appended, lifecycle diagnostics use the existing backend.log
+writer (including its qualification and rotation), without a second writer or ACL
+repair. Before that writer exists, a bounded in-memory backlog reports omissions
+when storage returns. If both sinks remain unavailable or the process exits first,
+persistence is not guaranteed; stdout/in-memory output is not durable evidence.
+`RotatingFileLog.write()` reports acceptance, not durability: `true` means appended
+or retained for best-effort replay by `resume()`; `false` means rejected, including
+closed writers, storage failure or an oversized deferred chunk. Deferred replay
+can still fail if storage is unavailable. Do not replace this result with an
+unconditional success or use it as evidence that a line is already on disk.
+The diagnostic backlog has its own 50 MiB byte limit and 4096-chunk limit, independent
+of the primary file's rotation setting. New lines cannot overtake retained lines.
+An omitted-byte notice is best-effort and cannot block retained data; a failed
+notice remains pending. Pending diagnostics retry once per second through an
+unreferenced timer, so quiet periods can recover without keeping the process alive.
+The will-quit hook calls `DiagnosticLog.end()` for a final best-effort drain before
+closing the primary writer and cancels retries; repeated closes are idempotent.
+
+Platform matrix: Windows uses native handoff trust and callback launch telemetry;
+macOS signature/bootstrap behavior is unchanged and open-url delivery has no native
+launch record. Both platforms share phase timing and diagnostic fallback. Native
+oracle fixtures cover embedded/catalog signatures, exact Unicode publishers, wrong
+publishers, tampering and unsigned inputs; they do not establish signed installed
+startup, update/UAC, or final callback acceptance. Those require the real signed
+package and final-revision runtime screenshot evidence on the affected platform.
 
 Readiness reports lineage, receipt, inventory identity and entry qualification, with
 zero payload `bytes` and no `hash` metric. Full reuse reports payload hash bytes.

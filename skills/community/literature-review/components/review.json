@@ -1,0 +1,167 @@
+{
+  "data": {
+    "schema_version": "1.1",
+    "session_id": "plugin-preview",
+    "workspace": "sample-review",
+    "checkpoint": "result",
+    "status": "generated",
+    "section_count": 2,
+    "title": "样例：长上下文信息利用综述",
+    "intent": "方法与证据对比",
+    "scope": {
+      "topic": "长上下文",
+      "time_range": "样例范围",
+      "focus": [
+        "信息位置"
+      ],
+      "requested_materials": [],
+      "project_materials": 0,
+      "external_materials": 2
+    },
+    "output": {
+      "format": "markdown",
+      "citation_style": "author_year",
+      "decided_by": "user"
+    },
+    "sections": [
+      {
+        "id": "background",
+        "title": "问题与评估设置",
+        "description": "界定上下文长度与信息位置。",
+        "papers": 1,
+        "children": [
+          "实验设置与证据位置"
+        ],
+        "comparison_tables": []
+      },
+      {
+        "id": "methods",
+        "title": "方法与证据对比",
+        "description": "比较位置敏感性及改进方法。",
+        "papers": 1,
+        "children": [],
+        "comparison_tables": [
+          "位置与上下文长度对照表"
+        ]
+      }
+    ],
+    "included": 2,
+    "fulltext": 1,
+    "abstract_only": 1,
+    "pending_checks": 1,
+    "cited": 2,
+    "citations": [
+      {
+        "title": "样例：长上下文信息利用",
+        "authors": "Example Author",
+        "year": 2024,
+        "venue": "Sample Conference"
+      },
+      {
+        "title": "样例：上下文评测方法",
+        "authors": "Example Researcher",
+        "year": 2025,
+        "venue": "Sample Journal"
+      }
+    ],
+    "abstract_evidence": [
+      {
+        "paper_id": "sample-1",
+        "title": "样例：上下文评测方法",
+        "reason": "样例限制：仅获得摘要，不用于支持具体实验数值。"
+      }
+    ],
+    "checks": [
+      {
+        "title": "引用完整性",
+        "verdict": "PASS",
+        "reason": "样例：正文引用均对应文献条目。"
+      },
+      {
+        "title": "全文证据覆盖",
+        "verdict": "WARN",
+        "reason": "样例：一篇论文只有摘要证据，需要补读全文。"
+      },
+      {
+        "title": "PDF 编译",
+        "verdict": "NOT_APPLICABLE",
+        "reason": "本例交付 Markdown。"
+      }
+    ],
+    "issues": [
+      {
+        "title": "证据仍需补充",
+        "detail": "样例：不要将摘要判断写成全文结论。",
+        "paper_ids": [
+          "sample-1"
+        ],
+        "affected_content": "方法与证据对比"
+      }
+    ],
+    "warnings": [],
+    "source_hashes": {},
+    "artifacts": [
+      {
+        "artifact_id": "sample-body",
+        "path": "sample-review/06_output/survey.md",
+        "name": "survey.md",
+        "title": "样例综述正文",
+        "media_type": "text/markdown",
+        "size": 128,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "context": {
+      "projectId": "sample-project",
+      "projectName": "样例项目"
+    },
+    "generation_status": "SUCCESS"
+  },
+  "responses": {
+    "open-artifact": {
+      "state": "resolved",
+      "data": {
+        "result": null,
+        "view": {
+          "title": "样例交付物",
+          "body": "这是当前交付物的样例内容，不读取真实科研产物。",
+          "identifier": {
+            "$input": "artifactId",
+            "$default": ""
+          }
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "label": "全部校验通过",
+      "data": {
+        "pending_checks": 0,
+        "issues": [],
+        "checks": [
+          {
+            "title": "证据与引用核验",
+            "verdict": "PASS",
+            "reason": "样例核验完成。"
+          }
+        ]
+      }
+    },
+    {
+      "label": "部分交付仍需补充",
+      "data": {
+        "status": "partial",
+        "generation_status": "PARTIAL_SUCCESS"
+      }
+    },
+    {
+      "label": "生成失败",
+      "data": {
+        "status": "failed",
+        "generation_status": "FAILED",
+        "artifacts": []
+      }
+    }
+  ]
+}

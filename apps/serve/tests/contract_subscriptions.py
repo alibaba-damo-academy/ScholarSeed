@@ -13,16 +13,17 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from scholarseed_runtime.contract import ModelToolProtocol
+from scholarseed_runtime.contract import ModelToolProtocol, ModelWireProtocol
 from service.chat.api.settings import mount_setting_routes
 from service.chat.service.completions import (
     CompletionBridge,
+    CompletionCleanupUnknown,
     CompletionCredentialError,
     mount_completion_bridge,
 )
@@ -227,6 +228,34 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("error", row["oauth"])
             self.assertEqual(original(OWNER, connection).tokens.access_token, "access")
 
+    async def test_subscription_renewal_requires_the_exact_stored_credential_intent(self):
+        connection = await self.connected()
+
+        def register():
+            registration = self.subscriptions.register(OWNER, connection, MODEL, "renewal", {})
+            upstream = self.bridge._upstreams[registration.bridge_id]
+            authority = self.bridge._request_authority(
+                upstream, upstream.responses_endpoint, ModelWireProtocol.RESPONSES
+            )
+            authority.capture_renewal()
+            return authority
+
+        authority = register()
+        renewal = authority.prepare_renewal("successor")
+        with renewal.capture():
+            self.bridge.release("renewal")
+            register()
+        self.assertTrue(renewal.complete().current())
+        self.assertFalse(authority.current())
+        self.bridge.release("renewal")
+        authority = register()
+        renewal = authority.prepare_renewal("different-successor")
+        with renewal.capture():
+            self.bridge.release("renewal")
+            register()
+        with patch.object(self.credentials, "read", return_value=None):
+            self.assertIsNone(renewal.complete())
+
     async def test_status_does_not_hide_programming_or_unknown_profile_errors(self):
         connection = (await self.models.save_profile(self.values, user_id=OWNER))["profile"]["id"]
         with patch.object(self.credentials, "read", side_effect=RuntimeError("unexpected")):
@@ -301,6 +330,25 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             with self.subTest(payload=payload):
                 with self.assertRaisesRegex(OAuthFailure, "oauth_capability_unsupported"):
                     SubscriptionService.request_policy(payload)
+
+    def test_hosted_agent_items_fail_without_modifying_history(self):
+        for itemType in ("agent_message", "multi_agent_call", "multi_agent_call_output"):
+            item = {
+                "type": itemType,
+                "id": "native-original",
+                "author": "/root",
+                "recipient": "/root/reviewer",
+                "content": [{"type": "encrypted_content", "encrypted_content": "opaque"}],
+            }
+            payload = {"input": [item]}
+            with self.subTest(itemType=itemType):
+                with self.assertRaisesRegex(
+                    ValueError, "subscription_sharing_unsupported_capability"
+                ):
+                    SubscriptionService.request_policy(payload)
+                self.assertEqual(item["id"], "native-original")
+                self.assertEqual(item["content"][0]["encrypted_content"], "opaque")
+                self.assertIs(payload["input"][0], item)
 
     async def test_remote_revocation_failure_keeps_local_disconnect(self):
         connection = await self.connected()
@@ -412,6 +460,262 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         finally:
             await subscriptions.close()
 
+    async def test_suspended_subscription_reference_restores_the_child_endpoint(self):
+        connection = await self.connected()
+        first = self.subscriptions.register(OWNER, connection, MODEL, "paused-parent", {})
+        upstream = self.bridge._upstreams[first.bridge_id]
+        repeated = self.subscriptions.register(OWNER, connection, MODEL, "paused-parent", {})
+        self.assertEqual(repeated, first)
+        self.assertIs(self.bridge._upstreams[first.bridge_id], upstream)
+        await self.models.suspend_session("paused-parent")
+        self.assertNotIn(first.bridge_id, self.bridge._upstreams)
+        self.assertEqual((await self.bridge.forward(first.bridge_id, {})).status_code, 404)
+        self.assertEqual(len(self.bridge._references), 1)
+        reference = next(iter(self.bridge._references.values()))
+        self.assertEqual(
+            set(vars(reference)),
+            {"bridge_id", "session_id", "owner_id", "connection_id", "scope", "state"},
+        )
+        restored = self.subscriptions.register(OWNER, connection, MODEL, "paused-parent", {})
+        self.assertEqual(restored, first)
+        self.assertIsNot(self.bridge._upstreams[first.bridge_id], upstream)
+        self.assertIsNot(
+            self.bridge._upstreams[first.bridge_id].credential_resolver,
+            upstream.credential_resolver,
+        )
+        self.assertEqual((await self.bridge.catalog(first.bridge_id)).status_code, 200)
+        self.models.release_session("paused-parent")
+        self.assertEqual(len(self.bridge._references), 0)
+        reopened = self.subscriptions.register(OWNER, connection, MODEL, "paused-parent", {})
+        self.assertNotEqual(reopened, first)
+
+    async def test_suspended_reference_never_crosses_policy_or_revocation_boundaries(self):
+        connection = await self.connected()
+        original = self.subscriptions.register(
+            OWNER, connection, MODEL, "policy-parent", {}, reasoning_effort="low"
+        )
+        await self.models.suspend_session("policy-parent")
+        changed_effort = self.subscriptions.register(
+            OWNER, connection, MODEL, "policy-parent", {}, reasoning_effort="high"
+        )
+        changed_catalog = self.subscriptions.register(
+            OWNER,
+            connection,
+            MODEL,
+            "policy-parent",
+            {},
+            reasoning_effort="low",
+            catalog_identity="changed-schema",
+        )
+        self.assertNotEqual(changed_effort, original)
+        self.assertNotEqual(changed_catalog, original)
+        await self.models.suspend_session("policy-parent")
+        self.bridge.revoke_connection(OWNER, connection)
+        self.assertEqual(len(self.bridge._references), 0)
+        restored = self.subscriptions.register(
+            OWNER, connection, MODEL, "policy-parent", {}, reasoning_effort="low"
+        )
+        self.assertNotEqual(restored, original)
+
+    async def test_active_subscription_reregistration_preserves_calls_and_resolvers(self):
+        connection = await self.connected()
+        originalCatalog = AsyncMock(return_value={"models": []})
+        replacementCatalog = AsyncMock(return_value={"models": []})
+        first = self.subscriptions.register(
+            OWNER, connection, MODEL, "active-parent", {}, catalog_resolver=originalCatalog
+        )
+        upstream = self.bridge._upstreams[first.bridge_id]
+        originalCredentials = upstream.credential_resolver
+        originalPolicy = upstream.request_policy
+        originalResolver = upstream.catalog_resolver
+        pendingCall = Mock(spec=["revoke", "close", "task"])
+        pendingCall.task = None
+        pendingCall.close = AsyncMock()
+        upstream.calls.add(pendingCall)
+        repeated = self.subscriptions.register(
+            OWNER, connection, MODEL, "active-parent", {}, catalog_resolver=replacementCatalog
+        )
+        self.assertEqual(repeated, first)
+        self.assertIs(self.bridge._upstreams[first.bridge_id], upstream)
+        self.assertEqual(upstream.calls, {pendingCall})
+        self.assertIs(upstream.credential_resolver, originalCredentials)
+        self.assertIs(upstream.request_policy, originalPolicy)
+        self.assertIs(upstream.catalog_resolver, originalResolver)
+        await upstream.catalog_resolver(OWNER, connection)
+        originalCatalog.assert_awaited_once_with(OWNER, connection)
+        replacementCatalog.assert_not_awaited()
+        pendingCall.revoke.assert_not_called()
+        pendingCall.close.assert_not_awaited()
+
+    async def test_subscription_pause_waits_for_call_cleanup_before_reactivation(self):
+        connection = await self.connected()
+        registration = self.subscriptions.register(OWNER, connection, MODEL, "waiting-parent", {})
+        upstream = self.bridge._upstreams[registration.bridge_id]
+        entered, finished = asyncio.Event(), asyncio.Event()
+
+        async def close():
+            entered.set()
+            await finished.wait()
+
+        pendingCall = Mock(spec=["revoke", "close", "task"])
+        pendingCall.task = None
+        pendingCall.close = AsyncMock(side_effect=close)
+        upstream.calls.add(pendingCall)
+        task = asyncio.create_task(self.bridge.suspend("waiting-parent"))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            pendingCall.revoke.assert_called_once()
+            self.assertFalse(task.done())
+            self.assertNotIn(registration.bridge_id, self.bridge._upstreams)
+            self.assertEqual(self.bridge._references[registration.bridge_id].state.value, "pausing")
+            with self.assertRaises(CompletionCleanupUnknown):
+                self.subscriptions.register(OWNER, connection, MODEL, "waiting-parent", {})
+            finished.set()
+            await task
+            pendingCall.close.assert_awaited_once()
+            self.assertEqual(self.bridge._references[registration.bridge_id].state.value, "paused")
+            restored = self.subscriptions.register(OWNER, connection, MODEL, "waiting-parent", {})
+            self.assertEqual(restored, registration)
+            self.assertIsNot(self.bridge._upstreams[registration.bridge_id], upstream)
+        finally:
+            finished.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_subscription_pause_cleanup_failure_remains_fenced(self):
+        connection = await self.connected()
+        registration = self.subscriptions.register(OWNER, connection, MODEL, "unknown-parent", {})
+        pendingCall = Mock(spec=["revoke", "close", "task"])
+        pendingCall.task = None
+        pendingCall.close = AsyncMock(side_effect=OSError("cleanup unknown"))
+        self.bridge._upstreams[registration.bridge_id].calls.add(pendingCall)
+        with self.assertRaises(CompletionCleanupUnknown):
+            await self.bridge.suspend("unknown-parent")
+        self.assertNotIn(registration.bridge_id, self.bridge._upstreams)
+        self.assertEqual(self.bridge._references[registration.bridge_id].state.value, "pausing")
+        with self.assertRaises(CompletionCleanupUnknown):
+            self.subscriptions.register(OWNER, connection, MODEL, "unknown-parent", {})
+        self.assertEqual((await self.bridge.forward(registration.bridge_id, {})).status_code, 404)
+
+    async def test_pause_never_restores_references_revoked_during_cleanup(self):
+        connection = await self.connected()
+        for operation in ("release", "owner", "connection"):
+            with self.subTest(operation=operation):
+                sessionId = f"revoked-parent-{operation}"
+                registration = self.subscriptions.register(OWNER, connection, MODEL, sessionId, {})
+                entered, finished = asyncio.Event(), asyncio.Event()
+
+                async def close():
+                    entered.set()
+                    await finished.wait()
+
+                pendingCall = Mock(spec=["revoke", "close", "task"])
+                pendingCall.task = None
+                pendingCall.close = AsyncMock(side_effect=close)
+                self.bridge._upstreams[registration.bridge_id].calls.add(pendingCall)
+                task = asyncio.create_task(self.bridge.suspend(sessionId))
+                try:
+                    await asyncio.wait_for(entered.wait(), 1)
+                    if operation == "release":
+                        removed = self.bridge.release(sessionId)
+                    elif operation == "owner":
+                        removed = self.bridge.revoke_owner(OWNER)
+                    else:
+                        removed = self.bridge.revoke_connection(OWNER, connection)
+                    self.assertEqual(removed, 1)
+                    finished.set()
+                    await task
+                    self.assertNotIn(registration.bridge_id, self.bridge._references)
+                    self.assertNotIn(registration.bridge_id, self.bridge._upstreams)
+                    self.assertEqual(
+                        (await self.bridge.forward(registration.bridge_id, {})).status_code, 404
+                    )
+                finally:
+                    finished.set()
+                    await asyncio.gather(task, return_exceptions=True)
+
+    async def test_pause_waits_for_call_task_that_defers_credential_cancellation(self):
+        connection = await self.connected()
+        registration = self.subscriptions.register(OWNER, connection, MODEL, "resolver-parent", {})
+        entered, cancelled, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def resolver():
+            entered.set()
+            try:
+                await finished.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await finished.wait()
+
+        resolverTask = asyncio.create_task(resolver())
+        await asyncio.wait_for(entered.wait(), 1)
+        pendingCall = Mock(spec=["revoke", "close", "task"])
+        pendingCall.task = resolverTask
+        pendingCall.revoke.side_effect = resolverTask.cancel
+        pendingCall.close = AsyncMock()
+        self.bridge._upstreams[registration.bridge_id].calls.add(pendingCall)
+        task = asyncio.create_task(self.bridge.suspend("resolver-parent"))
+        try:
+            await asyncio.wait_for(cancelled.wait(), 1)
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), 0.05)
+            self.assertFalse(task.done())
+            self.assertFalse(resolverTask.done())
+            with self.assertRaises(CompletionCleanupUnknown):
+                self.subscriptions.register(OWNER, connection, MODEL, "resolver-parent", {})
+            finished.set()
+            await task
+            self.assertTrue(resolverTask.done())
+        finally:
+            finished.set()
+            await asyncio.gather(task, resolverTask, return_exceptions=True)
+
+    async def test_registration_release_excludes_its_current_call_task(self):
+        connection = await self.connected()
+        registration = self.subscriptions.register(OWNER, connection, MODEL, "own-task-parent", {})
+        pendingCall = Mock(spec=["revoke", "close", "task"])
+        pendingCall.task = asyncio.current_task()
+        pendingCall.close = AsyncMock()
+        self.bridge._upstreams[registration.bridge_id].calls.add(pendingCall)
+        async with asyncio.timeout(1):
+            await self.bridge.release_registration(registration)
+        pendingCall.close.assert_awaited_once()
+        self.assertNotIn(registration.bridge_id, self.bridge._references)
+
+    async def test_reference_capacity_fails_closed_without_crossing_connection_scope(self):
+        connection = await self.connected()
+        values = {
+            "endpoint": "https://subscription.example/responses",
+            "responses_endpoint": "https://subscription.example/responses",
+            "wire_protocol": ModelWireProtocol.RESPONSES,
+            "api_key": "",
+            "owner_id": OWNER,
+            "connection_id": connection,
+            "session_id": "bounded-parent",
+            "credential_resolver": AsyncMock(),
+            "resume_scope": json.dumps({"model": MODEL, "catalog": "original"}),
+        }
+        with patch("service.chat.service.completions.BRIDGE_REFERENCE_LIMIT", 1):
+            first = self.bridge.register(**values)
+            upstream = self.bridge._upstreams[first.bridge_id]
+            for changes in (
+                {"owner_id": OTHER},
+                {"connection_id": "another-connection"},
+                {"session_id": "another-parent"},
+                {"resume_scope": json.dumps({"model": "another-model", "catalog": "original"})},
+                {"resume_scope": json.dumps({"model": MODEL, "catalog": "changed"})},
+                {"model_routes": {"alias": MODEL}},
+                {"reasoning_effort": "high"},
+            ):
+                with self.subTest(changes=changes):
+                    with self.assertRaisesRegex(ValueError, "model_bridge_reference_limit"):
+                        self.bridge.register(**{**values, **changes})
+                    self.assertEqual(self.bridge.register(**values), first)
+                    self.assertIs(self.bridge._upstreams[first.bridge_id], upstream)
+                    self.assertTrue(upstream.active)
+                    self.assertEqual(set(self.bridge._references), {first.bridge_id})
+            await self.bridge.suspend("bounded-parent")
+            self.assertEqual(self.bridge.register(**values), first)
+
     async def test_authorized_catalog_and_session_are_owned_subscription_transport(self):
         connection = await self.connected()
         self.assertEqual(len(self.requests), 1)
@@ -454,6 +758,8 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(intent.transport.endpoint.startswith("http://127.0.0.1:8770/"))
             self.assertIsNone(port)
             self.assertEqual(intent.capabilities.tool_protocol.value, "provider_native")
+            self.assertIs(getattr(spec.capabilities, "native_agent_messages", None), False)
+            self.assertIs(getattr(intent.capabilities, "native_agent_messages", None), False)
             self.assertNotIn("access", repr(intent))
         self.assertNotIn("access", json.dumps(self.models.profiles(user_id=OWNER)))
         self.assertNotIn("refresh", self.profiles.path.read_text())
@@ -1137,6 +1443,11 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
                 native_intent.transport.proxy_bypass_hosts,
             )
             entries = {entry.model_ref: entry for entry in qwen.catalog_models}
+            self.assertIs(
+                getattr(entries[MODEL].capabilities, "native_agent_messages", None), False
+            )
+            self.assertIs(getattr(native_intent.capabilities, "native_agent_messages", None), False)
+            self.assertIsNone(getattr(qwen_intent.capabilities, "native_agent_messages", None))
             self.assertEqual(
                 entries[MODEL].capabilities.tool_protocol, ModelToolProtocol.PROVIDER_NATIVE
             )
@@ -1147,6 +1458,12 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
                 entries["qwen3.8-flash"].capabilities.tool_protocol, ModelToolProtocol.JSON_SCHEMA
             )
             reviewer = qwen_intent.approval_model_ref
+            self.assertIsNone(
+                getattr(entries["qwen3.8-flash"].capabilities, "native_agent_messages", None)
+            )
+            self.assertIsNone(
+                getattr(entries[reviewer].capabilities, "native_agent_messages", None)
+            )
             self.assertEqual(entries["qwen3.8-flash"].approval_model_ref, reviewer)
             self.assertEqual(entries[reviewer].approval_model_ref, reviewer)
             self.assertNotEqual(

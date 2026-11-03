@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 
 import { hoverCardContentClassName, popoverContentClassName } from './classes'
 import {
@@ -200,5 +200,5 @@ export function HoverCardContent({
       {...props}
     />
   )
-  return createPortal(content, document.body)
+  return <Portal>{content}</Portal>
 }

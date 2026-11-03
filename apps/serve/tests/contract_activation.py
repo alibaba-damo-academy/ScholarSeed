@@ -26,6 +26,7 @@ from scholarseed_runtime.contract.resource import (
     ResourceRequest,
     ResourceState,
 )
+from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
 from scholarseed_runtime.contract.session import RuntimeActivitySnapshot
 from service.chat.persistence.catalog import OpenState, SessionCatalogStore, SessionPrincipal
 from service.chat.runtime.activation import (
@@ -229,6 +230,46 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.live.runtime_session, previous)
         self.activation._reclaim.assert_not_awaited()
         self.assertEqual(self.provider.cancelled, ["rejected"])
+
+    async def test_sandbox_rejection_preserves_safe_code_and_releases_reservation(self) -> None:
+        for waiting in (False, True):
+            for code in sorted(SANDBOX_STARTUP_ERRORS):
+                with self.subTest(waiting=waiting, code=code):
+                    provider = AdmissionFixture()
+                    rejected = ResourceReceipt(
+                        "sandbox-request",
+                        "sandbox-reservation",
+                        ResourceState.REJECTED,
+                        safe_error=code,
+                    )
+                    provider.reserve = AsyncMock(
+                        return_value=(
+                            ResourceReceipt(
+                                "sandbox-request",
+                                "sandbox-reservation",
+                                ResourceState.WAITING,
+                                deadline=TEST_DEADLINE,
+                            )
+                            if waiting
+                            else rejected
+                        )
+                    )
+                    provider.wait_resource = AsyncMock(return_value=rejected)
+                    self.activation._reclaim = AsyncMock()
+                    with self.assertRaises(SessionActivationError) as caught:
+                        await self.activation.acquire(
+                            provider,
+                            ResourceRequest(
+                                "sandbox-request",
+                                ResourcePurpose.TURN,
+                                TEST_DEADLINE,
+                                OpenSessionRequest("session", Path("/workspace")),
+                            ),
+                        )
+                    self.assertEqual(caught.exception.safe_error, code)
+                    self.assertEqual(provider.reserve.await_count, 1)
+                    self.assertEqual(provider.wait_resource.await_count, int(waiting))
+                    self.assertEqual(provider.cancelled, ["sandbox-reservation"])
 
     async def test_turn_refresh_policy_does_not_refresh_session_inspection(self) -> None:
         self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
@@ -538,6 +579,15 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
     def test_failure_codes_cannot_expose_arbitrary_provider_text(self) -> None:
         failure = SessionActivationError("secret-token-or-private-provider-response")
         self.assertEqual(failure.safe_error, RESOURCE_RESERVATION_INVALID)
+
+    def test_sandbox_failure_codes_require_an_exact_public_code(self) -> None:
+        for code in sorted(SANDBOX_STARTUP_ERRORS):
+            with self.subTest(code=code):
+                self.assertEqual(SessionActivationError(code).safe_error, code)
+                for invalid in (f"private-{code}", f"{code}:private-response"):
+                    self.assertEqual(
+                        SessionActivationError(invalid).safe_error, RESOURCE_RESERVATION_INVALID
+                    )
 
     def test_logical_model_selection_checks_owner_without_registering_a_bridge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

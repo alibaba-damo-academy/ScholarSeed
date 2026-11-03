@@ -200,6 +200,7 @@ class InferenceContracts(unittest.IsolatedAsyncioTestCase):
             await finish.wait()
 
         call = Mock()
+        call.task = None
         call.close = close
         bridge._upstreams[registration.bridge_id].calls.add(call)
         task = asyncio.create_task(bridge.release_registration(registration))

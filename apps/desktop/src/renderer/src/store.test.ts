@@ -593,6 +593,178 @@ test('a project-targeted draft navigates out of global pages before requesting s
   assert.match(draft, /homeSelectedProjectId: seed\.projectId \?\? null/)
 })
 
+test('an exact draft checks its source before changing the existing draft and selection', () => {
+  const action = block(storeSource, 'startDraft: (seed = {}) => {', 'applyModelCatalog:')
+  const compiled = transformSync(`const actions = {${action}}; actions.startDraft(seed)`, {
+    loader: 'ts',
+    format: 'cjs',
+  }).code
+  for (const available of [false, true]) {
+    let state = {
+      model: 'previous-model',
+      draftModelId: null,
+      activeSession: 'original-task',
+      modelSelectionGeneration: 4,
+      draftGeneration: 2,
+      aiPanel: {},
+      catalog: { models: [{ key: 'original-model', disabled: !available }] },
+    }
+    let draft = 'Existing draft'
+    const execute = () =>
+      runInNewContext(compiled, {
+        seed: { modelId: 'original-model', composerText: 'Visible history', submit: false },
+        stateRef: {
+          get current() {
+            return state
+          },
+        },
+        composerDraft: {
+          current: {
+            set: (value: string) => {
+              draft = value
+            },
+          },
+        },
+        HOME_RESET: { activeSession: null, draftModelId: null },
+        assistantSessionView: () => 'resource',
+        rememberScopeConversation: () => {},
+        currentScopeKey: () => null,
+        setState: (update: (current: typeof state) => typeof state) => {
+          state = update(state)
+        },
+      })
+    if (!available) {
+      assert.throws(execute, /draft_model_unavailable/)
+      assert.equal(draft, 'Existing draft')
+      assert.equal(state.model, 'previous-model')
+      assert.equal(state.activeSession, 'original-task')
+    } else {
+      execute()
+      assert.equal(draft, 'Visible history')
+      assert.equal(state.model, 'original-model')
+      assert.equal(state.draftModelId, 'original-model')
+      assert.equal(state.modelSelectionGeneration, 5)
+      assert.equal(state.activeSession, null)
+      assert.equal(
+        (state as typeof state & { composerSubmitRequested: boolean }).composerSubmitRequested,
+        false
+      )
+    }
+  }
+})
+
+test('catalog refresh preserves an exact draft source even when it disappears or is disabled', () => {
+  const action = block(storeSource, 'applyModelCatalog: (catalog) =>', 'setPersonalProfiles:')
+  const compiled = transformSync(
+    `const actions = {${action}}; actions.applyModelCatalog(catalog)`,
+    {
+      loader: 'ts',
+      format: 'cjs',
+    }
+  ).code
+  for (const models of [
+    [{ key: 'original-model', disabled: true }, { key: 'paid-model' }],
+    [{ key: 'paid-model' }],
+  ]) {
+    for (const activeSession of [null, 'attachment-session']) {
+      let state = {
+        serviceInstanceId: 'service',
+        activeSession,
+        model: 'original-model',
+        draftModelId: 'original-model',
+        catalog: {},
+      }
+      runInNewContext(compiled, {
+        catalog: {
+          service_instance_id: 'service',
+          current_model: 'paid-model',
+          available_models: models,
+        },
+        selectableCatalogModelKey: () => 'paid-model',
+        setState: (update: (current: typeof state) => typeof state) => {
+          state = update(state)
+        },
+      })
+      assert.equal(state.model, 'original-model')
+      assert.equal(state.draftModelId, 'original-model')
+    }
+  }
+})
+
+test('explicit model selection moves the exact draft constraint but reasoning preparation does not', async () => {
+  const callback = block(
+    storeSource,
+    'const prepareModel = useCallback(',
+    'const runModelSelection = useCallback('
+  )
+  const compiled = transformSync(
+    `${callback}; result.pending = prepareModel(modelId, persistDefault)`,
+    {
+      loader: 'ts',
+      format: 'cjs',
+    }
+  ).code
+  for (const choice of [
+    {
+      pinned: 'original-model',
+      persistDefault: false,
+      modelId: 'original-model',
+      expected: 'original-model',
+    },
+    {
+      pinned: 'original-model',
+      persistDefault: true,
+      modelId: 'chosen-paid-model',
+      expected: 'chosen-paid-model',
+    },
+    {
+      pinned: 'original-model',
+      persistDefault: true,
+      modelId: 'original-model',
+      expected: 'original-model',
+    },
+    { pinned: null, persistDefault: true, modelId: 'chosen-paid-model', expected: null },
+  ]) {
+    let state = {
+      model: 'original-model',
+      draftModelId: choice.pinned,
+      serviceInstanceId: 'service',
+      draftGeneration: 2,
+      modelSelectionGeneration: 4,
+      homeSelectedProjectId: null,
+      activeSession: null,
+    }
+    const result: { pending?: Promise<unknown> } = {}
+    runInNewContext(compiled, {
+      result,
+      modelId: choice.modelId,
+      persistDefault: choice.persistDefault,
+      useCallback: (callback: unknown) => callback,
+      stateRef: {
+        get current() {
+          return state
+        },
+      },
+      preparationSequenceRef: { current: 0 },
+      preparationIntentRef: { current: null },
+      preparationSnapshot: (current: typeof state) => ({
+        model: current.draftModelId || current.model,
+      }),
+      preparationController: () => ({ prepare: () => Promise.resolve({ state: 'applied' }) }),
+      preparationContextMatches: () => true,
+      PREPARATION_INSTANCE_CHANGED_ERROR: 'instance_changed',
+      PREPARATION_SUPERSEDED_ERROR: 'superseded',
+      flushSync: (callback: () => void) => callback(),
+      setState: (update: (current: typeof state) => typeof state) => {
+        state = update(state)
+      },
+    })
+    await result.pending
+    assert.equal(state.draftModelId, choice.expected)
+    assert.equal(state.model, choice.modelId)
+  }
+})
+
 test('a skill task retains its description through workbench tab synchronization', () => {
   const helper = block(storeSource, 'function assistantSessionView', 'function activateSession')
   const reset = block(storeSource, 'const HOME_RESET:', 'const SESSION_META')

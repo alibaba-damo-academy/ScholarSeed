@@ -1,5 +1,6 @@
 import type { IconName } from './icons'
 import type { SkillInfo } from './api'
+import type { TFunction } from 'i18next'
 import { isAbsoluteInputPath } from './input.ts'
 
 export type TaskStarterSkillFailure =
@@ -36,6 +37,14 @@ export function resolveTaskStarterSkill(
       version: skill.version,
     },
   }
+}
+
+export function skillUseFailureMessage(
+  translate: TFunction<'skills'>,
+  failure: TaskStarterSkillFailure,
+  name: string
+): string {
+  return translate(`try.failures.${failure}`, { name })
 }
 
 const SKILL_ICONS: Readonly<Record<string, IconName>> = Object.freeze({
@@ -118,11 +127,9 @@ export function skillDocumentBody(document: string): string {
   return document.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trimStart()
 }
 
-export interface SkillInstallNotice {
-  namespace: 'skills'
-  key: 'installed'
-  name: string
-}
+export type SkillInstallNotice =
+  | { namespace: 'skills'; key: 'installed' | 'plugin.installedDisabled'; name: string }
+  | { namespace: 'skills'; key: 'plugin.uiUpdated' }
 
 const SKILL_FAILURE_KEYS = {
   duplicate_name: { key: 'errors.duplicate', preserveDetail: false },

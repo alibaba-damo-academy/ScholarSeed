@@ -75,6 +75,9 @@ function identityOf(path: string): string {
 
 /** Filesystem-backed DomainNative stand-in: real directories, path-derived lineage. */
 class FsNative implements DomainNative {
+  device = '0000000000000001'
+  volume = '11111111111111111111111111111111'
+  birth = '0000000000000001:00000000'
   constructor(private readonly aliases = new Map<string, string>()) {}
   pin(path: string, create: boolean): unknown {
     path = this.aliases.get(path) ?? path
@@ -86,7 +89,13 @@ class FsNative implements DomainNative {
     return { path }
   }
   lineage(pin: unknown): string[] {
-    return [identityOf((pin as { path: string }).path)]
+    return [
+      identityOf((pin as { path: string }).path).replace(/posix:[^:]+:/, `posix:${this.device}:`),
+    ]
+  }
+  persistentIdentity(pin: unknown): string {
+    const inode = identityOf((pin as { path: string }).path).split(':')[2]
+    return `darwin:${this.volume}:${inode}:${this.birth}`
   }
   createAt(pin: unknown, name: string, bytes: Buffer): void {
     writeFileSync(join((pin as { path: string }).path, name), bytes)
@@ -94,7 +103,7 @@ class FsNative implements DomainNative {
   createChild(pin: unknown, name: string): string {
     const child = join((pin as { path: string }).path, name)
     mkdirSync(child)
-    return identityOf(child)
+    return this.lineage({ path: child })[0]
   }
   acquireAt(pin: unknown, name: string, _exclusive: boolean): unknown {
     return { pin, name }
@@ -489,6 +498,80 @@ test('pending retry refuses conflicting candidate, builds, debug port, account a
 })
 
 const SHIPIT_GRACE_MS = 15 * 60 * 1000
+
+test('update launch survives reboot device renumbering without changing storage selection', () => {
+  const fixture = launchFixture()
+  try {
+    fixture.persist()
+    fixture.native.device = '0000000000000042'
+    const restored = fixture.restore(fixture.target)!
+    assert.equal(restored.context.home, fixture.selection.home)
+    assert.equal(restored.context.userData, fixture.selection.userData)
+    assert.equal(restored.context.workspace, fixture.selection.workspace)
+    restored.complete()
+    assert.equal(fixture.contextPresent(), false)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('persistent launch identity rejects a different volume or reused directory inode', () => {
+  for (const field of ['volume', 'birth'] as const) {
+    const fixture = launchFixture()
+    try {
+      fixture.persist()
+      fixture.native[field] = fixture.native[field].replace(/1/g, '2')
+      assert.throws(() => fixture.restore(fixture.target), /directory was replaced/)
+      assert.equal(fixture.contextPresent(), true)
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('legacy launch records retain full device and inode checks', () => {
+  const fixture = launchFixture()
+  try {
+    fixture.persist()
+    const path = join(fixture.directory, 'context.json')
+    const record = JSON.parse(readFileSync(path, 'utf8'))
+    record.schema = 1
+    record.identities = ['home', 'userData', 'workspace'].map(
+      (name) => fixture.native.lineage({ path: join(fixture.root, name) })[0]
+    )
+    writeFileSync(path, JSON.stringify(record))
+    assert.ok(fixture.restore(fixture.target))
+    fixture.native.device = '0000000000000042'
+    assert.throws(() => fixture.restore(fixture.target), /directory was replaced/)
+    assert.equal(fixture.contextPresent(), true)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('stable launch identities reject malformed records and unavailable native support', () => {
+  const stable =
+    'darwin:11111111111111111111111111111111:0000000000000002:0000000000000001:00000000'
+  const record = { ...VALID, schema: 2, identities: [stable, stable, stable] }
+  assert.deepEqual(decodeUpdateLaunch(Buffer.from(JSON.stringify(record))), record)
+  for (const identities of [
+    [stable],
+    [stable, stable, 'posix:0000000000000001:0000000000000002'],
+    [stable, stable, `${stable}:extra`],
+  ]) {
+    assert.throws(() => decodeUpdateLaunch(Buffer.from(JSON.stringify({ ...record, identities }))))
+  }
+  const fixture = launchFixture()
+  try {
+    fixture.native.persistentIdentity = () => {
+      throw new Error('volume identity unavailable')
+    }
+    assert.throws(fixture.persist, /volume identity unavailable/)
+    assert.equal(fixture.contextPresent(), false)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
 
 test('non-target launches past the handoff grace cannot destroy the pending transaction', () => {
   for (const build of ['202610132132', '202610150000']) {

@@ -27,6 +27,8 @@ DIAGNOSTIC_EVENT = "launcher_ready"
 
 VERSION_ARGUMENTS = (["--version"], ["-V"])
 PRODUCT_PYTHON_RESERVED = "product_python_reserved_for_bundled_skills"
+MODULE_ARGUMENT = "-m"
+PRODUCT_COMMANDS = frozenset({"service.cli.plugins"})
 
 
 def admit_script(arguments: Sequence[str]) -> None:
@@ -79,7 +81,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("usage: scholarseed-skill-python <bundled-skill-script> [args ...]", file=sys.stderr)
         return EXIT_USAGE
     try:
-        admit_script(arguments)
+        if not (
+            len(arguments) >= 2
+            and arguments[0] == MODULE_ARGUMENT
+            and arguments[1] in PRODUCT_COMMANDS
+        ):
+            admit_script(arguments)
     except (ValueError, OSError, httpx.HTTPError) as error:
         print(f"Skill unavailable: {error}", file=sys.stderr)
         return EXIT_FAILURE

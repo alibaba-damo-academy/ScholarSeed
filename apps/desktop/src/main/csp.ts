@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron'
+import { PLUGIN_SCHEME } from '../plugins.ts'
 
 const MAIN_FRAME_RESOURCE_TYPE = 'mainFrame'
 const CONTENT_SECURITY_POLICY_HEADER = 'Content-Security-Policy'
@@ -16,6 +17,7 @@ export function mainWindowContentSecurityPolicy(accountBaseUrl: string): string 
     `img-src 'self' ${LOOPBACK_HTTP_SOURCE} data: blob:`,
     "font-src 'self' data:",
     `connect-src ${connectSources.join(' ')}`,
+    `frame-src 'self' ${PLUGIN_SCHEME}:`,
     "media-src 'self' blob:",
     "worker-src 'self' blob:",
   ].join('; ')

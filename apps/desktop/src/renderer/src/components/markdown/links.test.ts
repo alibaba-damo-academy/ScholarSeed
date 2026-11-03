@@ -6,7 +6,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ReactMarkdown from 'react-markdown'
 
-import { absoluteSessionFilePath, relativeSessionFilePath } from './links.ts'
+import { absoluteSessionFilePath, messageLinks, relativeSessionFilePath } from './links.ts'
 import { rehypeScholarSeedDecorations } from './decorate.ts'
 
 const LONG_TEXT_LENGTH = 60_000
@@ -169,5 +169,15 @@ test('session file paths follow the session root platform separator', () => {
   assert.equal(
     absoluteSessionFilePath('C:\\session\\', 'outputs/report.md'),
     'C:\\session\\outputs\\report.md'
+  )
+})
+test('user links preserve exact source and destinations without interpreting markup or activating unsafe schemes', () => {
+  const source =
+    '**说明**\n(https://example.com/a_(b)). https://example.com/?q=a%20b#c，后续文字\nfile:///private/data javascript:alert(1) https://'
+  const fragments = messageLinks(source)
+  assert.equal(fragments.map((fragment) => fragment.value).join(''), source)
+  assert.deepEqual(
+    fragments.flatMap((fragment) => (fragment.url ? [fragment.url] : [])),
+    ['https://example.com/a_(b)', 'https://example.com/?q=a%20b#c']
   )
 })

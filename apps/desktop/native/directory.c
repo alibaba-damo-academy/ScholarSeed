@@ -27,6 +27,8 @@
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <sys/mount.h>
+#include <sys/attr.h>
+#include <uuid/uuid.h>
 #include <unistd.h>
 #include "darwin-permissions.h"
 #define PATH_UNITS 4096
@@ -55,6 +57,38 @@ static void failure(struct directory_error *error, const char *code, uint32_t sy
   error->permission_index = -1;
   error->permission_scope = 0;
 }
+
+#ifndef _WIN32
+bool directory_persistent_identity(struct directory *directory,
+                                   char identity[DIRECTORY_IDENTITY_BYTES],
+                                   struct directory_error *error) {
+  int descriptor = directory->handles[directory->count - 1];
+  struct attrlist attributes = { .bitmapcount = ATTR_BIT_MAP_COUNT,
+    .volattr = ATTR_VOL_INFO | ATTR_VOL_UUID };
+  struct { uint32_t length; uuid_t uuid; } volume = {0};
+  struct stat info;
+  if (fgetattrlist(descriptor, &attributes, &volume, sizeof(volume), 0) ||
+      fstat(descriptor, &info)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  if (volume.length != sizeof(volume) || uuid_is_null(volume.uuid) ||
+      !info.st_ino || info.st_birthtimespec.tv_sec <= 0 ||
+      info.st_birthtimespec.tv_nsec < 0 || info.st_birthtimespec.tv_nsec >= 1000000000) {
+    failure(error, "ERR_LEASE_UNSUPPORTED", 0);
+    return false;
+  }
+  char uuid[33];
+  for (size_t i = 0; i < sizeof(volume.uuid); i++)
+    snprintf(uuid + i * 2, 3, "%02x", volume.uuid[i]);
+  /* st_dev is a mount/session identity. Do not persist it across boots.
+     Birth time also fences reuse of an inode on the same persistent volume. */
+  snprintf(identity, DIRECTORY_IDENTITY_BYTES, "darwin:%s:%016" PRIx64 ":%016" PRIx64 ":%08" PRIx32,
+           uuid, (uint64_t)info.st_ino, (uint64_t)info.st_birthtimespec.tv_sec,
+           (uint32_t)info.st_birthtimespec.tv_nsec);
+  return true;
+}
+#endif
 
 static uint32_t close_handle(file_handle handle) {
 #ifdef _WIN32

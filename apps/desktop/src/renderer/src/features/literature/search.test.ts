@@ -4,6 +4,8 @@ import test from 'node:test'
 
 import {
   loadConversationSearch,
+  requestConversationSearch,
+  requestDownloadCard,
   createLiteratureSearch,
   LiteratureApiError,
   streamLiteratureSearch,
@@ -52,6 +54,95 @@ const papers = [
     source: 'paperhub',
   },
 ]
+
+test('copy loads all saved papers by exact session/card without library lookups or writes', async (context) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  context.after(() => {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => 'http://127.0.0.1' } },
+  })
+  const requests: Array<{ url: string; method?: string }> = []
+  const saved = Array.from({ length: 40 }, (_, index) => ({
+    id: String(index),
+    title: `Paper ${index + 1}`,
+  }))
+  globalThis.fetch = async (input, options) => {
+    requests.push({ url: String(input), method: options?.method })
+    return new Response(JSON.stringify({ session_id: 'session', retained: 40, papers: saved }))
+  }
+  const result = await requestConversationSearch('session', 'saved/card')
+  assert.deepEqual(result.papers, saved)
+  assert.deepEqual(requests, [
+    {
+      url: 'http://127.0.0.1/api/sessions/session/literature/results/saved%2Fcard',
+      method: undefined,
+    },
+  ])
+  await assert.rejects(
+    requestConversationSearch('other-session', 'saved/card'),
+    /literature_result_invalid/
+  )
+})
+
+test('download copy loads every scoped receipt and rejects incomplete or mismatched results', async () => {
+  const originalWindow = globalThis.window
+  const originalFetch = globalThis.fetch
+  const requests: { url: string; method?: string }[] = []
+  const saved = Array.from({ length: 5 }, (_, index) => ({
+    paper_id: `paper-${index}`,
+    literature_id: `literature-${index}`,
+    attachment_id: `attachment-${index}`,
+    title: `Paper ${index}`,
+    revision: `revision-${index}`,
+  }))
+  const card = {
+    schema_version: '1.0' as const,
+    session_id: 'session',
+    run: 'run/frozen',
+    project_id: 'project',
+    papers: saved.slice(0, 3),
+    omitted_papers: 2,
+    failures: [],
+  }
+  let payload = { ...card, papers: saved }
+  globalThis.window = {
+    scholarseed: { getApiBase: () => 'http://127.0.0.1' },
+  } as unknown as Window & typeof globalThis
+  globalThis.fetch = async (input, options) => {
+    requests.push({ url: String(input), method: options?.method })
+    return new Response(JSON.stringify(payload))
+  }
+  try {
+    const complete = await requestDownloadCard(card)
+    assert.deepEqual(complete.papers, saved)
+    assert.equal(complete.omitted_papers, 0)
+    assert.deepEqual(requests, [
+      {
+        url: 'http://127.0.0.1/api/sessions/session/literature/downloads?run=run%2Ffrozen&project_id=project',
+        method: undefined,
+      },
+    ])
+    for (const invalid of [
+      { ...card, session_id: 'other-session', papers: saved },
+      { ...card, run: 'other-run', papers: saved },
+      { ...card, project_id: 'other-project', papers: saved },
+      { ...card, papers: saved.slice(0, 3) },
+      { ...card, papers: saved.map((paper) => ({ ...paper, revision: 'changed' })) },
+    ]) {
+      payload = invalid
+      await assert.rejects(requestDownloadCard(card), /download_receipt_invalid/)
+    }
+  } finally {
+    globalThis.window = originalWindow
+    globalThis.fetch = originalFetch
+  }
+})
 
 test('search report evidence stays inside its card rather than making file cards', () => {
   const result = {
@@ -103,7 +194,7 @@ test('selected search papers convert to importable BibTeX', () => {
 })
 
 test('literature search content fills the available workbench width', () => {
-  const source = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('./Matches.tsx', import.meta.url), 'utf8')
   assert.match(source, /className="flex min-h-0 w-full min-w-0 flex-1 flex-col/)
   assert.match(source, /aria-label=\{t\('search.selectAll'\)\}\s+checked=\{allShownSelected\}/)
   // 正文列是推荐理由, 全文获取列与详情摘要由列集配置决定, 结果表不再读摘要
@@ -127,9 +218,15 @@ test('AI search results drop abstracts so the library import stays without one',
 })
 
 test('submitted searches and conversation results share the query summary header', () => {
-  const source = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
-  const resultsSource = readFileSync(new URL('./Results.tsx', import.meta.url), 'utf8')
-  assert.match(source, /query=\{task\.query\}/)
+  const searchSource = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('./Matches.tsx', import.meta.url), 'utf8')
+  const resultsSource = readFileSync(new URL('./Report.tsx', import.meta.url), 'utf8')
+  assert.match(searchSource, /query=\{task\.query\}/)
+  assert.match(searchSource, /<SearchSurface\s+\{\.\.\.props\}/)
+  assert.match(
+    readFileSync(new URL('./Results.tsx', import.meta.url), 'utf8'),
+    /<ResultReport\s+View=\{LiteratureSearchView\}/
+  )
   assert.match(source, /query\?: string/)
   assert.match(source, /i18nKey="search.summary"\s+values=\{\{ query \}\}/)
   assert.match(source, /t\('search.paperCount', \{ count: papers.length \}\)/)
@@ -151,8 +248,10 @@ test('project search keeps its scope and imports only into the current project',
   assert.ok(searchSource.includes('const projectId = state.homeSelectedProjectId'))
   const menuSource = readFileSync(new URL('./JoinMenu.tsx', import.meta.url), 'utf8')
   assert.ok(menuSource.includes('listLiteratureCollections(projectId)'))
-  assert.ok(menuSource.includes('await pushLibItem(items, destination, projectId)'))
-  assert.ok(menuSource.includes('!projectId && Boolean(tree?.projects.length)'))
+  assert.ok(menuSource.includes('await pushLibItem(papers, destination, projectId)'))
+  const joiningSource = readFileSync(new URL('./Joining.tsx', import.meta.url), 'utf8')
+  assert.ok(joiningSource.includes('!projectId && Boolean(tree?.projects.length)'))
+  assert.ok(joiningSource.includes('await ports.admit(items, destination)'))
   const openSearch = storeSource.slice(
     storeSource.indexOf('openLiteratureSearch: (task)'),
     storeSource.indexOf('restoreLiteratureSearches:')
@@ -173,7 +272,7 @@ test('opening a conversation literature result leaves fullscreen assistant cover
 test('search imports refresh shared literature counts after persistence succeeds', () => {
   const source = readFileSync(new URL('./JoinMenu.tsx', import.meta.url), 'utf8')
   const state = readFileSync(new URL('./joinState.ts', import.meta.url), 'utf8')
-  assert.match(source, /await pushLibItem\(items, destination, projectId\)\s+recordJoined/)
+  assert.match(source, /await pushLibItem\(papers, destination, projectId\)\s+recordJoined/)
   assert.match(state, /export function recordJoined[\s\S]*?catalogue\.reload\(\)/)
 })
 
@@ -277,7 +376,7 @@ test('literature search SSE parser handles chunk boundaries and seq replay dedup
             )
           )
           controller.enqueue(
-            encoder.encode('data: {\"schema_version\":1,\"seq\":2,\"type\":\"content.delta\",')
+            encoder.encode('data: {"schema_version":1,"seq":2,"type":"content.delta",')
           )
           controller.enqueue(encoder.encode('"data":{"text":"new"}}\n\n'))
           controller.close()
@@ -575,7 +674,8 @@ test('retrieval warnings map legacy diagnostics to localized keys without exposi
 test('unrestorable searches surface as an interrupted status instead of an internal code', () => {
   // 重启后 serve 只给投影状态: 前端必须把它当终态, 既不能再订阅 SSE, 也不能退回 unknown 文案。
   const source = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
-  assert.match(source, /search_interrupted: 'search\.status\.search_interrupted'/)
+  const presentation = readFileSync(new URL('./Matches.tsx', import.meta.url), 'utf8')
+  assert.match(presentation, /search_interrupted: 'search\.status\.search_interrupted'/)
   const terminal = source.slice(
     source.indexOf('const TERMINAL_STATUSES'),
     source.indexOf('const RESULT_SORT_LABELS')

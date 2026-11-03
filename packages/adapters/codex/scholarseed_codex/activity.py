@@ -89,6 +89,7 @@ class NativeActivityBlocker(str, Enum):
     GENERATION_CHANGED = "native_activity_generation_changed"
     LOADED_THREADS_CHANGED = "native_loaded_threads_changed"
     THREAD_NOT_LOADED = "native_thread_not_loaded"
+    THREAD_PRESENT = "native_thread_present"
     UNKNOWN_OWNERSHIP = "native_thread_ownership_unknown"
     PAGINATION_INCOMPLETE = "native_activity_pagination_incomplete"
 
@@ -112,7 +113,9 @@ class NativeActivityHost(Protocol):
     @property
     def process_generation(self) -> int: ...
 
-    async def request(self, method: str, params: Any) -> dict[str, Any]: ...
+    async def request(
+        self, method: str, params: Any, *, generation: int | None = None
+    ) -> dict[str, Any]: ...
 
 
 class _NativeActivityError(ValueError):
@@ -181,12 +184,22 @@ class NativeActivity:
         return tuple(sorted(descendants, key=lambda node: node.thread_id))
 
     async def inspect(self) -> NativeActivityState:
+        return await self._inspect(root_absent=False)
+
+    async def inspect_absence(self) -> NativeActivityState:
+        return await self._inspect(root_absent=True)
+
+    async def _inspect(self, *, root_absent: bool) -> NativeActivityState:
         generation = self._host.process_generation
         loaded_ids: tuple[str, ...] = ()
         blockers: set[NativeActivityBlocker] = set()
         try:
             loaded_ids = await self._loaded(generation)
-            if self._root_thread_id and self._root_thread_id not in loaded_ids:
+            if root_absent and not self._root_thread_id:
+                raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+            if root_absent and self._root_thread_id in loaded_ids:
+                raise _NativeActivityError(NativeActivityBlocker.THREAD_PRESENT)
+            if not root_absent and self._root_thread_id and self._root_thread_id not in loaded_ids:
                 raise _NativeActivityError(NativeActivityBlocker.THREAD_NOT_LOADED)
             threads = {
                 thread_id: await self._thread(thread_id, generation) for thread_id in loaded_ids
@@ -327,7 +340,7 @@ class NativeActivity:
         self, method: str, params: dict[str, Any], generation: int
     ) -> dict[str, Any]:
         self._require_generation(generation)
-        result = await self._host.request(method, params)
+        result = await self._host.request(method, params, generation=generation)
         self._require_generation(generation)
         if not isinstance(result, dict):
             raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)

@@ -14,6 +14,8 @@ import { Icon } from '../../icons'
 import { activeThread, useApp, type ComposerReference } from '../../store'
 import { fetchResourceDirectoryTree, importAttachmentToResources } from './api'
 import { ResourceSaveDialog } from './Save'
+import { SentImages } from './Images'
+import { imageReference } from './pictures'
 
 type FileReference = Extract<ComposerReference, { type: 'file' }>
 
@@ -94,32 +96,55 @@ export function SentAttachments({ refs }: { refs: ComposerReference[] }): React.
     act.noticeResource('ok', { key: 'feedback.savedResource', name: result.node.name })
   }
 
+  const actions = (ref: FileReference): React.ReactNode => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          unstyled
+          aria-label={t('attachments.actions', { title: ref.title })}
+          className="inline-flex h-[var(--vds-space-7)] items-center justify-center rounded-[var(--vds-radius-2)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-2)] text-[var(--vds-text-secondary)] transition-colors hover:bg-[var(--vds-surface-hover)] aria-[expanded=true]:bg-[var(--vds-surface-hover)]"
+          icon={<Icon name="more-horizontal" size={12} />}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent>
+        <DropdownMenuItem
+          disabled={!state.projects.length || !thread.sessionId}
+          onSelect={() => open(ref)}
+        >
+          {t('attachments.save')}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+  const images = refs.filter(imageReference)
+  const files = thread.sessionId ? refs.filter((reference) => !imageReference(reference)) : refs
   return (
     <>
-      <ComposerAttachments
-        refs={refs}
-        onOpen={act.openFilePreview}
-        renderActions={(ref) => (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+      {thread.sessionId && images.length > 0 && (
+        <SentImages
+          sessionId={thread.sessionId}
+          refs={images}
+          renderActions={(ref) => (
+            <>
               <Button
-                unstyled
-                aria-label={t('attachments.actions', { title: ref.title })}
-                className="inline-flex h-[var(--vds-space-7)] items-center justify-center rounded-[var(--vds-radius-2)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-2)] text-[var(--vds-text-secondary)] transition-colors hover:bg-[var(--vds-surface-hover)] aria-[expanded=true]:bg-[var(--vds-surface-hover)]"
-                icon={<Icon name="more-horizontal" size={12} />}
-              />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuItem
-                disabled={!state.projects.length || !thread.sessionId}
-                onSelect={() => open(ref)}
+                onClick={() =>
+                  act.openFilePreview({
+                    path: ref.path,
+                    title: ref.title,
+                    source: ref.previewSource,
+                    sessionId: thread.sessionId!,
+                    mediaType: ref.mediaType,
+                  })
+                }
               >
-                {t('attachments.save')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      />
+                {t('attachments.openImage')}
+              </Button>
+              {actions(ref)}
+            </>
+          )}
+        />
+      )}
+      <ComposerAttachments refs={files} onOpen={act.openFilePreview} renderActions={actions} />
       <ResourceSaveDialog
         open={source !== null}
         onOpenChange={(value) => {

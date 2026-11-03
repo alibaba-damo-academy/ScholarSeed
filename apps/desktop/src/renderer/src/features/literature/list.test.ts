@@ -347,7 +347,7 @@ test('double-clicking a row opens its primary fulltext and nothing else', () => 
   assert.match(listSource, /const ROW_SELECTOR_CLASS = 'lit-row'/)
   assert.match(
     listSource,
-    /const ROW_CLASS =\s*'lit-row relative grid min-w-max library-narrow:min-w-\[var\(--vds-library-table-narrow-min-width\)\] items-center/
+    /const ROW_CLASS =\s*'lit-row relative grid min-w-\[var\(--literature-grid-width\)\] library-narrow:min-w-\[max\(var\(--vds-library-table-narrow-min-width\),var\(--literature-grid-width\)\)\] items-center/
   )
   assert.match(
     listSource,

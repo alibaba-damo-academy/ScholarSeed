@@ -181,7 +181,7 @@ class _Live:
             return None
         return {"name": name, "version": "1.2.3", "active": True}
 
-    def pending_hil_snapshot(self) -> list[dict[str, Any]]:
+    def pending_hil_snapshot(self, *, blocking_only: bool = True) -> list[dict[str, Any]]:
         return []
 
     def artifact_snapshot(self) -> list[dict[str, Any]]:

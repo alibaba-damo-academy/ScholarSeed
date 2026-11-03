@@ -42,6 +42,12 @@
     },
     {
       "mode": 420,
+      "path": ".scholarseed-plugin.json",
+      "sha256": "d1fff116aeaa80b7016246ead0ad6be30970b4f64e346a6783e4a7aaaa713158",
+      "size": 3452
+    },
+    {
+      "mode": 420,
       "path": ".slr-home",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size": 0
@@ -49,8 +55,8 @@
     {
       "mode": 420,
       "path": "PACKAGE-MANIFEST.sha256",
-      "sha256": "d3a7f48b683c88c403985bc39ecdfd846d4d591adf0e4e41c67d37a34ed15b85",
-      "size": 23013
+      "sha256": "b88b259f4f7c50acaf9031512edba435ec77693e4f21670533ada5a439b824aa",
+      "size": 23919
     },
     {
       "mode": 420,
@@ -61,14 +67,14 @@
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "a796c9ee82c3395ba83f1fffcf309d8d7028d5af97396fa9c37454ce3117f55b",
-      "size": 47189
+      "sha256": "3135e23bb2f093d790712b90db387fb7eebfd119beadc063cd993dba355f23d0",
+      "size": 47193
     },
     {
       "mode": 420,
       "path": "VERSION",
-      "sha256": "a581dc973cf82caf1a6424ec3f3c1bc143567e58e84d22b5df1077466c4f0e9f",
-      "size": 11
+      "sha256": "4f9af028e77e82c8f838afcadb126e9b87082f5808ae2894b918238abeae6e0d",
+      "size": 13
     },
     {
       "mode": 420,
@@ -117,6 +123,60 @@
       "path": "assets/unsrtnat_scholarseed.bst",
       "sha256": "8b259bd27866e6ec60b7f5755ef2b554c32dde36122ed956a0332d93c462279c",
       "size": 25044
+    },
+    {
+      "mode": 420,
+      "path": "components/authorization.json",
+      "sha256": "60273a4b17c50a0cb0818818e7e0d0dcead7e28f42108abd90b30cbcb621b170",
+      "size": 2784
+    },
+    {
+      "mode": 420,
+      "path": "components/cards.js",
+      "sha256": "d6531724e4f7fc6d125ab4376d092c154aefdcc4380a9e2c72da009f5ce9a0e1",
+      "size": 2295
+    },
+    {
+      "mode": 420,
+      "path": "components/delivery.json",
+      "sha256": "abe9df7d32113fd3b7dbfd5f7ca1e894f5800fd259b73b3a27f0ccae1d857008",
+      "size": 10274
+    },
+    {
+      "mode": 420,
+      "path": "components/details.json",
+      "sha256": "6986cfa9f0885d1233529062ed42183ec0a47eefabd066b7af5f8a0751137ecc",
+      "size": 6179
+    },
+    {
+      "mode": 420,
+      "path": "components/downloads.json",
+      "sha256": "fc3a47744906e062e80744a607ac9ab7354891b494313b19e6256faadd8f9b23",
+      "size": 2722
+    },
+    {
+      "mode": 420,
+      "path": "components/outline.json",
+      "sha256": "f7b01421520e44e15230f38cfd896c8c364401ff97082aede909db693e7f1767",
+      "size": 4439
+    },
+    {
+      "mode": 420,
+      "path": "components/question.json",
+      "sha256": "5735dbe32002318f13c9ee99bd6f66a6e2089fc8c25e19b5c66e11fc46327652",
+      "size": 2621
+    },
+    {
+      "mode": 420,
+      "path": "components/results.json",
+      "sha256": "406412e298cfb04b08b215cbdfbed3303e70c314ba1979eb609a8bdc37c401d7",
+      "size": 7043
+    },
+    {
+      "mode": 420,
+      "path": "components/review.json",
+      "sha256": "12ab01b58ed9854408c1bf59d043e32ec23b80ff76294ae99e90fe35469e82cb",
+      "size": 4173
     },
     {
       "mode": 420,
@@ -1438,6 +1498,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "a796c9ee82c3395ba83f1fffcf309d8d7028d5af97396fa9c37454ce3117f55b",
-  "version": "2026.10.30"
+  "source_document_sha256": "3135e23bb2f093d790712b90db387fb7eebfd119beadc063cd993dba355f23d0",
+  "version": "2026.10.30+1"
 }

@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="书深插件开发专题指南：对话创建、界面绘制、组件、交互、API 与测试。">
+  <link rel="icon" href="data:,">
+  <title>插件开发指南 · 书深</title>
+  <style>
+/* Hallmark · shape: documentation workbench · theme: existing ScholarSeed · scope: app · v2.0.0 */
+/* Critique: source-first reading, green active navigation, no decorative hero. */
+/* Waiver: technical documentation retains complete tables and code rather than a marketing word budget. */
+:root {
+  color-scheme: light;
+  --paper: #faf8f4;
+  --surface: #fdfdfa;
+  --ink: #272727;
+  --muted: #606861;
+  --line: #dedfd7;
+  --accent: #2c5545;
+  --tint: #e7eee8;
+  --code: #f0f1ec;
+  --warning: #fff3d7;
+  --warning-line: #ad6b08;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { overflow-x: clip; }
+html { scroll-padding-top: 90px; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--font); line-height: 1.8; }
+a { color: var(--accent); text-underline-offset: 4px; }
+button, input { font: inherit; }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+header { border-bottom: 1px solid var(--line); background: var(--paper); }
+.mast { max-width: 1540px; margin: auto; padding: 20px 32px; display: flex; gap: 20px; align-items: center; justify-content: space-between; }
+.brand { font-size: 20px; font-weight: 650; text-decoration: none; color: var(--ink); }
+.mast span { font-size: 14px; color: var(--muted); }
+.workspace { max-width: 1540px; margin: auto; display: grid; grid-template-columns: 250px minmax(0, 1fr) 210px; gap: 40px; padding: 32px; }
+.sidebar, .outline { align-self: start; position: sticky; top: 24px; max-height: calc(100dvh - 48px); overflow-y: auto; }
+nav { display: grid; gap: 4px; }
+nav a { padding: 8px 12px; border-radius: 8px; text-decoration: none; color: var(--ink); font-size: 15px; }
+nav a:hover, nav a[aria-current="page"] { background: var(--tint); color: var(--accent); }
+nav a[aria-current="page"] { font-weight: 650; }
+.nav-title { margin: 24px 12px 8px; font-size: 13px; color: var(--muted); }
+.nav-title:first-child { margin-top: 0; }
+.sidebar label { display: block; margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+input { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--surface); color: var(--ink); }
+input:hover { border-color: var(--accent); }
+.search { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 20px; }
+.results { padding: 0; list-style: none; font-size: 14px; }
+.results a { display: block; margin: 12px 0; }
+.results small { display: block; color: var(--muted); }
+.help { color: var(--muted); font-size: 12px; }
+main { min-width: 0; }
+article { padding: 0 0 48px; overflow-wrap: break-word; }
+article + article { border-top: 1px solid var(--line); padding-top: 40px; }
+article[hidden] { display: none; }
+h1, h2, h3, h4 { min-width: 0; overflow-wrap: break-word; line-height: 1.4; text-wrap: balance; }
+h1 { font-size: 32px; margin: 12px 0 28px; font-weight: 650; }
+h2 { font-size: 24px; margin: 44px 0 16px; padding-top: 4px; }
+h3 { font-size: 19px; margin: 32px 0 16px; }
+h4 { font-size: 16px; margin: 24px 0 12px; }
+p, ul, ol { margin-top: 12px; margin-bottom: 16px; }
+li { margin: 8px 0; }
+strong { font-weight: 650; }
+.source { font-size: 13px; color: var(--muted); }
+blockquote { margin: 20px 0; border: 1px solid var(--line); padding: 12px 20px; background: var(--tint); border-radius: 8px; }
+blockquote p { margin: 0; }
+.warning { border-color: var(--warning-line); background: var(--warning); }
+code { font-family: var(--mono); font-size: .88em; background: var(--code); padding: 0 4px; border-radius: 4px; overflow-wrap: anywhere; }
+pre { position: relative; padding: 40px 20px 20px; background: var(--code); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; line-height: 1.7; }
+pre code { display: block; padding: 0; border-radius: 0; overflow-wrap: normal; font-size: 13px; }
+.copy { position: absolute; right: 12px; top: 8px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+.copy:hover, .copy:active { color: var(--accent); border-color: var(--accent); }
+.copy:disabled { opacity: .5; cursor: not-allowed; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin: 20px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; display: block; overflow-x: auto; }
+th, td { padding: 12px 16px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); min-width: 130px; }
+th { background: var(--tint); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+img { max-width: 100%; height: auto; border-radius: 8px; }
+.outline h2 { font-size: 13px; color: var(--muted); margin: 0 0 12px; }
+.outline a { display: block; text-decoration: none; color: var(--muted); font-size: 13px; line-height: 1.6; margin: 12px 0; }
+.outline a:hover { color: var(--accent); }
+.skip { position: absolute; top: -100px; left: 16px; background: var(--surface); padding: 12px; }
+.skip:focus { top: 8px; }
+footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; color: var(--muted); }
+@media (max-width: 1200px) { .workspace { grid-template-columns: 230px minmax(0, 1fr); gap: 28px; } .outline { display: none; } }
+@media (max-width: 760px) {
+  .mast { padding: 16px 20px; } .mast span { display: none; }
+  .workspace { display: block; padding: 20px; } .sidebar { position: static; max-height: none; border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 24px; }
+  nav { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nav-title { grid-column: 1 / -1; }
+  .search { margin-top: 16px; } h1 { font-size: 28px; } h2 { font-size: 22px; } .brand { font-size: 18px; }
+}
+@media print { .sidebar, .outline, header, .copy, .source { display: none; } .workspace { display: block; padding: 0; } article[hidden] { display: block; } pre { white-space: pre-wrap; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#guide--plugin-概览">跳转到正文</a>
+  <header><div class="mast"><a class="brand" href="#guide">书深 / 插件开发指南</a><span>从业务流程到真实对话</span></div></header>
+  <div class="workspace">
+    <aside class="sidebar" aria-label="专题导航">
+      <nav aria-label="插件专题"><p class="nav-title">开发指南</p><a href="#guide" data-topic="guide">Plugin 概览</a>
+<a href="#create" data-topic="create">创建 Plugin</a>
+<a href="#cards" data-topic="cards">Plugin 公共对话卡片</a>
+<a href="#runtime" data-topic="runtime">Plugin 运行原理</a>
+<a href="#api" data-topic="api">Plugin 可用 API</a>
+<a href="#testing" data-topic="testing">Plugin 测试</a></nav>
+      <section class="search" hidden>
+        <label for="search">搜索全部专题</label><input id="search" type="search" placeholder="搜索 slot、草稿或安装…" autocomplete="off">
+        <p class="help" id="search-status" role="status"></p><ul class="results" id="results"></ul>
+      </section>
+      <p class="help">离线可读，无需登录或启动后端。</p>
+    </aside>
+    <main id="content"><article id="guide" data-page="guide" aria-label="Plugin 概览"><a class="source" href="plugins.md">查看 Markdown 源文档</a><h1 id="guide--plugin-概览">Plugin 概览</h1>
+<p>Plugin 把 Skill 和对话卡片打包成一个可安装的工作流。用 Skill 告诉 AI 怎样完成任务，用卡片展示结果或收集用户选择。</p>
+<blockquote class="warning" role="note">
+<p>插件能力处于<strong>开发者预览</strong>阶段，正在快速迭代，<strong>未来可能出现破坏兼容性的变更</strong>。</p>
+</blockquote>
+<h2 id="guide--plugin-可以做什么">Plugin 可以做什么</h2>
+<ul>
+<li><strong>组织业务流程</strong>：读取获准材料、调用后端、处理用户选择，再交付结果。</li>
+<li><strong>在对话中展示卡片</strong>：复用公共业务卡片，或编写自己的交互。</li>
+<li><strong>复用官方 UI</strong>：使用书深提供的 React、控件和 Conversation 组件。</li>
+<li><strong>交付可检查的安装包</strong>：生成 ZIP 与摘要，由用户确认安装。</li>
+</ul>
+<p>Plugin 不提供全局工具拦截、自动批准或任意书深内部事件 hook。需要调用业务能力时，由 Skill 使用<a href="#api">可用 API</a>，不能只在界面里加一个按钮。</p>
+<h2 id="guide--创建-plugin">创建 Plugin</h2>
+<ul>
+<li><strong>对话生成</strong>：在书深对话中指名 <code>plugin-create</code>，描述你要的流程，让 AI 生成并修改插件。</li>
+<li><strong>自己编写</strong>：<a href="#create--自己编写">按照教程</a>学习 Skill、描述符与界面代码如何协作。示例使用普通 <code>.js</code> 和书深提供的 React，无需另装 Node.js、前端打包工具或编译 JSX/TypeScript；交付前仍需检查并打包 ZIP。</li>
+</ul>
+<h2 id="guide--安装和使用">安装和使用</h2>
+<p>在技能中心点 <strong>添加技能</strong>，检查 ZIP 的身份、版本和风险后确认安装。对话生成的插件也可通过安装卡片交付；卡片发布不等于安装成功。</p>
+<p>安装并启用后，在对话中要求 AI 使用它，无需先通过技能选择器绑定。</p>
+<p>只安装可信来源的插件。组件 iframe 的隔离不等于 Skill 脚本拥有通用沙箱；插件包中不应包含凭据、登录缓存或环境文件。</p>
+<h2 id="guide--开发文档">开发文档</h2>
+<ul>
+<li><a href="#create">创建 Plugin</a>：让 AI 生成，或自己写出第一个插件。</li>
+<li><a href="#cards">Plugin 公共对话卡片</a>：选择公共 slot、组合组件和基础控件。</li>
+<li><a href="#runtime">Plugin 运行原理</a>：了解数据、状态、回答和旧卡片如何流转。</li>
+<li><a href="#api">Plugin 可用 API</a>：查询前端 SDK、后端能力和实际契约。</li>
+<li><a href="#testing">Plugin 测试</a>：检查插件包，运行真实任务并排障。</li>
+</ul>
+</article>
+<article id="create" data-page="create" aria-label="创建 Plugin"><a class="source" href="plugins/create.md">查看 Markdown 源文档</a><h1 id="create--创建-plugin">创建 Plugin</h1>
+<p><a href="#guide">Plugin 概览</a></p>
+<p>本教程创建一个<strong>论文阅读笔记</strong>插件：用户提供论文材料，选择“理解方法”或“核对证据”，AI 按阅读重点生成带来源的笔记。</p>
+<h2 id="create--让-ai-创建">让 AI 创建</h2>
+<p>在书深对话中发送：</p>
+<blockquote>
+<p>请使用 plugin-create 创建 paper-reading-notes 插件。用户提供论文或摘录后，先用卡片询问阅读重点：“理解方法”或“核对证据”。理解方法时整理研究问题、方法步骤和适用条件；核对证据时整理主要结论、对应证据和局限。笔记附上页码或段落位置，材料未提到的内容标为未说明。生成源码、检查并打包 ZIP，再提供安装卡片。</p>
+</blockquote>
+<p>AI 会生成 Skill、描述符、组件和场景。检查交付的源码和报告后，在安装卡片中确认安装。</p>
+<p>要修改它，在同一对话继续指名 <code>plugin-create</code> 并描述变更；不用重新创建一个相同身份的插件。</p>
+<h2 id="create--自己编写">自己编写</h2>
+<p>在安装了目标版本书深后端的 Python 环境中，查询 <code>host</code> 字段需要填写的值：</p>
+<pre><code class="language-sh">python -c &quot;from importlib.metadata import version; print('==' + version('scholarseed'))&quot;
+</code></pre>
+<p>创建以下文件：</p>
+<pre><code class="language-text">paper-reading-notes/                 # 插件源码，也是打包输入目录
+├── SKILL.md                         # 论文阅读流程与笔记要求
+├── .scholarseed-plugin.json          # 插件身份、兼容设置、卡片与动作
+└── components/
+    ├── focus.js                     # 阅读重点选择卡片
+    └── focus.preview.json           # 卡片的示例输入与提交样例
+request.json                        # 校验用请求，放在插件目录外
+</code></pre>
+<p><code>.scholarseed-package.json</code> 是打包工具生成的包清单，不需要手写。</p>
+<h3 id="create--1-skillmd">1 SKILL.md</h3>
+<p><code>SKILL.md</code> 使用<a href="https://agentskills.io/specification">标准 Skill 格式</a>（<a href="https://github.com/agentskills/agentskills">GitHub</a>）。</p>
+<pre><code class="language-markdown">---
+name: paper-reading-notes
+description: 按用户选择的阅读重点，为论文或摘录整理方法笔记或证据笔记。
+version: &quot;0.1.0&quot;
+---
+
+# 论文阅读笔记
+
+1. 确认用户提供的论文或摘录；缺少材料时请用户补充。
+2. 查询 component/catalog，确认 reading.focus 可用。
+3. 使用 component/request 发布“选择阅读重点”卡片，传入 question 和唯一 request_id。
+4. 等待回答，从 result.answers 解析 JSON {action, values}。
+5. action 为 confirm 时，按 values.focus 生成笔记：
+   - method：研究问题、方法步骤、适用条件。
+   - evidence：主要结论、对应证据、研究局限。
+6. 为每条笔记附上页码或段落位置；材料未说明的内容标为“未说明”。
+7. 收到取消或失败结果时停止；仅有摘要或摘录时，注明笔记覆盖的材料范围。
+</code></pre>
+<h3 id="create--2-scholarseed-pluginjson">2 .scholarseed-plugin.json</h3>
+<p>描述符声明插件身份、卡片入口和输入输出。复制下面的内容，将 <code>__HOST__</code> 替换为上方命令的完整输出。</p>
+<pre><code class="language-json">{
+  &quot;schema&quot;: 2,
+  &quot;id&quot;: &quot;paper-reading-notes&quot;,
+  &quot;version&quot;: &quot;0.1.0&quot;,
+  &quot;host&quot;: &quot;__HOST__&quot;,
+  &quot;skill&quot;: &quot;SKILL.md&quot;,
+  &quot;ui&quot;: {
+    &quot;compatibility&quot;: &quot;1.0&quot;,
+    &quot;exports&quot;: [&quot;React&quot;, &quot;mount&quot;, &quot;Button&quot;]
+  },
+  &quot;capabilities&quot;: [&quot;interaction.answer&quot;],
+  &quot;components&quot;: [
+    {
+      &quot;id&quot;: &quot;focus&quot;,
+      &quot;slot&quot;: &quot;reading.focus&quot;,
+      &quot;entry&quot;: &quot;components/focus.js&quot;,
+      &quot;preview&quot;: &quot;components/focus.preview.json&quot;,
+      &quot;input_schema&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [&quot;question&quot;],
+        &quot;properties&quot;: {&quot;question&quot;: {&quot;type&quot;: &quot;string&quot;}},
+        &quot;additionalProperties&quot;: false
+      },
+      &quot;output_schema&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;required&quot;: [&quot;focus&quot;],
+        &quot;properties&quot;: {&quot;focus&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;method&quot;, &quot;evidence&quot;]}},
+        &quot;additionalProperties&quot;: false
+      },
+      &quot;actions&quot;: [
+        {
+          &quot;id&quot;: &quot;confirm&quot;,
+          &quot;capability&quot;: &quot;interaction.answer&quot;,
+          &quot;input_schema&quot;: {
+            &quot;type&quot;: &quot;object&quot;,
+            &quot;required&quot;: [&quot;focus&quot;],
+            &quot;properties&quot;: {&quot;focus&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;method&quot;, &quot;evidence&quot;]}},
+            &quot;additionalProperties&quot;: false
+          }
+        }
+      ]
+    }
+  ],
+  &quot;configuration&quot;: []
+}
+</code></pre>
+<h4 id="create--顶层字段">顶层字段</h4>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+<th>本教程怎么填</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>schema</code></td>
+<td>书深使用的描述符格式版本</td>
+<td>填数字 <code>2</code>。</td>
+</tr>
+<tr>
+<td><code>host</code></td>
+<td>插件支持的书深后端版本</td>
+<td>复制查询命令的完整输出，包含开头的 <code>==</code>。</td>
+</tr>
+<tr>
+<td><code>id</code></td>
+<td>插件的唯一名称</td>
+<td>填 <code>paper-reading-notes</code>，与 Skill 的 <code>name</code> 一致。更新时保持不变。</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td>插件自身的发布版本</td>
+<td>填 <code>0.1.0</code>，与 Skill 和打包命令一致；发布更新时递增。</td>
+</tr>
+<tr>
+<td><code>skill</code></td>
+<td>Skill 入口路径</td>
+<td>填 <code>SKILL.md</code>。</td>
+</tr>
+<tr>
+<td><code>ui.compatibility</code></td>
+<td>书深 UI 接口版本</td>
+<td>填 <code>&quot;1.0&quot;</code>。</td>
+</tr>
+<tr>
+<td><code>ui.exports</code></td>
+<td>组件使用的官方 UI 导出</td>
+<td>填 <code>React</code>、<code>mount</code>、<code>Button</code>；增加控件时同步补充。</td>
+</tr>
+<tr>
+<td><code>capabilities</code></td>
+<td>卡片动作需要的能力</td>
+<td>此例只提交用户选择，填 <code>[&quot;interaction.answer&quot;]</code>。</td>
+</tr>
+<tr>
+<td><code>components</code></td>
+<td>卡片列表</td>
+<td>此例声明一张 <code>focus</code> 卡片，字段见下表。</td>
+</tr>
+<tr>
+<td><code>configuration</code></td>
+<td>可选的配置项声明</td>
+<td>此例没有配置，填 <code>[]</code>。</td>
+</tr>
+</tbody>
+</table>
+<h4 id="create--每张卡片的字段">每张卡片的字段</h4>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>怎么填</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>插件内唯一的组件名称，此例填 <code>focus</code>。</td>
+</tr>
+<tr>
+<td><code>slot</code></td>
+<td>AI 请求卡片时使用的名称，此例填 <code>reading.focus</code>。使用两个以点分隔的名称段，各段以小写字母开头，可包含数字和连字符。</td>
+</tr>
+<tr>
+<td><code>public</code></td>
+<td>默认 <code>false</code>。自己的组件保持默认；引用<a href="#cards--公共业务-slot">公共卡片</a>才设为 <code>true</code>，使用已有公共 slot，并且不能提供 <code>entry</code>。</td>
+</tr>
+<tr>
+<td><code>entry</code></td>
+<td>界面的 JavaScript 路径，此例填 <code>components/focus.js</code>。</td>
+</tr>
+<tr>
+<td><code>preview</code></td>
+<td>检查场景的 JSON 路径，此例填 <code>components/focus.preview.json</code>。</td>
+</tr>
+<tr>
+<td><code>input_schema</code></td>
+<td>卡片 <code>data</code> 的 JSON Schema；省略时默认为对象。写清必填字段和允许的数据类型。</td>
+</tr>
+<tr>
+<td><code>output_schema</code></td>
+<td>用户回答中 <code>values</code> 的 JSON Schema；省略时默认为对象。不要套上 <code>{action, values}</code> 外层信封。</td>
+</tr>
+<tr>
+<td><code>actions</code></td>
+<td>动作数组，默认 <code>[]</code>。每项的 <code>id</code> 是代码传给 <code>submit</code> 或 <code>request</code> 的名称；<code>capability</code> 必须出现在顶层能力数组；<code>input_schema</code> 校验该动作的 <code>values</code>，默认对象。动作 ID 在卡片内唯一。</td>
+</tr>
+</tbody>
+</table>
+<p>例如 <code>submit(&quot;confirm&quot;, {focus: &quot;method&quot;})</code>：<code>confirm</code> 对应动作 ID，<code>{focus: &quot;method&quot;}</code> 同时接受动作和卡片输出 schema 的校验。</p>
+<h4 id="create--配置项与填写约束">配置项与填写约束</h4>
+<p>需要声明配置时，每项填写 <code>key</code>（唯一名称）、<code>type</code>（<code>string</code>、<code>integer</code> 或 <code>boolean</code>）、<code>label</code>（显示名称），可附 <code>required</code> 和同类型的 <code>default</code>。配置声明目前不提供设置页面或值的存取接口。</p>
+<p>描述符不接受未知字段。资源路径使用 <code>/</code>，相对插件根目录，不使用 <code>..</code>、绝对路径或 Windows 保留名。Schema 不使用 <code>$ref</code> 或 <code>$dynamicRef</code>；改动后重新运行检查。</p>
+<h3 id="create--3-componentsfocusjs">3 components/focus.js</h3>
+<p>按钮把所选方式提交给书深；仅在 pending 状态允许操作。需要可编辑表单时，再接入<a href="#runtime--处理草稿与回答">草稿与状态</a>。</p>
+<pre><code class="language-javascript">(() =&gt; {
+  const { React, mount, Button } = window.scholarseedUI;
+  const create = React.createElement;
+
+  function FocusCard({ state }) {
+    const disabled = state.status !== &quot;pending&quot;;
+    const chinese = state.language.startsWith(&quot;zh&quot;);
+    return create(&quot;section&quot;, { &quot;aria-label&quot;: chinese ? &quot;阅读重点&quot; : &quot;Reading focus&quot; },
+      create(&quot;p&quot;, null, state.data.question),
+      create(Button, {
+        disabled,
+        onClick: () =&gt; window.plugin.submit(&quot;confirm&quot;, { focus: &quot;method&quot; })
+      }, chinese ? &quot;理解方法&quot; : &quot;Understand the method&quot;),
+      create(Button, {
+        disabled,
+        onClick: () =&gt; window.plugin.submit(&quot;confirm&quot;, { focus: &quot;evidence&quot; })
+      }, chinese ? &quot;核对证据&quot; : &quot;Check the evidence&quot;)
+    );
+  }
+
+  mount(state =&gt; create(FocusCard, { state }));
+})();
+</code></pre>
+<h3 id="create--4-componentsfocuspreviewjson">4 components/focus.preview.json</h3>
+<p>场景文件为 <code>focus.js</code> 提供检查数据，通过描述符的 <code>preview</code> 字段关联。<code>data</code> 是示例输入，<code>responses</code> 是模拟动作响应，<code>submissions</code> 是待检查的提交值。正式对话使用实际请求数据，不读取这个文件。</p>
+<pre><code class="language-json">{
+  &quot;data&quot;: {&quot;question&quot;: &quot;这篇论文，你想重点了解什么？&quot;},
+  &quot;responses&quot;: {
+    &quot;confirm&quot;: {&quot;state&quot;: &quot;resolved&quot;, &quot;data&quot;: {&quot;focus&quot;: {&quot;$input&quot;: &quot;focus&quot;}}}
+  },
+  &quot;submissions&quot;: {
+    &quot;confirm&quot;: [{&quot;focus&quot;: &quot;method&quot;}, {&quot;focus&quot;: &quot;evidence&quot;}]
+  }
+}
+</code></pre>
+<h2 id="create--请求卡片">请求卡片</h2>
+<p>安装并启用后，AI 使用以下 <code>scholarseed_bridge</code> 工具参数请求卡片：</p>
+<pre><code class="language-json">{
+  &quot;capability&quot;: &quot;component&quot;,
+  &quot;operation&quot;: &quot;request&quot;,
+  &quot;request&quot;: {
+    &quot;request_id&quot;: &quot;reading-focus-1&quot;,
+    &quot;slot&quot;: &quot;reading.focus&quot;,
+    &quot;data&quot;: {
+      &quot;question&quot;: &quot;这篇论文，你想重点了解什么？&quot;
+    },
+    &quot;title&quot;: &quot;选择阅读重点&quot;,
+    &quot;prompt&quot;: &quot;选择后生成对应的论文阅读笔记。&quot;
+  }
+}
+</code></pre>
+<p>书深后端返回用户选择后，AI 从 <code>result.answers</code> 解析 <code>{action, values}</code>，按 <code>values.focus</code> 生成方法笔记或证据笔记。</p>
+<p>发布前按<a href="#api--查询组件与-slot">API 参考</a>检查 <code>reading.focus</code> 是否与已启用插件冲突。每次新问题使用不同的 <code>request_id</code>。</p>
+<h2 id="create--检查和打包">检查和打包</h2>
+<p>把上面 JSON 的<strong>内层 request</strong> 保存为 <code>request.json</code>，从插件父目录运行：</p>
+<pre><code class="language-sh">python -m service.cli.plugins validate ./paper-reading-notes/.scholarseed-plugin.json ./request.json
+python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-notes --version 0.1.0 --output ./paper-reading-notes-0.1.0.zip
+</code></pre>
+<p>输出 <code>valid=true</code> 后，保留 ZIP 和 SHA-256。ZIP 放在源码目录外；发布更新时递增版本并生成新包。</p>
+<p><code>capabilities_unchecked</code> 表示尚未核验书深运行时的实际能力。离线通过不等于已经安装或运行，下一步仍需<a href="#testing--导入书深并完成第一次对话">导入并完成端到端测试</a>。</p>
+<h2 id="create--安装并试用">安装并试用</h2>
+<ul>
+<li><strong>AI 生成</strong>：在已发布的安装卡片上核对报告并确认安装。<code>published</code> 只表示卡片已发布。</li>
+<li><strong>自己编写</strong>：技能中心 → <strong>添加技能</strong>，选择 ZIP，检查后确认安装。</li>
+</ul>
+<p><img src="assets/plugins/upload.png" alt="书深开发版添加技能弹窗，可选择 ZIP 或文件夹" /></p>
+<p>安装并启用后，发送：</p>
+<blockquote>
+<p>请使用 paper-reading-notes 为我刚上传的论文整理阅读笔记，先让我选择阅读重点。</p>
+</blockquote>
+<p>选择“理解方法”后，应得到研究问题、方法步骤和适用条件；选择“核对证据”后，应得到结论、证据和局限。两类笔记都应包含来源位置。完整检查步骤见<a href="#testing--导入书深并完成第一次对话">Plugin 测试</a>。</p>
+<p>接下来：<a href="#cards">公共对话卡片</a> · <a href="#runtime">运行原理</a>。</p>
+</article>
+<article id="cards" data-page="cards" aria-label="Plugin 公共对话卡片"><a class="source" href="plugins/cards.md">查看 Markdown 源文档</a><h1 id="cards--plugin-公共对话卡片">Plugin 公共对话卡片</h1>
+<p><a href="#guide">Plugin 概览</a></p>
+<p>先选择卡片由谁驱动，再选择界面。<strong>公共 slot 是业务入口；Conversation 是可组合的 UI，两者不是一回事。</strong></p>
+<h2 id="cards--选择卡片">选择卡片</h2>
+<table>
+<thead>
+<tr>
+<th>你要做什么</th>
+<th>使用什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>复用检索、文献选择、授权或保存流程</td>
+<td>由所属领域工具驱动公共 slot</td>
+</tr>
+<tr>
+<td>自己组织已有对话 UI</td>
+<td>Conversation 组件，并接入实际 props 和回调</td>
+</tr>
+<tr>
+<td>收集自己的业务选择</td>
+<td>自定义 slot、数据/动作 schema 和组件代码</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cards--公共业务-slot">公共业务 slot</h2>
+<table>
+<thead>
+<tr>
+<th>slot</th>
+<th>显示内容</th>
+<th>使用方式</th>
+<th>书深前端实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>interaction.question</code></td>
+<td>问题选项与确认</td>
+<td>由 AI 的原生提问流程展示并收集回答。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19">Choices.tsx:19</a></td>
+</tr>
+<tr>
+<td><code>display.literature-search</code></td>
+<td>检索摘要、进入完整结果的按钮</td>
+<td>在文献检索结果流程中展示，使用本轮结果集。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Summary.tsx#L45">Summary.tsx:45</a></td>
+</tr>
+<tr>
+<td><code>preview.literature-results</code></td>
+<td>完整结果、筛选、分页与来源</td>
+<td>从检索摘要打开详情，可选择论文、查看来源或加入文献库。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Details.tsx#L35">Details.tsx:35</a></td>
+</tr>
+<tr>
+<td><code>literature.selection</code></td>
+<td>论文子集选择</td>
+<td>兼容已有文献流程；用户勾选后返回论文 ID 列表。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19">Choices.tsx:19</a></td>
+</tr>
+<tr>
+<td><code>literature.authorization</code></td>
+<td>全文授权涉及的论文</td>
+<td>通过文献授权流程展示，用户确认后才获取全文。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19">Choices.tsx:19</a></td>
+</tr>
+<tr>
+<td><code>display.literature-downloads</code></td>
+<td>逐篇获取或入库结果</td>
+<td>在获取或入库结束后展示，可打开全文或进入文献库。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Downloads.tsx#L16">Downloads.tsx:16</a></td>
+</tr>
+<tr>
+<td><code>display.literature-delivery</code></td>
+<td>保存位置、文件冲突与保存结果</td>
+<td>通过 <code>literature delivery</code> 发起，由用户选择保存目标并确认。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/Delivery.tsx#L74">Delivery.tsx:74</a></td>
+</tr>
+<tr>
+<td><code>display.literature-references</code></td>
+<td>引用列表与来源操作</td>
+<td>展示正文引用的文献，可打开来源、入库或设置分类。</td>
+<td><a href="../apps/desktop/src/renderer/src/features/literature/References.tsx#L131">References.tsx:131</a></td>
+</tr>
+</tbody>
+</table>
+<p>描述符引用公共组件时设置 <code>public: true</code>，指定 slot 和场景文件，不提供 entry。实际数据和动作以<a href="#api--查询组件与-slot">组件目录</a>为准。</p>
+<p>公共 slot 不能通过通用 <code>component/request</code> 或 <code>component/display</code> 伪造调用：</p>
+<ul>
+<li><code>interaction.question</code> 由书深的原生问答流程绑定，没有独立的命令行问答操作。要收集自己的业务选择，按<a href="#create--请求卡片">创建教程</a>使用自定义 slot。</li>
+<li>文献卡片由 <code>literature/result</code>、<code>literature/review</code> 等领域入口建立真实上下文；先查询对应操作的实际契约，不自行拼造数据。</li>
+</ul>
+<p><code>literature.outline</code>、<code>display.literature-review</code> 是已有插件的自定义 slot，不是公共 slot。</p>
+<h3 id="cards--slot-怎样找到组件">slot 怎样找到组件</h3>
+<p>前端入口在 <code>apps/desktop/src/renderer/src/features/literature/Component.tsx</code>。<a href="../apps/desktop/src/renderer/src/features/literature/Component.tsx">源码路由</a>节选：</p>
+<pre><code class="language-typescript">const VIEWS = {
+  'display.literature-search': LiteratureResults,
+  'display.literature-references': LiteratureReferences,
+  'display.literature-downloads': LiteratureDownloads,
+  'display.literature-delivery': LiteratureDeliveryCard,
+  'preview.literature-results': LiteratureDetails,
+};
+const CHOICES = ['interaction.question', 'literature.authorization'];
+const LEGACY_SELECTION = 'literature.selection';
+</code></pre>
+<p>结果卡片接收 <code>content</code> 与业务操作端口 <code>ports</code>；选项卡片接收 <code>data/status/slot/submit</code>。<code>literature.selection</code> 的前端注册标为 <code>legacyOnly</code>，用于已有绑定兼容，不作为新插件的通用问答入口。</p>
+<p>公共 slot 的后端清单在 <a href="../apps/serve/service/capabilities/service/descriptor.py">descriptor.py</a>，动作约束在 <a href="../apps/serve/service/capabilities/service/ui.py">ui.py</a>，前端操作到领域能力的映射在 <a href="../apps/desktop/src/renderer/src/features/literature/ports.ts">ports.ts</a>。修改或复用前同时查这三处，不能只看按钮。</p>
+<p>在描述符中引用已有公共卡片，例如：</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: &quot;results&quot;,
+  &quot;slot&quot;: &quot;display.literature-search&quot;,
+  &quot;public&quot;: true,
+  &quot;preview&quot;: &quot;components/results.json&quot;
+}
+</code></pre>
+<p>将这项放入 <code>components</code>，按实际数据和动作补齐 schema 与能力声明。这里没有 <code>entry</code>，因为界面由书深实现；声明只建立引用，真正显示仍走文献领域工具。</p>
+<h2 id="cards--公共卡片视觉示例">公共卡片视觉示例</h2>
+<p>以下为公共卡片的组件预览。示例数据位于 <code>skills/community/&lt;插件名&gt;/components/</code>。</p>
+<h3 id="cards--问答与论文选择">问答与论文选择</h3>
+<p><code>interaction.question</code> 显示选项，<code>literature.selection</code> 显示可选论文子集。问答的题干和整轮确认由外层交互流程负责，不由下面的选项组件单独完成。</p>
+<p><img src="assets/plugins/cards/interaction.question.png" alt="interaction.question 的选项组件预览" /></p>
+<p><img src="assets/plugins/cards/literature.selection.png" alt="literature.selection 的论文子集组件预览" /></p>
+<h3 id="cards--检索摘要与完整结果">检索摘要与完整结果</h3>
+<p><code>display.literature-search</code> 给出摘要，<code>preview.literature-results</code> 承载完整结果、筛选与操作。示例数据见 <a href="../skills/community/agentic-search/components">agentic-search/components</a> 中的 <code>results.json</code>、<code>details.json</code> 和 <code>question.json</code>。</p>
+<p><img src="assets/plugins/cards/display.literature-search.png" alt="display.literature-search 的检索摘要组件预览" /></p>
+<p><img src="assets/plugins/cards/preview.literature-results.png" alt="preview.literature-results 的完整结果组件预览" /></p>
+<h3 id="cards--全文授权与获取结果">全文授权与获取结果</h3>
+<p><code>literature.authorization</code> 展示本次全文授权涉及的论文；按钮和授权结果由书深原生流程处理。<code>display.literature-downloads</code> 显示逐篇结果。示例分别来自 <a href="../skills/community/literature-review/components/authorization.json">literature-review/components/authorization.json</a> 与 <a href="../skills/community/precise-literature-search/components/downloads.json">precise-literature-search/components/downloads.json</a>。论文子集样例在同目录 <code>scenario.json</code>。</p>
+<p><img src="assets/plugins/cards/literature.authorization.png" alt="literature.authorization 的授权范围组件预览" /></p>
+<p><img src="assets/plugins/cards/display.literature-downloads.png" alt="display.literature-downloads 的获取结果组件预览" /></p>
+<h3 id="cards--保存交付与引用">保存交付与引用</h3>
+<p><code>display.literature-delivery</code> 收集保存目标和相关选择；<code>display.literature-references</code> 显示引用列表及来源操作。示例分别来自 <a href="../skills/community/precise-literature-search/components/delivery.json">precise-literature-search/components/delivery.json</a> 与 <a href="../skills/community/research-idea-partner/components/references.json">research-idea-partner/components/references.json</a>。</p>
+<p><img src="assets/plugins/cards/display.literature-delivery.png" alt="display.literature-delivery 的保存交付组件预览" /></p>
+<p><img src="assets/plugins/cards/display.literature-references.png" alt="display.literature-references 的引用组件预览" /></p>
+<h2 id="cards--conversation-组件">Conversation 组件</h2>
+<p>从 <code>window.scholarseedUI.Conversation</code> 取组件，在 ui.exports 声明 <code>Conversation</code>。</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>当前导出</th>
+<th>开发者负责什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>科研卡片</td>
+<td><code>Choices</code>、<code>Results</code>、<code>Details</code>、<code>References</code>、<code>Downloads</code>、<code>Delivery</code>、<code>Review</code></td>
+<td>真实业务数据、操作端口、授权结果；科研卡通常接收 <code>content</code> 与 <code>ports</code>，Choices 接收 <code>data/status/slot/submit</code></td>
+</tr>
+<tr>
+<td>正文与原文</td>
+<td><code>Markdown</code>、<code>Message</code>、<code>Code</code>、<code>Formula</code>、<code>Tabulation</code></td>
+<td>原始内容、复制/打开回调、引用和数学含义核对；显示代码不会执行代码</td>
+</tr>
+<tr>
+<td>产物</td>
+<td><code>Artifact</code>、<code>ArtifactGroup</code>、<code>ArtifactMenuItems</code>、<code>ArtifactDestination</code></td>
+<td>不可变文件/版本身份、保存/导入/打开操作及结果；分组只负责布局</td>
+</tr>
+<tr>
+<td>图片</td>
+<td><code>ImageView</code>、<code>Images</code>、<code>ImageThumbnail</code></td>
+<td>已授权 URL、资源身份、加载失败、选中状态与操作；组件不会读取任意本地文件</td>
+</tr>
+<tr>
+<td>引用与上下文</td>
+<td><code>CitationLink</code>、<code>WebCitationLink</code>、<code>CitationSources</code>、<code>ConversationReference</code>、<code>ComposerRefChip</code></td>
+<td>引用解析、授权预览、历史快照、分页与跳转；前端标签不是读取权限</td>
+</tr>
+<tr>
+<td>执行过程</td>
+<td><code>ExecutionProcess</code>、<code>ExecutionBatch</code>、<code>ToolExecution</code>、<code>ExecutionIO</code>、<code>ExecutionStatus</code>、<code>WebSearchRecord</code></td>
+<td>真实轮次、状态、输入输出和时间；不能把未知/中断显示为成功</td>
+</tr>
+<tr>
+<td>任务辅助</td>
+<td><code>Plan</code>、<code>Failure</code>、<code>Suggestions</code>、<code>Attachments</code>、<code>FileFormatIcon</code></td>
+<td>计划投影、恢复资格、发送、文件身份与打开操作；UI 不自动恢复任务或发送消息</td>
+</tr>
+</tbody>
+</table>
+<p>输入提示见 <code>catalog.composition.Conversation</code>，精确类型见<a href="#api--源码与类型">源码与类型</a>。导出组件不表示其所有书深内部回调都向普通插件开放。</p>
+<h2 id="cards--基础控件">基础控件</h2>
+<ul>
+<li><strong>输入</strong>：Button、IconButton、Checkbox、Input、Textarea、RadioGroup、Select。</li>
+<li><strong>布局</strong>：Card 及其 Header、Title、Description、Content、Footer。</li>
+<li><strong>浮层</strong>：Dialog、DropdownMenu 及其已声明子组件。</li>
+<li><strong>表格与反馈</strong>：Table、Alert、Badge、Progress。</li>
+</ul>
+<p>精确导出先查 <code>catalog.exports</code>，在 ui.exports 声明实际使用的顶层名称。使用官方 React，不重复打包 React 或从 Desktop 内部导入代码；自定义样式由自己的构建提供，不能假设书深生成任意 Tailwind 类。</p>
+<p>接下来：<a href="#runtime--处理草稿与回答">用组件完成交互</a>。</p>
+</article>
+<article id="runtime" data-page="runtime" aria-label="Plugin 运行原理"><a class="source" href="plugins/runtime.md">查看 Markdown 源文档</a><h1 id="runtime--plugin-运行原理">Plugin 运行原理</h1>
+<p><a href="#guide">Plugin 概览</a></p>
+<p>AI 按 Skill 的指令发起请求，书深后端校验后，在书深对话界面展示卡片。用户提交选择后，AI 根据回答继续完成任务。</p>
+<p><img src="assets/plugins/runtime-v2.png" alt="自定义 Plugin 从用户任务、AI 与命令行调用，到后端校验、对话卡片及回答回传的链路" /></p>
+<p>以<a href="#create">论文阅读笔记</a>为例：AI 请求 <code>reading.focus</code> → 书深后端检查数据 → 对话界面加载 <code>focus.js</code> → 用户选择“理解方法” → 后端返回 <code>{focus: &quot;method&quot;}</code> → AI 生成方法笔记。</p>
+<h2 id="runtime--从加载到绘制">从加载到绘制</h2>
+<ol>
+<li>安装检查通过后，用户确认安装并启用。AI 在真实任务中发现并使用 Skill。</li>
+<li>AI 查询组件目录，向可用 slot 发出请求；公共业务卡片由领域工具驱动。</li>
+<li>书深固定本次交互的插件和 UI 资源版本：自定义组件在隔离 iframe 中加载包内 entry；公共卡片使用书深前端实现，不提供包内 entry。</li>
+<li>自定义组件通过 <code>mount(render)</code> 接收快照、切换语言和主题并绘制到 <code>#root</code>。不要同时创建第二个 React root 或重复订阅渲染链。</li>
+</ol>
+<p><code>component/request</code> 等待用户回答；<code>component/display</code> 只展示。发布记录不表示相关业务已经完成。</p>
+<h2 id="runtime--处理草稿与回答">处理草稿与回答</h2>
+<table>
+<thead>
+<tr>
+<th>数据</th>
+<th>用途</th>
+<th>校验</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>data</td>
+<td>书深传给组件的业务输入</td>
+<td>组件 input_schema</td>
+</tr>
+<tr>
+<td>draft</td>
+<td>已保存的界面草稿</td>
+<td>保存流程；不是批准或执行结果</td>
+</tr>
+<tr>
+<td>values</td>
+<td>用户提交的值</td>
+<td>动作 input_schema；interaction.answer 还校验组件 output_schema</td>
+</tr>
+<tr>
+<td>{action, values}</td>
+<td>回到 AI 的回答信封</td>
+<td>书深后端封装；不要把外层信封写进 values 的 schema</td>
+</tr>
+</tbody>
+</table>
+<p>使用 <code>onState</code> 接收当前快照及后续 data、draft、status、language、slot、theme。使用 mount 时，渲染订阅已经接好。</p>
+<ul>
+<li><code>save(values)</code> 保存草稿，不让 AI 继续；失败时保留输入。</li>
+<li><code>submit(actionId, values)</code> 回答当前交互，仅在 pending 时提交；完成情况看后续状态。</li>
+<li>主题、语言或状态更新不能清空未保存输入，旧保存回执不能覆盖更新的编辑。</li>
+<li>取消、失败、过期或未知结果，不推进依赖这个回答的步骤。</li>
+</ul>
+<p>方法签名与返回值见<a href="#api--前端-sdk">前端 SDK</a>。</p>
+<h2 id="runtime--更新和旧卡片">更新和旧卡片</h2>
+<p>修改插件后递增 Skill 与描述符版本，重新生成 ZIP 和摘要，通过新安装卡片或技能中心确认更新。slot 冲突或更新失败时保留旧版，不静默接管其他插件。</p>
+<p>旧交互固定原插件、UI 资源、数据、草稿和动作语义；新版不能重新解释旧回答。关闭插件只阻止新绑定，旧卡仍需当前权限和状态校验，不等于授权永久有效。</p>
+<h2 id="runtime--权限边界">权限边界</h2>
+<p>组件只能使用书深给出的数据和已声明且已接通的动作。iframe 没有 Node、Electron、preload 或父文档权限，不是任意文件、HTTP 或命令代理。</p>
+<p>Skill 调用后端与前端 SDK 是两个调用面；声明 capability 不会自动接通处理器或授予业务权限。本协议没有全局事件拦截、工具重写或自动批准接口。</p>
+<p>接下来：<a href="#api">可用 API</a> · <a href="#testing">测试状态与更新</a>。</p>
+</article>
+<article id="api" data-page="api" aria-label="Plugin 可用 API"><a class="source" href="plugins/api.md">查看 Markdown 源文档</a><h1 id="api--plugin-可用-api">Plugin 可用 API</h1>
+<p><a href="#guide">Plugin 概览</a></p>
+<p><code>scholarseed-bridge</code> 是书深后端的 CLI，供 Agent 查询资料、管理文献和展示对话卡片。Skill 通过 CLI 调用这些能力；卡片界面使用<a href="#api--前端-sdk">前端 SDK</a>。</p>
+<h2 id="api--使用-cli">使用 CLI</h2>
+<p>在书深的 Agent 执行环境中运行，命令格式为 <code>scholarseed-bridge &lt;能力组&gt; &lt;操作&gt; --json '&lt;请求&gt;'</code>：</p>
+<pre><code class="language-sh">scholarseed-bridge history list --json '{&quot;limit&quot;:5}'
+scholarseed-bridge component catalog --json '{&quot;include_ui&quot;:true}'
+scholarseed-bridge component preflight --json '{&quot;slots&quot;:[&quot;reading.focus&quot;]}'
+</code></pre>
+<p>CLI 自动使用当前会话的项目和授权。用 <code>--help</code> 查看参数：</p>
+<pre><code class="language-sh">scholarseed-bridge --help
+scholarseed-bridge component request --help
+</code></pre>
+<p>AI 还可以通过模型工具 <code>scholarseed_bridge</code> 调用后端，参数格式为 <code>{capability, operation, request}</code>。本页的 JSON 示例使用这个格式；CLI 的 <code>--json</code> 只接收其中的 <code>request</code>。</p>
+<h2 id="api--查询实际契约">查询实际契约</h2>
+<p>在已安装对应版本后端的 Python 环境运行：</p>
+<pre><code class="language-sh">python -m service.cli.plugins describe
+</code></pre>
+<p>返回描述符格式、组件 SDK 和请求参数定义。开发或更新插件时，以目标版本返回的定义为准；<code>host</code> 的填写方式见<a href="#create--自己编写">创建教程</a>。</p>
+<h2 id="api--前端-sdk">前端 SDK</h2>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>结果</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>window.plugin.onState(callback)</td>
+<td>返回取消订阅函数</td>
+<td>当前快照与后续状态；卸载时取消订阅</td>
+</tr>
+<tr>
+<td>window.plugin.setCopyContent({text, markdown?})</td>
+<td>Promise 返回登记结果</td>
+<td>为当前卡片登记可复制文本；不写系统剪贴板</td>
+</tr>
+<tr>
+<td>window.plugin.save(values)</td>
+<td>Promise 返回 {state, revision}</td>
+<td>保存 JSON 草稿，不推进 AI</td>
+</tr>
+<tr>
+<td>window.plugin.submit(actionId, values)</td>
+<td>void</td>
+<td>提交回答，完成情况看后续状态</td>
+</tr>
+<tr>
+<td>window.plugin.request(actionId, values)</td>
+<td>Promise 返回书深操作结果</td>
+<td>调用已声明且当前上下文有处理器的操作</td>
+</tr>
+<tr>
+<td>window.scholarseedUI.mount(render)</td>
+<td>返回卸载函数</td>
+<td>挂载 React 界面，并同步状态、语言和主题</td>
+</tr>
+<tr>
+<td>window.scholarseedUI.useCopyContent(text)</td>
+<td>React Hook</td>
+<td>将当前组件的文本加入整张卡片的复制内容</td>
+</tr>
+</tbody>
+</table>
+<p>普通自定义卡片的 plugin-call 目前仅接通 <code>skills.list</code>、<code>navigation.skills</code>。文献卡的全文、分类和保存由领域专用端口处理；复制 <code>literature.read</code>、<code>navigation.open</code> 等能力名不会让普通卡片自动拥有这些操作。</p>
+<h3 id="api--提供卡片的复制内容">提供卡片的复制内容</h3>
+<p>在界面状态更新后登记文本，书深会在“复制消息”中按顺序合并本轮正文与卡片。公共卡片由书深根据业务数据生成，无需重复登记。</p>
+<p>官方 UI 的 <code>Conversation.Choices</code>、<code>Results</code>、<code>Details</code>、<code>References</code>、<code>Downloads</code>、<code>Delivery</code> 和 <code>Review</code> 在 <code>mount()</code> 内使用时会自动登记文本。组合多个组件时会合并内容；综述的折叠章节、引用、检查和问题不会因未展开而遗漏。产物保留标题和路径，不会自动读取文件正文。</p>
+<p><code>Markdown</code>、<code>Message</code>、<code>Code</code>、<code>Formula</code> 和 <code>Artifact</code> 也会自动登记；代码保留未展开的完整源码，公式保留 LaTeX、说明和注释。<code>Tabulation</code> 需要提供 <code>copyText</code> 或 <code>invalidSource</code>，不会从表格 DOM 推断数据。</p>
+<p>自己绘制界面时，可以在组件内调用 <code>window.scholarseedUI.useCopyContent(text)</code>，并将 <code>useCopyContent</code> 加入 <code>ui.exports</code>。它会合并同一界面中各组件的文本，并在保存状态更新后重新登记；登记失败会在卡片内提示。不要在同一界面混用这个 Hook 和下方直接覆盖整张卡片文本的 <code>setCopyContent()</code>。</p>
+<pre><code class="language-js">const { React, mount } = window.scholarseedUI;
+
+function Notes({ state }) {
+  const [error, setError] = React.useState(&quot;&quot;);
+  const focus = state.draft?.focus ?? &quot;evidence&quot;;
+  React.useEffect(() =&gt; {
+    let current = true;
+    window.plugin.setCopyContent({
+      text: `阅读重点：${focus === &quot;method&quot; ? &quot;理解方法&quot; : &quot;核对证据&quot;}`
+    }).then(() =&gt; {
+      if (current) setError(&quot;&quot;);
+    }).catch(() =&gt; {
+      if (current) setError(&quot;复制内容暂未保存&quot;);
+    });
+    return () =&gt; { current = false; };
+  }, [focus, state.revision]);
+  return React.createElement(&quot;p&quot;, { role: error ? &quot;status&quot; : undefined }, error || focus);
+}
+
+mount(state =&gt; React.createElement(Notes, { state }));
+</code></pre>
+<p><code>text</code> 必填，包含标题、正文、当前选择以及需要保留的引用或链接，不要加入提交、展开等操作按钮。可附 <code>markdown</code> 源码；当前复制使用 <code>text</code>，不接受 HTML。登记内容最多 64 KiB，并受消息总大小限制。</p>
+<p>先等待 <code>save()</code> 完成，再根据 <code>onState</code> 返回的新状态登记文本。草稿更新会使旧文本失效，旧版本登记会被拒绝。已登记文本保留在会话卡片绑定中，历史复制无需重新运行 iframe；没有文本的卡片会明确提示。登记本身不推进 AI，也不授予插件读取或写入剪贴板的权限。</p>
+<h2 id="api--查询组件与-slot">查询组件与 slot</h2>
+<p>查询可用组件和官方 UI 导出：</p>
+<pre><code class="language-json">{&quot;capability&quot;:&quot;component&quot;,&quot;operation&quot;:&quot;catalog&quot;,&quot;request&quot;:{&quot;include_ui&quot;:true}}
+</code></pre>
+<p>返回当前组件、UI 导出和组合目录。自定义 slot 再做只读冲突预检：</p>
+<pre><code class="language-json">{&quot;capability&quot;:&quot;component&quot;,&quot;operation&quot;:&quot;preflight&quot;,&quot;request&quot;:{&quot;slots&quot;:[&quot;reading.focus&quot;]}}
+</code></pre>
+<p>预检只检查冲突，安装与启用时会再次校验。</p>
+<h2 id="api--查询后端操作">查询后端操作</h2>
+<p>让 AI 通过模型工具查询操作列表，再查看需要的参数定义。下面两项是模型工具操作：</p>
+<pre><code class="language-json">{&quot;capability&quot;:&quot;contract&quot;,&quot;operation&quot;:&quot;list&quot;,&quot;request&quot;:{}}
+</code></pre>
+<pre><code class="language-json">{&quot;capability&quot;:&quot;contract&quot;,&quot;operation&quot;:&quot;describe&quot;,&quot;request&quot;:{&quot;target_capability&quot;:&quot;literature&quot;,&quot;target_operation&quot;:&quot;read&quot;}}
+</code></pre>
+<h3 id="api--当前-cli-工具列表">当前 CLI 工具列表</h3>
+<p>表中名称接在 <code>scholarseed-bridge</code> 后。</p>
+<table>
+<thead>
+<tr>
+<th>子命令与操作</th>
+<th>做什么</th>
+<th>运行后的影响与注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>history list / search / read</code></td>
+<td>列出会话、检索消息、补读正文</td>
+<td>读取当前允许访问的历史会话。</td>
+</tr>
+<tr>
+<td><code>resource list / read</code></td>
+<td>列出或读取当前项目资料</td>
+<td>只读；大文件按返回的分页信息继续读取。</td>
+</tr>
+<tr>
+<td><code>resource import</code></td>
+<td>将已发布产物或会话文件导入项目资料</td>
+<td>写入项目资料；先确认导入文件和目标位置。</td>
+</tr>
+<tr>
+<td><code>pdf list / status / read / search / library / annotations</code></td>
+<td>查看 PDF、准备状态、原文、证据窗口和标注</td>
+<td>读取已获准的内容；返回引用身份与页码。</td>
+</tr>
+<tr>
+<td><code>pdf prepare</code></td>
+<td>准备 PDF 原文与索引</td>
+<td>启动准备任务；后续用 <code>status</code> 查询进度。</td>
+</tr>
+<tr>
+<td><code>pdf materialize</code></td>
+<td>将 PDF 内容写到指定位置</td>
+<td>创建文件和相关记录；先确认目标路径。</td>
+</tr>
+<tr>
+<td><code>pdf register-card</code></td>
+<td>登记论文内容卡片 <code>paper_card</code></td>
+<td>写入结构化文献证据及其版本。</td>
+</tr>
+<tr>
+<td><code>literature list / read / annotations / receipt</code></td>
+<td>查看项目文献、原文、标注和全文授权回执</td>
+<td><code>receipt</code> 返回本轮实际获准和已获取的全文范围。</td>
+</tr>
+<tr>
+<td><code>literature authorize</code></td>
+<td>请求用户授权读取全文</td>
+<td>展示候选论文，等待用户确认后继续。</td>
+</tr>
+<tr>
+<td><code>literature result / review</code></td>
+<td>展示检索结果或综述流程卡片</td>
+<td>按检查点展示结果、收集选择或确认大纲。</td>
+</tr>
+<tr>
+<td><code>literature acquire</code></td>
+<td>获取获准候选的开放全文</td>
+<td>下载并托管文件；逐篇返回获取结果。</td>
+</tr>
+<tr>
+<td><code>literature ingest / import</code></td>
+<td>将下载结果或会话文件导入文献库</td>
+<td>写文献库并关联当前项目；<code>import</code> 按用户明确指令直接导入。</td>
+</tr>
+<tr>
+<td><code>literature delivery</code></td>
+<td>展示全文保存流程</td>
+<td>固定本次交付批次，按用户后续选择保存或入库。</td>
+</tr>
+<tr>
+<td><code>literature collection.list / tag.list</code></td>
+<td>列出分类或标签</td>
+<td>分类属于当前项目，标签全局共享。</td>
+</tr>
+<tr>
+<td><code>literature collection.create / collection.update</code></td>
+<td>创建、重命名或移动分类</td>
+<td>修改当前项目的分类结构。</td>
+</tr>
+<tr>
+<td><code>literature tag.create / tag.update</code></td>
+<td>创建或重命名标签</td>
+<td>修改全局标签，重命名影响所有使用它的项目。</td>
+</tr>
+<tr>
+<td><code>literature collection.delete / tag.delete</code></td>
+<td>删除分类或标签</td>
+<td>先返回受影响的分类、标签和文献关联，用户确认后再执行删除。</td>
+</tr>
+<tr>
+<td><code>literature organize</code></td>
+<td>增删文献的分类、标签关系</td>
+<td>修改选中文献的归属关系。</td>
+</tr>
+<tr>
+<td><code>search run</code></td>
+<td>执行产品搜索</td>
+<td>访问外部搜索并登记新结果；<strong>不可直接自动重试</strong>，重复执行会再次搜索。</td>
+</tr>
+<tr>
+<td><code>search browser</code></td>
+<td>搜索过程的内部浏览器回调</td>
+<td>由已有搜索任务调用，插件使用 <code>search run</code>。</td>
+</tr>
+<tr>
+<td><code>artifact publish</code></td>
+<td>发布已生成的文件产物</td>
+<td>登记文件及其固定版本，供用户打开或保存。</td>
+</tr>
+<tr>
+<td><code>plan get</code></td>
+<td>读取当前计划</td>
+<td>返回计划、步骤 ID 和 revision。</td>
+</tr>
+<tr>
+<td><code>plan write / structure / action</code></td>
+<td>写计划、调整结构、记录执行动作</td>
+<td>修改计划状态；提交当前 revision 和该次操作的请求 ID。</td>
+</tr>
+<tr>
+<td><code>task activate</code></td>
+<td>激活当前任务身份</td>
+<td>修改当前轮次的任务绑定，由 Skill launcher 调用。</td>
+</tr>
+<tr>
+<td><code>display-card</code></td>
+<td>展示业务卡片</td>
+<td>创建可恢复的对话卡片；此命令直接接 <code>--json</code>。</td>
+</tr>
+<tr>
+<td><code>component catalog / preflight</code></td>
+<td>查询组件、UI 导出或 slot 冲突</td>
+<td>只读。</td>
+</tr>
+<tr>
+<td><code>component request / display</code></td>
+<td>请求用户交互或展示自定义卡片</td>
+<td>创建卡片；<code>request</code> 等待用户回答，<code>display</code> 仅展示。</td>
+</tr>
+</tbody>
+</table>
+<h2 id="api--源码与类型">源码与类型</h2>
+<p>在与目标书深版本匹配的源码版本查阅：</p>
+<ul>
+<li><a href="../apps/serve/service/capabilities/service/descriptor.py">描述符与 schema</a>、<a href="../apps/serve/service/capabilities/README.md">离线工具</a></li>
+<li><a href="../packages/ui/manifest.json">官方 UI 导出</a>、<a href="../packages/ui/catalog.ts">组件目录</a></li>
+<li><a href="../packages/ui/contract.ts">SDK 类型</a>、<a href="../packages/ui/conversation.ts">Conversation 导出</a></li>
+<li><a href="../apps/serve/service/capabilities/api/routes.py">书深动作处理</a>、<a href="../apps/desktop/src/renderer/src/features/literature/ports.ts">科研卡片端口</a></li>
+<li><a href="../apps/serve/service/cli/bridge.py">命令行子命令</a>、<a href="../apps/serve/service/platform/bridge.py">后端操作注册与副作用说明</a></li>
+</ul>
+<p>升级出现不兼容时，修改源码并重新检查；不要只扩大 host 范围或略过校验。</p>
+</article>
+<article id="testing" data-page="testing" aria-label="Plugin 测试"><a class="source" href="plugins/testing.md">查看 Markdown 源文档</a><h1 id="testing--plugin-测试">Plugin 测试</h1>
+<p><a href="#guide">Plugin 概览</a></p>
+<p>用<a href="#create">论文阅读笔记插件</a>走完检查、安装和对话使用流程。</p>
+<h2 id="testing--检查插件包">检查插件包</h2>
+<p>按<a href="#create--检查和打包">创建教程</a>执行 validate 和 pack。validate 使用 <code>request.json</code> 中的内层请求。</p>
+<p>收到外部 ZIP，或需要核对传输后的字节时执行：</p>
+<pre><code class="language-sh">python -m service.cli.plugins check ./paper-reading-notes-0.1.0.zip
+</code></pre>
+<ul>
+<li>核对包身份、版本、实际 SHA-256 和每个 issue。</li>
+<li>检查场景覆盖所有动作，以及每个动作的提交值。</li>
+<li>ZIP 放在源码目录外，路径使用可移植相对路径；不要带绝对路径、盘符、反斜杠、.. 或 Windows 保留名。</li>
+<li>不打包凭据、.env、登录缓存、虚拟环境或无关文件。</li>
+</ul>
+<p><code>capabilities_unchecked</code> 表示还需要在书深中验证实际调用。</p>
+<h2 id="testing--导入书深并完成第一次对话">导入书深并完成第一次对话</h2>
+<p>准备 <code>paper-reading-notes-0.1.0.zip</code> 和一篇你要阅读的论文。</p>
+<ol>
+<li>打开书深，进入<strong>技能中心 → 添加技能</strong>，选择 ZIP。</li>
+<li>核对插件名称、版本和检查结果，确认安装。</li>
+<li>在自己的技能列表中找到 <code>paper-reading-notes</code> 并启用。通过 AI 创建的插件，也可以直接在对话安装卡片中确认安装。</li>
+<li>打开自己的对话，上传论文或粘贴摘录，发送下方指令。</li>
+<li>等到“选择阅读重点”卡片出现，点<strong>理解方法</strong>，检查笔记是否包含研究问题、方法步骤和适用条件，并标注来源位置。</li>
+<li>再发起一次任务，选择<strong>核对证据</strong>，检查是否改为整理主要结论、对应证据和局限。材料未说明的内容应标为“未说明”。</li>
+</ol>
+<p>可以直接发送：</p>
+<blockquote>
+<p>请使用 paper-reading-notes 为我刚上传的论文整理阅读笔记，先让我选择阅读重点。</p>
+</blockquote>
+<p>无需先通过技能选择器绑定插件。若没有出现卡片，检查插件是否启用，以及工具记录中是否发起了 <code>component/request</code>。</p>
+<p><img src="assets/plugins/upload.png" alt="书深添加技能入口与 ZIP 上传界面" /></p>
+<h2 id="testing--检查任务结果">检查任务结果</h2>
+<table>
+<thead>
+<tr>
+<th>测试</th>
+<th>预期结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>选择“理解方法”</td>
+<td>回答中的 <code>focus</code> 为 <code>method</code>，生成方法笔记并附来源。</td>
+</tr>
+<tr>
+<td>选择“核对证据”</td>
+<td>回答中的 <code>focus</code> 为 <code>evidence</code>，生成证据笔记并附来源。</td>
+</tr>
+<tr>
+<td>取消阅读重点选择</td>
+<td>不再生成本轮笔记。</td>
+</tr>
+<tr>
+<td>只提供论文摘要</td>
+<td>笔记注明仅基于摘要，不补写全文中的实验或结论。</td>
+</tr>
+<tr>
+<td>使用下载、保存或入库能力的插件</td>
+<td>在对应文件目录、资料库或文献库中核对实际结果。</td>
+</tr>
+</tbody>
+</table>
+<p>记录任务输入、工具返回和输出笔记，保留出错时的截图或录屏。</p>
+<h2 id="testing--检查界面和更新">检查界面和更新</h2>
+<p>对于自定义卡片，调用 <code>setCopyContent()</code> 后点击消息下方的复制按钮。将剪贴板粘贴到文本编辑器，核对正文、卡片、后续结论的顺序，以及选择、引用和链接是否完整。切换会话再返回，确认历史卡片内容仍包含在复制结果中；修改草稿后应重新登记，不能继续复制旧选择。未登记文本时，复制结果应明确标出缺失的卡片内容。</p>
+<ul>
+<li><strong>界面</strong>：明暗主题、窄窗口、键盘、长文本和错误提示。</li>
+<li><strong>状态</strong>：重绘保留编辑，旧保存回执不覆盖新输入，取消后不继续。</li>
+<li><strong>更新</strong>：新包、新摘要、新安装确认；slot 冲突不接管其他插件，失败保留旧版。</li>
+<li><strong>旧卡片</strong>：按固定版本恢复，并重新检查当前权限。</li>
+<li><strong>平台</strong>：macOS 与 Windows 分别验证受影响的安装和运行。</li>
+</ul>
+<h2 id="testing--排障">排障</h2>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>先检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>找不到创建或预览按钮</td>
+<td>页面入口隐藏；在对话中指名 plugin-create</td>
+</tr>
+<tr>
+<td>对话无法使用 plugin-create</td>
+<td>当前版本是否包含技能、是否启用、书深技能清单是否正常</td>
+</tr>
+<tr>
+<td>host 不兼容</td>
+<td>后端 distribution 版本、描述符范围和实际契约</td>
+</tr>
+<tr>
+<td>已安装但没卡片</td>
+<td>启用状态、component/catalog、slot 和真实工具请求</td>
+</tr>
+<tr>
+<td>component_value_invalid</td>
+<td>data、动作 values、output_schema；不要把外层回答信封当 values</td>
+</tr>
+<tr>
+<td>plugin_capability_unavailable</td>
+<td>当前卡片是否有实际处理器；能力声明不是接通操作</td>
+</tr>
+<tr>
+<td>ui_dependency_unavailable</td>
+<td>官方资源、compatibility、实际 exports；不要自带 React 冒充书深提供的资源</td>
+</tr>
+<tr>
+<td>保存后输入丢失</td>
+<td>本地编辑与快照合并，旧回执是否覆盖了新输入</td>
+</tr>
+<tr>
+<td>技能列表失败或 503</td>
+<td>书深技能清单与初始化日志；恢复后重试，不模拟成功</td>
+</tr>
+</tbody>
+</table>
+</article><footer>正文由仓库 Markdown 生成。修改源文档后运行 <code>.venv/bin/python doc/plugins/build.py</code> 更新本页。</footer></main>
+    <aside class="outline" aria-label="本页目录"><h2>本页目录</h2><div id="outline"></div></aside>
+  </div>
+  <script>
+(() => {
+  'use strict';
+  const pages = [...document.querySelectorAll('article[data-page]')];
+  const outline = document.querySelector('#outline');
+  const search = document.querySelector('#search');
+  const results = document.querySelector('#results');
+  const status = document.querySelector('#search-status');
+  const records = [];
+  for (const page of pages) {
+    let heading = page.querySelector('h1');
+    for (const block of page.querySelectorAll('h2, h3, h4, p, li, tr, pre')) {
+      if (/^H[234]$/.test(block.tagName)) heading = block;
+      records.push({title: heading.textContent, text: block.textContent, id: heading.id, topic: page.getAttribute('aria-label')});
+    }
+  }
+  function showPage() {
+    let fragment;
+    try { fragment = decodeURIComponent(location.hash.slice(1)); } catch { fragment = ''; }
+    const selected = pages.find(page => page.dataset.page === fragment.split('--')[0]) || pages[0];
+    pages.forEach(page => { page.hidden = page !== selected; });
+    document.querySelectorAll('[data-topic]').forEach(link => {
+      if (link.dataset.topic === selected.dataset.page) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    outline.replaceChildren();
+    for (const heading of selected.querySelectorAll('h2, h3')) {
+      const link = document.createElement('a');
+      link.href = '#' + heading.id;
+      link.textContent = heading.textContent;
+      outline.append(link);
+    }
+    document.title = selected.getAttribute('aria-label') + ' | 书深插件开发指南';
+    const target = document.getElementById(fragment);
+    if (target && fragment.includes('--')) target.scrollIntoView();
+    else window.scrollTo(0, 0);
+  }
+  search.closest('section').hidden = false;
+  search.addEventListener('input', () => {
+    results.replaceChildren();
+    const query = search.value.trim().toLocaleLowerCase();
+    if (!query) { status.textContent = ''; return; }
+    const found = new Map();
+    for (const record of records) {
+      if (record.text.toLocaleLowerCase().includes(query) && !found.has(record.id)) found.set(record.id, record);
+    }
+    status.textContent = found.size ? '找到 ' + found.size + ' 个相关章节' + (found.size > 12 ? '，显示前 12 项' : '') : '没有匹配章节，请换个关键词。';
+    for (const record of [...found.values()].slice(0, 12)) {
+      const item = document.createElement('li');
+      const link = document.createElement('a');
+      const topic = document.createElement('small');
+      link.href = '#' + record.id;
+      link.append(document.createTextNode(record.title));
+      topic.textContent = record.topic;
+      link.append(topic);
+      item.append(link);
+      results.append(item);
+    }
+  });
+  for (const table of document.querySelectorAll('table')) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'table-wrap';
+    table.replaceWith(wrapper);
+    wrapper.append(table);
+  }
+  for (const block of document.querySelectorAll('pre')) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'copy';
+    button.textContent = '复制代码';
+    button.addEventListener('click', async () => {
+      const code = block.querySelector('code');
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        button.textContent = '已复制';
+      } catch {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        button.textContent = '请按 Ctrl/Cmd+C 复制';
+      }
+    });
+    block.append(button);
+  }
+  window.addEventListener('hashchange', showPage);
+  showPage();
+})();
+  </script>
+</body>
+</html>

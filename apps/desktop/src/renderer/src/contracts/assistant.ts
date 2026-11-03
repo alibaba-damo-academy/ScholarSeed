@@ -9,7 +9,39 @@
  * 用户显式加入对话时冻结的 `snapshot_text`；所有选区发送时直接使用完整快照。
  */
 
-import type { SelectionLocator } from './workbench'
+import type { SelectionLocator, LiteratureDocumentSource, SessionFileSource } from './workbench'
+
+export type ComposerReference =
+  | {
+      type: 'skill'
+      id: string
+      title: string
+      status?: string
+      path: string
+      version?: string
+    }
+  | {
+      type: 'file'
+      id: string
+      title: string
+      status?: string
+      path: string
+      referenceId?: string
+      registrationRequired?: boolean
+      previewSource?: LiteratureDocumentSource | SessionFileSource
+      mediaType?: string
+      sha256?: string
+      size?: number
+    }
+  | {
+      type: 'directory'
+      id: string
+      title: string
+      status?: string
+      path: string
+      referenceId?: string
+      registrationRequired?: boolean
+    }
 
 export const ASSISTANT_CONTEXT_REVISION_CONFLICT = 'assistant_context_revision_conflict'
 import type { ResourceNode } from './resources'

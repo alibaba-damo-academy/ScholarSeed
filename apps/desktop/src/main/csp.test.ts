@@ -102,6 +102,7 @@ test('CSP retains all desktop directives and scopes account access to its origin
       "img-src 'self' http://127.0.0.1:* data: blob:",
       "font-src 'self' data:",
       "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://account.example.test",
+      "frame-src 'self' scholarseed-plugin:",
       "media-src 'self' blob:",
       "worker-src 'self' blob:",
     ]

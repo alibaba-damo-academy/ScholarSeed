@@ -20,16 +20,27 @@ from scholarseed_runtime.contract import (
     RuntimeSession,
     TurnRequest,
 )
-from scholarseed_runtime.contract.command import EmptyThreadReplacementProof, SubmissionRetryProof
+from scholarseed_runtime.contract.command import (
+    EmptyThreadReplacementProof,
+    SubmissionRetryProof,
+    ThreadReplacementProof,
+)
 from scholarseed_runtime.contract.content import validate_content
 from scholarseed_runtime.contract.history import MessagePhase
 from scholarseed_runtime.contract.incident import RUNTIME_TURN_NOT_SUBMITTED
 from scholarseed_runtime.contract.session import (
     RUNTIME_CONFIRMATION_UNSUPPORTED,
+    RUNTIME_THREAD_REPLACEMENT_BUSY,
+    RUNTIME_THREAD_REPLACEMENT_STALE,
+    RUNTIME_THREAD_REPLACEMENT_UNSUPPORTED,
+    RuntimeThreadReplacement,
     RuntimeTurnConfirmation,
     SuspendReceipt,
     SuspendState,
     SuspendTicket,
+    ThreadReplacementReceipt,
+    ThreadReplacementTarget,
+    ThreadReplacementTicket,
     TurnConfirmationReceipt,
     TurnConfirmationTarget,
 )
@@ -125,8 +136,14 @@ class RuntimeDriver:
         self._projected_sequence = 0
         self._projection_changed = asyncio.Condition()
         self._consumer_error: BaseException | None = None
+        self._pending_observations: list[RuntimeObservation] = []
+        self._projection_failed = False
+        self._recovery_lock = asyncio.Lock()
         self._closed = False
         self._suspend_ticket: SuspendTicket | None = None
+        self._replacement_lock = asyncio.Lock()
+        self._replacement_ticket: ThreadReplacementTicket | None = None
+        self._replacement_receipt: ThreadReplacementReceipt | None = None
 
     @property
     def session(self) -> RuntimeSession:
@@ -141,9 +158,70 @@ class RuntimeDriver:
             raise RuntimeDriverError("runtime event consumer is already started")
         self._consumer = asyncio.create_task(self._consume())
 
+    @property
+    def projection_failed(self) -> bool:
+        return self._projection_failed
+
+    async def recover_projection(self) -> int:
+        """Resume retained observations only after explicit host recovery admission."""
+        async with self._recovery_lock:
+            consumer = self._consumer
+            if (
+                not self.projection_failed
+                or consumer is None
+                or not consumer.done()
+                or self._terminals
+            ):
+                raise RuntimeDriverError("runtime projection is not recoverable")
+            consumer.exception()
+            self._projection_failed = False
+            try:
+                await self._project_pending()
+            except asyncio.CancelledError:
+                self._projection_failed = True
+                raise
+            self._consumer_error = None
+            self._closed = False
+            self._consumer = None
+            self.start()
+            return self._projected_sequence
+
+    async def _project_pending(self) -> None:
+        while self._pending_observations:
+            count = 1
+            first = self._pending_observations[0]
+            if self._on_observations is not None and isinstance(first, RuntimeEvent):
+                if first.kind is RuntimeEventKind.TOOL_PROGRESS:
+                    while count < len(self._pending_observations):
+                        next_event = self._pending_observations[count]
+                        if (
+                            not isinstance(next_event, RuntimeEvent)
+                            or next_event.kind is not first.kind
+                        ):
+                            break
+                        count += 1
+            batch = tuple(self._pending_observations[:count])
+            try:
+                if self._on_observations is None:
+                    await self._on_observation(first)
+                else:
+                    await self._on_observations(batch)
+            except Exception:
+                self._projection_failed = True
+                raise
+            for observation in batch:
+                if isinstance(observation, RuntimeEvent):
+                    self._reduce(observation)
+                    async with self._projection_changed:
+                        self._projected_sequence = observation.sequence
+                        self._projection_changed.notify_all()
+            del self._pending_observations[:count]
+
     async def submit(self, request: TurnRequest) -> RuntimeTurnResult:
         if self._closed:
             raise RuntimeDriverError("runtime event consumer is closed")
+        if self._replacement_ticket is not None:
+            raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_BUSY)
         if request.command_id in self._terminals:
             raise RuntimeDriverError("runtime command id is already active")
         future = asyncio.get_running_loop().create_future()
@@ -225,6 +303,8 @@ class RuntimeDriver:
             self._calls.pop(request.command_id, None)
             self._proofs.pop(request.command_id, None)
             self._started_commands.discard(request.command_id)
+            async with self._projection_changed:
+                self._projection_changed.notify_all()
 
     async def close(self) -> None:
         self._closed = True
@@ -232,16 +312,31 @@ class RuntimeDriver:
             self._projection_changed.notify_all()
         consumer = self._consumer
         self._consumer = None
+        consumer_error: Exception | None = None
         if consumer is not None:
             consumer.cancel()
             try:
                 await consumer
             except (asyncio.CancelledError, RuntimeDriverError):
                 pass
+            except Exception as error:
+                consumer_error = error
         for future in self._terminals.values():
             if not future.done():
                 future.set_exception(RuntimeDriverError("runtime session detached"))
-        await self._session.detach()
+        try:
+            await self._session.detach()
+        except Exception as error:
+            if consumer_error is None:
+                raise
+            logger.error(
+                "runtime_session_detach_failed runtime_id=%s session_id=%s error_type=%s",
+                self._session.binding.runtime_id,
+                self._session.binding.product_session_id,
+                type(error).__name__,
+            )
+        if consumer_error is not None:
+            raise consumer_error
 
     async def suspend(self, checkpoint: Callable[[int], Awaitable[None]]) -> SuspendReceipt:
         if self._terminals or self._closed or self._consumer is None:
@@ -323,6 +418,107 @@ class RuntimeDriver:
             await self._wait_projection(ticket.watermark)
         return receipt
 
+    def _thread_replacement_session(
+        self, *, allow_pending: bool = False
+    ) -> RuntimeThreadReplacement:
+        session = self._session
+        supported = any(
+            entry.name == RuntimeCapabilityName.THREAD_REPLACEMENT.value
+            and entry.state is CapabilityState.SUPPORTED
+            for entry in session.capabilities.entries
+        )
+        if not supported or not isinstance(session, RuntimeThreadReplacement):
+            raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_UNSUPPORTED)
+        if self._closed or self._consumer is None or self._consumer_error is not None:
+            raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_STALE)
+        if (self._terminals and not allow_pending) or self._suspend_ticket:
+            raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_BUSY)
+        return session
+
+    def _thread_replacement_target(
+        self, ticket: ThreadReplacementTicket
+    ) -> ThreadReplacementTarget:
+        if not isinstance(ticket, ThreadReplacementTicket) or not isinstance(
+            ticket.proof, ThreadReplacementProof
+        ):
+            raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_STALE)
+        proof = ticket.proof
+        if (
+            proof.binding != self._session.binding
+            or not all(
+                isinstance(value, str) and value.strip()
+                for value in (
+                    ticket.generation,
+                    proof.proof_id,
+                    proof.command_id,
+                    proof.incident_id,
+                )
+            )
+            or not all(
+                type(value) is int and value >= 0
+                for value in (ticket.revision, ticket.watermark, proof.watermark)
+            )
+            or type(proof.failed_generation) is not int
+            or type(proof.absence_generation) is not int
+            or not 0 < proof.failed_generation < proof.absence_generation
+            or proof.watermark != ticket.watermark
+        ):
+            raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_STALE)
+        return ThreadReplacementTarget(
+            proof.binding, proof.command_id, proof.incident_id, proof.failed_generation
+        )
+
+    async def prepare_thread_replacement(
+        self, target: ThreadReplacementTarget
+    ) -> ThreadReplacementTicket:
+        async with self._replacement_lock:
+            self._thread_replacement_session(allow_pending=True)
+            if (
+                not isinstance(target, ThreadReplacementTarget)
+                or target.binding != self._session.binding
+                or not all(
+                    isinstance(value, str) and value.strip()
+                    for value in (target.command_id, target.incident_id)
+                )
+                or type(target.failed_generation) is not int
+                or target.failed_generation <= 0
+            ):
+                raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_STALE)
+            async with self._projection_changed:
+                await self._projection_changed.wait_for(
+                    lambda: not self._terminals or self._consumer_error is not None or self._closed
+                )
+            session = self._thread_replacement_session()
+            ticket = self._replacement_ticket
+            if ticket is None:
+                ticket = await session.prepare_thread_replacement(target)
+            if self._thread_replacement_target(ticket) != target:
+                raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_STALE)
+            await self._wait_projection(ticket.watermark)
+            self._thread_replacement_session()
+            self._replacement_ticket = ticket
+            return ticket
+
+    async def commit_thread_replacement(
+        self, ticket: ThreadReplacementTicket
+    ) -> ThreadReplacementReceipt:
+        async with self._replacement_lock:
+            session = self._thread_replacement_session()
+            self._thread_replacement_target(ticket)
+            if self._replacement_ticket != ticket:
+                raise RuntimeDriverError(RUNTIME_THREAD_REPLACEMENT_STALE)
+            await self._wait_projection(ticket.watermark)
+            self._thread_replacement_session()
+            if self._replacement_receipt is not None:
+                return self._replacement_receipt
+            receipt = await session.commit_thread_replacement(ticket, self._projected_sequence)
+            if not isinstance(receipt, ThreadReplacementReceipt) or receipt.ticket != ticket:
+                raise RuntimeDriverError("runtime thread replacement receipt mismatch")
+            if receipt.state is CommandState.APPLIED:
+                await self._wait_projection(ticket.watermark)
+                self._replacement_receipt = receipt
+            return receipt
+
     async def _consume(self) -> None:
         observations = aiter(self._session.events())
         pending: asyncio.Task[RuntimeObservation] | None = None
@@ -358,16 +554,8 @@ class RuntimeDriver:
                 for observation in batch:
                     self._validate(observation)
                 if batch:
-                    if self._on_observations is None:
-                        await self._on_observation(batch[0])
-                    else:
-                        await self._on_observations(tuple(batch))
-                    for observation in batch:
-                        if isinstance(observation, RuntimeEvent):
-                            self._reduce(observation)
-                            async with self._projection_changed:
-                                self._projected_sequence = observation.sequence
-                                self._projection_changed.notify_all()
+                    self._pending_observations.extend(batch)
+                    await self._project_pending()
                 if ended:
                     raise RuntimeDriverError("runtime event stream ended before detach")
         except asyncio.CancelledError:
@@ -394,6 +582,20 @@ class RuntimeDriver:
             if pending is not None:
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
+                if self._projection_failed and not pending.cancelled():
+                    try:
+                        observation = pending.result()
+                    except StopAsyncIteration:
+                        pass
+                    except Exception:
+                        self._projection_failed = False
+                    else:
+                        try:
+                            self._validate(observation)
+                        except Exception:
+                            self._projection_failed = False
+                        else:
+                            self._pending_observations.append(observation)
             if isinstance(observations, AsyncGenerator):
                 await observations.aclose()
 

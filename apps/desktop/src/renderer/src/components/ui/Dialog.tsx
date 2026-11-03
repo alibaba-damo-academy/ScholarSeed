@@ -12,7 +12,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal, PortalScope } from './portal'
 
 import { Button } from './Button'
 import {
@@ -94,6 +94,7 @@ export function DialogOverlay({
 }
 
 export interface DialogContentProps extends HTMLAttributes<HTMLDivElement> {
+  portalClassName?: string
   headerLayout?: 'default' | 'aligned'
   closeButtonClassName?: string
   hideCloseButton?: boolean
@@ -132,6 +133,7 @@ export function DialogContent({
   onPointerDown,
   overlayClassName,
   overlayProps,
+  portalClassName,
   ...props
 }: DialogContentProps): JSX.Element | null {
   const { contentId, contentRef, open, setOpen } = dialogContext.useOpenContext()
@@ -159,7 +161,7 @@ export function DialogContent({
         role="dialog"
         {...props}
       >
-        {children}
+        <PortalScope className={portalClassName}>{children}</PortalScope>
         {!hideCloseButton ? (
           <DialogDismissButton
             className={cx(
@@ -200,6 +202,5 @@ export function DialogDescription({
 }
 
 export const DialogPortal = ({ children }: { children?: ReactNode }): JSX.Element => {
-  if (typeof document === 'undefined') return <>{children}</>
-  return createPortal(children, document.body)
+  return <Portal>{children}</Portal>
 }

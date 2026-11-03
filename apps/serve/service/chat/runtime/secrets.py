@@ -51,6 +51,7 @@ def _launch_secret_contract(
     environment: Mapping[str, str] | None,
     *,
     tool_environment: Mapping[str, str] | None = None,
+    include_skill_credentials: bool = False,
     execution_environment: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> tuple[LaunchSecretIntent, RuntimeSecretPort | None]:
@@ -74,9 +75,17 @@ def _launch_secret_contract(
     }
     bindings: list[LaunchSecret] = []
     values: dict[str, RuntimeSecret] = {}
+    skill_environment = dict(tool_environment or {})
+    skill_environment.update(
+        {
+            name: value
+            for name, value in dict(environment or {}).items()
+            if include_skill_credentials and name in PLATFORM_ENVIRONMENT_KEYS
+        }
+    )
     for scope, source in (
         (LaunchSecretScope.PROCESS, environment),
-        (LaunchSecretScope.TOOL, tool_environment),
+        (LaunchSecretScope.TOOL, skill_environment),
     ):
         for name, value in sorted(dict(source or {}).items()):
             secret_ref = uuid.uuid4().hex

@@ -634,6 +634,116 @@ test('catalog selection preserves an enabled previous choice before using the fi
   assert.equal(selectableCatalogModelKey('missing', []), 'missing')
 })
 
+test('an exact continuation draft never falls back to an available paid source', () => {
+  const source = 'subscription/original'
+  const paid = 'personal-account:original'
+  for (const models of [[{ key: source, disabled: true }, { key: paid }], [{ key: paid }]]) {
+    assert.equal(effectiveSessionModelKey(models, source, null, {}, source), source)
+    assert.equal(effectiveSessionModelKey(models, paid, null, {}, source), source)
+    const attached = thread('attachment-session')
+    attached.runtime = { name: 'codex', model_id: source }
+    assert.equal(
+      effectiveSessionModelKey(models, paid, attached.id, { [attached.id]: attached }, source),
+      source
+    )
+  }
+  const models = [{ key: source, disabled: true }, { key: paid }]
+  assert.equal(effectiveSessionModelKey(models, source, null, {}), paid)
+})
+
+test('composer blocks an unavailable exact draft while ordinary drafts retain catalog fallback', () => {
+  const source = readFileSync(
+    new URL('./components/business/Composer.tsx', import.meta.url),
+    'utf8'
+  )
+  const syntax = ts.createSourceFile(
+    'Composer.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  let declaration: ts.VariableDeclaration | undefined
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(syntax) === 'modelAvailable')
+      declaration = node
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.ok(declaration?.initializer)
+  const script = ts.transpileModule(`result.value = ${declaration.initializer.getText(syntax)}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  for (const exactDraftModelId of [null, 'subscription/original']) {
+    const result: { value?: boolean } = {}
+    runInNewContext(script, {
+      result,
+      exactDraftModelId,
+      selectedModel: { key: 'subscription/original', disabled: true },
+      state: {
+        catalog: {
+          models: [{ key: 'subscription/original', disabled: true }, { key: 'paid-model' }],
+        },
+      },
+      hasSelectableModel,
+    })
+    assert.equal(result.value, exactDraftModelId === null)
+  }
+})
+
+test('new-session and attachment admission reject a substituted model before executing anything', async () => {
+  const source = readFileSync(
+    new URL('./components/business/Composer.tsx', import.meta.url),
+    'utf8'
+  )
+  const syntax = ts.createSourceFile(
+    'Composer.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const guards: ts.IfStatement[] = []
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isIfStatement(node) &&
+      node.expression.getText(syntax).includes('opened.runtime.model_id !== exactDraftModelId')
+    )
+      guards.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(guards.length, 2)
+  for (const guard of guards) {
+    const script = ts.transpileModule(
+      `(async () => { ${guard.getText(syntax)}; return 'admitted' })()`,
+      {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }
+    ).outputText
+    for (const modelId of ['original-model', 'substituted-paid-model']) {
+      const state = {
+        draftModelId: 'original-model',
+        draftGeneration: 2,
+        modelSelectionGeneration: 3,
+        catalog: { models: [{ key: 'original-model' }] },
+      }
+      const updates: unknown[] = []
+      const result = await runInNewContext(script, {
+        exactDraftModelId: 'original-model',
+        opened: { runtime: { model_id: modelId } },
+        state,
+        getSnapshot: () => state,
+        restoreDraft: () => {},
+        set: (update: unknown) => updates.push(update),
+        feedback: (_namespace: string, key: string) => key,
+      })
+      assert.equal(result === 'admitted', modelId === 'original-model')
+      assert.equal(updates.length, modelId === 'original-model' ? 0 : 1)
+    }
+  }
+})
+
 test('reading actions resolve a stale preference against the current selectable catalog', () => {
   const models = [
     { key: 'qwen3.8-max', disabled: true, model_id: 'qwen3.8-max' },

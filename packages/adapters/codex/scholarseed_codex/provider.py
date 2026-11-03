@@ -277,12 +277,18 @@ class CodexRuntimeProvider:
         reservation = None
         lease = None
         configuration_reset = False
+        identity_transferred = False
         borrow_id = uuid.uuid4().hex
         async with AsyncExitStack() as preparation:
             if self._resource_lease is not None:
                 preparation.callback(self._resource_lease().close)
             try:
                 async with self._prepare_lock:
+                    if reconfigure and not self._pool.matches_scope(request.process_sharing_scope):
+                        if not await self._pool.release_idle():
+                            raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
+                        await self._pool.replace_execution_scope(request.process_sharing_scope)
+                        identity_transferred = configuration_reset = True
                     self._pool.authorize_scope(request.process_sharing_scope)
                     environment, tool_environment = await _resolve_launch_secrets(request)
                     if tool_environment:
@@ -334,9 +340,14 @@ class CodexRuntimeProvider:
                     lease = await self._pool.consume(reservation)
                 self._pool.authorize_scope(request.process_sharing_scope)
                 yield lease
-            except BaseException:
+            except BaseException as error:
                 if configuration_reset:
                     self._pool.fence_reconfiguration()
+                if identity_transferred and isinstance(error, Exception):
+                    raise AppServerError(
+                        RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
+                        safe_error=RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
+                    ) from error
                 raise
             finally:
                 cleanup = (

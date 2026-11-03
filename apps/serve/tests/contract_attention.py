@@ -71,6 +71,12 @@ class AttentionContract(unittest.TestCase):
         self.assertEqual(snapshot["unread_count"], 4)
         self.assertEqual(snapshot["by_session"], {SESSION_ID: 4})
 
+    def test_independent_card_does_not_create_waiting_attention(self) -> None:
+        self.emit(PRODUCT_EVENT_HIL_REQUESTED, "offer-1", request_id="offer", blocking=False)
+        self.assertEqual(self.attention.snapshot(OWNER)["unread_count"], 0)
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done-1")
+        self.assertEqual(self.attention.snapshot(OWNER)["unread_count"], 1)
+
     def test_read_all_preserves_concurrent_new_reminders_and_survives_reopen(self) -> None:
         self.emit(PRODUCT_EVENT_HIL_REQUESTED, "request-1", request_id="one")
         snapshot = self.attention.snapshot(OWNER)

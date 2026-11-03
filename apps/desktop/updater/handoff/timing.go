@@ -79,6 +79,16 @@ type componentTimer struct {
 	serial  int
 }
 
+func (policy Policy) WithTimingObserver(observe func(ComponentTiming)) Policy {
+	policy.observeTiming = func(event ComponentTiming) {
+		writeTimings([]ComponentTiming{event})
+		if observe != nil {
+			observe(event)
+		}
+	}
+	return policy
+}
+
 func (p Policy) timer(c Component, operation string) *componentTimer {
 	return &componentTimer{event: ComponentTiming{Kind: c.Kind, Version: c.Version,
 		Operation: operation, PID: os.Getpid(), Status: "passed", Metrics: map[string]TimingMetric{}},

@@ -16,7 +16,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 import { Check, ChevronRight } from 'lucide-react'
 
 import {
@@ -335,49 +335,48 @@ export function MenuContent({
     : style
   useFocusScope(contentRef, open && positionedStyle?.visibility !== 'hidden', trapFocus, autoFocus)
   if (!open || typeof document === 'undefined') return null
-  // Portal 到 body：fixed 定位不受父级 overflow/transform 影响，且菜单
-  // 不会被裁进任何滚动容器（原生 select 之外的下拉/上下文菜单的通用前提）。
-  return createPortal(
-    <div
-      className={cx(menuContentClassName, className)}
-      id={contentId}
-      tabIndex={-1}
-      ref={contentRef}
-      role="menu"
-      style={positionedStyle}
-      {...props}
-      onKeyDown={(event) => {
-        onKeyDown?.(event)
-        if (
-          event.defaultPrevented ||
-          (event.target as HTMLElement).closest('[role="menu"]') !== event.currentTarget
-        )
-          return
-        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-        const items = [
-          ...event.currentTarget.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR),
-        ].filter(
-          (item) =>
-            item.closest('[role="menu"]') === event.currentTarget &&
-            !item.matches(':disabled') &&
-            item.getAttribute('aria-disabled') !== 'true' &&
-            visibleContent(item)
-        )
-        if (!items.length) return
-        event.preventDefault()
-        const current = items.indexOf(document.activeElement as HTMLElement)
-        const index =
-          event.key === 'Home'
-            ? 0
-            : event.key === 'End'
-              ? items.length - 1
-              : event.key === 'ArrowDown'
-                ? (current + 1) % items.length
-                : (current - 1 + items.length) % items.length
-        items[index].focus()
-      }}
-    />,
-    document.body
+  return (
+    <Portal>
+      <div
+        className={cx(menuContentClassName, className)}
+        id={contentId}
+        tabIndex={-1}
+        ref={contentRef}
+        role="menu"
+        style={positionedStyle}
+        {...props}
+        onKeyDown={(event) => {
+          onKeyDown?.(event)
+          if (
+            event.defaultPrevented ||
+            (event.target as HTMLElement).closest('[role="menu"]') !== event.currentTarget
+          )
+            return
+          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+          const items = [
+            ...event.currentTarget.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR),
+          ].filter(
+            (item) =>
+              item.closest('[role="menu"]') === event.currentTarget &&
+              !item.matches(':disabled') &&
+              item.getAttribute('aria-disabled') !== 'true' &&
+              visibleContent(item)
+          )
+          if (!items.length) return
+          event.preventDefault()
+          const current = items.indexOf(document.activeElement as HTMLElement)
+          const index =
+            event.key === 'Home'
+              ? 0
+              : event.key === 'End'
+                ? items.length - 1
+                : event.key === 'ArrowDown'
+                  ? (current + 1) % items.length
+                  : (current - 1 + items.length) % items.length
+          items[index].focus()
+        }}
+      />
+    </Portal>
   )
 }
 

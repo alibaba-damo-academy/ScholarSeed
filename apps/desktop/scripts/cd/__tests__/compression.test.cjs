@@ -9,7 +9,9 @@ const child = require('node:child_process')
 const { createRequire } = require('node:module')
 const cache = require('../../shared/component-cache.cjs')
 const state = require('../../shared/build-state.cjs')
+const { developmentPython } = require('../../../../../scripts/shared/python.cjs')
 const REPO = path.resolve(sourceDirectory, '../../../..')
+const PYTHON = process.env.TEST_PYTHON || developmentPython(REPO, process.env.VENV, { context: process.env.CI ? 'ci' : 'local' })
 
 function fixture(t, kind = 'codex') {
   const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-compression-')))
@@ -31,7 +33,7 @@ function fixture(t, kind = 'codex') {
     }} : realRequire(name)}, {filename})
   const inputs = {cacheRoot: path.join(temporary, 'cache'), repo, kind, target: 'win32-x86_64',
     contentId: 'a'.repeat(64), pythonArchiveSha256: 'b'.repeat(64),
-    python: process.env.TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3'), root,
+    python: PYTHON, root,
     entry: 'bin/runtime.exe'}
   let sequence = 0
   const pack = (overrides = {}) => {

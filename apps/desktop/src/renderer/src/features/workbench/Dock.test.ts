@@ -7,7 +7,7 @@ import { transformSync } from 'esbuild'
 import { chromium } from '@playwright/test'
 import { compile } from 'tailwindcss'
 
-type Element = React.ReactElement<Record<string, any>>
+type Element = React.ReactElement<React.PropsWithChildren<Record<string, unknown>>>
 
 function descendants(element: Element): Element[] {
   return [

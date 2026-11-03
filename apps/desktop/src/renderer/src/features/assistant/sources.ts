@@ -194,7 +194,7 @@ export function taskSources(conversation: ConvItem[], projectId: string): TaskSo
   submittedReferences(conversation).forEach(referenceSource)
   for (const item of conversation) {
     if (item.kind === 'user' && !item.cancelled) {
-      for (const match of item.text.matchAll(/https?:\/\/[^\s<>\[\]()]+/g)) {
+      for (const match of item.text.matchAll(/https?:\/\/[^\s<>[\]()]+/g)) {
         urlSource(match[0])
       }
     }

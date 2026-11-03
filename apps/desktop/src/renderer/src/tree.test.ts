@@ -10,7 +10,7 @@ import {
   appendSessionChildren,
   serveSessionNode,
 } from './tree.ts'
-import type { SessionNode, SessionStatus } from './model.ts'
+import type { SessionNode } from './model.ts'
 import type { ServeSession } from './api'
 
 it('catalog projection preserves terminal failures and pauses after reload', () => {
@@ -239,7 +239,7 @@ describe('serveSessionNode', () => {
       mtime: 2000,
       runtime: { model_id: 'qwen-max' },
       workdir: '/tmp/test',
-    } as any
+    } as ServeSession
     const node = serveSessionNode(session, {}, null)
     assert.equal(node.id, 'abc12345')
     assert.equal(node.status, 'running')
@@ -256,7 +256,7 @@ describe('serveSessionNode', () => {
       waiting: false,
       created_at: 1000,
       mtime: 3000,
-    } as any
+    } as ServeSession
     const node = serveSessionNode(session, { xyz98765: 2000 }, null)
     assert.equal(node.status, 'done')
   })
@@ -268,7 +268,7 @@ describe('serveSessionNode', () => {
       running: false,
       waiting: false,
       created_at: 1000,
-    } as any
+    } as ServeSession
     const node = serveSessionNode(session, {}, null)
     assert.equal(node.title, 'abcdef12')
   })

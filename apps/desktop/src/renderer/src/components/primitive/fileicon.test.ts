@@ -64,7 +64,7 @@ test('shared file icons render imported assets and preserve the document fallbac
     const markup = renderToStaticMarkup(
       createElement(loaded.exports.FileFormatIcon, { name, appearance: 'outline' })
     )
-    assert.match(markup, new RegExp(`lucide-${icon}(?: |\")`))
+    assert.match(markup, new RegExp(`lucide-${icon}(?: |")`))
     assert.doesNotMatch(markup, /<img/)
   }
   for (const extension of [

@@ -1,3 +1,4 @@
+import type { PluginReference, PluginReport } from '../../plugins'
 import { resolveContentResponse } from './app/api/content.ts'
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
@@ -63,6 +64,9 @@ const SESSION_LIST_DEFAULT_SCOPE: SessionListScope = 'all'
 const REQUEST_TIMEOUT_MESSAGE = 'request_timeout'
 const REQUEST_FAILED_MESSAGE = 'request failed'
 const ATTENTION_REQUEST_TIMEOUT_MS = 10_000
+const CONTINUATION_PREVIEW_TIMEOUT_MS = 10_000
+const CONTINUATION_INVALID_RESPONSE = 'session_continuation_invalid'
+const CONTINUATION_UNAVAILABLE = 'session_continuation_unavailable'
 const BACKEND_HEALTH_PATH = '/api/healthz/backend'
 const BACKEND_HEALTH_UNSUPPORTED_STATUSES = new Set([404, 405])
 
@@ -577,6 +581,84 @@ export function classifySessionResumeFailure(
     terminal:
       clientFailure || manualReadiness || SESSION_RESUME_TERMINAL_CODES.has(opened.code ?? ''),
   }
+}
+
+export interface SessionContinuationPreview {
+  source_session_id: string
+  source_product_seq: number
+  source_title: string
+  project_path: string | null
+  model_id: string
+  messages: { role: 'user' | 'assistant'; text: string }[]
+  included_messages: number
+  omitted_messages: number
+  omitted_characters: number
+  truncated: boolean
+  excluded_categories: string[]
+}
+
+function validSessionContinuation(
+  value: unknown,
+  sourceId: string
+): value is SessionContinuationPreview {
+  if (!value || typeof value !== 'object') return false
+  const preview = value as Record<string, unknown>
+  const messages = preview.messages
+  return (
+    preview.source_session_id === sourceId &&
+    typeof preview.source_title === 'string' &&
+    (preview.project_path === null || typeof preview.project_path === 'string') &&
+    typeof preview.model_id === 'string' &&
+    Boolean(preview.model_id.trim()) &&
+    typeof preview.truncated === 'boolean' &&
+    [
+      preview.source_product_seq,
+      preview.included_messages,
+      preview.omitted_messages,
+      preview.omitted_characters,
+    ].every((count) => typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) &&
+    Array.isArray(messages) &&
+    messages.length > 0 &&
+    preview.included_messages === messages.length &&
+    messages.every(
+      (message: unknown) =>
+        message !== null &&
+        typeof message === 'object' &&
+        'role' in message &&
+        (message.role === 'user' || message.role === 'assistant') &&
+        'text' in message &&
+        typeof message.text === 'string'
+    ) &&
+    Array.isArray(preview.excluded_categories) &&
+    preview.excluded_categories.every((category: unknown) => typeof category === 'string')
+  )
+}
+
+export async function getSessionContinuation(
+  sourceId: string,
+  turnId?: string,
+  signal?: AbortSignal
+): Promise<SessionContinuationPreview> {
+  const query = new URLSearchParams()
+  if (turnId) query.set('turn_id', turnId)
+  const suffix = query.size ? `?${query.toString()}` : ''
+  const timeout = AbortSignal.timeout(CONTINUATION_PREVIEW_TIMEOUT_MS)
+  const response = await apiFetch(
+    `/api/serve/sessions/${encodeURIComponent(sourceId)}/continuation${suffix}`,
+    { cache: 'no-store', signal: signal ? AbortSignal.any([signal, timeout]) : timeout }
+  )
+  if (!response.ok) {
+    const failure = await serviceErrorDetail(response)
+    throw new Error(failure.code || CONTINUATION_UNAVAILABLE)
+  }
+  let preview: unknown
+  try {
+    preview = await response.json()
+  } catch {
+    throw new Error(CONTINUATION_INVALID_RESPONSE)
+  }
+  if (!validSessionContinuation(preview, sourceId)) throw new Error(CONTINUATION_INVALID_RESPONSE)
+  return preview
 }
 
 export interface SessionOpenOptions {
@@ -1954,7 +2036,8 @@ export async function respondHil(
     values?: Record<string, unknown>
     state_version?: number
     cancelled?: boolean
-  }
+  },
+  hostOwned = false
 ): Promise<{
   ok: boolean
   request_id?: string
@@ -1964,14 +2047,27 @@ export async function respondHil(
   outcome?: 'unknown' | 'stale'
 }> {
   try {
-    const response = await apiFetch(
-      `/api/serve/sessions/${encodeURIComponent(sid)}/hil/${encodeURIComponent(requestId)}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      }
-    )
+    const native = hostOwned
+      ? await window.scholarseed.deviceSkills({
+          operation: 'plugin-answer',
+          session: sid,
+          request: requestId,
+          body,
+        })
+      : null
+    const response = native
+      ? new Response(native.body, {
+          status: native.status,
+          headers: { 'content-type': 'application/json' },
+        })
+      : await apiFetch(
+          `/api/serve/sessions/${encodeURIComponent(sid)}/hil/${encodeURIComponent(requestId)}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          }
+        )
     if (!response.ok) {
       const failure = await serviceErrorDetail(response)
       return {
@@ -2138,6 +2234,9 @@ interface ProductEventBase<TType extends string, TData> {
 }
 
 export interface ProductHilQuestion {
+  plugin_installation?: PluginReport
+  component?: PluginReference
+  component_data?: Record<string, unknown>
   id?: string
   name?: string
   header?: string
@@ -2148,8 +2247,10 @@ export interface ProductHilQuestion {
 }
 
 export interface ProductHilData {
+  session_id?: string
   request_id: string
   lifetime?: 'turn' | 'session'
+  blocking?: boolean
   kind: string
   tool_name?: string
   title?: string
@@ -2412,7 +2513,12 @@ export type ProductEvent =
     >
   | ProductEventBase<
       'display_card',
-      { card_id: string; type: string; content: Record<string, unknown> }
+      {
+        card_id: string
+        type: string
+        content: Record<string, unknown>
+        component?: PluginReference
+      }
     >
   | ProductEventBase<'hil_requested', ProductHilData>
   | ProductEventBase<
@@ -2443,7 +2549,13 @@ export type ProductEvent =
   | ProductEventBase<'turn_completed', { stop_reason?: string }>
   | ProductEventBase<
       'turn_failed',
-      { code?: string; message: string; retryable?: boolean; automatic_retry_attempts?: number }
+      {
+        code?: string
+        provider_error_code?: string
+        message: string
+        retryable?: boolean
+        automatic_retry_attempts?: number
+      }
     >
   | ProductEventBase<'turn_interrupted', { reason?: string }>
   | ProductEventBase<
@@ -2471,6 +2583,7 @@ export interface RuntimeIncidentData {
   strategy: 'vendor_retry' | 'auto_restart' | 'auto_resume' | 'manual_retry' | 'none'
   retryability: 'in_progress' | 'user_retryable' | 'terminal' | 'unknown_outcome'
   safe_error: string
+  provider_error_code?: string
   process_generation: number
   attempt: number
   max_attempts: number
@@ -2725,29 +2838,6 @@ export interface Project {
 export interface ProjectsResp {
   default: string
   projects: Project[]
-}
-// getJson and postJson are now imported from ./app/api/client
-async function putJson<T>(path: string, body: unknown, timeoutMs?: number): Promise<T | null> {
-  const ctl = timeoutMs ? new AbortController() : null
-  const timer = ctl ? window.setTimeout(() => ctl.abort(), timeoutMs) : null
-  try {
-    const r = await apiFetch(path, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      ...(ctl ? { signal: ctl.signal } : {}),
-    })
-    if (r.status === 401 && !path.startsWith('/api/auth/')) {
-      window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
-      return null
-    }
-    if (!r.ok) return null
-    return (await r.json()) as T
-  } catch {
-    return null
-  } finally {
-    if (timer != null) window.clearTimeout(timer)
-  }
 }
 async function deleteJson<T>(path: string, timeoutMs?: number): Promise<T | null> {
   const ctl = timeoutMs ? new AbortController() : null
@@ -3204,6 +3294,7 @@ export interface SkillInfo extends SkillAttributionInfo {
   updateStatus?: 'available' | 'current' | 'unavailable' | 'unmapped'
   labels?: SkillLabel[] | null
   labelsStatus?: 'ready' | 'unavailable' | 'unmapped'
+  plugin?: boolean
   name: string
   requires_login?: boolean
   display_name?: string
@@ -3461,6 +3552,7 @@ export interface SkillUploadPreview {
   document: string
   version: string
   provider: string
+  plugin: boolean
 }
 
 export async function previewSkillFile(file: File): Promise<SkillUploadPreview> {
@@ -3530,7 +3622,11 @@ async function skillMutationResponse(
       }
       return { ok: false, error: detail || `HTTP ${response.status}` }
     }
-    window.dispatchEvent(new Event(SKILL_CATALOG_CHANGED_EVENT))
+    window.dispatchEvent(
+      new CustomEvent(SKILL_CATALOG_CHANGED_EVENT, {
+        detail: { name: payload?.installed?.name ?? payload?.name },
+      })
+    )
     return { ok: true, name: payload?.installed?.name ?? payload?.name }
   } catch (error) {
     return { ok: false, error: String(error) }
@@ -3558,7 +3654,8 @@ export async function getSkills(surface?: SkillSurface, locale?: string): Promis
 export async function setSkillActive(name: string, active: boolean): Promise<boolean> {
   try {
     const response = await deviceSkillFetch({ operation: 'toggle', name, enabled: active })
-    if (response.ok) window.dispatchEvent(new Event(SKILL_CATALOG_CHANGED_EVENT))
+    if (response.ok)
+      window.dispatchEvent(new CustomEvent(SKILL_CATALOG_CHANGED_EVENT, { detail: { name } }))
     return response.ok
   } catch {
     return false

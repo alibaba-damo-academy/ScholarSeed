@@ -51,9 +51,16 @@ export function isFirstRun(home: string, release: ReleaseIdentity): boolean {
   return readStartupMarkerVersion(home) !== clientVersion(release.version, release.buildNumber)
 }
 
-/** 首启或冷组件展开都付一次性成本，二者任一即给一次性预算。 */
-export function resolveStartupBudgetMs(firstRun: boolean, coldProvisioned: boolean): number {
-  return firstRun || coldProvisioned ? STARTUP_BUDGET_ONE_TIME_MS : STARTUP_BUDGET_STEADY_MS
+/** 准备阶段结束后仍保留普通就绪余量；首启或冷组件展开维持一次性预算下限。 */
+export function resolveStartupBudgetMs(
+  firstRun: boolean,
+  coldProvisioned: boolean,
+  preparationBudgetMs = 0
+): number {
+  const baseline = firstRun || coldProvisioned
+    ? STARTUP_BUDGET_ONE_TIME_MS
+    : STARTUP_BUDGET_STEADY_MS
+  return Math.max(baseline, preparationBudgetMs + STARTUP_BUDGET_STEADY_MS)
 }
 
 export function writeStartupMarker(home: string, release: ReleaseIdentity): void {

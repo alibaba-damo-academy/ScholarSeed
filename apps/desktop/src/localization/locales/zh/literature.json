@@ -1,4 +1,5 @@
 {
+  "copyRegistrationFailed": "卡片复制文本保存失败，请重试或重新打开卡片。",
   "tagFilter": {
     "label": "筛选标签",
     "loading": "加载标签中",
@@ -21,6 +22,11 @@
     "libraryScope": "文献将关联到当前项目；全局“文献中心”也会汇总显示，但不会加入全局分类。",
     "projectNotice": "保存到项目后，PDF 将成为项目文件，可通过项目文件能力被读取。",
     "chooseDirectory": "选择其他本地文件夹…",
+    "chooseLocalDirectory": "选择本地文件夹…",
+    "addToGlobalLibrary": "确保加入全局文献库（已有全文复用，删除后重新入库）",
+    "globalLibraryScope": "文献保存到全局文献库，不关联任何项目。",
+    "loadFailed": "无法读取全文交付信息，请重试。",
+    "scopeChanged": "全文交付与当前会话的项目归属不一致，请返回原会话重试。",
     "noDirectory": "尚未选择本地文件夹",
     "addToLibrary": "确保加入「{{project}}」项目文献库（已有全文复用，删除后重新入库）",
     "unfiled": "未整理",

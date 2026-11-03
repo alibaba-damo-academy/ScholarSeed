@@ -3,8 +3,6 @@
 package handoff
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,7 +12,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf16"
 	"unsafe"
 )
 
@@ -211,32 +208,21 @@ func verifyAuthenticodeFiles(filenames []string, signing Signing) error {
 	if signing.Mode != "authenticode" || signing.Publisher == "" {
 		return errors.New("missing compiled Authenticode policy")
 	}
-	var systemBuffer [32768]uint16
-	n, _, err := kernel.NewProc("GetSystemDirectoryW").Call(uintptr(unsafe.Pointer(&systemBuffer[0])), uintptr(len(systemBuffer)))
-	if n == 0 || n >= uintptr(len(systemBuffer)) {
-		return err
-	}
-	system := syscall.UTF16ToString(systemBuffer[:n])
-	powershell := filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
-	// The command and module path are fixed Windows components; no PATH lookup,
-	// profile, caller-provided script, or publisher-name substring comparison.
-	script := `$ErrorActionPreference='Stop'; $paths=ConvertFrom-Json -InputObject $env:SCHOLARSEED_HANDOFF_VERIFY_PATHS; foreach($path in $paths){$s=Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $path; if(($s.Status -ne 'Valid') -or ($s.SignerCertificate.Subject -cne $env:SCHOLARSEED_HANDOFF_VERIFY_PUBLISHER)){exit 1}}; exit 0`
-	paths, err := json.Marshal(filenames)
-	if err != nil {
-		return err
-	}
-	words := utf16.Encode([]rune(script))
-	bytes := make([]byte, len(words)*2)
-	for i, w := range words {
-		bytes[i*2] = byte(w)
-		bytes[i*2+1] = byte(w >> 8)
-	}
-	command := exec.Command(powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(bytes))
-	command.Dir = system
-	command.Env = []string{"SystemRoot=" + filepath.Dir(system), "WINDIR=" + filepath.Dir(system), "PATH=" + system, "PSModulePath=" + filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules"), "SCHOLARSEED_HANDOFF_VERIFY_PATHS=" + string(paths), "SCHOLARSEED_HANDOFF_VERIFY_PUBLISHER=" + signing.Publisher}
-	hideProcess(command)
-	if err = command.Run(); err != nil {
-		return errors.New("executable Authenticode or publisher differs")
+	var files []*os.File
+	defer func() { closeFiles(files) }()
+	for _, filename := range filenames {
+		file, err := pinFile(filename)
+		if err != nil {
+			return err
+		}
+		files = append(files, file)
+		subject, err := nativeSignature(file)
+		if err != nil {
+			return err
+		}
+		if err = signaturePublisher(subject, signing.Publisher); err != nil {
+			return err
+		}
 	}
 	return nil
 }

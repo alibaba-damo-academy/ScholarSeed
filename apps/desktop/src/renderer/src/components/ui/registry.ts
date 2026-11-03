@@ -288,7 +288,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
       'DialogTrigger',
     ],
     intents: ['弹窗', '模态框', '对话框', '表单弹层', 'dialog', 'modal', 'popup'],
-    use: '模态弹层: 表单、详情、导入向导等；DialogContent 的 headerLayout="aligned" 对齐标题与关闭按钮，复用详情标题头尺寸',
+    use: '模态弹层: 表单、详情、导入向导等；DialogContent 的 headerLayout="aligned" 对齐标题与关闭按钮；portalClassName 为嵌套表面指定共享浮层容器的语义层级',
     replaces: ['dialog', 'div'],
     avoid: '危险操作确认用 AlertDialog; 侧边滑出用 Sheet/Drawer; 轻量悬浮内容用 Popover',
   },

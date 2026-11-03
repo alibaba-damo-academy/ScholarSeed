@@ -12,7 +12,7 @@
 ![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848F)
 ![Python](https://img.shields.io/badge/Python-FastAPI-3776AB)
 
-[Why ScholarSeed](#why-scholarseed) · [Research Paper](#research-paper) · [From Papers to Progress](#from-papers-to-progress) · [Get Started](#get-started) · [Installation](#run-from-source) · [Development](#development) · [Community](#community-and-support)
+[Why ScholarSeed](#why-scholarseed) · [Research Paper](#research-paper) · [From Papers to Progress](#from-papers-to-progress) · [Get Started](#get-started) · [Installation](#run-from-source) · [Development](#development) · [Plugins](#plugins) · [Community](#community-and-support)
 
 </div>
 
@@ -213,6 +213,56 @@ pnpm ops pre doctor
 
 `pnpm ops ci check --profile python` runs static checks; it is not a substitute for real Electron, backend, model, and tool-flow acceptance.
 
+## Plugins
+
+**ScholarSeed plugins connect research steps, conversation cards, and material organization into a reusable workflow. Have the AI analyze materials using your research method, ask for decisions at key steps, then produce reports, save notes, and organize papers.**
+
+Start with a Skill—a set of research workflow instructions. In `SKILL.md`, describe the research steps, required materials, and expected outputs. Add conversation cards where researchers need to make choices before continuing the analysis and organizing their papers.
+
+Plugins are currently in developer preview. See the [plugin guide (Chinese)](doc/plugins.md) for development and installation.
+
+### Take Actions in ScholarSeed, Not Just Generate Content
+
+A Skill can use `scholarseed-bridge`, ScholarSeed's application interface, to turn analysis into actions:
+
+- **Use materials:** Search project files, read authorized PDFs and annotations, and import generated files into the project.
+- **Organize papers:** Import papers, save or edit notes, apply tags in batches, and update collections and project associations.
+- **Advance tasks:** Read permitted conversation history, update task plans, and present cards that guide the next steps based on researchers' choices.
+
+The AI invokes these operations following the Skill; ScholarSeed checks the current project scope and permissions. Cards do not inherit all application permissions or automatically approve sensitive actions. See the [plugin API guide (Chinese)](doc/plugins/api.md) for available operations.
+
+### Comparison with Codex Desktop and Zotero AI Plugins
+
+| Aspect | ScholarSeed | Codex desktop | Zotero + AI plugins |
+| --- | --- | --- | --- |
+| Custom workflows | Skills + optional scripts | Skills + optional scripts | Some plugins support Skills |
+| Research interactions | Research + custom cards | Tool- and plugin-provided | Plugin-provided |
+| Research materials | Project files + paper library | Files + connected services | Library access through plugins |
+| Organizing results | Built-in ScholarSeed operations | Connect a literature tool | Plugin library tools |
+
+Codex desktop also supports Skills, plugins, MCP (a protocol for connecting external tools), and application tools. **ScholarSeed's distinction is its ready-to-use research cards, project materials, and literature operations: analysis, selection, and organization stay in one application, without first connecting a separate literature-management service.**
+
+### Example: Read 30 Papers Using Your Lab's Method
+
+A researcher wants to compare 30 papers by research question, method, evidence, and limitations, select papers for closer study, and produce a report with saved reading notes.
+
+In ScholarSeed, a developer can bring these steps into one workflow:
+
+1. **Define the reading method.** Specify what to compare, how to cite sources, and how to flag insufficient evidence in `SKILL.md`.
+2. **Use project materials in the analysis.** Combine the project's research question, the lab's reading requirements, and paper content using existing material and literature features.
+3. **Select papers through a card.** Show papers and comparison results in a custom conversation card. The researcher selects papers and adds comments; the AI continues based on those choices.
+4. **Produce the report and organize the papers.** Generate a comparison report, save notes, add tags, and associate papers with the project, within the permissions granted.
+
+For the same task in Zotero, install and configure LLM-for-Zotero, enable Agent mode, and define the reading method in a custom Skill. The AI can then analyze papers and save notes. A dedicated paper-screening interface requires further development using the interfaces provided by the plugin.
+
+Codex desktop can also organize paper analysis with a Skill. Synchronizing paper tags, notes, and collections requires connecting the corresponding literature-management tools or services.
+
+**Reading rules guide the analysis, cards capture the researcher's decisions, and the results return to the project's materials and literature. Developers can focus on research steps rather than rebuilding AI connectivity and literature management for every workflow.**
+
+A `SKILL.md` file does not automatically create a custom interface. Dedicated cards still require interface code, an installation package, and testing. Reading or changing materials requires the appropriate permissions, and research conclusions still need checking against the original sources and evidence.
+
+References: [Codex Skills](https://developers.openai.com/codex/skills), [OpenAI plugins](https://developers.openai.com/plugins/build/plugins), [Zotero plugin development](https://www.zotero.org/support/dev/client_coding/plugin_development), [LLM-for-Zotero documentation](https://yilewang.github.io/llm-for-zotero/), and [zotero-gpt](https://github.com/MuiseDestiny/zotero-gpt). Available features depend on the version and configuration used.
+
 ## Packaging
 
 Build installers on the matching native operating system:
@@ -257,4 +307,3 @@ Third-party software, assets, and bundled runtimes remain under their respective
 - [Desktop dependencies and corresponding source notices](apps/desktop/resources/notices/README.md)
 - [Office viewer third-party notices](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md)
 - [`paper-fulltext-dl` third-party notices](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)
-

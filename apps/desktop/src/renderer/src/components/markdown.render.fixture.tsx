@@ -6,7 +6,9 @@ import enAssistant from '../../../localization/locales/en/assistant.json'
 import zhUi from '../../../localization/locales/zh/ui.json'
 import enUi from '../../../localization/locales/en/ui.json'
 import { FloatingWindow } from './primitive/FloatingWindow'
-import { Button } from './ui'
+import { Button, ToastProvider } from './ui'
+import { StoreProvider } from '../store'
+import { DocumentWorkspaceContext, documentWorkspaces } from '../features/workbench/workspace'
 import { createRoot } from 'react-dom/client'
 
 import '../styles.css'
@@ -692,6 +694,12 @@ function Fixture() {
 }
 createRoot(document.getElementById('root')!).render(
   <I18nextProvider i18n={localization}>
-    <Fixture />
+    <ToastProvider>
+      <StoreProvider assistantSources={[]}>
+        <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
+          <Fixture />
+        </DocumentWorkspaceContext.Provider>
+      </StoreProvider>
+    </ToastProvider>
   </I18nextProvider>
 )

@@ -199,6 +199,26 @@ def read_download_receipt(operation_id: str, session_id: str) -> DownloadReceipt
         return receipt if _receipt_available(connection, receipt) else None
 
 
+def read_download_receipts(
+    session_id: str, run: str, project_id: str
+) -> tuple[DownloadReceipt, ...]:
+    if not session_id or not run:
+        raise ValueError(DOWNLOAD_RECEIPT_INVALID)
+    with closing(connect(LiteratureRepository().database)) as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({DOWNLOAD_ADMISSION_TABLE})")
+        }
+        if not set(DOWNLOAD_ADMISSION_SCOPE_FIELDS).issubset(columns):
+            return ()
+        rows = connection.execute(
+            f"SELECT * FROM {DOWNLOAD_ADMISSION_TABLE} "
+            "WHERE session_id=? AND run=? AND project_id=? ORDER BY rowid",
+            (session_id, run, project_id),
+        ).fetchall()
+        return tuple(_download_receipt(row) for row in rows)
+
+
 def download_literature_ids(
     session_id: str, run: str, project_id: str, excluded_papers: tuple[str, ...] = ()
 ) -> tuple[str, ...]:

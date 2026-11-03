@@ -16,7 +16,7 @@ test('main startup tolerates damaged preferences but reconciliation cannot ackno
   try {
     process.env.SCHOLARSEED_HOME = join(directory, 'home')
     await build({
-      stdin: { contents: `export * from './src/main/preferences.ts'; export { selectStorage, publishStorage } from './src/main/storage.ts'`, resolveDir: DESKTOP, sourcefile: 'preferences-contract.ts' }, outfile: output,
+      stdin: { contents: `export * from './src/main/preferences.ts'; export { selectStorage, publishStorage } from './src/main/storage.ts'; export { writerEvents } from './src/main/writer'`, resolveDir: DESKTOP, sourcefile: 'preferences-contract.ts' }, outfile: output,
       bundle: true, platform: 'node', format: 'esm',
       plugins: [{ name: 'isolated-electron-path', setup(builder) {
         builder.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'contract' }))
@@ -31,13 +31,20 @@ test('main startup tolerates damaged preferences but reconciliation cannot ackno
           getLocale: () => 'en-US',
           getPreferredSystemLanguages: () => ['en-US']
         }` }))
-        builder.onResolve({ filter: /^\.\/writer$/ }, (args) => {
-          if (!args.importer.startsWith(join(DESKTOP, 'src', 'main'))) return
-          return { path: 'writer', namespace: 'isolated-writer' }
+        builder.onResolve({ filter: /(?:^|\/)writer$/ }, (args) => {
+          if (!args.importer.startsWith(join(DESKTOP, 'src', 'main')) && args.path !== './src/main/writer') return
+          return { path: 'writer', namespace: 'preference-writer' }
         })
-        builder.onLoad({ filter: /^writer$/, namespace: 'isolated-writer' }, () => ({
-          contents: 'export function desktopDirectoryWriter() { return { close() {} } }',
-        }))
+        builder.onLoad({ filter: /.*/, namespace: 'preference-writer' }, () => ({ contents: `
+          import assert from 'node:assert/strict';
+          export const writerEvents = [];
+          export function desktopDirectoryWriter(directory) {
+            assert.equal(directory, ${JSON.stringify(directory)});
+            writerEvents.push(['acquire', directory]);
+            let closed = false;
+            return { close() { assert.equal(closed, false); closed = true; writerEvents.push(['release', directory]); } };
+          }
+        ` }))
       } }]
     })
     const preferences = await import(pathToFileURL(output).href)
@@ -50,6 +57,8 @@ test('main startup tolerates damaged preferences but reconciliation cannot ackno
     assert.ok(['zh', 'en'].includes(initial.language))
     await assert.rejects(preferences.reconcileRendererPreferences(), SyntaxError)
     assert.equal(readFileSync(file, 'utf8'), '{invalid', 'reading never overwrites damaged user state')
+    assert.deepEqual(preferences.writerEvents, [], 'startup and reconciliation never acquire a writer')
+
     await assert.rejects(preferences.commitRendererPreferences({ ...initial, language: 'en' }), SyntaxError)
     assert.equal(readFileSync(file, 'utf8'), '{invalid', 'failed saving never overwrites damaged user state')
     unlinkSync(file)
@@ -58,6 +67,7 @@ test('main startup tolerates damaged preferences but reconciliation cannot ackno
     assert.equal(saved.theme, 'dark')
     assert.deepEqual(await preferences.reconcileRendererPreferences(), saved)
     assert.deepEqual(preferences.loadRendererPreferences(), saved)
+    assert.deepEqual(preferences.writerEvents, [['acquire', directory], ['release', directory]])
   } finally {
     if (previousHome === undefined) delete process.env.SCHOLARSEED_HOME
     else process.env.SCHOLARSEED_HOME = previousHome

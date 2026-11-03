@@ -11,7 +11,10 @@ import { BUILD_NUMBER_PATTERN } from './version.ts'
 
 const CONTEXT_DIRECTORY = '.scholarseed-update-launch'
 const CONTEXT_FILE = 'context.json'
-const SCHEMA = 1
+const LEGACY_SCHEMA = 1
+const SCHEMA = 2
+const LEGACY_IDENTITY = /^posix:[a-f0-9]{16}:[a-f0-9]{16}$/
+const PERSISTENT_IDENTITY = /^darwin:[a-f0-9]{32}:[a-f0-9]{16}:[a-f0-9]{16}:[a-f0-9]{8}$/
 const MAX_BYTES = 16 * 1024
 const PROFILE_SWITCH = '--user-data-dir'
 const CONTEXT_LOCK = 'context-write'
@@ -67,11 +70,14 @@ export function updateLaunchDirectory(coordinator: string, application: string):
     createHash('sha256').update(application).digest('hex')
   )
 }
-function directoryIdentity(native: DomainNative, path: string): string {
+function directoryIdentity(native: DomainNative, path: string, schema = SCHEMA): string {
   const pin = native.pin(path, false)
   try {
-    const id = native.lineage(pin).at(-1)
-    if (!id) throw new Error('Update launch directory has no identity')
+    const id =
+      schema === LEGACY_SCHEMA ? native.lineage(pin).at(-1) : native.persistentIdentity?.(pin)
+    const pattern = schema === LEGACY_SCHEMA ? LEGACY_IDENTITY : PERSISTENT_IDENTITY
+    if (!id || !pattern.test(id))
+      throw new Error('Update launch directory has no supported identity')
     return id
   } finally {
     native.release(pin)
@@ -114,7 +120,7 @@ export function decodeUpdateLaunch(bytes: Buffer): UpdateLaunchContext {
       (key) => !KEYS.includes(key as (typeof KEYS)[number]) && key !== 'debugPort'
     ) ||
     KEYS.some((key) => !Object.hasOwn(record, key)) ||
-    record.schema !== SCHEMA ||
+    (record.schema !== SCHEMA && record.schema !== LEGACY_SCHEMA) ||
     (Object.hasOwn(record, 'debugPort') && !isValidDebugPort(record.debugPort)) ||
     !Number.isSafeInteger(record.uid) ||
     record.uid < 0 ||
@@ -131,7 +137,9 @@ export function decodeUpdateLaunch(bytes: Buffer): UpdateLaunchContext {
     !Array.isArray(record.identities) ||
     record.identities.length !== 3 ||
     record.identities.some(
-      (id) => typeof id !== 'string' || !/^posix:[a-f0-9]{16}:[a-f0-9]{16}$/.test(id)
+      (id) =>
+        typeof id !== 'string' ||
+        !(record.schema === LEGACY_SCHEMA ? LEGACY_IDENTITY : PERSISTENT_IDENTITY).test(id)
     )
   )
     throw new Error('Invalid Mac update launch context')
@@ -187,7 +195,15 @@ export function persistUpdateLaunch(
             previous.home === record.home &&
             previous.userData === record.userData &&
             previous.workspace === record.workspace &&
-            previous.identities.every((id, index) => id === record.identities[index])
+            previous.identities.every(
+              (id, index) =>
+                id ===
+                directoryIdentity(
+                  native,
+                  [record.home, record.userData, record.workspace][index],
+                  previous.schema
+                )
+            )
           if (!sameStorage) throw new Error('Mac update launch identity or storage differs')
           if (
             previous.sourceBuild === record.sourceBuild &&
@@ -274,7 +290,10 @@ export function observeUpdateLaunch(
       }
       const roots = [context.home, context.userData, context.workspace]
       if (
-        roots.some((path, index) => directoryIdentity(native, path) !== context.identities[index])
+        roots.some(
+          (path, index) =>
+            directoryIdentity(native, path, context.schema) !== context.identities[index]
+        )
       )
         throw new Error('Mac update launch directory was replaced')
     },

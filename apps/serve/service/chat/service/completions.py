@@ -5,19 +5,32 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import random
 import secrets
 import time
 import uuid
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass, field
 from email.utils import parsedate_to_datetime
 from enum import Enum
 from http import HTTPStatus
 from io import BytesIO
-from typing import Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from typing import (
+    Any,
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from urllib.parse import urlsplit
+from weakref import WeakValueDictionary
 
 import httpx
 from fastapi import FastAPI, Request
@@ -138,6 +151,7 @@ class ToolInputFailure(str, Enum):
 # 账号腿脱敏分支把上游 >=400 一律折成该码：上游体内可能带厂商内部信息或凭据片段，
 # 不能进 Codex 子进程与 renderer。
 MODEL_UPSTREAM_REJECTED = "model_upstream_rejected"
+MODEL_REQUEST_INVALID = "model_request_invalid"
 # 产品级上游错误码登记：这些码出自自有网关的业务信封（429 的 ``detail.error``），
 # 属产品语义而非厂商内部信息，客户端要按它分支渲染文案（如积分耗尽）。脱敏分支只放行
 # 命中登记的码；新增产品码在此登记，adapter 与 renderer 各自登记自己的文案与语义。
@@ -148,6 +162,8 @@ PRODUCT_UPSTREAM_ERROR_CODES = frozenset({"credit_balance_exhausted"})
 # bridge_id 一直可用（loopback 可达即可调用）。每条记录现在还多了 per-session 计量头，
 # 不淘汰会把这个问题放大。
 BRIDGE_REGISTRATION_TTL_SECONDS = 12 * 3600
+BRIDGE_REFERENCE_LIMIT = 4096
+MODEL_BRIDGE_REFERENCE_LIMIT = "model_bridge_reference_limit"
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +178,22 @@ class CompletionRegistration:
     proxy_bypass_host: str = ""
 
 
+class CompletionReferenceState(str, Enum):
+    ACTIVE = "active"
+    PAUSING = "pausing"
+    PAUSED = "paused"
+
+
+@dataclass
+class CompletionReference:
+    bridge_id: str
+    session_id: str
+    owner_id: str
+    connection_id: str
+    scope: str
+    state: CompletionReferenceState = CompletionReferenceState.ACTIVE
+
+
 @dataclass(frozen=True)
 class StructuredStreamError:
     """Provider error returned incorrectly inside a successful text stream."""
@@ -172,6 +204,10 @@ class StructuredStreamError:
 
 class CompletionCredentialError(ValueError):
     """Credential policy failure carrying only a safe public error code."""
+
+
+class CompletionRequestError(ValueError):
+    """Request policy failure resolved through registered safe rejection semantics."""
 
 
 class CompletionCleanupUnknown(RuntimeError):
@@ -288,6 +324,13 @@ class CompletionStream(StreamingResponse):
 
 
 @dataclass
+class CompletionEpoch:
+    revision: int = 0
+    owner_id: str | None = None
+    shared: bool = False
+
+
+@dataclass
 class CompletionUpstream:
     """One registered upstream plus how its outbound call is credentialed.
 
@@ -357,6 +400,9 @@ class CompletionUpstream:
     provider: str = ""
     approval_model_ref: str = ""
     active: bool = True
+    renewal_source: Callable[[], object] | None = field(default=None, repr=False)
+    renewal_epochs: tuple[CompletionEpoch, ...] = field(default_factory=tuple, repr=False)
+    renewal_attempts: set[str] = field(default_factory=set, repr=False)
     calls: set[CompletionCall] = field(default_factory=set, repr=False)
     created_at: float = field(default_factory=time.monotonic)
     last_used_at: float = field(default_factory=time.monotonic)
@@ -449,6 +495,125 @@ class CompletionAuthority:
     identity: str
     retryable_tools: frozenset[str]
     current: Callable[[], bool]
+    prepare_renewal: Callable[[str], CompletionRenewal | None] | None = field(
+        default=None, repr=False, compare=False
+    )
+    capture_renewal: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+
+
+class CompletionRenewal:
+    def __init__(
+        self,
+        bridge: CompletionBridge,
+        upstream: CompletionUpstream,
+        authority: CompletionAuthority,
+        successor: str,
+        endpoint: str,
+        protocol: ModelWireProtocol,
+        *,
+        source: str,
+        epoch: tuple[int, ...],
+    ) -> None:
+        self._bridge = bridge
+        self._upstream = upstream
+        self._authority = authority
+        self._successor = successor
+        self._endpoint = endpoint
+        self._protocol = protocol
+        self._owner = asyncio.current_task()
+        self._source = source
+        self._epoch = epoch
+        self._candidate: CompletionUpstream | None = None
+        self._candidates = 0
+        self._entered = False
+        self._closed = False
+        self._consumed = False
+        self._failed = self._source is None or self._owner is None or not successor.strip()
+        self._released = False
+
+    def _current(self) -> bool:
+        return (
+            not self._bridge._closed
+            and not self._failed
+            and self._bridge._renewal_epoch(self._upstream) == self._epoch
+            and self._bridge._renewal_source(self._upstream) == self._source
+            and self._bridge._renewal_epoch(self._upstream) == self._epoch
+        )
+
+    @contextmanager
+    def capture(self) -> Iterator[None]:
+        if (
+            self._entered
+            or self._consumed
+            or asyncio.current_task() is not self._owner
+            or self._bridge._renewal_scope.get() is not None
+            or not self._authority.current()
+            or not self._current()
+        ):
+            raise RuntimeError("completion_renewal_stale")
+        self._entered = True
+        scope = self._bridge._renewal_scope.set(self)
+        try:
+            yield
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            self._bridge._renewal_scope.reset(scope)
+            self._closed = True
+
+    def _register(self, upstream: CompletionUpstream) -> None:
+        if upstream.session_id != self._upstream.session_id:
+            return
+        self._candidates += 1
+        if (
+            asyncio.current_task() is not self._owner
+            or self._closed
+            or self._candidates != 1
+            or not self._current()
+            or self._bridge._renewal_source(upstream) != self._source
+            or self._bridge._renewal_epoch(upstream) != self._epoch
+        ):
+            self._failed = True
+            return
+        self._candidate = upstream
+
+    def complete(self) -> CompletionAuthority | None:
+        if self._consumed:
+            return None
+        self._consumed = True
+        candidate = self._candidate
+        if not self._closed or asyncio.current_task() is not self._owner or not self._current():
+            return None
+        if not self._released:
+            if (
+                self._candidates > 1
+                or (self._candidates == 1 and candidate is not self._upstream)
+                or not self._authority.current()
+            ):
+                return None
+            candidate = self._upstream
+            authority = self._authority
+        else:
+            if (
+                self._upstream.active
+                or candidate is None
+                or not candidate.active
+                or self._bridge._renewal_source(candidate) != self._source
+                or self._bridge._renewal_epoch(candidate) != self._epoch
+            ):
+                return None
+            authority = self._bridge._request_authority(candidate, self._endpoint, self._protocol)
+
+        def current() -> bool:
+            return (
+                authority.current()
+                and self._current()
+                and self._bridge._renewal_source(candidate) == self._source
+                and self._bridge._renewal_epoch(candidate) == self._epoch
+            )
+
+        return CompletionAuthority(authority.identity, authority.retryable_tools, current)
 
 
 class CompletionBridge:
@@ -481,9 +646,18 @@ class CompletionBridge:
         # machine 轴下订阅桥归这台机器所有, 切账号不该把它拆掉(见 rebind_owner)。
         self._shared_ownership = bool(shared_ownership)
         self._upstreams: dict[str, CompletionUpstream] = {}
+        self._references: dict[str, CompletionReference] = {}
         self._calls: set[CompletionCall] = set()
         self._clients: dict[bool, httpx.AsyncClient] = {}
         self._closed = False
+        self._renewal_scope: ContextVar[CompletionRenewal | None] = ContextVar(
+            "completion_renewal", default=None
+        )
+        self._owner_epochs: WeakValueDictionary[str, CompletionEpoch] = WeakValueDictionary()
+        self._connection_epochs: WeakValueDictionary[tuple[str, str], CompletionEpoch] = (
+            WeakValueDictionary()
+        )
+        self._session_epochs: WeakValueDictionary[str, CompletionEpoch] = WeakValueDictionary()
         self._before_output: Callable[[str, str, bytes], Awaitable[None]] | None = None
         self._before_request: (
             Callable[[str, str, Mapping[str, Any], CompletionAuthority], Awaitable[None]] | None
@@ -553,11 +727,45 @@ class CompletionBridge:
             )
 
         binding = source()
+        renewal_source: str | None = None
+        renewal_epoch = self._renewal_epoch(upstream)
+        captured = False
 
         def current() -> bool:
             return not self._closed and upstream.active and binding == source()
 
-        return CompletionAuthority(
+        def capture_renewal() -> None:
+            nonlocal captured, renewal_source
+            if captured:
+                return
+            captured = True
+            if current() and self._renewal_epoch(upstream) == renewal_epoch:
+                renewal_source = self._renewal_source(upstream)
+
+        def prepare_renewal(successor: str) -> CompletionRenewal | None:
+            if (
+                not current()
+                or not captured
+                or renewal_source is None
+                or self._renewal_source(upstream) != renewal_source
+                or self._renewal_epoch(upstream) != renewal_epoch
+                or not successor.strip()
+                or successor in upstream.renewal_attempts
+            ):
+                return None
+            upstream.renewal_attempts.add(successor)
+            return CompletionRenewal(
+                self,
+                upstream,
+                authority,
+                successor,
+                endpoint,
+                protocol,
+                source=renewal_source,
+                epoch=renewal_epoch,
+            )
+
+        authority = CompletionAuthority(
             uuid.uuid5(
                 uuid.NAMESPACE_URL, f"{upstream.authority_id}:{protocol.value}:{endpoint}"
             ).hex,
@@ -567,7 +775,73 @@ class CompletionBridge:
                 else frozenset()
             ),
             current,
+            prepare_renewal if upstream.renewal_source is not None else None,
+            capture_renewal if upstream.renewal_source is not None else None,
         )
+        return authority
+
+    def _bind_renewal_epochs(self, upstream: CompletionUpstream) -> None:
+        owner = self._owner_epochs.setdefault(upstream.owner_id, CompletionEpoch())
+        connection = self._connection_epochs.setdefault(
+            (upstream.owner_id, upstream.connection_id), CompletionEpoch()
+        )
+        session = self._session_epochs.setdefault(upstream.session_id, CompletionEpoch())
+        upstream.renewal_epochs = (owner, connection, session)
+        if upstream.session_id:
+            if session.owner_id is not None and session.owner_id != upstream.owner_id:
+                session.revision += 1
+            session.owner_id = upstream.owner_id
+            session.shared = bool(
+                self._shared_ownership and upstream.credential_resolver is not None
+            )
+
+    @staticmethod
+    def _renewal_epoch(upstream: CompletionUpstream) -> tuple[int, ...]:
+        return tuple(epoch.revision for epoch in upstream.renewal_epochs)
+
+    @staticmethod
+    def _renewal_source(upstream: CompletionUpstream) -> str | None:
+        if upstream.renewal_source is None:
+            return None
+        try:
+            payload = json.dumps(
+                {
+                    "session": upstream.session_id,
+                    "owner": upstream.owner_id,
+                    "connection": upstream.connection_id,
+                    "endpoint": upstream.endpoint,
+                    "responses_endpoint": upstream.responses_endpoint,
+                    "wire_protocol": upstream.wire_protocol,
+                    "provider": upstream.provider,
+                    "model_routes": upstream.model_routes,
+                    "reasoning_effort": upstream.reasoning_effort,
+                    "thinking": (
+                        asdict(upstream.thinking) if upstream.thinking is not None else None
+                    ),
+                    "reasoning_options": upstream.reasoning_options,
+                    "approval_model": upstream.approval_model_ref,
+                    "trust_env": upstream.trust_env,
+                    "api_key": upstream.api_key,
+                    "headers": upstream.headers,
+                    "bearer": upstream.bearer() if upstream.token_provider is not None else "",
+                    "credential_resolver": upstream.credential_resolver is not None,
+                    "token_provider": upstream.token_provider is not None,
+                    "request_policy": upstream.request_policy is not None,
+                    "intent": upstream.renewal_source(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            return hashlib.sha256(payload.encode(JSON_ENCODING)).hexdigest()
+        except Exception as error:
+            logger.warning(
+                "model_bridge_renewal_source_failed session_id=%s failure_type=%s",
+                upstream.session_id,
+                type(error).__name__,
+            )
+            return None
 
     def register(
         self,
@@ -594,6 +868,8 @@ class CompletionBridge:
         reasoning_options: Sequence[Mapping[str, Any]] | None = None,
         provider: str = "",
         approval_model_ref: str = "",
+        renewal_source: Callable[[], object] | None = None,
+        resume_scope: str = "",
     ) -> CompletionRegistration:
         if self._closed:
             raise ValueError(MODEL_BRIDGE_CLOSED)
@@ -607,7 +883,6 @@ class CompletionBridge:
         if wire_protocol == ModelWireProtocol.RESPONSES and not responses_endpoint.strip():
             raise ValueError("Responses model connection requires a Responses endpoint")
         self._evict_expired()
-        bridge_id = secrets.token_urlsafe(24)
         private_headers = {
             str(name).strip(): str(value).strip()
             for name, value in dict(headers or {}).items()
@@ -618,6 +893,69 @@ class CompletionBridge:
             for source, target in dict(model_routes or {}).items()
             if str(source).strip() and str(target).strip()
         }
+        reference = None
+        if resume_scope:
+            if (
+                not session_id.strip()
+                or not owner_id.strip()
+                or not connection_id.strip()
+                or credential_resolver is None
+                or api_key.strip()
+            ):
+                raise ValueError("resumable model connection requires scoped dynamic credentials")
+            scope = hashlib.sha256(
+                json.dumps(
+                    {
+                        "policy": resume_scope,
+                        "session": session_id,
+                        "owner": owner_id,
+                        "connection": connection_id,
+                        "endpoint": target,
+                        "responses_endpoint": responses_endpoint.strip(),
+                        "wire_protocol": wire_protocol,
+                        "headers": private_headers,
+                        "routes": routes,
+                        "reasoning_effort": reasoning_effort,
+                        "thinking": asdict(thinking) if thinking is not None else None,
+                        "reasoning_options": reasoning_options,
+                        "trust_env": trust_env,
+                        "provider": provider,
+                        "approval_model": approval_model_ref,
+                        "source_text": source_text,
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            reference = next(
+                (item for item in self._references.values() if item.scope == scope), None
+            )
+            if reference is not None:
+                if reference.state is CompletionReferenceState.PAUSING:
+                    raise CompletionCleanupUnknown("model connection pause remains unknown")
+                if reference.state is CompletionReferenceState.ACTIVE:
+                    upstream = self._upstreams.get(reference.bridge_id)
+                    if upstream is None:
+                        raise CompletionCleanupUnknown("model connection binding remains unknown")
+                    renewal = self._renewal_scope.get()
+                    if renewal is not None:
+                        renewal._register(upstream)
+                    return CompletionRegistration(
+                        bridge_id=reference.bridge_id,
+                        base_url=f"{self._internal_base_url}/api/internal/model-bridge/{reference.bridge_id}/v1",
+                        proxy_bypass_host=urlsplit(self._internal_base_url).hostname or "",
+                    )
+            else:
+                if len(self._references) >= BRIDGE_REFERENCE_LIMIT:
+                    raise ValueError(MODEL_BRIDGE_REFERENCE_LIMIT)
+                reference = CompletionReference(
+                    bridge_id=secrets.token_urlsafe(24),
+                    session_id=session_id,
+                    owner_id=owner_id,
+                    connection_id=connection_id,
+                    scope=scope,
+                )
+                self._references[reference.bridge_id] = reference
+        bridge_id = reference.bridge_id if reference is not None else secrets.token_urlsafe(24)
         self._upstreams[bridge_id] = CompletionUpstream(
             endpoint=target,
             api_key=api_key.strip(),
@@ -645,7 +983,15 @@ class CompletionBridge:
             ),
             provider=provider,
             approval_model_ref=approval_model_ref,
+            renewal_source=renewal_source,
         )
+        upstream = self._upstreams[bridge_id]
+        self._bind_renewal_epochs(upstream)
+        renewal = self._renewal_scope.get()
+        if renewal is not None:
+            renewal._register(upstream)
+        if reference is not None:
+            reference.state = CompletionReferenceState.ACTIVE
         logger.info(
             "model_bridge_registration_credentials session_id=%s api_key_present=%s "
             "owner_present=%s token_provider_present=%s credential_resolver_present=%s",
@@ -674,6 +1020,15 @@ class CompletionBridge:
         actor = str(owner_id or "").strip()
         if not owner or not actor:
             return 0
+        session_epoch = self._session_epochs.get(owner)
+        if (
+            session_epoch is not None
+            and session_epoch.owner_id is not None
+            and session_epoch.owner_id != actor
+            and not session_epoch.shared
+        ):
+            session_epoch.revision += 1
+            session_epoch.owner_id = actor
         moved = 0
         for key, upstream in tuple(self._upstreams.items()):
             if (
@@ -695,6 +1050,7 @@ class CompletionBridge:
             ):
                 previous_bearer_present = bool(upstream.bearer())
                 upstream.owner_id = actor
+                self._bind_renewal_epochs(upstream)
                 logger.info(
                     "model_bridge_owner_rebound session_id=%s previous_bearer_present=%s "
                     "bearer_present=%s",
@@ -715,20 +1071,62 @@ class CompletionBridge:
         owner = str(session_id or "")
         if not owner:
             return 0
-        stale = [key for key, up in self._upstreams.items() if up.session_id == owner]
+        stale = {key for key, up in self._upstreams.items() if up.session_id == owner} | {
+            key for key, ref in self._references.items() if ref.session_id == owner
+        }
         for key in stale:
+            self._release_renewal(self._upstreams.get(key))
             self._invalidate(key)
         return len(stale)
+
+    def _release_renewal(self, upstream: CompletionUpstream | None) -> None:
+        renewal = self._renewal_scope.get()
+        if (
+            renewal is not None
+            and asyncio.current_task() is renewal._owner
+            and upstream is renewal._upstream
+        ):
+            renewal._released = True
+
+    async def suspend(self, session_id: str) -> None:
+        upstreams = {
+            key: upstream
+            for key, upstream in self._upstreams.items()
+            if upstream.session_id == session_id
+        }
+        references = []
+        calls = set()
+        for bridge_id, upstream in upstreams.items():
+            reference = self._references.get(bridge_id)
+            if reference is not None:
+                reference.state = CompletionReferenceState.PAUSING
+                references.append(reference)
+            calls.update(upstream.calls)
+            self._release_renewal(upstream)
+            self._invalidate(bridge_id, preserve_reference=reference is not None)
+        await self._close_calls(tuple(calls))
+        for reference in references:
+            if self._references.get(reference.bridge_id) is reference:
+                reference.state = CompletionReferenceState.PAUSED
 
     async def release_registration(self, registration: CompletionRegistration) -> None:
         upstream = self._upstreams.get(registration.bridge_id)
         calls = tuple(upstream.calls) if upstream is not None else ()
         self._invalidate(registration.bridge_id)
+        await self._close_calls(calls)
+
+    async def _close_calls(self, calls: tuple[CompletionCall, ...]) -> None:
+        current = asyncio.current_task()
+        tasks = tuple(
+            call.task for call in calls if call.task is not None and call.task is not current
+        )
         closing = asyncio.gather(*(call.close() for call in calls), return_exceptions=True)
+        draining = asyncio.gather(*tasks, return_exceptions=True)
+        finished = asyncio.gather(closing, draining)
         interrupted = False
-        while not closing.done():
+        while not finished.done():
             try:
-                await asyncio.shield(closing)
+                await asyncio.shield(finished)
             except asyncio.CancelledError:
                 interrupted = True
         for result in closing.result():
@@ -739,7 +1137,9 @@ class CompletionBridge:
         if interrupted:
             raise asyncio.CancelledError
 
-    def _invalidate(self, bridge_id: str) -> None:
+    def _invalidate(self, bridge_id: str, *, preserve_reference: bool = False) -> None:
+        if not preserve_reference:
+            self._references.pop(bridge_id, None)
         upstream = self._upstreams.pop(bridge_id, None)
         if upstream is not None:
             upstream.active = False
@@ -747,21 +1147,32 @@ class CompletionBridge:
                 call.revoke()
 
     def revoke_connection(self, owner_id: str, connection_id: str) -> int:
-        keys = [
+        scope = (owner_id, connection_id)
+        epoch = self._connection_epochs.get(scope)
+        if epoch is not None:
+            epoch.revision += 1
+        keys = {
             key
             for key, upstream in self._upstreams.items()
             if upstream.owner_id == owner_id and upstream.connection_id == connection_id
-        ]
+        } | {
+            key
+            for key, reference in self._references.items()
+            if reference.owner_id == owner_id and reference.connection_id == connection_id
+        }
         for key in keys:
             self._invalidate(key)
         return len(keys)
 
     def revoke_owner(self, owner_id: str) -> int:
-        keys = [
+        epoch = self._owner_epochs.get(owner_id)
+        if epoch is not None:
+            epoch.revision += 1
+        keys = {
             key
             for key, upstream in self._upstreams.items()
             if upstream.owner_id == owner_id and upstream.credential_resolver is not None
-        ]
+        } | {key for key, reference in self._references.items() if reference.owner_id == owner_id}
         for key in keys:
             self._invalidate(key)
         return len(keys)
@@ -769,8 +1180,11 @@ class CompletionBridge:
     async def close(self) -> None:
         self._closed = True
         calls = tuple(self._calls)
-        for key in tuple(self._upstreams):
+        for key in self._upstreams.keys() | self._references.keys():
             self._invalidate(key)
+        self._owner_epochs.clear()
+        self._connection_epochs.clear()
+        self._session_epochs.clear()
         await asyncio.gather(*(call.close() for call in calls), return_exceptions=True)
         clients = tuple(self._clients.values())
         self._clients.clear()
@@ -979,8 +1393,28 @@ class CompletionBridge:
         if upstream.request_policy is not None:
             try:
                 chat_request = upstream.request_policy(chat_request)
+            except CompletionRequestError as error:
+                policy = PRODUCT_PROVIDER_REJECTIONS.get(str(error).casefold())
+                code = (
+                    (policy.product_code or str(error).casefold())
+                    if policy
+                    else MODEL_REQUEST_INVALID
+                )
+                status = policy.http_status if policy else HTTPStatus.BAD_REQUEST
+                call.diagnostic.status_code = status
+                call.diagnostic.http_error_code = code
+                call.diagnostic.failure_type = code
+                return JSONResponse(
+                    {
+                        "error": {
+                            "code": code,
+                            **({"message": policy.safe_message} if policy else {}),
+                        }
+                    },
+                    status_code=status,
+                )
             except ValueError:
-                return JSONResponse({"error": {"code": "model_request_invalid"}}, status_code=400)
+                return JSONResponse({"error": {"code": MODEL_REQUEST_INVALID}}, status_code=400)
         chat_request["model"] = upstream.route_model(chat_request.get("model"))
         call.diagnostic.routed_model = str(chat_request["model"])
         call.diagnostic.wire_protocol = protocol.value
@@ -1347,6 +1781,21 @@ class CompletionBridge:
                     )
             finally:
                 await call.close()
+            if (
+                upstream.credential_resolver is not None
+                and policy is not None
+                and policy.subscription_visible
+                and response.status_code == policy.http_status
+            ):
+                return JSONResponse(
+                    {
+                        "error": {
+                            "code": call.diagnostic.http_error_code,
+                            "message": policy.safe_message,
+                        }
+                    },
+                    status_code=response.status_code,
+                )
             if upstream.credential_resolver is not None:
                 # 上游明确吊销令牌时把凭证回写交回订阅侧（桥不持有凭证 store），并透出 reauth
                 # 码，使推理路径与目录路径一致地提示「请重新登录」而非通用 model_upstream_rejected。

@@ -48,6 +48,8 @@ MODALITIES_ERROR = "runtime_model_catalog_modalities_unsupported"
 NATIVE_MODEL_NAMESPACE_SEPARATOR = "/"
 MODELS_SUFFIX = "/models"
 CODEX_CATALOG_PROVIDER_ID = "openai"
+MULTI_AGENT_VERSION_KEY = "multi_agent_version"
+LOCAL_MULTI_AGENT_VERSION = "v1"
 
 
 class CatalogPreflightError(RuntimeError):
@@ -345,6 +347,10 @@ async def model_catalog_argument(
             ]
         }
         required.add(intent.model_ref)
+    for row in catalog["models"]:
+        capabilities = entries[row["slug"]].capabilities if entries else intent.capabilities
+        if capabilities.native_agent_messages is False:
+            row[MULTI_AGENT_VERSION_KEY] = LOCAL_MULTI_AGENT_VERSION
     available = {row["slug"] for row in catalog["models"]}
     missing = required - available
     if missing:

@@ -45,7 +45,8 @@ int main(void) {
     RACSignal *failed = SSAdmission(^BOOL { return NO; }, ^RACSignal *{
       return [RACSignal error:running];
     }, neverRetry, TestTimeout);
-    if ([failed waitUntilCompleted:&error] || error != running) return 6;
+    if ([failed waitUntilCompleted:&error] || ![error.domain isEqual:SSAdmissionErrorDomain] ||
+        error.code != running.code || error.userInfo[NSUnderlyingErrorKey] != running) return 6;
 
     RACDisposable *subscription = [occupied subscribeCompleted:^{ abort(); }];
     [subscription dispose];
@@ -71,7 +72,8 @@ int main(void) {
       moves++;
       return [RACSignal empty];
     }];
-    if ([verificationFailure waitUntilCompleted:&error] || error != running || moves != 0) return 10;
+    if ([verificationFailure waitUntilCompleted:&error] || ![error.domain isEqual:SSAdmissionErrorDomain] ||
+        error.userInfo[NSUnderlyingErrorKey] != running || moves != 0) return 10;
 
     __block NSUInteger validations = 0;
     RACSignal *admitted = SSAdmission(^BOOL { return NO; }, ^RACSignal *{

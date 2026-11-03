@@ -4,11 +4,18 @@
 // node --test 环境下 electron 包不提供具名导出，整模块不可加载；解析与生成是
 // 这条链上唯一值得单测的部分，因此住在不碰 electron 的这一层。
 
-import { randomBytes } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 
 /** Callback prefix owned by the hosted-account desktop handoff. */
 export const DESKTOP_AUTH_CALLBACK_PREFIX = 'scholarseed://auth/callback'
 const STATE_BYTES = 32
+const DIAGNOSTIC_STATE_LENGTH = 16
+
+export function handoffFingerprint(state: string): string {
+  return state
+    ? createHash('sha256').update(state).digest('hex').slice(0, DIAGNOSTIC_STATE_LENGTH)
+    : 'none'
+}
 
 export interface ParsedCallback {
   code: string
@@ -23,9 +30,9 @@ function isDesktopCallbackUrl(url: string): boolean {
     return false
   }
   return (
-    parsed.protocol.toLowerCase() === 'scholarseed:'
-    && parsed.hostname.toLowerCase() === 'auth'
-    && parsed.pathname === '/callback'
+    parsed.protocol.toLowerCase() === 'scholarseed:' &&
+    parsed.hostname.toLowerCase() === 'auth' &&
+    parsed.pathname === '/callback'
   )
 }
 

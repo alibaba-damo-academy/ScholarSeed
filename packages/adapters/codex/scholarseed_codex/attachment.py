@@ -25,6 +25,7 @@ class ThreadAttachment:
     mcp_invalidate: Callable[[], None] | None = field(default=None, repr=False)
     attachment_state: CodexThreadAttachmentState = CodexThreadAttachmentState.ATTACHING
     attached_generation: int = 0
+    disconnected_generation: int = 0
     absent_generation: int = 0
     fresh_generation: int = 0
     registration_epoch: int = 0

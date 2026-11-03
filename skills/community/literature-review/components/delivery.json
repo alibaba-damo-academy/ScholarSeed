@@ -1,0 +1,387 @@
+{
+  "data": {
+    "schema_version": "1.0",
+    "session_id": "plugin-preview",
+    "delivery_id": "sample-delivery",
+    "count": 1,
+    "context": {
+      "projectId": "sample-project",
+      "projectName": "样例项目"
+    }
+  },
+  "responses": {
+    "delivery": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "$state": "batch"
+        }
+      }
+    },
+    "folders": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "resourceRoot": "",
+          "nodes": [
+            {
+              "path": "papers",
+              "name": "papers",
+              "kind": "dir"
+            }
+          ],
+          "total": 1,
+          "offset": 0
+        }
+      }
+    },
+    "collections": {
+      "state": "resolved",
+      "data": {
+        "result": [
+          {
+            "id": "sample-collection",
+            "name": "样例分类",
+            "project_id": "sample-project"
+          }
+        ]
+      }
+    },
+    "pick-directory": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "ok": true,
+          "ticket": "sample-ticket",
+          "label": "样例目录（未写入文件）"
+        }
+      }
+    },
+    "save": {
+      "state": "resolved",
+      "set": {
+        "batch": {
+          "id": "sample-delivery",
+          "session_id": "plugin-preview",
+          "project_id": "sample-project",
+          "attempt_id": "sample-attempt",
+          "state": "saved",
+          "choice": {
+            "$input": "choice"
+          },
+          "papers": [
+            {
+              "paper_id": "sample-0",
+              "title": "样例：长上下文论文",
+              "revision": "sample-revision",
+              "saved": {
+                "$if": {
+                  "$input": "choice.versions.sample-0",
+                  "$default": "keep_both"
+                },
+                "equals": "skip",
+                "then": "skipped",
+                "else": "saved"
+              },
+              "library": {
+                "$if": {
+                  "$input": "choice.add_to_library"
+                },
+                "equals": true,
+                "then": "saved",
+                "else": "skipped"
+              },
+              "resource_path": "papers/sample.pdf",
+              "literature_id": "sample-library",
+              "error": "",
+              "library_error": ""
+            }
+          ],
+          "prompted": true,
+          "history": [],
+          "failures": []
+        }
+      },
+      "data": {
+        "result": {
+          "ok": true,
+          "value": {
+            "$state": "batch"
+          }
+        }
+      }
+    },
+    "cancel": {
+      "state": "resolved",
+      "set": {
+        "batch": {
+          "id": "sample-delivery",
+          "session_id": "plugin-preview",
+          "project_id": "sample-project",
+          "attempt_id": "sample-attempt",
+          "state": "canceled",
+          "choice": null,
+          "papers": [
+            {
+              "paper_id": "sample-0",
+              "title": "样例：长上下文论文",
+              "revision": "sample-revision",
+              "saved": "pending",
+              "library": "pending",
+              "resource_path": "",
+              "literature_id": "",
+              "error": "",
+              "library_error": ""
+            }
+          ],
+          "prompted": true,
+          "history": [],
+          "failures": []
+        }
+      },
+      "data": {
+        "result": {
+          "$state": "batch"
+        }
+      }
+    },
+    "open-directory": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "ok": true
+        },
+        "view": {
+          "title": "样例保存目录",
+          "body": "样例目录中包含已保存全文的预览条目，不打开真实目录。"
+        }
+      }
+    },
+    "open-library": {
+      "state": "resolved",
+      "data": {
+        "result": null,
+        "view": {
+          "title": "样例文献库",
+          "body": "样例入库文献及其保存状态，仅用于预览，不访问真实文献库。",
+          "identifier": {
+            "$input": "paperId",
+            "$default": ""
+          }
+        }
+      }
+    }
+  },
+  "state": {
+    "batch": {
+      "id": "sample-delivery",
+      "session_id": "plugin-preview",
+      "project_id": "sample-project",
+      "attempt_id": "sample-attempt",
+      "state": "pending",
+      "choice": null,
+      "papers": [
+        {
+          "paper_id": "sample-0",
+          "title": "样例：长上下文论文",
+          "revision": "sample-revision",
+          "saved": "pending",
+          "library": "pending",
+          "resource_path": "",
+          "literature_id": "",
+          "error": "",
+          "library_error": ""
+        }
+      ],
+      "prompted": true,
+      "history": [],
+      "failures": []
+    }
+  },
+  "cases": [
+    {
+      "label": "保存冲突后选择版本",
+      "responses": {
+        "save": {
+          "state": "resolved",
+          "set": {
+            "batch": {
+              "id": "sample-delivery",
+              "session_id": "plugin-preview",
+              "project_id": "sample-project",
+              "attempt_id": "sample-attempt",
+              "state": "saved",
+              "choice": {
+                "$input": "choice"
+              },
+              "papers": [
+                {
+                  "paper_id": "sample-0",
+                  "title": "样例：长上下文论文",
+                  "revision": "sample-revision",
+                  "saved": {
+                    "$if": {
+                      "$input": "choice.versions.sample-0",
+                      "$default": "keep_both"
+                    },
+                    "equals": "skip",
+                    "then": "skipped",
+                    "else": "saved"
+                  },
+                  "library": {
+                    "$if": {
+                      "$input": "choice.add_to_library"
+                    },
+                    "equals": true,
+                    "then": "saved",
+                    "else": "skipped"
+                  },
+                  "resource_path": "papers/sample.pdf",
+                  "literature_id": "sample-library",
+                  "error": "",
+                  "library_error": ""
+                }
+              ],
+              "prompted": true,
+              "history": [],
+              "failures": []
+            }
+          },
+          "data": {
+            "result": {
+              "ok": true,
+              "value": {
+                "$state": "batch"
+              }
+            }
+          },
+          "steps": [
+            {
+              "state": "resolved",
+              "set": {
+                "batch": {
+                  "id": "sample-delivery",
+                  "session_id": "plugin-preview",
+                  "project_id": "sample-project",
+                  "attempt_id": "sample-attempt",
+                  "state": "partial",
+                  "choice": {
+                    "$input": "choice"
+                  },
+                  "papers": [
+                    {
+                      "paper_id": "sample-0",
+                      "title": "样例：长上下文论文",
+                      "revision": "sample-revision",
+                      "saved": "failed",
+                      "library": "pending",
+                      "resource_path": "",
+                      "literature_id": "",
+                      "error": "",
+                      "library_error": "",
+                      "versions": [
+                        "existing-version"
+                      ]
+                    }
+                  ],
+                  "prompted": true,
+                  "history": [],
+                  "failures": []
+                }
+              },
+              "data": {
+                "result": {
+                  "ok": true,
+                  "value": {
+                    "$state": "batch"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "label": "保存失败后重试",
+      "responses": {
+        "save": {
+          "state": "resolved",
+          "set": {
+            "batch": {
+              "id": "sample-delivery",
+              "session_id": "plugin-preview",
+              "project_id": "sample-project",
+              "attempt_id": "sample-attempt",
+              "state": "saved",
+              "choice": {
+                "$input": "choice"
+              },
+              "papers": [
+                {
+                  "paper_id": "sample-0",
+                  "title": "样例：长上下文论文",
+                  "revision": "sample-revision",
+                  "saved": {
+                    "$if": {
+                      "$input": "choice.versions.sample-0",
+                      "$default": "keep_both"
+                    },
+                    "equals": "skip",
+                    "then": "skipped",
+                    "else": "saved"
+                  },
+                  "library": {
+                    "$if": {
+                      "$input": "choice.add_to_library"
+                    },
+                    "equals": true,
+                    "then": "saved",
+                    "else": "skipped"
+                  },
+                  "resource_path": "papers/sample.pdf",
+                  "literature_id": "sample-library",
+                  "error": "",
+                  "library_error": ""
+                }
+              ],
+              "prompted": true,
+              "history": [],
+              "failures": []
+            }
+          },
+          "data": {
+            "result": {
+              "ok": true,
+              "value": {
+                "$state": "batch"
+              }
+            }
+          },
+          "steps": [
+            {
+              "state": "failed",
+              "data": {
+                "error": "preview_save_failed"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "label": "取消目录选择",
+      "responses": {
+        "pick-directory": {
+          "state": "cancelled",
+          "data": {
+            "result": {
+              "ok": false,
+              "canceled": true
+            }
+          }
+        }
+      }
+    }
+  ]
+}

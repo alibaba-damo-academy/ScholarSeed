@@ -46,7 +46,7 @@ export const REQUEST_KEYS = [
   'callerCreationHigh',
   'fromVersion',
   'toVersion',
-  'installDir'
+  'installDir',
 ] as const
 
 export const READY_KEYS = [
@@ -56,7 +56,7 @@ export const READY_KEYS = [
   'installerPid',
   'installerCreationLow',
   'installerCreationHigh',
-  'result'
+  'result',
 ] as const
 
 export const DECISION_KEYS = ['schemaVersion', 'updateId', 'nonce', 'decision'] as const
@@ -109,10 +109,10 @@ function isSignedInt32(value: string): boolean {
 }
 
 function assertSingleLine(value: string, key: string): void {
-  // eslint-disable-next-line no-control-regex
   if (/[\r\n]/.test(value)) throw new Error(`handshake value for ${key} contains a line break`)
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(value)) throw new Error(`handshake value for ${key} contains control characters`)
+  if (/[\u0000-\u001f\u007f]/.test(value))
+    throw new Error(`handshake value for ${key} contains control characters`)
 }
 
 export function serializeRecord(keys: readonly string[], values: Record<string, string>): string {
@@ -190,11 +190,17 @@ export function validateRequest(record: HandshakeRequest): boolean {
  * 「spawn 时拿到 env 的安装器进程」与主进程知道的共享秘密，防止别的进程往目录里
  * 丢一个 ready.ini 冒充握手对端。
  */
-export function validateReady(record: ReadyRecord, request: Pick<HandshakeRequest, 'updateId' | 'nonce'>): boolean {
+export function validateReady(
+  record: ReadyRecord,
+  request: Pick<HandshakeRequest, 'updateId' | 'nonce'>
+): boolean {
   return validateInstallerRecord(record, request) && record.result === INSTALLER_READY
 }
 
-function validateInstallerRecord(record: ReadyRecord, request: Pick<HandshakeRequest, 'updateId' | 'nonce'>): boolean {
+function validateInstallerRecord(
+  record: ReadyRecord,
+  request: Pick<HandshakeRequest, 'updateId' | 'nonce'>
+): boolean {
   return (
     record.schemaVersion === HANDSHAKE_SCHEMA_VERSION &&
     record.updateId === request.updateId &&
@@ -222,7 +228,10 @@ export class InstallerReadiness {
   observe(record: ReadyRecord | null, now: number): ReadyOutcome | null {
     if (now >= this.deadline) return 'timeout'
     if (record === null) return null
-    if (!validateInstallerRecord(record, this.request) || Number(record.installerPid) !== this.installerPid) {
+    if (
+      !validateInstallerRecord(record, this.request) ||
+      Number(record.installerPid) !== this.installerPid
+    ) {
       return 'invalid-ready'
     }
     if (record.result === INSTALLER_READY) return 'ready'
@@ -285,6 +294,7 @@ export function parseDecision(buffer: Buffer): DecisionRecord | null {
  * 这是防路径穿越的唯一闸（NSIS 侧有同样的校验义务）。
  */
 export function handshakeDirectory(baseDirectory: string, updateId: string): string {
-  if (!isValidUpdateId(updateId)) throw new Error('refusing to build a handshake path from an invalid updateId')
+  if (!isValidUpdateId(updateId))
+    throw new Error('refusing to build a handshake path from an invalid updateId')
   return join(baseDirectory, updateId)
 }

@@ -20,6 +20,7 @@ import tempfile
 import unittest
 from contextlib import closing, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from service.assistant.persistence.store import AssistantStore
@@ -65,6 +66,78 @@ def collect_names(nodes: tuple) -> set[str]:
 
 
 class InspectionFilesContract(unittest.TestCase):
+    def test_runtime_schema_reobserves_retired_sidecar_without_accepting_it(self):
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                database = root / "state" / "db.sqlite3"
+                store = VersionStore(database, root)
+                store.ensure()
+                original = Path.lstat
+                observations = []
+
+                def observe(path, *args, **kwargs):
+                    if path == Path(str(database) + "-shm") and (persistent or not observations):
+                        observations.append(path)
+                        info = original(database)
+                        return SimpleNamespace(
+                            st_mode=info.st_mode,
+                            st_nlink=0,
+                            st_dev=info.st_dev,
+                            st_ino=info.st_ino,
+                            st_file_attributes=0,
+                        )
+                    return original(path, *args, **kwargs)
+
+                with patch.object(Path, "lstat", observe):
+                    if persistent:
+                        with self.assertRaises(project_db.DatabaseBindingError):
+                            store.ensure()
+                        self.assertGreater(len(observations), 1)
+                        self.assertLessEqual(len(observations), 8)
+                    else:
+                        store.ensure()
+                        self.assertEqual(len(observations), 1)
+                with project_db.reader(database) as connection:
+                    self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+
+    def test_retired_sidecar_is_classified_but_main_and_unsafe_files_are_not(self):
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            for links in (0, 2):
+                with (
+                    self.subTest(suffix=suffix, links=links),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    database = Path(directory) / "db.sqlite3"
+                    database.write_bytes(b"main")
+                    target = Path(str(database) + suffix)
+                    original = Path.lstat
+
+                    def observe(path, *args, **kwargs):
+                        if path == target:
+                            info = original(database) if suffix else original(path)
+                            return SimpleNamespace(
+                                st_mode=info.st_mode,
+                                st_nlink=links,
+                                st_dev=info.st_dev,
+                                st_ino=info.st_ino,
+                                st_file_attributes=0,
+                            )
+                        return original(path, *args, **kwargs)
+
+                    with patch.object(Path, "lstat", observe):
+                        with self.assertRaises(project_db.DatabaseBindingError) as caught:
+                            with project_db.database_files(database, stable_sidecars=False):
+                                self.fail("an unsafe observation must not enter SQLite")
+                    self.assertEqual(
+                        isinstance(
+                            caught.exception.__cause__, project_db.DatabaseSidecarChangedError
+                        ),
+                        bool(suffix) and links == 0,
+                    )
+                    self.assertIn("file=", str(caught.exception))
+                    self.assertNotIn(directory, str(caught.exception))
+
     def test_binding_diagnostics_preserve_owner_error_and_classify_only_sidecars(self):
         class OwnerError(sqlite3.DatabaseError):
             pass
@@ -222,7 +295,7 @@ class InspectionFilesContract(unittest.TestCase):
                     keeper.execute("SELECT * FROM resources_objects").fetchall()
 
                 try:
-                    with patch.object(version, "reader", rotate_after_close):
+                    with patch.object(project_db, "reader", rotate_after_close):
                         if strict:
                             with self.assertRaises(project_db.DatabaseBindingError):
                                 store.inspect_schema(database)

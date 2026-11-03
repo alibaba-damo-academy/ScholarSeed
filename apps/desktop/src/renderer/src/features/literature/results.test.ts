@@ -9,7 +9,10 @@ test('authorization preview renders localized diagnostics and preserves the fort
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
   Object.defineProperty(globalThis, 'window', { configurable: true, value: {} })
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: { documentElement: {} } })
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { documentElement: {} },
+  })
   context.after(() => {
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
     else Reflect.deleteProperty(globalThis, 'window')
@@ -29,7 +32,7 @@ test('authorization preview renders localized diagnostics and preserves the fort
           import { createLocalization } from './src/localization/engine';
           import { resources } from './src/localization/resources';
           import { StoreContext } from './src/renderer/src/storeContext';
-          import { LiteratureResults } from './src/renderer/src/features/literature/Results';
+          import { LiteratureResults } from './src/renderer/src/features/literature/Summary';
           export function render(language, warnings) {
             const content = { schema_version: '1.0', session_id: 'session', status: 'success',
               selection: { artifact_id: 'selection' }, retained: 40, candidates: 40,
@@ -53,13 +56,21 @@ test('authorization preview renders localized diagnostics and preserves the fort
       jsx: 'automatic',
       define: { 'import.meta.env.DEV': 'false' },
       loader: { '.png': 'dataurl', '.svg': 'dataurl' },
-      plugins: [{
-        name: 'styles',
-        setup(builder) {
-          builder.onResolve({ filter: /\.css$/ }, args => ({ path: args.path, namespace: 'styles' }))
-          builder.onLoad({ filter: /.*/, namespace: 'styles' }, () => ({ contents: '', loader: 'js' }))
+      plugins: [
+        {
+          name: 'styles',
+          setup(builder) {
+            builder.onResolve({ filter: /\.css$/ }, (args) => ({
+              path: args.path,
+              namespace: 'styles',
+            }))
+            builder.onLoad({ filter: /.*/, namespace: 'styles' }, () => ({
+              contents: '',
+              loader: 'js',
+            }))
+          },
         },
-      }],
+      ],
     })
     const { render } = await import(pathToFileURL(output).href)
     const diagnostic = 'agentic-search used degraded retrieval (source_mode=web_only)'

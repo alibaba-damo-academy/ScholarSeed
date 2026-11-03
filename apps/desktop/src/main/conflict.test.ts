@@ -9,7 +9,14 @@ import test from 'node:test'
 import ts from 'typescript'
 import { ActivationCandidateChanged } from './update-authorization.ts'
 import { UpdatePreparation } from './preparation.ts'
-import type { LatestVersionMeta } from '../updates.ts'
+import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
+import type * as Updater from './updater.ts'
+
+interface RejectedFixtureExports {
+  read: () => LatestVersionMeta | null
+  discardRejectedUpdate: typeof Updater.discardRejectedUpdate
+  checkForUpdate: typeof Updater.checkForUpdate
+}
 
 // Real production functions at controlled native boundaries; not signed-package acceptance.
 const source = ts.createSourceFile(
@@ -41,7 +48,11 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
     const controller = new AbortController()
     let preparations = 0
     let authorizations = 0
-    let ready = { meta: candidate, path: '/owned/update.dmg', archive: {} }
+    let ready: { meta: LatestVersionMeta; path: string; archive: object } | null = {
+      meta: candidate,
+      path: '/owned/update.dmg',
+      archive: {},
+    }
     let revoked = false
     const context = {
       exports: {},
@@ -88,7 +99,7 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
       discardRejectedUpdate: (selected: LatestVersionMeta) => {
         assert.equal(selected, candidate)
         revoked = true
-        ready = null as any
+        ready = null
       },
       authorize: async () => {
         authorizations++
@@ -136,7 +147,7 @@ function diskHarness(t: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'conflict-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const context = {
-    exports: {} as Record<string, (...args: any[]) => any>,
+    exports: {} as RejectedFixtureExports,
     join,
     rmSync,
     writeJson,
@@ -185,7 +196,7 @@ test('cleanup failure retains durable rejection and damaged records fail closed'
     throw new Error('locked')
   }
   assert.throws(() => context.exports.discardRejectedUpdate(candidate, () => {}), /locked/)
-  assert.equal(context.exports.read().id, candidate.id)
+  assert.equal(context.exports.read()!.id, candidate.id)
   writeFileSync(join(root, 'rejected.json'), '{broken')
   assert.throws(() => context.exports.read())
 })
@@ -205,7 +216,7 @@ for (const outcome of [
     let authorizations = 0
     const checks = {
       ...context,
-      exports: {} as Record<string, (...args: any[]) => any>,
+      exports: {} as RejectedFixtureExports,
       AbortController,
       archType: () => 'darwin-arm64',
       resolveDesktopConfig: () => ({ baseUrl: 'https://example.test' }),
@@ -257,7 +268,7 @@ test('conflict recovery clears the claimed preparation before requesting a fresh
   await preparation.settled()
   assert.equal(preparation.claim(candidate), true)
   preparation.release()
-  let snapshot: any = { phase: 'ready', candidate }
+  let snapshot: UpdateSnapshot = { phase: 'ready', candidate, currentVersion: '0.2.0' }
   let checked = false
   const index = ts.createSourceFile(
     'index.ts',
@@ -271,7 +282,7 @@ test('conflict recovery clears the claimed preparation before requesting a fresh
   const context = {
     updateChecks: { invalidate: () => {} },
     updatePreparation: preparation,
-    publishUpdateSnapshot: (next: unknown) => {
+    publishUpdateSnapshot: (next: UpdateSnapshot) => {
       snapshot = next
     },
     app: { getVersion: () => '0.2.0' },

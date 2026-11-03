@@ -61,6 +61,7 @@
   --vds-z-modal: 6000;
   --vds-z-modal-nested-overlay: calc(var(--vds-z-modal) + 1);
   --vds-z-modal-nested: calc(var(--vds-z-modal-nested-overlay) + 1);
+  --vds-z-modal-interaction: calc(var(--vds-z-modal-nested) + 1);
   --vds-z-modal-nested-flyout: calc(var(--vds-z-modal-nested) + 1);
   --vds-z-update-confirmation-overlay: calc(var(--vds-z-modal-nested) + 1);
   --vds-z-update-confirmation: calc(var(--vds-z-update-confirmation-overlay) + 1);

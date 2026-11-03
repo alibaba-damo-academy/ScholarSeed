@@ -1,3 +1,4 @@
+import type { PluginReference, PluginReport } from '../../plugins'
 import type { SessionTitleFallback } from './session'
 import type { ContextLabelFallback } from './contracts/assistant'
 import type { ForegroundMessage } from './contracts/feedback'
@@ -461,6 +462,7 @@ export type AnswerSource =
   | { number: number; kind: 'receipt'; handle: string; citation_urls: string[] }
 
 export interface DisplayCardData {
+  component?: PluginReference
   cardId: string
   type: string
   content: Record<string, unknown>
@@ -608,6 +610,7 @@ export type ConvItem = TurnOwned &
         applicationFailure?: ApplicationRequestFailure
         failure?: {
           kind:
+            | 'capability'
             | 'quota'
             | 'credits'
             | 'rate_limit'
@@ -680,6 +683,7 @@ export type ConvItem = TurnOwned &
       }
     | {
         kind: 'hil'
+        sessionId?: string
         requestId: string
         hilKind: string
         browserApproval?: {
@@ -742,6 +746,7 @@ export type ConvItem = TurnOwned &
         hilState?:
           'pending' | 'submitting' | 'failed' | 'resolved' | 'cancelled' | 'stale' | 'unknown'
         lifetime?: 'turn' | 'session'
+        blocking?: boolean
         submissionError?: string
         submissionErrorMessage?: HilSubmissionMessage
         submissionRequestFailure?: ApplicationRequestFailure
@@ -783,6 +788,9 @@ export interface HilOption {
   description?: string
 }
 export interface HilQuestion {
+  installation?: PluginReport
+  component?: PluginReference
+  componentData?: Record<string, unknown>
   id?: string
   header?: string
   question: string

@@ -84,7 +84,7 @@ class ResourceDeliveryService:
         self._content = content
         self._versions = versions
         self._supervisor = supervisor
-        self._projects: dict[tuple[str, str], str] = {}
+        self._projects: dict[tuple[str, str], str | None] = {}
         self._terminals: ResourceTerminalSource | None = None
 
     def bind_terminals(self, source: ResourceTerminalSource) -> None:
@@ -95,6 +95,8 @@ class ResourceDeliveryService:
     def recover_project(self, project_id: str, project_root: str) -> None:
         """Replay one project's frozen terminal snapshots and pending publications."""
 
+        for turn in self._store(project_id).unreceived_turns():
+            self._projects[(turn.session_id, turn.turn_id)] = project_id
         self._reconcile_terminals(project_id, project_root)
         for session_id, turn_id in self._store(project_id).pending_finalizations():
             try:
@@ -164,6 +166,7 @@ class ResourceDeliveryService:
         with self._activities.enter(ActivityDomain.RESOURCE):
             project = self._content.project_for_path(workdir)
             if project is None:
+                self._projects[(session_id, turn_id)] = None
                 return ResourceTurnContext()
             await self._supervisor.prepare_project(project.id)
             self._projects[(session_id, turn_id)] = project.id
@@ -297,6 +300,7 @@ class ResourceDeliveryService:
         tool_input: object,
         *,
         generation: str,
+        event_id: str = "",
     ) -> None:
         """Persist filename matches from one write-capable ToolCall input."""
         with self._activities.enter(ActivityDomain.RESOURCE):
@@ -314,6 +318,7 @@ class ResourceDeliveryService:
                 session_id,
                 client_turn_id,
                 serialized,
+                event_id=event_id,
             )
             inventory = await self._activities.to_thread(
                 ActivityDomain.RESOURCE, store.turn_inventory, session_id, client_turn_id
@@ -355,16 +360,12 @@ class ResourceDeliveryService:
     def _runtime_binding(
         self, session_id: str, vendor_turn_id: str, generation: str
     ) -> tuple[str, str] | None:
-        # Admission already owns the project; unrelated registered roots must not
-        # participate in a live tool's write fence. After restart, discover the
-        # persisted binding only in roots that are currently available.
+        """Use admission/startup bindings, never discover unrelated roots on a live event."""
         project_ids = {
             project_id
             for (owner_session_id, _), project_id in self._projects.items()
-            if owner_session_id == session_id
+            if owner_session_id == session_id and project_id is not None
         }
-        if not project_ids:
-            project_ids = {project.id for project in self._content.projects() if project.available}
         for project_id in project_ids:
             client_turn_id = self._store(project_id).runtime_turn(
                 session_id, vendor_turn_id, generation
@@ -670,9 +671,9 @@ class ResourceDeliveryService:
         )
 
     def _project_for_turn(self, session_id: str, turn_id: str) -> str | None:
-        cached = self._projects.get((session_id, turn_id))
-        if cached is not None:
-            return cached
+        key = (session_id, turn_id)
+        if key in self._projects:
+            return self._projects[key]
         for project in self._content.projects():
             if not project.available:
                 continue

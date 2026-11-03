@@ -628,7 +628,7 @@ test('Writer editing is offered by the governed native menu and commands', () =>
     'InsertPagebreak',
     'GraphicDialog',
   ]) {
-    assert.match(policySource, new RegExp(`['\"]${command}['\"]`))
+    assert.match(policySource, new RegExp(`['"]${command}['"]`))
   }
   assert.match(governanceSource, /policy\.menus/)
 })

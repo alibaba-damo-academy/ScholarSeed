@@ -2,7 +2,7 @@
 name: precise-literature-search
 description: Iteratively search a precise research question, present candidate papers for review and selection, download authorized full texts, verify PDFs, and synthesize evidence grounded in the verified files. Use when the user emphasizes finding specific papers to answer specific research questions that may need fulltext screening. It may run unattended when explicitly requested after this skill is selected. Do not use when the user primarily wants an autonomous narrative literature review, asks broad research questions, or simply wants to download specific papers. The host must be a ScholarSeed product session, where full-text acquisition and reading happen only through the in-process `scholarseed_bridge` product tool, so other hosts cannot download or read full texts.
 description_zh: 围绕明确的研究问题开展迭代检索，展示候选论文供审阅和筛选，下载具有访问授权的全文，核验 PDF，并基于已核验文件中的证据形成综合分析。适用于用户强调查找特定论文来回答可能需要阅读全文才能回答的具体研究问题。选定本技能后，用户明确要求时可无人值守运行。如果用户的主要需求是自主撰写叙述性文献综述，提出宽泛的研究问题，或者下载具体文章，则不应使用本技能。宿主必须是书深（ScholarSeed）产品会话：全文获取与阅读只通过服务进程内的 `scholarseed_bridge` 产品工具完成，其他宿主不能下载或阅读全文。
-version: "1.0.27"
+version: "1.0.37"
 ---
 
 # Precise Literature Search
@@ -28,11 +28,21 @@ mode, result acceptance or downloads.
 Before running any command, tell the user in their language that this
 workflow may take substantial time and involve multiple rounds of clue
 resolution, paper retrieval, downloading, and evidence screening.
-Ask whether they want to begin.
+Ask whether they want to begin through `request_user_input`: present one question
+with explicit start and defer choices in the user's language (for example,
+"开始检索" and "暂不开始"). This question tool is allowed before the first
+command; it renders the selected Skill's isolated question component.
 
 Then STOP and wait for an explicit affirmative response.
 Do not execute `stage.py start`, initialize a run, or begin research
 before receiving that response.
+
+Use the host-confirmed card answer as the response. Only an explicit start choice
+advances to Phase 0–1. Do not ask the user to type "开始" or "确认" after clicking
+the card, and do not replace the card with a plain-text confirmation request.
+Skipped, cancelled, timed-out or unanswered cards are not approval. If the
+question tool is unavailable, report that the confirmation cannot be presented
+and do not initialize a run or silently fall back to text confirmation.
 
 Confirmation of the research scope is separate and does not satisfy
 this start confirmation. Selecting this skill, requesting auto mode,
@@ -243,6 +253,8 @@ To stop before downloads, use `stage.py metadata-only --run-dir "$RUN_DIR"
 --decision-source user_explicit`.
 
 ## Phase 4: authorize and download
+
+Before writing an intermediate download-request file (for example, `$RUN_DIR/work/acquire-papers.json`), create its parent directory if it does not exist.
 
 Present the candidate list with identity, access status, tier and relevance.
 The product authorization card carries the download subset selection; do not

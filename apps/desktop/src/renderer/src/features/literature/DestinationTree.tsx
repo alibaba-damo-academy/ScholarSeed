@@ -9,7 +9,7 @@ import {
   DropdownMenuSubTrigger,
   EllipsisText,
 } from '../../components/ui'
-import type { JoinDestination, JoinNode } from './join'
+import type { JoinDestination, JoinNode } from './hierarchy'
 
 // 目录树菜单的公共边界: 限制最大宽度让超长名称触发省略。
 // 菜单基类是 `grid w-max`(按最宽项撑开), 单加 max-w 收不窄 grid 轨道: 超长名称会把唯一轨道顶到

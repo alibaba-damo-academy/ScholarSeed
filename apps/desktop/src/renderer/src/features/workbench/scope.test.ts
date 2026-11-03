@@ -7,13 +7,8 @@ import { resolveDocumentWorkspaceProject } from './scope.ts'
 const dockSource = readFileSync(new URL('./Dock.tsx', import.meta.url), 'utf8')
 const mainSource = readFileSync(new URL('../../app/root.tsx', import.meta.url), 'utf8')
 const layoutSource = readFileSync(new URL('../../design/layout.css', import.meta.url), 'utf8')
-const workbenchStyles = readFileSync(new URL('../../shell/workbench.css', import.meta.url), 'utf8')
 const literatureSource = readFileSync(
   new URL('../literature/LiteratureList.tsx', import.meta.url),
-  'utf8'
-)
-const literatureStyles = readFileSync(
-  new URL('../literature/literature.css', import.meta.url),
   'utf8'
 )
 const preferencesSource = readFileSync(
@@ -21,7 +16,6 @@ const preferencesSource = readFileSync(
   'utf8'
 )
 const storeSource = readFileSync(new URL('../../store.tsx', import.meta.url), 'utf8')
-const workbenchSource = readFileSync(new URL('./Workbench.tsx', import.meta.url), 'utf8')
 const assistantPanelSource = readFileSync(
   new URL('../assistant/AiPanel.tsx', import.meta.url),
   'utf8'

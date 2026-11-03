@@ -1,0 +1,63 @@
+{
+  "schema": 2,
+  "id": "agentic-search",
+  "version": "1.1.8",
+  "host": ">=0.2.0,<0.4.0",
+  "skill": "SKILL.md",
+  "capabilities": [
+    "navigation.open",
+    "interaction.answer",
+    "literature.read",
+    "literature.write"
+  ],
+  "components": [
+    {
+      "id": "results",
+      "slot": "display.literature-search",
+      "preview": "components/results.json",
+      "actions": [
+        {
+          "id": "open-results",
+          "capability": "navigation.open"
+        }
+      ],
+      "public": true
+    },
+    {
+      "id": "question",
+      "slot": "interaction.question",
+      "preview": "components/question.json",
+      "actions": [
+        {
+          "id": "choose",
+          "capability": "interaction.answer"
+        }
+      ],
+      "public": true
+    },
+    {
+      "id": "details",
+      "slot": "preview.literature-results",
+      "preview": "components/details.json",
+      "actions": [
+        {
+          "id": "open-source",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "add-reference",
+          "capability": "literature.write"
+        },
+        {
+          "id": "collections",
+          "capability": "literature.read"
+        },
+        {
+          "id": "create-collection",
+          "capability": "literature.write"
+        }
+      ],
+      "public": true
+    }
+  ]
+}

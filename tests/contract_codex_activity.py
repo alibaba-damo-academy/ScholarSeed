@@ -6,6 +6,7 @@ import asyncio
 import copy
 import unittest
 from collections import defaultdict
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -20,12 +21,25 @@ from scholarseed_codex.activity import (
     NATIVE_THREAD_READ_METHOD,
     NativeActivity,
     NativeActivityBlocker,
+    NativeActivityState,
 )
+from scholarseed_codex.admission import NativeQuiescence
+from scholarseed_codex.attachment import ThreadAttachment
+from scholarseed_codex.control import CodexRuntimeControl
 from scholarseed_codex.process import CodexProcessHost
-from scholarseed_codex.protocol.state import CODEX_COLLAB_TOOL_CALL_ITEM_TYPE, AppServerError
+from scholarseed_codex.protocol.session import CodexSessionOpenRequest
+from scholarseed_codex.protocol.state import (
+    CODEX_COLLAB_TOOL_CALL_ITEM_TYPE,
+    AppServerError,
+    CodexProcessState,
+    CodexThreadAttachmentState,
+)
 from scholarseed_codex.session import CodexRuntimeSession
+from scholarseed_codex.turn import CodexTurnRuntime
 from scholarseed_runtime.contract.command import InterruptRequest
+from scholarseed_runtime.contract.sandbox import SANDBOX_CANCELLED_ERROR
 from scholarseed_runtime.contract.session import (
+    RUNTIME_SUSPEND_STALE,
     RuntimeActivitySnapshot,
     RuntimeExecutionTreeBlocker,
 )
@@ -51,6 +65,7 @@ class ScriptedNativeHost:
         self.threads = {ROOT_THREAD: idle_thread(ROOT_THREAD)}
         self.responses: dict[tuple[str, str, str], Any] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.request_generations: list[int | None] = []
         self.counts: dict[str, int] = defaultdict(int)
         self.mutation: Any = None
 
@@ -63,8 +78,11 @@ class ScriptedNativeHost:
     def retain_loaded_roots(self, _loaded: tuple[str, ...]) -> None:
         return None
 
-    async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def request(
+        self, method: str, params: dict[str, Any], *, generation: int | None = None
+    ) -> dict[str, Any]:
         self.calls.append((method, copy.deepcopy(params)))
+        self.request_generations.append(generation)
         self.counts[method] += 1
         if self.mutation is not None:
             self.mutation(method, params, self.counts[method])
@@ -102,6 +120,183 @@ class ScriptedNativeHost:
 
 
 class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def empty_replacement_host() -> CodexProcessHost:
+        host = CodexProcessHost()
+        host._generation = 2
+        host.state = CodexProcessState.READY
+        host._proc = SimpleNamespace(returncode=None)
+        host._exited_generations.append(1)
+        attachment = ThreadAttachment(
+            request=CodexSessionOpenRequest(
+                request_id="empty-replacement", runtime_id="codex", cwd=Path.cwd()
+            ),
+            listener=None,
+            thread_id=ROOT_THREAD,
+            attached_generation=2,
+            absent_generation=2,
+            fresh_generation=1,
+            attachment_state=CodexThreadAttachmentState.BROKEN,
+        )
+        attachment.turn = CodexTurnRuntime(
+            attachment,
+            admission=host.admission,
+            request=host._request_connected,
+            ensure_attached=host.ensure_attached,
+            stale_requests=host._stale_requests,
+            emitter=host._emitter,
+            router=host._router,
+            watcher=host._watcher,
+            diagnostic=host._diagnostics.append,
+            protocol_error=host._protocol_errors.append,
+        )
+        host._threads[ROOT_THREAD] = attachment
+        host.admission.freeze(1)
+        return host
+
+    async def test_sealing_empty_replacement_invalidates_existing_configuration_ticket(
+        self,
+    ) -> None:
+        host = self.empty_replacement_host()
+        ticket = NativeQuiescence(
+            1, host.process_generation, host.activity_revision, host.admission.epoch
+        )
+        thread_revision = host.thread_activity_revision(ROOT_THREAD)
+        self.assertTrue(host.configuration_quiescence_current(ticket))
+
+        self.assertEqual(host.seal_empty_replacement(ROOT_THREAD), (1, 2))
+
+        self.assertFalse(host.configuration_quiescence_current(ticket))
+        self.assertEqual(host.activity_revision, ticket.activity_revision + 1)
+        self.assertEqual(host.thread_activity_revision(ROOT_THREAD), thread_revision + 1)
+        self.assertEqual(
+            host.attachment(ROOT_THREAD).attachment_state,
+            CodexThreadAttachmentState.CLOSED,
+        )
+        self.assertTrue(host.attachment(ROOT_THREAD).turn.replacement_sealed)
+        self.assertIsNone(host.seal_empty_replacement(ROOT_THREAD))
+        self.assertEqual(host.activity_revision, ticket.activity_revision + 1)
+
+    async def test_sealing_empty_replacement_invalidates_inflight_configuration_inspection(
+        self,
+    ) -> None:
+        host = self.empty_replacement_host()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def inspect() -> NativeActivityState:
+            entered.set()
+            await release.wait()
+            return NativeActivityState(True, (), (), (), host.process_generation)
+
+        with patch.object(NativeActivity, "inspect", new=AsyncMock(side_effect=inspect)):
+            pending = asyncio.create_task(host.configuration_quiescence(1))
+            await entered.wait()
+            result = host.seal_empty_replacement(ROOT_THREAD)
+            release.set()
+            ticket = await pending
+
+        self.assertEqual(result, (1, 2))
+        self.assertIsNone(ticket)
+
+    async def test_disconnected_activity_never_starts_a_new_process(self) -> None:
+        host = CodexProcessHost()
+        host._generation = 1
+        host.state = CodexProcessState.UNAVAILABLE
+
+        async def failed_start() -> None:
+            host._generation += 1
+            raise AppServerError("setup cancelled", safe_error=SANDBOX_CANCELLED_ERROR)
+
+        host._start_process = AsyncMock(side_effect=failed_start)
+        session = self.runtime_session(host)
+        for _ in range(2):
+            snapshot = await session.activity()
+            self.assertFalse(snapshot.execution_tree_complete)
+            self.assertFalse(snapshot.execution_tree_idle)
+            self.assertIn(NativeActivityBlocker.UNAVAILABLE.value, snapshot.blockers)
+        with self.assertRaises(AppServerError):
+            await NativeActivity(host, ROOT_THREAD).interrupt()
+        self.assertEqual(host.process_generation, 1)
+        host._start_process.assert_not_awaited()
+        with self.assertRaises(AppServerError) as caught:
+            await host.start()
+        self.assertEqual(caught.exception.safe_error, SANDBOX_CANCELLED_ERROR)
+        self.assertEqual(host.process_generation, 2)
+        host._start_process.assert_awaited_once()
+
+    async def test_activity_reads_target_the_observed_process_generation(self) -> None:
+        host = ScriptedNativeHost()
+        state = await NativeActivity(host, ROOT_THREAD).inspect()
+        self.assertTrue(state.complete)
+        self.assertTrue(host.request_generations)
+        self.assertEqual(set(host.request_generations), {host.process_generation})
+
+    async def test_activity_control_requires_the_exact_lease_generation(self) -> None:
+        host = CodexProcessHost()
+        host._generation = 1
+        host.state = CodexProcessState.READY
+        scripted = ScriptedNativeHost()
+        host._request_connected = AsyncMock(side_effect=scripted.request)
+        host.start = AsyncMock(side_effect=AssertionError("observation cannot start a host"))
+        control = CodexRuntimeControl(
+            cwd=Path.cwd(),
+            lease=SimpleNamespace(host=host, host_id="control-host"),
+            host_pool=Mock(),
+        )
+        await control.open()
+        for generation in (0, 2, True):
+            with self.subTest(generation=generation):
+                with self.assertRaises(AppServerError) as caught:
+                    await control.request(
+                        NATIVE_THREAD_LOADED_LIST_METHOD, {}, generation=generation
+                    )
+                self.assertEqual(caught.exception.safe_error, RUNTIME_SUSPEND_STALE)
+        host._request_connected.assert_not_awaited()
+        await control.request(NATIVE_THREAD_LOADED_LIST_METHOD, {}, generation=1)
+        await control.request(NATIVE_THREAD_LOADED_LIST_METHOD, {})
+        state = await NativeActivity(control, ROOT_THREAD).inspect()
+        self.assertTrue(state.complete)
+        self.assertEqual(set(scripted.request_generations), {1})
+        host.start.assert_not_awaited()
+
+    async def test_absent_root_does_not_require_unrelated_root_to_be_idle(self) -> None:
+        host = ScriptedNativeHost()
+        host.known_roots = (ROOT_THREAD, SIBLING_THREAD)
+        host.threads = {SIBLING_THREAD: idle_thread(SIBLING_THREAD)}
+        host.threads[SIBLING_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        state = await NativeActivity(
+            host, ROOT_THREAD, known_roots=host.known_roots
+        ).inspect_absence()
+        self.assertTrue(state.complete)
+        self.assertEqual(state.blockers, ())
+        self.assertEqual(state.loaded_thread_ids, (SIBLING_THREAD,))
+        self.assertFalse(any(params.get("threadId") == ROOT_THREAD for _, params in host.calls))
+
+    async def test_absent_root_still_checks_loaded_descendants(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads = {CHILD_THREAD: idle_thread(CHILD_THREAD, ROOT_THREAD)}
+        host.threads[CHILD_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        state = await NativeActivity(host, ROOT_THREAD).inspect_absence()
+        self.assertTrue(state.complete)
+        self.assertIn(NativeActivityBlocker.TURN.value, state.blockers)
+        host.threads[CHILD_THREAD]["status"] = {"type": "idle"}
+        state = await NativeActivity(host, ROOT_THREAD).inspect_absence()
+        self.assertTrue(state.complete)
+        self.assertFalse(state.blockers)
+
+    async def test_absence_inspection_rejects_present_root_and_unknown_ownership(self) -> None:
+        host = ScriptedNativeHost()
+        state = await NativeActivity(host, ROOT_THREAD).inspect_absence()
+        self.assertFalse(state.complete)
+        self.assertIn(NativeActivityBlocker.THREAD_PRESENT.value, state.blockers)
+        host.threads = {SIBLING_THREAD: idle_thread(SIBLING_THREAD)}
+        state = await NativeActivity(host, ROOT_THREAD).inspect_absence()
+        self.assertFalse(state.complete)
+        self.assertIn(NativeActivityBlocker.UNKNOWN_OWNERSHIP.value, state.blockers)
+        state = await NativeActivity(host).inspect_absence()
+        self.assertFalse(state.complete)
+        self.assertIn(NativeActivityBlocker.UNKNOWN_OWNERSHIP.value, state.blockers)
+
     async def test_detach_waits_for_whole_tree_interruption(self) -> None:
         entered, finish = asyncio.Event(), asyncio.Event()
 
@@ -140,7 +335,7 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         interrupted = []
         request = host.request
 
-        async def native(method, params):
+        async def native(method, params, *, generation=None):
             thread = host.threads.get(params.get("threadId"))
             if method == "thread/turns/list":
                 return {
@@ -148,13 +343,14 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
                     "nextCursor": None,
                 }
             if method == "turn/interrupt":
+                self.assertEqual(generation, host.process_generation)
                 interrupted.append(params["threadId"])
                 thread["status"] = {"type": "idle"}
                 if params["threadId"] == CHILD_THREAD:
                     host.threads["grandchild"] = idle_thread("grandchild", CHILD_THREAD)
                     host.threads["grandchild"]["status"] = {"type": "active", "activeFlags": []}
                 return {}
-            return await request(method, params)
+            return await request(method, params, generation=generation)
 
         host.request = native
         await NativeActivity(host, ROOT_THREAD, known_roots=host.known_roots).interrupt()
@@ -174,14 +370,15 @@ class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
         terminated = []
         request = host.request
 
-        async def native(method, params):
+        async def native(method, params, *, generation=None):
             if method == "thread/backgroundTerminals/list" and params["threadId"] == CHILD_THREAD:
                 return {"data": list(terminals), "nextCursor": None}
             if method == "thread/backgroundTerminals/terminate":
+                self.assertEqual(generation, host.process_generation)
                 terminated.append(params)
                 terminals.clear()
                 return {"terminated": True}
-            return await request(method, params)
+            return await request(method, params, generation=generation)
 
         host.request = native
         await NativeActivity(host, ROOT_THREAD).interrupt(cleanup_background_processes=True)

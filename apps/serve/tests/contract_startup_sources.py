@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,6 +66,7 @@ from service.identity.persistence.handoff import HandoffClaimStore
 from service.literature.domain.model import LiteratureError
 from service.literature.persistence.store import connect as connect_literature
 from service.paths import PROJECT_DB_RELATIVE
+from service.persistence import project as project_db
 from service.persistence.documents import check_documents, preview_documents
 from service.platform.content import AssetKind, ImportMode
 from service.platform.domains import (
@@ -75,7 +76,12 @@ from service.platform.domains import (
     measure_directory_validation,
     pinned_inspection,
 )
-from service.platform.startup import acquire_startup_domains, prepare_startup_domains
+from service.platform.locator import directory_locator
+from service.platform.startup import (
+    SQLITE_SNAPSHOT_ATTEMPTS,
+    acquire_startup_domains,
+    prepare_startup_domains,
+)
 from service.platform.storage import (
     DarwinDirectoryNative,
     DirectoryRole,
@@ -1141,6 +1147,16 @@ def exercise_application_isolation() -> None:
         connection.execute("INSERT INTO user_notes VALUES ('preserved note')")
     marker = healthy / "user-note.txt"
     marker.write_bytes(b"preserve healthy user bytes")
+    # An unavailable registration can still own an ancestor needed to prove
+    # another registration absent. External mounts can share that same anchor.
+    missing = (root / "external" / "missing", broken / "missing")
+    if os.environ.get("STARTUP_LOCATOR_FIXTURE"):
+        for index, project in enumerate(missing):
+            project_id = f"missing-{index}"
+            catalog.insert_project(ProjectRow(project_id, project_id, str(project), "managed", 1))
+        catalog.insert_external_root(
+            ExternalRootRow("shared-anchor", "missing-0", str(root / "external"), "anchor", 1)
+        )
     native = DarwinDirectoryNative() if sys.platform == "darwin" else WindowsDirectoryNative()
     bridge = root / "b"
     bridge_pin = native.pin(str(bridge), True)
@@ -1185,9 +1201,38 @@ def exercise_application_isolation() -> None:
         pin = native.pin(str(directory), True)
         native.release(pin)
     crash_index_writer(trace_paths.index)
-    app = bootstrap.create_app(
-        cwd=healthy, local_bridge_root=bridge, runtime_discovery=discovery, auth=False
-    )
+    with ExitStack() as startup:
+        if os.environ.get("STARTUP_LOCATOR_FIXTURE") == "rejected":
+            # Discovery can pin this ancestor, but full qualification must
+            # encounter real OS contention on this ancestor's admission slot.
+            # Lock only the target slot: a complete maintenance domain would
+            # also block unrelated initialization through common ancestors.
+            coordinator = str(bootstrap.coordination_root())
+            pin = native.pin(coordinator, True)
+            startup.callback(native.release, pin)
+            ancestor = str(missing[0].parent)
+            ancestor_pin = native.pin(ancestor, False, DirectoryRole.PROJECT)
+            try:
+                identity = native.lineage(ancestor_pin)[-1]
+            finally:
+                native.release(ancestor_pin)
+            blocker = native.acquire_at(pin, f"{identity.replace(':', '-')}-admission-a", True)
+            startup.callback(native.release, blocker)
+            hint = directory_locator(native, str(missing[0]), role=DirectoryRole.PROJECT)
+            assert hint.anchor == ancestor and not hint.anchor_rejected
+            observed = startup.enter_context(unittest.TestCase().assertLogs(bootstrap._log))
+        app = bootstrap.create_app(
+            cwd=healthy, local_bridge_root=bridge, runtime_discovery=discovery, auth=False
+        )
+        if os.environ.get("STARTUP_LOCATOR_FIXTURE") == "rejected":
+            failures = [
+                record
+                for record in observed.records
+                if record.msg == "project_qualification_failed path=%s reason=%s"
+            ]
+            assert len(failures) == 1, "ancestor qualification was not isolated exactly once"
+            assert failures[0].args == (ancestor, bootstrap.ProjectFailure.INSPECTION_FAILED)
+            assert ancestor not in app.state.startup_sources.roots
     assert app.state.startup_sources.trace_projection.recovery is None
     with closing(sqlite3.connect(trace_paths.index.as_uri() + "?mode=ro", uri=True)) as connection:
         assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
@@ -1202,6 +1247,30 @@ def exercise_application_isolation() -> None:
         assert app.state.content.project("broken").unavailable_reason
         assert set(app.state.startup_sources.root_roles) == set(app.state.startup_sources.roots)
         assert catalog.project("broken") is not None
+        if os.environ.get("STARTUP_LOCATOR_FIXTURE"):
+            for index, project in enumerate(missing):
+                assert not projects[f"missing-{index}"]["available"]
+                absent = next(
+                    row
+                    for row in app.state.startup_sources.unavailable_projects
+                    if row.root == project
+                )
+                if index == 0 and os.environ.get("STARTUP_LOCATOR_FIXTURE") == "rejected":
+                    assert absent.anchor_rejected
+                    assert absent.reason == bootstrap.ProjectFailure.INSPECTION_FAILED
+                    assert (
+                        sum(
+                            row.root == project
+                            for row in app.state.startup_sources.unavailable_projects
+                        )
+                        == 1
+                    ), "rejected project retained a stale unqualified locator"
+                else:
+                    assert absent.anchor_identity is not None and not absent.anchor_rejected
+                    assert str(project.parent) in app.state.startup_sources.roots
+                assert not project.exists(), "startup recreated a missing project"
+                assert catalog.project(f"missing-{index}") is not None
+            assert catalog.external_root("shared-anchor") is not None
         assert broken_database.read_bytes() == b"preserve corrupt user bytes"
         assert marker.read_bytes() == b"preserve healthy user bytes"
         with closing(sqlite3.connect(healthy_database)) as connection:
@@ -1213,8 +1282,118 @@ def exercise_application_isolation() -> None:
     )
 
 
+def exercise_restored_projects() -> None:
+    # Restart in a fresh process so the first process's native qualifications
+    # are released, as in the real Serve lifecycle owned by ProductServer.
+    root = Path(sys.argv[2])
+    healthy, broken = root / "configured", root / "project"
+    missing = (root / "external" / "missing", broken / "missing")
+    for project in missing:
+        project.mkdir()
+    app = bootstrap.create_app(cwd=healthy, local_bridge_root=root / "b", auth=False)
+    with TestClient(app) as client:
+        response = client.get("/api/content/projects")
+        assert response.status_code == 200, response.text
+        projects = {item["id"]: item for item in response.json()["projects"]}
+        assert projects["healthy"]["available"] and not projects["broken"]["available"]
+        assert all(projects[f"missing-{index}"]["available"] for index in range(len(missing)))
+        catalog = ContentCatalog(root / "home" / "service" / "content.sqlite3")
+        assert catalog.external_root("shared-anchor") is not None
+        assert (broken / PROJECT_DB_RELATIVE).read_bytes() == b"preserve corrupt user bytes"
+        assert (healthy / "user-note.txt").read_bytes() == b"preserve healthy user bytes"
+
+
 @unittest.skipUnless(sys.platform in {"darwin", "win32"}, "native product source platforms")
 class StartupSourcesContract(unittest.TestCase):
+    def test_startup_resamples_real_sqlite_sidecar_rotation(self):
+        for failure_read, continuous in ((1, False), (2, False), (1, True)):
+            with (
+                self.subTest(failure_read=failure_read, continuous=continuous),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                data = root / "data"
+                data.mkdir()
+                coordinator = root / "coordinator"
+                coordinator.mkdir()
+                database = data / "content.sqlite3"
+                catalog = ContentCatalog(database)
+                catalog.insert_project(ProjectRow("project", "project", str(data), "managed", 1))
+                keeper = project_db.connect(database)
+                keeper.execute("SELECT * FROM projects").fetchall()
+                native = (
+                    DarwinDirectoryNative()
+                    if sys.platform == "darwin"
+                    else WindowsDirectoryNative()
+                )
+                reads = 0
+
+                def inspect(qualification):
+                    nonlocal keeper, reads
+                    reads += 1
+                    with qualification.inspection(str(data)):
+                        with project_db.database_files(database, error_type=CatalogFormatError):
+                            snapshot = ContentCatalog.read_roots(database)
+                            if continuous or reads == failure_read:
+                                keeper.close()
+                                keeper = project_db.connect(database)
+                                keeper.execute("UPDATE projects SET dir_root=?", (str(root),))
+                                keeper.commit()
+                    return SimpleNamespace(roots=(str(data),), catalog=snapshot)
+
+                try:
+                    if continuous:
+                        with self.assertRaisesRegex(CatalogFormatError, "binding changed"):
+                            acquire_startup_domains(native, str(coordinator), (str(data),), inspect)
+                        self.assertEqual(reads, SQLITE_SNAPSHOT_ATTEMPTS)
+                    else:
+                        observed, occupied = acquire_startup_domains(
+                            native, str(coordinator), (str(data),), inspect
+                        )
+                        try:
+                            self.assertEqual(reads, failure_read + 2)
+                            self.assertEqual(observed.catalog.projects, (("project", root),))
+                        finally:
+                            occupied.close()
+                finally:
+                    keeper.close()
+
+    def test_startup_does_not_retry_main_replacement_unsafe_files_or_schema_errors(self):
+        for failure in ("main", "unsafe", "schema"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                data = root / "data"
+                data.mkdir()
+                coordinator = root / "coordinator"
+                coordinator.mkdir()
+                database = data / "content.sqlite3"
+                ContentCatalog(database)
+                replacement = data / "replacement.sqlite3"
+                replacement.write_bytes(database.read_bytes())
+                native = (
+                    DarwinDirectoryNative()
+                    if sys.platform == "darwin"
+                    else WindowsDirectoryNative()
+                )
+                reads = 0
+
+                def inspect(qualification):
+                    nonlocal reads
+                    reads += 1
+                    with qualification.inspection(str(data)):
+                        with project_db.database_files(database, error_type=CatalogFormatError):
+                            if failure == "main":
+                                os.replace(replacement, database)
+                            elif failure == "unsafe":
+                                Path(str(database) + "-journal").mkdir()
+                            else:
+                                raise CatalogFormatError("unsupported catalog root inventory")
+                    self.fail("unsafe inspection returned a snapshot")
+
+                with self.assertRaises(CatalogFormatError):
+                    acquire_startup_domains(native, str(coordinator), (str(data),), inspect)
+                self.assertEqual(reads, 1)
+
     @contextmanager
     def project_fixture(self, root: Path, count: int):
         projects = tuple(root / f"project-{index}" for index in range(count))
@@ -1561,6 +1740,12 @@ else:
     def test_actual_application_starts_with_corrupt_project_and_deferred_prelaunch(self) -> None:
         self.run_fixture("application")
 
+    def test_missing_project_anchors_survive_project_and_mount_isolation(self) -> None:
+        self.run_fixture("application-locator")
+
+    def test_rejected_missing_project_does_not_retain_an_unqualified_locator(self) -> None:
+        self.run_fixture("application-rejected")
+
     def test_actual_sources_under_native_qualification(self) -> None:
         self.run_fixture()
 
@@ -1574,7 +1759,7 @@ else:
         base = os.environ.get("SCHOLARSEED_LEASE_TEST_ROOT", tempfile.gettempdir())
         root = Path(base).resolve() / (
             ("app-" + uuid4().hex[:8])
-            if variant == "application"
+            if variant.startswith("application")
             else ("startup-sources-" + uuid4().hex)
         )
         pin = native.pin(str(root), True)
@@ -1601,7 +1786,12 @@ else:
             native.release(pin)
         environment = dict(
             os.environ,
-            UNAVAILABLE_RECOVERY_FIXTURE=variant if variant != "application" else "",
+            UNAVAILABLE_RECOVERY_FIXTURE=variant if not variant.startswith("application") else "",
+            STARTUP_LOCATOR_FIXTURE=(
+                "rejected"
+                if variant == "application-rejected"
+                else "shared" if variant == "application-locator" else ""
+            ),
             SCHOLARSEED_HOME=str(root / "home"),
             SCHOLARSEED_DEFAULT_WORKSPACE=str(root / "environment"),
             SCHOLARSEED_CODEX_HOME=str(root / "runtime"),
@@ -1612,7 +1802,7 @@ else:
             [
                 sys.executable,
                 str(Path(__file__).resolve()),
-                "--app-child" if variant == "application" else "--child",
+                "--app-child" if variant.startswith("application") else "--child",
                 str(root),
             ],
             env=environment,
@@ -1621,10 +1811,21 @@ else:
             timeout=60,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if environment["STARTUP_LOCATOR_FIXTURE"]:
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), "--restore-child", str(root)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
-    if "--app-child" in sys.argv:
+    if "--restore-child" in sys.argv:
+        exercise_restored_projects()
+    elif "--app-child" in sys.argv:
         exercise_application_isolation()
     elif "--child" in sys.argv:
         exercise()

@@ -586,6 +586,19 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.hosts), 2)
             self.assertEqual(self.capacity(runtime._pool).used, 1)
 
+    async def test_explicit_reconfiguration_transfers_drained_account_identity(self) -> None:
+        with self.warmup_provider() as (runtime, request, _compiled):
+            previous = replace(request("first"), process_sharing_scope="local")
+            target = replace(request("target"), process_sharing_scope="account")
+            self.assertIs((await runtime.prewarm(previous)).state, CommandState.APPLIED)
+            self.assertIs((await runtime.prewarm(target)).state, CommandState.RESTART_REQUIRED)
+            old = self.hosts[0]
+            self.assertIs((await runtime.reconfigure(target)).state, CommandState.APPLIED)
+            self.assertTrue(old.closed)
+            self.assertIs((await runtime.prewarm(previous)).state, CommandState.RESTART_REQUIRED)
+            self.assertIs((await runtime.prewarm(target)).state, CommandState.APPLIED)
+            self.assertEqual(len(self.hosts), 2)
+
     async def test_provider_switch_cancellation_waits_for_real_transaction(self) -> None:
         with self.warmup_provider() as (runtime, request, _compiled):
             await runtime.prewarm(request("first"))
@@ -656,8 +669,48 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(AppServerError, RESOURCE_HOST_CONFIGURATION_UNCERTAIN):
             await pool.reset_execution_configuration("owner")
         with self.assertRaisesRegex(AppServerError, RESOURCE_HOST_CONFIGURATION_UNCERTAIN):
+            await pool.replace_execution_scope("another-owner")
+        with self.assertRaisesRegex(AppServerError, RESOURCE_HOST_CONFIGURATION_UNCERTAIN):
             await pool.acquire(self.request("fenced"))
         self.assertEqual(len(self.hosts), 0)
+
+    async def test_identity_handover_requires_all_old_resources_to_finish(self) -> None:
+        pool = self.pool()
+        first = await pool.acquire(
+            replace(self.request("identity-first"), process_sharing_scope="old")
+        )
+        for phase in ("active", "unowned"):
+            if phase == "unowned":
+                await first.close()
+            with self.assertRaisesRegex(AppServerError, RESOURCE_HOST_BUSY):
+                await pool.replace_execution_scope("new")
+            pool.authorize_scope("old")
+        self.assertTrue(await pool.release_idle())
+        gate = asyncio.Event()
+        cleanup = pool._background(gate.wait())
+        with self.assertRaisesRegex(AppServerError, RESOURCE_HOST_BUSY):
+            await pool.replace_execution_scope("new")
+        gate.set()
+        await cleanup
+        await pool.replace_execution_scope("new")
+        with self.assertRaisesRegex(AppServerError, RESOURCE_HOST_CONFIGURATION_CONFLICT):
+            pool.authorize_scope("old")
+        pool.authorize_scope("new")
+
+    async def test_identity_handover_failure_is_fenced_not_retryable_rejection(self) -> None:
+        with self.warmup_provider() as (runtime, request, compiled):
+            await runtime.prewarm(request("first"))
+            compiled.side_effect = ValueError("catalog failed after identity handover")
+            result = await runtime.reconfigure(
+                replace(request("target"), process_sharing_scope="new")
+            )
+            self.assertIs(result.state, CommandState.RESTART_REQUIRED)
+            self.assertEqual(result.safe_error, RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
+            self.assertTrue(self.hosts[0].closed)
+            self.assertEqual(
+                (await runtime.prewarm(request("first"))).safe_error,
+                RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
+            )
 
     async def test_reset_rejects_pending_native_cleanup(self) -> None:
         pool = self.pool()
@@ -3373,7 +3426,13 @@ class ThreadOpeningRecoveryContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.host._proc)
 
     async def test_projection_failure_does_not_skip_physical_exit_cleanup(self):
-        state = ThreadAttachment(request=self.request(), listener=None, thread_id="saved")
+        state = ThreadAttachment(
+            request=self.request(),
+            listener=None,
+            thread_id="saved",
+            attachment_state=CodexThreadAttachmentState.ATTACHED,
+            attached_generation=1,
+        )
         failure = ValueError("controlled projection failure")
         state.turn = SimpleNamespace(connection_lost=AsyncMock(side_effect=failure))
         self.host._threads["saved"] = state
@@ -3393,6 +3452,7 @@ class ThreadOpeningRecoveryContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sibling.attached_generation, 0)
         self.assertIsNone(self.host._proc)
         self.assertIn(1, self.host._exited_generations)
+        self.assertEqual(state.disconnected_generation, 1)
         self.host._schedule_recovery.assert_called_once()
 
     async def test_late_old_generation_fault_cannot_taint_or_clear_new_generation(self):

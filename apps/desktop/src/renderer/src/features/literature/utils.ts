@@ -5,6 +5,23 @@ export const RESOURCE_ROOT = ''
 const PATH_SEPARATOR = '/'
 const LOCAL_DESTINATION = 'directory'
 
+export const DELIVERY_STATUS_KEYS = {
+  acquiring: 'delivery.status.acquiring',
+  pending: 'delivery.status.pending',
+  saving: 'delivery.status.saving',
+  saved: 'delivery.status.saved',
+  partial: 'delivery.status.partial',
+  canceled: 'delivery.status.canceled',
+} as const
+
+export function deliveryProjectMatches(
+  batchProjectId: string,
+  projectId: string | undefined,
+  projectPath: string | null | undefined
+): boolean {
+  return (!projectPath || Boolean(projectId)) && batchProjectId === (projectId ?? '')
+}
+
 export function deliveryChoiceMatches(
   recorded: LiteratureDeliveryChoice | null | undefined,
   current: LiteratureDeliveryChoice

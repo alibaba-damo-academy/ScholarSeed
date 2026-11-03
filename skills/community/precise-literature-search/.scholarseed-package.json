@@ -16,15 +16,15 @@
   "files": [
     {
       "mode": 420,
-      "path": ".scholarseed-package.json",
-      "sha256": "dc48b89a3db0da5c3aa7999a57651e13a3e998277dfd3ea15248d8d436112d58",
-      "size": 17225
+      "path": ".scholarseed-plugin.json",
+      "sha256": "d61fc8f64af2a5e81d99444166382b7bada0601ae062811bd2966797bd74f142",
+      "size": 2909
     },
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "0f3025f38ba36f6ef3a05ec53c083c3db88e6d4850b01175fdaa5090841f95fc",
-      "size": 30749
+      "sha256": "2716abff1648effc2da478777aa05e1f33a2c960c6d0e35c7f22325e91036081",
+      "size": 31659
     },
     {
       "mode": 420,
@@ -43,6 +43,42 @@
       "path": "assets/examples/request.txt",
       "sha256": "6d6aaf20d94c4f07b5e02e2bd5c951636ce902f6c8eb8a2eee879e52f8845625",
       "size": 175
+    },
+    {
+      "mode": 420,
+      "path": "components/delivery.json",
+      "sha256": "abe9df7d32113fd3b7dbfd5f7ca1e894f5800fd259b73b3a27f0ccae1d857008",
+      "size": 10274
+    },
+    {
+      "mode": 420,
+      "path": "components/details.json",
+      "sha256": "6986cfa9f0885d1233529062ed42183ec0a47eefabd066b7af5f8a0751137ecc",
+      "size": 6179
+    },
+    {
+      "mode": 420,
+      "path": "components/downloads.json",
+      "sha256": "fc3a47744906e062e80744a607ac9ab7354891b494313b19e6256faadd8f9b23",
+      "size": 2722
+    },
+    {
+      "mode": 420,
+      "path": "components/question.json",
+      "sha256": "5735dbe32002318f13c9ee99bd6f66a6e2089fc8c25e19b5c66e11fc46327652",
+      "size": 2621
+    },
+    {
+      "mode": 420,
+      "path": "components/results.json",
+      "sha256": "406412e298cfb04b08b215cbdfbed3303e70c314ba1979eb609a8bdc37c401d7",
+      "size": 7043
+    },
+    {
+      "mode": 420,
+      "path": "components/scenario.json",
+      "sha256": "300f5735f37d13f0ab457b38900bb2b27bd0f5f070cdd69beb72ff8698a8deb4",
+      "size": 4513
     },
     {
       "mode": 420,
@@ -572,6 +608,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "0f3025f38ba36f6ef3a05ec53c083c3db88e6d4850b01175fdaa5090841f95fc",
-  "version": "1.0.27"
+  "source_document_sha256": "2716abff1648effc2da478777aa05e1f33a2c960c6d0e35c7f22325e91036081",
+  "version": "1.0.37"
 }

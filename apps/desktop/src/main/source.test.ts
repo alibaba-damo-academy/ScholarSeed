@@ -11,7 +11,7 @@ function fixture() {
   const git = (...args: string[]) =>
     execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
   git('init', '-q', '-b', 'feature/source')
-  git('remote', 'add', 'origin', 'https://user:secret@example.test/team/repository.git')
+  git('remote', 'add', 'origin', 'https://user:secret@git.example.org/example/repository.git')
   writeFileSync(join(root, 'program.txt'), 'version one')
   git('add', 'program.txt')
   git(
@@ -34,7 +34,7 @@ test('startup captures the program repo and dirty state independently of convers
     const value = JSON.parse((await captureSourceBaseline(root, '0.3.0-202610261200', false))!)
     assert.equal(value.commit, git('rev-parse', 'HEAD'))
     assert.equal(value.branch, 'feature/source')
-    assert.equal(value.repository_url, 'https://example.test/team/repository.git')
+    assert.equal(value.repository_url, 'https://git.example.org/example/repository.git')
     assert.equal(value.dirty, false)
     assert.equal(value.status, 'captured')
     assert.equal(value.runtime_kind, 'local_dev')
@@ -55,6 +55,7 @@ test('startup captures the program repo and dirty state independently of convers
 test('unavailable source identity overwrites a prior launch instead of reusing it', async () => {
   const { root } = fixture()
   const empty = mkdtempSync(join(tmpdir(), 'source-unavailable-'))
+  execFileSync('git', ['init', '-q', empty])
   try {
     await captureSourceBaseline(root, '0.3.0', false)
     const value = JSON.parse((await captureSourceBaseline(empty, '0.3.0', false))!)

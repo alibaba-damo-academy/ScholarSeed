@@ -18,6 +18,8 @@ import { once } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { BackendHandle } from './backend.ts'
 import { RUNTIME_ENTRIES, RUNTIME_COMPONENT_KINDS } from '../../runtime/components.cjs'
+import { RotatingFileLog } from './logfile.ts'
+import { isFirstRun, resolveStartupBudgetMs, writeStartupMarker } from './startupmarker.ts'
 
 const directory = mkdtempSync(join(tmpdir(), 'browser-startup-'))
 mkdirSync(join(directory, 'resources'))
@@ -54,6 +56,66 @@ const hooks = registerHooks({
   },
 })
 const backend = await import('./backend.ts')
+
+test('same-build startup survives slow preparation beyond the former overall deadline', async context => {
+  const home = mkdtempSync(join(directory, 'existing-marker-'))
+  context.after(() => rmSync(home, { recursive: true, force: true }))
+  const identity = { version: '0.3.0', buildNumber: '202611021300' }
+  writeStartupMarker(home, identity)
+  const firstRun = isFirstRun(home, identity)
+  assert.equal(firstRun, false)
+  const originalFetch = globalThis.fetch
+  const logs: string[] = []
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  try {
+    globalThis.fetch = async () => ({
+      ok: Date.now() >= 55_000,
+      json: async () => ({ ok: true, features: { browser: false } }),
+    }) as Response
+    const ready = backend.waitForHealth(
+      'http://127.0.0.1', resolveStartupBudgetMs(firstRun, false, 90_000),
+      line => logs.push(line)
+    )
+    for (let second = 0; second < 56; second++) {
+      context.mock.timers.tick(1_000)
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+    assert.equal(await ready, true)
+    assert.match(logs.join(''), /backend healthy/)
+  } finally {
+    globalThis.fetch = originalFetch
+    context.mock.timers.reset()
+  }
+})
+
+test('same-build startup still fails when preparation and readiness exhaust the total budget', async context => {
+  const home = mkdtempSync(join(directory, 'expired-marker-'))
+  context.after(() => rmSync(home, { recursive: true, force: true }))
+  const identity = { version: '0.3.0', buildNumber: '202611021300' }
+  writeStartupMarker(home, identity)
+  const originalFetch = globalThis.fetch
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  try {
+    globalThis.fetch = async () => ({ ok: false }) as Response
+    const budget = resolveStartupBudgetMs(isFirstRun(home, identity), false, 90_000)
+    assert.equal(budget, 135_000)
+    let settled = false
+    const ready = backend.waitForHealth('http://127.0.0.1', budget, () => {}).then(value => {
+      settled = true
+      return value
+    })
+    for (let second = 0; second < 136; second++) {
+      context.mock.timers.tick(1_000)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      if (second === 89) assert.equal(settled, false)
+    }
+    assert.equal(settled, true)
+    assert.equal(await ready, false)
+  } finally {
+    globalThis.fetch = originalFetch
+    context.mock.timers.reset()
+  }
+})
 
 test('Skill Python probe rejects missing executables and does not launch after cancellation', async () => {
   const stop = new AbortController()
@@ -112,6 +174,22 @@ test(
     assert.match(output, /"signal":null/)
     assert.doesNotMatch(output, /discarded-prefix|must-not-be-logged|PRIVATE_TOKEN/)
     assert.ok(output.length < 12_000)
+  }
+)
+
+test(
+  'Skill Python cold start can exceed the previous outer deadline',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const executable = join(directory, 'probe-cold')
+    writeFileSync(executable, '#!/bin/sh\nsleep 16\nexit 0\n')
+    chmodSync(executable, 0o755)
+    assert.equal(
+      await backend.probeSkillPython(
+        executable, directory, directory, {}, new AbortController().signal
+      ),
+      true
+    )
   }
 )
 
@@ -188,7 +266,7 @@ test(
         new AbortController().signal,
         (line) => diagnostics.push(line)
       )
-      context.mock.timers.tick(15_000)
+      context.mock.timers.tick(90_000)
       assert.equal(await result, false)
       assert.match(diagnostics.join(''), /"event":"timed-out"/)
       assert.match(diagnostics.join(''), /"signal":"SIGKILL"/)
@@ -523,7 +601,12 @@ test('packaged Windows resolves versioned components and does not expand files i
   delete process.env.SCHOLARSEED_PYTHON
   try {
     const logs: string[] = []
-    const handle = backend.startBackend((line) => logs.push(line), { port: 0 })
+    const diagnosticPath = join(directory, 'startup.log')
+    const lifecycle = new RotatingFileLog(diagnosticPath)
+    const handle = backend.startBackend((line) => logs.push(line), {
+      port: 0,
+      lifecycleLog: (line) => lifecycle.write(line),
+    })
     assert.equal(await handle.ready, false)
     const pythonRoot = join(directory, 'runtime', 'python', '1.0.0-r1', 'python')
     assert.deepEqual(handle.error, {
@@ -536,11 +619,42 @@ test('packaged Windows resolves versioned components and does not expand files i
     assert.match(logs.join(''), /python not found/)
     mkdirSync(pythonRoot, { recursive: true })
     writeFileSync(join(pythonRoot, 'python.exe'), '')
-    const damaged = backend.startBackend(() => undefined, { port: 0 })
+    const damaged = backend.startBackend(
+      (line) => {
+        if (line.startsWith('[backend-startup]')) throw new Error('stdout unavailable')
+      },
+      { port: 0, lifecycleLog: (line) => lifecycle.write(line) }
+    )
     assert.equal(await damaged.ready, false)
     assert.equal(damaged.error?.kind, 'startupFailed')
     assert.match(JSON.stringify(damaged.error), /powershell.*pwsh/)
     assert.equal(damaged.proc, null)
+    await lifecycle.end()
+    const entries = readFileSync(diagnosticPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line.slice('[backend-startup] '.length)))
+    const failures = entries.filter((entry) => entry.event === 'failed')
+    assert.equal(failures.length, 2)
+    assert.equal(failures[0].phase, 'python-entry')
+    assert.equal(failures[0].failure, 'pythonMissing')
+    assert.equal(failures[1].phase, 'runtime-entries')
+    assert.equal(failures[1].failure, 'startupFailed')
+    assert.equal(failures[1].backendPid, null)
+    assert.equal(failures[1].error.code, 'ENOENT')
+    assert.match(failures[1].error.stack, /powershell.*pwsh/)
+    assert.notEqual(failures[0].attemptId, failures[1].attemptId)
+    for (const failure of failures) {
+      assert.ok(failure.elapsedMs >= failure.phaseElapsedMs)
+      assert.ok(
+        entries.some(
+          (entry) =>
+            entry.event === 'started' &&
+            entry.attemptId === failure.attemptId &&
+            entry.phase === failure.phase
+        )
+      )
+    }
   } finally {
     mutableApp.isPackaged = false
     mutableApp.getAppPath = originalAppPath

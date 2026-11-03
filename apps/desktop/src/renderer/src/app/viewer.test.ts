@@ -5,6 +5,28 @@ import { runInNewContext } from 'node:vm'
 import * as React from 'react'
 import { transformSync } from 'esbuild'
 
+interface FixtureDocument {
+  documentSessionId: string
+  tabId: string
+  path: string
+  viewKind: string
+}
+
+interface FixtureBoundaryProps {
+  document: FixtureDocument
+}
+
+interface FixtureExports {
+  withViewerBoundary: (viewer: { kind: string; render: () => null }) => {
+    render: (document: FixtureDocument) => React.ReactElement<FixtureBoundaryProps>
+  }
+  ViewerBoundary: new (props: FixtureBoundaryProps) => {
+    state: { failed: boolean }
+    setState: (state: { failed: boolean }) => void
+    componentDidUpdate: (previous: FixtureBoundaryProps) => void
+  }
+}
+
 test('viewer identity survives mode changes and failed viewers can recover in another mode', () => {
   const source = readFileSync(new URL('./viewer.tsx', import.meta.url), 'utf8')
   const compiled = transformSync(`${source}\nexport { ViewerBoundary }`, {
@@ -12,7 +34,7 @@ test('viewer identity survives mode changes and failed viewers can recover in an
     format: 'cjs',
     jsx: 'transform',
   }).code
-  const loaded = { exports: {} as any }
+  const loaded = { exports: {} as FixtureExports }
   runInNewContext(compiled, {
     module: loaded,
     exports: loaded.exports,
@@ -36,7 +58,7 @@ test('viewer identity survives mode changes and failed viewers can recover in an
   assert.notEqual(first.key, viewer.render({ ...document, documentSessionId: 'other' }).key)
   const boundary = new loaded.exports.ViewerBoundary(preview.props)
   boundary.state = { failed: true }
-  boundary.setState = (state: unknown) => {
+  boundary.setState = (state: { failed: boolean }) => {
     boundary.state = state
   }
   boundary.componentDidUpdate(first.props)

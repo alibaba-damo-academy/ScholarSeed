@@ -21,7 +21,11 @@ from scholarseed_codex.mutex import _error as startup_error
 from scholarseed_codex.mutex import startup_mutex
 from scholarseed_codex.process import CodexProcessHost
 from scholarseed_codex.protocol.session import CodexSessionOpenRequest
-from scholarseed_codex.protocol.state import AppServerError, CodexProcessState
+from scholarseed_codex.protocol.state import (
+    AppServerError,
+    CodexProcessState,
+    CodexThreadAttachmentState,
+)
 from scholarseed_codex.provider import CodexRuntimeProvider
 from scholarseed_codex.rpc import PendingRequests
 from scholarseed_codex.sandbox import (
@@ -29,23 +33,34 @@ from scholarseed_codex.sandbox import (
     SANDBOX_ARGUMENT,
     SANDBOX_COMPLETED_METHOD,
     SANDBOX_EXECUTION_METHOD,
+    SANDBOX_EXECUTION_TIMEOUT_MS,
     SANDBOX_MODE,
     SANDBOX_PERMISSION_METHOD,
     SANDBOX_READINESS_METHOD,
     SANDBOX_READONLY_ARGUMENT,
     SANDBOX_RESOURCE_ERROR,
     SANDBOX_SETUP_METHOD,
+    SANDBOX_SETUP_TIMEOUT_SECONDS,
     SANDBOX_USERS_GROUP,
     WindowsSandboxBootstrap,
     windows_sandbox_arguments,
 )
 from scholarseed_runtime.contract.command import CommandState
-from scholarseed_runtime.contract.incident import RuntimeRetryability
+from scholarseed_runtime.contract.evidence import RuntimeProcessEventKind
+from scholarseed_runtime.contract.incident import (
+    RuntimeIncident,
+    RuntimeIncidentKind,
+    RuntimeIncidentScope,
+    RuntimeIncidentState,
+    RuntimeRecoveryStrategy,
+    RuntimeRetryability,
+)
 from scholarseed_runtime.contract.runtime import ProviderConfiguration
 from scholarseed_runtime.contract.sandbox import (
     SANDBOX_CANCELLED_ERROR,
     SANDBOX_POLICY_ERROR,
     SANDBOX_SETUP_ERROR,
+    SANDBOX_UNKNOWN_ERROR,
     SandboxProbe,
     SandboxRecoveryError,
 )
@@ -55,6 +70,726 @@ TEST_TIMEOUT_SECONDS = 0.01
 
 
 class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
+    def recovery_incident(self) -> RuntimeIncident:
+        return RuntimeIncident(
+            incident_id="original-process-exit",
+            scope=RuntimeIncidentScope.PROCESS,
+            state=RuntimeIncidentState.DETECTED,
+            kind=RuntimeIncidentKind.PROCESS_EXIT,
+            strategy=RuntimeRecoveryStrategy.AUTO_RESTART,
+            retryability=RuntimeRetryability.IN_PROGRESS,
+            safe_error="agent_runtime_exit",
+            process_generation=GENERATION,
+            vendor_thread_id="original-thread",
+            vendor_turn_id="original-turn",
+            rpc_method="turn/start",
+            rpc_code=-32000,
+            process_exit_code=57005,
+            ambiguous_commit=True,
+        )
+
+    async def test_recovery_stops_after_sandbox_failure_and_keeps_its_cause(self) -> None:
+        for safe_error, retryability in (
+            (SANDBOX_CANCELLED_ERROR, RuntimeRetryability.USER_RETRYABLE),
+            (SANDBOX_UNKNOWN_ERROR, RuntimeRetryability.UNKNOWN_OUTCOME),
+        ):
+            with self.subTest(safe_error=safe_error):
+                host = CodexProcessHost(
+                    max_recovery_attempts=3,
+                    recovery_initial_delay=0,
+                    recovery_max_delay=0,
+                    recovery_jitter_ratio=0,
+                )
+                host._generation = GENERATION + 1
+                host._threads["original-thread"] = SimpleNamespace()
+                host._emitter.incident = AsyncMock()
+                host._record_process_event = Mock()
+                failure = AppServerError(
+                    "native initialization failed",
+                    safe_error=safe_error,
+                    method=SANDBOX_EXECUTION_METHOD,
+                    generation=GENERATION + 1,
+                    rpc_code=-32603,
+                    rpc_latency_ms=31,
+                    retryability=retryability,
+                )
+                host._start_process = AsyncMock(side_effect=failure)
+                original = self.recovery_incident()
+                await host._recover_process(original)
+                self.assertEqual(host._start_process.await_count, 1)
+                final = host._emitter.incident.await_args.args[1]
+                self.assertEqual(final.incident_id, original.incident_id)
+                self.assertEqual(final.safe_error, safe_error)
+                self.assertIs(final.retryability, retryability)
+                self.assertEqual(final.rpc_method, SANDBOX_EXECUTION_METHOD)
+                self.assertEqual(final.rpc_code, -32603)
+                self.assertEqual(final.rpc_latency_ms, 31)
+                self.assertEqual(final.process_generation, GENERATION + 1)
+                self.assertEqual(final.vendor_turn_id, original.vendor_turn_id)
+                self.assertEqual(final.vendor_thread_id, original.vendor_thread_id)
+                self.assertEqual(final.process_exit_code, original.process_exit_code)
+                self.assertTrue(final.ambiguous_commit)
+
+    async def test_transient_recovery_keeps_existing_bounded_retry(self) -> None:
+        host = CodexProcessHost(
+            max_recovery_attempts=3,
+            recovery_initial_delay=0,
+            recovery_max_delay=0,
+            recovery_jitter_ratio=0,
+        )
+        host._threads["original-thread"] = SimpleNamespace()
+        host._emitter.incident = AsyncMock()
+        host._record_process_event = Mock()
+        host._start_process = AsyncMock(
+            side_effect=AppServerError(
+                "transport unavailable",
+                safe_error="runtime_transport_lost",
+                retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+            )
+        )
+        await host._recover_process(self.recovery_incident())
+        self.assertEqual(host._start_process.await_count, host.max_recovery_attempts)
+
+    async def test_recovery_timeout_preserves_shielded_sandbox_startup_failure(self) -> None:
+        for safe_error, retryability in (
+            (SANDBOX_UNKNOWN_ERROR, RuntimeRetryability.UNKNOWN_OUTCOME),
+            (SANDBOX_CANCELLED_ERROR, RuntimeRetryability.USER_RETRYABLE),
+            ("runtime_transport_lost", RuntimeRetryability.UNKNOWN_OUTCOME),
+        ):
+            with self.subTest(safe_error=safe_error):
+                host = CodexProcessHost(
+                    max_recovery_attempts=3,
+                    recovery_total_timeout=TEST_TIMEOUT_SECONDS,
+                    recovery_initial_delay=0,
+                    recovery_max_delay=0,
+                    recovery_jitter_ratio=0,
+                )
+                host._threads = {name: SimpleNamespace() for name in ("first", "second")}
+                host._emitter.incident = AsyncMock()
+                entered, finish = asyncio.Event(), asyncio.Event()
+                failure = AppServerError(
+                    "native startup did not finish before recovery timeout",
+                    safe_error=safe_error,
+                    retryability=retryability,
+                    method=SANDBOX_EXECUTION_METHOD,
+                    generation=GENERATION,
+                    rpc_code=-32603,
+                    rpc_latency_ms=31,
+                )
+
+                async def launch():
+                    host._generation = GENERATION
+                    entered.set()
+                    await finish.wait()
+                    raise failure
+
+                @asynccontextmanager
+                async def coordination():
+                    yield
+
+                launch_mock = AsyncMock(side_effect=launch)
+                with (
+                    patch("scholarseed_codex.process.startup_mutex", coordination),
+                    patch("scholarseed_codex.process.os", SimpleNamespace(name="nt")),
+                    patch.object(host, "_launch_process", launch_mock),
+                ):
+                    original = self.recovery_incident()
+                    recovery = asyncio.create_task(host._recover_process(original))
+                    await entered.wait()
+                    await asyncio.sleep(TEST_TIMEOUT_SECONDS * 2)
+                    finish.set()
+                    await recovery
+                launch_mock.assert_awaited_once()
+                failed = [
+                    call.args[1]
+                    for call in host._emitter.incident.await_args_list
+                    if call.args[1].state == RuntimeIncidentState.FAILED
+                ]
+                self.assertEqual(len(failed), len(host._threads))
+                sandbox_failure = safe_error != "runtime_transport_lost"
+                for incident in failed:
+                    self.assertEqual(incident.incident_id, original.incident_id)
+                    self.assertEqual(
+                        incident.safe_error, safe_error if sandbox_failure else original.safe_error
+                    )
+                    self.assertIs(
+                        incident.retryability,
+                        retryability if sandbox_failure else RuntimeRetryability.USER_RETRYABLE,
+                    )
+                    self.assertEqual(
+                        incident.rpc_method,
+                        SANDBOX_EXECUTION_METHOD if sandbox_failure else original.rpc_method,
+                    )
+                    self.assertEqual(incident.rpc_code, -32603 if sandbox_failure else -32000)
+                    self.assertTrue(incident.ambiguous_commit)
+                    self.assertEqual(incident.vendor_turn_id, original.vendor_turn_id)
+
+    async def test_cancelled_startup_keeps_sandbox_cause_without_consuming_cancellation(
+        self,
+    ) -> None:
+        host = CodexProcessHost()
+        entered, finish = asyncio.Event(), asyncio.Event()
+        failure = AppServerError(
+            "native setup outcome unknown",
+            safe_error=SANDBOX_UNKNOWN_ERROR,
+            retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+        )
+
+        async def launch():
+            entered.set()
+            await finish.wait()
+            raise failure
+
+        @asynccontextmanager
+        async def coordination():
+            yield
+
+        with (
+            patch("scholarseed_codex.process.startup_mutex", coordination),
+            patch("scholarseed_codex.process.os", SimpleNamespace(name="nt")),
+            patch.object(host, "_launch_process", launch),
+        ):
+            start = asyncio.create_task(host._start_process())
+            await entered.wait()
+            start.cancel()
+            await asyncio.sleep(0)
+            finish.set()
+            with self.assertRaises(asyncio.CancelledError) as raised:
+                await start
+        self.assertIs(raised.exception.__cause__, failure)
+
+    async def test_unknown_initialization_failure_keeps_original_rpc_when_cause_has_none(
+        self,
+    ) -> None:
+        host = CodexProcessHost(max_recovery_attempts=1, recovery_initial_delay=0)
+        host._generation = GENERATION + 1
+        host._threads["original-thread"] = SimpleNamespace()
+        host._emitter.incident = AsyncMock()
+        host._record_process_event = Mock()
+        host._start_process = AsyncMock(
+            side_effect=AppServerError(
+                "initialization unknown",
+                safe_error=SANDBOX_UNKNOWN_ERROR,
+                retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+            )
+        )
+        original = self.recovery_incident()
+        await host._recover_process(original)
+        final = host._emitter.incident.await_args.args[1]
+        self.assertEqual(final.safe_error, SANDBOX_UNKNOWN_ERROR)
+        self.assertIs(final.retryability, RuntimeRetryability.UNKNOWN_OUTCOME)
+        self.assertEqual(final.rpc_method, original.rpc_method)
+        self.assertEqual(final.rpc_code, original.rpc_code)
+        self.assertTrue(final.ambiguous_commit)
+
+    async def test_concurrent_cancelled_setup_shares_failure_until_a_new_generation(self) -> None:
+        bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+        calls = []
+        active_generation = GENERATION
+
+        async def request(method, params):
+            calls.append(method)
+            if method == SANDBOX_SETUP_METHOD:
+                bootstrap.completed(
+                    {
+                        "mode": SANDBOX_MODE,
+                        "success": False,
+                        "error": "orchestrator_helper_launch_canceled:1223",
+                    },
+                    active_generation,
+                )
+                return {"started": True}
+            return {"status": "updateRequired"}
+
+        results = await asyncio.gather(
+            bootstrap.ensure_ready(request, Path.cwd(), GENERATION),
+            bootstrap.ensure_ready(request, Path.cwd(), GENERATION),
+            return_exceptions=True,
+        )
+        self.assertTrue(all(isinstance(result, AppServerError) for result in results))
+        self.assertEqual([result.safe_error for result in results], [SANDBOX_CANCELLED_ERROR] * 2)
+        self.assertEqual(calls.count(SANDBOX_SETUP_METHOD), 1)
+        active_generation += 1
+        with self.assertRaises(AppServerError):
+            await bootstrap.ensure_ready(request, Path.cwd(), active_generation)
+        self.assertEqual(calls.count(SANDBOX_SETUP_METHOD), 2)
+
+    async def test_execution_check_normalizes_failure_without_guessing_native_message(self) -> None:
+        for failure, expected in (
+            (
+                AppServerError(
+                    "arbitrary rejection",
+                    safe_error="runtime_rpc_rejected",
+                    method=SANDBOX_EXECUTION_METHOD,
+                    generation=GENERATION,
+                    rpc_code=-32600,
+                    rpc_latency_ms=29,
+                ),
+                SANDBOX_SETUP_ERROR,
+            ),
+            (
+                AppServerError(
+                    "transport ended",
+                    safe_error="runtime_transport_lost",
+                    method=SANDBOX_EXECUTION_METHOD,
+                    generation=GENERATION,
+                    rpc_code=-32603,
+                    rpc_latency_ms=29,
+                    retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+                ),
+                SANDBOX_UNKNOWN_ERROR,
+            ),
+            (TimeoutError(), SANDBOX_UNKNOWN_ERROR),
+        ):
+            bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+            with (
+                patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+                patch("scholarseed_codex.sandbox._system_directory", return_value=Path.cwd()),
+            ):
+                with self.assertRaises(AppServerError) as raised:
+                    await bootstrap.ensure_execution_ready(AsyncMock(side_effect=failure))
+            self.assertEqual(raised.exception.safe_error, expected)
+            self.assertEqual(raised.exception.method, SANDBOX_EXECUTION_METHOD)
+            if isinstance(failure, AppServerError):
+                self.assertEqual(raised.exception.rpc_code, failure.rpc_code)
+                self.assertEqual(raised.exception.rpc_latency_ms, failure.rpc_latency_ms)
+                self.assertEqual(raised.exception.generation, failure.generation)
+            if expected == SANDBOX_UNKNOWN_ERROR:
+                self.assertIs(raised.exception.retryability, RuntimeRetryability.UNKNOWN_OUTCOME)
+
+    async def test_execution_check_does_not_convert_caller_cancellation(self) -> None:
+        bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+        with (
+            patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+            patch("scholarseed_codex.sandbox._system_directory", return_value=Path.cwd()),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await bootstrap.ensure_execution_ready(
+                    AsyncMock(side_effect=asyncio.CancelledError())
+                )
+
+    async def test_cleanup_failure_does_not_replace_initialization_or_cancellation(self) -> None:
+        cleanup_error = RuntimeError("cleanup failed")
+        for initial in (
+            AppServerError("cancelled setup", safe_error=SANDBOX_CANCELLED_ERROR),
+            asyncio.CancelledError(),
+        ):
+            bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+            with patch.object(bootstrap, "_ensure_ready", AsyncMock(side_effect=initial)):
+                with self.assertRaises(type(initial)) as raised:
+                    await bootstrap.ensure_ready(
+                        AsyncMock(),
+                        Path.cwd(),
+                        GENERATION,
+                        cleanup=AsyncMock(side_effect=cleanup_error),
+                    )
+            self.assertIs(raised.exception, initial)
+            self.assertIs(raised.exception.__cause__, cleanup_error)
+
+    async def test_failed_launch_preserves_sandbox_failure_when_process_wait_fails(self) -> None:
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                host = CodexProcessHost(executable="codex", launch_arguments=(SANDBOX_ARGUMENT,))
+                cleanup_error = OSError("process wait failed")
+                process = SimpleNamespace(
+                    pid=1,
+                    stdin=Mock(),
+                    returncode=None,
+                    wait=AsyncMock(side_effect=cleanup_error),
+                )
+                calls = []
+
+                async def request(method, params, **kwargs):
+                    calls.append(method)
+                    if method == SANDBOX_READINESS_METHOD:
+                        return {"status": "updateRequired"}
+                    if method == SANDBOX_SETUP_METHOD:
+                        if cancelled:
+                            raise asyncio.CancelledError()
+                        host._sandbox.completed(
+                            {
+                                "mode": SANDBOX_MODE,
+                                "success": False,
+                                "error": "orchestrator_helper_launch_canceled:1223",
+                            },
+                            host._generation,
+                        )
+                        return {"started": True}
+                    return {}
+
+                spawn = AsyncMock(return_value=process)
+                with (
+                    patch("scholarseed_codex.process.asyncio.create_subprocess_exec", spawn),
+                    patch.object(host, "_read_stdout", AsyncMock()),
+                    patch.object(host, "_drain_stderr", AsyncMock()),
+                    patch.object(host, "_notify", AsyncMock()),
+                    patch.object(host, "_request_connected", side_effect=request),
+                    patch.object(host._sandbox, "verify_initialization_permissions", AsyncMock()),
+                ):
+                    with self.assertRaises(
+                        asyncio.CancelledError if cancelled else AppServerError
+                    ) as raised:
+                        await host._launch_process()
+                    await asyncio.gather(host._reader_task, host._stderr_task)
+                    self.assertIs(raised.exception.__cause__, cleanup_error)
+                    if not cancelled:
+                        self.assertEqual(raised.exception.safe_error, SANDBOX_CANCELLED_ERROR)
+                    self.assertIs(host.state, CodexProcessState.CRASHED)
+                    self.assertIs(host._proc, process)
+                    self.assertFalse(host.reusable)
+                    self.assertEqual(process.wait.await_count, 2)
+                    self.assertNotIn(
+                        RuntimeProcessEventKind.EXITED,
+                        [event.kind for event in host._process_events],
+                    )
+                    with self.assertRaises(AppServerError) as blocked:
+                        await host.start()
+                    self.assertEqual(blocked.exception.safe_error, "agent_runtime_unavailable")
+                self.assertEqual(calls.count(SANDBOX_SETUP_METHOD), 1)
+                spawn.assert_awaited_once()
+
+    async def test_recovery_cleanup_failure_projects_sandbox_cause_to_all_threads(self) -> None:
+        for safe_error, retryability in (
+            (SANDBOX_CANCELLED_ERROR, RuntimeRetryability.USER_RETRYABLE),
+            (SANDBOX_UNKNOWN_ERROR, RuntimeRetryability.UNKNOWN_OUTCOME),
+        ):
+            with self.subTest(safe_error=safe_error):
+                host = CodexProcessHost(
+                    max_recovery_attempts=3,
+                    recovery_initial_delay=0,
+                    recovery_max_delay=0,
+                    recovery_jitter_ratio=0,
+                )
+                host._generation = GENERATION
+                host._threads = {name: SimpleNamespace() for name in ("first", "second")}
+                host._emitter.incident = AsyncMock()
+                process = SimpleNamespace(
+                    pid=1,
+                    stdin=Mock(),
+                    returncode=1,
+                    wait=AsyncMock(side_effect=OSError("process wait failed")),
+                )
+                failure = AppServerError(
+                    "sandbox initialization failed",
+                    safe_error=safe_error,
+                    retryability=retryability,
+                    method=SANDBOX_EXECUTION_METHOD,
+                    rpc_code=-32603,
+                )
+
+                async def start():
+                    host._proc = process
+                    raise failure
+
+                host._start_process = AsyncMock(side_effect=start)
+                original = self.recovery_incident()
+                await host._recover_process(original)
+                host._start_process.assert_awaited_once()
+                self.assertIs(host._proc, process)
+                self.assertFalse(host.reusable)
+                self.assertIs(host.state, CodexProcessState.UNAVAILABLE)
+                failed = [
+                    call.args
+                    for call in host._emitter.incident.await_args_list
+                    if call.args[1].state == RuntimeIncidentState.FAILED
+                ]
+                self.assertEqual(len(failed), len(host._threads))
+                for thread, incident in failed:
+                    self.assertIn(thread, host._threads.values())
+                    self.assertEqual(incident.incident_id, original.incident_id)
+                    self.assertEqual(incident.safe_error, safe_error)
+                    self.assertIs(incident.retryability, retryability)
+                    self.assertEqual(incident.rpc_method, SANDBOX_EXECUTION_METHOD)
+                    self.assertEqual(incident.rpc_code, -32603)
+                    self.assertTrue(incident.ambiguous_commit)
+
+    async def test_recovery_does_not_reuse_process_after_unconfirmed_launch_cleanup(self) -> None:
+        for expected_error in (None, SANDBOX_CANCELLED_ERROR, SANDBOX_UNKNOWN_ERROR):
+            with self.subTest(expected_error=expected_error):
+                host = CodexProcessHost(
+                    launch_arguments=(SANDBOX_ARGUMENT,),
+                    max_recovery_attempts=3,
+                    recovery_initial_delay=0,
+                    recovery_max_delay=0,
+                    recovery_jitter_ratio=0,
+                )
+                host._threads = {
+                    name: SimpleNamespace(
+                        thread_id=name,
+                        attachment_state=CodexThreadAttachmentState.BROKEN,
+                        attachment_incident=None,
+                    )
+                    for name in ("first", "second")
+                }
+                host._emitter.incident = AsyncMock()
+                process = SimpleNamespace(
+                    pid=1,
+                    stdin=Mock(),
+                    returncode=None,
+                    wait=AsyncMock(side_effect=OSError("process wait failed")),
+                )
+                calls = []
+
+                async def request(method, params, **kwargs):
+                    calls.append(method)
+                    if expected_error is None:
+                        raise OSError("initialize failed")
+                    if method == SANDBOX_READINESS_METHOD:
+                        return {"status": "updateRequired"}
+                    if method == SANDBOX_SETUP_METHOD:
+                        if expected_error == SANDBOX_UNKNOWN_ERROR:
+                            raise AppServerError(
+                                "setup transport failed",
+                                safe_error="runtime_transport_lost",
+                                retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+                            )
+                        host._sandbox.completed(
+                            {
+                                "mode": SANDBOX_MODE,
+                                "success": False,
+                                "error": "orchestrator_helper_launch_canceled:1223",
+                            },
+                            host._generation,
+                        )
+                        return {"started": True}
+                    return {}
+
+                spawn = AsyncMock(return_value=process)
+                resume = AsyncMock(return_value=True)
+                with (
+                    patch("scholarseed_codex.process.asyncio.create_subprocess_exec", spawn),
+                    patch.object(host, "_read_stdout", AsyncMock()),
+                    patch.object(host, "_drain_stderr", AsyncMock()),
+                    patch.object(host, "_notify", AsyncMock()),
+                    patch.object(host, "_request_connected", side_effect=request),
+                    patch.object(host._sandbox, "verify_initialization_permissions", AsyncMock()),
+                    patch.object(host, "_resume_registered_threads", resume),
+                ):
+                    original = self.recovery_incident()
+                    await host._recover_process(original)
+                    await asyncio.gather(host._reader_task, host._stderr_task)
+                spawn.assert_awaited_once()
+                resume.assert_not_awaited()
+                self.assertEqual(calls.count(SANDBOX_SETUP_METHOD), bool(expected_error))
+                self.assertIs(host._proc, process)
+                self.assertFalse(host.reusable)
+                self.assertIs(host.state, CodexProcessState.UNAVAILABLE)
+                self.assertEqual(
+                    [call.args[1].state for call in host._emitter.incident.await_args_list],
+                    [RuntimeIncidentState.RETRYING] * 2 + [RuntimeIncidentState.FAILED] * 2,
+                )
+                for call in host._emitter.incident.await_args_list[-2:]:
+                    incident = call.args[1]
+                    self.assertEqual(incident.safe_error, expected_error or original.safe_error)
+                    self.assertTrue(incident.ambiguous_commit)
+                    self.assertEqual(incident.vendor_turn_id, original.vendor_turn_id)
+                    if expected_error == SANDBOX_UNKNOWN_ERROR:
+                        self.assertIs(incident.retryability, RuntimeRetryability.UNKNOWN_OUTCOME)
+                self.assertNotIn(
+                    RuntimeProcessEventKind.RECOVERED,
+                    [event.kind for event in host._process_events],
+                )
+
+    async def test_thread_cleanup_does_not_start_a_new_process_after_disconnect(self) -> None:
+        for suspend in (False, True):
+            with self.subTest(suspend=suspend):
+                host = CodexProcessHost()
+                host._generation = GENERATION
+                host.state = CodexProcessState.READY
+                host._proc = Mock(returncode=None)
+                turn = SimpleNamespace(replacement_sealed=False, close=AsyncMock())
+                state = SimpleNamespace(
+                    thread_id="cleanup-thread",
+                    turn=turn,
+                    permission_confirmation=None,
+                    attachment_state=CodexThreadAttachmentState.ATTACHED,
+                )
+                host._threads[state.thread_id] = state
+                start = AsyncMock(side_effect=AssertionError("cleanup must not start a process"))
+
+                def disconnect(*args):
+                    host._proc = None
+                    host.state = CodexProcessState.CRASHED
+                    if not suspend:
+                        host._generation += 1
+                    return ()
+
+                with (
+                    patch.object(host, "start", start),
+                    patch.object(host, "suspend_blockers", side_effect=disconnect),
+                    patch.object(host._watcher, "close", AsyncMock(side_effect=disconnect)),
+                ):
+                    with self.assertRaises(AppServerError) as raised:
+                        if suspend:
+                            await host.suspend_thread(state.thread_id, GENERATION)
+                        else:
+                            await host.close_thread(state.thread_id)
+                self.assertEqual(raised.exception.safe_error, "runtime_transport_lost")
+                self.assertEqual(raised.exception.generation, GENERATION)
+                start.assert_not_awaited()
+                if not suspend:
+                    turn.close.assert_awaited_once_with(GENERATION, True)
+                    self.assertEqual(host._unconfirmed_attachment_generations, {GENERATION})
+
+    async def test_sandbox_resume_failure_is_not_an_automatic_retry(self) -> None:
+        host = CodexProcessHost()
+        state = SimpleNamespace(attachment_incident=None, thread_id="blocked")
+        for safe_error, retryability in (
+            (SANDBOX_CANCELLED_ERROR, RuntimeRetryability.USER_RETRYABLE),
+            (SANDBOX_UNKNOWN_ERROR, RuntimeRetryability.UNKNOWN_OUTCOME),
+        ):
+            failure = AppServerError(
+                "preparation failed",
+                safe_error=safe_error,
+                retryability=retryability,
+                method=SANDBOX_EXECUTION_METHOD,
+                rpc_code=-32603,
+                rpc_latency_ms=23,
+            )
+            incident = host._resume_failure_incident(state, failure, GENERATION, True)
+            self.assertIs(incident.state, RuntimeIncidentState.FAILED)
+            self.assertIs(incident.retryability, retryability)
+            self.assertIs(incident.strategy, RuntimeRecoveryStrategy.MANUAL_RETRY)
+            self.assertEqual(incident.rpc_method, SANDBOX_EXECUTION_METHOD)
+            self.assertEqual(incident.rpc_code, -32603)
+            self.assertEqual(incident.rpc_latency_ms, 23)
+            if retryability is RuntimeRetryability.UNKNOWN_OUTCOME:
+                self.assertTrue(incident.ambiguous_commit)
+
+    async def test_automatic_resume_skips_only_current_generation_sandbox_failure(self) -> None:
+        host = CodexProcessHost()
+        failure = host._resume_failure_incident(
+            SimpleNamespace(attachment_incident=None, thread_id="blocked"),
+            AppServerError("cancelled", safe_error=SANDBOX_CANCELLED_ERROR),
+            GENERATION,
+            True,
+        )
+        blocked = SimpleNamespace(
+            thread_id="blocked",
+            attachment_incident=failure,
+            attachment_state=CodexThreadAttachmentState.BROKEN,
+        )
+        healthy = SimpleNamespace(
+            thread_id="healthy",
+            attachment_incident=None,
+            attachment_state=CodexThreadAttachmentState.ATTACHING,
+        )
+        host._threads = {"blocked": blocked, "healthy": healthy}
+        host._resume_thread = AsyncMock(return_value=True)
+        self.assertTrue(await host._resume_registered_threads(GENERATION, self.recovery_incident()))
+        self.assertEqual(host._resume_thread.await_count, 1)
+        self.assertIs(host._resume_thread.await_args.args[0], healthy)
+        host._resume_thread.reset_mock()
+        self.assertTrue(
+            await host._resume_registered_threads(GENERATION + 1, self.recovery_incident())
+        )
+        self.assertEqual(host._resume_thread.await_count, 2)
+
+    async def test_manual_resume_can_recheck_a_cancelled_preparation(self) -> None:
+        host = CodexProcessHost()
+        failure = host._resume_failure_incident(
+            SimpleNamespace(attachment_incident=None, thread_id="blocked"),
+            AppServerError("cancelled", safe_error=SANDBOX_CANCELLED_ERROR),
+            GENERATION,
+            False,
+        )
+        state = SimpleNamespace(
+            thread_id="blocked",
+            attachment_incident=failure,
+            attachment_state=CodexThreadAttachmentState.BROKEN,
+        )
+        host._threads = {"blocked": state}
+        host._resume_thread = AsyncMock(return_value=True)
+        self.assertTrue(await host._resume_registered_threads(GENERATION, None))
+        host._resume_thread.assert_awaited_once()
+
+    async def test_initial_execution_uses_only_unspent_setup_budget_once(self) -> None:
+        bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+        loop = asyncio.get_running_loop()
+        response_margin = 7.0
+        base_timeout = SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + response_margin
+        with patch.object(loop, "time", return_value=100.0) as clock:
+            await bootstrap.ensure_ready(
+                AsyncMock(return_value={"status": "ready"}), Path.cwd(), GENERATION
+            )
+            clock.return_value += 45.0
+            self.assertEqual(
+                bootstrap.initial_execution_timeout(GENERATION, response_margin),
+                base_timeout + SANDBOX_SETUP_TIMEOUT_SECONDS - 45.0,
+            )
+            self.assertEqual(
+                bootstrap.initial_execution_timeout(GENERATION, response_margin), base_timeout
+            )
+
+    async def test_initial_execution_budget_excludes_expired_or_other_generation(self) -> None:
+        for expired, requested_generation in ((True, GENERATION), (False, GENERATION + 1)):
+            with self.subTest(expired=expired, generation=requested_generation):
+                bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+                loop = asyncio.get_running_loop()
+                with patch.object(loop, "time", return_value=100.0) as clock:
+                    await bootstrap.ensure_ready(
+                        AsyncMock(return_value={"status": "ready"}), Path.cwd(), GENERATION
+                    )
+                    if expired:
+                        clock.return_value += SANDBOX_SETUP_TIMEOUT_SECONDS + 1
+                    self.assertEqual(
+                        bootstrap.initial_execution_timeout(requested_generation, 7.0),
+                        SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + 7.0,
+                    )
+
+    async def test_explicit_setup_consumes_the_same_initialization_budget(self) -> None:
+        bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "time", return_value=100.0) as clock:
+
+            async def request(method, params):
+                if method == SANDBOX_SETUP_METHOD:
+                    clock.return_value += 45.0
+                    bootstrap.completed({"mode": SANDBOX_MODE, "success": True}, GENERATION)
+                    return {"started": True}
+                return {"status": "ready" if clock.return_value > 100.0 else "updateRequired"}
+
+            await bootstrap.ensure_ready(request, Path.cwd(), GENERATION)
+            self.assertEqual(
+                bootstrap.initial_execution_timeout(GENERATION, 7.0),
+                SANDBOX_SETUP_TIMEOUT_SECONDS - 45.0 + SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + 7.0,
+            )
+
+    async def test_disabled_sandbox_does_not_allocate_setup_budget(self) -> None:
+        bootstrap = WindowsSandboxBootstrap(())
+        request = AsyncMock()
+        await bootstrap.ensure_ready(request, Path.cwd(), GENERATION)
+        request.assert_not_awaited()
+        self.assertEqual(
+            bootstrap.initial_execution_timeout(GENERATION, 7.0),
+            SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + 7.0,
+        )
+
+    async def test_missing_setup_completion_has_bounded_unknown_outcome(self) -> None:
+        bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+        cleanup = AsyncMock()
+
+        async def request(method, params):
+            if method == SANDBOX_SETUP_METHOD:
+                return {"started": True}
+            return {"status": "updateRequired"}
+
+        with patch("scholarseed_codex.sandbox.SANDBOX_SETUP_TIMEOUT_SECONDS", TEST_TIMEOUT_SECONDS):
+            with self.assertRaises(AppServerError) as raised:
+                await asyncio.wait_for(
+                    bootstrap.ensure_ready(request, Path.cwd(), GENERATION, cleanup), 1.0
+                )
+        self.assertIs(raised.exception.retryability, RuntimeRetryability.UNKNOWN_OUTCOME)
+        cleanup.assert_awaited_once()
+        replay = AsyncMock()
+        with self.assertRaises(AppServerError):
+            await bootstrap.ensure_ready(replay, Path.cwd(), GENERATION)
+        replay.assert_not_awaited()
+        self.assertEqual(
+            bootstrap.initial_execution_timeout(GENERATION, 7.0),
+            SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + 7.0,
+        )
+
     async def test_host_initialization_refuses_disallowed_readonly_profile(self) -> None:
         bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
         for profiles in (
@@ -693,6 +1428,16 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
             if method == SANDBOX_PERMISSION_METHOD:
                 return {"data": [{"id": ":read-only", "allowed": True}]}
             if method == SANDBOX_EXECUTION_METHOD:
+                self.assertGreater(
+                    kwargs["timeout"], SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + host.rpc_timeout
+                )
+                self.assertLessEqual(
+                    kwargs["timeout"],
+                    SANDBOX_SETUP_TIMEOUT_SECONDS
+                    + SANDBOX_EXECUTION_TIMEOUT_MS / 1000
+                    + host.rpc_timeout,
+                )
+                self.assertEqual(params["timeoutMs"], SANDBOX_EXECUTION_TIMEOUT_MS)
                 self.assertEqual(
                     params["sandboxPolicy"], {"type": "readOnly", "networkAccess": False}
                 )

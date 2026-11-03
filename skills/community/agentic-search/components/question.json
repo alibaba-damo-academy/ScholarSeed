@@ -1,0 +1,124 @@
+{
+  "data": {},
+  "interaction": {
+    "questions": [
+      {
+        "id": "question",
+        "header": "研究下一步",
+        "question": "接下来如何推进？",
+        "options": [
+          {
+            "label": "选论文，读全文"
+          },
+          {
+            "label": "继续检索"
+          },
+          {
+            "label": "结束并生成回答"
+          }
+        ]
+      }
+    ]
+  },
+  "responses": {
+    "choose": {
+      "state": "resolved",
+      "data": {}
+    }
+  },
+  "cases": [
+    {
+      "label": "确认失败后重试",
+      "interaction": {
+        "questions": [
+          {
+            "id": "question",
+            "header": "研究下一步",
+            "question": "接下来如何推进？",
+            "options": [
+              {
+                "label": "选论文，读全文"
+              },
+              {
+                "label": "继续检索"
+              },
+              {
+                "label": "结束并生成回答"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "error": "preview_submit_failed"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "确认结果未知",
+      "interaction": {
+        "questions": [
+          {
+            "id": "question",
+            "header": "研究下一步",
+            "question": "接下来如何推进？",
+            "options": [
+              {
+                "label": "选论文，读全文"
+              },
+              {
+                "label": "继续检索"
+              },
+              {
+                "label": "结束并生成回答"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "outcome": "unknown"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "请求已过期",
+      "interaction": {
+        "questions": [
+          {
+            "id": "question",
+            "header": "研究下一步",
+            "question": "接下来如何推进？",
+            "options": [
+              {
+                "label": "选论文，读全文"
+              },
+              {
+                "label": "继续检索"
+              },
+              {
+                "label": "结束并生成回答"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "outcome": "stale"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

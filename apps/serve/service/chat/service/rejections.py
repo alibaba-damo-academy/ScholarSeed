@@ -55,12 +55,18 @@ class RejectionPolicy:
     # invalid_prompt 后靠这里还原成 CONTENT_SAFETY_BLOCKED）；空=放行原始上游码
     # （参数/模型类保留真实厂商码，如 InvalidParameter，供 Trace 归因与桌面端 casefold 匹配）。
     product_code: str = ""
+    subscription_visible: bool = False
 
 
 # 模型/参数类配置错误：用户改个模型名即可自修，确定性终态，HTTP 语义 400。
 MODEL_CONFIG_SAFE_MESSAGE = "The model is not supported by this endpoint."
 # 其余确定性 4xx 请求类。
 REQUEST_SAFE_MESSAGE = "The model provider rejected the request."
+SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE = "subscription_sharing_unsupported_capability"
+SUBSCRIPTION_CAPABILITY_UNSUPPORTED_MESSAGE = (
+    "The ChatGPT subscription connection does not support this request capability. "
+    "Use a compatible model source or start a task without that capability; retrying unchanged will fail."
+)
 # 确定性 4xx 认证/凭据类。
 AUTH_SAFE_MESSAGE = "The model provider rejected the credentials."
 AUTH_FAILURE_CODE = "authentication_error"
@@ -105,6 +111,14 @@ TRANSIENT_PROVIDER_CODES = frozenset(
 # 头部 5xx 耗尽由上方 HTTP 状态集合单独恢复；流内 200 的瞬时 5xx 码走 TRANSIENT_PROVIDER_CODES。
 # 键一律 casefold（匹配时 ``code.casefold()``）。
 PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
+    SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE: RejectionPolicy(
+        retryability=RuntimeRetryability.TERMINAL,
+        http_status=HTTPStatus.BAD_REQUEST,
+        message=RejectionMessage.FIXED,
+        safe_message=SUBSCRIPTION_CAPABILITY_UNSUPPORTED_MESSAGE,
+        product_code=SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE,
+        subscription_visible=True,
+    ),
     **dict.fromkeys(
         (
             RATE_LIMIT_CODE,

@@ -16,6 +16,110 @@ import {
   newHandoffState,
   parseCallbackUrl,
 } from './handoff-url.ts'
+import {
+  CALLBACK_TIMING_FLAG,
+  callbackTimingLine,
+  findCallbackTiming,
+  validateCallbackTiming,
+} from './handoff-timing.ts'
+
+test('absent timing is rejected before parsing its callback URL', (context) => {
+  const OriginalURL = URL
+  let constructions = 0
+  context.mock.method(
+    globalThis,
+    'URL',
+    class extends OriginalURL {
+      constructor(input: string | URL, base?: string | URL) {
+        constructions++
+        super(input, base)
+      }
+    }
+  )
+  for (const value of [null, undefined, 0, 'invalid', []])
+    assert.equal(
+      validateCallbackTiming(value, `${DESKTOP_AUTH_CALLBACK_PREFIX}?code=secret&state=xyz`),
+      null
+    )
+  assert.equal(constructions, 0)
+})
+
+test('callback timing validates keys once and reuses one callback parse when formatting', (context) => {
+  const url = `${DESKTOP_AUTH_CALLBACK_PREFIX}?code=secret&state=xyz`
+  const timing = {
+    schema: 1,
+    attempt: '3608bca1e44ea6c4',
+    launcher_pid: 12,
+    started_at_ms: 1000,
+    activate_ms: 1,
+    bootstrap_ms: 20,
+    signature_ms: 12,
+    readiness_ms: 4,
+    pre_engine_ms: 25,
+  }
+  let enumerations = 0
+  const observed = new Proxy(timing, {
+    ownKeys(target) {
+      enumerations++
+      return Reflect.ownKeys(target)
+    },
+  })
+  assert.equal(validateCallbackTiming(observed, url), observed)
+  assert.equal(enumerations, 1)
+  const OriginalURL = URL
+  let constructions = 0
+  context.mock.method(
+    globalThis,
+    'URL',
+    class extends OriginalURL {
+      constructor(input: string | URL, base?: string | URL) {
+        constructions++
+        super(input, base)
+      }
+    }
+  )
+  assert.ok(parseCallbackUrl(url))
+  const singleParse = constructions
+  constructions = 0
+  const line = callbackTimingLine(url, 'open_url', observed, 1100)
+  assert.equal(constructions, singleParse)
+  assert.doesNotMatch(line, /secret|state=|code=/)
+})
+
+test('callback timing accepts only bounded matching diagnostics without exposing credentials', () => {
+  const url = `${DESKTOP_AUTH_CALLBACK_PREFIX}?code=SECRET_CODE&state=xyz`
+  const timing = {
+    schema: 1,
+    attempt: '3608bca1e44ea6c4',
+    launcher_pid: 12,
+    started_at_ms: 1000,
+    activate_ms: 1,
+    bootstrap_ms: 20,
+    signature_ms: 12,
+    readiness_ms: 4,
+    pre_engine_ms: 25,
+  }
+  const argument = (value: unknown): string =>
+    CALLBACK_TIMING_FLAG + Buffer.from(JSON.stringify(value)).toString('base64url')
+  assert.deepEqual(findCallbackTiming([argument(timing)], url), timing)
+  const line = callbackTimingLine(url, 'second_instance', timing, 1100)
+  assert.match(line, /"delivery_ms":75/)
+  assert.match(line, /"attempt":"3608bca1e44ea6c4"/)
+  assert.doesNotMatch(line, /SECRET_CODE|xyz|scholarseed:\/\//)
+  for (const value of [
+    { ...timing, attempt: '0000000000000000' },
+    { ...timing, signature_ms: -1 },
+    { ...timing, bootstrap_ms: null },
+    { ...timing, pre_engine_ms: Infinity },
+    { ...timing, launcher_pid: 0 },
+    { ...timing, extra: 'SECRET' },
+  ])
+    assert.equal(findCallbackTiming([argument(value)], url), null)
+  assert.equal(findCallbackTiming([argument(timing), argument(timing)], url), null)
+  assert.equal(findCallbackTiming([CALLBACK_TIMING_FLAG + '!'], url), null)
+  assert.equal(findCallbackTiming([CALLBACK_TIMING_FLAG + 'a'.repeat(8192)], url), null)
+  assert.equal(findCallbackTiming([argument(timing)], null), null)
+})
 
 test('callback url parses code and state only for the desktop handoff prefix', () => {
   const parsed = parseCallbackUrl(`${DESKTOP_AUTH_CALLBACK_PREFIX}?code=abc&state=xyz`)
@@ -51,6 +155,47 @@ test('handoff state is high-entropy and never repeats', () => {
 })
 
 const ACCOUNT_BASE = 'https://account.test'
+
+test('phase timing separates HTTP, adoption, renderer confirmation and receipt without credentials', async () => {
+  let finishReceipt!: () => void
+  const receipt = new Promise<void>((resolve) => {
+    finishReceipt = resolve
+  })
+  const host = harness(async () => tokenResponse(), { report: () => receipt })
+  try {
+    await host.handoff.start()
+    const state = stateOf(host.openedUrls[0])
+    await host.handoff.handleCallback(callback(state, 'PRIVATE_CODE'))
+    await tick()
+    const id = host.handoff.current().confirmationId!
+    assert.equal(host.handoff.resetAfterAdopted(id, true), true)
+    for (const event of [
+      'account_base',
+      'exchange_http',
+      'credential_adoption',
+      'renderer_confirmation',
+    ]) {
+      assert.match(
+        host.logs.find((line) => line.includes(`event=${event} `)) ?? '',
+        /elapsed_ms=\d+(\.\d+)?/
+      )
+    }
+    assert.equal(
+      host.logs.some((line) => line.includes('event=receipt ')),
+      false
+    )
+    finishReceipt()
+    await tick()
+    assert.match(
+      host.logs.find((line) => line.includes('event=receipt ')) ?? '',
+      /result=completed/
+    )
+    assert.doesNotMatch(host.logs.join(''), new RegExp(`PRIVATE_CODE|${state}|refresh_token`))
+  } finally {
+    finishReceipt()
+    host.restore()
+  }
+})
 
 test('cancelled exchange never calls adoption after its HTTP response arrives', async () => {
   let complete!: (response: Response) => void

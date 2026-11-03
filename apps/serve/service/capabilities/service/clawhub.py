@@ -327,6 +327,12 @@ class ClawHub:
                 display_name = metadata.get("displayName")
                 if isinstance(display_name, str) and display_name:
                     result["display_name"] = display_name
+                summary = metadata.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    result["descriptions"] = {
+                        **(row.get("descriptions") or {}),
+                        self.locale.lower(): summary.strip(),
+                    }
                 result.update(
                     labels=_labels(metadata.get("labels")), labelsStatus=SKILLHUB_LABELS_READY
                 )

@@ -25,6 +25,11 @@
 `None` 表示未声明，`False` 表示明确不支持。宿主经模型桥转换协议时，应传递实际上游
 的能力，不能用桥的入站协议替代。此声明不限制由宿主执行的普通函数搜索或浏览器搜索。
 
+`ModelCapabilities.native_agent_messages` 声明连接是否支持原生多代理通信输入；
+`None` 保持供应商默认，`False` 要求 Adapter 使用兼容的本地工具协作协议，
+不代表禁用子任务。声明同时属于模型目录项与当前模型意图，参与冻结目录和重配置身份；
+不授权转换密文或改写已持久化的历史。
+
 ## 接入一个 Harness
 
 可选 `contract.provider.RuntimeHostReconfiguration` 与 `host_reconfiguration` 能力用于
@@ -38,6 +43,15 @@ release_idle_resources 不自动切换；未知退出或写入继续围栏，不
 及故障代次；ticket 绑定执行器实例、活动修订和观察水位。Gateway 等待该水位持久投影后
 才提交确认，消费失败则拒绝。APPLIED 仅证明该次提交的准入歧义已由执行器安全解除，
 不证明原提交已成功、失败或未执行，也不授权重放。产品决策与确认凭据由 Serve 持久化。
+
+可选 `thread_replacement` 能力与 `contract.session.RuntimeThreadReplacement` 提供原生
+线程不可恢复后的两阶段封闭端口。目标包含完整 binding、产品 command、当前线程恢复
+失败 incident 和原故障代次；`ThreadReplacementProof` 保留准确缺失代次及观察水位。
+Gateway 核验身份并等待原观察水位投影，产品在提交票据前持久化替代围栏。APPLIED 仅证明
+旧附件已封闭、原执行进程已实际退出收尾，不证明旧 Turn 未提交、未执行或结果已确定。
+它与 `EmptyThreadReplacementProof` 的未提交负证明独立，不解除原未知结果，也不授权
+重放。产品负责候选创建、原子绑定切换、上下文重建及有界续作；旧能力缺失时明确拒绝。
+此可选加法契约不改变必选 SPI 或 ABI 6，真实跨平台故障恢复仍需产品验收。
 
 可选 `contract.provider.RuntimeHostWarmup` 与 `host_warmup` 能力支持应用启动时预热
 Host；`contract.command.HostWarmupRequest` 必须显式声明共享授权域，仍使用原有模型及

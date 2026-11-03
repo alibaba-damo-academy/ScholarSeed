@@ -22,6 +22,7 @@ from scholarseed_runtime.contract.sandbox import (
     SANDBOX_PREPARING_ERROR,
     SANDBOX_RESOURCE_ERROR,
     SANDBOX_SETUP_ERROR,
+    SANDBOX_STARTUP_ERRORS,
     SANDBOX_UNKNOWN_ERROR,
     SandboxRecovery,
     SandboxRecoveryError,
@@ -117,6 +118,8 @@ def _failure(
     safe_error: str = SANDBOX_SETUP_ERROR,
     *,
     retryability: RuntimeRetryability = RuntimeRetryability.USER_RETRYABLE,
+    cause: AppServerError | None = None,
+    method: str = "",
 ) -> AppServerError:
     if safe_error in {SANDBOX_SETUP_ERROR, SANDBOX_RESOURCE_ERROR}:
         if retryability is RuntimeRetryability.IN_PROGRESS:
@@ -127,6 +130,10 @@ def _failure(
         message,
         safe_error=safe_error,
         retryability=retryability,
+        method=(cause.method or method) if cause is not None else method,
+        generation=cause.generation if cause is not None else 0,
+        rpc_code=cause.rpc_code if cause is not None else None,
+        rpc_latency_ms=cause.rpc_latency_ms if cause is not None else 0,
     )
 
 
@@ -152,6 +159,8 @@ class WindowsSandboxBootstrap:
         self._executable = executable
         self._completion: asyncio.Future[Mapping[str, Any]] | None = None
         self._unknown_generation: int | None = None
+        self._initialization_failure: tuple[int, AppServerError] | None = None
+        self._initialization_deadline: float | None = None
 
     def initialization_cwd(self, fallback: Path) -> Path:
         return (
@@ -178,6 +187,24 @@ class WindowsSandboxBootstrap:
         native_policy = {"type": "readOnly", "networkAccess": False}
         await self._check_execution(request, directory, str(directory), native_policy)
 
+    def initial_execution_timeout(self, generation: int, response_margin: float) -> float:
+        deadline = self._initialization_deadline
+        self._initialization_deadline = None
+        remaining_setup = (
+            max(0.0, deadline - asyncio.get_running_loop().time())
+            if deadline is not None and generation == self._generation
+            else 0.0
+        )
+        if self.enabled:
+            LOGGER.info(
+                "windows_sandbox_execution_budget generation=%s setup_remaining_ms=%s execution_ms=%s response_margin_ms=%s",
+                generation,
+                round(remaining_setup * 1000),
+                SANDBOX_EXECUTION_TIMEOUT_MS,
+                round(response_margin * 1000),
+            )
+        return remaining_setup + SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + response_margin
+
     async def _check_execution(
         self,
         request: NativeRequest,
@@ -186,21 +213,47 @@ class WindowsSandboxBootstrap:
         native_policy: dict[str, Any],
     ) -> None:
         LOGGER.info("windows_sandbox_execution_check event=started")
-        result = await request(
-            SANDBOX_EXECUTION_METHOD,
-            {
-                "command": [str(directory / "cmd.exe"), "/d", "/c", "exit", "0"],
-                "cwd": execution_cwd,
-                "timeoutMs": SANDBOX_EXECUTION_TIMEOUT_MS,
-                "sandboxPolicy": native_policy,
-            },
-        )
+        try:
+            result = await request(
+                SANDBOX_EXECUTION_METHOD,
+                {
+                    "command": [str(directory / "cmd.exe"), "/d", "/c", "exit", "0"],
+                    "cwd": execution_cwd,
+                    "timeoutMs": SANDBOX_EXECUTION_TIMEOUT_MS,
+                    "sandboxPolicy": native_policy,
+                },
+            )
+        except Exception as error:
+            retryability = (
+                RuntimeRetryability.UNKNOWN_OUTCOME
+                if isinstance(error, TimeoutError)
+                else (
+                    error.retryability
+                    if isinstance(error, AppServerError)
+                    else RuntimeRetryability.USER_RETRYABLE
+                )
+            )
+            raise _failure(
+                "Windows sandbox execution check failed; startup refused",
+                (
+                    error.safe_error
+                    if isinstance(error, AppServerError)
+                    and error.safe_error in SANDBOX_STARTUP_ERRORS
+                    else SANDBOX_SETUP_ERROR
+                ),
+                retryability=retryability,
+                cause=error if isinstance(error, AppServerError) else None,
+                method=SANDBOX_EXECUTION_METHOD,
+            ) from error
         if (
             not isinstance(result.get("exitCode"), int)
             or isinstance(result["exitCode"], bool)
             or result["exitCode"] != 0
         ):
-            raise _failure("Windows sandbox execution check failed; startup refused")
+            raise _failure(
+                "Windows sandbox execution check failed; startup refused",
+                method=SANDBOX_EXECUTION_METHOD,
+            )
         LOGGER.info("windows_sandbox_execution_check event=ready")
 
     async def ensure_thread_execution_ready(
@@ -270,6 +323,8 @@ class WindowsSandboxBootstrap:
                             "Windows bundled tool verification failed",
                             SANDBOX_RESOURCE_ERROR,
                             retryability=retryability,
+                            cause=error if isinstance(error, AppServerError) else None,
+                            method=SANDBOX_EXECUTION_METHOD,
                         ) from error
                     LOGGER.info(
                         "windows_sandbox_tool_check event=ready kind=%s entry=%s", probe.kind, entry
@@ -289,6 +344,15 @@ class WindowsSandboxBootstrap:
         if not self.enabled:
             return
         async with self._setup_lock:
+            previous_failure = self._initialization_failure
+            if previous_failure is not None and previous_failure[0] == generation:
+                failure = previous_failure[1]
+                raise _failure(
+                    "Windows sandbox initialization failed; explicit retry is required",
+                    failure.safe_error,
+                    retryability=failure.retryability,
+                    cause=failure,
+                ) from failure
             if self._unknown_generation == generation:
                 raise _failure(
                     "Windows setup outcome is unknown; restart and recheck readiness",
@@ -304,13 +368,53 @@ class WindowsSandboxBootstrap:
                         retryability=RuntimeRetryability.USER_RETRYABLE,
                     )
                 await self._prepare_private_storage()
-                await self._ensure_ready(request, cwd, generation, pid)
+                self._initialization_deadline = (
+                    asyncio.get_running_loop().time() + SANDBOX_SETUP_TIMEOUT_SECONDS
+                )
+                try:
+                    async with asyncio.timeout_at(self._initialization_deadline):
+                        await self._ensure_ready(request, cwd, generation, pid)
+                except TimeoutError as error:
+                    raise _failure(
+                        "Windows sandbox initialization timed out",
+                        retryability=(
+                            RuntimeRetryability.UNKNOWN_OUTCOME
+                            if self._unknown_generation == generation
+                            else RuntimeRetryability.USER_RETRYABLE
+                        ),
+                    ) from error
                 await self._prepare_private_storage()
                 if prepare_resources:
                     await self.prepare_resources(cwd)
-            except BaseException:
+            except BaseException as error:
+                self._initialization_deadline = None
+                initialization_failure: AppServerError | None = None
+                if isinstance(error, Exception):
+                    initialization_failure = (
+                        error
+                        if isinstance(error, AppServerError)
+                        and error.safe_error in SANDBOX_STARTUP_ERRORS
+                        else _failure(
+                            "Windows sandbox initialization failed",
+                            retryability=(
+                                error.retryability
+                                if isinstance(error, AppServerError)
+                                else RuntimeRetryability.USER_RETRYABLE
+                            ),
+                            cause=error if isinstance(error, AppServerError) else None,
+                        )
+                    )
+                    self._initialization_failure = (generation, initialization_failure)
                 if cleanup is not None:
-                    await cleanup()
+                    try:
+                        await cleanup()
+                    except Exception as cleanup_error:
+                        LOGGER.exception("windows_sandbox_cleanup_failed")
+                        raise (
+                            initialization_failure if initialization_failure is not None else error
+                        ) from cleanup_error
+                if initialization_failure is not None and initialization_failure is not error:
+                    raise initialization_failure from error
                 raise
 
     async def prepare_resources(self, cwd: Path) -> None:
@@ -485,6 +589,7 @@ class WindowsSandboxBootstrap:
                 raise _failure(
                     "Windows setup outcome is unknown; restart and recheck readiness",
                     retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+                    cause=error if isinstance(error, AppServerError) else None,
                 ) from error
             raise
         finally:

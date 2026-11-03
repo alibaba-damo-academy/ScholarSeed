@@ -11,9 +11,41 @@ import {
   type HandoffInboxDependencies,
 } from './handoff-inbox.ts'
 import { STATE_TTL_MS } from './handoff.ts'
+import { handoffFingerprint, parseCallbackUrl } from './handoff-url.ts'
+import type { CallbackTiming } from './handoff-timing.ts'
 
 const CALLBACK =
   'scholarseed://auth/callback?state=abcdefghijklmnopqrstuvwxyz0123456789ABCDE&code=SECRET_CODE_VALUE'
+
+test('inbox preserves only validated native timing and never lets diagnostics block callback delivery', () => {
+  const logs: string[] = []
+  const home = mkdtempSync(join(tmpdir(), 'handoff-inbox-test-'))
+  const timing: CallbackTiming = {
+    schema: 1,
+    attempt: handoffFingerprint(parseCallbackUrl(CALLBACK)!.state),
+    launcher_pid: 10,
+    started_at_ms: 1,
+    activate_ms: 1,
+    bootstrap_ms: 3,
+    signature_ms: 2,
+    readiness_ms: 1,
+    pre_engine_ms: 5,
+  }
+  const received: Array<{ url: string; timing: CallbackTiming | null }> = []
+  const receive = (url: string, timing: CallbackTiming | null): void => {
+    received.push({ url, timing })
+  }
+  assert.equal(parkCallbackUrl(deps(logs, home), CALLBACK, timing), 'parked')
+  assert.equal(drainInbox(deps(logs, home), receive), 1)
+  assert.deepEqual(received.pop(), { url: CALLBACK, timing })
+  assert.equal(
+    parkCallbackUrl(deps(logs, home), CALLBACK, { ...timing, attempt: 'invalid' }),
+    'parked'
+  )
+  assert.equal(drainInbox(deps(logs, home), receive), 1)
+  assert.deepEqual(received.pop(), { url: CALLBACK, timing: null })
+  assert.doesNotMatch(logs.join(''), /SECRET_CODE_VALUE|abcdefghijklmnopqrstuvwxyz0123456789ABCDE/)
+})
 
 function deps(logs: string[], home?: string, now?: number): HandoffInboxDependencies {
   return {

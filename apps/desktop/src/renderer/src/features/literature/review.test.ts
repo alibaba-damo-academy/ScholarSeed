@@ -576,6 +576,8 @@ test('precise fulltext card with a paper subset uses the dedicated subset policy
     'respond'
   )
   assert.equal(preciseFulltextSubsetAuthorization.directPresentation, 'primary-secondary')
+  assert.equal(preciseFulltextSubsetAuthorization.directSelectionRequired?.(withSubset[0].options[0]), true)
+  assert.equal(preciseFulltextSubsetAuthorization.directSelectionRequired?.(withSubset[0].options[1]), false)
   const presented = preciseFulltextSubsetAuthorization.presentQuestion?.(
     withSubset[0] as never,
     engine

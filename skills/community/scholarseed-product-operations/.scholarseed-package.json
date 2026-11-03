@@ -4,7 +4,7 @@
     {
       "mode": 420,
       "path": "PACKAGE-MANIFEST.sha256",
-      "sha256": "9668ae4eb8d20b697393aa8f0e1407ff794f5269817b965018301deb255a3460",
+      "sha256": "e437ede96f64d260cbc023700351424cf47e4afa6390fc81413d31883bdf14a1",
       "size": 677
     },
     {
@@ -34,8 +34,8 @@
     {
       "mode": 420,
       "path": "references/mcp.md",
-      "sha256": "a05b991adefb0a46c9bd060c7ec9c5062af548c78dc56994840019ce1baca133",
-      "size": 3544
+      "sha256": "b633e65e0c070682f0284d6c49ad7a2d219a58775d7ddc068f784ffd759cc117",
+      "size": 4177
     },
     {
       "mode": 420,

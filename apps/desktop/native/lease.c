@@ -392,6 +392,27 @@ static napi_value identity(napi_env env, napi_callback_info info) {
   return result;
 }
 
+#ifndef _WIN32
+static napi_value persistent_identity(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2], result;
+  void *data = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 1)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *lease = lookup(env, data, argv[0]);
+  if (!lease) return NULL;
+  if (lease->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!lease->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char value[DIRECTORY_IDENTITY_BYTES];
+  struct directory_error error = {0};
+  if (!directory_persistent_identity(lease->directory, value, &error))
+    return fail_directory(env, &error);
+  if (napi_create_string_utf8(env, value, NAPI_AUTO_LENGTH, &result) != napi_ok)
+    return fail(env, "ERR_LEASE_NATIVE", 0);
+  return result;
+}
+#endif
+
 static napi_value lineage(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2], result;
@@ -641,6 +662,9 @@ static napi_value initialize(napi_env env, napi_value exports) {
       {"pin", NULL, pin, NULL, NULL, NULL, napi_default, owner},
       {"pinChild", NULL, pin_child, NULL, NULL, NULL, napi_default, owner},
       {"identity", NULL, identity, NULL, NULL, NULL, napi_default, owner},
+#ifndef _WIN32
+      {"persistentIdentity", NULL, persistent_identity, NULL, NULL, NULL, napi_default, owner},
+#endif
       {"lineage", NULL, lineage, NULL, NULL, NULL, napi_default, owner},
       {"acquireAt", NULL, acquire_at, NULL, NULL, NULL, napi_default, owner},
       {"reclaimAt", NULL, reclaim_at, NULL, NULL, NULL, napi_default, owner},

@@ -422,8 +422,9 @@ export async function revokeRoot(
     const affected =
       payload &&
       typeof payload === 'object' &&
-      Array.isArray((payload as any).agentSessionsAffected)
-        ? ((payload as any).agentSessionsAffected as string[])
+      'agentSessionsAffected' in payload &&
+      Array.isArray(payload.agentSessionsAffected)
+        ? (payload.agentSessionsAffected as string[])
         : []
     return { ok: true, agentSessionsAffected: affected }
   } catch (error) {

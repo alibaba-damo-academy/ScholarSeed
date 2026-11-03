@@ -9,7 +9,7 @@ const ENVIRONMENT = {
   location: 'http://localhost:5173/workbench',
   userAgent: 'ScholarSeed test agent',
   viewportHeight: 800,
-  viewportWidth: 1200
+  viewportWidth: 1200,
 }
 
 test('crash report includes renderer, React, and environment diagnostics', () => {
@@ -26,8 +26,8 @@ test('crash report includes renderer, React, and environment diagnostics', () =>
   assert.match(report, /Occurred at: 2026-09-23T07:00:00\.000Z/)
   assert.match(report, /Error name: TypeError/)
   assert.match(report, /Error message: render failed/)
-  assert.match(report, /TypeError: render failed\n    at BrokenView/)
-  assert.match(report, /React component stack:\n    at BrokenView\n    at App/)
+  assert.match(report, /TypeError: render failed\n {4}at BrokenView/)
+  assert.match(report, /React component stack:\n {4}at BrokenView\n {4}at App/)
   assert.match(report, /Viewport: 1200x800 @ 2x/)
   assert.match(report, /User agent: ScholarSeed test agent/)
 })
@@ -36,12 +36,7 @@ test('crash report stays within the feedback description limit', () => {
   const error = new Error('render failed')
   error.stack = 'x'.repeat(10_000)
 
-  const report = createCrashReport(
-    error,
-    'y'.repeat(10_000),
-    ENVIRONMENT,
-    new Date(0)
-  )
+  const report = createCrashReport(error, 'y'.repeat(10_000), ENVIRONMENT, new Date(0))
 
   assert.equal(report.length, 5000)
 })

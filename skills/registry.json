@@ -16,6 +16,7 @@
   },
   "scanners": ["skill-scanner"],
   "dependencies": {
+    "plugin-create": {},
     "find-skill": {},
     "academic-research-guidance": {},
     "scholarseed-product-operations": {},

@@ -16,7 +16,7 @@ import {
   SelectContent,
   SelectItem,
 } from '../../components/ui'
-import type { JoinNode } from './join'
+import type { JoinNode } from './hierarchy'
 
 export const GROUP_NAME_MAX_LENGTH = 20
 

@@ -127,6 +127,7 @@
     "title": "AI 助手"
   },
   "attachments": {
+    "openImage": "打开原图",
     "actions": "附件操作 {{title}}",
     "save": "保存到资料库",
     "title": "保存附件到资料库",

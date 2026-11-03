@@ -1,0 +1,193 @@
+{
+  "schema": 1,
+  "id": "official-ui",
+  "compatibility": "1.0",
+  "version": "1.0.11",
+  "runtime": "ui.js",
+  "exports": [
+    "React",
+    "mount",
+    "useTranslation",
+    "useCopyContent",
+    "catalog",
+    "Conversation",
+    "Button",
+    "IconButton",
+    "Checkbox",
+    "Input",
+    "Textarea",
+    "Card",
+    "CardHeader",
+    "CardTitle",
+    "CardDescription",
+    "CardContent",
+    "CardFooter",
+    "RadioGroup",
+    "RadioGroupItem",
+    "Select",
+    "SelectTrigger",
+    "SelectContent",
+    "SelectItem",
+    "SelectValue",
+    "Dialog",
+    "DialogTrigger",
+    "DialogContent",
+    "DialogTitle",
+    "DialogDescription",
+    "DialogFooter",
+    "DialogClose",
+    "DropdownMenu",
+    "DropdownMenuTrigger",
+    "DropdownMenuContent",
+    "DropdownMenuItem",
+    "DropdownMenuSub",
+    "DropdownMenuSubTrigger",
+    "DropdownMenuSubContent",
+    "DropdownMenuSeparator",
+    "Table",
+    "TableHeader",
+    "TableBody",
+    "TableRow",
+    "TableHead",
+    "TableCell",
+    "TableCaption",
+    "Alert",
+    "AlertTitle",
+    "AlertDescription",
+    "Badge",
+    "Progress"
+  ],
+  "components": [
+    {
+      "slot": "interaction.question",
+      "entry": "choices.js",
+      "actions": [
+        {
+          "id": "choose",
+          "capability": "interaction.answer"
+        }
+      ]
+    },
+    {
+      "slot": "literature.authorization",
+      "entry": "choices.js",
+      "actions": []
+    },
+    {
+      "slot": "literature.selection",
+      "entry": "selection.js",
+      "actions": [
+        {
+          "id": "select",
+          "capability": "interaction.answer"
+        }
+      ]
+    },
+    {
+      "slot": "display.literature-search",
+      "entry": "research.js",
+      "actions": [
+        {
+          "id": "open-results",
+          "capability": "navigation.open"
+        }
+      ]
+    },
+    {
+      "slot": "preview.literature-results",
+      "entry": "research.js",
+      "actions": [
+        {
+          "id": "open-source",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "add-reference",
+          "capability": "literature.write"
+        },
+        {
+          "id": "collections",
+          "capability": "literature.read"
+        },
+        {
+          "id": "create-collection",
+          "capability": "literature.write"
+        }
+      ]
+    },
+    {
+      "slot": "display.literature-references",
+      "entry": "research.js",
+      "actions": [
+        {
+          "id": "open-source",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "add-reference",
+          "capability": "literature.write"
+        },
+        {
+          "id": "collections",
+          "capability": "literature.read"
+        },
+        {
+          "id": "create-collection",
+          "capability": "literature.write"
+        }
+      ]
+    },
+    {
+      "slot": "display.literature-downloads",
+      "entry": "research.js",
+      "actions": [
+        {
+          "id": "open-fulltext",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "open-library",
+          "capability": "navigation.open"
+        }
+      ]
+    },
+    {
+      "slot": "display.literature-delivery",
+      "entry": "research.js",
+      "actions": [
+        {
+          "id": "delivery",
+          "capability": "literature.read"
+        },
+        {
+          "id": "folders",
+          "capability": "literature.read"
+        },
+        {
+          "id": "collections",
+          "capability": "literature.read"
+        },
+        {
+          "id": "pick-directory",
+          "capability": "literature.write"
+        },
+        {
+          "id": "save",
+          "capability": "literature.write"
+        },
+        {
+          "id": "cancel",
+          "capability": "literature.write"
+        },
+        {
+          "id": "open-directory",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "open-library",
+          "capability": "navigation.open"
+        }
+      ]
+    }
+  ]
+}

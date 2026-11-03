@@ -6,7 +6,8 @@ import { createLocalization } from '../../src/localization/engine'
 import { resources } from '../../src/localization/resources'
 import { StoreContext } from '../../src/renderer/src/storeContext'
 import type { Store } from '../../src/renderer/src/store'
-import { LiteratureResults } from '../../src/renderer/src/features/literature/Results'
+import { LiteratureResults } from '../../src/renderer/src/features/literature/Summary'
+import type { LiteratureCardPorts } from '../../src/renderer/src/features/literature/ports'
 import { LiteratureSearchView } from '../../src/renderer/src/features/literature/Search'
 import { conversationSearchPapers } from '../../src/renderer/src/features/literature/result'
 import { ToastProvider, Toaster } from '../../src/renderer/src/components/ui'
@@ -22,7 +23,7 @@ function PreviewFixture(): React.JSX.Element {
     <main className="grid gap-[var(--vds-space-4)] p-[var(--vds-space-4)]">
       <section data-testid="preview-consumer">{expanded
         ? <LiteratureSearchView papers={conversationSearchPapers(papers)} status="completed" output="" />
-        : <LiteratureResults content={content} cardId="preview-card" />}</section>
+        : <LiteratureResults content={content} ports={{ openResults: async () => setExpanded(true) } as LiteratureCardPorts} />}</section>
       <section data-testid="search-consumer"><LiteratureSearchView papers={conversationSearchPapers(papers)} status="completed" output="" /></section>
     </main><Toaster />
   </StoreContext.Provider></ToastProvider></I18nextProvider>

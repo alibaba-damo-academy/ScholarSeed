@@ -49,6 +49,7 @@ from scholarseed_runtime.contract.command import (
     HostWarmupRequest,
     SkillConfiguration,
     SkillConfigurationRequest,
+    ThreadReplacementProof,
 )
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.incident import RuntimeRetryability
@@ -72,6 +73,7 @@ from scholarseed_runtime.contract.resource import (
 from scholarseed_runtime.contract.session import (
     RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS,
     RuntimeExecutionThread,
+    ThreadReplacementTarget,
 )
 from scholarseed_runtime.gateway.driver import (
     RuntimeDriver,
@@ -90,10 +92,12 @@ from service.chat.active import (
     base_instructions,
     developer_instructions,
 )
+from service.chat.constants import PRODUCT_EVENT_SESSION_STATE, PRODUCT_SESSION_STATE_IDLE
 from service.chat.persistence.artifacts import SessionArtifactStore
 from service.chat.persistence.catalog import (
     OpenState,
     QueuedMessageState,
+    ReplacementKind,
     ReplacementState,
     SessionCatalogStore,
 )
@@ -158,6 +162,8 @@ from service.platform.vocabulary import (
     INTERNAL_BASE_URL_ENV,
 )
 from service.settings.capabilities import REASONING_EFFORT_LEVELS
+
+THREAD_REBUILT_EVENT_KEY_PREFIX = "runtime:thread-rebuilt"
 
 
 def _invocation_turn_identity(session_id: str) -> str:
@@ -891,12 +897,15 @@ class LiveSessionService:
         try:
             task = self._activities.spawn(
                 ActivityDomain.RUNTIME,
-                lambda: self._configure_skills(
-                    cwd=key[2],
-                    user_id=key[0],
-                    state=state,
-                    model_id=model_id,
-                    refresh_key=key,
+                lambda: self._activities.finish(
+                    ActivityDomain.RUNTIME,
+                    lambda: self._configure_skills(
+                        cwd=key[2],
+                        user_id=key[0],
+                        state=state,
+                        model_id=model_id,
+                        refresh_key=key,
+                    ),
                 ),
             )
         except MaintenanceActive:
@@ -942,6 +951,8 @@ class LiveSessionService:
                     refresh_key != key or entry is None or entry.state != state
                 ):
                     raise RuntimeError(RESOURCE_HOST_CONFIGURATION_CONFLICT)
+                if cached or refresh_key is not None:
+                    state = load_skill_state()
                 if cached and entry is not None and entry.state == state:
                     if time.monotonic() - entry.refreshed_at >= SKILL_INVENTORY_CACHE_TTL_SECONDS:
                         self._schedule_skill_inventory_refresh(
@@ -984,7 +995,24 @@ class LiveSessionService:
             )
 
         discovered = await inventory(force_reload=refresh)
-        plan = self._skills.enablement_plan(discovered, state)
+        plan = await self._activities.to_thread(
+            ActivityDomain.RUNTIME, self._skills.enablement_plan, discovered, state
+        )
+        components = self._skills.components
+        unavailable: set[str] = set()
+        snapshots = (
+            await self._activities.to_thread(
+                ActivityDomain.RUNTIME,
+                self._skills.component_snapshots,
+                discovered,
+                plan.state,
+                unavailable=unavailable,
+            )
+            if components is not None
+            else []
+        )
+        if components is not None:
+            await self._activities.to_thread(ActivityDomain.RUNTIME, components.check, snapshots)
         enabled_by_path = {
             self._skills.manifest(skill.path).expanduser().resolve(): skill.enabled
             for skill in discovered.skills
@@ -1017,9 +1045,11 @@ class LiveSessionService:
             save_skill_state(plan.state)
         elif load_skill_state() != state:
             save_skill_state(state)
+        if components is not None:
+            components.publish(snapshots, unavailable=frozenset(unavailable))
         self._skill_inventory_cache[key] = SkillInventoryCache(
             inventory=discovered,
-            state=state,
+            state=plan.state,
             refreshed_at=time.monotonic(),
         )
         return discovered
@@ -1185,12 +1215,17 @@ class LiveSessionService:
                 ActivityDomain.RUNTIME, prepare_commands, live.runtime_workdir
             ),
         )
-        inventory = await self.skill_inventory(
-            cwd=live.runtime_workdir,
-            timing=timing,
-            user_id=live.user_id,
-            model_id=live.model_id,
-            process_environment=live.process_environment,
+        inventory = await self._activities.finish(
+            ActivityDomain.RUNTIME,
+            lambda: self._configure_skills(
+                cwd=live.runtime_workdir,
+                state=load_skill_state(),
+                user_id=live.user_id,
+                model_id=live.model_id,
+                process_environment=live.process_environment,
+                timing=timing,
+                cached=True,
+            ),
         )
         live.skill_configurations = tuple(
             SkillConfiguration(path, enabled)
@@ -1253,6 +1288,7 @@ class LiveSessionService:
         live = LiveSession(
             recording=self.recording,
             recover_empty=lambda proof: self._recover_empty(live, proof),
+            rebuild_thread=lambda target: self._rebuild_thread(live, target),
             trace_secrets=(),
             session_id=session_id,
             runtime_id=selected_runtime_id,
@@ -1270,6 +1306,7 @@ class LiveSessionService:
             process_environment=process_environment,
             user_id=user_id,
             on_release=self._models.release_session,
+            on_suspend=self._models.suspend_session,
             project_id=project_id,
             resource_changes=self._resource_changes,
             local_socket=self._local_socket,
@@ -1417,6 +1454,168 @@ class LiveSessionService:
             live.replacement_proof = None
             live.replacement_revision = None
 
+    async def _rebuild_thread(
+        self, live: LiveSession, target: ThreadReplacementTarget
+    ) -> ThreadReplacementProof:
+        driver = live.runtime_driver
+        session = live.runtime_session
+        revision = self._activation_revision(live)
+        interrupt_generation = live.interrupt_generation
+        source = self._catalog.queued_message(live.id, target.command_id)
+
+        def current() -> bool:
+            record = self._catalog.get(live.id)
+            queued = self._catalog.queued_message(live.id, target.command_id)
+            return (
+                live.runtime_driver is driver
+                and live.runtime_session is session
+                and session is not None
+                and session.binding == target.binding
+                and source is not None
+                and source.operation_seq is not None
+                and queued is not None
+                and queued.operation_seq == source.operation_seq
+                and queued.state
+                in (
+                    QueuedMessageState.SUBMITTING,
+                    QueuedMessageState.RUNNING,
+                    QueuedMessageState.OUTCOME_UNKNOWN,
+                )
+                and live.last_submission_id == target.command_id
+                and live.interrupt_generation == interrupt_generation
+                and self._activation_revision(live) == revision
+                and record is not None
+                and not record.archived
+                and not live.closing
+                and not live.interrupting
+                and not live.terminating
+                and not live.terminated
+                and not live.pending_hil_snapshot()
+                and self._activities.snapshot().phase is ActivityPhase.OPEN
+            )
+
+        if driver is None or not current():
+            raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+        provider = self._gateway.provider_for(target.binding)
+        deadline = asyncio.get_running_loop().time() + provider.resource_policy.wait_seconds
+        proof = None
+        detached = False
+        failure: BaseException | None = None
+        try:
+            async with asyncio.timeout_at(deadline):
+                ticket = await driver.prepare_thread_replacement(target)
+                if not current():
+                    raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+                receipt = await driver.commit_thread_replacement(ticket)
+                if receipt.state is not CommandState.APPLIED or not current():
+                    raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+                proof = ticket.proof
+                live.thread_replacement_proof = proof
+                await driver.close()
+                detached = True
+                while True:
+                    owners = {
+                        task
+                        for task in (
+                            live.current_task,
+                            (
+                                live.resource_task
+                                if live.waiting_request_id == target.command_id
+                                else None
+                            ),
+                        )
+                        if task is not None and not task.done()
+                    }
+                    if not owners:
+                        break
+                    await asyncio.shield(asyncio.gather(*owners, return_exceptions=True))
+                if not current():
+                    raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+                await live.persistence.run(
+                    self._catalog.record_replacement, proof, self._revision_digest(revision)
+                )
+                live.replacement_proof = proof
+                live.replacement_revision = revision
+                live.runtime_driver = None
+                live.runtime_session = None
+                live.release_attachment_activity()
+                if live.active_product_turn_id == target.command_id:
+                    if not await live.release_product_turn(target.command_id):
+                        raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+                if (
+                    self._activation_revision(live) != revision
+                    or live.interrupt_generation != interrupt_generation
+                ):
+                    raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+                await self.ensure_active(
+                    live,
+                    purpose=ResourcePurpose.TURN,
+                    request_id=proof.proof_id,
+                    deadline=time.time() + max(0.0, deadline - asyncio.get_running_loop().time()),
+                )
+                async with live.lifecycle_lock:
+                    replacement_revision = self._activation_revision(live)
+                    if (
+                        live.runtime_session is None
+                        or live.interrupt_generation != interrupt_generation
+                        or live.closing
+                        or live.terminating
+                        or live.terminated
+                        or not await live.ledger.confirm_thread_replacement(proof)
+                    ):
+                        raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+                    if (
+                        live.interrupt_generation != interrupt_generation
+                        or live.closing
+                        or live.terminating
+                        or live.terminated
+                        or self._activation_revision(live) != replacement_revision
+                        or self._activities.snapshot().phase is not ActivityPhase.OPEN
+                    ):
+                        raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+                    await live.publish(
+                        PRODUCT_EVENT_SESSION_STATE,
+                        {
+                            "state": PRODUCT_SESSION_STATE_IDLE,
+                            "runtime_id": proof.binding.runtime_id,
+                            "recovery_blocked": False,
+                            "recovery_pending": False,
+                            "reason": ReplacementKind.HISTORY_REBUILD.value,
+                            "proof_id": proof.proof_id,
+                            "previous_native_session_id": proof.binding.opaque_session_ref,
+                            "native_session_id": live.runtime_session.binding.opaque_session_ref,
+                        },
+                        turn_id=proof.command_id,
+                        idempotency_key=f"{THREAD_REBUILT_EVENT_KEY_PREFIX}:{proof.proof_id}",
+                    )
+                return proof
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            try:
+                if proof is not None:
+                    self._catalog.settle_replacement(
+                        live.id, proof.proof_id, ReplacementState.UNKNOWN
+                    )
+            except Exception:
+                if failure is None:
+                    raise
+                self._logger.error(
+                    "thread_replacement_cleanup_failed session_id=%s proof_id=%s",
+                    live.id,
+                    proof.proof_id if proof is not None else "",
+                    exc_info=True,
+                )
+            finally:
+                if detached and live.runtime_driver is driver and live.runtime_session is session:
+                    live.runtime_driver = None
+                    live.runtime_session = None
+                    live.release_attachment_activity()
+                live.thread_replacement_proof = None
+                live.replacement_proof = None
+                live.replacement_revision = None
+
     def _activation_plan(self, live: LiveSession) -> ActivationPlan:
         proof = live.replacement_proof
         manual = False
@@ -1466,6 +1665,7 @@ class LiveSessionService:
         launch_secrets, secret_port = _launch_secret_contract(
             launch_environment,
             execution_environment=execution_environment,
+            include_skill_credentials=True,
             cwd=live.runtime_workdir,
         )
         mode = str(revision[1] or RuntimePermissionMode.ASK.value)
@@ -1553,7 +1753,7 @@ class LiveSessionService:
                 fork_source=fork_source,
                 initial_history=(
                     self._events.portable_history(live.id, exclude_rejected=True)
-                    if proof is None
+                    if (proof is None or isinstance(proof, ThreadReplacementProof))
                     and replaces is not None
                     and activation.open_state is not OpenState.UNSUBMITTED
                     else ()
@@ -1917,7 +2117,9 @@ class LiveSessionService:
                         ActivityDomain.RUNTIME, prepare_commands, cwd
                     ),
                 )
-                launch_secrets, secret_port = _launch_secret_contract(launch_environment, cwd=cwd)
+                launch_secrets, secret_port = _launch_secret_contract(
+                    launch_environment, include_skill_credentials=True, cwd=cwd
+                )
                 skill_configurations: tuple[SkillConfiguration, ...] = ()
                 if not ephemeral:
                     with timing.measure(ActivationStage.SKILLS):

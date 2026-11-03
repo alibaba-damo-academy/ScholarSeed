@@ -7,6 +7,7 @@ import en from '../../../../localization/locales/en/literature.json' with { type
 import zh from '../../../../localization/locales/zh/literature.json' with { type: 'json' }
 
 import {
+  conversationProject,
   claimDownloadRefresh,
   DOWNLOAD_REFRESH_CACHE_LIMIT,
   downloadOutcome,
@@ -15,6 +16,16 @@ import {
   openDownloadedFulltext,
   parseDownloadCard,
 } from './admission.ts'
+
+test('card project follows its conversation rather than the visible workbench', () => {
+  const projects = [
+    { id: 'first', path: '/first' },
+    { id: 'second', path: '/second' },
+  ]
+  assert.equal(conversationProject(projects, '/first')?.id, 'first')
+  assert.equal(conversationProject(projects, '/missing'), undefined)
+  assert.equal(conversationProject(projects, null), undefined)
+})
 import type { ConvItem } from '../../model.ts'
 import { latestDisplayCardItems, projectDisplayCardEvent } from '../../transcript.ts'
 import { literatureNavigation } from '../workbench/tabs.ts'

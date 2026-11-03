@@ -127,6 +127,17 @@ async def exercise() -> None:
             )
         )
 
+        with patch.object(deliveries, "_store", side_effect=AssertionError("unrelated database")):
+            await deliveries.begin_turn("unassigned", "unassigned-turn", str(root / "session"))
+            await deliveries.bind_turn("unassigned", "unassigned-turn", "native-unassigned", "g1")
+            await deliveries.record_tool_call(
+                "unassigned", "native-unassigned", {}, generation="g1"
+            )
+            await deliveries.record_change(
+                "unassigned", "native-unassigned", "file", "update", generation="g1"
+            )
+        check("unassigned runtime events never inspect unrelated project databases", True)
+
         await deliveries.begin_turn("session-1", "client-turn-1", project.root)
 
         await deliveries.bind_turn(
@@ -456,6 +467,7 @@ async def exercise() -> None:
         rebound = ResourceDeliveryService(
             content, versions, supervisor, activities=supervisor._activities
         )
+        rebound.recover_project(project.id, project.root)
         await rebound.record_change(
             "session-bound", "vendor-bound", str(bound), "update", generation="generation-0"
         )

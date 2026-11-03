@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from dataclasses import dataclass, field, replace
@@ -18,11 +19,16 @@ from scholarseed_runtime.contract.inventory import (
 )
 from service.capabilities.domain import SKILL_MANIFEST_NAME
 from service.capabilities.service.attribution import read_attribution
+from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.delivery import InstallationCandidates
+from service.capabilities.service.descriptor import HOST_COMPONENT_PLUGIN, PLUGIN_DESCRIPTOR
 from service.capabilities.service.install import (
     ORIGIN_FILE_NAME,
     SkillPackageError,
     parse_skill_frontmatter,
 )
+from service.capabilities.service.installed import installed_inventory
+from service.capabilities.service.plugins import PLUGIN_ORIGIN_KIND, identity_snapshot
 from service.paths import SERVICE_SKILL_STATE_FILE
 from service.platform.storage import filesystem_path
 
@@ -86,6 +92,7 @@ SKILL_PRESENTATION_SURFACE_FIELDS = frozenset(
     {SKILL_PRESENTATION_NAMES_KEY, SKILL_PRESENTATION_SOURCES_KEY}
 )
 SKILL_PRESENTATION_ALLOWED_SOURCES = frozenset({SKILL_SOURCE_BUILTIN, SKILL_SOURCE_USER})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -243,7 +250,16 @@ def save_skill_state(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    payload = {
+    payload = skill_state_record(state)
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def skill_state_record(state: SkillProductState) -> dict[str, Any]:
+    return {
         SKILL_STATE_DISABLED: sorted(state.disabled_skills),
         SKILL_STATE_DELETED: sorted(state.deleted_skills),
         SKILL_STATE_INSTALLATIONS: dict(state.installation_sources),
@@ -252,11 +268,28 @@ def save_skill_state(
             SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES: sorted(state.recovered_workspaces),
         },
     }
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+
+
+def restore_skill_state(record: dict[str, Any]) -> None:
+    disabled = record.get(SKILL_STATE_DISABLED)
+    deleted = record.get(SKILL_STATE_DELETED)
+    recovery = record.get(SKILL_STATE_RUNTIME_RECOVERY)
+    if not isinstance(recovery, dict) or any(
+        not isinstance(items, list) or any(not isinstance(item, str) for item in items)
+        for items in (disabled, deleted)
+    ):
+        raise ValueError("plugin_recovery_state_invalid")
+    version = recovery.get(SKILL_STATE_RUNTIME_RECOVERY_VERSION)
+    workspaces = recovery.get(SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES)
+    if (
+        type(version) is not int
+        or not isinstance(workspaces, list)
+        or any(not isinstance(item, str) for item in workspaces)
+    ):
+        raise ValueError("plugin_recovery_state_invalid")
+    save_skill_state(
+        SkillProductState(frozenset(disabled), frozenset(deleted), version, frozenset(workspaces))
     )
-    temporary.replace(path)
 
 
 def replace_skill_state(
@@ -293,7 +326,7 @@ def workspace_recovery_key(cwd: Path) -> str:
 
 
 class SkillCatalog:
-    """Enrich only skills that the real Codex runtime reports for one cwd."""
+    """Project owned packages for browsing and native inventories for execution."""
 
     def __init__(
         self,
@@ -301,22 +334,93 @@ class SkillCatalog:
         bundled_root: Path,
         user_root: Path,
         presentation: SkillPresentation | None = None,
+        components: ComponentRegistry | None = None,
     ) -> None:
         self._bundled_root = bundled_root.expanduser().resolve()
         self._user_root = user_root.expanduser().resolve()
         self._presentation = presentation or load_skill_presentation()
         self._authenticated: Callable[[str], bool] = lambda _user_id: False
+        self.components = components
+        self.candidates: InstallationCandidates | None = None
+        if components is not None:
+            components.authorize = self.component_authorized
         # 目录指纹按内容签名复用: 全量重算要逐文件读字节, 而它每次列表请求都会跑一遍。
         self._fingerprints: dict[Path, tuple[tuple[tuple[str, int, int], ...], str]] = {}
 
     def bind_authentication(self, authenticated: Callable[[str], bool]) -> None:
         self._authenticated = authenticated
 
-    def requires_login(self, skill: SkillView) -> bool:
+    def installed_inventory(self, cwd: Path) -> SkillInventory:
+        return installed_inventory(self._bundled_root, self._user_root, cwd)
+
+    def installation_report(self, workspace: Path, path: str, sha256: str) -> dict[str, Any]:
+        if self.candidates is None:
+            raise ValueError("plugin_installation_unavailable")
+        report = self.candidates.delivery(workspace, path, sha256)
+        name = (report.get("descriptor") or {}).get("id", "")
+        if name and (self._bundled_root / name).exists():
+            if report.get("candidate"):
+                self.candidates.discard(report["candidate"])
+            raise ValueError("immutable_skill")
+        return {**report, "update": bool(name and (self._user_root / name).exists())}
+
+    def installation_receipt(self, report: Mapping[str, Any]) -> dict[str, Any] | None:
+        if self.candidates is None:
+            raise ValueError("plugin_installation_unavailable")
+        return self.candidates.receipt(report["candidate"], report["sha256"])
+
+    def component_authorized(self, name: str, user_id: str) -> bool:
         return (
-            self.source(skill.path) == SKILL_SOURCE_BUILTIN
-            and skill.name in self._presentation.requires_login
+            name == HOST_COMPONENT_PLUGIN
+            or name not in self._presentation.requires_login
+            or self._authenticated(user_id)
         )
+
+    def component_snapshots(
+        self,
+        inventory: SkillInventory,
+        state: SkillProductState,
+        *,
+        unavailable: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        snapshots = []
+        retained = {
+            item["descriptor"]["id"]: item
+            for item in (self.components.enabled_snapshots() if self.components is not None else [])
+        }
+        for skill in self.product_skills(inventory):
+            if (
+                skill.name in state.disabled_skills
+                or skill.name in state.deleted_skills
+                or not self._plugin_declared(skill)
+            ):
+                continue
+            try:
+                snapshot = identity_snapshot(
+                    {
+                        "path": str(self.manifest(skill.path)),
+                        "source": self.source(skill.path),
+                        "active": True,
+                    }
+                )
+                if self.components is not None:
+                    snapshot = self.components.dependencies(snapshot)
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                logger.warning(
+                    "plugin_component_unavailable plugin=%r failure_type=%s",
+                    skill.name,
+                    type(error).__name__,
+                )
+                if unavailable is not None:
+                    unavailable.add(skill.name)
+                if skill.name in retained:
+                    snapshots.append(retained[skill.name])
+                continue
+            snapshots.append(snapshot)
+        return snapshots
+
+    def requires_login(self, skill: SkillView) -> bool:
+        return skill.name in self._presentation.requires_login
 
     def availability_revision(self, user_id: str) -> tuple[object, ...]:
         state = load_skill_state()
@@ -331,19 +435,26 @@ class SkillCatalog:
         self, inventory: SkillInventory, state: SkillProductState, *, user_id: str
     ) -> tuple[tuple[Path, bool], ...]:
         authenticated = self._authenticated(user_id)
+        selected = {
+            self.manifest(skill.path).resolve(): skill for skill in self.product_skills(inventory)
+        }
         return tuple(
             sorted(
                 (
                     (
                         self.manifest(skill.path).expanduser().resolve(),
-                        (self.required(skill.name) or skill.name not in state.disabled_skills)
+                        self.manifest(skill.path).resolve() in selected
+                        and not self._plugin_error(skill)
+                        and (self.required(skill.name) or skill.name not in state.disabled_skills)
                         and (
                             self.source(skill.path) != SKILL_SOURCE_USER
                             or skill.name not in state.deleted_skills
                         )
                         and (not self.requires_login(skill) or authenticated),
                     )
-                    for skill in self.product_skills(inventory)
+                    for reported in inventory.skills
+                    for skill in (self._owned_skill(reported),)
+                    if self.source(skill.path) in {SKILL_SOURCE_BUILTIN, SKILL_SOURCE_USER}
                 ),
                 key=lambda row: str(row[0]),
             )
@@ -409,6 +520,7 @@ class SkillCatalog:
         """Project product state only onto paths owned by this product."""
 
         rows: list[tuple[Path, bool]] = []
+        selected = {self.manifest(skill.path).resolve() for skill in self.product_skills(inventory)}
         for reported in inventory.skills:
             skill = self._owned_skill(reported)
             source = self.source(skill.path)
@@ -417,7 +529,11 @@ class SkillCatalog:
                 continue
             if source == SKILL_SOURCE_USER and skill.name in state.deleted_skills:
                 continue
-            enabled = self.required(skill.name) or skill.name not in state.disabled_skills
+            enabled = (
+                manifest in selected
+                and not self._plugin_error(skill)
+                and (self.required(skill.name) or skill.name not in state.disabled_skills)
+            )
             rows.append((manifest, enabled))
         return tuple(rows)
 
@@ -453,7 +569,7 @@ class SkillCatalog:
         return SkillEnablementPlan(tuple(configurations.items()), recovered_state)
 
     def product_skills(self, inventory: SkillInventory) -> tuple[SkillView, ...]:
-        """Choose one product-owned skill per name, preferring bundled sources."""
+        """Select installed plugin identities without silently falling back on corruption."""
 
         selected: dict[str, SkillView] = {}
         for reported in inventory.skills:
@@ -463,11 +579,43 @@ class SkillCatalog:
             if not identity or source not in {SKILL_SOURCE_BUILTIN, SKILL_SOURCE_USER}:
                 continue
             current = selected.get(identity)
-            if current is None or (
-                source == SKILL_SOURCE_BUILTIN and self.source(current.path) == SKILL_SOURCE_USER
+            candidate_plugin = source == SKILL_SOURCE_USER and self._plugin_declared(skill)
+            current_plugin = (
+                current is not None
+                and self.source(current.path) == SKILL_SOURCE_USER
+                and self._plugin_declared(current)
+            )
+            if (
+                current is None
+                or (candidate_plugin and not current_plugin)
+                or (
+                    not current_plugin
+                    and source == SKILL_SOURCE_BUILTIN
+                    and self.source(current.path) == SKILL_SOURCE_USER
+                )
             ):
                 selected[identity] = skill
         return tuple(selected.values())
+
+    def _plugin_declared(self, skill: SkillView) -> bool:
+        directory = self.manifest(skill.path).parent
+        return (
+            (directory / PLUGIN_DESCRIPTOR).exists()
+            or self._json_file(directory / ORIGIN_FILE_NAME).get("kind") == PLUGIN_ORIGIN_KIND
+            or (self.components is not None and self.components.has_claim(skill.name))
+        )
+
+    def _plugin_error(self, skill: SkillView) -> str:
+        manifest = self.manifest(skill.path)
+        if not self._plugin_declared(skill):
+            return ""
+        try:
+            identity_snapshot(
+                {"path": str(manifest), "source": self.source(skill.path), "active": True}
+            )
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            return f"plugin_invalid: {error}"
+        return ""
 
     def _owned_skill(self, skill: SkillView) -> SkillView:
         if self.source(skill.path) == SKILL_SOURCE_PROJECT:
@@ -541,9 +689,14 @@ class SkillCatalog:
             for dependency in skill.dependencies
         ]
         dependency_state = self._aggregate_dependency_state(dependencies)
-        runtime_error = inventory_errors.get(str(manifest.expanduser().resolve()), "")
+        plugin_error = self._plugin_error(skill)
+        runtime_error = plugin_error or inventory_errors.get(
+            str(manifest.expanduser().resolve()), ""
+        )
         product_enabled = self.required(skill.name) or skill.name not in state.disabled_skills
-        runtime_enabled = skill.enabled and skill.availability == SkillAvailability.AVAILABLE
+        runtime_enabled = (
+            not plugin_error and skill.enabled and skill.availability == SkillAvailability.AVAILABLE
+        )
         requires_login = self.requires_login(skill)
         login_available = not requires_login or authenticated
         active = (
@@ -561,6 +714,8 @@ class SkillCatalog:
         if product_enabled and not login_available:
             unavailable_reason = SKILL_LOGIN_REQUIRED_REASON
         version = str(metadata.get("version") or hub_record.get("version") or "").strip()
+        if not plugin_error and self._plugin_declared(skill):
+            version = str(self._json_file(directory / PLUGIN_DESCRIPTOR).get("version") or "")
         if not version and fingerprint:
             version = f"{SKILL_LOCAL_VERSION_PREFIX}-{fingerprint[:12]}"
         category = str(metadata.get("category") or "").strip()

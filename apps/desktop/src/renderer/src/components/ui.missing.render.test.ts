@@ -53,7 +53,7 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
     const url = server.resolvedUrls?.local[0]
     assert.ok(url, 'Vite test server should expose a local URL')
 
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     const page = await browser.newPage()
     const startupErrors: string[] = []
     page.on('pageerror', (error) => startupErrors.push(`pageerror: ${error.message}`))

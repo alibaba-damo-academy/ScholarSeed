@@ -26,6 +26,14 @@ import {
   WindowsHandoffExitUnconfirmed,
 } from './transfer.ts'
 import { desktopDirectoryWriter } from './writer'
+import { createPluginHost } from './plugins'
+import { validatePluginBinding } from './skills'
+import {
+  PLUGIN_SCHEME,
+  PLUGIN_SCHEME_PRIVILEGES,
+  PLUGIN_NAVIGATION_CHANNEL,
+  type PluginSnapshot,
+} from '../plugins'
 import { CoordinationReclamation } from './reclamation'
 import { uncertainRelease, type ReclamationNative } from '../../native/reclamation.cjs'
 import { serveAssets, type AssetServer } from './assets'
@@ -138,6 +146,7 @@ import {
   Menu,
   nativeImage,
   powerMonitor,
+  protocol,
   shell,
   session,
   WebContentsView,
@@ -183,6 +192,7 @@ import {
   resolveProductConfig,
   waitForHealth,
   backendHostProcessKey,
+  writeBackendDiagnostic,
   backendUpdateControl,
   HOST_PROCESS_HEADER,
 } from './backend'
@@ -234,7 +244,7 @@ import {
   storageFailureMessage,
 } from './localization'
 import { backendFailureMessage, updateInstallFailure, type BackendFailure } from './failure'
-import { isFirstRun, resolveStartupBudgetMs } from './startupmarker'
+import { resolveStartupBudgetMs } from './startupmarker'
 import {
   coordinationRoot,
   selectStorage,
@@ -254,9 +264,11 @@ import {
 } from './handoff-inbox'
 import { reportReceipt } from './receipt'
 import { createHandoffCoordinator } from './handoff-local'
-import { findCallbackUrl, parseCallbackUrl } from './handoff-url'
+import { findCallbackUrl, handoffFingerprint, parseCallbackUrl } from './handoff-url'
+import { callbackTimingLine, findCallbackTiming } from './handoff-timing'
 import { processIntegrityLevel } from './integrity'
 import { showStartupScreen, type StartupScreen } from './startup'
+import { recoverStartupAdmission } from './admission'
 import * as updater from './updater'
 import { STARTUP_BUILD_NUMBER, clientVersion, isNewerRelease } from './version'
 import type {
@@ -267,7 +279,7 @@ import type {
   UpdateSnapshot,
 } from '../updates'
 import { LOCAL_LANE_UPDATE_REASON, UPDATE_HEALTH_CHANNEL, updateCandidateKey } from '../updates'
-import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
+import { PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy } from './save'
 import { blocksRendererReload, prepareRendererLoad } from './reload'
 import { installOfficeFontPermission } from './fonts'
@@ -286,7 +298,7 @@ import { externalWebUrl } from './external'
 import { DEFAULT_SERVE_URL } from '../../endpoints'
 import { installApplicationMenu } from './menu'
 import { createWindowController } from './tray'
-import { RotatingFileLog, isRendererDiagnostic } from './logfile'
+import { DiagnosticLog, RotatingFileLog, isRendererDiagnostic } from './logfile'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import { nextUpdateCheckAt, UpdateChecks } from './checks.ts'
 import {
@@ -302,10 +314,12 @@ import {
   type ClipboardContentPayload,
 } from '../clipboard'
 
+protocol.registerSchemesAsPrivileged([
+  { scheme: PLUGIN_SCHEME, privileges: PLUGIN_SCHEME_PRIVILEGES },
+])
 const FAILURE_CODES = {
   clipboardForbidden: 'clipboard_forbidden',
 } as const
-
 // Synchronize Electron's notification identity with the installed shortcut before windows exist.
 configureNotificationIdentity(app, process.platform)
 
@@ -442,6 +456,7 @@ let runtimePreparation: AbortController | null = null
 let startupScreen: StartupScreen | null = null
 let startupScreenStartedAt: number | null = null
 let windowLifecycleLog: RotatingFileLog | null = null
+let windowDiagnostics: DiagnosticLog | null = null
 const WINDOW_LIFECYCLE_LOG_FILENAME = 'window.log'
 const windowController = createWindowController({
   requestSnapshot: (requestId) => sendToMainWindow(TRAY_CHANNEL.request, requestId),
@@ -622,7 +637,10 @@ function logWindowLifecycle(line: string): void {
     join(desktopHome(), LOGS_DIRNAME, WINDOW_LIFECYCLE_LOG_FILENAME),
     { acquireWriter: () => desktopDirectoryWriter(join(desktopHome(), LOGS_DIRNAME)) }
   )
-  windowLifecycleLog.write(`${new Date().toISOString()} pid=${process.pid} ${line}`)
+  windowDiagnostics ??= new DiagnosticLog(windowLifecycleLog, (entry) =>
+    writeBackendDiagnostic(backend, entry)
+  )
+  windowDiagnostics.write(`${new Date().toISOString()} pid=${process.pid} ${line}`)
   pushLog(line)
 }
 
@@ -2659,6 +2677,8 @@ function deliverDesktopCallback(url: string): void {
 function registerIpcHandlers(developerToolsEnabled: boolean): void {
   if (ipcHandlersRegistered) return
   ipcHandlersRegistered = true
+  const pluginRevisions = new Map<string, number>()
+  const plugins = createPluginHost()
   const feedbackConfig = resolveProductConfig(pushLog)
   const feedbackSubmission = new FeedbackSubmissionService({
     baseUrl: feedbackConfig.feedbackBaseUrl,
@@ -3050,7 +3070,31 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1') {
         throw new Error('Device skills require the local desktop backend')
       }
+      if (request.operation === 'plugin-valid') {
+        if (!plugins.valid(event.sender, request.lease)) return { status: 410, body: '{}' }
+        const reference = plugins.reference(event.sender, request.lease)
+        if (!reference) return { status: 200, body: '{}' }
+        const status = await validatePluginBinding(event.sender.session, apiBase, reference, {
+          [HOST_PROCESS_HEADER]: backendHostProcessKey(),
+        })
+        return {
+          status: plugins.valid(event.sender, request.lease) ? status : 410,
+          body: '{}',
+        }
+      }
+      if (request.operation === 'plugin-release') {
+        if (
+          !Array.isArray(request.leases) ||
+          request.leases.some((lease) => typeof lease !== 'string')
+        )
+          throw new Error('plugin_release_invalid')
+        plugins.release(event.sender, request.leases)
+        return { status: 200, body: '{}' }
+      }
       const { path, init } = skillRequest(request)
+      const pluginName = request.operation === 'plugin-preview-installed' ? request.name : null
+      const revision = pluginName ? pluginRevisions.get(pluginName) : undefined
+      const current = (): boolean => !pluginName || revision === pluginRevisions.get(pluginName)
       const headers = new Headers(init.headers)
       headers.set(HOST_PROCESS_HEADER, backendHostProcessKey())
       const response = await event.sender.session.fetch(`${apiBase}${path}`, {
@@ -3058,7 +3102,43 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         redirect: 'error',
         headers,
       })
-      return { status: response.status, body: await response.text() }
+      const body = await response.text()
+      if (
+        response.ok &&
+        request.operation === 'plugin-delivery' &&
+        request.action === 'directory'
+      ) {
+        const result = JSON.parse(body) as { directory: string }
+        const error = await shell.openPath(result.directory)
+        if (error) return { status: 422, body: JSON.stringify({ error }) }
+      }
+      if (response.ok && request.operation === 'plugin-call') {
+        const result = JSON.parse(body) as { navigation?: unknown }
+        if (result.navigation === 'skills' && !event.sender.isDestroyed())
+          event.sender.send(PLUGIN_NAVIGATION_CHANNEL)
+      }
+      if (
+        response.ok &&
+        (request.operation === 'plugin-preview' ||
+          request.operation === 'plugin-open' ||
+          request.operation === 'plugin-preview-installed')
+      ) {
+        const mount = await plugins.open(
+          event.sender,
+          JSON.parse(body) as PluginSnapshot,
+          request.operation !== 'plugin-open',
+          current,
+          request.operation === 'plugin-open' ? request.reference : undefined
+        )
+        return { status: response.status, body: JSON.stringify(mount) }
+      }
+      if (
+        response.ok &&
+        (request.operation === 'delete' || (request.operation === 'toggle' && !request.enabled))
+      ) {
+        pluginRevisions.set(request.name, (pluginRevisions.get(request.name) || 0) + 1)
+      }
+      return { status: response.status, body }
     }
   )
   ipcMain.handle(
@@ -4915,8 +4995,7 @@ async function startDesktop(): Promise<void> {
       )
       if (admission === 'superseded') supersededAdmission = admission
       if (admission === 'exit') {
-        app.exit(0)
-        return
+        throw new Error('Mac update startup admission is unresolved')
       }
     }
     const restored = observed
@@ -4961,8 +5040,7 @@ async function startDesktop(): Promise<void> {
       updateLaunchContext?.context
     )) === 'exit'
   ) {
-    app.exit(0)
-    return
+    throw new Error('Mac update startup admission is unresolved')
   }
   startupAdmissionResolved = true
   coordinationReclamation.run('startup')
@@ -4987,10 +5065,13 @@ async function startDesktop(): Promise<void> {
   if (initialNotificationUrl)
     pendingAttentionId = notificationAttentionId(initialNotificationUrl) ?? null
   const initialProtocolUrl = findCallbackUrl(process.argv)
+  const initialCallbackTiming = findCallbackTiming(process.argv, initialProtocolUrl)
+  if (initialProtocolUrl)
+    logWindowLifecycle(callbackTimingLine(initialProtocolUrl, 'argv', initialCallbackTiming))
   if (initialProtocolUrl) pendingProtocolUrl = initialProtocolUrl
 
   function callbackStateOf(url: string): string {
-    return parseCallbackUrl(url)?.state ?? 'unknown'
+    return handoffFingerprint(parseCallbackUrl(url)?.state ?? '')
   }
 
   function handoffInboxDeps(): HandoffInboxDependencies {
@@ -5005,7 +5086,8 @@ async function startDesktop(): Promise<void> {
   /** 主实例定时消费收件箱：二次实例停进来的回调在这里回到正常深链路径。 */
   function startHandoffInboxDrain(): void {
     const timer = setInterval(() => {
-      drainInbox(handoffInboxDeps(), (url) => {
+      drainInbox(handoffInboxDeps(), (url, timing) => {
+        logWindowLifecycle(callbackTimingLine(url, 'inbox', timing))
         handleProtocolUrl(url)
       })
       if (windowsNotifications)
@@ -5017,12 +5099,10 @@ async function startDesktop(): Promise<void> {
   }
 
   // 注册为 scholarseed:// 协议的默认处理程序 (需要在 ready 之前请求单例锁)
-  // Headless acceptance and electron-vite development runs stay isolated; packaged
-  // launches share one process so the OS callback can be delivered reliably.
-  const singleInstanceLockRequired = requiresSingleInstanceLock(
-    process.env['ELECTRON_RENDERER_URL'],
-    headless
-  )
+  // Interactive development uses isolated userData profiles, not a lock bypass.
+  // OS callbacks lack the Vite environment and must reach the existing profile's
+  // process before attempting a standalone renderer/backend bootstrap.
+  const singleInstanceLockRequired = requiresSingleInstanceLock(headless)
   const gotTheLock = !singleInstanceLockRequired || app.requestSingleInstanceLock()
   if (!gotTheLock) {
     // 87498884：取锁失败不等于这次登录可以静默作废。Windows 提权主实例 + UIPI 会让
@@ -5033,7 +5113,7 @@ async function startDesktop(): Promise<void> {
       logWindowLifecycle(`[notification] activation ${parked} for current profile\n`)
     }
     if (initialProtocolUrl) {
-      const parked = parkCallbackUrl(handoffInboxDeps(), initialProtocolUrl)
+      const parked = parkCallbackUrl(handoffInboxDeps(), initialProtocolUrl, initialCallbackTiming)
       logWindowLifecycle(
         `[shell] single-instance lock held by another instance; callback ` +
           `${parked === 'parked' ? 'parked in handoff inbox' : 'NOT parked, inbox unavailable'}` +
@@ -5056,8 +5136,12 @@ async function startDesktop(): Promise<void> {
           return
         }
         const url = findCallbackUrl(argv)
-        if (url) handleProtocolUrl(url)
-        else {
+        if (url) {
+          logWindowLifecycle(
+            callbackTimingLine(url, 'second_instance', findCallbackTiming(argv, url))
+          )
+          handleProtocolUrl(url)
+        } else {
           revealMainWindow('second instance')
         }
       })
@@ -5066,6 +5150,7 @@ async function startDesktop(): Promise<void> {
     // macOS: 应用已运行时收到 URL Scheme 调用
     app.on('open-url', (event, url) => {
       event.preventDefault()
+      if (parseCallbackUrl(url)) logWindowLifecycle(callbackTimingLine(url, 'open_url', null))
       handleProtocolUrl(url)
     })
 
@@ -5274,7 +5359,10 @@ async function startDesktop(): Promise<void> {
     if (logsQuitPending) return
     logsQuitPending = true
     logWindowLifecycle('[shell] will quit; draining log writes\n')
-    void Promise.all([windowLifecycleLog?.end(), updater.closeUpdateLog()]).then(() => {
+    void Promise.all([
+      windowDiagnostics?.end() ?? windowLifecycleLog?.end(),
+      updater.closeUpdateLog(),
+    ]).then(() => {
       logsQuitFinished = true
       // Let Electron finish processing the cancelled will-quit event first.
       // An already settled log drain can otherwise re-enter quit too early.
@@ -5285,8 +5373,7 @@ async function startDesktop(): Promise<void> {
 
 void startDesktop().catch((error) => {
   if (!startupAdmissionResolved) {
-    pushLog(`[startup] admission unresolved; exiting without a failure window: ${String(error)}\n`)
-    app.exit(1)
+    void recoverStartupAdmission(error, headless, pushLog)
     return
   }
   reportStartupFailure(

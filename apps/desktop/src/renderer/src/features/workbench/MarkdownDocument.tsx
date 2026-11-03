@@ -847,6 +847,12 @@ function MarkdownVisualEditor({
             .setSelection(TextSelection.create(view.state.doc, match.from, match.to))
             .scrollIntoView()
         )
+        const scroller = hostRef.current?.querySelector<HTMLElement>(':scope > .milkdown')
+        if (scroller) {
+          const viewport = scroller.getBoundingClientRect()
+          const target = view.coordsAtPos(match.from)
+          scroller.scrollTop += target.top - viewport.top - (target.bottom - target.top)
+        }
         setFindResult({ current: index + 1, total: matches.length })
       })
     },
@@ -855,7 +861,9 @@ function MarkdownVisualEditor({
 
   const closeFind = useCallback((): void => {
     setFindOpen(false)
-    crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx).focus())
+    requestAnimationFrame(() => {
+      crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx).focus())
+    })
   }, [])
 
   const runMarkdownShortcut = useCallback(

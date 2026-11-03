@@ -38,6 +38,7 @@ test(
           transport: 'http', version: '9.8.7', tools: [], state: 'auth_required',
         }));
         rows.push({ ...rows[1], id: 'github', name: 'GitHub', authorized: true, method: 'oauth', expires_at: 1793021439 });
+        rows.push({ ...rows[1], id: 'gitlab', name: 'GitLab' });
         for (const [name, transport, error, authorized, fetched] of [
           ['local', 'stdio', 'connector_process_failed', true, null],
           ['anonymous', 'http', '', true, 1],
@@ -109,6 +110,13 @@ test(
     await page.evaluate(() => Reflect.set(window, 'readFailure', ''))
     await page.getByRole('button', { name: '重试', exact: true }).click()
     await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '查看 GitLab', exact: true })).toHaveCount(0)
+    await page.getByRole('tab', { name: '我的', exact: true }).click()
+    await page.getByRole('button', { name: '查看 GitLab', exact: true }).click()
+    await expect(page.getByTestId('connector-detail')).toContainText('GitLab')
+    await page.keyboard.press('Escape')
+    await page.getByRole('tab', { name: '市场', exact: true }).click()
+    await expect(page.getByRole('button', { name: '查看 GitLab', exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: '重新授权', exact: true })).toHaveCount(0)
     for (const name of ['Zotero', 'Notion']) {
       await page.getByRole('button', { name: `查看 ${name}`, exact: true }).click()

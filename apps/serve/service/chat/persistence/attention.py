@@ -17,6 +17,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
+    PRODUCT_INTERACTION_BLOCKING,
     PRODUCT_SESSION_STATE_FAILED,
 )
 from service.chat.persistence.catalog import (
@@ -199,6 +200,8 @@ def project(
     logical_turn_id: str | None = None,
 ) -> None:
     reminder_kind = ATTENTION_EVENT_KINDS.get(kind)
+    if kind == PRODUCT_EVENT_HIL_REQUESTED and payload.get(PRODUCT_INTERACTION_BLOCKING) is False:
+        return
     if reminder_kind is None:
         return
     blocked = kind == PRODUCT_EVENT_SESSION_STATE

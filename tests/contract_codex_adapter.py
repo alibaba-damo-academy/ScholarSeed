@@ -57,6 +57,8 @@ from scholarseed_codex.failure import (
     PROVIDER_AUTH_MESSAGE,
     PROVIDER_RATE_LIMIT_MESSAGE,
     PROVIDER_UNAVAILABLE_MESSAGE,
+    authentication_failure,
+    provider_codes,
     provider_failure,
 )
 from scholarseed_codex.input import start_parameters
@@ -1099,6 +1101,133 @@ def test_internal_channel_proxy_bypass_projection() -> None:
         and qwen_request.launch_arguments == gpt_request.launch_arguments
         and qwen_request.thread_config != gpt_request.thread_config,
     )
+
+
+def test_native_agent_message_capability() -> None:
+    source = {
+        "models": [
+            {
+                "slug": "native",
+                "multi_agent_version": "v2",
+                "use_responses_lite": True,
+                "tool_mode": "code_mode_only",
+                "model_messages": {"instructions_template": "native instructions"},
+                "custom_future_field": {"preserve": True},
+            }
+        ]
+    }
+
+    async def scenario(home: Path) -> None:
+        request = CodexSessionOpenRequest(
+            "collaboration-catalog",
+            "codex",
+            cwd=home,
+            process_environment={codex_environment.CODEX_HOME_ENV: str(home)},
+        )
+        snapshots: list[catalog_module.ModelCatalogSnapshot] = []
+
+        async def select(
+            snapshot: catalog_module.ModelCatalogSnapshot,
+        ) -> CodexRuntimeLaunchArgument:
+            snapshots.append(snapshot)
+            return snapshot.argument
+
+        for protocol in (ModelToolProtocol.PROVIDER_NATIVE, ModelToolProtocol.JSON_SCHEMA):
+            for declared in (False, True):
+                previous: catalog_module.ModelCatalogSnapshot | None = None
+                for supported in (None, True, False):
+                    capabilities = ModelCapabilities(
+                        tool_protocol=protocol, native_agent_messages=supported
+                    )
+                    entry = ModelCatalogEntry("native", capabilities)
+                    intent = ModelIntent(
+                        model_ref="native",
+                        capabilities=capabilities,
+                        catalog_models=(entry,) if declared else (),
+                        transport=ModelTransport(mode=ModelConnectionMode.NATIVE),
+                    )
+                    await model_catalog_argument(
+                        intent, request, native=AsyncMock(return_value=source), select=select
+                    )
+                    snapshot = snapshots[-1]
+                    row = json.loads(snapshot.document)["models"][0]
+                    if supported is False:
+                        assert previous is not None
+                        check(
+                            "unsupported agent messages select official local collaboration",
+                            row["multi_agent_version"] == "v1",
+                        )
+                        check(
+                            "collaboration capability changes immutable catalog identity",
+                            previous.path != snapshot.path and not previous.covers(snapshot),
+                        )
+                        if declared:
+                            check(
+                                "catalog declaration detects changed collaboration capability",
+                                not previous.declares(intent),
+                            )
+                    else:
+                        check(
+                            "unknown or supported agent messages preserve upstream selection",
+                            row.get("multi_agent_version")
+                            == ("v2" if protocol is ModelToolProtocol.PROVIDER_NATIVE else None),
+                        )
+                    if protocol is ModelToolProtocol.PROVIDER_NATIVE:
+                        check(
+                            "collaboration projection preserves all other native metadata",
+                            {
+                                key: value
+                                for key, value in row.items()
+                                if key not in {"multi_agent_version", "auto_review_model_override"}
+                            }
+                            == {
+                                key: value
+                                for key, value in source["models"][0].items()
+                                if key != "multi_agent_version"
+                            },
+                        )
+                    previous = snapshot
+        check(
+            "collaboration projection never mutates the source catalog",
+            source["models"][0]["multi_agent_version"] == "v2"
+            and "auto_review_model_override" not in source["models"][0],
+        )
+        intent = ModelIntent(
+            model_ref="native",
+            transport=ModelTransport(endpoint="https://model.example.test/v1"),
+        )
+        session = CodexRuntimeSession(
+            OpenSessionRequest(product_session_id="collaboration-config", cwd=home, model=intent)
+        )
+        with patch.object(session._host_pool, "require_skill_policy", AsyncMock()):
+            default = await session._configure_model_connection(
+                intent, session._native_base_request, None
+            )
+            restricted = replace(
+                intent, capabilities=replace(intent.capabilities, native_agent_messages=False)
+            )
+            configured = await session._configure_model_connection(
+                restricted, session._native_base_request, None
+            )
+        check(
+            "unrestricted sources retain native feature defaults",
+            "features.multi_agent_v2" not in default.thread_config,
+        )
+        check(
+            "unsupported native messages override explicit V2 without disabling local collaboration",
+            configured.thread_config.get("features.multi_agent_v2") is False
+            and "features.multi_agent" not in configured.thread_config,
+        )
+        receipt = await session.reconfigure(
+            RuntimeConfigurationIntent(revision="collaboration:v1", model=restricted, required=True)
+        )
+        check(
+            "collaboration backend changes cannot hot-reconfigure an existing thread",
+            receipt.state is CommandState.RESTART_REQUIRED,
+        )
+
+    with tempfile.TemporaryDirectory() as directory:
+        asyncio.run(scenario(Path(directory)))
 
 
 def test_approval_catalog_binding() -> None:
@@ -5442,6 +5571,47 @@ def test_durable_thread_unsubscribes() -> None:
     asyncio.run(run())
 
 
+def test_subscription_capability_rejection_is_terminal() -> None:
+    code = "subscription_sharing_unsupported_capability"
+    privateMessage = "private upstream detail https://secret.example/token?access=credential"
+    expectedMessage = (
+        "The ChatGPT subscription connection does not support this request capability. "
+        "Use a compatible model source or start a task without that capability; "
+        "retrying unchanged will fail."
+    )
+    for error in (
+        {"code": code, "message": privateMessage},
+        {"error": {"code": code, "message": privateMessage}},
+        {"code": code.upper(), "message": privateMessage},
+        {
+            "message": "unexpected status 400 Bad Request: "
+            + json.dumps({"error": {"code": code, "message": privateMessage}})
+        },
+    ):
+        originalError = json.loads(json.dumps(error))
+        failure = provider_failure(error)
+        check(
+            "subscription capability rejection is terminal and safely identified",
+            failure.code.casefold() == code
+            and failure.diagnostic_code == code
+            and failure.retryability is RuntimeRetryability.TERMINAL
+            and failure.message == expectedMessage
+            and not authentication_failure(failure),
+        )
+        check("provider classification preserves the original error", error == originalError)
+    check("subscription capability has a dedicated provider family", code in provider_codes())
+    for unknownCode in ("vendor_unknown", code + "_unknown"):
+        failure = provider_failure({"code": unknownCode, "message": privateMessage})
+        check(
+            "unregistered provider capability errors stay generic and redacted",
+            failure.diagnostic_code == "codex_provider_failed"
+            and failure.message == "The model provider rejected the request."
+            and failure.retryability is RuntimeRetryability.USER_RETRYABLE
+            and not authentication_failure(failure)
+            and unknownCode not in provider_codes(),
+        )
+
+
 def test_provider_http_authentication() -> None:
     for code in ("", "invalid_request_error", "bad_request", "vendor_unknown"):
         failure = provider_failure(
@@ -6294,6 +6464,7 @@ def main() -> int:
     test_preflight_process_cleanup()
     test_preflight_output_budget()
     test_catalog_process_cleanup()
+    test_native_agent_message_capability()
     test_approval_catalog_binding()
     test_mixed_catalog_declarations()
     test_catalog_immutable_publication()
@@ -6355,6 +6526,7 @@ def main() -> int:
     test_skill_refresh_uses_exclusive_control()
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()
+    test_subscription_capability_rejection_is_terminal()
     test_provider_http_authentication()
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0

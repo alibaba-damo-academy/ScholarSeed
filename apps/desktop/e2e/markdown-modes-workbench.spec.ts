@@ -38,6 +38,21 @@ const WRAPPING_DOCUMENT = [
   '| 第一列 | 第二列 | 第三列 | 第四列 |\n| --- | --- | --- | --- |\n| 内容 | 内容 | 内容 | 内容 |',
 ].join('\n\n')
 
+const FIND_QUERY = 'EDITOR-NEEDLE'
+const FIND_FIRST_PARAGRAPH = `${FIND_QUERY} appears in the first prose target.`
+const FIND_SECOND_PARAGRAPH = `${FIND_QUERY} appears in the second prose target.`
+const FIND_PARAGRAPH_COUNT = 40
+const FIND_DOCUMENT = [
+  '# Find navigation',
+  FIND_FIRST_PARAGRAPH,
+  ...Array.from(
+    { length: FIND_PARAGRAPH_COUNT },
+    (_, index) => `Intervening paragraph ${index + 1}.`
+  ),
+  FIND_SECOND_PARAGRAPH,
+  ...Array.from({ length: FIND_PARAGRAPH_COUNT }, (_, index) => `Trailing paragraph ${index + 1}.`),
+].join('\n\n')
+
 async function withMarkdownRuntime(
   testInfo: TestInfo,
   operation: (runtime: RuntimePaths) => Promise<void>
@@ -58,6 +73,111 @@ async function withMarkdownRuntime(
       if (previousCodexHome === undefined) delete process.env.SCHOLARSEED_CODEX_HOME
       else process.env.SCHOLARSEED_CODEX_HOME = previousCodexHome
     }
+  })
+}
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`Markdown find reveals cross-screen matches without moving focus out of the dialog (${theme})`, async ({}, testInfo) => {
+    await withMarkdownRuntime(testInfo, async (runtime) => {
+      const preferencesPath = join(runtime.userData, PREFERENCES_FILE)
+      const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+      writeFileSync(preferencesPath, JSON.stringify({ ...preferences, theme }))
+      const desktop = new DesktopSession(runtime, testInfo)
+      try {
+        const page = await desktop.launch()
+        const project = await createReadyProject(page, PROJECT_NAME)
+        const path = join(project.root, DOCUMENT_PATH)
+        writeFileSync(path, FIND_DOCUMENT)
+        await page.reload()
+        await enterWorkbenchShell(page)
+        await page.getByTestId('activity-home').click()
+        await page.getByTestId(`home-project-${project.name}`).click()
+        await page.getByRole('button', { name: '项目文件', exact: true }).click()
+        await page.getByRole('button', { name: '刷新资料库', exact: true }).click()
+        await page.getByRole('button', { name: 'modes.md', exact: true }).click()
+        await selectMarkdownMode(page, 'edit')
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+        const editor = page.getByTestId('markdown-visual-editor').locator('.ProseMirror')
+        await editor.getByRole('heading', { name: 'Find navigation' }).click()
+        await page.keyboard.press(`${SHORTCUT}+f`)
+        const input = page.getByTestId('markdown-find-input')
+        const dialog = page.getByRole('dialog').filter({ has: input })
+        const first = editor.getByText(FIND_FIRST_PARAGRAPH, { exact: true })
+        const second = editor.getByText(FIND_SECOND_PARAGRAPH, { exact: true })
+        const expectMatchVisible = async (paragraph: typeof first): Promise<void> => {
+          await expect
+            .poll(() =>
+              paragraph.evaluate((element) => {
+                const range = document.createRange()
+                range.selectNodeContents(element)
+                const bounds = range.getBoundingClientRect()
+                const viewport = element.closest('.milkdown')!.getBoundingClientRect()
+                const overlay = document.querySelector('[role="dialog"]')?.getBoundingClientRect()
+                const visible =
+                  bounds.top >= viewport.top &&
+                  bounds.bottom <= viewport.bottom &&
+                  bounds.top >= 0 &&
+                  bounds.bottom <= window.innerHeight &&
+                  (!overlay ||
+                    bounds.bottom <= overlay.top ||
+                    bounds.top >= overlay.bottom ||
+                    bounds.right <= overlay.left ||
+                    bounds.left >= overlay.right)
+                return visible
+                  ? null
+                  : {
+                      match: bounds.toJSON(),
+                      viewport: viewport.toJSON(),
+                      overlay: overlay?.toJSON(),
+                    }
+              })
+            )
+            .toBeNull()
+        }
+        await input.fill(FIND_QUERY)
+        await input.press('Enter')
+        await expect(dialog).toContainText('第 1 个，共 2 个')
+        await expect(second).not.toBeInViewport()
+        await expectMatchVisible(first)
+        await dialog.getByRole('button', { name: '下一个', exact: true }).click()
+        await expect(dialog).toContainText('第 2 个，共 2 个')
+        await page.screenshot({ path: join(runtime.artifacts, `find-next-${theme}.png`) })
+        await expectMatchVisible(second)
+        expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(
+          true
+        )
+        await dialog.getByRole('button', { name: '上一个', exact: true }).click()
+        await expect(dialog).toContainText('第 1 个，共 2 个')
+        await expectMatchVisible(first)
+        await input.focus()
+        await input.press('Shift+Enter')
+        await expect(dialog).toContainText('第 2 个，共 2 个')
+        await expectMatchVisible(second)
+        await expect(input).toBeFocused()
+        await input.press('Enter')
+        await expect(dialog).toContainText('第 1 个，共 2 个')
+        await expectMatchVisible(first)
+        const nativeWindow = await desktop.browserWindow(page)
+        await nativeWindow.evaluate(
+          (window, size) => window.setSize(size.width, size.height),
+          WORKSPACE_WINDOW_MINIMUM
+        )
+        await nativeWindow.dispose()
+        await input.press('Enter')
+        await expect(dialog).toContainText('第 2 个，共 2 个')
+        await expectMatchVisible(second)
+        await page.screenshot({ path: join(runtime.artifacts, `find-minimum-${theme}.png`) })
+        await input.press('Escape')
+        await expect(dialog).toHaveCount(0)
+        await expectMatchVisible(second)
+        await expect(editor).toBeFocused()
+        await page.screenshot({ path: join(runtime.artifacts, `find-closed-${theme}.png`) })
+        expect(readFileSync(path, 'utf8')).toBe(FIND_DOCUMENT)
+        desktop.assertNoPageErrors()
+      } finally {
+        await desktop.attachArtifacts()
+      }
+    })
   })
 }
 

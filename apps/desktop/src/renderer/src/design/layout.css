@@ -1,5 +1,7 @@
 /* Page composition defaults. Reading width is inferred; see docs/design/vibe-coding.md. */
 :root {
+  --vds-preview-width: min(var(--vds-layout-reading-width), 90vw);
+  --vds-preview-content-max-height: 60dvh;
   --vds-app-shell-viewport-height: 100vh;
   --vds-app-shell-drag-region-height: 15px;
   --vds-app-shell-drag-region-z-index: 210;
@@ -245,6 +247,8 @@
   --vds-layout-pdf-translation-language-width: 100px;
   --vds-layout-session-output-max-height: 120px;
   --vds-layout-search-row-max-height: 180px;
+  --vds-layout-search-row-min-height: 112px;
+  --vds-literature-results-detail-width: max(300px, 38%);
   --vds-reference-picker-list-height: 265px;
   --vds-composer-suggestion-list-max-height: min(300px, 36vh);
   --vds-composer-reference-picker-max-height: calc(min(420px, 70vh) - var(--vds-space-2));
@@ -318,6 +322,11 @@
   --vds-assistant-citation-list-max-height: 208px;
   --vds-assistant-citation-expanded-max-height: 288px;
   --vds-assistant-citation-panel-width: 320px;
+  --vds-assistant-citation-panel-height: 70vh;
+  --vds-assistant-source-list-height: 384px;
+  --vds-assistant-source-list-width: 384px;
+  --vds-artifact-card-min-width: 300px;
+  --vds-artifact-card-max-width: 520px;
   --vds-assistant-citation-line-height: 1.625;
   --vds-assistant-notes-max-height: 320px;
   --vds-feedback-annotator-min-width: 208px;

@@ -85,6 +85,7 @@ HTTP_PRECONDITION_REQUIRED = 428
 HTTP_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 ARTIFACT_EDITABLE_HEADER = "X-ScholarSeed-Artifact-Editable"
 MCP_CONTROL_FAILED = "mcp_control_failed"
+CONTINUATION_CACHE_HEADERS = {"Cache-Control": "no-store"}
 PERMISSION_CONTINUATION_CONTEXT_FIELDS = (
     "client_user_message_id",
     "assistant_context_revision",
@@ -378,6 +379,18 @@ def mount_session_routes(
                 skill_environment=skill_environment,
             )
         return _result(payload, status)
+
+    @app.get(
+        "/api/serve/sessions/{session_id}/continuation",
+        dependencies=[Depends(require_session_access)],
+    )
+    async def session_continuation(
+        session_id: str, request: Request, turn_id: str = Query(default="")
+    ) -> Any:
+        payload, status = await sessions.continuation(
+            session_id, request_principal(request), turn_id=turn_id
+        )
+        return JSONResponse(payload, status_code=status, headers=CONTINUATION_CACHE_HEADERS)
 
     @app.get("/api/serve/sessions/{session_id}/events", dependencies=session_guard)
     def session_events(session_id: str, request: Request, from_seq: int = 0) -> StreamingResponse:

@@ -19,8 +19,6 @@ const PROJECT_MENU_ITEM_ACTIVE_CLASS_NAME =
 const PROJECT_MENU_LABEL_CLASS_NAME =
   'min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--vds-text-primary)]'
 const PROJECT_MENU_LABEL_ACTIVE_CLASS_NAME = '!text-[var(--vds-brand-bg-default)]'
-const PROJECT_MENU_SECTION_LABEL_CLASS_NAME =
-  'px-[var(--vds-space-3)] pb-[var(--vds-space-1)] pt-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-placeholder)]'
 
 /**
  * 项目切换下拉（顶栏、0.1 首页与工作台空态共用）。

@@ -1,9 +1,8 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { openByDefault } from '../../fileOpen'
 import { Icon } from '../../icons'
-import { activeThread, useApp } from '../../store'
+import type { LiteratureCardPorts } from './ports'
 import {
   Accordion,
   AccordionContent,
@@ -67,12 +66,12 @@ function ReviewCollapsible({
 
 export function LiteratureReviewCard({
   content,
+  ports,
 }: {
+  ports: LiteratureCardPorts
   content: Record<string, unknown>
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
-  const { state, act } = useApp()
-  const thread = activeThread(state)
   const review = parseReview(content)
   if (!review)
     return (
@@ -105,34 +104,7 @@ export function LiteratureReviewCard({
   const notice = reviewNotice(review)
   const issueSummary = reviewIssueSummary(review)
   const openArtifact = (artifact: ReviewArtifact): void => {
-    const absolute = thread.workdir
-      ? `${thread.workdir.replace(/\/$/, '')}/${artifact.path.replace(/^\//, '')}`
-      : artifact.path
-    void openByDefault(
-      { relative: artifact.path, absolute, title: artifact.title },
-      {
-        openPreview: (target) =>
-          act.openFilePreview({
-            ...target,
-            absolutePath: absolute,
-            sessionId: review.session_id,
-            artifactId: artifact.artifact_id,
-            mediaType: artifact.media_type,
-            size: artifact.size,
-          }),
-        onFailed: (_context, note) =>
-          act.openFilePreview({
-            path: artifact.path,
-            absolutePath: absolute,
-            sessionId: review.session_id,
-            artifactId: artifact.artifact_id,
-            title: artifact.title,
-            mediaType: artifact.media_type,
-            size: artifact.size,
-            content: note,
-          }),
-      }
-    )
+    void ports.openArtifact(artifact.artifact_id)
   }
   const body = review.artifacts.find((artifact) =>
     /06_output\/survey\.(md|pdf)$/.test(artifact.path)

@@ -301,6 +301,35 @@ class LiteratureBridgeContracts(unittest.TestCase):
         self.assertEqual(receipt["attachment_id"], attachment["id"])
         self.assertIn("Supplementary", result["pages"][0]["text"])
 
+    def test_explicit_primary_uses_same_library_scope_as_implicit_primary(self) -> None:
+        request = LiteratureRead(ref_id="literature:paper", start_page=1, end_page=1)
+        implicit = self.citations.service.literature_read("session", "snapshot", request, "turn")
+        explicit = self.citations.service.literature_read(
+            "session",
+            "snapshot",
+            request.model_copy(update={"attachment_id": self.paper_attachment["id"]}),
+            "turn",
+        )
+        implicit_result = self.citations.service.commit_literature_read(
+            "session", "snapshot", implicit
+        )
+        explicit_result = self.citations.service.commit_literature_read(
+            "session", "snapshot", explicit
+        )
+        self.assertEqual(explicit_result["pages"], implicit_result["pages"])
+        with self.assertRaisesRegex(ValueError, "literature_not_found"):
+            self.citations.service.literature_read(
+                "session",
+                "snapshot",
+                request.model_copy(
+                    update={
+                        "ref_id": "literature:foreign",
+                        "attachment_id": self.repository.attachments("foreign")[0]["id"],
+                    }
+                ),
+                "turn",
+            )
+
     def test_attachment_read_rejects_foreign_unsupported_and_unselected_sources(self) -> None:
         attachment = self._stage(
             "paper",
@@ -787,6 +816,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
                 return decision
 
             live: Any = SimpleNamespace(
+                component_for=AsyncMock(return_value=None),
                 id="session",
                 bridge_token="token",
                 active_assistant_snapshot_id="snapshot",
@@ -943,6 +973,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
         for task_type, authorization_type, header in cases:
             with self.subTest(task_type=task_type):
                 live = SimpleNamespace(
+                    component_for=AsyncMock(return_value=None),
                     id="session",
                     bridge_token="token",
                     active_assistant_snapshot_id="snapshot",
@@ -1080,6 +1111,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
 
     def test_research_idea_literature_read_requires_durable_matching_hil_grant(self) -> None:
         live = SimpleNamespace(
+            component_for=AsyncMock(return_value=None),
             id="session",
             bridge_token="token",
             active_assistant_snapshot_id="snapshot",

@@ -157,7 +157,11 @@ from scholarseed_runtime.contract.incident import (
 )
 from scholarseed_runtime.contract.inventory import SkillPolicy
 from scholarseed_runtime.contract.resource import RESOURCE_HOST_CONFIGURATION_CONFLICT
-from scholarseed_runtime.contract.sandbox import SandboxRecovery, SandboxResources
+from scholarseed_runtime.contract.sandbox import (
+    SANDBOX_STARTUP_ERRORS,
+    SandboxRecovery,
+    SandboxResources,
+)
 from scholarseed_runtime.contract.session import RUNTIME_SUSPEND_BUSY, RUNTIME_SUSPEND_STALE
 
 LOGGER = logging.getLogger(__name__)
@@ -190,6 +194,7 @@ SUBAGENT_ITEM_ACTIVITIES = {
 SUBAGENT_ITEM_BOUNDARIES = frozenset({"item/started", "item/completed"})
 SUBAGENT_GENERIC_ACTIVITY = "work"
 THREAD_RESUME_FAILED = "thread_resume_failed"
+THREAD_CLOSED_ERROR = "codex_thread_closed"
 THREAD_RECOVERY_FAILED = "agent_runtime_unavailable"
 THREAD_ATTACHMENT_RECOVERABLE_ERRORS = frozenset(
     {"agent_runtime_exit", "runtime_transport_lost", "runtime_rpc_timeout", RUNTIME_SUSPEND_STALE}
@@ -369,7 +374,8 @@ class CodexProcessHost:
             sorted(
                 thread_id
                 for thread_id, state in self._threads.items()
-                if not self._generation or state.absent_generation != self._generation
+                if state.attachment_state is not CodexThreadAttachmentState.CLOSED
+                and (not self._generation or state.absent_generation != self._generation)
             )
         )
 
@@ -614,7 +620,11 @@ class CodexProcessHost:
         if self.suspend_blockers(thread_id):
             raise AppServerError(RUNTIME_SUSPEND_BUSY, safe_error=RUNTIME_SUSPEND_BUSY)
         state = self.attachment(thread_id)
-        result = await self.request(THREAD_UNSUBSCRIBE_METHOD, {THREAD_ID_KEY: thread_id})
+        result = await self.request(
+            THREAD_UNSUBSCRIBE_METHOD,
+            {THREAD_ID_KEY: thread_id},
+            generation=expected_generation,
+        )
         if result.get(UNSUBSCRIBE_STATUS_KEY) not in THREAD_UNSUBSCRIBE_STATUSES:
             raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
         if expected_generation != self._generation:
@@ -824,6 +834,7 @@ class CodexProcessHost:
             if cancelled:
                 # Consume the terminal result and close the process before the
                 # next owner is admitted, including repeated caller cancellation.
+                failure = None
                 if not launch.cancelled():
                     failure = launch.exception()
                     if failure is not None:
@@ -846,6 +857,9 @@ class CodexProcessHost:
                         cleanup.result()
                     except Exception:
                         LOGGER.exception("codex_launch_cleanup_failed_during_cancellation")
+                if isinstance(failure, AppServerError):
+                    if failure.safe_error in SANDBOX_STARTUP_ERRORS:
+                        raise asyncio.CancelledError from failure
                 raise asyncio.CancelledError
             launch.result()
 
@@ -944,11 +958,10 @@ class CodexProcessHost:
                 home=Path(child_environment.get(CODEX_HOME_ENV, str(CODEX_RUNTIME_HOME))),
                 prepare_resources=False,
             )
-            # Keep the native command budget plus the normal RPC response margin.
             await self._sandbox.ensure_execution_ready(
                 partial(
                     self._request_connected,
-                    timeout=SANDBOX_EXECUTION_TIMEOUT_MS / 1000 + self.rpc_timeout,
+                    timeout=self._sandbox.initial_execution_timeout(generation, self.rpc_timeout),
                 ),
             )
             if self._skill_roots:
@@ -961,11 +974,17 @@ class CodexProcessHost:
                 )
             self.state = CodexProcessState.READY
             self._record_process_event(RuntimeProcessEventKind.STARTED)
-        except BaseException:
-            if proc is self._proc and generation == self._generation:
-                await self._discard_process(proc, generation)
+        except BaseException as error:
             if self.state != CodexProcessState.CLOSING:
                 self.state = CodexProcessState.CRASHED
+            if proc is self._proc and generation == self._generation:
+                self._unconfirm_attachment(generation)
+                try:
+                    await self._discard_process(proc, generation)
+                except Exception as cleanup_error:
+                    LOGGER.exception("codex_launch_cleanup_failed")
+                    raise error from cleanup_error
+            if self.state != CodexProcessState.CLOSING and generation in self._exited_generations:
                 self._record_process_event(
                     RuntimeProcessEventKind.EXITED,
                     generation=generation,
@@ -1778,14 +1797,9 @@ class CodexProcessHost:
 
         async def resume(state: ThreadAttachment, process_reused: bool) -> bool:
             async with semaphore:
-                if state.attachment_state == CodexThreadAttachmentState.CLOSED or (
-                    state.attachment_incident is not None
-                    and state.attachment_incident.retryability == RuntimeRetryability.TERMINAL
-                    and state.attachment_incident.state == RuntimeIncidentState.FAILED
-                    and (
-                        state.attachment_incident.safe_error != THREAD_HISTORY_MISSING_ERROR
-                        or state.absent_generation == generation
-                    )
+                if (
+                    state.attachment_state == CodexThreadAttachmentState.CLOSED
+                    or self._resume_retry_blocked(state, generation, process_incident is not None)
                 ):
                     return True
                 restored = await self._resume_thread(
@@ -1799,10 +1813,8 @@ class CodexProcessHost:
                     or self._threads.get(state.thread_id) is not state
                     or (
                         state.attachment_state == CodexThreadAttachmentState.CLOSED
-                        or (
-                            state.attachment_incident is not None
-                            and state.attachment_incident.retryability
-                            == RuntimeRetryability.TERMINAL
+                        or self._resume_retry_blocked(
+                            state, generation, process_incident is not None
                         )
                     )
                 )
@@ -1815,6 +1827,23 @@ class CodexProcessHost:
         )
         return all(results)
 
+    def _resume_retry_blocked(
+        self, state: ThreadAttachment, generation: int, automatic: bool
+    ) -> bool:
+        failure = state.attachment_incident
+        if failure is None or failure.state != RuntimeIncidentState.FAILED:
+            return False
+        if failure.retryability == RuntimeRetryability.TERMINAL:
+            return (
+                failure.safe_error != THREAD_HISTORY_MISSING_ERROR
+                or state.absent_generation == generation
+            )
+        return (
+            automatic
+            and failure.safe_error in SANDBOX_STARTUP_ERRORS
+            and failure.process_generation == generation
+        )
+
     def _resume_failure_incident(
         self,
         state: ThreadAttachment,
@@ -1825,7 +1854,12 @@ class CodexProcessHost:
         terminal = (
             isinstance(error, AppServerError) and error.retryability == RuntimeRetryability.TERMINAL
         )
-        recovering = automatic and not terminal
+        sandbox_error = (
+            error
+            if isinstance(error, AppServerError) and error.safe_error in SANDBOX_STARTUP_ERRORS
+            else None
+        )
+        recovering = automatic and not terminal and sandbox_error is None
         previous = state.attachment_incident
         return RuntimeIncident(
             incident_id=previous.incident_id if previous else uuid.uuid4().hex,
@@ -1838,12 +1872,16 @@ class CodexProcessHost:
                 else RuntimeRecoveryStrategy.MANUAL_RETRY
             ),
             retryability=(
-                RuntimeRetryability.TERMINAL
-                if terminal
+                sandbox_error.retryability
+                if sandbox_error is not None
                 else (
-                    RuntimeRetryability.IN_PROGRESS
-                    if recovering
-                    else RuntimeRetryability.USER_RETRYABLE
+                    RuntimeRetryability.TERMINAL
+                    if terminal
+                    else (
+                        RuntimeRetryability.IN_PROGRESS
+                        if recovering
+                        else RuntimeRetryability.USER_RETRYABLE
+                    )
                 )
             ),
             safe_error=(
@@ -1853,7 +1891,14 @@ class CodexProcessHost:
             attempt=max(1, self._recovery_attempt),
             max_attempts=self.max_recovery_attempts,
             vendor_thread_id=state.thread_id,
+            rpc_method=error.method if isinstance(error, AppServerError) else "",
             rpc_code=error.rpc_code if isinstance(error, AppServerError) else None,
+            rpc_latency_ms=error.rpc_latency_ms if isinstance(error, AppServerError) else 0,
+            ambiguous_commit=bool(previous and previous.ambiguous_commit)
+            or (
+                sandbox_error is not None
+                and sandbox_error.retryability == RuntimeRetryability.UNKNOWN_OUTCOME
+            ),
         )
 
     async def _resume_thread(
@@ -1865,7 +1910,10 @@ class CodexProcessHost:
         process_reused: bool = True,
     ) -> bool:
         async with state.attachment_lock:
-            if self._threads.get(state.thread_id) is not state:
+            if (
+                self._threads.get(state.thread_id) is not state
+                or state.attachment_state is CodexThreadAttachmentState.CLOSED
+            ):
                 return False
             if (
                 state.attachment_state == CodexThreadAttachmentState.ATTACHED
@@ -1996,6 +2044,7 @@ class CodexProcessHost:
                     ),
                 )
                 state.attachment_incident = None
+            state.disconnected_generation = 0
             state.last_incident_id = (
                 process_incident.incident_id if process_incident is not None else ""
             )
@@ -2020,6 +2069,12 @@ class CodexProcessHost:
 
     async def ensure_attached(self, thread_id: str) -> int:
         state = self.attachment(thread_id)
+        if state.attachment_state is CodexThreadAttachmentState.CLOSED:
+            raise AppServerError(
+                THREAD_CLOSED_ERROR,
+                safe_error=THREAD_CLOSED_ERROR,
+                retryability=RuntimeRetryability.TERMINAL,
+            )
         await self.start()
         generation = self._generation
         if state.absent_generation == generation:
@@ -2123,7 +2178,101 @@ class CodexProcessHost:
         ):
             return None
         turn.seal_replacement()
+        state.attachment_state = CodexThreadAttachmentState.CLOSED
+        self._record_activity(thread_id)
         return state.fresh_generation, state.absent_generation
+
+    def thread_replacement_current(
+        self,
+        thread_id: str,
+        command_id: str,
+        incident_id: str,
+        failed_generation: int,
+        generation: int,
+        registration_epoch: int,
+        revision: int,
+    ) -> bool:
+        state = self._threads.get(thread_id)
+        if state is None:
+            return False
+        turn = state.turn
+        incident = state.attachment_incident
+        return (
+            not self._closed
+            and not self.admission.failed
+            and self.state is CodexProcessState.READY
+            and self._proc is not None
+            and self._proc.returncode is None
+            and type(failed_generation) is int
+            and 0 < failed_generation < generation == self._generation
+            and failed_generation in self._exited_generations
+            and state.disconnected_generation == failed_generation
+            and state.absent_generation == generation
+            and state.registration_epoch == registration_epoch
+            and self.thread_activity_revision(thread_id) == revision
+            and state.attachment_state is CodexThreadAttachmentState.BROKEN
+            and incident is not None
+            and incident.incident_id == incident_id
+            and incident.scope is RuntimeIncidentScope.THREAD
+            and incident.kind is RuntimeIncidentKind.RESUME_FAILED
+            and incident.state is RuntimeIncidentState.FAILED
+            and incident.retryability is RuntimeRetryability.TERMINAL
+            and incident.safe_error == THREAD_HISTORY_MISSING_ERROR
+            and incident.process_generation == generation
+            and incident.vendor_thread_id == thread_id
+            and bool(command_id and incident_id)
+            and not turn.replacement_sealed
+            and not turn.active_turn_id
+            and (turn.turn_done is None or turn.turn_done.done())
+            and (
+                not turn.ambiguous_submission_id
+                or (
+                    turn.ambiguous_submission_id == command_id
+                    and turn.ambiguous_generation == failed_generation
+                )
+            )
+            and (
+                not turn.interrupted_turn_client_id
+                or (
+                    turn.interrupted_turn_client_id == command_id
+                    and turn.interrupted_turn_generation == failed_generation
+                )
+            )
+            and not self._rpc_requests.unsettled(generation)
+            and not any(
+                pending.thread_id == thread_id
+                or (
+                    (route := self._router.agent(pending.thread_id)) is not None
+                    and route.owner_thread_id == thread_id
+                )
+                for pending in (*self._pending_hil.values(), *self._pending_tools.values())
+            )
+        )
+
+    def seal_thread_replacement(
+        self,
+        thread_id: str,
+        command_id: str,
+        incident_id: str,
+        failed_generation: int,
+        generation: int,
+        registration_epoch: int,
+        revision: int,
+    ) -> bool:
+        if not self.thread_replacement_current(
+            thread_id,
+            command_id,
+            incident_id,
+            failed_generation,
+            generation,
+            registration_epoch,
+            revision,
+        ):
+            return False
+        self._threads[thread_id].turn.seal_replacement()
+        self._threads[thread_id].attachment_state = CodexThreadAttachmentState.CLOSED
+        self._record_activity(thread_id)
+        return True
 
     async def close_thread(self, thread_id: str) -> None:
         state = self._threads.get(thread_id)
@@ -2138,23 +2287,24 @@ class CodexProcessHost:
                     retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
                 )
             )
-        sealed_absent = (
-            state.turn.replacement_sealed and state.absent_generation == self._generation
-        )
-        connected = self.state == CodexProcessState.READY and not sealed_absent
-        await self._watcher.close(state.turn, self._generation, connected)
+        generation = self._generation
+        connected = self.state == CodexProcessState.READY and not state.turn.replacement_sealed
+        await self._watcher.close(state.turn, generation, connected)
         self._registration_epoch += 1
         state.registration_epoch = self._registration_epoch
         state.attachment_state = CodexThreadAttachmentState.CLOSED
-        await state.turn.close(self._generation, connected)
+        await state.turn.close(generation, connected)
         self._threads.pop(thread_id, None)
         self._router.close(thread_id)
         # Release the event subscription for durable threads too. This preserves
         # the rollout; configuration isolation is owned by the host pool.
         if connected:
-            generation = self._generation
             try:
-                result = await self.request(THREAD_UNSUBSCRIBE_METHOD, {THREAD_ID_KEY: thread_id})
+                result = await self.request(
+                    THREAD_UNSUBSCRIBE_METHOD,
+                    {THREAD_ID_KEY: thread_id},
+                    generation=generation,
+                )
                 if result.get(UNSUBSCRIBE_STATUS_KEY) not in THREAD_UNSUBSCRIBE_STATUSES:
                     raise AppServerError("Thread cleanup was not confirmed")
             except BaseException:
@@ -2434,7 +2584,7 @@ class CodexProcessHost:
             incident = self._attachment_incident(
                 state,
                 message_generation,
-                safe_error="codex_thread_closed",
+                safe_error=THREAD_CLOSED_ERROR,
             )
             await self._emitter.incident(state, incident, turn_id=turn_id)
             return
@@ -2890,6 +3040,8 @@ class CodexProcessHost:
             if state.attachment_state != CodexThreadAttachmentState.CLOSED
         )
         for state in threads:
+            if state.attachment_state is CodexThreadAttachmentState.ATTACHED:
+                state.disconnected_generation = exit_generation
             state.attachment_state = CodexThreadAttachmentState.RECOVERY_PENDING
             state.attached_generation = 0
             state.last_incident_id = incident.incident_id
@@ -2959,6 +3111,7 @@ class CodexProcessHost:
     async def _recover_process(self, incident: RuntimeIncident) -> None:
         current = asyncio.current_task()
         deadline = asyncio.get_running_loop().time() + self.recovery_total_timeout
+        startup_failure: AppServerError | None = None
         try:
             for attempt in range(1, self.max_recovery_attempts + 1):
                 remaining = deadline - asyncio.get_running_loop().time()
@@ -3025,15 +3178,42 @@ class CodexProcessHost:
                         "Codex App Server recovery attempt failed",
                         extra={"attempt": attempt},
                     )
+                    startup_error = exc if isinstance(exc, AppServerError) else None
+                    if startup_error is None and isinstance(exc, TimeoutError):
+                        cancellation = exc.__cause__
+                        startup_cause = (
+                            cancellation.__cause__
+                            if isinstance(cancellation, asyncio.CancelledError)
+                            else None
+                        )
+                        if isinstance(startup_cause, AppServerError):
+                            if startup_cause.safe_error in SANDBOX_STARTUP_ERRORS:
+                                startup_error = startup_cause
+                    if (
+                        startup_error is not None
+                        and startup_error.safe_error in SANDBOX_STARTUP_ERRORS
+                    ):
+                        startup_failure = startup_error
+                    cleanup_failed = False
                     proc = self._proc
                     if proc is not None and proc.returncode is not None:
-                        await self._discard_process(proc, self._generation)
+                        self.state = CodexProcessState.CRASHED
+                        self._unconfirm_attachment(self._generation)
+                        try:
+                            await self._discard_process(proc, self._generation)
+                        except Exception:
+                            cleanup_failed = True
+                            LOGGER.exception("codex_recovery_cleanup_failed")
                     if (
-                        isinstance(exc, AppServerError)
-                        # 左侧 isinstance 已收窄到 AppServerError; pylint 在 `and` 短路里
-                        # 不做收窄, 故误报没有该成员 (mypy 对同一行无异议)。
-                        and exc.retryability  # pylint: disable=no-member
-                        == RuntimeRetryability.TERMINAL
+                        cleanup_failed
+                        or (self.state == CodexProcessState.CRASHED and self._proc is not None)
+                        or (
+                            startup_error is not None
+                            and (
+                                startup_error.retryability == RuntimeRetryability.TERMINAL
+                                or startup_error.safe_error in SANDBOX_STARTUP_ERRORS
+                            )
+                        )
                     ):
                         break
                     continue
@@ -3138,9 +3318,39 @@ class CodexProcessHost:
                 incident,
                 state=RuntimeIncidentState.FAILED,
                 strategy=RuntimeRecoveryStrategy.MANUAL_RETRY,
-                retryability=RuntimeRetryability.USER_RETRYABLE,
+                retryability=(
+                    startup_failure.retryability
+                    if startup_failure is not None
+                    else RuntimeRetryability.USER_RETRYABLE
+                ),
+                safe_error=(
+                    startup_failure.safe_error
+                    if startup_failure is not None
+                    else incident.safe_error
+                ),
                 process_generation=self._generation,
                 attempt=self._recovery_attempt,
+                rpc_method=(
+                    (startup_failure.method or incident.rpc_method)
+                    if startup_failure is not None
+                    else incident.rpc_method
+                ),
+                rpc_code=(
+                    startup_failure.rpc_code
+                    if startup_failure is not None and startup_failure.rpc_code is not None
+                    else incident.rpc_code
+                ),
+                rpc_latency_ms=(
+                    startup_failure.rpc_latency_ms
+                    if startup_failure is not None
+                    and (startup_failure.method or startup_failure.rpc_code is not None)
+                    else incident.rpc_latency_ms
+                ),
+                ambiguous_commit=incident.ambiguous_commit
+                or (
+                    startup_failure is not None
+                    and startup_failure.retryability == RuntimeRetryability.UNKNOWN_OUTCOME
+                ),
             )
             for thread_state in tuple(self._threads.values()):
                 await self._emitter.incident(thread_state, failed)

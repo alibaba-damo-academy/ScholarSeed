@@ -23,10 +23,47 @@ REVIEW_HEADER = "大纲与输出设置确认"
 REVIEW_QUESTION = "是否按上述大纲和以下输出设置开始撰写？也可直接填写大纲或输出设置的修改意见。"
 REVIEW_TIMEOUT_NOTICE = "请在 5 分钟内确认或提出修改；若未回复，将按以上设置继续。"
 REVIEW_NEXT_ACTION = (
-    "Save confirmation unchanged and run writing review-complete --request FILE. "
-    "For an actual confirmation call writing approve; handle revisions without approving. "
-    "Do not start review-start/review-wait or another question."
+    "The product card has already received the user's decision. Execute continuation.steps "
+    "in order using this workspace's slr CLI: append each arguments array, and send input "
+    "as JSON on stdin (--request -). Use the actual session workdir, not a reconstructed path. "
+    "Stop on a failed step; repair that failure without asking for the same confirmation again. "
+    "If continuation.state is confirmed, the click is the actual user approval: after both "
+    "steps succeed, continue the Skill's manuscript preparation and writing in this turn. "
+    "Do not finish with an outline summary or ask for a text confirmation. "
+    "Otherwise consume review-complete and follow its result; never approve revisions, "
+    "cancellation or timeout as a user confirmation. Do not start another question or timer."
 )
+REVIEW_CONFIRMED_STATE = "confirmed"
+REVIEW_DECISION_STATE = "decision_received"
+REVIEW_COMPLETE_ARGUMENTS = ("writing", "review-complete", "--request", "-")
+REVIEW_APPROVE_ARGUMENTS = ("writing", "approve", "--request", "-")
+
+
+def confirmation_continuation(confirmation: dict[str, Any]) -> dict[str, Any]:
+    decision = confirmation["decision"]
+    request_id = confirmation["request_id"]
+    answer = decision.get("answers", {}).get(request_id)
+    confirmed = (
+        answer == REVIEW_CONFIRM_LABEL
+        and not decision.get("cancelled")
+        and not decision.get("timed_out")
+    )
+    steps = [{"arguments": list(REVIEW_COMPLETE_ARGUMENTS), "input": confirmation}]
+    if confirmed:
+        steps.append(
+            {
+                "arguments": list(REVIEW_APPROVE_ARGUMENTS),
+                "input": {
+                    "packet_id": confirmation["packet_id"],
+                    "message_id": request_id,
+                    "user_response": answer,
+                },
+            }
+        )
+    return {
+        "state": REVIEW_CONFIRMED_STATE if confirmed else REVIEW_DECISION_STATE,
+        "steps": steps,
+    }
 
 
 @dataclass(frozen=True)

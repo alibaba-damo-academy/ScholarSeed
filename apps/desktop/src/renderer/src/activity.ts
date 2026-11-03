@@ -11,6 +11,52 @@ export type ArtifactItem = Extract<ConvItem, { kind: 'artifact' }>
 
 type NativeActivity = Extract<ConvItem, { kind: 'native_activity' }>
 
+const EXTERNAL_RESULT_PROTOCOLS = new Set(['http:', 'https:'])
+
+export function externalResultUrl(value: string | undefined): string | null {
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    return EXTERNAL_RESULT_PROTOCOLS.has(url.protocol) ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+export function webSearchQuery(item: Extract<ConvItem, { kind: 'web_search' }>): string {
+  if (item.query) return item.query
+  if (typeof item.action.query === 'string') return item.action.query
+  if (Array.isArray(item.action.queries)) return item.action.queries.join(' · ')
+  if (typeof item.action.url === 'string') return item.action.url
+  return ''
+}
+
+export function webSearchRecordData(item: Extract<ConvItem, { kind: 'web_search' }>) {
+  const query = webSearchQuery(item)
+  const url = typeof item.action.url === 'string' ? item.action.url : ''
+  const actualQueries = Array.isArray(item.action.queries)
+    ? item.action.queries.filter(
+        (value): value is string => typeof value === 'string' && Boolean(value)
+      )
+    : []
+  return {
+    queries: actualQueries.length ? actualQueries : query ? [query] : [],
+    page: url && url !== query ? url : undefined,
+    pattern: typeof item.action.pattern === 'string' ? item.action.pattern : undefined,
+    results: item.results
+      .filter((result) => Boolean(result.title || result.url))
+      .map((result, index) => {
+        const externalUrl = externalResultUrl(result.url)
+        return {
+          id: JSON.stringify([result.url, index]),
+          title: result.title || result.url || '',
+          url: externalUrl ?? undefined,
+          site: externalUrl ? new URL(externalUrl).hostname : undefined,
+        }
+      }),
+  }
+}
+
 const COLLABORATION_OPERATIONS = {
   spawn_agent: 'spawn',
   spawnAgent: 'spawn',
@@ -102,6 +148,39 @@ export type ActivityRow =
   | { kind: 'artifacts'; items: ArtifactItem[]; turnId?: string; key: string }
 
 export type ActivityRunState = 'running' | 'completed' | 'failed' | 'interrupted'
+
+export type ProcessRow =
+  | { kind: 'row'; row: ActivityRow; index: number; key: string }
+  | { kind: 'process'; entries: { row: ActivityRow; index: number }[]; turnId: string; key: string }
+
+export function processRows(rows: readonly ActivityRow[]): ProcessRow[] {
+  const projected: ProcessRow[] = []
+  const candidate = (row: ActivityRow): boolean =>
+    row.kind === 'activity' ||
+    (row.kind === 'item' && row.item.kind === 'thinking' && row.item.commentary === true)
+  for (let index = 0; index < rows.length;) {
+    const first = rows[index]
+    const turnId = rowTurnId(first)
+    if (!turnId || !candidate(first)) {
+      projected.push({ kind: 'row', row: first, index, key: first.key })
+      index += 1
+      continue
+    }
+    const entries: { row: ActivityRow; index: number }[] = []
+    while (index < rows.length && rowTurnId(rows[index]) === turnId && candidate(rows[index])) {
+      entries.push({ row: rows[index], index })
+      index += 1
+    }
+    if (entries.some((entry) => entry.row.kind === 'activity')) {
+      projected.push({ kind: 'process', entries, turnId, key: `process:${turnId}:${first.key}` })
+    } else {
+      projected.push(
+        ...entries.map((entry) => ({ kind: 'row' as const, ...entry, key: entry.row.key }))
+      )
+    }
+  }
+  return projected
+}
 
 export function cardArtifactIds(
   items: readonly ConvItem[],

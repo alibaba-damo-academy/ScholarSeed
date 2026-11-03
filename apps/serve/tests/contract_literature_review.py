@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -21,7 +22,13 @@ from service.chat.service.tasks import ProductTaskLease
 from service.cli.bridge import parser
 from service.literature.api.gate import FulltextGate
 from service.literature.api.review import register_literature_review_routes
-from service.literature.service.confirmation import REVIEW_PACKET, prepare_confirmation
+from service.literature.service.confirmation import (
+    REVIEW_CONFIRM_LABEL,
+    REVIEW_HEADER,
+    REVIEW_PACKET,
+    confirmation_continuation,
+    prepare_confirmation,
+)
 from service.literature.service.result import SEARCH_CARD
 from service.literature.service.review import (
     CHECK_LABELS,
@@ -68,6 +75,103 @@ LITERATURE_SKILL_FILE = (
 
 
 class LiteratureReviewContract(unittest.TestCase):
+    def test_outline_continuation_runs_real_skill_cli_and_rejects_stale_packet(self) -> None:
+        script = """
+import json
+import subprocess
+import sys
+from pathlib import Path
+from test_native_pipeline import NativeTest
+from operator_cli import review_packet
+from task_contract import configure
+from writing_contract import digest, require_approval
+from service.literature.service.confirmation import REVIEW_CONFIRM_LABEL, confirmation_continuation
+
+fixture = NativeTest()
+fixture.setUp()
+try:
+    workspace = fixture.ws
+    configure(workspace, {'outline_review': 'required', 'publication': {'format': 'markdown', 'citation_style': 'numeric'}})
+    packet = review_packet(workspace)
+    receipt = {'packet_id': packet['packet_id'], 'snapshot_id': digest(packet['snapshot']),
+               'request_id': 'actual-card-request', 'started_at': 1000, 'deadline_at': None,
+               'decision': {'answers': {'actual-card-request': REVIEW_CONFIRM_LABEL}}}
+    steps = confirmation_continuation(receipt)['steps']
+    for step in steps:
+        result = subprocess.run([sys.executable, 'slr.py', *step['arguments'], '--workspace', str(workspace)],
+                                input=json.dumps(step['input']), capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+    require_approval(workspace)
+    approval = json.loads((workspace / '04_outline/approval.json').read_text())
+    assert approval['message_id'] == receipt['request_id']
+    assert approval['user_response'] == REVIEW_CONFIRM_LABEL
+    outline_path = workspace / '04_outline/outline.json'
+    outline = json.loads(outline_path.read_text())
+    outline['survey_title'] = 'Revised outline requires confirmation'
+    outline_path.write_text(json.dumps(outline))
+    for step in steps:
+        stale = subprocess.run([sys.executable, 'slr.py', *step['arguments'], '--workspace', str(workspace)],
+                               input=json.dumps(step['input']), capture_output=True, text=True, timeout=30)
+        assert stale.returncode != 0, 'stale receipt must not authorize changed writing scope'
+finally:
+    fixture.doCleanups()
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=LITERATURE_SKILL_FILE.parent / "scripts",
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    filter(
+                        None,
+                        (
+                            str(LITERATURE_SKILL_FILE.parent / "scripts"),
+                            os.environ.get("PYTHONPATH", ""),
+                        ),
+                    )
+                ),
+            },
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_outline_confirmation_provides_executable_continuation(self) -> None:
+        receipt = {
+            "packet_id": "current-packet",
+            "snapshot_id": "current-snapshot",
+            "request_id": "outline-request",
+            "started_at": 1000,
+            "deadline_at": None,
+            "decision": {"answers": {"outline-request": REVIEW_CONFIRM_LABEL}},
+        }
+        result = confirmation_continuation(receipt)
+        self.assertEqual(result["state"], "confirmed")
+        self.assertEqual(result["steps"][0]["input"], receipt)
+        self.assertEqual(
+            result["steps"][0]["arguments"], ["writing", "review-complete", "--request", "-"]
+        )
+        self.assertEqual(result["steps"][1]["arguments"], ["writing", "approve", "--request", "-"])
+        self.assertEqual(
+            result["steps"][1]["input"],
+            {
+                "packet_id": "current-packet",
+                "message_id": "outline-request",
+                "user_response": REVIEW_CONFIRM_LABEL,
+            },
+        )
+        for decision in (
+            {"answers": {"outline-request": "修改第二章"}},
+            {"answers": {"outline-request": ""}},
+            {"cancelled": True, "answers": {"outline-request": REVIEW_CONFIRM_LABEL}},
+            {"timed_out": True},
+        ):
+            with self.subTest(decision=decision):
+                pending = confirmation_continuation({**receipt, "decision": decision})
+                self.assertNotEqual(pending["state"], "confirmed")
+                self.assertEqual(len(pending["steps"]), 1)
+
     def test_review_preserves_supported_citation_styles(self) -> None:
         for checkpoint in ("outline", "result"):
             for style in ("numeric", "author_year", "ieee", "acm", "gbt7714_2025"):
@@ -650,6 +754,10 @@ class LiteratureReviewContract(unittest.TestCase):
             {"paper_id": f"p{index}", "title": f"Paper {index}", "year": 2025}
             for index in range(40)
         ]
+        authors = [f"Research Author {index}" for index in range(54)]
+        abstract = "Full abstract evidence. " * 180 + "ABSTRACT END"
+        reason = "Complete selection rationale. " * 100 + "RATIONALE END"
+        papers[0].update(authors=authors, abstract=abstract, reason=reason)
         warning = "agentic-search used degraded retrieval (source_mode=web_only)"
         self.write(METADATA, {"papers": papers})
         self.write(CORPUS, {paper["paper_id"]: paper for paper in papers})
@@ -659,12 +767,16 @@ class LiteratureReviewContract(unittest.TestCase):
         self.assertEqual(prepared.card.retained, 40)
         self.assertEqual(prepared.card.candidates, 40)
         self.assertEqual(len(prepared.card.papers), 3)
+        self.assertEqual(prepared.card.papers[0].authors, authors[:20])
         self.assertEqual(len(prepared.authorization_sources), 40)
         snapshot = project_review_search_artifacts(
             {path: (self.workspace / path).read_bytes() for path in (METADATA, CORPUS, RETRIEVAL)}
         )
         self.assertEqual(len(snapshot), prepared.card.retained)
         self.assertEqual([paper.id for paper in snapshot], [paper["paper_id"] for paper in papers])
+        self.assertEqual(snapshot[0].authors, authors)
+        self.assertEqual(snapshot[0].abstract, abstract)
+        self.assertEqual(snapshot[0].reasons, [reason])
         self.assertIn(warning, captured.output[0])
         self.assertIn("review-run", captured.output[0])
 
@@ -972,10 +1084,16 @@ class LiteratureReviewContract(unittest.TestCase):
             return {"card_id": "review-card"}
 
         product_questions = []
+        reference = {
+            "plugin": "literature-review",
+            "component": "outline",
+            "fingerprint": "review-version",
+        }
 
         async def request_product_input(question, **kwargs):
             product_questions.append((question, kwargs))
-            return {"answers": {question["id"]: "一键授权"}}
+            answer = REVIEW_CONFIRM_LABEL if question.get("header") == REVIEW_HEADER else "一键授权"
+            return {"answers": {question["id"]: answer}}
 
         live = SimpleNamespace(
             id="session",
@@ -994,6 +1112,7 @@ class LiteratureReviewContract(unittest.TestCase):
             publish_artifact=publish,
             display_card=display,
             interactions=SimpleNamespace(request_product_input=request_product_input),
+            component_for=AsyncMock(return_value=reference),
         )
 
         def lease(task_type: ProductTaskType, run_id: str) -> None:
@@ -1014,6 +1133,7 @@ class LiteratureReviewContract(unittest.TestCase):
                 scope_digest="scope-digest",
                 question_id="literature-review-fulltext:opaque",
                 turn_id="turn",
+                refs=("p1", "p2"),
             )
         )
         app = FastAPI()
@@ -1074,10 +1194,16 @@ class LiteratureReviewContract(unittest.TestCase):
             confirmed = client.post(LITERATURE_REVIEW_ROUTE, json=payload, headers=headers)
             self.assertEqual(confirmed.status_code, 200, confirmed.text)
             receipt = confirmed.json()["confirmation"]
+            self.assertEqual(confirmed.json()["continuation"], confirmation_continuation(receipt))
             self.assertEqual(receipt["packet_id"], "packet")
             self.assertEqual(receipt["deadline_at"], 1300)
-            self.assertEqual(receipt["decision"]["answers"][receipt["request_id"]], "一键授权")
+            self.assertEqual(
+                receipt["decision"]["answers"][receipt["request_id"]], REVIEW_CONFIRM_LABEL
+            )
+            self.assertEqual(confirmed.json()["continuation"]["state"], "confirmed")
             self.assertEqual(product_questions[-1][1]["timeout_seconds"], 300)
+            self.assertEqual(product_questions[-1][0]["component"], reference)
+            self.assertEqual(product_questions[-1][0]["component_data"], cards[-1][1])
             product_questions.clear()
             cards.pop()
             self.write("06_output/survey.md", "# Finished review")

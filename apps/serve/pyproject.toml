@@ -26,6 +26,7 @@ dependencies = [
     "mcp==1.26.0",
     "zotero-mcp-server==0.15.1",
     "json-repair",
+    "jsonschema>=4",
     "lxml>=5.2",
     "numpy",
     "openpyxl",
@@ -105,6 +106,7 @@ include-package-data = false
 # damoagent / damoatrace 发行包。capabilities/skills/ 是 prebundle 从仓库内
 # skills/community/ 离线编译出的技能 pack, 随 wheel 交付。
 service = [
+    "capabilities/ui.zip",
     "**/*.md",
     "**/*.yaml",
     "**/*.yml",

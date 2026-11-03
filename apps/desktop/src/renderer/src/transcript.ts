@@ -1607,6 +1607,7 @@ export function projectDisplayCardEvent(
     kind: 'display_card',
     card: {
       cardId: event.data.card_id,
+      component: event.data.component,
       type: event.data.type,
       content: event.data.content,
       presentationSource,

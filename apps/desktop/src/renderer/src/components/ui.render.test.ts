@@ -1628,7 +1628,7 @@ test('assistant host constrains the transcript to its own scroll viewport', asyn
 })
 
 test('nested activity disclosure follows its own state, not an expanded ancestor', async () => {
-  const source = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+  const source = await readFile(path.join(ROOT_DIR, 'components/business/Execution.tsx'), 'utf8')
   const classes = Object.fromEntries(
     ['STEP', 'STEP_TRIGGER', 'STEP_CARET', 'STEP_CONTENT', 'CONTENT_INNER'].map((name) => {
       const value = source.match(new RegExp(`const TOOL_RUN_${name}_CLASS =\\s*'([^']+)'`))?.[1]
@@ -1657,7 +1657,7 @@ test('nested activity disclosure follows its own state, not an expanded ancestor
 })
 
 test('subagent detail tokens preserve readable typography and wrap long commands in narrow panels', async () => {
-  const source = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+  const source = await readFile(path.join(ROOT_DIR, 'components/business/Execution.tsx'), 'utf8')
   const stackClass = source.match(/const TOOL_RUN_IO_STACK_CLASS =\s*'([^']+)'/)?.[1]
   const labelClass = source.match(/const TOOL_RUN_IO_LABEL_CLASS =\s*'([^']+)'/)?.[1]
   assert.ok(stackClass && labelClass)
@@ -1707,8 +1707,11 @@ test('subagent detail tokens preserve readable typography and wrap long commands
 
 test('question options select radio or checkbox by question type', async () => {
   const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
-  assert.match(stream, /const OptionControl = q\.multiSelect \? Checkbox : Radio/)
-  assert.match(stream, /<OptionControl[\s\S]*?data-testid={`hil-question-option-/)
+  const options = await readFile(path.join(ROOT_DIR, 'components/business/Options.tsx'), 'utf8')
+  assert.match(options, /const Control = multiSelect \? Checkbox : Radio/)
+  assert.match(options, /<Control[\s\S]*?data-testid=\{testId\}/)
+  assert.match(stream, /<QuestionOption[\s\S]*?testId={`hil-question-option-/)
+  assert.match(stream, /<QuestionOption[\s\S]*?multiSelect=\{q\.multiSelect\}/)
   assert.doesNotMatch(stream, /QUESTION_OPTION_MARK_CLASS/)
 })
 
@@ -1815,7 +1818,7 @@ test('conversation and controls share a centered capped column at every panel wi
     const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
     const columnClass = stream.match(/const READING_COLUMN_CLASS =\s*'([^']+)'/)?.[1]
     const streamClass = stream.match(/className=\{cx\(\s*'(conversation-stream[^']*)'/)?.[1]
-    const controlsClass = stream.match(/className="(vds-ai-composer-host[^"]*)"/)?.[1]
+    const controlsClass = stream.match(/className=\{cx\(\s*'(vds-ai-composer-host[^']*)'/)?.[1]
     assert.ok(columnClass && streamClass && controlsClass)
     for (const width of PANEL_WIDTHS) {
       for (const height of TRANSCRIPT_HEIGHTS) {

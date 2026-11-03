@@ -99,7 +99,6 @@ import {
   ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuLabel,
   ContextMenuSeparator,
   ContextMenuShortcut,
   ContextMenuSub,
@@ -123,9 +122,6 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
   Drawer,
   DrawerClose,
@@ -187,7 +183,6 @@ import {
   RadioGroup,
   ResizableHandle,
   ResizablePanel,
-  ResizablePanelGroup,
   Select,
   SelectContent,
   SelectItem,
@@ -3499,11 +3494,23 @@ export function ComponentsPage(): JSX.Element {
                   <DialogTrigger asChild>
                     <Button>{t('menus.openDialog')}</Button>
                   </DialogTrigger>
-                  <DialogContent headerLayout="aligned" aria-label={t('menus.projectSettings')}>
+                  <DialogContent
+                    aria-label={t('menus.projectSettings')}
+                    headerLayout="aligned"
+                    portalClassName="z-[var(--vds-z-modal-interaction)]"
+                  >
                     <DialogHeader>
                       <DialogTitle>{t('menus.projectSettings')}</DialogTitle>
                       <DialogDescription>{t('menus.dialogDescription')}</DialogDescription>
                     </DialogHeader>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="secondary">{t('menus.openDialog')}</Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent>
+                        <DropdownMenuItem>{t('menus.confirm')}</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     <DialogFooter>
                       <DialogClose asChild>
                         <Button variant="outline">{t('delete.cancel')}</Button>

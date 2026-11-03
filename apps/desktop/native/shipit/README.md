@@ -100,8 +100,23 @@ ledger and never authorize installation.
 Terminal admission wait and final-guard failures reuse the identity-bound preparation
 acknowledgement. Reopening a failed journal restores and republishes before any
 preparation, installation counter or rollback branch; publication failure preserves
-the launchd demand and journal for another attempt. A crash before the terminal
-failure record is persisted is not covered by this terminal recovery protocol.
+the launchd demand and journal for another attempt. Ownership mutation has a durable
+intent before verification: an interrupted intent is converted to a failure only
+when the original target and narrowly pinned candidate remain provable. Recovery
+never resumes that installation. Other crashes before a terminal record or ownership
+intent is persisted remain outside this terminal recovery protocol.
+An authorized failed installation publishes its bound failure before requesting an
+old-application launch through the same installed helper used for successful updates.
+The existing NSWorkspace default schedules launches asynchronously, allowing the
+child and its transaction-owning parent to exit before Desktop admission. An exact
+already-running target needs no additional launch. Launch request acceptance is
+persisted in the failure record; request failure retains launchd demand and retries.
+An interruption between launch acceptance and its journal write may repeat the
+ordinary NSWorkspace request, which reuses the existing application instance.
+Startup polls an installing observation for at most five seconds, then repeats all
+native evidence checks. Neither timeout nor helper absence grants admission.
+This records launch request acceptance, not product readiness or successful recovery.
+
 Desktop accepts an acknowledgement only after the matching user/root helper is
 absent, validates its regular-file ownership and permissions, and compares its
 source/target identities with both the live request and the request frozen at the
@@ -277,6 +292,27 @@ The application collects bounded ShipIt and Squirrel timing log tails into `logs
 on startup. Native records retain their original timestamps and PID; the enclosing
 collection timestamp is not the operation time. Logs remain best-effort evidence,
 not installation authority.
+
+## Candidate ownership and pre-acquisition failure
+
+Squirrel takes ownership of the private candidate before checking its signature.
+The prepared snapshot therefore precedes a legitimate owner change. Before that
+mutation, `SSPreparationBeginOwnership` persists intent; candidate copying refuses
+an outstanding intent. After a
+successful signature check, `SSPreparationAcceptOwnership` persists the new owner
+snapshot only when the request binding, paths, parent identities, bundle and
+Contents device/inode identities are unchanged, and both owners match Squirrel's
+real UID. Ordinary admission remains an exact snapshot check. A failed atomic
+save preserves the prior snapshot and prevents installation.
+
+A nonretryable error inside admission is classified as a pre-acquisition terminal
+error, retaining the original error as its cause. The terminal path still has to
+prove the original target identity and write bound failure evidence before the
+Desktop can resume service. If ownership completed before signature failure,
+recording that failure may accept the same narrowly pinned owner transition; it
+never authorizes installation. Errors after target acquisition retain the existing
+rollback and recovery path. Unknown historical handoffs remain unconfirmed until
+native evidence proves their outcome; do not clear their state to resume service.
 
 ## Acceptance boundary
 

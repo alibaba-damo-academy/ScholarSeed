@@ -25,7 +25,8 @@ import {
 import { join } from 'path'
 
 import { STATE_TTL_MS } from './handoff.ts'
-import { parseCallbackUrl } from './handoff-url.ts'
+import { handoffFingerprint, parseCallbackUrl } from './handoff-url.ts'
+import { validateCallbackTiming, type CallbackTiming } from './handoff-timing.ts'
 
 export const INBOX_DIRNAME = 'handoff-inbox'
 /** 主实例的消费节拍。深链回调的寿命以分钟计，秒级节拍足够且 readdir 成本可忽略。 */
@@ -47,6 +48,7 @@ interface InboxEntry {
   schema?: number
   url?: string
   written_at_ms?: number
+  launch_timing?: CallbackTiming
 }
 
 function inboxDir(deps: HandoffInboxDependencies): string {
@@ -58,17 +60,23 @@ function nowOf(deps: HandoffInboxDependencies): number {
 }
 
 function stateOf(url: string): string {
-  return parseCallbackUrl(url)?.state ?? 'unknown'
+  return handoffFingerprint(parseCallbackUrl(url)?.state ?? '')
 }
 
 /** 二次实例退出前调用。失败不抛：兜底腿自己坏了不能把退出路径也拖下水。 */
-export function parkCallbackUrl(deps: HandoffInboxDependencies, url: string): ParkResult {
+export function parkCallbackUrl(
+  deps: HandoffInboxDependencies,
+  url: string,
+  timing?: CallbackTiming | null
+): ParkResult {
   const name = `${randomUUID()}${ENTRY_SUFFIX}`
   try {
     const dir = inboxDir(deps)
     mkdirSync(dir, { recursive: true })
     const tmp = join(dir, `${name}${TMP_SUFFIX}`)
     const payload: InboxEntry = { schema: ENTRY_SCHEMA, url, written_at_ms: nowOf(deps) }
+    const validated = validateCallbackTiming(timing, url)
+    if (validated) payload.launch_timing = validated
     writeFileSync(tmp, JSON.stringify(payload), { encoding: 'utf8' })
     renameSync(tmp, join(dir, name))
     return 'parked'
@@ -82,7 +90,10 @@ export function parkCallbackUrl(deps: HandoffInboxDependencies, url: string): Pa
 }
 
 /** 主实例消费收件箱。返回本轮真正投递出去的条目数。 */
-export function drainInbox(deps: HandoffInboxDependencies, onUrl: (url: string) => void): number {
+export function drainInbox(
+  deps: HandoffInboxDependencies,
+  onUrl: (url: string, timing: CallbackTiming | null) => void
+): number {
   const dir = inboxDir(deps)
   let names: string[]
   try {
@@ -125,7 +136,7 @@ export function drainInbox(deps: HandoffInboxDependencies, onUrl: (url: string) 
     }
     delivered += 1
     deps.log(`[shell] handoff inbox entry consumed (state=${stateOf(entry.url)})\n`)
-    onUrl(entry.url)
+    onUrl(entry.url, validateCallbackTiming(entry.launch_timing, entry.url))
   }
   return delivered
 }

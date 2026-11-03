@@ -78,6 +78,7 @@ assert.ok(beforeQuit)
 
 function fixture(visible: boolean, headless = false, minimized = false) {
   const actions: string[] = []
+  const updateSnapshots: Record<string, unknown>[] = []
   const parent = {
     isVisible: () => visible,
     isMinimized: () => minimized,
@@ -129,6 +130,8 @@ function fixture(visible: boolean, headless = false, minimized = false) {
     startupScreen: surface as typeof surface | null,
     startupScreenStartedAt: null,
     appQuitting: false,
+    windowsUpdateMaintenanceActive: false,
+    macUpdateMaintenanceActive: false,
     headless,
     startupFailureReports: 0,
     initialWindowLoad: null,
@@ -211,6 +214,10 @@ function fixture(visible: boolean, headless = false, minimized = false) {
     updateInstallBlockingSince: null,
     updateInstallationInProgress: false,
     updateRestartRequested: false,
+    currentUpdateSnapshot: () => ({ phase: 'installing' }),
+    publishUpdateSnapshot: (snapshot: Record<string, unknown>) => {
+      updateSnapshots.push(snapshot)
+    },
     backendQuitFinished: false,
     backendQuitPending: false,
     backgroundUpdateTimerStopped: false,
@@ -219,6 +226,9 @@ function fixture(visible: boolean, headless = false, minimized = false) {
     updatePreparation: { running: false, stop: async () => undefined },
     armBackgroundUpdateCheck: () => undefined,
     preferenceQuiescence: {
+      allowInteraction: () => {
+        actions.push('allow-interaction')
+      },
       prepare: () => Promise.resolve(),
       resume: () => undefined,
       isPreparing: () => false,
@@ -254,7 +264,7 @@ function fixture(visible: boolean, headless = false, minimized = false) {
     beforeQuit(event: { preventDefault(): void }): void
     entries: Record<string, (...args: unknown[]) => void>
   }
-  return { api, actions, surface, resolveClose: resolveClose! }
+  return { api, actions, surface, resolveClose: resolveClose!, updateSnapshots }
 }
 
 for (const readyAt of ['before-close', 'during-close', 'after-close']) {
@@ -506,6 +516,42 @@ test('failed shutdown preparation restores display admission and reports its rec
   assert.equal(current.api.backendQuitPending, false)
   assert.deepEqual(current.actions, ['quit-held', 'open', 'failure'])
 })
+
+for (const maintenance of [
+  'windowsUpdateMaintenanceActive',
+  'macUpdateMaintenanceActive',
+] as const) {
+  test(`failed shutdown during ${maintenance} retains maintenance and reports activation recovery`, async () => {
+    const current = fixture(false)
+    assert.equal(current.api[maintenance], false)
+    current.api[maintenance] = true
+    current.api.preferenceQuiescence.prepare = async () => {
+      throw new Error('maintenance flush failed')
+    }
+    current.api.preferenceQuiescence.resume = () => {
+      assert.fail('an unconfirmed update must not resume storage writes')
+    }
+    current.api.beforeQuit({ preventDefault: () => undefined })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(current.api.appQuitting, false)
+    assert.equal(current.api.backendQuitPending, false)
+    assert.equal(current.api[maintenance], true)
+    assert.deepEqual(
+      current.updateSnapshots.map((snapshot) => ({ ...snapshot })),
+      [
+        {
+          phase: 'failed',
+          installation: undefined,
+          installStage: undefined,
+          errorFallback: 'activation_recovery_required',
+          errorOrigin: 'install',
+        },
+      ]
+    )
+    assert.ok(current.actions.includes('allow-interaction'))
+    assert.ok(!current.actions.includes('quit'))
+  })
+}
 
 for (const preparingUpdate of [false, true]) {
   test(`settled shutdown resumes native quit on a later event turn, update preparation=${preparingUpdate}`, async () => {

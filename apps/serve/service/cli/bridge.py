@@ -15,6 +15,7 @@ from service.platform.bridge import (
     BLOCKING_OPERATIONS,
     BRIDGE_COMMAND,
     BRIDGE_REQUESTS,
+    COMPONENT_CAPABILITY,
     HISTORY_REQUESTS,
     LITERATURE_REQUESTS,
     PDF_REQUESTS,
@@ -204,6 +205,15 @@ def parser() -> argparse.ArgumentParser:
     )
     display_card.epilog = json.dumps(DisplayCard.model_json_schema(), ensure_ascii=False)
     display_card.set_defaults(capability_parser=display_card, operation="publish")
+    component = groups.add_parser(COMPONENT_CAPABILITY, help="查询或使用已启用的对话组件")
+    component_verbs = component.add_subparsers(dest="operation")
+    for (capability, operation), contract in BRIDGE_REQUESTS.items():
+        if capability != COMPONENT_CAPABILITY:
+            continue
+        command = component_verbs.add_parser(operation, help=contract.summary)
+        command.add_argument("--json", required=True, help="组件参数；组件身份及权限由宿主校验")
+        command.epilog = json.dumps(contract.request_type.model_json_schema(), ensure_ascii=False)
+    component.set_defaults(capability_parser=component)
     return root
 
 

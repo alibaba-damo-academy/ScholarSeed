@@ -42,6 +42,7 @@ from scholarseed_runtime.contract.command import (
     EmptyThreadReplacementProof,
     SkillConfiguration,
     SubmissionRetryProof,
+    ThreadReplacementProof,
 )
 from scholarseed_runtime.contract.content import (
     PUBLIC_REASONING_SUMMARY,
@@ -66,8 +67,14 @@ from scholarseed_runtime.contract.input import TurnInput
 from scholarseed_runtime.contract.inventory import SkillInventory
 from scholarseed_runtime.contract.permission import PERMISSION_MODE_KEY
 from scholarseed_runtime.contract.resource import ResourceReceipt
-from scholarseed_runtime.contract.session import SuspendState
+from scholarseed_runtime.contract.session import SuspendState, ThreadReplacementTarget
 from scholarseed_runtime.gateway.driver import RuntimeDriver, RuntimeObservation, RuntimeTurnResult
+from service.capabilities.domain import COMPONENT_ANSWER_CAPABILITY
+from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.delivery import INSTALLATION_FIELD, validate_receipt
+from service.capabilities.service.descriptor import validate_component_value
+from service.capabilities.service.plugins import PLUGIN_DISPLAY_PREFIX, PLUGIN_QUESTION_SLOT
+from service.capabilities.service.presentation import TurnSkillBinding
 from service.capabilities.service.skills import SkillCatalog, load_skill_state
 from service.chat.constants import (
     AUTOMATIC_RECOVERY_MESSAGE,
@@ -140,6 +147,7 @@ from service.chat.persistence.catalog import (
     QUEUE_PURPOSE_RECOVERY,
     HilStatus,
     QueuedMessageRecord,
+    SessionAccessError,
     SessionCatalogStore,
     SessionStatus,
 )
@@ -215,12 +223,20 @@ from service.chat.service.sources import answer_sources
 from service.chat.service.tasks import ProductTaskLease, restore_task_binding
 from service.content.domain.model import ContentError
 from service.inference.source import ContentSource, SourceReference
+from service.persistence.project import inspect_database
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.platform.bridge import (
     BRIDGE_TOKEN_BYTES,
+    COMPONENT_CARD_TYPE,
+    COMPONENT_HOST_PLUGIN,
+    COMPONENT_REQUEST_MARKER,
+    COMPONENT_SCHEMA_DEFAULT,
     PLAN_SOURCE,
+    PLUGIN_INSTALL_CAPABILITY,
+    ComponentInvocation,
     DisplayCardContent,
     PlanCommand,
+    PluginInstallation,
 )
 from service.platform.citations import CitationAnswerFilter
 from service.platform.context import ContextOrigin, ContextRefKind, ContextResolutionState
@@ -268,6 +284,7 @@ class LiveSession:
         process_environment: Mapping[str, str] | None = None,
         user_id: str = "",
         on_release: Callable[[str], Any] | None = None,
+        on_suspend: Callable[[str], Awaitable[Any]] | None = None,
         project_id: str = "",
         resource_changes: AgentResourceChangeSink | None = None,
         local_socket: Path | None = None,
@@ -284,12 +301,17 @@ class LiveSession:
         recover_empty: (
             Callable[[EmptyThreadReplacementProof], Awaitable[RuntimeTurnAdmission]] | None
         ) = None,
+        rebuild_thread: (
+            Callable[[ThreadReplacementTarget], Awaitable[ThreadReplacementProof]] | None
+        ) = None,
     ) -> None:
         self.turn_activity: ActivityLease | None = None
         self.attachment_activity: ActivityLease | None = None
         self.id = session_id
         self.recover_empty = recover_empty
-        self.replacement_proof: EmptyThreadReplacementProof | None = None
+        self.rebuild_thread = rebuild_thread
+        self.replacement_proof: EmptyThreadReplacementProof | ThreadReplacementProof | None = None
+        self.thread_replacement_proof: ThreadReplacementProof | None = None
         self.replacement_revision: tuple[object, ...] | None = None
         self.submission_retry_authorizer: (
             Callable[[SubmissionRetryProof], Awaitable[Callable[[], bool]]] | None
@@ -343,6 +365,7 @@ class LiveSession:
         # 会话关闭时需要掉的进程内资源（当前是 bridge 注册项，内含 api_key）。仅靠 TTL
         # 惰性淘汰会让已关闭会话的凭据再可用几小时；关闭即摘才是真正框住窗口的那一步。
         self._on_release = on_release
+        self._on_suspend = on_suspend
         self.runtime_session: RuntimeSession | None = None
         self.runtime_driver: RuntimeDriver | None = None
         self.runtime_binding: RuntimeBinding | None = None
@@ -365,6 +388,7 @@ class LiveSession:
         self.terminated = False
         self.last_interrupt_succeeded: bool | None = None
         self.current_task: asyncio.Task[Any] | None = None
+        self.settlement_observer: Callable[[LiveSession], None] | None = None
         self.last_submission_id = ""
         self.recovery_observer: Callable[[LiveSession, RuntimeEvent], Awaitable[None]] | None = None
         # 当前已准入的**产品轮** id（= ``client_user_message_id``），出站计量的轮粒度真值：
@@ -378,6 +402,7 @@ class LiveSession:
         self.active_task_type = ""
         self.product_turn_generation = 0
         self.active_task_lease: ProductTaskLease | None = None
+        self.active_skill_presentation: TurnSkillBinding | None = None
         self.task_lease_revision = 0
         self.active_turn_started_at = 0.0
         self._activity_observer = activity_observer
@@ -394,12 +419,15 @@ class LiveSession:
             self.publish,
             events=events,
             broadcast=self._broadcast_product_event,
+            bind_component=self.bind_component,
+            finish_component=self.finish_component,
         )
         self.plans = SessionPlans(self.id, events, catalog)
         self._events = events
         self._persistence = PersistenceWorker(session_id=self.id)
         self._close_task: asyncio.Task[None] | None = None
         self._publication_lock = asyncio.Lock()
+        self._component_lock = asyncio.Lock()
         catalog_record = catalog.get(self.id)
         self._broadcast_sequence = (
             catalog_record.last_product_seq if catalog_record else INITIAL_PRODUCT_SEQUENCE
@@ -415,6 +443,7 @@ class LiveSession:
         self._active = False
         self._projection_lock = asyncio.Lock()
         self._service_callbacks: set[asyncio.Task[None]] = set()
+        self._projection_recovery_lock = asyncio.Lock()
         self._local_history: list[dict[str, Any]] = []
         self._message_snapshots = MessageSnapshots()
         self._skill_inventory: SkillInventory | None = None
@@ -740,6 +769,32 @@ class LiveSession:
             return ()
         return activity.blockers or (RUNTIME_ACTIVITY_UNAVAILABLE_BLOCKER,)
 
+    async def recover_runtime_projection(self) -> None:
+        """Recheck storage before replaying the retained, unacknowledged observation."""
+        async with self._projection_recovery_lock:
+            driver = self.runtime_driver
+            if driver is None or not driver.projection_failed:
+                return
+            await self._persistence.run(
+                inspect_database,
+                self._events.database,
+                SessionCatalogStore.inspect_connection,
+                stable_sidecars=False,
+            )
+            await self._persistence.run(
+                inspect_database,
+                self._events.database,
+                ProductEventStore.inspect_connection,
+                stable_sidecars=False,
+            )
+            self._publication_error = None
+            if self._publication_task is not None and self._publication_task.done():
+                if not self._publication_task.cancelled():
+                    self._publication_task.exception()
+                self._publication_task = None
+            watermark = await driver.recover_projection()
+            self.trace_resource("projection_recovered", watermark=watermark)
+
     async def suspend_runtime(self, *, require_unsubscribed: bool = False) -> bool:
         async with self.lifecycle_lock:
             self.suspend_blockers = ()
@@ -800,7 +855,9 @@ class LiveSession:
             self.bridge_token = ""
             await self.end_browser_scope()
             self.active_product_turn_id = ""
-            if self._on_release is not None:
+            if self._on_suspend is not None:
+                await self._on_suspend(self.id)
+            elif self._on_release is not None:
                 self._on_release(self.id)
             return True
 
@@ -1035,6 +1092,26 @@ class LiveSession:
                         ],
                     }
                 )
+                if observation.kind is CallbackKind.USER_INPUT:
+                    questions = payload.get("questions")
+                    if isinstance(questions, list):
+                        bound_questions = []
+                        for index, question in enumerate(questions):
+                            if not isinstance(question, Mapping):
+                                bound_questions.append(question)
+                                continue
+                            component = await self.component_for(
+                                PLUGIN_QUESTION_SLOT,
+                                interaction_id=f"{observation.request_id}:{question.get('id', index)}",
+                            )
+                            bound = (
+                                {**question, "component": component}
+                                if component is not None
+                                else dict(question)
+                            )
+                            self.bind_component(bound)
+                            bound_questions.append(bound)
+                        payload["questions"] = bound_questions
                 await self._persistence.run(
                     self._catalog.record_hil,
                     product_request_id=observation.request_id,
@@ -1360,6 +1437,7 @@ class LiveSession:
                     turn_id,
                     tool_input,
                     generation=self._resource_generation(event),
+                    event_id=event.event_id,
                 )
             await self.publish(
                 PRODUCT_EVENT_TOOL_STARTED,
@@ -1553,6 +1631,10 @@ class LiveSession:
                     )
                 record = await self._persistence.run(self._catalog.acknowledge_hil, request_id)
                 resolved = interaction_snapshot(record)
+                if record.status is HilStatus.RESOLVED:
+                    for question in record.payload.get("questions", []):
+                        if isinstance(question, Mapping):
+                            self.finish_component(question)
             else:
                 resolved = {
                     "request_id": request_id,
@@ -1617,6 +1699,8 @@ class LiveSession:
                 self.active_product_turn_id,
                 settlement_event,
             )
+            if not self.running and self.settlement_observer is not None:
+                self.settlement_observer(self)
             return
         if await self.ledger.terminal(
             event,
@@ -3064,6 +3148,193 @@ class LiveSession:
             raise ArtifactPublishError(str(error)) from error
         return self._project_publication(publication)
 
+    async def component_for(
+        self, slot: str, *, skill_name: str = "", interaction_id: str = ""
+    ) -> dict[str, str] | None:
+        if self._skills.components is None:
+            return None
+        return self._skills.components.resolve(
+            slot,
+            session_id=self.id,
+            turn_id=self.active_product_turn_id,
+            user_id=self.user_id,
+            interaction_id=interaction_id,
+        )
+
+    @property
+    def component_registry(self) -> ComponentRegistry:
+        if self._skills.components is None:
+            raise ValueError("component_registry_unavailable")
+        return self._skills.components
+
+    def bind_component(self, question: Mapping[str, Any]) -> None:
+        reference = question.get("component")
+        if isinstance(reference, Mapping):
+            data = question.get("component_data")
+            self.component_registry.bind_data(
+                reference, dict(data if isinstance(data, Mapping) else question)
+            )
+
+    def finish_component(self, question: Mapping[str, Any]) -> None:
+        reference = question.get("component")
+        if isinstance(reference, Mapping):
+            self.component_registry.finish(reference)
+
+    def component_catalog(self) -> list[dict[str, Any]]:
+        return self.component_registry.catalog(user_id=self.user_id)
+
+    def component_ui_catalog(self) -> dict[str, Any]:
+        return self.component_registry.ui_catalog()
+
+    def component_preflight(self, slots: list[str]) -> dict[str, Any]:
+        return self.component_registry.preflight(slots)
+
+    def validate_installation_answer(
+        self, question: Mapping[str, Any], body: Mapping[str, Any]
+    ) -> None:
+        report = question[INSTALLATION_FIELD]
+        state = self._catalog.hil(question["id"]).payload.get("installation_state", {})
+        receipt = state.get("receipt")
+        if not state:
+            receipt = self._skills.installation_receipt(report)
+        if body == {"cancelled": True} and receipt is None:
+            return
+        answers = body.get("answers")
+        if not isinstance(answers, Mapping) or set(answers) != {question["id"]}:
+            raise ValueError("plugin_installation_receipt_invalid")
+        validate_receipt(
+            receipt,
+            json.loads(answers[question["id"]]),
+        )
+
+    async def plugin_installation(
+        self, command: PluginInstallation, *, turn_id: str
+    ) -> dict[str, Any]:
+        signature = sha256(command.model_dump_json().encode()).hexdigest()
+        request_id = card_identity(self.id, turn_id, PLUGIN_INSTALL_CAPABILITY, command.request_id)
+        async with self._component_lock:
+            try:
+                previous = self._catalog.hil(request_id)
+            except SessionAccessError:
+                previous = None
+            if previous is not None:
+                question = previous.payload["questions"][0]
+                if (
+                    previous.session_id != self.id
+                    or question.get("installation_signature") != signature
+                ):
+                    raise ValueError("plugin_installation_request_conflict")
+                if previous.status is HilStatus.RESOLVED:
+                    return dict(previous.decision or {})
+            else:
+                report = self._skills.installation_report(
+                    self.runtime_workdir, command.path, command.sha256
+                )
+                if not report.get("valid"):
+                    return {"installed": False, "report": report}
+                question = {
+                    "id": request_id,
+                    "header": "plugin-installation",
+                    "question": report["descriptor"]["id"],
+                    "options": [],
+                    INSTALLATION_FIELD: report,
+                    "installation_path": command.path,
+                    "installation_signature": signature,
+                }
+            await self.interactions.publish_product_input(question, turn_id=turn_id)
+        report = question[INSTALLATION_FIELD]
+        return {
+            "published": True,
+            "request_id": request_id,
+            "package": {
+                "id": report["descriptor"]["id"],
+                "version": report["descriptor"]["version"],
+                "sha256": report["sha256"],
+            },
+        }
+
+    async def component_interaction(
+        self, command: ComponentInvocation, *, turn_id: str, waiting: bool
+    ) -> dict[str, Any]:
+        encoded = json.dumps(command.model_dump(), sort_keys=True, separators=(",", ":"))
+        signature = sha256(encoded.encode()).hexdigest()
+        request_id = card_identity(self.id, turn_id, COMPONENT_CARD_TYPE, command.request_id)
+        async with self._component_lock:
+            if waiting:
+                try:
+                    previous = self._catalog.hil(request_id)
+                except SessionAccessError:
+                    previous = None
+                if previous is not None:
+                    question = previous.payload["questions"][0]
+                    if (
+                        previous.session_id != self.id
+                        or question.get(COMPONENT_REQUEST_MARKER) != signature
+                    ):
+                        raise ValueError("component_request_conflict")
+                    self.component_registry.snapshot(question["component"], user_id=self.user_id)
+                    if previous.status is HilStatus.RESOLVED:
+                        return dict(previous.decision or {})
+                else:
+                    question = None
+            else:
+                previous_card = self._events.by_key(self.id, request_id)
+                if previous_card is not None:
+                    if previous_card.payload.get(COMPONENT_REQUEST_MARKER) != signature:
+                        raise ValueError("component_request_conflict")
+                    self.component_registry.snapshot(
+                        previous_card.payload["component"], user_id=self.user_id
+                    )
+                    return previous_card.payload
+                question = None
+            if question is None:
+                reference = await self.component_for(command.slot, interaction_id=request_id)
+                if reference is None:
+                    raise ValueError("plugin_component_slot_missing")
+                if reference.get("plugin") == COMPONENT_HOST_PLUGIN:
+                    raise ValueError("component_requires_domain_publication")
+                snapshot = self.component_registry.snapshot(reference, user_id=self.user_id)
+                definition = next(
+                    item
+                    for item in snapshot["descriptor"]["components"]
+                    if item["id"] == reference["component"]
+                )
+                validate_component_value(
+                    definition.get("input_schema", COMPONENT_SCHEMA_DEFAULT), command.data
+                )
+                if waiting and not any(
+                    action["capability"] == COMPONENT_ANSWER_CAPABILITY
+                    for action in definition["actions"]
+                ):
+                    raise ValueError("component_answer_action_missing")
+                self.component_registry.bind_data(reference, command.data)
+                question = {
+                    "id": request_id,
+                    "header": command.title,
+                    "question": command.prompt or command.title,
+                    "options": [],
+                    "component": reference,
+                    "component_data": command.data,
+                    COMPONENT_REQUEST_MARKER: signature,
+                }
+            if not waiting:
+                return self._publish_card(
+                    COMPONENT_CARD_TYPE,
+                    command.data,
+                    signature,
+                    len(encoded.encode()),
+                    question["component"],
+                    turn_id=turn_id,
+                    key=request_id,
+                    metadata={COMPONENT_REQUEST_MARKER: signature},
+                )
+            self.interactions.prepare_product_input(question, turn_id=turn_id)
+        return await self.interactions.request_product_input(
+            question,
+            turn_id=turn_id,
+            activity=self.bridge_activity,
+        )
+
     async def display_card(
         self,
         card_type: str,
@@ -3076,10 +3347,37 @@ class LiveSession:
         normalized, digest, encoded_size = normalize_card(
             self.runtime_workdir, self._cards, card_type, content
         )
+        component = await self.component_for(
+            PLUGIN_DISPLAY_PREFIX + card_type,
+            skill_name=content.skill,
+            interaction_id=card_identity(self.id, turn_id, card_type, digest),
+        )
+        if component is not None:
+            self.component_registry.bind_data(component, normalized)
+        return self._publish_card(
+            card_type, normalized, digest, encoded_size, component, turn_id=turn_id
+        )
+
+    def _publish_card(
+        self,
+        card_type: str,
+        normalized: dict[str, Any],
+        digest: str,
+        encoded_size: int,
+        component: dict[str, str] | None,
+        *,
+        turn_id: str,
+        key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if component is not None:
+            encoded = json.dumps(component, sort_keys=True, separators=(",", ":")).encode()
+            digest = sha256(digest.encode() + encoded).hexdigest()
+            encoded_size += len(encoded)
         card_id = card_identity(self.id, turn_id, card_type, digest)
         slot = self._cards.slot(card_type, normalized)
         item_slot = card_identity(self.id, turn_id, card_type, slot) if slot is not None else None
-        idempotency_key = f"{DISPLAY_CARD_IDEMPOTENCY_PREFIX}:{turn_id}:{card_type}:{digest}"
+        idempotency_key = key or f"{DISPLAY_CARD_IDEMPOTENCY_PREFIX}:{turn_id}:{card_type}:{digest}"
         with self._events.transaction() as connection:
             if item_slot is not None:
                 previous = self._events.latest_kind(
@@ -3089,12 +3387,20 @@ class LiveSession:
                     vendor_turn_id=turn_id,
                     vendor_item_id=item_slot,
                 )
-                if previous is not None and previous.payload.get("content") == normalized:
+                if (
+                    previous is not None
+                    and previous.payload.get("content") == normalized
+                    and previous.payload.get("component") == component
+                ):
                     return previous.payload
                 predecessor = previous.product_seq if previous is not None else 0
                 idempotency_key = f"{idempotency_key}:{predecessor}"
                 card_id = card_identity(self.id, turn_id, card_type, idempotency_key)
             payload = {"card_id": card_id, "type": card_type, "content": normalized}
+            if metadata is not None:
+                payload.update(metadata)
+            if component is not None:
+                payload["component"] = component
             existing = self._events.by_key(self.id, idempotency_key, connection=connection)
             if existing is None:
                 _, byte_count = self._events.turn_kind_usage(
@@ -3163,7 +3469,7 @@ class LiveSession:
     def artifact_snapshot(self) -> list[dict[str, Any]]:
         return artifact_snapshot_payload(self._artifacts.list_session(self.id))
 
-    def pending_hil_snapshot(self) -> list[dict[str, Any]]:
+    def pending_hil_snapshot(self, *, blocking_only: bool = True) -> list[dict[str, Any]]:
         return [
             {
                 "request_id": row.product_request_id,
@@ -3171,7 +3477,7 @@ class LiveSession:
                 "turn_id": row.vendor_turn_id,
                 "item_id": row.vendor_item_id,
             }
-            for row in self._catalog.pending_hil(self.id)
+            for row in self._catalog.pending_hil(self.id, blocking_only=blocking_only)
         ]
 
     async def reconcile_resumed_turns(self) -> None:

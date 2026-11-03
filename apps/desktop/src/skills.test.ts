@@ -59,6 +59,79 @@ test('marketplace installation forwards the chosen activation preference', () =>
   }
 })
 
+test('delivery actions bind the original session and request without renderer filesystem paths', () => {
+  for (const action of ['status', 'check', 'skip', 'directory'] as const) {
+    const request = {
+      operation: 'plugin-delivery' as const,
+      session: 'session-one',
+      request: 'request-one',
+      action,
+    }
+    const mapped = skillRequest(request)
+    assert.equal(mapped.path, `${SKILLS_PATH}/plugins/delivery`)
+    assert.equal(mapped.init.method, 'POST')
+    assert.deepEqual(JSON.parse(String(mapped.init.body)), request)
+  }
+})
+
+test('plugin confirmation binds exact candidate digest and explicit grants', () => {
+  const request = {
+    operation: 'plugin-confirm' as const,
+    candidate: 'opaque',
+    sha256: 'digest',
+    grants: ['skills.list'],
+    confirmed: true as const,
+  }
+  const mapped = skillRequest(request)
+  assert.equal(mapped.path, `${SKILLS_PATH}/plugins/confirm`)
+  assert.equal(mapped.init.method, 'POST')
+  assert.deepEqual(JSON.parse(String(mapped.init.body)), request)
+  assert.deepEqual(mapped.init.headers, { 'Content-Type': 'application/json' })
+})
+
+test('plugin UI lookup requests its fixed interaction reference rather than current installation', () => {
+  const reference = {
+    plugin: 'research',
+    component: 'card',
+    fingerprint: 'revision-one',
+    binding: 'interaction-one',
+  }
+  const mapped = skillRequest({ operation: 'plugin-open', reference })
+  assert.equal(mapped.path, `${SKILLS_PATH}/plugins/binding`)
+  assert.equal(mapped.init.method, 'POST')
+  assert.deepEqual(JSON.parse(String(mapped.init.body)), { reference })
+  assert.equal(
+    skillRequest({ operation: 'plugin-preview-installed', name: '../other' }).path,
+    `${SKILLS_PATH}/..%2Fother/plugin`
+  )
+})
+
+test('component RPC and draft writes carry the immutable reference through bounded host routes', () => {
+  const reference = {
+    plugin: 'methods',
+    component: 'compare',
+    fingerprint: 'v1',
+    binding: 'binding-one',
+  }
+  const call = skillRequest({ operation: 'plugin-call', reference, action: 'list', values: {} })
+  assert.equal(call.path, `${SKILLS_PATH}/plugins/action`)
+  assert.deepEqual(JSON.parse(String(call.init.body)), { reference, action: 'list', values: {} })
+  const draft = skillRequest({
+    operation: 'plugin-draft',
+    reference,
+    session_id: 'session-one',
+    expected_revision: 2,
+    values: { selected: ['a'] },
+  })
+  assert.equal(draft.path, `${SKILLS_PATH}/plugins/draft`)
+  assert.deepEqual(JSON.parse(String(draft.init.body)), {
+    reference,
+    session_id: 'session-one',
+    expected_revision: 2,
+    values: { selected: ['a'] },
+  })
+})
+
 test('requests the conversation skill surface without changing the base management route', () => {
   assert.deepEqual(skillRequest({ operation: 'list' }), {
     path: SKILLS_PATH,

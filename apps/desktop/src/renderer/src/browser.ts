@@ -34,9 +34,6 @@ const COOKIE_ASSIGN = '='
 const WEB_VERSION =
   typeof __SCHOLARSEED_WEB_VERSION__ === 'string' ? __SCHOLARSEED_WEB_VERSION__ : 'dev'
 
-const noop = (): void => undefined
-const unsubscribe = (): (() => void) => noop
-
 function platform(): string {
   return navigator.platform || PLATFORM_FALLBACK
 }

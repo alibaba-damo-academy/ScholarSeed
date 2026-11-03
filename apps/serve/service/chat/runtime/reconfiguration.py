@@ -324,6 +324,12 @@ class HostReconfiguration:
                         generation = self._activities.begin()
                     if reopen and generation is not None:
                         self._activities.resume(generation, expected_phase=ActivityPhase.DRAINING)
+                    elif generation is not None:
+                        # The mutation has ended, but its unknown physical state
+                        # still fences new work. A confirmed restart may now
+                        # claim that fence and independently drain the instance.
+                        owner.close()
+                        self._activities.release_for_restart(generation)
                     self._logger.info(
                         "runtime_host_reconfiguration request_id=%s session_id=%s state=%s code=%s",
                         request_id,

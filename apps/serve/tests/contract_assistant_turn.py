@@ -148,6 +148,8 @@ class CaptureAdapter:
 
 
 class CaptureDriver:
+    projection_failed = False
+
     def __init__(self, adapter: CaptureAdapter) -> None:
         self.adapter = adapter
 
@@ -225,6 +227,178 @@ class ReadyProvider:
 
 
 class AssistantTurnContract(unittest.TestCase):
+    def test_stop_inspects_native_activity_after_product_turn_has_ended(self) -> None:
+        async def scenario() -> None:
+            self.assertFalse(self.live.running)
+            sessions = self.session_service()
+            sessions._runtime = SimpleNamespace(runtime_id=RUNTIME_ID)
+            activity = RuntimeActivitySnapshot("fixture", 0, 0, True, ("native_turn_active",))
+            with (
+                patch.object(
+                    self.live.runtime_session, "activity", new=AsyncMock(return_value=activity)
+                ),
+                patch.object(self.live, "interrupt", new=AsyncMock()) as interrupt,
+            ):
+                result = await sessions.interrupt(SESSION_ID)
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["idle"])
+            interrupt.assert_awaited_once_with(cleanup_background_processes=True)
+
+        asyncio.run(scenario())
+
+    def test_projection_recovery_requires_readable_storage(self) -> None:
+        async def scenario() -> None:
+            previous = self.live.runtime_driver
+            driver = SimpleNamespace(
+                projection_failed=True, recover_projection=AsyncMock(return_value=1)
+            )
+            self.live.runtime_driver = driver
+            error = OSError("persistent storage fault")
+            self.live._publication_error = error
+            try:
+                with patch.object(self.live.persistence, "run", new=AsyncMock(side_effect=error)):
+                    with self.assertRaises(OSError):
+                        await self.live.recover_runtime_projection()
+                driver.recover_projection.assert_not_awaited()
+                self.assertIs(self.live._publication_error, error)
+                await self.live.recover_runtime_projection()
+                driver.recover_projection.assert_awaited_once()
+                self.assertIsNone(self.live._publication_error)
+            finally:
+                self.live.runtime_driver = previous
+
+        asyncio.run(scenario())
+
+    def test_continuation_restores_only_original_turn_skill(self) -> None:
+        self.turns._events = self.events
+        skill_path = self.live.runtime_workdir / "SKILL.md"
+        skill_path.write_text("skill", encoding="utf-8")
+        reference = {"type": "skill", "id": "research", "path": str(skill_path), "status": "1"}
+        for index, origin in enumerate(("turn", "steer")):
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=self.adapter.session_id,
+                vendor_turn_id="original",
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_USER_MESSAGE,
+                payload={
+                    "origin": origin,
+                    "binding": "bound",
+                    "refs": [reference if origin == "turn" else {**reference, "id": "other"}],
+                },
+                idempotency_key=f"binding-{index}",
+            )
+        body = {"continue_turn_id": "original", "input": [{"type": "text", "text": "continue"}]}
+        restored = self.turns._continuation_input(self.live, body)
+        self.assertEqual(
+            restored["input"][-1],
+            {"type": "skill", "name": "research", "path": str(skill_path), "version": "1"},
+        )
+        self.assertEqual(len(body["input"]), 1)
+        unknown = {**body, "continue_turn_id": "unrelated"}
+        self.assertEqual(self.turns._continuation_input(self.live, unknown), unknown)
+        with patch.object(
+            self.live, "skill_identity", new=AsyncMock(return_value={"version": "2"})
+        ):
+            with self.assertRaisesRegex(ValueError, "version"):
+                asyncio.run(self.turns._typed_input(self.live, restored))
+
+    def test_continuation_ignores_cancelled_ambiguous_and_foreign_skill_records(self) -> None:
+        self.turns._events = self.events
+        reference = {"type": "skill", "id": "research", "path": "/skill/SKILL.md", "status": "1"}
+        for name, binding, references in (
+            ("cancelled", "cancelled", [reference]),
+            ("ambiguous", "bound", [reference, reference]),
+            ("unversioned", "bound", [{**reference, "status": ""}]),
+            ("valid", "admitted", [reference]),
+        ):
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=self.adapter.session_id,
+                vendor_turn_id=name,
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_USER_MESSAGE,
+                payload={"origin": "turn", "binding": binding, "refs": references},
+                idempotency_key=f"binding-{name}",
+            )
+            body = {"continue_turn_id": name, "input": [{"type": "text", "text": "continue"}]}
+            restored = self.turns._continuation_input(self.live, body)
+            self.assertEqual(len(restored["input"]), 2 if name == "valid" else 1)
+        self.assertIsNone(self.events.original_user_message_for_turn("another-session", "valid"))
+
+    def test_continuation_admission_persists_inherited_skill_for_next_recovery(self) -> None:
+        self.turns._events = self.events
+        selection = self.select(0)
+        skill_path = self.live.runtime_workdir / "SKILL.md"
+        skill_path.write_text("skill", encoding="utf-8")
+        reference = {"type": "skill", "id": "research", "path": str(skill_path), "status": "1"}
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="original",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_USER_MESSAGE,
+            payload={"origin": "turn", "binding": "bound", "refs": [reference]},
+            idempotency_key="binding-original",
+        )
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="original",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_TURN_FAILED,
+            payload={"retryable": True},
+            idempotency_key="binding-failed",
+        )
+
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            with patch.object(
+                self.live, "skill_identity", new=AsyncMock(return_value={"version": "1"})
+            ):
+                result, status = await self.turns.post(
+                    SESSION_ID,
+                    {
+                        **self.body(selection.revision),
+                        "continue_turn_id": "original",
+                        "wait": False,
+                    },
+                    side=False,
+                )
+                self.assertEqual(status, 202, result)
+                await self.adapter.started.wait()
+                try:
+                    recovery_text = "\n".join(
+                        item.get("text", "") for item in self.adapter.inputs[0].items
+                    )
+                    self.assertIn("Continuation is not an answer or approval", recovery_text)
+                    self.assertIn("Reissue any unanswered interaction", recovery_text)
+                    binding = self.live.active_skill_presentation
+                    self.assertIsNotNone(binding)
+                    self.assertEqual(binding.skill_name, "research")
+                    self.assertEqual(binding.turn_id, CLIENT_TURN)
+                    record = self.events.original_user_message_for_turn(SESSION_ID, CLIENT_TURN)
+                    self.assertIsNotNone(record)
+                    self.assertEqual(record.payload["refs"][0]["id"], "research")
+                    restored = self.turns._continuation_input(
+                        self.live,
+                        {
+                            "continue_turn_id": CLIENT_TURN,
+                            "input": [{"type": "text", "text": "continue"}],
+                        },
+                    )
+                    self.assertEqual(restored["input"][-1]["name"], "research")
+                finally:
+                    self.adapter.release.set()
+                    await self.live.current_task
+
+        asyncio.run(scenario())
+
     def crash_context(self):
         assistant = AssistantService(
             self.store,

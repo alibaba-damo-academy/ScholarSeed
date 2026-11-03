@@ -111,10 +111,9 @@ test('enables developer tools only for an interactive Vite renderer launch', () 
   assert.equal(resolveDeveloperToolsEnabled('http://localhost:5173', true, '1'), false)
 })
 
-test('requires the interactive single-instance lock outside Vite development and headless checks', () => {
-  assert.equal(requiresSingleInstanceLock(undefined, false), true)
-  assert.equal(requiresSingleInstanceLock('http://127.0.0.1:5174', false), false)
-  assert.equal(requiresSingleInstanceLock(undefined, true), false)
+test('interactive Vite instances also hold the profile lock for OS login callbacks', () => {
+  assert.equal(requiresSingleInstanceLock(false), true)
+  assert.equal(requiresSingleInstanceLock(true), false)
 })
 
 test('extracts the marked PATH from noisy login shell output', () => {

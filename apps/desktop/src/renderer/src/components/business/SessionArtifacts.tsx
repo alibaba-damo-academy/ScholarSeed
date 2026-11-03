@@ -2,7 +2,7 @@ import React from 'react'
 import { ChevronDown, ChevronRight, Folder } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { getSessionFiles, openSystemPath, type FilesResp } from '../../api'
+import { getSessionFiles, openSystemPath, type FilesResp, type TaskDocument } from '../../api'
 import { openByDefault } from '../../fileOpen'
 import { overviewArtifacts, type SessionArtifact } from '../../model'
 import { activeThread, useApp } from '../../store'
@@ -30,6 +30,7 @@ export function SessionArtifacts({
   onOpened,
   boundaryRef,
   renderActions,
+  renderLiteratureActions,
 }: {
   onOpened?: () => void
   boundaryRef?: React.RefObject<HTMLElement | null>
@@ -39,6 +40,7 @@ export function SessionArtifacts({
     absolutePath: string
     artifact?: SessionArtifact
   }) => React.ReactNode
+  renderLiteratureActions?: (document: TaskDocument) => React.ReactNode
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { state, act } = useApp()
@@ -174,24 +176,29 @@ export function SessionArtifacts({
       </div>
     )),
     ...documents.map((document) => (
-      <Button
+      <div
         key={'literature:' + document.id}
-        unstyled
-        className={OVERVIEW_ROW_CLASS}
-        disabled={!document.literature_id}
-        onClick={() => {
-          void act.openLiteratureAttachment(
-            document.literature_id,
-            document.attachment_id ?? undefined
-          )
-          onOpened?.()
-        }}
+        className="group/overview-file flex min-w-0 items-center rounded-[var(--vds-radius-4)] hover:bg-[var(--vds-bg-white-hover-transparent)] focus-within:bg-[var(--vds-bg-white-hover-transparent)]"
       >
-        <FileFormatIcon name={document.title} />
-        <EllipsisText wrapperClassName="min-w-0 flex-1" tooltipPortalled>
-          {document.title}
-        </EllipsisText>
-      </Button>
+        <Button
+          unstyled
+          className={`${OVERVIEW_ROW_CLASS} hover:!bg-transparent`}
+          disabled={!document.literature_id}
+          onClick={() => {
+            void act.openLiteratureAttachment(
+              document.literature_id,
+              document.attachment_id ?? undefined
+            )
+            onOpened?.()
+          }}
+        >
+          <FileFormatIcon name={document.title} />
+          <EllipsisText wrapperClassName="min-w-0 flex-1" tooltipPortalled>
+            {document.title}
+          </EllipsisText>
+        </Button>
+        {renderLiteratureActions?.(document)}
+      </div>
     )),
   ]
 

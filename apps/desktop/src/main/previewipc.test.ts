@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
+import type { IpcMain, IpcMainInvokeEvent } from 'electron'
 import { PREVIEW_UPDATE_IPC } from '../updates.ts'
 import type { LatestVersionMeta, PreviewUpdatePolicy, UpdateSnapshot } from '../updates.ts'
 import { previewScope } from './preview.ts'
@@ -51,7 +52,7 @@ function candidate(version: string): LatestVersionMeta {
   }
 }
 function harness(preview = true) {
-  const handlers = new Map<string, (...args: any[]) => any>()
+  const handlers = new Map<string, Parameters<IpcMain['handle']>[1]>()
   const events: string[] = []
   const frame = {},
     sender = {}
@@ -67,7 +68,8 @@ function harness(preview = true) {
     previewScope,
     updatePreparation: preparation,
     ipcMain: {
-      handle: (channel: string, handler: (...args: any[]) => any) => handlers.set(channel, handler),
+      handle: (channel: string, handler: Parameters<IpcMain['handle']>[1]) =>
+        handlers.set(channel, handler),
     },
     requireDesktopWorkbench: () => {},
     isMainWindowSender: (s: unknown, f: unknown) => s === sender && f === frame,
@@ -120,7 +122,7 @@ function harness(preview = true) {
   }
   runInNewContext(code, context)
   const call = (channel: string, ...args: unknown[]) =>
-    handlers.get(channel)!({ sender, senderFrame: frame }, ...args)
+    handlers.get(channel)!({ sender, senderFrame: frame } as unknown as IpcMainInvokeEvent, ...args)
   return {
     context,
     handlers,
@@ -161,7 +163,7 @@ test('select starts only the chosen target; cancel drains it and preserves scope
 test('unlisted IDs, release invocations, subframes and handoff reject without mutation', async () => {
   const h = harness()
   await assert.rejects(h.call(PREVIEW_UPDATE_IPC.select, 'arbitrary'), /not listed/)
-  const invalid = { sender: {}, senderFrame: {} }
+  const invalid = { sender: {}, senderFrame: {} } as unknown as IpcMainInvokeEvent
   await assert.rejects(
     h.handlers.get(PREVIEW_UPDATE_IPC.scope)!(invalid, 'current-version'),
     /sender/

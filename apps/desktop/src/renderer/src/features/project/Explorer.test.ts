@@ -11,13 +11,34 @@ const compiled = transformSync(readFileSync(new URL('./Explorer.tsx', import.met
   jsx: 'transform',
 }).code
 
-type Element = React.ReactElement<Record<string, any>>
+interface ElementProps {
+  [name: string]: unknown
+  children: React.ReactNode
+  className: string
+  leftPanel: Element
+  rightPanel: Element
+  creation: { row: Element; parent: string }
+  expanded: Set<string>
+  icon: Element
+  onChange: (event: { target: { value: string } }) => void
+  onKeyDown: (event: {
+    key: string
+    nativeEvent: { isComposing: boolean }
+    preventDefault: () => void
+  }) => void | Promise<void>
+  onBlur: () => void | Promise<void>
+  onClick: () => void | Promise<void>
+  onSelect: (item?: Record<string, unknown>) => void | Promise<void>
+  onMenu: (item: Record<string, unknown>, left: number, top: number) => void
+}
+
+type Element = React.ReactElement<ElementProps>
 
 function descendants(element: Element): Element[] {
   return [
     element,
     ...React.Children.toArray(element.props.children).flatMap((child) =>
-      React.isValidElement(child) ? descendants(child as Element) : []
+      React.isValidElement<ElementProps>(child) ? descendants(child as Element) : []
     ),
   ]
 }
@@ -58,7 +79,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
         if (index === 5) hooks[index] = 'document'
         return [
           hooks[index],
-          (value: any) => {
+          (value: unknown) => {
             hooks[index] = typeof value === 'function' ? value(hooks[index]) : value
           },
         ]
@@ -151,7 +172,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
   for (const collapsed of [false, true, false]) {
     const surface = render()
     const toolbar = React.Children.toArray(surface.props.children).find(
-      (child) => React.isValidElement(child) && child.type === 'header'
+      (child) => React.isValidElement<ElementProps>(child) && child.type === 'header'
     ) as Element | undefined
     assert.ok(toolbar, 'toolbar must be a direct child above the split panels')
     const controls = descendants(toolbar)
@@ -160,7 +181,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
     const tooltip = controls.find((child) => child.type === 'Tooltip')
     assert.ok(tooltip, 'tree toggle exposes a tooltip')
     assert.equal(tooltip.props.content, collapsed ? 'explorerExpandTree' : 'explorerHideTree')
-    assert.equal(tooltip.props.children.props, toggle.props)
+    assert.equal((tooltip.props.children as Element).props, toggle.props)
     assert.equal(toggle.props.title, '')
     assert.equal(toggle.props['aria-expanded'], !collapsed)
     assert.equal(toggle.props['aria-pressed'], !collapsed)

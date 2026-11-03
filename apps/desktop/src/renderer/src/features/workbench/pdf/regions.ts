@@ -40,7 +40,7 @@ const POLICY = {
   formulaIdentifiers: 2,
 } as const
 const CAPTION = /^\s*(fig(?:ure)?s?\.?|tables?|图|表)\s*(?:[A-Z]?\d+|[IVX]+)(?:\b|[.:：、])/i
-const EQUATION_NUMBER = /^\s*\(\d+(?:[.\-]\d+)*\)\s*$/
+const EQUATION_NUMBER = /^\s*\(\d+(?:[.-]\d+)*\)\s*$/
 const RELATION = /[=<>≤≥≈≠∈∼∝→⇒⇔]/u
 const LARGE_OPERATOR = /[∑∏∫√]/u
 const OPERATOR = /[=+−\-*/^_|<>≤≥≈≠∑∏∫√∞∂∇]/gu

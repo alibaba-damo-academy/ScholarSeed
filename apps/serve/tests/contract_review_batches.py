@@ -26,7 +26,7 @@ from service.platform.resources import (
     TurnOutcome,
 )
 from service.resources.api.versions import register_version_routes
-from service.resources.persistence.version import VersionStore
+from service.resources.persistence.version import VersionStore, VersionStoreConflict
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.batch import ResourceReviewBatchError, ResourceReviewBatchService
 from service.resources.service.delivery import ResourceDeliveryService
@@ -60,6 +60,27 @@ class Settings:
 
 
 class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recovered_runtime_tool_event_is_durable_and_idempotent(self) -> None:
+        await self.delivery.begin_turn("session", "replay", self.project.root)
+        await self.delivery.bind_turn("session", "replay", "native-replay", "generation")
+        for _ in range(2):
+            await self.delivery.record_tool_call(
+                "session",
+                "native-replay",
+                {"command": "same"},
+                generation="generation",
+                event_id="original-runtime-event",
+            )
+        self.assertEqual(len(self.store.turn_tool_calls("session", "replay")), 1)
+        with self.assertRaisesRegex(VersionStoreConflict, "runtime_event_conflict"):
+            await self.delivery.record_tool_call(
+                "session",
+                "native-replay",
+                {"command": "different"},
+                generation="generation",
+                event_id="original-runtime-event",
+            )
+
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)

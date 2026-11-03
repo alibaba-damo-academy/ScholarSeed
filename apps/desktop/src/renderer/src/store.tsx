@@ -1,4 +1,5 @@
 import { availabilityPolicy } from './app/policy'
+import type { ComposerReference } from './contracts/assistant'
 import { previewFormat } from './features/workbench/preview/routing'
 import { ASSISTANT_CONTEXT_REVISION_CONFLICT } from './contracts/assistant'
 import {
@@ -92,7 +93,6 @@ import {
   type ProductTaskType,
   interruptSession,
   listQueuedMessages,
-  listSessions,
   prepareRuntime,
   getRuntimePreparation,
   getSharedRuntimeReconfiguration,
@@ -164,7 +164,6 @@ import {
   sentAnswerAnnotationIds,
   submittedContextRefIds,
   mergeContextCandidates,
-  AssistantContextError,
   INITIAL_AI_PANEL_STATE,
 } from './features/assistant/state'
 import {
@@ -211,11 +210,7 @@ import type {
 } from './contracts/assistant'
 import type { AssistantSourceContribution } from './contracts/features'
 import type { LiteratureDetail, LiteratureSearchTask } from './contracts/literature'
-import type {
-  FindTextReveal,
-  LiteratureDocumentSource,
-  SessionFileSource,
-} from './contracts/workbench'
+import type { FindTextReveal } from './contracts/workbench'
 import {
   LITERATURE_EXCERPT_SOURCE_KIND,
   LITERATURE_EXCERPT_VIEW_STATE_KEY,
@@ -326,7 +321,6 @@ import {
   FIXED_TAB_BY_VIEW,
   fixedTabForView,
   LITERATURE_TAB,
-  openFileTab,
   openFixedTab,
   openWorkbenchTab,
   restoreProjectWorkbenchTab,
@@ -363,7 +357,8 @@ function preparationSnapshot(state: AppState): PreparationSnapshot {
       state.catalog.models,
       state.model,
       state.activeSession,
-      state.threads
+      state.threads,
+      state.draftModelId
     ),
   }
 }
@@ -484,40 +479,11 @@ export interface ModelCatalog {
   personalProfiles: PersonalApiProfilesResp | null
 }
 
-export type ComposerReference =
-  | {
-      type: 'skill'
-      id: string
-      title: string
-      status?: string
-      path: string
-      version?: string
-    }
-  | {
-      type: 'file'
-      id: string
-      title: string
-      status?: string
-      path: string
-      referenceId?: string
-      registrationRequired?: boolean
-      previewSource?: LiteratureDocumentSource | SessionFileSource
-      mediaType?: string
-      sha256?: string
-      size?: number
-    }
-  | {
-      type: 'directory'
-      id: string
-      title: string
-      status?: string
-      path: string
-      referenceId?: string
-      registrationRequired?: boolean
-    }
+export type { ComposerReference } from './contracts/assistant'
 
 export interface DraftSeed {
   submit?: boolean
+  modelId?: string
   composerText?: string
   composerRefs?: ComposerReference[]
   /** Explicit project assignment for a draft opened from a project's add action. */
@@ -566,6 +532,7 @@ export interface AppState {
   wdMenuOpen: boolean
   notifPanelOpen: boolean
   model: string
+  draftModelId: string | null
   runtimePreparation: RuntimePreparation | null
   runtimePreparationTarget: string | null
   draftGeneration: number
@@ -873,6 +840,7 @@ const INITIAL: AppState = {
   wdMenuOpen: false,
   notifPanelOpen: false,
   model: '',
+  draftModelId: null,
   runtimePreparation: null,
   runtimePreparationTarget: null,
   draftGeneration: 0,
@@ -984,6 +952,7 @@ const SURFACE_RESET: Partial<AppState> = {
 }
 
 const COMPOSER_RESET: Partial<AppState> = {
+  draftModelId: null,
   composerSubmitRequested: false,
   archivedSession: null,
   composerTaskType: '',
@@ -1831,6 +1800,7 @@ export function StoreProvider({
           ...(persistDefault
             ? {
                 model: modelId,
+                draftModelId: current.draftModelId ? modelId : null,
                 modelSelectionGeneration: current.modelSelectionGeneration + 1,
                 foregroundError: null,
                 ...(current.turnLaunch?.phase === 'preparing' ? { turnLaunch: null } : {}),
@@ -1909,6 +1879,26 @@ export function StoreProvider({
     draftGeneration: number
     started: boolean
   } | null>(null)
+  useEffect(() => {
+    // Confirmed login replaces the authority of pending and completed preparations.
+    const restored = (): void => {
+      preparationControllerRef.current?.dispose()
+      preparationControllerRef.current = null
+      preparationIntentRef.current = null
+      preparationPublicationRef.current = null
+      preparationSequenceRef.current += 1
+      startupPreparation.current = null
+      setState((current) => ({
+        ...current,
+        modelCatalogInstanceId: null,
+        runtimePreparation: null,
+        runtimePreparationTarget: null,
+        modelSelectionGeneration: current.modelSelectionGeneration + 1,
+      }))
+    }
+    window.addEventListener('scholarseed:auth-restored', restored)
+    return () => window.removeEventListener('scholarseed:auth-restored', restored)
+  }, [setState])
   useEffect(() => {
     const instance = state.serviceInstanceId
     if (
@@ -2552,7 +2542,6 @@ export function StoreProvider({
       const clientActionId = identity?.clientActionId ?? crypto.randomUUID()
       const clientAttemptId = crypto.randomUUID()
       if (!projectId) {
-        const error = '请先选择项目，再使用 AI 翻译。'
         setState((value) => ({
           ...value,
           aiPanel: {
@@ -6433,6 +6422,13 @@ export function StoreProvider({
           }
         }),
       startDraft: (seed = {}) => {
+        if (
+          seed.modelId &&
+          !stateRef.current.catalog.models.some(
+            (model) => model.key === seed.modelId && !model.disabled
+          )
+        )
+          throw new Error('draft_model_unavailable')
         composerDraft.current!.set(seed.composerText ?? '')
         setState((current) => {
           rememberScopeConversation(current)
@@ -6448,6 +6444,13 @@ export function StoreProvider({
           return {
             ...current,
             ...HOME_RESET,
+            ...(seed.modelId
+              ? {
+                  model: seed.modelId,
+                  draftModelId: seed.modelId,
+                  modelSelectionGeneration: current.modelSelectionGeneration + 1,
+                }
+              : {}),
             mainView: assistantSessionView(current, seed.projectId),
             draftGeneration: current.draftGeneration + 1,
             runtimePreparation: null,
@@ -6467,7 +6470,9 @@ export function StoreProvider({
           const models = catalog.available_models ?? []
           return {
             ...current,
-            model: selectableCatalogModelKey(catalog.current_model, models, current.model),
+            model: current.draftModelId
+              ? current.draftModelId
+              : selectableCatalogModelKey(catalog.current_model, models, current.model),
             modelCatalogInstanceId: catalog.service_instance_id,
             catalog: {
               ...current.catalog,
@@ -6758,6 +6763,8 @@ export function StoreProvider({
       },
     }))
   }, [state.activeSession, assistantProject(state).projectPath])
+
+  useEffect(() => window.scholarseed.onPluginNavigation?.(() => act.openSettings('skills')), [act])
 
   const value = useMemo(
     () => ({

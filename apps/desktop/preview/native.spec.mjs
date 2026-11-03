@@ -87,6 +87,28 @@ async function reloadCenter(action) {
   await expect(product.getByTestId('project-center')).toBeVisible()
 }
 
+test('literature grid surfaces cover every configured column when horizontally scrolled', { annotation: { type: INITIAL_TARGET_ANNOTATION, description: JSON.stringify({ pageId: 'page-literature', sceneId: 'library-populated' }) } }, async () => {
+  await scenario('page-literature', 'library-populated')
+  await expect(product.locator('.lit-row').first()).toBeVisible()
+  const table = product.locator('.lit-table')
+  await table.evaluate(element => { element.scrollLeft = element.scrollWidth })
+  for (const selector of ['.lit-table-head', '.lit-row']) {
+    for (const surface of await table.locator(selector).all()) {
+      const geometry = await surface.evaluate(element => {
+        const tracks = getComputedStyle(element).gridTemplateColumns.split(' ').map(parseFloat)
+        return { width: element.clientWidth, columnsWidth: tracks.reduce((total, width) => total + width, 0) }
+      })
+      expect(geometry.width).toBeGreaterThanOrEqual(geometry.columnsWidth)
+    }
+  }
+  await product.getByRole('button', { name: '展开附件', exact: true }).first().click()
+  await expect(table.locator('.lit-attachment-row').first()).toBeVisible()
+  const headerWidth = await table.locator('.lit-table-head').evaluate(element => element.clientWidth)
+  for (const attachment of await table.locator('.lit-attachment-row').all()) {
+    expect(await attachment.evaluate(element => element.clientWidth)).toBe(headerWidth)
+  }
+})
+
 test('native product uses top-level shared renderer, real OS fonts and isolated secure windows', async ({}, testInfo) => {
   const observed = await product.evaluate(async () => {
     const fonts = await window.scholarseed.listOfficeFonts()

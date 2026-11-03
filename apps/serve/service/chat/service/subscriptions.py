@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import sqlite3
@@ -16,7 +17,9 @@ from service.chat.service.completions import (
     CompletionBridge,
     CompletionCredentialError,
     CompletionRegistration,
+    CompletionRequestError,
 )
+from service.chat.service.rejections import SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE
 from service.chat.service.transport import retryable_connect_failure, transport_diagnostics
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.settings.authorization import BrowserAuthorization
@@ -74,6 +77,9 @@ _SUBSCRIPTION_SECRET_PATTERN = re.compile(
 LOGGER = logging.getLogger(__name__)
 RESPONSE_ITEM_REFERENCE = "item_reference"
 RESPONSE_ITEM_ID = "id"
+UNSUPPORTED_SUBSCRIPTION_INPUT_TYPES = frozenset(
+    {"agent_message", "multi_agent_call", "multi_agent_call_output"}
+)
 UNSUPPORTED_RESPONSE_FIELDS = frozenset(
     {
         "background",
@@ -687,6 +693,7 @@ class SubscriptionService:
         turn_id_provider: Callable[[str], str] | None = None,
         catalog_activity: ActivityLease | None = None,
         catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        catalog_identity: str = "",
     ) -> CompletionRegistration:
         profile = self.profile(owner_id, connection_id)
         if not profile.get(ENABLED_KEY) or model_id not in {
@@ -729,6 +736,20 @@ class SubscriptionService:
             with self._activities.continue_from(parent, ActivityDomain.CREDENTIAL):
                 return await self.resolve(owner, connection)
 
+        def renewal_source() -> object:
+            record = self.credentials.read(owner_id, connection_id)
+            return (
+                self._closed,
+                owner_id,
+                connection_id,
+                model_id,
+                self.profile(owner_id, connection_id),
+                record.generation,
+                record.state.value,
+                self._owner_epochs.get(owner_id, 0),
+                self._connection_epochs.get((owner_id, connection_id), 0),
+            )
+
         return self.bridge.register(
             endpoint=policy.responses_endpoint,
             responses_endpoint=policy.responses_endpoint,
@@ -746,6 +767,12 @@ class SubscriptionService:
             reasoning_effort=reasoning_effort,
             turn_id_provider=turn_id_provider,
             provider=OPENAI_PROVIDER,
+            renewal_source=renewal_source,
+            resume_scope=(
+                json.dumps({"model": model_id, "catalog": catalog_identity}, sort_keys=True)
+                if session_id
+                else ""
+            ),
         )
 
     @staticmethod
@@ -773,6 +800,12 @@ class SubscriptionService:
         if not isinstance(items, list):
             raise OAuthFailure("oauth_capability_unsupported")
         for item in items:
+            if (
+                isinstance(item, Mapping)
+                and isinstance(item.get("type"), str)
+                and item.get("type") in UNSUPPORTED_SUBSCRIPTION_INPUT_TYPES
+            ):
+                raise CompletionRequestError(SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE)
             if (
                 not isinstance(item, Mapping)
                 or item.get("type") == RESPONSE_ITEM_REFERENCE

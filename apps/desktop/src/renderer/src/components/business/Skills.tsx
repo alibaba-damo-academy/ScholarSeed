@@ -30,6 +30,8 @@ import {
   type SkillUploadPreview,
 } from '../../api'
 import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
+import { PluginPreview, PluginPreviewDialog, type PluginPreviewRequest } from './Plugin'
+import type { PluginReport, PluginInstallationReceipt } from '../../../../plugins'
 import { Icon } from '../../icons'
 import {
   productSkillGroup,
@@ -38,10 +40,11 @@ import {
   skillName,
   skillDocumentBody,
   SKILL_GROUPS,
-  SKILL_LOGIN_REQUIRED,
   type SkillInstallNotice,
   skillMutationMessage,
   type SkillMutationMessage,
+  skillUseFailureMessage,
+  type TaskStarterSkillFailure,
 } from '../../skill'
 import { useApp } from '../../store'
 import { resolveTaskStarterSkill } from '../../skill'
@@ -105,6 +108,8 @@ import {
 const TAB_MARKETPLACE = 'marketplace'
 const TAB_SYSTEM = 'scholarseed'
 const TAB_USER = 'user'
+const PLUGIN_PREVIEW_VISIBLE = false
+const HIDDEN_SYSTEM_SKILLS: ReadonlySet<string> = new Set(['plugin-create'])
 const SKILL_TABS = [
   { id: TAB_MARKETPLACE, labelKey: 'groups.all' },
   { id: TAB_SYSTEM, labelKey: 'groups.scholarseed' },
@@ -118,7 +123,7 @@ const LIST_SCROLL_CLASS = 'h-full min-h-0 overflow-y-auto'
 const LOADING_TEXT_CLASS =
   'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]'
 const SEARCH_EMPTY_CLASS =
-  'min-h-[var(--vds-skills-empty-height)] w-full content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
+  'min-h-[var(--vds-skills-empty-height)] flex-1 w-full content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
 const GRID_CLASS = 'grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2 lg:grid-cols-3'
 const CARD_CLASS =
   'group relative isolate flex flex-col gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] !bg-transparent hover:!bg-[var(--vds-bg-gray-default-transparent)] py-[var(--vds-space-3)] !shadow-none'
@@ -147,6 +152,17 @@ function installationLabel(skill: SkillInfo, t: TFunction<'skills'>): string {
     default:
       return t('attribution.local')
   }
+}
+
+function SkillUseFailure({
+  failure,
+  skill,
+}: {
+  failure: TaskStarterSkillFailure
+  skill: SkillInfo
+}): React.JSX.Element {
+  const { t: translate } = useTranslation('skills')
+  return <>{skillUseFailureMessage(translate, failure, skillName(skill))}</>
 }
 
 function SkillAttribution({ skill }: { skill: SkillAttributionInfo }): React.JSX.Element {
@@ -216,7 +232,7 @@ function SkillNotice({ notice }: { notice: SkillPageNotice | string }): React.JS
       ) : (
         <>
           {t(notice.key)}
-          {notice.detail && <span> {notice.detail}</span>}
+          {'detail' in notice && notice.detail && <span> {notice.detail}</span>}
         </>
       )}
     </>
@@ -257,6 +273,9 @@ export function Skills(): React.JSX.Element {
   const listRef = React.useRef<HTMLDivElement>(null)
   const paginationRef = React.useRef<HTMLDivElement>(null)
   const [loading, setLoading] = React.useState(true)
+  const loaded = React.useRef(false)
+  const [loadError, setLoadError] = React.useState<SkillPageNotice | null>(null)
+  const loadRequest = React.useRef(0)
   const [notice, setNotice] = React.useState<SkillPageNotice | string | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [toggling, setToggling] = React.useState<ReadonlySet<string>>(new Set())
@@ -267,23 +286,26 @@ export function Skills(): React.JSX.Element {
   const [useProject, setUseProject] = React.useState('')
   const [useDescription, setUseDescription] = React.useState('')
   const [removing, setRemoving] = React.useState<SkillInfo | null>(null)
+  const [preview, setPreview] = React.useState<PluginPreviewRequest | null>(null)
   const [loginSkill, setLoginSkill] = React.useState<string | null>(null)
-  const localGeneration = React.useRef(0)
-  const loaded = React.useRef(false)
   const activationRevision = React.useRef(0)
   const activationChanges = React.useRef(
     new Map<string, { enabled: boolean; revision: number; pending: boolean }>()
   )
 
   const load = React.useCallback(async (): Promise<void> => {
-    const request = ++localGeneration.current
+    const request = ++loadRequest.current
     const activation = activationRevision.current
     setLoading(!loaded.current)
     try {
       const rows = await getSkills(SKILL_SURFACE_SETTINGS, language)
-      if (request !== localGeneration.current) return
+      if (request !== loadRequest.current) return
       const next = rows
-        .filter((row) => productSkillGroup(row.group) !== null)
+        .filter(
+          (row) =>
+            productSkillGroup(row.group) !== null &&
+            !(row.group === TAB_SYSTEM && HIDDEN_SYSTEM_SKILLS.has(row.name))
+        )
         .map((row) => {
           const change = activationChanges.current.get(row.name)
           return change && (change.pending || change.revision > activation)
@@ -293,16 +315,14 @@ export function Skills(): React.JSX.Element {
       for (const [name, change] of activationChanges.current) {
         if (!change.pending && change.revision <= activation) activationChanges.current.delete(name)
       }
-      loaded.current = true
       setSkills(next)
-      setNotice((current) =>
-        current && typeof current !== 'string' && current.key === 'loadFailed' ? null : current
-      )
+      loaded.current = true
+      setLoadError(null)
     } catch (error) {
-      if (request !== localGeneration.current) return
+      if (request !== loadRequest.current) return
       toast({ tone: 'error', title: t('loadFailed') })
       if (!loaded.current)
-        setNotice({
+        setLoadError({
           key: 'loadFailed',
           detail:
             error instanceof SkillCatalogError
@@ -312,7 +332,7 @@ export function Skills(): React.JSX.Element {
                 : undefined,
         })
     } finally {
-      if (request === localGeneration.current) setLoading(false)
+      if (request === loadRequest.current) setLoading(false)
     }
   }, [toast, t, language])
   const updates = useSkillUpdates(skills, load)
@@ -345,7 +365,7 @@ export function Skills(): React.JSX.Element {
   React.useEffect(() => {
     void load()
     return () => {
-      localGeneration.current += 1
+      loadRequest.current += 1
     }
   }, [load, revision])
 
@@ -457,7 +477,9 @@ export function Skills(): React.JSX.Element {
     }
   }
 
-  const loadFailed = notice !== null && typeof notice !== 'string' && notice.key === 'loadFailed'
+  const openPlugin = (name: string): void =>
+    setPreview({ operation: 'plugin-preview-installed', name })
+
   const keyword = query.trim().toLocaleLowerCase()
   const selectedLabel = tab === TAB_MARKETPLACE ? market.label : ''
   const illustratedEmpty =
@@ -647,6 +669,14 @@ export function Skills(): React.JSX.Element {
           </div>
         )}
       </div>
+      {notice && (
+        <div role="status" className="flex items-center gap-[var(--vds-space-2)] text-sm">
+          <SkillNotice notice={notice} />
+          <Button variant="ghost" onClick={() => setNotice(null)} aria-label={t('dismiss')}>
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+      )}
       <ScrollArea
         overlay
         className="min-h-0 flex-1"
@@ -746,15 +776,20 @@ export function Skills(): React.JSX.Element {
                 )}
               </>
             )
-          ) : loading ? (
+          ) : loading && skills.length === 0 ? (
             <SkillLoading />
-          ) : loadFailed ? (
+          ) : loadError && skills.length === 0 ? (
             <div className="flex flex-1 items-center justify-center">
               <EmptyState
                 data-testid="skills-load-error"
-                title={<SkillNotice notice={notice} />}
+                title={<SkillNotice notice={loadError} />}
                 action={
-                  <Button variant="outline" onClick={() => void load()}>
+                  <Button
+                    variant="outline"
+                    disabled={loading}
+                    onClick={() => void load()}
+                    data-testid="skills-load-retry"
+                  >
                     {t('retry')}
                   </Button>
                 }
@@ -762,12 +797,14 @@ export function Skills(): React.JSX.Element {
             </div>
           ) : (
             <>
-              {visible.length === 0 && (
+              {loaded.current && !loadError && visible.length === 0 && (
                 <div
                   className={
-                    illustratedEmpty || keyword || selectedLabel
+                    illustratedEmpty
                       ? ''
-                      : 'flex flex-1 items-center justify-center'
+                      : keyword || selectedLabel
+                        ? 'flex flex-1'
+                        : 'flex flex-1 items-center justify-center'
                   }
                 >
                   <EmptyState
@@ -945,6 +982,16 @@ export function Skills(): React.JSX.Element {
                               </CardDescription>
                             </CardContent>
                             <CardFooter className="pointer-events-none !mt-0 mx-[var(--vds-space-4)] !justify-start border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-2)]">
+                              {PLUGIN_PREVIEW_VISIBLE && skill.plugin && (
+                                <Button
+                                  variant="ghost"
+                                  className="pointer-events-auto relative z-[var(--vds-z-local-raised)]"
+                                  disabled={!skill.enabled}
+                                  onClick={() => void openPlugin(skill.name)}
+                                >
+                                  {t('plugin.open')}
+                                </Button>
+                              )}
                               <Badge
                                 size="sm"
                                 variant="secondary"
@@ -1144,6 +1191,7 @@ export function Skills(): React.JSX.Element {
           </DialogContent>
         </DialogPortal>
       </Dialog>
+      {preview && <PluginPreviewDialog request={preview} onClose={() => setPreview(null)} />}
       <Dialog
         open={using !== null}
         onOpenChange={(open) => {
@@ -1208,7 +1256,11 @@ export function Skills(): React.JSX.Element {
                   if (!using || !state.projects.some((project) => project.id === useProject)) return
                   const result = resolveTaskStarterSkill(skills, using.name)
                   if (!result.reference) {
-                    toast({ tone: 'error', title: t('try.unavailable') })
+                    toast({
+                      tone: 'error',
+                      title: <SkillUseFailure failure={result.failure} skill={using} />,
+                      dedupeKey: `skill-use:${using.name}:${result.failure}`,
+                    })
                     return
                   }
                   act.startDraft({
@@ -1275,7 +1327,13 @@ export function Skills(): React.JSX.Element {
           onDone={async (message) => {
             setAdding(false)
             setNotice(null)
-            toast({ tone: 'success', title: t(message.key, { name: message.name }) })
+            toast({
+              tone: 'success',
+              title:
+                message.key === 'plugin.uiUpdated'
+                  ? t('plugin.uiUpdated')
+                  : t(message.key, { name: message.name }),
+            })
             await load()
           }}
         />
@@ -1317,12 +1375,211 @@ export function Skills(): React.JSX.Element {
   )
 }
 
+export function PluginInstallation({
+  report,
+  done,
+  busy,
+  session,
+  request,
+  onAnswer,
+}: {
+  report: PluginReport
+  done: boolean
+  busy: boolean
+  session: string | null
+  request: string
+  answer?: string
+  onAnswer?: (receipt: PluginInstallationReceipt | null) => Promise<void>
+}): React.JSX.Element {
+  const { t } = useTranslation('skills')
+  const [reviewing, setReviewing] = React.useState(false)
+  const [preview, setPreview] = React.useState(false)
+  const [checked, setChecked] = React.useState(report)
+  const [working, setWorking] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const [state, setState] = React.useState<{
+    status: 'pending' | 'skipped' | 'failed' | 'installed' | 'unknown' | 'installing'
+    receipt?: PluginInstallationReceipt
+    error?: string
+  }>({ status: 'unknown' })
+  const delivery = React.useCallback(
+    async (action: 'status' | 'check' | 'skip' | 'directory') => {
+      if (!session) throw new Error('plugin_delivery_session_unavailable')
+      const response = await window.scholarseed.deviceSkills({
+        operation: 'plugin-delivery',
+        session,
+        request,
+        action,
+      })
+      if (response.status >= 400) throw new Error(response.body)
+      return JSON.parse(response.body) as typeof state & { report?: PluginReport }
+    },
+    [session, request]
+  )
+  React.useEffect(() => {
+    let active = true
+    void delivery('status')
+      .then((result) => {
+        if (active) setState(result)
+      })
+      .catch((reason) => {
+        if (active) {
+          setState({ status: 'unknown' })
+          setError(String(reason))
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [delivery])
+  const act = async (action: 'preview' | 'install' | 'skip' | 'directory'): Promise<void> => {
+    if (working || busy) return
+    setWorking(true)
+    setError('')
+    try {
+      const result = await delivery(
+        action === 'skip' ? 'skip' : action === 'directory' ? 'directory' : 'check'
+      )
+      setState(result)
+      if (action === 'skip') {
+        if (!done) await onAnswer?.(result.receipt ?? null)
+        return
+      }
+      if (action === 'directory') return
+      if (result.report) setChecked(result.report)
+      if (action === 'preview' && result.report) setPreview(true)
+      if (
+        action === 'install' &&
+        result.status !== 'unknown' &&
+        result.status !== 'installed' &&
+        result.report
+      )
+        setReviewing(true)
+    } catch (reason) {
+      setError(String(reason))
+    } finally {
+      setWorking(false)
+    }
+  }
+  const installed = state.status === 'installed' ? state.receipt : undefined
+  const statusLabels = {
+    pending: t('installation.states.pending'),
+    skipped: t('installation.states.skipped'),
+    failed: t('installation.states.failed'),
+    installed: t('installation.states.installed'),
+    unknown: t('installation.states.unknown'),
+    installing: t('installation.states.installing'),
+  }
+  const previewRequest = React.useMemo<PluginPreviewRequest | null>(
+    () =>
+      checked.candidate
+        ? { operation: 'plugin-preview', candidate: checked.candidate, sha256: checked.sha256 }
+        : null,
+    [checked.candidate, checked.sha256]
+  )
+  return (
+    <Card data-testid="plugin-installation-card">
+      <CardHeader>
+        <CardTitle>{t('installation.title')}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-[var(--vds-space-3)] break-words">
+        <p>
+          <Button
+            unstyled
+            disabled={working}
+            onClick={() => void act('directory')}
+            className="underline underline-offset-2"
+          >
+            {report.descriptor?.id} · {report.descriptor?.version}
+          </Button>{' '}
+          · {t(installed ? 'installation.installedDirectory' : 'installation.generatedDirectory')}
+        </p>
+        <p role="status">{statusLabels[state.status]}</p>
+        {(error || state.error) && <p role="alert">{error || state.error}</p>}
+        <div className="flex flex-wrap justify-end gap-[var(--vds-space-2)]">
+          {!done && !installed && state.status !== 'skipped' && (
+            <Button variant="outline" disabled={busy || working} onClick={() => void act('skip')}>
+              {t('installation.defer')}
+            </Button>
+          )}
+          {PLUGIN_PREVIEW_VISIBLE && !!report.descriptor?.components.length && (
+            <Button
+              variant="outline"
+              disabled={busy || working}
+              onClick={() => void act('preview')}
+            >
+              {t('plugin.preview')}
+            </Button>
+          )}
+          {!installed && (
+            <Button disabled={busy || working || !report.valid} onClick={() => void act('install')}>
+              {t(
+                state.status === 'failed'
+                  ? 'installation.retry'
+                  : state.status === 'unknown'
+                    ? 'installation.reconcile'
+                    : 'installation.install'
+              )}
+            </Button>
+          )}
+          {!done && installed && onAnswer && (
+            <Button disabled={busy} onClick={() => void onAnswer(installed)}>
+              {t('installation.returnResult')}
+            </Button>
+          )}
+        </div>
+      </CardContent>
+      {preview && previewRequest && (
+        <PluginPreviewDialog request={previewRequest} onClose={() => setPreview(false)} />
+      )}
+      {reviewing && (
+        <SkillAdd
+          initialReport={checked}
+          onClose={() => {
+            setReviewing(false)
+            void delivery('status')
+              .then(setState)
+              .catch((reason) => setError(String(reason)))
+          }}
+          onDone={async () => undefined}
+          onFailure={async (failure) => {
+            setReviewing(false)
+            setError(failure)
+            try {
+              const result = await delivery('status')
+              setState(
+                result.status === 'pending' || result.status === 'skipped'
+                  ? { ...result, status: 'failed' }
+                  : result
+              )
+            } catch (reason) {
+              setState({ status: 'unknown' })
+              setError(`${failure}; ${String(reason)}`)
+            }
+          }}
+          onInstalled={async (result) => {
+            setState({ status: 'installed', receipt: result })
+            setReviewing(false)
+            if (!done) await onAnswer?.(result)
+          }}
+        />
+      )}
+    </Card>
+  )
+}
+
 export function SkillAdd({
   onClose,
   onDone,
+  initialReport,
+  onInstalled,
+  onFailure,
 }: {
   onClose: () => void
   onDone: (message: SkillInstallNotice) => Promise<void>
+  initialReport?: PluginReport
+  onInstalled?: (receipt: PluginInstallationReceipt) => Promise<void>
+  onFailure?: (failure: string) => Promise<void>
 }): React.JSX.Element {
   const { t } = useTranslation('skills')
   const { t: ui } = useTranslation('ui')
@@ -1333,11 +1590,17 @@ export function SkillAdd({
   const [file, setFile] = React.useState<File | null>(null)
   const [over, setOver] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
-  const [preview, setPreview] = React.useState<SkillUploadPreview | null>(null)
+  const [preview, setPreview] = React.useState<PluginPreviewRequest | null>(null)
+  const [report, setReport] = React.useState<PluginReport | null>(initialReport ?? null)
+  const [slotConflict, setSlotConflict] = React.useState(false)
+  const [uploadPreview, setUploadPreview] = React.useState<SkillUploadPreview | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const pick = async (source: readonly File[] | DataTransfer, directory = false): Promise<void> => {
     if ((Array.isArray(source) && !source.length) || busy) return
     setPreview(null)
+    setReport(null)
+    setSlotConflict(false)
+    setUploadPreview(null)
     setError(null)
     setFile(null)
     setBusy(true)
@@ -1354,7 +1617,7 @@ export function SkillAdd({
         return
       }
       setFile(incoming)
-      setPreview(await previewSkillFile(incoming))
+      setUploadPreview(await previewSkillFile(incoming))
     } catch (failure) {
       setError(
         failure instanceof Error && failure.message !== 'invalid_directory'
@@ -1366,7 +1629,7 @@ export function SkillAdd({
     }
   }
   const install = async (): Promise<void> => {
-    if (!file || !preview || busy) return
+    if (!file || !uploadPreview || uploadPreview.plugin || busy) return
     setBusy(true)
     try {
       const result = await uploadSkillFile(file)
@@ -1401,6 +1664,76 @@ export function SkillAdd({
       setBusy(false)
     }
   }
+  const pluginOperation = async (
+    operation: 'check' | 'preview' | 'confirm',
+    enable = true
+  ): Promise<void> => {
+    if (busy || (operation === 'check' ? !file : !report?.candidate)) return
+    setBusy(true)
+    try {
+      const request =
+        operation === 'check'
+          ? {
+              operation: 'plugin-check' as const,
+              filename: file!.name,
+              bytes: new Uint8Array(await file!.arrayBuffer()),
+            }
+          : operation === 'preview'
+            ? {
+                operation: 'plugin-preview' as const,
+                candidate: report!.candidate!,
+                sha256: report!.sha256,
+              }
+            : {
+                operation: 'plugin-confirm' as const,
+                candidate: report!.candidate!,
+                sha256: report!.sha256,
+                confirmed: true as const,
+                grants: report!.kind === 'ui' ? [] : report!.descriptor!.capabilities,
+                enable,
+                update: report!.update ?? false,
+              }
+      if (request.operation === 'plugin-preview') {
+        setPreview(request)
+        return
+      }
+      const response = await window.scholarseed.deviceSkills(request)
+      if (operation === 'confirm') setSlotConflict(response.status === 409 && !report?.update)
+      if (response.status >= 400) throw new Error(response.body)
+      if (operation === 'check') setReport(JSON.parse(response.body) as PluginReport)
+      if (operation === 'confirm') {
+        if (report?.kind === 'ui') {
+          await onDone({ namespace: 'skills', key: 'plugin.uiUpdated' })
+          return
+        }
+        const result = JSON.parse(response.body) as {
+          installed: { name: string }
+          enabled: boolean
+          receipt: PluginInstallationReceipt
+        }
+        if (enable && !result.enabled) throw new Error(t('plugin.enableFailed'))
+        if (onInstalled) {
+          await onInstalled(result.receipt)
+          return
+        }
+        await onDone({
+          namespace: 'skills',
+          key: result.enabled ? 'installed' : 'plugin.installedDisabled',
+          name: result.installed.name,
+        })
+      }
+    } catch (error) {
+      toast({
+        tone: 'error',
+        title: t('upload.failed'),
+        description: error instanceof Error ? error.message : t('upload.retryHint'),
+      })
+      if (operation === 'confirm' && onFailure)
+        await onFailure(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
   const uploadPicker = (trigger: React.JSX.Element): React.JSX.Element => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
@@ -1427,6 +1760,7 @@ export function SkillAdd({
         <DialogContent
           className="w-[var(--vds-skills-detail-width)] max-h-[var(--vds-skills-add-dialog-max-height)] overflow-y-auto !gap-[var(--vds-space-3)] !px-[var(--vds-space-5)] !pt-[var(--vds-space-3)] !pb-[var(--vds-space-5)] !z-[var(--vds-z-modal-nested)]"
           overlayClassName="!z-[var(--vds-z-modal-nested-overlay)]"
+          portalClassName="z-[var(--vds-z-modal-interaction)]"
           data-testid="skill-add-modal"
           headerLayout="aligned"
           aria-busy={busy}
@@ -1435,100 +1769,164 @@ export function SkillAdd({
           <DialogHeader className="min-h-[var(--vds-control-height-md)] content-center">
             <DialogTitle>{t('add')}</DialogTitle>
           </DialogHeader>
-          <div
-            className="grid gap-[var(--vds-space-3)]"
-            data-testid="skill-drop-zone"
-            data-drag-over={over}
-            onDragOver={(event) => {
-              event.preventDefault()
-              setOver(true)
-            }}
-            onDragLeave={() => setOver(false)}
-            onDrop={(event) => {
-              event.preventDefault()
-              setOver(false)
-              void pick(event.dataTransfer)
-            }}
-          >
-            {file ? (
-              <div
-                className="flex items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] bg-[var(--vds-bg-gray-default-transparent)] p-[var(--vds-space-3)]"
-                data-testid="skill-upload-file"
-              >
-                <FileFormatIcon
-                  name={file.name}
-                  className="!size-[var(--vds-skills-upload-icon-size)]"
-                />
-                <span className="grid min-w-0 flex-1 gap-[var(--vds-space-1)] break-words">
-                  <span>{file.name}</span>
-                  <span className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
-                    {createFormatters(state.lang).bytes(file.size)}
-                  </span>
-                </span>
-                {uploadPicker(
-                  <Button variant="outline" disabled={busy}>
-                    {t('upload.reselect')}
-                  </Button>
-                )}
-              </div>
-            ) : (
-              uploadPicker(
-                <Button
-                  variant="dropzone"
-                  disabled={busy}
-                  aria-label={t('upload.select')}
-                  data-drop-active={over}
-                  className="!h-[var(--vds-skills-upload-height)] min-h-[var(--vds-skills-upload-height)] w-full flex-col gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-4)] ![border-width:var(--vds-border-width-1)] !bg-[var(--vds-other-overlay-1)] !px-[var(--vds-space-3)] !py-0 hover:!bg-[var(--vds-other-overlay-2)] data-[drop-active=true]:!bg-[var(--vds-other-overlay-2)]"
+          {!initialReport && (
+            <div
+              className="grid gap-[var(--vds-space-3)]"
+              data-testid="skill-drop-zone"
+              data-drag-over={over}
+              onDragOver={(event) => {
+                event.preventDefault()
+                setOver(true)
+              }}
+              onDragLeave={() => setOver(false)}
+              onDrop={(event) => {
+                event.preventDefault()
+                setOver(false)
+                void pick(event.dataTransfer)
+              }}
+            >
+              {file ? (
+                <div
+                  className="flex items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] bg-[var(--vds-bg-gray-default-transparent)] p-[var(--vds-space-3)]"
+                  data-testid="skill-upload-file"
                 >
-                  <span className="flex size-[var(--vds-skills-upload-icon-size)] items-center justify-center rounded-[var(--vds-radius-4)] bg-[var(--vds-other-overlay-1)]">
-                    <Upload className="size-[var(--vds-icon-8)]" aria-hidden="true" />
+                  <FileFormatIcon
+                    name={file.name}
+                    className="!size-[var(--vds-skills-upload-icon-size)]"
+                  />
+                  <span className="grid min-w-0 flex-1 gap-[var(--vds-space-1)] break-words">
+                    <span>{file.name}</span>
+                    <span className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+                      {createFormatters(state.lang).bytes(file.size)}
+                    </span>
                   </span>
-                  <span className="grid gap-[var(--vds-space-1)] text-center text-[var(--vds-text-secondary)]">
-                    <span>{over ? t('upload.drop') : t('upload.drag')}</span>
-                    <span className="text-[var(--vds-text-tertiary)]">{t('upload.formats')}</span>
-                  </span>
-                </Button>
-              )
-            )}
-            <Input
-              ref={directoryRef}
-              type="file"
-              {...{ webkitdirectory: '' }}
-              aria-label={t('upload.selectDirectory')}
-              className="hidden"
-              disabled={busy}
-              data-testid="skill-upload-directory"
-              onChange={(event) => {
-                void pick(Array.from(event.target.files ?? []), true)
-                event.target.value = ''
-              }}
-            />
-            <Input
-              ref={inputRef}
-              type="file"
-              aria-label={t('upload.select')}
-              accept={UPLOAD_ACCEPT}
-              className="hidden"
-              disabled={busy}
-              data-testid="skill-upload-input"
-              onChange={(event) => {
-                void pick(Array.from(event.target.files ?? []))
-                event.target.value = ''
-              }}
-            />
-          </div>
+                  {uploadPicker(
+                    <Button variant="outline" disabled={busy}>
+                      {t('upload.reselect')}
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                uploadPicker(
+                  <Button
+                    variant="dropzone"
+                    disabled={busy}
+                    aria-label={t('upload.select')}
+                    data-drop-active={over}
+                    className="!h-[var(--vds-skills-upload-height)] min-h-[var(--vds-skills-upload-height)] w-full flex-col gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-4)] ![border-width:var(--vds-border-width-1)] !bg-[var(--vds-other-overlay-1)] !px-[var(--vds-space-3)] !py-0 hover:!bg-[var(--vds-other-overlay-2)] data-[drop-active=true]:!bg-[var(--vds-other-overlay-2)]"
+                  >
+                    <span className="flex size-[var(--vds-skills-upload-icon-size)] items-center justify-center rounded-[var(--vds-radius-4)] bg-[var(--vds-other-overlay-1)]">
+                      <Upload className="size-[var(--vds-icon-8)]" aria-hidden="true" />
+                    </span>
+                    <span className="grid gap-[var(--vds-space-1)] text-center text-[var(--vds-text-secondary)]">
+                      <span>{over ? t('upload.drop') : t('upload.drag')}</span>
+                      <span className="text-[var(--vds-text-tertiary)]">{t('upload.formats')}</span>
+                    </span>
+                  </Button>
+                )
+              )}
+              <Input
+                ref={directoryRef}
+                type="file"
+                {...{ webkitdirectory: '' }}
+                aria-label={t('upload.selectDirectory')}
+                className="hidden"
+                disabled={busy}
+                data-testid="skill-upload-directory"
+                onChange={(event) => {
+                  void pick(Array.from(event.target.files ?? []), true)
+                  event.target.value = ''
+                }}
+              />
+              <Input
+                ref={inputRef}
+                type="file"
+                aria-label={t('upload.select')}
+                accept={UPLOAD_ACCEPT}
+                className="hidden"
+                disabled={busy}
+                data-testid="skill-upload-input"
+                onChange={(event) => {
+                  void pick(Array.from(event.target.files ?? []))
+                  event.target.value = ''
+                }}
+              />
+            </div>
+          )}
+          {report && (
+            <Card data-testid="plugin-report">
+              <CardHeader>
+                <CardTitle>
+                  {report.kind === 'ui' ? t('plugin.updateUI') : t('plugin.report')}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="max-h-[var(--vds-dialog-list-max-height)] overflow-y-auto break-words">
+                <p>
+                  {report.descriptor?.id} {report.descriptor?.version}
+                </p>
+                <p>{report.sha256}</p>
+                {report.kind === 'ui' ? (
+                  <p>{t('plugin.systemUI')}</p>
+                ) : (
+                  <p>
+                    {t('plugin.grants')}:{' '}
+                    {report.descriptor?.capabilities.join(', ') || t('plugin.none')}
+                  </p>
+                )}
+                {report.kind !== 'ui' && <p>{t('plugin.warning')}</p>}
+                {report.update && <p role="alert">{t('installation.updateWarning')}</p>}
+                {report.issues.map((issue, index) => (
+                  <p key={index}>
+                    {issue.severity}: {issue.path} — {issue.message}
+                  </p>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+          {preview && <PluginPreview request={preview} />}
           {error && <Alert tone="error" title={error} data-testid="skill-upload-error" />}
           <DialogFooter>
             <Button variant="outline" disabled={busy} onClick={onClose}>
               {ui('cancel')}
             </Button>
-            <Button
-              disabled={!file || !preview || busy}
-              data-testid="skill-install"
-              onClick={() => void install()}
-            >
-              {busy ? t(preview ? 'upload.installing' : 'upload.parsing') : t('upload.install')}
-            </Button>
+            {report?.valid ? (
+              <>
+                {PLUGIN_PREVIEW_VISIBLE &&
+                  report.valid &&
+                  Boolean(report.descriptor?.components.length) && (
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void pluginOperation('preview')}
+                    >
+                      {t('plugin.preview')}
+                    </Button>
+                  )}
+                <Button
+                  disabled={busy || !report.valid || !report.candidate}
+                  onClick={() => void pluginOperation('confirm')}
+                >
+                  {report.kind === 'ui' ? t('plugin.confirmUI') : t('plugin.confirm')}
+                </Button>
+                {slotConflict && !report.update && (
+                  <Button
+                    variant="outline"
+                    disabled={busy || !report.valid || !report.candidate}
+                    onClick={() => void pluginOperation('confirm', false)}
+                  >
+                    {t('plugin.installDisabled')}
+                  </Button>
+                )}
+              </>
+            ) : (
+              <Button
+                disabled={!file || !uploadPreview || busy}
+                data-testid="skill-install"
+                onClick={() => void (uploadPreview?.plugin ? pluginOperation('check') : install())}
+              >
+                {busy ? t('upload.installing') : t('upload.install')}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </DialogPortal>

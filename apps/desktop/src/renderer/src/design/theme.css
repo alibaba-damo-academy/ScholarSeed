@@ -11,6 +11,21 @@
   --vds-opacity-navigation-disabled: 0.35;
   /* 悬停/聚焦才显现的行内控件：隐藏用 opacity-0，显现统一取这个 token，页面不写死数值。 */
   --vds-opacity-full: 1;
+  --vds-conversation-message-max-width: 86%;
+  --vds-conversation-message-radius: 14px 14px 4px 14px;
+  --vds-conversation-message-font-size: 15px;
+  --vds-conversation-message-line-height: 1.85;
+  --vds-conversation-message-collapsed-height: 11.1em;
+  --vds-conversation-message-fade: linear-gradient(#000 68%, transparent);
+  --vds-plan-list-max-height: 192px;
+  --vds-code-font-size: 12.5px;
+  --vds-code-line-height: 1.75;
+  --vds-code-gutter: 40px;
+  --vds-conversation-table-cell-min-width: 96px;
+  --vds-conversation-table-cell-max-width: 280px;
+  --vds-attachment-open-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--brand-ink) 16%, transparent);
+  --vds-attachment-line-height: 20px;
   --vds-control-height-xs: 24px;
   --vds-control-height-mini: 26px;
   --vds-control-height-sm: 28px;
@@ -182,6 +197,27 @@
   --vds-popover-available-width: calc(100vw - var(--vds-space-6) * 2);
   --vds-reference-list-max-width: 460px;
   --vds-reference-list-max-height: 50vh;
+  --vds-retrieval-site-width: 30%;
+  --vds-execution-detail-height: 240px;
+  --vds-execution-transition: 260ms;
+  --vds-execution-caret-transition: 200ms;
+  --vds-execution-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --vds-execution-focus-offset: -2px;
+  --vds-execution-duration-padding: 6px;
+  --vds-execution-batch-font: 12.5px;
+  --vds-execution-batch-leading: 1.45;
+  --vds-execution-batch-transition: 150ms;
+  --vds-execution-disclosure-size: 24px;
+  --vds-execution-tone-running: var(--c-fact);
+  --vds-execution-tone-done: var(--c-experience);
+  --vds-execution-tone-error: var(--c-tension);
+  --vds-execution-error-shadow: inset 0 0 0 1px
+    color-mix(in oklch, var(--vds-execution-tone-error) 72%, var(--vds-border-default));
+  --vds-conversation-reference-width: min(420px, calc(100vw - var(--vds-space-8)));
+  --vds-conversation-reference-label-width: 180px;
+  --vds-conversation-reference-height: min(360px, 50vh);
+  --vds-conversation-reference-title-leading: 1.625;
+  --vds-conversation-reference-feedback-leading: 20px;
   --vds-pdf-annotation-max-height: min(640px, calc(100dvh - var(--vds-space-6)));
   --vds-pdf-annotation-preview-max-height: min(320px, 40dvh);
   --vds-command-gap: var(--vds-space-2);

@@ -437,6 +437,10 @@ class FulltextGate:
             snapshot_id=snapshot_id,
             authorization_type=checkpoint.policy.authorization_type,
             refs=checkpoint.content.refs,
+            papers=tuple(
+                {"id": source.ref_id, "label": source.title}
+                for source in checkpoint.content.sources
+            ),
             task_context=task_context,
             activity=activity,
         )
@@ -564,7 +568,7 @@ class FulltextGate:
 
 
 async def publish_checkpoint_card(
-    live: LiveSession, content: CheckpointContent, turn_id: str
+    live: LiveSession, content: CheckpointContent, turn_id: str, *, skill_name: str = ""
 ) -> dict[str, Any]:
     """Publish a candidate set's exact files and its literature-search card."""
 
@@ -582,7 +586,9 @@ async def publish_checkpoint_card(
                 reference["title"] = artifact.title
             update[artifact.field] = reference
     card = content.card.model_copy(update=update).model_dump(mode="json")
-    return await live.display_card(SEARCH_CARD, DisplayCardContent(data=card), turn_id=turn_id)
+    return await live.display_card(
+        SEARCH_CARD, DisplayCardContent(data=card, skill=skill_name), turn_id=turn_id
+    )
 
 
 __all__ = [

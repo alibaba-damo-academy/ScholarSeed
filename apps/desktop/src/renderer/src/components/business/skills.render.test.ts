@@ -5,7 +5,7 @@ import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import type { Plugin } from 'vite'
+import { createServer, type Plugin } from 'vite'
 import { renderServers } from '../../../../test-helpers/render.ts'
 import type { DeviceSkillRequest } from '../../../../skills.ts'
 import { WORKSPACE_WINDOW_MINIMUM } from '../../../../window.ts'
@@ -24,9 +24,131 @@ type SkillTestWindow = Window & {
   pendingSkillLists: Array<() => void>
   holdSkillToggles: boolean
   pendingSkillToggles: Array<(success: boolean) => void>
+  changeSkillLanguage: (language: string) => Promise<unknown>
 }
 
 const servers = renderServers({ after })
+
+test('skill use failures explain their cause, retain input and follow language changes', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [fixture(), react()],
+    cacheKey: 'skills',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT })
+    for (const scenario of [
+      {
+        failure: 'login_required',
+        chinese: '请先登录书深，再使用技能“skill-0”开始任务。',
+        english: 'Sign in to ScholarSeed before starting a task with skill “skill-0”.',
+      },
+      {
+        failure: 'disabled',
+        chinese: '技能“skill-0”已停用或运行状态未就绪。请在技能详情中检查启用状态和不可用原因。',
+        english:
+          'Skill “skill-0” is disabled or not ready to run. Check its enabled status and availability details.',
+      },
+      {
+        failure: 'dependencies',
+        chinese: '技能“skill-0”的依赖尚未就绪。请在技能详情中完成依赖准备后重试。',
+        english:
+          'Dependencies for skill “skill-0” are not ready. Review its details, prepare the dependencies, then try again.',
+      },
+      {
+        failure: 'path',
+        chinese:
+          '技能“skill-0”的本地路径缺失或格式不受支持。请刷新技能库后重试；仍失败时请联系支持。',
+        english:
+          'Skill “skill-0” has no local path or its path format is unsupported. Refresh the skill library and try again; contact support if the problem persists.',
+      },
+    ]) {
+      await page.goto(
+        new URL('/__skills?useFailure=' + scenario.failure, server.resolvedUrls!.local[0]).href
+      )
+      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await page.getByTestId('skill-view-skill-0').click()
+      await page
+        .getByTestId('skill-detail')
+        .getByRole('button', { name: '使用技能', exact: true })
+        .click()
+      const dialog = page.getByRole('dialog')
+      await dialog.getByLabel('任务内容').fill('保留这段任务内容')
+      await dialog.getByRole('button', { name: '带入新任务', exact: true }).click()
+      await expect(page.getByText(scenario.chinese, { exact: true })).toBeVisible()
+      await dialog.getByRole('button', { name: '带入新任务', exact: true }).click()
+      await expect(page.getByText(scenario.chinese, { exact: true })).toHaveCount(1)
+      await expect(dialog.getByRole('textbox')).toHaveValue('保留这段任务内容')
+      await expect(dialog.getByRole('combobox')).toHaveText('Project one')
+      assert.deepEqual(
+        await page.evaluate(() => (window as unknown as SkillTestWindow).skillActions),
+        []
+      )
+      await page.evaluate(() => (window as unknown as SkillTestWindow).changeSkillLanguage('en'))
+      await expect(page.getByText(scenario.english, { exact: true })).toBeVisible()
+      await expect(page.getByText(scenario.chinese, { exact: true })).toHaveCount(0)
+      await expect(dialog.getByRole('textbox')).toHaveValue('保留这段任务内容')
+    }
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
+
+test('skill task submission preserves Windows extended and UNC paths', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [fixture(), react()],
+    cacheKey: 'skills',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT })
+    for (const path of [
+      String.raw`C:\Research Files\skills\skill-0\SKILL.md`,
+      String.raw`\\?\C:\Research Files\skills\skill-0\SKILL.md`,
+      String.raw`\\server\share\skills\skill-0\SKILL.md`,
+      String.raw`\\?\UNC\server\share\skills\skill-0\SKILL.md`,
+    ]) {
+      const address = new URL('/__skills', server.resolvedUrls!.local[0])
+      address.searchParams.set('usePath', path)
+      await page.goto(address.href)
+      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await page.getByTestId('skill-view-skill-0').click()
+      await page
+        .getByTestId('skill-detail')
+        .getByRole('button', { name: '使用技能', exact: true })
+        .click()
+      const dialog = page.getByRole('dialog')
+      await dialog.getByLabel('任务内容').fill('开始技能任务')
+      await dialog.getByRole('button', { name: '带入新任务', exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      assert.deepEqual(
+        await page.evaluate(() => (window as unknown as SkillTestWindow).skillActions),
+        [
+          {
+            projectId: 'project-one',
+            submit: true,
+            composerText: '开始技能任务',
+            composerRefs: [
+              { type: 'skill', id: 'skill-0', title: 'skill-0', path, version: undefined },
+            ],
+          },
+        ]
+      )
+    }
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
 
 test('skills overlay scrollbar preserves width across tabs and supports dragging and keyboard', async () => {
   const server = await servers.create({
@@ -90,6 +212,9 @@ import { createLocalization } from '/../../localization/engine'
 import skills from '/../../localization/locales/zh/skills.json'
 import ui from '/../../localization/locales/zh/ui.json'
 import components from '/../../localization/locales/zh/components.json'
+import englishSkills from '/../../localization/locales/en/skills.json'
+import englishUi from '/../../localization/locales/en/ui.json'
+import englishComponents from '/../../localization/locales/en/components.json'
 import { Skills } from '/components/business/Skills'
 import { skillsFeature } from '/features/skills/feature'
 import { HomeHeader } from '/shell/Header'
@@ -104,6 +229,21 @@ const rows = Array.from({ length: location.search.includes('emptyUser') ? 5 : 30
   labels: location.search.includes('classificationData') ? [{ slug: index % 2 ? 'analysis' : 'research', type: 'RECOMMENDED', displayName: index % 2 ? '数据分析' : '文献研究' }] : [], labelsStatus: 'ready',
 }))
 window.skillRequests = []
+const useFailure = new URLSearchParams(location.search).get('useFailure')
+const usePath = new URLSearchParams(location.search).get('usePath')
+if (usePath) rows[0].path = usePath
+if (useFailure === 'login_required') rows[0].unavailable_reason = 'login_required'
+if (useFailure === 'disabled') rows[0].active = false
+if (useFailure === 'dependencies') rows[0].dependency_status = 'missing'
+if (useFailure === 'path') rows[0].path = 'relative/SKILL.md'
+if (location.search.includes('pluginData')) {
+  Object.assign(rows[0], { plugin: { id: 'fixture-plugin', version: '1.0.0' } })
+  Object.assign(rows[1], { plugin: { id: 'disabled-plugin', version: '1.0.0' }, enabled: false })
+}
+if (location.search.includes('authoringData')) {
+  rows[0].name = 'plugin-create'
+  rows[5].name = 'plugin-create'
+}
 if (location.search.includes('disabledReason')) rows[5].unavailable_reason = '该技能已在书深中停用'
 window.pendingSkillLists = []
 window.pendingSkillToggles = []
@@ -217,12 +357,17 @@ window.scholarseed = { openExternal: async url => { window.skillActions.push(url
   }
   if (request.operation === 'upload-preview') return request.filename === 'bad.zip'
     ? { status: 422, body: JSON.stringify({ detail: { message: 'Invalid ZIP' } }) }
-    : { status: 200, body: JSON.stringify({ preview: { name: 'uploaded-skill', description: 'Upload description', document: '# Uploaded instructions', provider: '', version: '1.0' } }) }
+    : { status: 200, body: JSON.stringify({ preview: { name: 'uploaded-skill', description: 'Upload description', document: '# Uploaded instructions', provider: 'Upload author', version: '1.0', plugin: ['plugin.zip', 'invalid-plugin.zip'].includes(request.filename) } }) }
+  if (request.operation === 'plugin-check') return request.filename === 'invalid-plugin.zip'
+    ? { status: 200, body: JSON.stringify({ valid: false, sha256: 'invalid-digest', issues: [{ severity: 'error', path: '.scholarseed-plugin.json', message: 'invalid_plugin_fixture' }] }) }
+    : { status: 200, body: JSON.stringify({ valid: true, candidate: 'upload-candidate', sha256: 'upload-digest', descriptor: { id: 'uploaded-skill', version: '1.0', capabilities: [], components: [] }, issues: [] }) }
+  if (request.operation === 'plugin-confirm') return { status: 200, body: JSON.stringify({ installed: { name: 'uploaded-skill' }, enabled: true, receipt: {} }) }
   if (request.operation === 'upload') return { status: 200, body: JSON.stringify({ installed: { name: 'uploaded-skill' } }) }
   return { status: 200, body: JSON.stringify(request.operation === 'document'
     ? { document: '# Skill documentation' } : { skills: rows }) }
 } }
-const localization = createLocalization('zh', { zh: { skills, ui, components } }, { report() {} })
+const localization = createLocalization('zh', { zh: { skills, ui, components }, en: { skills: englishSkills, ui: englishUi, components: englishComponents } }, { report() {} })
+window.changeSkillLanguage = language => localization.changeLanguage(language)
 const Body = location.search.includes('center') ? skillsFeature().panels[0].render : Skills
 createRoot(document.getElementById('root')).render(
   <I18nextProvider i18n={localization}><ToastProvider>
@@ -237,8 +382,17 @@ function fixture(): Plugin {
   return {
     name: 'skills-render-fixture',
     enforce: 'pre',
-    resolveId(id) {
-      if (id === '../../store') return STORE
+    resolveId(id, importer) {
+      if (
+        id === '../../store' &&
+        [
+          '/business/Skills.tsx',
+          '/business/LoginPrompt.tsx',
+          '/skills/feature.tsx',
+          '/skills/Connectors.tsx',
+        ].some((file) => importer?.endsWith(file))
+      )
+        return STORE
       if (id === ENTRY) return ENTRY
     },
     load(id) {
@@ -251,7 +405,7 @@ function fixture(): Plugin {
         server
           .transformIndexHtml(
             '/__skills',
-            '<html lang="zh-CN"><body style="margin:0"><div id="root"></div><script type="module" src="' +
+            '<!doctype html><html lang="zh-CN"><body style="margin:0"><div id="root"></div><script type="module" src="' +
               ENTRY +
               '"></script></body></html>'
           )
@@ -637,6 +791,76 @@ test(
   }
 )
 
+test('plugin previews stay hidden while skill details and upload remain available', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [fixture(), react()],
+    cacheKey: 'skills',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT })
+    page.on('pageerror', (error) => console.error(error.message))
+    await page.goto(new URL('/__skills?center=1&pluginData=1', server.resolvedUrls!.local[0]).href)
+    await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+    const card = page.getByTestId('skill-card-skill-0')
+    await expect(card).toBeVisible()
+    await expect(card.getByRole('button', { name: '预览交互', exact: true })).toHaveCount(0)
+    await expect(card.getByText('系统预置', { exact: true })).toHaveCount(0)
+    await expect(
+      page.getByTestId('skill-card-skill-1').getByRole('button', { name: '预览交互', exact: true })
+    ).toHaveCount(0)
+    await page.getByTestId('skill-view-skill-0').click()
+    await expect(page.getByTestId('skill-detail')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('skills-add').click()
+    await expect(page.getByRole('menuitem', { name: /通过书深创建/ })).toHaveCount(0)
+    await expect(page.getByTestId('skill-add-modal')).toBeVisible()
+    await expect(page.getByTestId('skill-upload-input')).toBeAttached()
+    assert.equal(
+      await page.evaluate(() =>
+        (window as unknown as SkillTestWindow).skillRequests.some(
+          (request) =>
+            request.operation === 'plugin-preview-installed' && request.name === 'skill-0'
+        )
+      ),
+      false
+    )
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
+
+test('plugin-create is hidden only in the system catalog', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [fixture(), react()],
+    cacheKey: 'skills',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT })
+    await page.goto(new URL('/__skills?authoringData=1', server.resolvedUrls!.local[0]).href)
+    await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+    await expect(page.getByTestId('skill-card-skill-1')).toBeVisible()
+    await expect(page.getByTestId('skill-card-plugin-create')).toHaveCount(0)
+    await page.getByTestId('skills-search').fill('plugin-create')
+    await expect(page.getByTestId('skill-card-plugin-create')).toHaveCount(0)
+    await page.getByRole('tab', { name: '我添加的', exact: true }).click()
+    await expect(page.getByTestId('skill-card-plugin-create')).toBeVisible()
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
+
 test(
   'initial skill loading centers one spinner and a visible label in the list',
   { timeout: 60_000 },
@@ -654,8 +878,10 @@ test(
       const page = await browser.newPage({ viewport: VIEWPORT })
       for (const source of ['Market', 'Local']) {
         await page.goto(
-          new URL(`/__skills?delayInitial${source}=1&delayLabels=1`, server.resolvedUrls!.local[0])
-            .href
+          new URL(
+            `/__skills?center=1&delayInitial${source}=1&delayLabels=1`,
+            server.resolvedUrls!.local[0]
+          ).href
         )
         if (source === 'Local') await page.getByTestId('skills-tab-scholarseed').click()
         const loading = page.getByTestId('skills-loading')
@@ -688,6 +914,11 @@ test(
         const bounds = await page.getByTestId('skills-list').boundingBox()
         const indicator = await loading.boundingBox()
         assert.ok(bounds && indicator)
+        const center = (await page.getByTestId('skill-center').boundingBox())!
+        const bottomPadding = await page
+          .getByTestId('skill-center')
+          .evaluate((element) => parseFloat(getComputedStyle(element).paddingBottom))
+        assert.ok(Math.abs(bounds.y + bounds.height - center.y - center.height + bottomPadding) < 1)
         assert.ok(Math.abs(indicator.x + indicator.width / 2 - bounds.x - bounds.width / 2) < 1)
         assert.ok(Math.abs(indicator.y + indicator.height / 2 - bounds.y - bounds.height / 2) < 1)
       }
@@ -697,6 +928,79 @@ test(
     }
   }
 )
+
+test('connector search empties center their image and label within the full list viewport', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [fixture(), react()],
+    cacheKey: 'skills',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT })
+    await page.goto(new URL('/__skills?center=1', server.resolvedUrls!.local[0]).href)
+    await page.getByRole('tab', { name: '连接器', exact: true }).click()
+    for (const viewport of [VIEWPORT, WORKSPACE_WINDOW_MINIMUM]) {
+      await page.setViewportSize(viewport)
+      for (const tab of ['市场', '我的']) {
+        await page.getByRole('tab', { name: tab, exact: true }).click()
+        await page.getByRole('searchbox', { name: '搜索连接器名称、说明' }).fill('missing')
+        const empty = page.getByTestId('connectors-empty')
+        await expect(empty).toContainText('没有找到连接器')
+        const list = (await page.getByTestId('connectors-list').boundingBox())!
+        const image = (await empty.locator('img').boundingBox())!
+        const label = (await empty.locator('.vds-empty-state__title').boundingBox())!
+        assert.ok(
+          Math.abs((image.y + label.y + label.height) / 2 - list.y - list.height / 2) < 1,
+          `${tab} connector empty must be vertically centered`
+        )
+        assert.ok(Math.abs(image.x + image.width / 2 - list.x - list.width / 2) < 1)
+      }
+    }
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
+
+test('skill-center search empties center their image and label within the full list viewport', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [fixture(), react()],
+    cacheKey: 'skills',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT })
+    await page.goto(new URL('/__skills?center=1&marketData=1', server.resolvedUrls!.local[0]).href)
+    for (const viewport of [VIEWPORT, WORKSPACE_WINDOW_MINIMUM]) {
+      await page.setViewportSize(viewport)
+      for (const tab of ['技能广场', '系统预置', '我添加的']) {
+        await page.getByRole('tab', { name: tab, exact: true }).click()
+        await page.getByTestId('skills-search').fill('missing')
+        const empty = page.getByTestId('skills-empty')
+        await expect(empty).toContainText('没有匹配的技能')
+        const list = (await page.getByTestId('skills-list').boundingBox())!
+        const image = (await empty.locator('img').boundingBox())!
+        const label = (await empty.locator('.vds-empty-state__title').boundingBox())!
+        assert.ok(
+          Math.abs((image.y + label.y + label.height) / 2 - list.y - list.height / 2) < 1,
+          `${tab} image and title must be vertically centered`
+        )
+        assert.ok(Math.abs(image.x + image.width / 2 - list.x - list.width / 2) < 1)
+      }
+    }
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
 
 test(
   'skill tabs separate catalogue refresh, system inventory and all installed updates',
@@ -1105,7 +1409,7 @@ test(
 )
 
 test(
-  'remote categories filter only the market and recover from removed labels',
+  'remote categories filter only the market and recover from removed labels after cache expiry',
   { timeout: 60_000 },
   async () => {
     const server = await servers.create({
@@ -1132,6 +1436,7 @@ test(
       await expect(page.getByTestId('marketplace-card-market-paper')).toHaveCount(0)
       await expect(page.getByTestId('skills-empty')).toContainText('没有匹配的技能')
       await page.getByTestId('skills-classification-research').click()
+      await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
       await page.getByTestId('skills-tab-user').click()
       await expect(page.getByTestId('skills-classification-scroll')).toHaveCount(0)
       await expect(page.locator('[data-testid^="skill-card-"]')).toHaveCount(25)
@@ -1140,7 +1445,19 @@ test(
         state.removeResearchCategory = true
         state.failSkillLoad = true
       })
+      const requests = () =>
+        page.evaluate(() =>
+          (window as unknown as SkillTestWindow).skillRequests.filter(
+            (request) =>
+              request.operation === 'marketplace' || request.operation === 'marketplace-labels'
+          )
+        )
+      const cachedRequests = await requests()
       await page.getByTestId('skills-tab-marketplace').click()
+      await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
+      await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
+      assert.deepEqual(await requests(), cachedRequests)
+      await page.getByTestId('skills-search').fill('paper')
       await expect(page.getByTestId('skills-load-error')).toBeVisible()
       await page.evaluate(() => {
         ;(window as unknown as SkillTestWindow).failSkillLoad = false
@@ -1151,6 +1468,7 @@ test(
         'aria-pressed',
         'true'
       )
+      await expect(page.getByTestId('marketplace-card-market-paper')).toBeVisible()
       await page.getByTestId('skills-tab-user').click()
       await expect(page.locator('[data-testid^="skill-card-"]')).toHaveCount(25)
       await page.goto(
@@ -1167,7 +1485,7 @@ test(
 )
 
 test(
-  'skill center puts navigation and contextual actions in the header and aligns connector cards',
+  'skill center keeps navigation in the header and contextual actions in the page and aligns connector cards',
   { timeout: 60_000 },
   async () => {
     const server = await servers.create({
@@ -1215,8 +1533,25 @@ test(
       assert.ok(centerBounds && listBounds)
       assert.equal(listBounds.x + listBounds.width, centerBounds.x + centerBounds.width)
       await header.getByRole('tab', { name: '连接器', exact: true }).click()
-      await expect(header.getByRole('searchbox', { name: '搜索连接器名称、说明' })).toBeVisible()
-      await expect(header.getByRole('button', { name: '添加连接器', exact: true })).toBeVisible()
+      const connectorsPage = page.getByTestId('connectors-page')
+      const connectorSearch = connectorsPage.getByRole('searchbox', {
+        name: '搜索连接器名称、说明',
+      })
+      const addConnector = connectorsPage.getByRole('button', {
+        name: '添加连接器',
+        exact: true,
+      })
+      await expect(connectorSearch).toBeVisible()
+      await expect(addConnector).toBeVisible()
+      await expect(header.getByRole('searchbox', { name: '搜索连接器名称、说明' })).toHaveCount(0)
+      await expect(header.getByRole('button', { name: '添加连接器', exact: true })).toHaveCount(0)
+      const headerBounds = await header.boundingBox()
+      assert.ok(headerBounds)
+      for (const action of [connectorSearch, addConnector]) {
+        const actionBounds = await action.boundingBox()
+        assert.ok(actionBounds)
+        assert.ok(actionBounds.y >= headerBounds.y + headerBounds.height)
+      }
       await expect(header.getByTestId('skills-search')).toHaveCount(0)
       const card = page.getByTestId('connector-zotero')
       await expect(page.getByText(/\d+ 个连接器/)).toHaveCount(0)
@@ -1242,9 +1577,6 @@ test(
         .last()
         .getByRole('button', { name: '取消', exact: true })
         .click()
-      const connectorSearch = header.getByRole('searchbox', {
-        name: '搜索连接器名称、说明',
-      })
       await connectorSearch.fill('Zotero')
       const connectorDetail = page.getByRole('dialog', { name: 'Zotero' })
       await expect(connectorDetail).toBeVisible()
@@ -1255,7 +1587,7 @@ test(
       await expect(connectorDetail.locator('dd').first()).toHaveCSS('font-size', '14px')
       await expect(connectorDetail.locator('details, [data-state="closed"][hidden]')).toHaveCount(0)
       await expect(page.getByRole('button', { name: '返回连接器' })).toHaveCount(0)
-      await expect(header.getByRole('button', { name: '添加连接器', exact: true })).toBeVisible()
+      await expect(addConnector).toBeVisible()
       await expect(card).toBeAttached()
       await expect(
         connectorDetail.getByRole('button', { name: '前往授权', exact: true })
@@ -1355,7 +1687,9 @@ test(
       await page.keyboard.press('Escape')
       await header.getByRole('tab', { name: '技能', exact: true }).focus()
       await page.keyboard.press('Enter')
-      await expect(header.getByTestId('skills-search')).toBeVisible()
+      await expect(page.getByTestId('skills-page').getByTestId('skills-search')).toBeVisible()
+      await expect(header.getByTestId('skills-search')).toHaveCount(0)
+      await expect(connectorsPage).toHaveCount(0)
       await expect(header.getByRole('searchbox', { name: '搜索连接器名称、说明' })).toHaveCount(0)
       await page.goto(new URL('/__skills?marketData=1', server.resolvedUrls!.local[0]).href)
       await expect(header.getByRole('heading', { name: '技能中心' })).toHaveCSS(
@@ -1694,8 +2028,121 @@ test(
   }
 )
 
+test('upload separates ordinary ZIPs from declared card plugins', { timeout: 60_000 }, async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT,
+    plugins: [fixture(), react()],
+    cacheKey: 'skills',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  await server.listen()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage({ viewport: VIEWPORT })
+    await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
+    await page.getByTestId('skills-add').click()
+    const input = page.getByTestId('skill-upload-input')
+    for (const filename of ['bad.zip', 'plugin.zip', 'plain.zip']) {
+      await input.setInputFiles({
+        name: filename,
+        mimeType: 'application/zip',
+        buffer: Buffer.from('upload fixture'),
+      })
+      if (filename === 'bad.zip')
+        await expect(page.getByTestId('skill-upload-error')).toContainText('Invalid ZIP')
+      await expect(page.getByRole('button', { name: '检查插件', exact: true })).toHaveCount(0)
+      await expect(page.getByTestId('skill-upload-preview')).toHaveCount(0)
+      await expect(page.getByTestId('skill-add-modal')).not.toContainText('Upload description')
+      await expect(page.getByTestId('skill-add-modal')).not.toContainText('Uploaded instructions')
+      await expect(page.getByTestId('skill-add-modal')).not.toContainText('Upload author')
+      if (filename === 'bad.zip') await expect(page.getByTestId('skill-install')).toBeDisabled()
+      else await expect(page.getByTestId('skill-install')).toBeEnabled()
+    }
+    await page.getByTestId('skill-install').click()
+    await expect(page.getByTestId('skill-add-modal')).toHaveCount(0)
+    const operations = await page.evaluate(() =>
+      (window as unknown as SkillTestWindow).skillRequests.map((request) => request.operation)
+    )
+    assert.equal(operations.includes('plugin-check'), false)
+    assert.equal(operations.filter((operation) => operation === 'upload').length, 1)
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+})
+
 test(
-  'upload previews metadata before confirmation and errors remain retryable',
+  'plugin upload checks on install and requires consent without a skill preview',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      configFile: false,
+      root: ROOT,
+      plugins: [fixture(), react()],
+      cacheKey: 'skills',
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage({ viewport: VIEWPORT })
+      await page.goto(new URL('/__skills', server.resolvedUrls!.local[0]).href)
+      await page.getByTestId('skills-add').click()
+      await page.getByTestId('skill-upload-input').setInputFiles({
+        name: 'invalid-plugin.zip',
+        mimeType: 'application/zip',
+        buffer: Buffer.from('invalid plugin fixture'),
+      })
+      await expect(page.getByTestId('skill-install')).toBeEnabled()
+      for (const attempt of [1, 2]) {
+        await page.getByTestId('skill-install').click()
+        await expect(page.getByTestId('plugin-report')).toContainText('invalid_plugin_fixture')
+        await expect(page.getByTestId('skill-install')).toBeEnabled()
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                (window as unknown as SkillTestWindow).skillRequests.filter(
+                  (request) => request.operation === 'plugin-check'
+                ).length
+            )
+          )
+          .toBe(attempt)
+      }
+      await page.getByTestId('skill-upload-input').setInputFiles({
+        name: 'plugin.zip',
+        mimeType: 'application/zip',
+        buffer: Buffer.from('plugin fixture'),
+      })
+      await expect(page.getByTestId('skill-install')).toBeEnabled()
+      await expect(page.getByTestId('skill-upload-preview')).toHaveCount(0)
+      await expect(page.getByRole('button', { name: '检查插件', exact: true })).toHaveCount(0)
+      await expect(page.getByTestId('plugin-report')).toHaveCount(0)
+      await page.getByTestId('skill-install').click()
+      await expect(page.getByTestId('plugin-report')).toBeVisible()
+      await expect(page.getByTestId('skill-add-modal')).not.toContainText('Upload description')
+      let operations = await page.evaluate(() =>
+        (window as unknown as SkillTestWindow).skillRequests.map((request) => request.operation)
+      )
+      assert.equal(operations.filter((operation) => operation === 'plugin-check').length, 3)
+      assert.equal(operations.includes('plugin-confirm'), false)
+      assert.equal(operations.includes('upload'), false)
+      await page.getByRole('button', { name: '授权并安装', exact: true }).click()
+      await expect(page.getByTestId('skill-add-modal')).toHaveCount(0)
+      operations = await page.evaluate(() =>
+        (window as unknown as SkillTestWindow).skillRequests.map((request) => request.operation)
+      )
+      assert.equal(operations.filter((operation) => operation === 'plugin-confirm').length, 1)
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'upload keeps metadata internal before confirmation and errors remain retryable',
   { timeout: 60_000 },
   async () => {
     const server = await servers.create({
@@ -2627,6 +3074,135 @@ test(
   }
 )
 
+test(
+  'system UI report without cards confirms an update without plugin activation or preview',
+  { timeout: 60_000 },
+  async () => {
+    const server = await createServer({
+      configFile: false,
+      root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'),
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
+    try {
+      browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+      const page = await browser.newPage()
+      await page.goto(
+        new URL(
+          '/components/business/skills.render.fixture.html?uiReport=1',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      await expect(page.getByRole('button', { name: '确认更新系统 UI', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: '对话交互预览', exact: true })).toHaveCount(0)
+      await expect(
+        page.getByRole('button', { name: '确认更新系统 UI', exact: true }).locator('..')
+      ).not.toContainText('0')
+      await expect(page.getByText('系统 UI 依赖：', { exact: false })).toBeVisible()
+      await expect(page.getByRole('button', { name: '仅安装，不启用', exact: true })).toHaveCount(0)
+      await page.evaluate(() => {
+        ;(
+          window as unknown as { catalogFixture: { respond: (result: unknown) => void } }
+        ).catalogFixture.respond({
+          status: 200,
+          body: JSON.stringify({ installed: { id: 'official-ui' } }),
+        })
+      })
+      await page.getByRole('button', { name: '确认更新系统 UI', exact: true }).click()
+      await expect
+        .poll(() => page.evaluate('window.catalogFixture.completed'))
+        .toEqual([{ namespace: 'skills', key: 'plugin.uiUpdated' }])
+      const requests = (await page.evaluate('window.catalogFixture.requests')) as {
+        operation: string
+        grants: string[]
+      }[]
+      assert.deepEqual(
+        requests.map((request) => request.operation),
+        ['plugin-confirm']
+      )
+      assert.deepEqual(requests[0].grants, [])
+    } finally {
+      await browser?.close()
+      await server.close()
+    }
+  }
+)
+
+test(
+  'catalog failure is not empty and retry preserves the previous successful list',
+  { timeout: 60_000 },
+  async () => {
+    const server = await createServer({
+      configFile: false,
+      root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'),
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
+    try {
+      await server.listen()
+      browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+      const page = await browser.newPage()
+      page.on('pageerror', (error) => console.error(error.stack))
+      await page.route(/\/api\/(?!.*\.(?:ts|tsx|js)(?:\?|$))/, (route) =>
+        route.fulfill({ status: 503, contentType: 'application/json', body: '{}' })
+      )
+      await page.goto(
+        new URL('/components/business/skills.render.fixture.html', server.resolvedUrls!.local[0])
+          .href
+      )
+      await page.getByRole('tab', { name: '系统预置', exact: true }).click()
+      await expect(page.getByTestId('skills-load-error')).toContainText('技能加载失败，请重试。')
+      await expect(page.getByTestId('skills-empty')).toHaveCount(0)
+      const rows = [
+        {
+          name: 'precise-literature-search',
+          group: 'scholarseed',
+          enabled: true,
+          toggleable: true,
+          description: 'Precise search',
+        },
+      ]
+      await page.evaluate(
+        (rows) =>
+          (
+            window as unknown as { catalogFixture: { respond: (result: unknown) => void } }
+          ).catalogFixture.respond({ status: 200, body: JSON.stringify({ skills: rows }) }),
+        rows
+      )
+      await page.getByTestId('skills-load-retry').click()
+      await expect(page.getByTestId('skill-card-precise-literature-search')).toBeVisible()
+      await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
+      await page.evaluate(() => {
+        const fixture = (
+          window as unknown as {
+            catalogFixture: { respond: (result: unknown) => void; refresh: () => void }
+          }
+        ).catalogFixture
+        fixture.respond({ status: 503, body: '{}' })
+        fixture.refresh()
+      })
+      await expect(page.getByTestId('skill-card-precise-literature-search')).toBeVisible()
+      await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
+      await expect(page.getByTestId('skills-empty')).toHaveCount(0)
+      await page.evaluate(() =>
+        (
+          window as unknown as { catalogFixture: { respond: (result: unknown) => void } }
+        ).catalogFixture.respond({ status: 200, body: '{"skills":[]}' })
+      )
+      await page.evaluate(() =>
+        (window as unknown as { catalogFixture: { refresh: () => void } }).catalogFixture.refresh()
+      )
+      await expect(page.getByTestId('skills-empty')).toBeVisible()
+      await expect(page.getByTestId('skills-load-error')).toHaveCount(0)
+    } finally {
+      await browser?.close()
+      await server.close()
+    }
+  }
+)
 test('installed skill and connector card actions share a centerline and an eight-pixel gap', async () => {
   const server = await servers.create({
     configFile: false,

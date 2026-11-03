@@ -5,13 +5,12 @@ import { catalogue, useCatalogue } from './catalog'
 
 import type { FeatureModule } from '../../contracts/features'
 import { LiteratureList } from './LiteratureList'
-import { LITERATURE_DELIVERY_CARD, LiteratureDeliveryCard } from './Delivery'
+import { LITERATURE_DELIVERY_CARD } from './Delivery'
 import { LiteraturePanel } from './LiteraturePanel'
-import { LiteratureReferences } from './References'
-import { LiteratureResults, LiteratureResultTab, literatureResultArtifacts } from './Results'
-import { LiteratureDownloads } from './Downloads'
+import { LiteratureCard } from './Card'
+import { literaturePublicComponents } from './Component'
+import { LiteratureResultTab, literatureResultArtifacts } from './Results'
 import { downloadSupersessionKey } from './admission'
-import { LiteratureReviewCard } from './Review'
 import { LITERATURE_RESULT_PREFIX } from '../workbench/tabs'
 import { LiteratureSearchTab } from './Search'
 import {
@@ -42,6 +41,7 @@ function LiteratureScope({ children }: { children: React.ReactNode }): React.JSX
 export function literatureFeature(): FeatureModule {
   return {
     id: 'literature',
+    publicComponents: literaturePublicComponents,
     activityItems: [
       {
         key: 'literature',
@@ -104,28 +104,28 @@ export function literatureFeature(): FeatureModule {
         type: LITERATURE_DELIVERY_CARD,
         supersessionKey: (content) =>
           typeof content.delivery_id === 'string' ? content.delivery_id : null,
-        render: ({ content }) => <LiteratureDeliveryCard content={content} />,
+        render: (props) => <LiteratureCard {...props} type={LITERATURE_DELIVERY_CARD} />,
       },
       {
         type: 'literature-downloads',
         supersessionKey: downloadSupersessionKey,
-        render: ({ cardId, content }) => <LiteratureDownloads cardId={cardId} content={content} />,
+        render: (props) => <LiteratureCard {...props} type="literature-downloads" />,
       },
       {
         type: 'literature-review',
         supersessionKey: reviewSupersessionKey,
-        render: ({ content }) => <LiteratureReviewCard content={content} />,
+        render: (props) => <LiteratureCard {...props} type="literature-review" />,
       },
       {
         type: 'literature-search',
         supersessionKey: searchSupersessionKey,
         supersessionPosition: 'first',
         presentedArtifacts: literatureResultArtifacts,
-        render: ({ content, cardId }) => <LiteratureResults content={content} cardId={cardId} />,
+        render: (props) => <LiteratureCard {...props} type="literature-search" />,
       },
       {
         type: LITERATURE_REFERENCES_CARD,
-        render: ({ content }) => <LiteratureReferences content={content} />,
+        render: (props) => <LiteratureCard {...props} type={LITERATURE_REFERENCES_CARD} />,
       },
     ],
     interactionPolicies: [

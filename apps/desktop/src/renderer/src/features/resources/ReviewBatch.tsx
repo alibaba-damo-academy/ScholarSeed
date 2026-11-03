@@ -1,7 +1,29 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Alert, AlertDescription, AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertTitle, Badge, Button, EllipsisText, EmptyState, ResizableHandle, ResizablePanel, ResizablePanelGroup, ScrollArea, Spinner, Tooltip } from '../../components/ui'
+import {
+  Alert,
+  AlertDescription,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertTitle,
+  Badge,
+  Button,
+  EllipsisText,
+  EmptyState,
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+  ScrollArea,
+  Spinner,
+  Tooltip,
+} from '../../components/ui'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import { OfficeDocument } from '../workbench/OfficeDocument'
@@ -19,7 +41,7 @@ import {
   type ResourceReviewAction,
   type ResourceReviewBatch as ReviewBatchState,
   type ResourceReviewBatchMember,
-  type ResourceReviewBatchResult
+  type ResourceReviewBatchResult,
 } from './api'
 import {
   resolveExpectedDiskRevision,
@@ -27,7 +49,7 @@ import {
   resolveReviewUndoSource,
   ReviewUndoSource,
   reviewDraftStore,
-  shouldSaveReviewDraft
+  shouldSaveReviewDraft,
 } from './draft'
 import { reviewProgress } from './status'
 
@@ -63,12 +85,32 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
   const [contentEpoch, setContentEpoch] = useState(0)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [undoPreview, setUndoPreview] = useState<{ members: ResourceReviewBatchMember[]; backupCount: number; draftCount: number } | null>(null)
+  const [undoPreview, setUndoPreview] = useState<{
+    members: ResourceReviewBatchMember[]
+    backupCount: number
+    draftCount: number
+  } | null>(null)
   const [submitConfirmOpen, setSubmitConfirmOpen] = useState(false)
   const [undoResults, setUndoResults] = useState<Array<{ path: string; ok: boolean }>>([])
   const [submissionResults, setSubmissionResults] = useState<ResourceReviewBatchResult[]>([])
-  const [error, setError] = useState<{ key: 'reviewBatch.loadFailed' | 'reviewBatch.contentFailed' | 'reviewBatch.prepareFailed' | 'reviewBatch.refreshFailed' | 'reviewBatch.stale' | 'reviewBatch.submitFailed' | 'reviewBatch.undoFailed' | 'reviewBatch.diskFailed' | 'reviewBatch.saveFailed' | 'reviewBatch.syncFailed'; path?: string; detail?: string } | null>(null)
-  const errorText = error ? `${t(error.key, { path: error.path ?? '' })}${error.detail ? ` (${error.detail})` : ''}` : null
+  const [error, setError] = useState<{
+    key:
+      | 'reviewBatch.loadFailed'
+      | 'reviewBatch.contentFailed'
+      | 'reviewBatch.prepareFailed'
+      | 'reviewBatch.refreshFailed'
+      | 'reviewBatch.stale'
+      | 'reviewBatch.submitFailed'
+      | 'reviewBatch.undoFailed'
+      | 'reviewBatch.diskFailed'
+      | 'reviewBatch.saveFailed'
+      | 'reviewBatch.syncFailed'
+    path?: string
+    detail?: string
+  } | null>(null)
+  const errorText = error
+    ? `${t(error.key, { path: error.path ?? '' })}${error.detail ? ` (${error.detail})` : ''}`
+    : null
 
   const refresh = async (): Promise<ReviewBatchState | null> => {
     if (!identity) return null
@@ -97,23 +139,36 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
   useEffect(() => {
     if (!identity || !batch) return
     let cancelled = false
-    void Promise.all(batch.members.filter((member) => member.state !== 'completed').map(async (member) => {
-      const current = await fetchReviewMemberCurrent(identity.projectId, batch.id, member.file_id)
-      return [member.file_id, current?.revision] as const
-    })).then((rows) => {
+    void Promise.all(
+      batch.members
+        .filter((member) => member.state !== 'completed')
+        .map(async (member) => {
+          const current = await fetchReviewMemberCurrent(
+            identity.projectId,
+            batch.id,
+            member.file_id
+          )
+          return [member.file_id, current?.revision] as const
+        })
+    ).then((rows) => {
       if (cancelled) return
       setCurrentRevisions((existing) => ({
         ...existing,
-        ...Object.fromEntries(rows.filter((row): row is readonly [string, string | null] => row[1] !== undefined))
+        ...Object.fromEntries(
+          rows.filter((row): row is readonly [string, string | null] => row[1] !== undefined)
+        ),
       }))
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [batch, identity?.batchId, identity?.projectId, contentEpoch])
 
-  const selected = batch?.members.find((member) => member.file_id === selectedFileId)
-    ?? batch?.members.find((member) => member.state !== 'completed')
-    ?? batch?.members[0]
-    ?? null
+  const selected =
+    batch?.members.find((member) => member.file_id === selectedFileId) ??
+    batch?.members.find((member) => member.state !== 'completed') ??
+    batch?.members[0] ??
+    null
 
   useEffect(() => {
     setBaseBytes(null)
@@ -129,10 +184,20 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
         const [base, candidate, current, openedTabId] = await Promise.all([
           selected.base.state === 'tombstone'
             ? Promise.resolve(new Uint8Array())
-            : fetchReviewMemberContent(identity.projectId, identity.batchId, selected.file_id, 'base'),
+            : fetchReviewMemberContent(
+                identity.projectId,
+                identity.batchId,
+                selected.file_id,
+                'base'
+              ),
           selected.candidate.state === 'tombstone'
             ? Promise.resolve(new Uint8Array())
-            : fetchReviewMemberContent(identity.projectId, identity.batchId, selected.file_id, 'candidate'),
+            : fetchReviewMemberContent(
+                identity.projectId,
+                identity.batchId,
+                selected.file_id,
+                'candidate'
+              ),
           fetchReviewMemberCurrent(identity.projectId, identity.batchId, selected.file_id),
           selected.candidate.state === 'tombstone'
             ? Promise.resolve(null)
@@ -140,10 +205,13 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
                 { kind: 'project', project: identity.projectId, path: selected.path },
                 'edit',
                 selected.path.split('/').at(-1) ?? selected.path
-              )
+              ),
         ])
         if (cancelled) return
-        if (!base || !candidate || !current) { setError({ key: 'reviewBatch.contentFailed' }); return }
+        if (!base || !candidate || !current) {
+          setError({ key: 'reviewBatch.contentFailed' })
+          return
+        }
         setBaseBytes(base)
         setCandidateBytes(candidate)
         setCurrentBytes(current.content)
@@ -151,46 +219,59 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
         setLoadedCurrentFileId(selected.file_id)
         setDocumentTabId(openedTabId)
       } catch (cause) {
-        if (!cancelled) setError({ key: 'reviewBatch.prepareFailed', detail: cause instanceof Error ? cause.message : undefined })
+        if (!cancelled)
+          setError({
+            key: 'reviewBatch.prepareFailed',
+            detail: cause instanceof Error ? cause.message : undefined,
+          })
       }
     })()
-    return () => { cancelled = true }
-  }, [contentEpoch, identity?.batchId, identity?.projectId, selected?.file_id, selected?.review_id, selected?.state])
+    return () => {
+      cancelled = true
+    }
+  }, [
+    contentEpoch,
+    identity?.batchId,
+    identity?.projectId,
+    selected?.file_id,
+    selected?.review_id,
+    selected?.state,
+  ])
 
   const documentTab = documentTabId ? documents.tabs[documentTabId] : null
   const session = documentTab ? documents.sessions[documentTab.sessionId] : null
-  const selectedChoice = selected && identity
-    ? reviewDraftStore.choice(identity.projectId, identity.batchId, selected.file_id)
-    : null
-  const decidedCount = identity && batch
-    ? reviewDraftStore.decidedCount(identity.projectId, identity.batchId)
-    : 0
-  const progress = identity && batch
-    ? reviewProgress(
-        batch,
-        (fileId) => reviewDraftStore.choice(identity.projectId, identity.batchId, fileId) !== null
-      )
-    : { reviewed: 0, pending: 0, failed: 0 }
-  const selectedCurrentRevision = selected
-    ? currentRevisions[selected.file_id]
-    : undefined
-  const externalModified = selected !== null
-    && loadedCurrentFileId === selected.file_id
-    && selectedCurrentRevision !== undefined
-    && selectedCurrentRevision !== selected?.candidate_revision
+  const selectedChoice =
+    selected && identity
+      ? reviewDraftStore.choice(identity.projectId, identity.batchId, selected.file_id)
+      : null
+  const decidedCount =
+    identity && batch ? reviewDraftStore.decidedCount(identity.projectId, identity.batchId) : 0
+  const progress =
+    identity && batch
+      ? reviewProgress(
+          batch,
+          (fileId) => reviewDraftStore.choice(identity.projectId, identity.batchId, fileId) !== null
+        )
+      : { reviewed: 0, pending: 0, failed: 0 }
+  const selectedCurrentRevision = selected ? currentRevisions[selected.file_id] : undefined
+  const externalModified =
+    selected !== null &&
+    loadedCurrentFileId === selected.file_id &&
+    selectedCurrentRevision !== undefined &&
+    selectedCurrentRevision !== selected?.candidate_revision
 
-  const sessionFor = (member: ResourceReviewBatchMember) => Object.values(
-    workspace.getSnapshot().sessions
-  ).find((candidate) => (
-    candidate.source.kind === 'project'
-    && candidate.source.project === identity?.projectId
-    && candidate.source.path === member.path
-  ))
+  const sessionFor = (member: ResourceReviewBatchMember) =>
+    Object.values(workspace.getSnapshot().sessions).find(
+      (candidate) =>
+        candidate.source.kind === 'project' &&
+        candidate.source.project === identity?.projectId &&
+        candidate.source.path === member.path
+    )
   const hasDraftEdits = (batch?.members ?? []).some((member) => Boolean(sessionFor(member)?.dirty))
 
   const choose = async (action: ResourceReviewAction): Promise<void> => {
     if (!identity || !selected || selected.state === 'completed') return
-    let revision = resolveExpectedDiskRevision(
+    const revision = resolveExpectedDiskRevision(
       selected,
       currentRevisions[selected.file_id],
       session?.revision
@@ -208,8 +289,10 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
     if (!identity || !batch) return
     setBusy(true)
     setError(null)
-    const members = (scope === 'current' ? [selected] : batch.members)
-      .filter((member): member is ResourceReviewBatchMember => Boolean(member && member.state !== 'completed'))
+    const members = (scope === 'current' ? [selected] : batch.members).filter(
+      (member): member is ResourceReviewBatchMember =>
+        Boolean(member && member.state !== 'completed')
+    )
     let backupCount = 0
     for (const member of members) {
       const current = await fetchReviewMemberCurrent(identity.projectId, batch.id, member.file_id)
@@ -220,7 +303,11 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
       }
       if (current.revision !== member.candidate_revision) backupCount += 1
     }
-    setUndoPreview({ members, backupCount, draftCount: members.filter((member) => sessionFor(member)?.dirty).length })
+    setUndoPreview({
+      members,
+      backupCount,
+      draftCount: members.filter((member) => sessionFor(member)?.dirty).length,
+    })
     setBusy(false)
   }
 
@@ -240,7 +327,12 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
         setError({ key: 'reviewBatch.diskFailed', path: member.path })
         continue
       }
-      const undoSource = resolveReviewUndoSource(choice, member, Boolean(memberSession?.dirty), current.revision)
+      const undoSource = resolveReviewUndoSource(
+        choice,
+        member,
+        Boolean(memberSession?.dirty),
+        current.revision
+      )
       if (undoSource === ReviewUndoSource.Candidate) {
         const preview = await fetchResourceReviewConflict(identity.projectId, member.file_id)
         if (!preview) {
@@ -261,8 +353,13 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
           continue
         }
       }
-      if (memberSession && (undoSource === ReviewUndoSource.Memory || memberSession.dirty || undoSource === ReviewUndoSource.Candidate)) {
-        if (!await workspace.discardMemory(memberSession.id)) {
+      if (
+        memberSession &&
+        (undoSource === ReviewUndoSource.Memory ||
+          memberSession.dirty ||
+          undoSource === ReviewUndoSource.Candidate)
+      ) {
+        if (!(await workspace.discardMemory(memberSession.id))) {
           if (undoSource !== ReviewUndoSource.Candidate) {
             results.push({ path: member.path, ok: false })
             setError({ key: 'reviewBatch.undoFailed', path: member.path })
@@ -275,7 +372,10 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
       results.push({ path: member.path, ok: true })
     }
     setUndoResults(results)
-    await workspace.reconcileProjectPaths(identity.projectId, members.map((member) => member.path))
+    await workspace.reconcileProjectPaths(
+      identity.projectId,
+      members.map((member) => member.path)
+    )
     setCurrentRevisions({})
     setLoadedCurrentFileId(null)
     setCurrentBytes(null)
@@ -290,9 +390,15 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
     setError(null)
     for (const member of batch.members) {
       if (member.state === 'completed') continue
-      if (scope === 'remaining' && reviewDraftStore.choice(identity.projectId, batch.id, member.file_id)) continue
+      if (
+        scope === 'remaining' &&
+        reviewDraftStore.choice(identity.projectId, batch.id, member.file_id)
+      )
+        continue
       const current = await fetchReviewMemberCurrent(
-        identity.projectId, identity.batchId, member.file_id
+        identity.projectId,
+        identity.batchId,
+        member.file_id
       )
       if (!current) {
         setBusy(false)
@@ -354,10 +460,13 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
     }
     const decisions = staged.map((decision) => ({
       ...decision,
-      revised_content: revisedContents[decision.file_id]
+      revised_content: revisedContents[decision.file_id],
     }))
     const result = await decideResourceReviewBatch(
-      identity.projectId, identity.batchId, decisions, crypto.randomUUID()
+      identity.projectId,
+      identity.batchId,
+      decisions,
+      crypto.randomUUID()
     )
     setSubmissionResults(result.results ?? [])
     setBusy(false)
@@ -371,9 +480,17 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
     let syncFailed = false
     for (const member of batch.members) {
       const memberSession = sessionFor(member)
-      if (memberSession?.dirty && revisedContents[member.file_id] && !await workspace.discardMemory(memberSession.id)) syncFailed = true
+      if (
+        memberSession?.dirty &&
+        revisedContents[member.file_id] &&
+        !(await workspace.discardMemory(memberSession.id))
+      )
+        syncFailed = true
     }
-    await workspace.reconcileProjectPaths(identity.projectId, batch.members.map((member) => member.path))
+    await workspace.reconcileProjectPaths(
+      identity.projectId,
+      batch.members.map((member) => member.path)
+    )
     act.invalidateResources()
     if (syncFailed) {
       setError({ key: 'reviewBatch.syncFailed' })
@@ -382,7 +499,7 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
     act.completeResourceReview(tabId, {
       projectId: identity.projectId,
       path: selected?.path ?? batch.members[0].path,
-      documentTabId
+      documentTabId,
     })
   }
 
@@ -390,89 +507,321 @@ export function ReviewBatch({ tabId }: { tabId: string }): React.JSX.Element {
     if (!identity || !batch) return
     const overwritesDraft = batch.members.some((member) => {
       const choice = reviewDraftStore.choice(identity.projectId, batch.id, member.file_id)
-      return member.state !== 'completed' && choice?.action !== 'revise' && Boolean(sessionFor(member)?.dirty)
+      return (
+        member.state !== 'completed' &&
+        choice?.action !== 'revise' &&
+        Boolean(sessionFor(member)?.dirty)
+      )
     })
     if (overwritesDraft) setSubmitConfirmOpen(true)
     else void submitBatch()
   }
 
-  if (!identity) return <EmptyState title={t('reviewBatch.invalid')} description={t('reviewBatch.reopen')} />
-  if (loading) return <div className="grid h-full place-items-center"><Spinner aria-label={t('reviewBatch.loading')} /></div>
-  if (!batch) return <EmptyState title={t('reviewBatch.unavailable')} description={errorText ?? t('reviewBatch.missing')} />
-  if (batch.members.length === 0) return <EmptyState title={t('reviewBatch.empty')} description={t('reviewBatch.noAction')} />
+  if (!identity)
+    return <EmptyState title={t('reviewBatch.invalid')} description={t('reviewBatch.reopen')} />
+  if (loading)
+    return (
+      <div className="grid h-full place-items-center">
+        <Spinner aria-label={t('reviewBatch.loading')} />
+      </div>
+    )
+  if (!batch)
+    return (
+      <EmptyState
+        title={t('reviewBatch.unavailable')}
+        description={errorText ?? t('reviewBatch.missing')}
+      />
+    )
+  if (batch.members.length === 0)
+    return <EmptyState title={t('reviewBatch.empty')} description={t('reviewBatch.noAction')} />
 
   return (
-    <ResizablePanelGroup className="h-full min-h-0 bg-[var(--vds-bg-page)]" data-testid="review-batch" defaultSizes={REVIEW_PANEL_SIZES}>
+    <ResizablePanelGroup
+      className="h-full min-h-0 bg-[var(--vds-bg-page)]"
+      data-testid="review-batch"
+      defaultSizes={REVIEW_PANEL_SIZES}
+    >
       <ResizablePanel aria-label={t('reviewBatch.files')} minSize={18} maxSize={38}>
         <aside className="flex h-full min-h-0 flex-col bg-[var(--vds-bg-white-default)]">
-        <header className="flex shrink-0 items-center justify-between gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] px-[var(--vds-space-3)] py-[var(--vds-space-3)]">
-          <h2 className="m-0 min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]"><EllipsisText wrapperClassName="w-full" tooltipPortalled>{t('reviewBatch.heading')}</EllipsisText></h2>
-          <Badge className="shrink-0" size="sm" tone="neutral">{batch.members.length}</Badge>
-        </header>
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="grid gap-[var(--vds-space-1)] p-[var(--vds-space-2)]">
-            {batch.members.map((member) => {
-              const action = reviewDraftStore.choice(identity.projectId, batch.id, member.file_id)?.action ?? null
-              return (
-                <Button key={member.file_id} aria-label={member.path} aria-current={selected?.file_id === member.file_id ? 'true' : undefined} className="w-full min-w-0 justify-start ![padding:var(--vds-space-2)] text-left aria-[current=true]:bg-[var(--vds-surface-active)] aria-[current=true]:[border-color:var(--vds-brand-light-border)]" data-decided={action ? 'true' : 'false'} data-testid={`review-member-${member.file_id}`} size="content" variant="ghost" onClick={() => setSelectedFileId(member.file_id)}>
-                  <span className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-[var(--vds-space-2)] text-[var(--vds-text-primary)]">
-                    <Icon name="doc" size={16} />
-                    <span className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-1)]">
-                      <EllipsisText className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]" tooltip={member.path} tooltipPortalled>{member.path.split('/').at(-1)}</EllipsisText>
-                      <EllipsisText className="font-[family-name:var(--vds-font-code)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]" tooltipPortalled>{member.path}</EllipsisText>
+          <header className="flex shrink-0 items-center justify-between gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] px-[var(--vds-space-3)] py-[var(--vds-space-3)]">
+            <h2 className="m-0 min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+              <EllipsisText wrapperClassName="w-full" tooltipPortalled>
+                {t('reviewBatch.heading')}
+              </EllipsisText>
+            </h2>
+            <Badge className="shrink-0" size="sm" tone="neutral">
+              {batch.members.length}
+            </Badge>
+          </header>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="grid gap-[var(--vds-space-1)] p-[var(--vds-space-2)]">
+              {batch.members.map((member) => {
+                const action =
+                  reviewDraftStore.choice(identity.projectId, batch.id, member.file_id)?.action ??
+                  null
+                return (
+                  <Button
+                    key={member.file_id}
+                    aria-label={member.path}
+                    aria-current={selected?.file_id === member.file_id ? 'true' : undefined}
+                    className="w-full min-w-0 justify-start ![padding:var(--vds-space-2)] text-left aria-[current=true]:bg-[var(--vds-surface-active)] aria-[current=true]:[border-color:var(--vds-brand-light-border)]"
+                    data-decided={action ? 'true' : 'false'}
+                    data-testid={`review-member-${member.file_id}`}
+                    size="content"
+                    variant="ghost"
+                    onClick={() => setSelectedFileId(member.file_id)}
+                  >
+                    <span className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-[var(--vds-space-2)] text-[var(--vds-text-primary)]">
+                      <Icon name="doc" size={16} />
+                      <span className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-1)]">
+                        <EllipsisText
+                          className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)]"
+                          tooltip={member.path}
+                          tooltipPortalled
+                        >
+                          {member.path.split('/').at(-1)}
+                        </EllipsisText>
+                        <EllipsisText
+                          className="font-[family-name:var(--vds-font-code)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]"
+                          tooltipPortalled
+                        >
+                          {member.path}
+                        </EllipsisText>
+                      </span>
+                      <span className="col-span-2 flex flex-wrap gap-[var(--vds-space-1)]">
+                        <Tooltip
+                          className="min-w-0"
+                          content={t(originLabel(member.origin))}
+                          portalled
+                        >
+                          <Badge
+                            className="min-w-0 max-w-full"
+                            size="sm"
+                            tone={member.origin === 'agent' ? 'brand' : 'neutral'}
+                          >
+                            <span className="truncate">{t(originLabel(member.origin))}</span>
+                          </Badge>
+                        </Tooltip>
+                        {currentRevisions[member.file_id] !== undefined &&
+                          currentRevisions[member.file_id] !== member.candidate_revision && (
+                            <Tooltip
+                              className="min-w-0"
+                              content={t('reviewBatch.changedBadge')}
+                              portalled
+                            >
+                              <Badge className="min-w-0 max-w-full" size="sm" tone="warning">
+                                <span className="truncate">{t('reviewBatch.changedBadge')}</span>
+                              </Badge>
+                            </Tooltip>
+                          )}
+                        <Tooltip className="min-w-0" content={t(choiceLabel(action))} portalled>
+                          <Badge
+                            className="min-w-0 max-w-full"
+                            size="sm"
+                            tone={action === 'reject' ? 'danger' : action ? 'success' : 'neutral'}
+                          >
+                            <span className="truncate">{t(choiceLabel(action))}</span>
+                          </Badge>
+                        </Tooltip>
+                      </span>
                     </span>
-                    <span className="col-span-2 flex flex-wrap gap-[var(--vds-space-1)]">
-                      <Tooltip className="min-w-0" content={t(originLabel(member.origin))} portalled><Badge className="min-w-0 max-w-full" size="sm" tone={member.origin === 'agent' ? 'brand' : 'neutral'}><span className="truncate">{t(originLabel(member.origin))}</span></Badge></Tooltip>
-                      {currentRevisions[member.file_id] !== undefined && currentRevisions[member.file_id] !== member.candidate_revision && <Tooltip className="min-w-0" content={t('reviewBatch.changedBadge')} portalled><Badge className="min-w-0 max-w-full" size="sm" tone="warning"><span className="truncate">{t('reviewBatch.changedBadge')}</span></Badge></Tooltip>}
-                      <Tooltip className="min-w-0" content={t(choiceLabel(action))} portalled><Badge className="min-w-0 max-w-full" size="sm" tone={action === 'reject' ? 'danger' : action ? 'success' : 'neutral'}><span className="truncate">{t(choiceLabel(action))}</span></Badge></Tooltip>
-                    </span>
-                  </span>
-                </Button>
-              )
-            })}
-          </div>
-        </ScrollArea>
+                  </Button>
+                )
+              })}
+            </div>
+          </ScrollArea>
         </aside>
       </ResizablePanel>
       <ResizableHandle aria-label={t('reviewBatch.resize')} />
       <ResizablePanel aria-label={t('reviewBatch.content')} minSize={50}>
         <main className="flex h-full min-h-0 min-w-0 flex-col">
-        <ReviewBar busy={busy} decided={decidedCount} reviewed={progress.reviewed} pending={progress.pending} failed={progress.failed} total={batch.members.length} hasEdits={hasDraftEdits} selectedAction={selectedChoice?.action ?? null} filePath={selected?.path} previewLabel={t(selectedChoice?.action === 'accept' ? 'reviewBatch.agentPreview' : selectedChoice?.action === 'reject' ? 'reviewBatch.basePreview' : session?.dirty ? 'reviewBatch.draftPreview' : 'reviewBatch.diskPreview')} acceptEnabled={Boolean(selected && selected.state !== 'completed')} reviseEnabled={Boolean(session?.dirty || externalModified)} selectedEnabled={Boolean(selected && selected.state !== 'completed')} decisionsEnabled={batch.members.some((member) => member.state !== 'completed')} onChoose={(action) => { void choose(action) }} onUndo={(scope) => { void previewUndo(scope) }} onBulk={(action, scope) => { void bulk(action, scope) }} onSubmit={requestSubmit} />
-        {error ? <Alert className="m-[var(--vds-space-3)]" tone="error"><AlertTitle>{t('reviewBatch.failed')}</AlertTitle><AlertDescription>{errorText}</AlertDescription></Alert> : null}
-        {submissionResults.length > 0 && submissionResults.some((result) => result.state === 'failed') ? <Alert action={<Button onClick={() => { void submitBatch() }} size="sm" variant="secondary">{t('reviewBatch.retryFailed')}</Button>} className="m-[var(--vds-space-3)]" description={submissionResults.map((result) => `${batch.members.find((member) => member.file_id === result.file_id)?.path ?? result.file_id}: ${result.state === 'completed' ? t('reviewBatch.submitted') : `${t('reviewBatch.submitFailedFile')} (${result.error ?? ''})`}`).join(' · ')} layout="stacked" title={t('reviewBatch.partialResult')} tone="warning" /> : null}
-        {undoResults.length > 0 ? <Alert className="m-[var(--vds-space-3)]" tone={undoResults.every((result) => result.ok) ? 'success' : 'warning'}><AlertTitle>{t('reviewBatch.undoResult')}</AlertTitle><AlertDescription>{undoResults.map((result) => `${result.path}: ${t(result.ok ? 'reviewBatch.undoSucceeded' : 'reviewBatch.undoRetry')}`).join(' · ')}</AlertDescription></Alert> : null}
-        {externalModified ? <Alert className="mx-[var(--vds-space-3)] mt-[var(--vds-space-3)]" tone="info"><AlertTitle>{t('reviewBatch.changed')}</AlertTitle><AlertDescription>{t('reviewBatch.changedDetail')}</AlertDescription></Alert> : null}
-        {!selected ? <EmptyState title={t('reviewBatch.processed')} description={t('reviewBatch.decided')} />
-          : selected.state === 'completed' ? <EmptyState title={t('reviewBatch.submitted')} description={t(choiceLabel(selected.action))} />
-          : !session || session.loadState === 'loading' || !baseBytes || !candidateBytes || !currentBytes ? <div className="grid min-h-0 flex-1 place-items-center"><Spinner aria-label={t('reviewBatch.preparing')} /></div>
-          : session.loadState === 'error' ? <EmptyState title={t('reviewBatch.openFailed')} description={selected.path} />
-          : session.viewer === 'code' || session.viewer === 'markdown' ? <ReviewDiff baseText={TEXT_DECODER.decode(baseBytes)} candidateText={selectedChoice?.action === 'accept' ? TEXT_DECODER.decode(candidateBytes) : selectedChoice?.action === 'reject' ? TEXT_DECODER.decode(baseBytes) : session.dirty && session.text !== null ? session.text : TEXT_DECODER.decode(currentBytes)} path={selected.path} sessionId={session.id} previewKey={`${selectedChoice?.action ?? 'current'}:${contentEpoch}`} readOnly={selectedChoice?.action === 'accept' || selectedChoice?.action === 'reject'} />
-          : session.viewer === 'office' || session.viewer === 'spreadsheet' ? <div className="min-h-0 flex-1"><OfficeDocument kind={session.viewer} sessionId={session.id} tabId={documentTabId ?? ''} viewKind="edit" /></div>
-          : <EmptyState title={t('reviewBatch.unsupported')} description={t('reviewBatch.wholeSnapshot')} />}
-        <AlertDialog open={undoPreview !== null} onOpenChange={(open) => { if (!open) setUndoPreview(null) }}>
-          <AlertDialogContent data-testid="review-undo-confirmation">
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t('reviewBatch.undoTitle')}</AlertDialogTitle>
-              <AlertDialogDescription>{t('reviewBatch.undoDescription', { count: undoPreview?.members.length ?? 0, backups: undoPreview?.backupCount ?? 0, drafts: undoPreview?.draftCount ?? 0 })}</AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t('reviewBatch.undoCancel')}</AlertDialogCancel>
-              <AlertDialogAction onClick={() => { void undoMembers() }}>{t('reviewBatch.undoConfirm')}</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-        <AlertDialog open={submitConfirmOpen} onOpenChange={setSubmitConfirmOpen}>
-          <AlertDialogContent data-testid="review-submit-draft-confirmation">
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t('reviewBatch.submitDraftTitle')}</AlertDialogTitle>
-              <AlertDialogDescription>{t('reviewBatch.submitDraftDescription')}</AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t('reviewBatch.undoCancel')}</AlertDialogCancel>
-              <AlertDialogAction onClick={() => { setSubmitConfirmOpen(false); void submitBatch() }}>{t('reviewBatch.submitDraftConfirm')}</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+          <ReviewBar
+            busy={busy}
+            decided={decidedCount}
+            reviewed={progress.reviewed}
+            pending={progress.pending}
+            failed={progress.failed}
+            total={batch.members.length}
+            hasEdits={hasDraftEdits}
+            selectedAction={selectedChoice?.action ?? null}
+            filePath={selected?.path}
+            previewLabel={t(
+              selectedChoice?.action === 'accept'
+                ? 'reviewBatch.agentPreview'
+                : selectedChoice?.action === 'reject'
+                  ? 'reviewBatch.basePreview'
+                  : session?.dirty
+                    ? 'reviewBatch.draftPreview'
+                    : 'reviewBatch.diskPreview'
+            )}
+            acceptEnabled={Boolean(selected && selected.state !== 'completed')}
+            reviseEnabled={Boolean(session?.dirty || externalModified)}
+            selectedEnabled={Boolean(selected && selected.state !== 'completed')}
+            decisionsEnabled={batch.members.some((member) => member.state !== 'completed')}
+            onChoose={(action) => {
+              void choose(action)
+            }}
+            onUndo={(scope) => {
+              void previewUndo(scope)
+            }}
+            onBulk={(action, scope) => {
+              void bulk(action, scope)
+            }}
+            onSubmit={requestSubmit}
+          />
+          {error ? (
+            <Alert className="m-[var(--vds-space-3)]" tone="error">
+              <AlertTitle>{t('reviewBatch.failed')}</AlertTitle>
+              <AlertDescription>{errorText}</AlertDescription>
+            </Alert>
+          ) : null}
+          {submissionResults.length > 0 &&
+          submissionResults.some((result) => result.state === 'failed') ? (
+            <Alert
+              action={
+                <Button
+                  onClick={() => {
+                    void submitBatch()
+                  }}
+                  size="sm"
+                  variant="secondary"
+                >
+                  {t('reviewBatch.retryFailed')}
+                </Button>
+              }
+              className="m-[var(--vds-space-3)]"
+              description={submissionResults
+                .map(
+                  (result) =>
+                    `${batch.members.find((member) => member.file_id === result.file_id)?.path ?? result.file_id}: ${result.state === 'completed' ? t('reviewBatch.submitted') : `${t('reviewBatch.submitFailedFile')} (${result.error ?? ''})`}`
+                )
+                .join(' · ')}
+              layout="stacked"
+              title={t('reviewBatch.partialResult')}
+              tone="warning"
+            />
+          ) : null}
+          {undoResults.length > 0 ? (
+            <Alert
+              className="m-[var(--vds-space-3)]"
+              tone={undoResults.every((result) => result.ok) ? 'success' : 'warning'}
+            >
+              <AlertTitle>{t('reviewBatch.undoResult')}</AlertTitle>
+              <AlertDescription>
+                {undoResults
+                  .map(
+                    (result) =>
+                      `${result.path}: ${t(result.ok ? 'reviewBatch.undoSucceeded' : 'reviewBatch.undoRetry')}`
+                  )
+                  .join(' · ')}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {externalModified ? (
+            <Alert className="mx-[var(--vds-space-3)] mt-[var(--vds-space-3)]" tone="info">
+              <AlertTitle>{t('reviewBatch.changed')}</AlertTitle>
+              <AlertDescription>{t('reviewBatch.changedDetail')}</AlertDescription>
+            </Alert>
+          ) : null}
+          {!selected ? (
+            <EmptyState title={t('reviewBatch.processed')} description={t('reviewBatch.decided')} />
+          ) : selected.state === 'completed' ? (
+            <EmptyState
+              title={t('reviewBatch.submitted')}
+              description={t(choiceLabel(selected.action))}
+            />
+          ) : !session ||
+            session.loadState === 'loading' ||
+            !baseBytes ||
+            !candidateBytes ||
+            !currentBytes ? (
+            <div className="grid min-h-0 flex-1 place-items-center">
+              <Spinner aria-label={t('reviewBatch.preparing')} />
+            </div>
+          ) : session.loadState === 'error' ? (
+            <EmptyState title={t('reviewBatch.openFailed')} description={selected.path} />
+          ) : session.viewer === 'code' || session.viewer === 'markdown' ? (
+            <ReviewDiff
+              baseText={TEXT_DECODER.decode(baseBytes)}
+              candidateText={
+                selectedChoice?.action === 'accept'
+                  ? TEXT_DECODER.decode(candidateBytes)
+                  : selectedChoice?.action === 'reject'
+                    ? TEXT_DECODER.decode(baseBytes)
+                    : session.dirty && session.text !== null
+                      ? session.text
+                      : TEXT_DECODER.decode(currentBytes)
+              }
+              path={selected.path}
+              sessionId={session.id}
+              previewKey={`${selectedChoice?.action ?? 'current'}:${contentEpoch}`}
+              readOnly={selectedChoice?.action === 'accept' || selectedChoice?.action === 'reject'}
+            />
+          ) : session.viewer === 'office' || session.viewer === 'spreadsheet' ? (
+            <div className="min-h-0 flex-1">
+              <OfficeDocument
+                kind={session.viewer}
+                sessionId={session.id}
+                tabId={documentTabId ?? ''}
+                viewKind="edit"
+              />
+            </div>
+          ) : (
+            <EmptyState
+              title={t('reviewBatch.unsupported')}
+              description={t('reviewBatch.wholeSnapshot')}
+            />
+          )}
+          <AlertDialog
+            open={undoPreview !== null}
+            onOpenChange={(open) => {
+              if (!open) setUndoPreview(null)
+            }}
+          >
+            <AlertDialogContent data-testid="review-undo-confirmation">
+              <AlertDialogHeader>
+                <AlertDialogTitle>{t('reviewBatch.undoTitle')}</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {t('reviewBatch.undoDescription', {
+                    count: undoPreview?.members.length ?? 0,
+                    backups: undoPreview?.backupCount ?? 0,
+                    drafts: undoPreview?.draftCount ?? 0,
+                  })}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t('reviewBatch.undoCancel')}</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    void undoMembers()
+                  }}
+                >
+                  {t('reviewBatch.undoConfirm')}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <AlertDialog open={submitConfirmOpen} onOpenChange={setSubmitConfirmOpen}>
+            <AlertDialogContent data-testid="review-submit-draft-confirmation">
+              <AlertDialogHeader>
+                <AlertDialogTitle>{t('reviewBatch.submitDraftTitle')}</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {t('reviewBatch.submitDraftDescription')}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t('reviewBatch.undoCancel')}</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    setSubmitConfirmOpen(false)
+                    void submitBatch()
+                  }}
+                >
+                  {t('reviewBatch.submitDraftConfirm')}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </main>
       </ResizablePanel>
     </ResizablePanelGroup>

@@ -17,7 +17,11 @@ import {
   isRecoverableTurnFailure,
   sameTurnFailureMessage,
 } from './failures.ts'
-import { projectHistoryWithRuntime, projectStreamDelta } from './transcript.ts'
+import {
+  projectHistorySnapshot,
+  projectHistoryWithRuntime,
+  projectStreamDelta,
+} from './transcript.ts'
 
 import {
   classifyHilResponseFailure,
@@ -44,6 +48,7 @@ import {
   effectiveReadiness,
   formatRuntimeStatus,
   formatTurnUnknown,
+  hasCurrentTurnCapabilityFailure,
   permissionModeFailure,
   permissionModeNeedsConfirmation,
   permissionModeShowsNextTurn,
@@ -627,6 +632,210 @@ test('credit balance exhaustion maps to a dedicated credits card without retry',
   )
 })
 
+test('subscription capability rejection stays localized and never offers unchanged continuation', async () => {
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const providerCode = 'subscription_sharing_unsupported_capability'
+  const message =
+    'The ChatGPT subscription connection does not support this request capability. Use a compatible model source or start a task without that capability; retrying unchanged will fail.'
+  for (const data of [
+    { code: providerCode, message, retryable: true },
+    { code: 'codex_provider_failed', provider_error_code: providerCode, message, retryable: true },
+  ]) {
+    const failure = { ...describeTurnFailure(data), turnId: 'capability-turn' }
+    assert.equal(failure.failure?.kind, 'capability')
+    assert.equal(failure.runtimeAction, undefined)
+    assert.equal(isRecoverableTurnFailure(failure), false)
+    assert.equal(
+      sameTurnFailureMessage(
+        { kind: 'error', title: '', message: '', action: '', runtimeAction: 'continue_turn' },
+        failure
+      ),
+      false
+    )
+    const current: Thread = {
+      ...thread(),
+      running: false,
+      status: 'failed',
+      conversation: [failure],
+      turnOutcomes: { 'capability-turn': 'failed' },
+    }
+    assert.equal(canContinueFailedTurn(current, failure), false)
+    assert.equal(
+      canContinueFailedTurn(current, { ...failure, runtimeAction: 'continue_turn' }),
+      false
+    )
+    await locale.changeLanguage('zh')
+    const before = JSON.stringify(failure)
+    const chinese = formatTurnFailure(failure, locale.getFixedT(null, 'conversation'))
+    assert.equal(chinese.message, 'ChatGPT 订阅连接不支持此请求使用的能力。')
+    assert.equal(
+      chinese.action,
+      '请切换到支持该能力的模型来源，或新建不使用该能力的任务；保持当前请求不变并点击继续仍会失败。任务历史已保留。'
+    )
+    await locale.changeLanguage('en')
+    const english = formatTurnFailure(failure, locale.getFixedT(null, 'conversation'))
+    assert.equal(
+      english.message,
+      'The ChatGPT subscription connection does not support this request capability.'
+    )
+    assert.match(english.action, /compatible model source/)
+    assert.match(english.action, /retrying unchanged will fail/)
+    assert.equal(JSON.stringify(failure), before)
+  }
+  const ordinary = describeTurnFailure({
+    code: 'codex_provider_failed',
+    provider_error_code: 'unknown_provider_code',
+    message: 'The model provider is temporarily unavailable.',
+    retryable: true,
+  })
+  assert.equal(ordinary.failure?.kind, 'unavailable')
+  assert.equal(ordinary.runtimeAction, 'continue_turn')
+})
+
+test('subscription capability history replay retains the terminal failure without a continue action', () => {
+  const previous = {
+    ...describeTurnFailure({ retryable: true }),
+    turnId: 'capability-turn',
+  }
+  const conversation = projectHistorySnapshot(
+    {
+      turns: [],
+      todos: [],
+      todo_turn_id: null,
+      artifacts: [],
+      turn_activity: [],
+      activity_events: [
+        {
+          v: 2,
+          seq: 1,
+          ts: 1,
+          type: 'turn_failed',
+          session_id: 'session-1',
+          turn_id: 'capability-turn',
+          data: {
+            code: 'codex_provider_failed',
+            provider_error_code: 'subscription_sharing_unsupported_capability',
+            message:
+              'The ChatGPT subscription connection does not support this request capability.',
+            retryable: true,
+          },
+        },
+      ],
+    },
+    [previous]
+  )
+  const failure = conversation.find(
+    (item) => item.kind === 'error' && item.failure?.kind === 'capability'
+  )
+  assert.ok(failure?.kind === 'error')
+  assert.equal(failure.failure?.kind, 'capability')
+  assert.equal(failure.runtimeAction, undefined)
+  assert.equal(
+    canContinueFailedTurn({ ...thread(), running: false, status: 'failed', conversation }, failure),
+    false
+  )
+  assert.ok(conversation.includes(previous))
+  assert.equal(
+    canContinueFailedTurn(
+      { ...thread(), running: false, status: 'failed', conversation },
+      previous
+    ),
+    false
+  )
+})
+
+test('subscription capability incident explains the terminal rejection in both languages', async () => {
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const update = reportRuntimeIncident(
+    thread(),
+    {
+      ...incident('detected'),
+      scope: 'turn',
+      kind: 'rpc_rejected',
+      strategy: 'none',
+      retryability: 'terminal',
+      safe_error: 'The ChatGPT subscription connection does not support this request capability.',
+      provider_error_code: 'subscription_sharing_unsupported_capability',
+    },
+    'capability-turn'
+  )
+  const status = update.conversation?.find((item) => item.kind === 'status')
+  assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
+  assert.match(
+    formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')),
+    /订阅连接不支持/
+  )
+  await locale.changeLanguage('en')
+  assert.match(
+    formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')),
+    /subscription connection does not support/
+  )
+})
+
+test('composer header continuation blocks only the current capability failure', async () => {
+  const source = readFileSync(
+    new URL('./components/business/Composer.tsx', import.meta.url),
+    'utf8'
+  )
+  const syntax = ts.createSourceFile(
+    'Composer.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const headers: ts.CallExpression[] = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.expression.getText(syntax) === 'header')
+      headers.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(headers.length, 1)
+  const script = ts.transpileModule(headers[0].getText(syntax), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText
+  const capability = {
+    ...describeTurnFailure({ code: 'subscription_sharing_unsupported_capability' }),
+    turnId: 'capability-turn',
+  }
+  for (const [conversation, blocked] of [
+    [[capability], true],
+    [[capability, { kind: 'user', text: 'new task', turnId: 'next-turn' }], false],
+    [[{ ...describeTurnFailure({ retryable: true }), turnId: 'ordinary-turn' }], false],
+  ] as [ConvItem[], boolean][]) {
+    let submissions = 0
+    let controls: { continueTurn: () => Promise<boolean>; continueDisabled: boolean } | undefined
+    runInNewContext(script, {
+      hasCurrentTurnCapabilityFailure,
+      thread: { ...thread(), running: false, status: 'failed', conversation },
+      continueDisabled: false,
+      header: (value: typeof controls) => {
+        controls = value
+      },
+      t: () => 'continue',
+      submit: async () => {
+        submissions += 1
+        return true
+      },
+    })
+    assert.ok(controls)
+    assert.equal(controls.continueDisabled, blocked)
+    assert.equal(await controls.continueTurn(), !blocked)
+    assert.equal(submissions, blocked ? 0 : 1)
+  }
+})
+
 test('classified turn failures keep a distinct reason for the card to surface', async () => {
   const locale = createInstance()
   await locale.init({
@@ -673,7 +882,16 @@ test('classified turn failures keep a distinct reason for the card to surface', 
 })
 
 test('the turn failure card uses a compact description and retry action', () => {
-  const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const host = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  assert.match(
+    host,
+    /<Failure[\s\S]*?recoveryAvailable=\{recoveryAvailable\}[\s\S]*?onContinue=\{onContinue\}[\s\S]*?onRepair=\{recoverAuthentication\}/
+  )
+  assert.match(host, /latest\.thread\.id !== recoveryThread\.id/)
+  assert.match(host, /latest\.item\.turnId !== item\.turnId/)
+  assert.match(host, /continueRequested && !canContinueFailedTurn\(latest\.thread, latest\.item\)/)
+  const stream = readFileSync(new URL('./components/business/Failure.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(stream, /useApp|getAuthMe|getModels|openSettings|window\./)
   const anchor = stream.indexOf('data-testid="turn-failure-card"')
   assert.notEqual(anchor, -1)
   const card = stream.slice(anchor)
@@ -683,7 +901,7 @@ test('the turn failure card uses a compact description and retry action', () => 
 })
 
 test('recoverable failures reuse the compact continuation notice and interrupted action', () => {
-  const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const stream = readFileSync(new URL('./components/business/Failure.tsx', import.meta.url), 'utf8')
   const notice = stream.indexOf('data-testid="turn-recoverable-notice"')
   const card = stream.indexOf('data-testid="turn-failure-card"')
   assert.notEqual(notice, -1)
@@ -694,7 +912,7 @@ test('recoverable failures reuse the compact continuation notice and interrupted
 })
 
 test('recoverable notice JSX renders localized messages, pending buttons and bound continuation', async () => {
-  const source = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('./components/business/Failure.tsx', import.meta.url), 'utf8')
   const syntax = ts.createSourceFile(
     'Stream.tsx',
     source,
@@ -752,6 +970,7 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
               recoveryAvailable,
               continuing: actionState === 'submitting',
               continueUnknown: actionState === 'outcome_unknown',
+              actionError: undefined,
               aiThinking: '',
               IconFont: () => null,
               Spinner: () => null,
@@ -1916,6 +2135,61 @@ test('repeated tool loop incident explains the stop in both languages', async ()
   )
   await locale.changeLanguage('en')
   assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /repeated/)
+})
+
+test('sandbox recovery incidents explain their exact cause without suggesting message replay', async () => {
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    defaultNS: 'conversation',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const cases = [
+    ['windows_sandbox_setup_failed', /初始化未完成/, /initialization did not complete/],
+    ['windows_sandbox_setup_cancelled', /授权已取消/, /authorization was cancelled/],
+    ['windows_sandbox_setup_unknown', /结果尚未确认/, /outcome is unconfirmed/],
+    ['windows_sandbox_setup_in_progress', /仍在初始化/, /still being initialized/],
+    ['windows_sandbox_policy_rejected', /安全策略/, /security policy/],
+    ['windows_sandbox_tool_access_failed', /内置工具/, /built-in tools/],
+  ] as const
+  for (const [reason, chinese, english] of cases) {
+    const observation = { ...incident('failed'), safe_error: reason }
+    const update = reportRuntimeIncident(thread(), observation, 'sandbox-turn', undefined, 42)
+    const status = update.conversation?.find((item) => item.kind === 'status')
+    assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
+    const identity = JSON.stringify(status)
+    await locale.changeLanguage('zh')
+    const chineseText = formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation'))
+    assert.match(chineseText, chinese)
+    assert.doesNotMatch(chineseText, /请重新发送|请重发|UAC 已批准/)
+    await locale.changeLanguage('en')
+    const englishText = formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation'))
+    assert.match(englishText, english)
+    assert.doesNotMatch(englishText, /send again|please resend|UAC was approved/i)
+    assert.equal(JSON.stringify(status), identity)
+    assert.equal(observation.safe_error, reason)
+    assert.equal(status.eventSeq, 42)
+  }
+  for (const reason of [
+    'windows_sandbox_setup_failed private-token',
+    'windows_sandbox_unknown_key',
+  ]) {
+    assert.equal(
+      formatRuntimeStatus(
+        { key: 'runtime.failed', reason },
+        locale.getFixedT(null, 'conversation')
+      ),
+      en.runtime.failed
+    )
+  }
+  assert.equal(
+    formatRuntimeStatus(
+      { key: 'runtime.recovered', reason: 'windows_sandbox_setup_cancelled' },
+      locale.getFixedT(null, 'conversation')
+    ),
+    en.runtime.recovered
+  )
 })
 
 test('provider retries are not presented as agent connection recovery', async () => {

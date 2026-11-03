@@ -7,21 +7,27 @@ import { cardArtifactIds } from '../../activity'
 import { latestDisplayCardItems } from '../../transcript'
 import { Alert, AlertDescription, AlertTitle } from '../ui'
 import { DisplayCardsContext } from './displayCardsContext'
+import { PublicComponentsContext } from './publicComponents'
+import type { PublicComponentContribution } from '../../contracts/components'
+import { PLUGIN_DISPLAY_TYPE } from '../../../../plugins'
+import { PluginInteraction } from './Frame'
 
 export function DisplayCardProvider({
   children,
-  cards
+  cards, publicComponents = new Map()
 }: {
   children: React.ReactNode
   cards: ReadonlyMap<string, DisplayCardContribution>
+  publicComponents?: ReadonlyMap<string, PublicComponentContribution>
 }): React.JSX.Element {
-  return <DisplayCardsContext.Provider value={cards}>{children}</DisplayCardsContext.Provider>
+  return <DisplayCardsContext.Provider value={cards}><PublicComponentsContext.Provider value={publicComponents}>{children}</PublicComponentsContext.Provider></DisplayCardsContext.Provider>
 }
 
 export function DisplayCardView({ card, turnId }: { card: DisplayCardData; turnId?: string }): React.JSX.Element {
   const cards = useContext(DisplayCardsContext)
   const { t } = useTranslation('components')
   const contribution = cards.get(card.type)
+  if (card.type === PLUGIN_DISPLAY_TYPE && card.component) return <PluginInteraction reference={card.component} data={card.content} status="resolved" onAction={() => undefined} />
   if (!contribution) {
     return (
       <Alert tone="warning">
@@ -30,7 +36,7 @@ export function DisplayCardView({ card, turnId }: { card: DisplayCardData; turnI
       </Alert>
     )
   }
-  return <>{contribution.render({ cardId: card.cardId, content: card.content, presentationSource: card.presentationSource, turnId })}</>
+  return <>{contribution.render({ cardId: card.cardId, content: card.content, component: card.component, presentationSource: card.presentationSource, turnId })}</>
 }
 
 export function usePostDeliveryCardTypes(): ReadonlySet<string> {

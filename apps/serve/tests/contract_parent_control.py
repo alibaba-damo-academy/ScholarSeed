@@ -27,6 +27,41 @@ COMPILER_DESCRIPTION = {
 
 
 class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_takeover_failure_and_cancellation_restore_terminal_fence(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                activities = Activities()
+                resource = activities.enter(ActivityDomain.RESOURCE, root=True)
+                fence = activities.begin()
+                activities.release_for_restart(fence)
+                entered = asyncio.Event()
+
+                async def drain(generation):
+                    self.assertNotEqual(generation, fence)
+                    self.assertFalse(activities.seal(generation))
+                    entered.set()
+                    if cancel:
+                        await asyncio.Event().wait()
+                    raise RuntimeError("resource cleanup unknown")
+
+                control = ParentControl(activities, drain_attachments=drain)
+                task = asyncio.create_task(
+                    control._command({"operation": "quiesce", "generation": None})
+                )
+                await entered.wait()
+                if cancel:
+                    task.cancel()
+                try:
+                    with self.assertRaises(asyncio.CancelledError if cancel else RuntimeError):
+                        await task
+                    self.assertIsNone(control._generation)
+                    self.assertEqual(activities.snapshot().generation, fence)
+                    self.assertEqual(activities.snapshot().counts, {"resource": 1})
+                    with self.assertRaises(MaintenanceActive):
+                        activities.enter(ActivityDomain.TURN, root=True)
+                finally:
+                    resource.close()
+
     async def test_skill_python_receipt_is_independent_and_single_use(self):
         skill = Mock()
         tex = Mock()

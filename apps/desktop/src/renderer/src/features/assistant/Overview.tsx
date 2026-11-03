@@ -20,7 +20,7 @@ import {
 } from '../../components/ui'
 import { activeThread, useApp } from '../../store'
 import { OverviewReferences } from './References'
-import { OverviewFileActions } from './Artifacts'
+import { OverviewFileActions, OverviewLiteratureActions } from './Artifacts'
 
 const OverviewLayoutContext = React.createContext<{
   reserveSpace: boolean
@@ -169,6 +169,9 @@ function Overview({ menuItem }: { menuItem: boolean }): React.JSX.Element {
             boundaryRef={boundaryRef}
             onOpened={menuItem ? () => setOpen(false) : undefined}
             renderActions={(file) => <OverviewFileActions file={file} boundaryRef={boundaryRef} />}
+            renderLiteratureActions={(document) => (
+              <OverviewLiteratureActions document={document} />
+            )}
           />
           <div
             aria-hidden

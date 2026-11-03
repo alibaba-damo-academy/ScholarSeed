@@ -33,23 +33,25 @@ preserve existing user rows and reject incompatible identity schemas.
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import stat
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from errno import ENOSPC
 from os import PathLike
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, TypeVar
 from urllib.parse import quote
 
 #: 锁等待上限。桌面端可能同时有 serve 与 CLI 进程开同一个库, 写锁需要排队;
 #: 但也不能无限等 —— 请求线程挂死比报错更难查。
 SQLITE_TIMEOUT_SECONDS = 5.0
 SQLITE_INITIALIZATION_RETRY_SECONDS = 0.01
+SQLITE_INSPECTION_ATTEMPTS = 3
 SQLITE_PRIMARY_RESULT_MASK = 0xFF
 SQLITE_READ_ONLY_QUERY = "?mode=ro"
 SQLITE_EXISTING_QUERY = "?mode=rw"
@@ -58,6 +60,8 @@ LEGACY_SCHEMA_REBUILD_SUFFIX = "_foreign_key_migration"
 #: 明文落凭据的库 (private=True) 的目录/文件 mode。
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
+InspectionResult = TypeVar("InspectionResult")
+_log = logging.getLogger(__name__)
 
 
 # Retain quoted literals and punctuation so declarations are compared without
@@ -281,18 +285,25 @@ def recover_database(database: Path, expected: DatabaseFingerprint) -> None:
 
 
 def _database_identity(
-    path: Path, error_type: type[sqlite3.DatabaseError]
+    path: Path, error_type: type[sqlite3.DatabaseError], *, sidecar: bool = False
 ) -> tuple[int, int] | None:
     try:
         info = path.lstat()
     except FileNotFoundError:
         return None
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_nlink != 1
-        or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-    ):
-        raise error_type("database inspection requires single-link regular files")
+    regular = stat.S_ISREG(info.st_mode) and not (
+        getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    if not regular or info.st_nlink != 1:
+        message = (
+            "database inspection requires single-link regular files: "
+            f"file={path.name!r} role={'sidecar' if sidecar else 'main'} "
+            f"links={info.st_nlink} mode={info.st_mode}"
+        )
+        _log.warning("database_binding_check_failed %s", message)
+        if sidecar and regular and info.st_nlink == 0:
+            raise error_type(message) from DatabaseSidecarChangedError(message)
+        raise error_type(message)
     return info.st_dev, info.st_ino
 
 
@@ -315,11 +326,15 @@ def database_files(
     """
     path = Path(database).absolute()
     paths = (path, *(Path(str(path) + suffix) for suffix in _SQLITE_SIDECARS))
-    before = tuple(_database_identity(item, error_type) for item in paths)
+    before = tuple(
+        _database_identity(item, error_type, sidecar=index > 0) for index, item in enumerate(paths)
+    )
     if before[0] is None and any(identity is not None for identity in before[1:]):
         raise error_type("database sidecars exist without their database")
     yield before[0] is not None
-    after = tuple(_database_identity(item, error_type) for item in paths)
+    after = tuple(
+        _database_identity(item, error_type, sidecar=index > 0) for index, item in enumerate(paths)
+    )
     if after[0] is None and any(identity is not None for identity in after[1:]):
         raise error_type("database sidecars appeared without their database")
     if before[0] != after[0]:
@@ -356,6 +371,39 @@ def reader(database: ProjectDatabasePath | Path | str) -> Iterator[sqlite3.Conne
         yield connection
     finally:
         connection.close()
+
+
+def inspect_database(
+    database: Path,
+    inspect: Callable[[sqlite3.Connection], InspectionResult],
+    *,
+    stable_sidecars: bool = True,
+) -> InspectionResult:
+    """Discard retired-sidecar snapshots without retrying any business mutation."""
+    database = Path(database).absolute()
+    expected = _database_identity(database, DatabaseBindingError)
+    attempts = 1 if stable_sidecars else SQLITE_INSPECTION_ATTEMPTS
+    for attempt in range(attempts):
+        if _database_identity(database, DatabaseBindingError) != expected:
+            raise DatabaseBindingError(
+                f"database changed before inspection: file={database.name!r}"
+            )
+        try:
+            with database_files(database, stable_sidecars=stable_sidecars) as present:
+                manager = reader(database) if present else closing(sqlite3.connect(":memory:"))
+                with manager as connection:
+                    connection.row_factory = sqlite3.Row
+                    connection.execute("BEGIN")
+                    result = inspect(connection)
+            return result
+        except DatabaseBindingError as error:
+            if (
+                stable_sidecars
+                or not isinstance(error.__cause__, DatabaseSidecarChangedError)
+                or attempt + 1 == attempts
+            ):
+                raise
+    raise AssertionError("unreachable database inspection retry")
 
 
 @contextmanager

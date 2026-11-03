@@ -1,5 +1,12 @@
 import type { LiteratureDownloadCard } from '../../contracts/literature'
 
+export function conversationProject<Project extends { id: string; path: string }>(
+  projects: readonly Project[],
+  projectPath: string | null | undefined
+): Project | undefined {
+  return projectPath ? projects.find((project) => project.path === projectPath) : undefined
+}
+
 interface DownloadActions {
   openLiteratureItem: (id: string, projectId: string) => Promise<boolean>
   openLiteratureAttachment: (

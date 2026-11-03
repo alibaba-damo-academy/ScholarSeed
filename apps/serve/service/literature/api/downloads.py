@@ -38,6 +38,7 @@ from service.literature.persistence.downloads import (
     DOWNLOAD_RECEIPT_INVALID,
     load_download_result,
     read_download_receipt,
+    read_download_receipts,
     save_download_result,
 )
 from service.literature.persistence.files import scoped_relative
@@ -74,6 +75,7 @@ DOWNLOAD_INGEST_FAILED = "download_ingest_failed"
 DOWNLOAD_TURN_STALE = "download_turn_stale"
 DOWNLOAD_TASK_REQUIRED = "download_task_required"
 DOWNLOAD_READ_ROUTE = "/api/sessions/{session_id}/literature/downloads/{operation_id}"
+DOWNLOAD_LIST_ROUTE = "/api/sessions/{session_id}/literature/downloads"
 DOWNLOAD_SESSION_NOT_FOUND = "session_not_found"
 DOWNLOAD_MAINTENANCE_ACTIVE = "update_maintenance"
 DOWNLOAD_CARD_UNAVAILABLE = "download_card_unavailable"
@@ -308,5 +310,36 @@ def register_download_routes(
         if receipt is None:
             raise HTTPException(HTTP_404_NOT_FOUND, DOWNLOAD_RECEIPT_INVALID)
         return receipt.payload()
+
+    @app.get(
+        DOWNLOAD_LIST_ROUTE,
+        dependencies=[Depends(execution_admission(activities, ActivityDomain.LITERATURE))],
+    )
+    async def history(session_id: str, run: str, project_id: str, request: Request) -> dict:
+        try:
+            await activities.to_thread(
+                ActivityDomain.LITERATURE,
+                catalog.require,
+                session_id,
+                SessionPrincipal(request_owner_id(request)),
+            )
+        except SessionAccessError as error:
+            raise HTTPException(HTTP_404_NOT_FOUND, DOWNLOAD_SESSION_NOT_FOUND) from error
+        try:
+            receipts = await activities.to_thread(
+                ActivityDomain.LITERATURE, read_download_receipts, session_id, run, project_id
+            )
+        except sqlite3.Error as error:
+            raise HTTPException(
+                HTTP_503_SERVICE_UNAVAILABLE, DOWNLOAD_RECEIPT_UNAVAILABLE
+            ) from error
+        except ValueError as error:
+            raise HTTPException(HTTP_400_BAD_REQUEST, DOWNLOAD_RECEIPT_INVALID) from error
+        return {
+            "session_id": session_id,
+            "run": run,
+            "project_id": project_id,
+            "papers": [receipt.payload() for receipt in receipts],
+        }
 
     return router

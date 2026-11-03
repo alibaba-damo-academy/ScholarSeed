@@ -14,7 +14,7 @@ import { OfficeImageError } from '../../../../../images'
 import { LOCALES } from '../../../../../localization/catalog'
 import type { SelectionLocator } from '../../../contracts/workbench'
 
-import { Alert, Toaster } from '../../../components/ui'
+import { Toaster } from '../../../components/ui'
 import { useApp } from '../../../store'
 import type { SelectionReplacementRequest, SelectionReplacementResult } from '../actions'
 import { useImageFailureText } from '../failure'
@@ -171,12 +171,6 @@ interface OfficeSearch {
 }
 
 type OfficePresentationNavigation = (direction: OfficePresentationDirection) => void
-
-type OfficeControlPost = (
-  type: string,
-  detail?: Record<string, unknown>,
-  transfer?: Transferable[]
-) => void
 
 function sameBounds(current: OfficeBounds | null, next: OfficeBounds | null): boolean {
   return (

@@ -8,10 +8,12 @@ const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const { stageOfficeComponent, OFFICE_BUILD_DIRECTORY } = require('../office-assets.cjs')
 const { officeContentId } = require('../../cd/payload.cjs')
+const { developmentPython } = require('../../../../../scripts/shared/python.cjs')
 
 const NOTICE = 'THIRD_PARTY_NOTICES.md'
 const ROOT = path.join('src', 'renderer', 'public', 'office')
-const PYTHON = process.env.TEST_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3')
+const REPO = path.resolve(sourceDirectory, '../../../..')
+const PYTHON = process.env.TEST_PYTHON || developmentPython(REPO, process.env.VENV, { context: process.env.CI ? 'ci' : 'local' })
 
 test('reviewed Office tree binding covers tracked metadata and pinned vendor files', () => {
   const desktop = path.resolve(sourceDirectory, '../..')

@@ -85,6 +85,12 @@ test('cold component preparation retains the one-time startup budget', () => {
   assert.equal(resolveStartupBudgetMs(true, true), STARTUP_BUDGET_ONE_TIME_MS)
 })
 
+test('preparation budget preserves readiness time for an existing build and first-run floors', () => {
+  assert.equal(resolveStartupBudgetMs(false, false, 90_000), 135_000)
+  assert.equal(resolveStartupBudgetMs(true, false, 90_000), STARTUP_BUDGET_ONE_TIME_MS)
+  assert.equal(resolveStartupBudgetMs(false, true, 90_000), STARTUP_BUDGET_ONE_TIME_MS)
+})
+
 test('same version with a newer build receives its own first-start budget', (t) => {
   const root = home(t)
   writeStartupMarker(root, release)

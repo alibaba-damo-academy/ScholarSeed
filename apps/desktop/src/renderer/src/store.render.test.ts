@@ -5,7 +5,6 @@ import test from 'node:test'
 import { expect, type Page } from '@playwright/test'
 import { renderFixture } from '../../test-helpers/render.ts'
 
-import { HOST_CONFIGURATION_CONFLICT } from '../../reconfiguration.ts'
 import type { ModelInfo } from './api'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -375,65 +374,11 @@ async function chooseConversationModel(page: Page, key: string): Promise<void> {
   await expect(page.getByTestId('model-selector-toggle')).toBeEnabled()
 }
 
-async function beginEffortChoice(page: Page, effort: string): Promise<void> {
-  await page.getByTestId('model-selector-toggle').click()
-  await page.getByTestId('model-effort-row').click()
-  await page.getByTestId(`model-effort-option-${effort}`).click()
-}
-
-async function rememberReasoningPreferences(
-  page: Page,
-  preferences: Record<string, string>
-): Promise<void> {
-  await page.evaluate(async (preferences) => {
-    const probe = Reflect.get(window, 'preferenceProbe')
-    for (const [model, effort] of Object.entries(preferences)) {
-      if (!(await probe.rememberEffort(model, effort)))
-        throw new Error('fixture preference seed failed')
-    }
-  }, preferences)
-}
-
 async function waitForEffortSelection(page: Page): Promise<void> {
   await expect(page.getByTestId('model-selector-toggle')).toHaveAttribute('aria-busy', 'false')
   await page.waitForFunction(
     () => Reflect.get(window, 'preferenceProbe').state.modelSelectionPending === 0
   )
-}
-
-async function preparationFixture(page: Page) {
-  const conversation = await conversationFixture(page)
-  const requests: Array<{ request_id: string; model_id: string; persist_default: boolean }> = []
-  const applied = new Set<string>()
-  const submissions: string[] = []
-  await page.route(/\/api\/serve\/runtime\/prepare(?:\/[^/]+)?$/, (route) => {
-    const request =
-      route.request().method() === 'POST'
-        ? route.request().postDataJSON()
-        : requests.find((value) => route.request().url().endsWith(value.request_id))
-    if (!request) return route.fulfill({ status: 404, json: { error: 'not_found' } })
-    if (route.request().method() === 'POST') requests.push(request)
-    return route.fulfill({
-      json: {
-        request_id: request.request_id,
-        model_id: request.model_id,
-        session_id: null,
-        service_instance_id: 'instance',
-        error: '',
-        state: applied.has(request.model_id) ? 'applied' : 'accepted',
-      },
-    })
-  })
-  await page.route('**/api/serve/sessions/*/messages', (route) => {
-    submissions.push(route.request().method())
-    return route.fulfill({ status: 500 })
-  })
-  await page.evaluate(() => {
-    const probe = Reflect.get(window, 'preferenceProbe')
-    probe.patch({ serviceInstanceId: 'instance' })
-    probe.draft(true)
-  })
-  return { ...conversation, requests, submissions, complete: (model: string) => applied.add(model) }
 }
 
 for (const target of ['current', 'other']) {

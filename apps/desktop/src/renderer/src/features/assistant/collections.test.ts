@@ -6,7 +6,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createInstance } from 'i18next'
 import ts from 'typescript'
-import { collectionNodes, flattenDestinations } from '../literature/join.ts'
+import { collectionNodes, flattenDestinations } from '../literature/hierarchy.ts'
 
 const source = readFileSync(new URL('./Collections.tsx', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile(

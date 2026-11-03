@@ -16,8 +16,7 @@ from uuid import uuid4
 from service.persistence.project import (
     ProjectDatabasePath,
     connect,
-    database_files,
-    reader,
+    inspect_database,
     rebuild_table,
     reject_schema_residue,
     schema_transaction,
@@ -473,6 +472,7 @@ SCHEMA = (
         turn_occurrence_id TEXT NOT NULL REFERENCES resources_turns(turn_occurrence_id) ON DELETE CASCADE,
         event_seq INTEGER NOT NULL,
         input_json TEXT NOT NULL,
+        runtime_event_id TEXT,
         updated_at_ms INTEGER NOT NULL,
         PRIMARY KEY(turn_occurrence_id, event_seq)
     )
@@ -559,6 +559,7 @@ SCHEMA = (
 )
 
 ADDITIVE_COLUMNS = {
+    "resources_turn_tool_calls": (("runtime_event_id", "TEXT"),),
     "resources_review_migrations": (("resolution", "TEXT"),),
     "resources_pending": (
         (
@@ -901,14 +902,7 @@ class VersionStore:
 
     @classmethod
     def _inspect_path(cls, database: Path, *, stable_sidecars: bool) -> VersionSchema:
-        with database_files(database, stable_sidecars=stable_sidecars) as present:
-            if not present:
-                with closing(sqlite3.connect(":memory:")) as connection:
-                    connection.row_factory = sqlite3.Row
-                    return cls.inspect_connection(connection)
-            with reader(database) as connection:
-                connection.execute("BEGIN")
-                return cls.inspect_connection(connection)
+        return inspect_database(database, cls.inspect_connection, stable_sidecars=stable_sidecars)
 
     @classmethod
     @lru_cache(maxsize=1)
@@ -2278,7 +2272,9 @@ class VersionStore:
             )
             return True
 
-    def record_turn_tool_call(self, session_id: str, turn_id: str, input_json: str) -> bool:
+    def record_turn_tool_call(
+        self, session_id: str, turn_id: str, input_json: str, *, event_id: str = ""
+    ) -> bool:
         """Persist one write-capable ToolCall input for terminal filename attribution."""
 
         self.ensure()
@@ -2295,6 +2291,16 @@ class VersionStore:
             if turn is None:
                 return False
             occurrence_id = str(turn["turn_occurrence_id"])
+            if event_id:
+                existing = connection.execute(
+                    "SELECT input_json FROM resources_turn_tool_calls "
+                    "WHERE turn_occurrence_id = ? AND runtime_event_id = ?",
+                    (occurrence_id, event_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing["input_json"] != input_json:
+                        raise VersionStoreConflict("runtime_event_conflict")
+                    return True
             next_row = connection.execute(
                 """
                 SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq
@@ -2305,10 +2311,10 @@ class VersionStore:
             connection.execute(
                 """
                 INSERT INTO resources_turn_tool_calls (
-                    turn_occurrence_id, event_seq, input_json, updated_at_ms
-                ) VALUES (?, ?, ?, ?)
+                    turn_occurrence_id, event_seq, input_json, runtime_event_id, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (occurrence_id, int(next_row["next_seq"]), input_json, now),
+                (occurrence_id, int(next_row["next_seq"]), input_json, event_id or None, now),
             )
             return True
 

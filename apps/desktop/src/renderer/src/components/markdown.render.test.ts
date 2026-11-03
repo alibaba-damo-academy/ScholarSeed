@@ -61,6 +61,7 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     await page.goto(new URL(FIXTURE_URL, url).toString())
 
     const publisher = page.getByTestId('publisher-citation-boundary')
+    await expect(publisher).toBeVisible()
     assert.deepEqual(
       await publisher
         .getByRole('link')
@@ -296,9 +297,11 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     const webPreview = page.getByRole('region', { name: '网页来源预览' })
     assert.equal((await webPreview.textContent())?.split(readableCitationUrl).length, 2)
     assert.doesNotMatch((await webPreview.textContent()) ?? '', /%E4%B8%AD/)
+    const originalBridge = await page.evaluateHandle(() => window.scholarseed)
     await page.evaluate(() => {
       Object.assign(window, {
         scholarseed: {
+          ...window.scholarseed,
           openExternal: (url: string) =>
             (
               window as unknown as { recordOpenedSource: (url: string) => Promise<void> }
@@ -308,7 +311,8 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     })
     await webPreview.getByRole('button', { name: '查看原文' }).click()
     assert.deepEqual(openedUrls, [encodedCitationUrl])
-    await page.evaluate(() => Reflect.deleteProperty(window, 'scholarseed'))
+    await page.evaluate((bridge) => Object.assign(window, { scholarseed: bridge }), originalBridge)
+    await originalBridge.dispose()
     await page.keyboard.press('Escape')
     await page
       .getByTestId('named-title-citation')

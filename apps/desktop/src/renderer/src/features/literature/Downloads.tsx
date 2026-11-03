@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -10,36 +10,27 @@ import {
   CardHeader,
   CardTitle,
 } from '../../components/ui'
-import { useApp } from '../../store'
-import { catalogue } from './catalog'
-import { resolveDownloadedFulltext } from './api'
-import {
-  claimDownloadRefresh,
-  downloadOutcome,
-  downloadRefreshKey,
-  openDownloadedFulltext,
-  parseDownloadCard,
-} from './admission'
+import type { LiteratureCardPorts } from './ports'
+import { downloadOutcome, parseDownloadCard } from './admission'
 
 export function LiteratureDownloads({
-  cardId,
   content,
+  ports,
 }: {
   cardId: string
+  ports: LiteratureCardPorts
   content: Record<string, unknown>
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
-  const { act } = useApp()
   const [openError, setOpenError] = useState(false)
   const card = parseDownloadCard(content)
-  const receiptKey = downloadRefreshKey(cardId, card)
-  useEffect(() => {
-    if (claimDownloadRefresh(receiptKey)) catalogue.reload()
-  }, [receiptKey])
   if (!card) return <Alert tone="warning" description={t('downloads.unreadable')} />
   const outcome = downloadOutcome(card)
   return (
-    <Card data-testid="literature-downloads-card">
+    <Card
+      className="min-w-0 [--vds-card-radius:var(--vds-radius-6)]"
+      data-testid="literature-downloads-card"
+    >
       <CardHeader>
         <CardTitle>
           {t(outcome.heading, { count: outcome.saved, failed: outcome.failed })}
@@ -51,7 +42,7 @@ export function LiteratureDownloads({
           {card.papers.map((paper) => (
             <div
               key={paper.paper_id}
-              className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]"
+              className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-hover)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
             >
               <span className="min-w-0 flex-1 break-words text-[var(--vds-text-primary)]">
                 {paper.title}
@@ -63,10 +54,7 @@ export function LiteratureDownloads({
                 onClick={async () => {
                   setOpenError(false)
                   try {
-                    if (
-                      !(await openDownloadedFulltext(act, card, paper, resolveDownloadedFulltext))
-                    )
-                      setOpenError(true)
+                    if (!(await ports.openFulltext(paper.paper_id))) setOpenError(true)
                   } catch {
                     setOpenError(true)
                   }
@@ -80,14 +68,7 @@ export function LiteratureDownloads({
             <Button
               variant="outline"
               data-testid="literature-download-library"
-              onClick={() =>
-                act.openLiteratureDownloads(
-                  card.session_id,
-                  card.run,
-                  card.project_id || null,
-                  card.papers.map((paper) => paper.paper_id)
-                )
-              }
+              onClick={() => void ports.openLibrary()}
             >
               {t('downloads.viewLibrary', { count: card.omitted_papers ?? 0 })}
             </Button>
