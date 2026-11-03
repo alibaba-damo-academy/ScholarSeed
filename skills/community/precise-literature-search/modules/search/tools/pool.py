@@ -15,6 +15,7 @@ sys.path.insert(0, str(SEARCH_DIR))
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
 from io_utils import atomic_write_json, read_json, utc_now  # noqa: E402
+from filesystem import path_exists
 from tools.dedup import deduplicate  # noqa: E402
 
 
@@ -36,7 +37,7 @@ def _read_papers(value: Any) -> list[dict[str, Any]]:
 
 def merge_papers(work_dir: Path, new_papers: list[dict[str, Any]]) -> dict[str, Any]:
     path = _pool_path(work_dir)
-    existing = read_json(path) if path.exists() else {"schema_version": "1.0", "papers": []}
+    existing = read_json(path) if path_exists(path) else {"schema_version": "1.0", "papers": []}
     before = _read_papers(existing)
     merged = deduplicate(before + new_papers)
     value = {"schema_version": "1.0", "papers": merged, "updated_at": utc_now()}

@@ -10,6 +10,7 @@ from service.invocation.service.model import (
     InvocationCommand,
     InvocationExecution,
     InvocationSandbox,
+    InvocationSearchMode,
     InvocationSkill,
 )
 from service.settings.capabilities import REASONING_EFFORT_LEVELS
@@ -35,7 +36,7 @@ class SkillSelector(BaseModel):
 class ExecutionOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    web_search: StrictBool = DEFAULT_INVOCATION_EXECUTION.web_search
+    web_search: StrictBool | InvocationSearchMode = DEFAULT_INVOCATION_EXECUTION.web_search
     sandbox: InvocationSandbox = DEFAULT_INVOCATION_EXECUTION.sandbox
     network_access: StrictBool = DEFAULT_INVOCATION_EXECUTION.network_access
     reasoning_effort: str | None = DEFAULT_INVOCATION_EXECUTION.reasoning_effort

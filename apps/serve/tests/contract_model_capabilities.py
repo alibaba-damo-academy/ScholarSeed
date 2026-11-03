@@ -51,6 +51,7 @@ from service.chat.runtime.evidence import SessionTrace  # noqa: E402
 from service.chat.runtime.live import LiveSession  # noqa: E402
 from service.chat.service.models import ModelService, _runtime_capabilities  # noqa: E402
 from service.inference.reasoning import (  # noqa: E402
+    BUDGET_RANGE_UNDECLARED,
     MINIMUM_APPLIED,
     MINIMUM_CLAMPED,
     NO_REASONING_FORM,
@@ -75,6 +76,7 @@ from service.settings.capabilities import (  # noqa: E402
     bundled_registry,
     load_registry,
     modality_flags,
+    option_payload,
     reasoning_option,
 )
 from service.settings.connections import (  # noqa: E402
@@ -224,6 +226,26 @@ def test_gateway_lane_resolves_the_declared_truth() -> None:
         str(item.get("context_window")),
     )
     check("a fully declared item carries no unverified marker", "capability_reason" not in item)
+    for model_name in ("qwen3.8-flash", "qwen3.8-max"):
+        declared = bundled_registry().lookup(model_name, GATEWAY_CONNECTION)
+        options = [option_payload(option) for option in (declared.reasoning_options or ())]
+        check(f"{model_name} defaults to medium", default_effort(options) == "medium")
+        for protocol, expected_parameters in (
+            (CHAT_COMPLETIONS_PROTOCOL, {"reasoning_effort": "medium"}),
+            (RESPONSES_PROTOCOL, {"reasoning": {"effort": "medium"}}),
+        ):
+            resolved = effort_parameters(options, protocol, "qwen", "")
+            check(
+                f"{model_name} sends medium by default over {protocol}",
+                resolved.parameters == expected_parameters and resolved.effort == "medium",
+                str(resolved),
+            )
+            selected = effort_parameters(options, protocol, "qwen", "low")
+            check(
+                f"{model_name} preserves explicit low over {protocol}",
+                selected.effort == "low" and not selected.adjusted,
+                str(selected),
+            )
 
 
 def test_resolution_matches_only_the_exact_wire_id() -> None:
@@ -652,6 +674,52 @@ def test_minimum_ladder_follows_the_declared_form() -> None:
     check(
         "the lowest level comes from the single level ordering",
         minimum_effort([{"kind": "effort", "values": ["high", "low", "xhigh"]}]) == "low",
+    )
+
+
+def test_minimum_budget_follows_declared_range() -> None:
+    minimum_budget = 128
+    maximum_budget = 1024
+    options = [
+        {
+            "kind": "budget",
+            "min": minimum_budget,
+            "max": maximum_budget,
+            "wire": {
+                CHAT_COMPLETIONS_PROTOCOL: "thinking_budget",
+                RESPONSES_PROTOCOL: "reasoning.budget",
+            },
+        }
+    ]
+    for protocol, expected in (
+        (CHAT_COMPLETIONS_PROTOCOL, {"thinking_budget": minimum_budget}),
+        (RESPONSES_PROTOCOL, {"reasoning": {"budget": minimum_budget}}),
+    ):
+        result = minimum_parameters(options, protocol, "openai")
+        check(
+            f"budget-only model uses its declared minimum on {protocol}",
+            result.parameters == expected and result.reason == MINIMUM_APPLIED,
+            str(result),
+        )
+    for missing_bound in ("min", "max"):
+        incomplete = [{**options[0], missing_bound: None}]
+        result = minimum_parameters(incomplete, RESPONSES_PROTOCOL, "openai")
+        check(
+            f"budget-only model never invents its missing {missing_bound}",
+            result.parameters == {} and result.reason == BUDGET_RANGE_UNDECLARED,
+            str(result),
+        )
+    toggle = {"kind": "toggle", "wire": {RESPONSES_PROTOCOL: "enable_thinking"}}
+    check(
+        "disabling thinking takes priority over reducing its budget",
+        minimum_parameters([*options, toggle], RESPONSES_PROTOCOL, "openai").parameters
+        == {"enable_thinking": False},
+    )
+    zero_budget = [{**options[0], "min": 0}]
+    check(
+        "an explicitly declared zero budget is not treated as missing",
+        minimum_parameters(zero_budget, CHAT_COMPLETIONS_PROTOCOL, "openai").parameters
+        == {"thinking_budget": 0},
     )
 
 
@@ -1085,6 +1153,7 @@ TESTS = (
     test_execution_config_reads_the_same_declaration,
     test_profiles_projection_offers_the_vendor_hint,
     test_minimum_ladder_follows_the_declared_form,
+    test_minimum_budget_follows_declared_range,
     test_effort_mapping_and_clamping,
     test_reasoning_forms_merge_by_kind,
     test_modality_flags_have_one_derivation,

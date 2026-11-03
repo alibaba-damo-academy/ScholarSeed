@@ -5,6 +5,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import manuscript_publication
 
 path = Path(__file__).resolve().parent / "generation/publish/_fast/phase07_compile_latex.py"
 spec = importlib.util.spec_from_file_location("compile_diagnostics", path)
@@ -13,6 +16,33 @@ spec.loader.exec_module(compiler)
 
 
 class CompileDiagnosticsTest(unittest.TestCase):
+    def test_precompile_timeout_terminates_at_the_refinement_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'full_draft_v1.tex'
+            source.write_text(r'\documentclass{article}\begin{document}Text.\end{document}')
+            with patch.object(manuscript_publication, 'latex_engine', return_value='/tool/pdflatex'), patch.object(
+                manuscript_publication.subprocess, 'run', side_effect=subprocess.TimeoutExpired('pdflatex', 10)
+            ) as run:
+                result = manuscript_publication.precompile(root, source)
+            self.assertEqual(result['status'], 'TIMEOUT')
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs['timeout'], 10)
+            self.assertEqual(source.read_text(), r'\documentclass{article}\begin{document}Text.\end{document}')
+
+    @unittest.skipUnless(shutil.which('pdflatex'), 'TeX engine unavailable')
+    def test_precompile_reports_source_error_without_touching_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'full_draft_v1.tex'
+            original = r'\documentclass{article}\begin{document}\undefinedForTest\end{document}'
+            source.write_text(original)
+            result = manuscript_publication.precompile(root, source)
+            self.assertEqual(result['status'], 'FAILED')
+            self.assertIn('Undefined control sequence', str(result['errors']))
+            self.assertEqual(source.read_text(), original)
+            self.assertFalse(source.with_suffix('.pdf').exists())
+
     @unittest.skipUnless(shutil.which('pdflatex'), 'TeX engine unavailable')
     def test_template_longtable_breaks_pages_and_retains_last_row(self):
         from native_document import load_renderer
@@ -21,7 +51,7 @@ class CompileDiagnosticsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='slr-longtable-') as folder:
             dest=Path(folder)
             shutil.copy(renderer.NEURIPS_TEMPLATE_DIR/renderer.NEURIPS_STY_FILENAME,dest)
-            preamble=renderer._citation_preamble('english',{'natbib_options':'numbers,sort',
+            preamble=renderer._citation_preamble('english',{'citation_style':'numeric','natbib_options':'numbers,sort',
                 'bibliography_style':'unsrtnat_scholarseed'})
             rows='\n'.join(fr'Row{i}&\rule{{0pt}}{{10mm}}Supported evidence\\' for i in range(1,51))
             body=(r'\begin{document}\begin{longtable}{p{3cm}p{8cm}}'
@@ -49,7 +79,7 @@ class CompileDiagnosticsTest(unittest.TestCase):
                 dest=Path(folder)
                 if language=='english':
                     shutil.copy(root/'assets/templates/neurips/neurips_2026.sty',dest)
-                preamble=merge._citation_preamble(language,{'natbib_options':'numbers,sort',
+                preamble=merge._citation_preamble(language,{'citation_style':'numeric','natbib_options':'numbers,sort',
                     'bibliography_style':'unsrtnat_scholarseed'})
                 (dest/'math.tex').write_text(preamble+'\n'+r'\begin{document}'+'\n'+
                     r'\[\bm{X}=\bm{U}\bm{V}^{\top},\quad\bm{\alpha}\in\mathbb{R}^{r}\]'+'\n'+

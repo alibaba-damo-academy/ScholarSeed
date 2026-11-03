@@ -1,5 +1,7 @@
 {
   "preferences": {
+    "quitFailed": "未能安全退出",
+    "quitRecovery": "设置保存或退出准备尚未完成，已取消退出。请重试未保存的设置，再重新退出。",
     "failed": "设置未能完成同步。请重试。",
     "retry": "重试"
   },
@@ -14,9 +16,13 @@
     "backendFailed": "书深后端启动失败",
     "interfaceFailed": "书深界面加载失败",
     "backendUnavailable": "书深后端不可用",
-    "applicationFailed": "书深启动失败"
+    "applicationFailed": "书深启动失败",
+    "storageUnavailable": "无法读取数据位置配置，启动已停止。请检查下方文件的内容和访问权限，或从已知正确的备份恢复后重试。"
   },
   "backendFailure": {
+    "browserPolicyMissing": "所连接服务未声明必需的浏览器产品策略。请使用一致的产品配置重启。",
+    "browserPolicyInvalid": "所连接服务声明的浏览器产品策略无效。features.browser 必须是布尔值。",
+    "browserPolicyMismatch": "所连接服务与桌面的浏览器产品策略不一致。请使用一致的产品配置重启两端。",
     "pythonMissing": "找不到用于启动本地服务的 Python：{{path}}",
     "pythonInvalid": "本地服务的 Python 环境校验失败。",
     "startupFailed": "本地服务启动失败。",

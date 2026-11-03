@@ -11,20 +11,32 @@
 
 from __future__ import annotations
 
+import errno
+import io
+import os
 import sqlite3
 import tempfile
+from contextlib import closing, contextmanager
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import patch
 
-from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE, ContentError
+from service.content.domain.model import (
+    MANAGED_RESOURCES_ROOT_RELATIVE,
+    ContentError,
+    ContentReadPermissionError,
+)
 from service.content.persistence.catalog import (
     AUDIT_AUTHORIZE,
     AUDIT_REVOKE,
+    CatalogFormatError,
     ContentCatalog,
 )
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.token import TrashTokenVault
+from service.platform.activity import Activities
 from service.platform.content import AssetKind, AssetOrigin, RootKind
+from service.platform.storage import DirectoryHandle
 
 PASS = 0
 FAIL = 0
@@ -48,8 +60,398 @@ def code_of(action) -> str:
     return ""
 
 
+def test_root_inventory(root: Path) -> None:
+    missing = root / "missing" / "content.sqlite3"
+    check(
+        "根发现不创建缺失catalog",
+        not ContentCatalog.read_roots(missing).present and not missing.parent.exists(),
+    )
+    database = root / "inventory.sqlite3"
+    ContentCatalog(database)
+    with closing(sqlite3.connect(database)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "INSERT INTO projects (project_id, display_name, dir_root, layout, created_at, seeded_from, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("offline", "offline", str(root / "unavailable"), "managed", 1, None, 1),
+        )
+        for identity, kind, revoked in (
+            ("file", "file", None),
+            ("directory", "dir", None),
+            ("revoked", "dir", 1),
+        ):
+            writer.execute(
+                "INSERT INTO external_roots VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (identity, "offline", str(root / identity), identity, kind, 1, revoked),
+            )
+        writer.commit()
+        wal = Path(str(database) + "-wal")
+        before = (database.read_bytes(), wal.read_bytes())
+        inventory = ContentCatalog.read_roots(database)
+        check(
+            "根发现读取WAL内尚未checkpoint项目且保留离线归档根",
+            inventory.present and inventory.projects == (("offline", root / "unavailable"),),
+        )
+        check(
+            "根发现保留文件类型并排除已撤销授权",
+            inventory.external
+            == (
+                ("directory", "offline", root / "directory", AssetKind.DIR),
+                ("file", "offline", root / "file", AssetKind.FILE),
+            ),
+        )
+        check("根发现不迁移或改写database/WAL", before == (database.read_bytes(), wal.read_bytes()))
+        writer.execute("UPDATE projects SET dir_root='relative'")
+        writer.commit()
+        rejected = False
+        try:
+            ContentCatalog.read_roots(database)
+        except CatalogFormatError:
+            rejected = True
+        check("根发现拒绝无效项目路径而非丢行", rejected)
+        writer.execute("UPDATE projects SET dir_root=?", (str(root / "unavailable"),))
+        writer.execute("UPDATE external_roots SET source_kind='unknown' WHERE root_id='file'")
+        writer.commit()
+        rejected = False
+        try:
+            ContentCatalog.read_roots(database)
+        except CatalogFormatError:
+            rejected = True
+        check("根发现拒绝未知文件类型", rejected)
+    broken = root / "broken.sqlite3"
+    broken.write_bytes(b"not a SQLite database")
+    rejected = False
+    try:
+        ContentCatalog.read_roots(broken)
+    except sqlite3.DatabaseError:
+        rejected = True
+    check(
+        "根发现不把损坏catalog当空库", rejected and broken.read_bytes() == b"not a SQLite database"
+    )
+
+
+def test_inventory_files(root: Path) -> None:
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        for kind in ("symlink", "hardlink", "directory"):
+            case = root / ("leaf-" + (suffix or "db") + "-" + kind)
+            case.mkdir()
+            database = case / "content.sqlite3"
+            ContentCatalog(database)
+            leaf = Path(str(database) + suffix)
+            target = case / "outside.sqlite3"
+            if leaf.exists():
+                leaf.replace(target)
+            else:
+                target.write_bytes(b"outside data must not change")
+            original = target.read_bytes()
+            if kind == "symlink":
+                leaf.symlink_to(target)
+            elif kind == "hardlink":
+                os.link(target, leaf)
+            else:
+                leaf.mkdir()
+            rejected = False
+            try:
+                ContentCatalog.read_roots(database)
+            except CatalogFormatError:
+                rejected = True
+            except sqlite3.DatabaseError:
+                pass
+            check(f"catalog拒绝{suffix or '主库'}的{kind}", rejected)
+            check(f"catalog保留{suffix or '主库'}的{kind}外部字节", target.read_bytes() == original)
+
+    for suffix in ("-wal", "-shm", "-journal"):
+        missing = root / ("orphan" + suffix + ".sqlite3")
+        sidecar = Path(str(missing) + suffix)
+        sidecar.write_bytes(b"unrecovered data")
+        rejected = False
+        try:
+            ContentCatalog.read_roots(missing)
+        except CatalogFormatError:
+            rejected = True
+        check(
+            f"catalog缺失主库但有{suffix}时拒绝当空库",
+            rejected and not missing.exists() and sidecar.read_bytes() == b"unrecovered data",
+        )
+    dangling = root / "dangling.sqlite3"
+    dangling.symlink_to(root / "absent.sqlite3")
+    rejected = False
+    try:
+        ContentCatalog.read_roots(dangling)
+    except CatalogFormatError:
+        rejected = True
+    check("catalog悬空链接不被当作新库", rejected and dangling.is_symlink())
+
+    database = root / "replacement.sqlite3"
+    replacement = root / "new.sqlite3"
+    ContentCatalog(database)
+    ContentCatalog(replacement)
+
+    @contextmanager
+    def replace_after_close(connection):
+        inspected_path = connection.execute("PRAGMA database_list").fetchone()[2]
+        try:
+            yield connection
+        finally:
+            connection.close()
+            if inspected_path and Path(inspected_path) == database:
+                os.replace(replacement, database)
+
+    rejected = False
+    with patch("service.content.persistence.catalog.closing", replace_after_close):
+        try:
+            ContentCatalog.read_roots(database)
+        except CatalogFormatError:
+            rejected = True
+    check("catalog读取结束后主库替换不得返回旧清单", rejected)
+
+
+def test_root_migration_dependents(root: Path) -> None:
+    path = root / "dependent-roots.sqlite3"
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executescript("""
+            PRAGMA foreign_keys=ON;
+            CREATE TABLE external_roots (
+                root_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_path TEXT NOT NULL,
+                mount_path TEXT NOT NULL, authorized_at REAL NOT NULL, revoked_at REAL NULL,
+                UNIQUE(project_id, source_path), UNIQUE(project_id, mount_path));
+            INSERT INTO external_roots VALUES('root','project','/source','resources/source',1,NULL);
+            CREATE TABLE root_notes(root_id TEXT REFERENCES external_roots(root_id) ON DELETE CASCADE,
+                note TEXT);
+            INSERT INTO root_notes VALUES('root','keep this note');
+            CREATE TABLE root_changes(root_id TEXT);
+            CREATE INDEX external_roots_authorized ON external_roots(authorized_at);
+            CREATE TRIGGER remember_root_change AFTER UPDATE ON external_roots
+                BEGIN INSERT INTO root_changes VALUES(NEW.root_id); END;
+        """)
+        before = connection.execute(
+            "SELECT name,sql FROM sqlite_master WHERE name IN ('external_roots_authorized','remember_root_change') ORDER BY name"
+        ).fetchall()
+    with patch.object(
+        ContentCatalog, "_ensure_external_root_kind", side_effect=RuntimeError("interrupted")
+    ):
+        try:
+            ContentCatalog(path)
+        except RuntimeError as error:
+            check("授权依赖迁移中断传播", str(error) == "interrupted")
+        else:
+            check("授权依赖迁移中断传播", False)
+    with closing(sqlite3.connect(path)) as connection:
+        check(
+            "授权依赖迁移中断保留子表",
+            connection.execute("SELECT * FROM root_notes").fetchall()
+            == [("root", "keep this note")],
+        )
+        check(
+            "授权依赖迁移中断保留索引和触发器",
+            connection.execute(
+                "SELECT name,sql FROM sqlite_master WHERE name IN ('external_roots_authorized','remember_root_change') ORDER BY name"
+            ).fetchall()
+            == before,
+        )
+    ContentCatalog(path)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        check(
+            "授权迁移保留外键子表数据",
+            connection.execute("SELECT * FROM root_notes").fetchall()
+            == [("root", "keep this note")],
+        )
+        check(
+            "授权迁移保留原外键目标",
+            connection.execute("PRAGMA foreign_key_list(root_notes)").fetchone()[2]
+            == "external_roots",
+        )
+        check(
+            "授权迁移保留显式索引和触发器",
+            connection.execute(
+                "SELECT name,sql FROM sqlite_master WHERE name IN ('external_roots_authorized','remember_root_change') ORDER BY name"
+            ).fetchall()
+            == before,
+        )
+        connection.execute("UPDATE external_roots SET authorized_at=2 WHERE root_id='root'")
+        check(
+            "授权迁移后触发器仍实际执行",
+            connection.execute("SELECT root_id FROM root_changes").fetchall() == [("root",)],
+        )
+        check("授权迁移外键完整", connection.execute("PRAGMA foreign_key_check").fetchall() == [])
+
+
+def test_root_migration_residue(root: Path) -> None:
+    for suffix in ("_old", "_schema_rebuild", "_foreign_key_migration"):
+        path = root / ("residue" + suffix + ".sqlite3")
+        table = "external_roots" + suffix
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute(f"CREATE TABLE {table}(payload TEXT)")
+            connection.execute(f"INSERT INTO {table} VALUES('must recover')")
+        rejected = False
+        try:
+            ContentCatalog(path)
+        except (RuntimeError, CatalogFormatError):
+            rejected = True
+        with closing(sqlite3.connect(path)) as connection:
+            check(
+                f"拒绝授权迁移残留{suffix}且不创建新表",
+                rejected
+                and connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+                == [(table,)],
+            )
+            check(
+                f"保留授权迁移残留{suffix}原始行",
+                connection.execute(f"SELECT * FROM {table}").fetchall() == [("must recover",)],
+            )
+
+
+def test_catalog_schema_inspection(root: Path) -> None:
+    missing = root / "absent-home" / "content.sqlite3"
+    schema = ContentCatalog.inspect_schema(missing)
+    check(
+        "只读分类缺失库要求初始化且不创建目录",
+        schema.needs_write
+        and set(schema.create_tables)
+        == {
+            "projects",
+            "external_roots",
+            "event_cursor",
+            "audit",
+            "root_receipts",
+            "content_operations",
+            "content_operation_effects",
+            "authorization_reconciliations",
+            "project_removals",
+            "project_creations",
+        }
+        and not missing.parent.exists(),
+    )
+    path = root / "schema-current.sqlite3"
+    ContentCatalog(path)
+    before = path.read_bytes()
+    check("只读分类当前库不要求结构写入", not ContentCatalog.inspect_schema(path).needs_write)
+    check("只读分类当前库保留字节", path.read_bytes() == before)
+    with closing(sqlite3.connect(path)) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("ALTER TABLE projects ADD COLUMN future_scope TEXT")
+        writer.commit()
+        wal = Path(str(path) + "-wal")
+        before = path.read_bytes(), wal.read_bytes()
+        rejected = False
+        try:
+            ContentCatalog.inspect_schema(path)
+        except CatalogFormatError:
+            rejected = True
+        check(
+            "只读分类看到WAL内未知项目列且保留主库和WAL",
+            rejected and before == (path.read_bytes(), wal.read_bytes()),
+        )
+    legacy = root / "schema-legacy.sqlite3"
+    with closing(sqlite3.connect(legacy)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE external_roots(root_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,source_path TEXT NOT NULL,mount_path TEXT NOT NULL,authorized_at REAL NOT NULL,revoked_at REAL NULL,UNIQUE(project_id,source_path),UNIQUE(project_id,mount_path))"
+        )
+    before = legacy.read_bytes()
+    schema = ContentCatalog.inspect_schema(legacy)
+    check(
+        "只读分类定位旧授权重建及补列",
+        schema.rebuild_external_roots
+        and ("external_roots", "source_kind") in schema.add_columns
+        and before == legacy.read_bytes(),
+    )
+    ContentCatalog(legacy)
+    check("迁移与只读分类使用同一最终规则", not ContentCatalog.inspect_schema(legacy).needs_write)
+    comment = root / "schema-comment.sqlite3"
+    with closing(sqlite3.connect(comment)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE external_roots(root_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,source_path TEXT NOT NULL,mount_path TEXT NOT NULL,source_kind TEXT NOT NULL DEFAULT 'dir',authorized_at REAL NOT NULL,revoked_at REAL NULL /* UNIQUE is only a comment */)"
+        )
+    check(
+        "SQL注释UNIQUE不触发授权表重建",
+        not ContentCatalog.inspect_schema(comment).rebuild_external_roots,
+    )
+    unknown = root / "schema-constraint.sqlite3"
+    with closing(sqlite3.connect(unknown)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE external_roots(root_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,source_path TEXT NOT NULL,mount_path TEXT NOT NULL,authorized_at REAL NOT NULL,revoked_at REAL NULL,UNIQUE(authorized_at))"
+        )
+    before = unknown.read_bytes()
+    rejected = False
+    try:
+        ContentCatalog.inspect_schema(unknown)
+    except CatalogFormatError:
+        rejected = True
+    check("未知授权唯一约束拒绝而非删除", rejected and unknown.read_bytes() == before)
+
+
+def test_root_rebuild_definition(root: Path) -> None:
+    declaration = (
+        "CREATE TABLE external_roots(root_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,"
+        "source_path TEXT NOT NULL,mount_path TEXT NOT NULL,authorized_at REAL NOT NULL,"
+        "revoked_at REAL NULL,UNIQUE(project_id,source_path),UNIQUE(project_id,mount_path))"
+    )
+    variants = {
+        "column-check": declaration.replace(
+            "REAL NOT NULL", "REAL NOT NULL CHECK(authorized_at >= 0)"
+        ),
+        "table-check": declaration[:-1] + ", CHECK(authorized_at >= 0))",
+        "reference": declaration.replace(
+            "project_id TEXT NOT NULL", "project_id TEXT NOT NULL REFERENCES owners(id)"
+        ),
+        "collation": declaration.replace(
+            "mount_path TEXT NOT NULL", "mount_path TEXT NOT NULL COLLATE NOCASE"
+        ),
+        "conflict": declaration.replace(
+            "root_id TEXT PRIMARY KEY", "root_id TEXT PRIMARY KEY ON CONFLICT REPLACE"
+        ),
+        "descending": declaration.replace(
+            "root_id TEXT PRIMARY KEY", "root_id TEXT PRIMARY KEY DESC"
+        ),
+    }
+    for name, sql in variants.items():
+        path = root / f"definition-{name}.sqlite3"
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute(sql)
+            connection.execute(
+                "INSERT INTO external_roots VALUES('root','project','/source','mount',1,NULL)"
+            )
+        before = path.read_bytes()
+        rejected = False
+        try:
+            ContentCatalog.inspect_schema(path)
+        except CatalogFormatError:
+            rejected = True
+        check(f"重建预检拒绝未知定义 {name}", rejected and before == path.read_bytes())
+        rejected = False
+        try:
+            ContentCatalog(path)
+        except CatalogFormatError:
+            rejected = True
+        check(f"实际初始化拒绝丢失定义 {name} 且保留原库", rejected and before == path.read_bytes())
+    path = root / "definition-quoted.sqlite3"
+    quoted = (
+        declaration.replace("external_roots", '"external_roots"')
+        .replace("root_id", "[root_id]")
+        .replace("source_path", "`source_path`")
+    )
+    quoted = quoted.replace("REAL NOT NULL", "REAL /* CHECK('odd, /* text') */ NOT NULL")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(quoted)
+    check(
+        "带注释与标识符引号的已知旧定义允许迁移",
+        ContentCatalog.inspect_schema(path).rebuild_external_roots,
+    )
+    ContentCatalog(path)
+    check("已知旧定义迁移后无需再改结构", not ContentCatalog.inspect_schema(path).needs_write)
+
+
 def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="content-authorization-")).resolve()
+    test_root_inventory(root)
+    test_inventory_files(root)
+    test_root_migration_dependents(root)
+    test_root_migration_residue(root)
+    test_catalog_schema_inspection(root)
+    test_root_rebuild_definition(root)
     workspace = root / "workspace"
     workspace.mkdir()
     external = root / "外部资料"
@@ -75,13 +477,170 @@ def main() -> int:
         migrated_row is not None and migrated_row.kind is AssetKind.DIR,
     )
 
+    for with_kind in (False, True):
+        unique_database = root / f"unique-{with_kind}.sqlite3"
+        kind_column = ", source_kind TEXT NOT NULL DEFAULT 'dir'" if with_kind else ""
+        with closing(sqlite3.connect(unique_database)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE external_roots ("
+                "root_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_path TEXT NOT NULL,"
+                "mount_path TEXT NOT NULL, authorized_at REAL NOT NULL, revoked_at REAL NULL"
+                + kind_column
+                + ", UNIQUE(project_id, source_path), UNIQUE(project_id, mount_path))"
+            )
+            for index, kind in enumerate((AssetKind.FILE, AssetKind.DIR)):
+                values = (
+                    f"root-{index}",
+                    "project",
+                    f"/source-{index}",
+                    f"resources/item-{index}",
+                    10.0 + index,
+                    20.0 if index else None,
+                )
+                connection.execute(
+                    "INSERT INTO external_roots VALUES ("
+                    + ",".join("?" for _ in values)
+                    + (",?" if with_kind else "")
+                    + ")",
+                    (*values, kind.value) if with_kind else values,
+                )
+        with closing(sqlite3.connect(unique_database)) as connection, connection:
+            original_schema = connection.execute(
+                "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+            ).fetchall()
+            original_rows = connection.execute(
+                "SELECT * FROM external_roots ORDER BY root_id"
+            ).fetchall()
+        interrupted_database = root / f"interrupted-{with_kind}.sqlite3"
+        with closing(sqlite3.connect(interrupted_database)) as connection, connection:
+            for _, statement in original_schema:
+                connection.execute(statement)
+            connection.executemany(
+                "INSERT INTO external_roots VALUES ("
+                + ",".join("?" for _ in original_rows[0])
+                + ")",
+                original_rows,
+            )
+        with patch.object(
+            ContentCatalog,
+            "_ensure_external_root_kind",
+            side_effect=RuntimeError("migration interrupted"),
+        ):
+            try:
+                ContentCatalog(interrupted_database)
+            except RuntimeError as error:
+                check("迁移异常保留原错误", str(error) == "migration interrupted")
+            else:
+                check("迁移异常必须向上传播", False)
+        with closing(sqlite3.connect(interrupted_database)) as connection, connection:
+            restored_schema = connection.execute(
+                "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+            ).fetchall()
+            restored_rows = connection.execute(
+                "SELECT * FROM external_roots ORDER BY root_id"
+            ).fetchall()
+        check(
+            f"中断迁移回滚原schema与数据 kind={with_kind}",
+            restored_schema == original_schema and restored_rows == original_rows,
+        )
+        ContentCatalog(interrupted_database)
+        with closing(sqlite3.connect(interrupted_database)) as connection, connection:
+            recovered_rows = connection.execute(
+                "SELECT root_id, project_id, source_path, mount_path, authorized_at,"
+                " revoked_at, source_kind FROM external_roots ORDER BY root_id"
+            ).fetchall()
+        for attempt in range(2):
+            migrated = ContentCatalog(unique_database)
+            with closing(sqlite3.connect(unique_database)) as connection, connection:
+                rows = connection.execute(
+                    "SELECT root_id, project_id, source_path, mount_path, authorized_at,"
+                    " revoked_at, source_kind FROM external_roots ORDER BY root_id"
+                ).fetchall()
+            expected = [
+                (
+                    f"root-{index}",
+                    "project",
+                    f"/source-{index}",
+                    f"resources/item-{index}",
+                    10.0 + index,
+                    20.0 if index else None,
+                    kind.value if with_kind else AssetKind.DIR.value,
+                )
+                for index, kind in enumerate((AssetKind.FILE, AssetKind.DIR))
+            ]
+            if attempt == 0:
+                check(f"中断后正常重试保留完整行 kind={with_kind}", recovered_rows == expected)
+            check(
+                f"旧 UNIQUE 迁移保留授权完整行 kind={with_kind} attempt={attempt}",
+                rows == expected,
+                str(rows),
+            )
+            check(
+                f"旧 UNIQUE 迁移后文件类型不扩大为目录 kind={with_kind} attempt={attempt}",
+                migrated.external_root("root-0").kind
+                is (AssetKind.FILE if with_kind else AssetKind.DIR),
+            )
+
+    for declaration in (
+        "future_scope TEXT DEFAULT 'retain-me'",
+        "future_scope TEXT GENERATED ALWAYS AS (source_path) VIRTUAL",
+    ):
+        unknown_database = root / (
+            "unknown-generated.sqlite3" if "GENERATED" in declaration else "unknown-column.sqlite3"
+        )
+        with closing(sqlite3.connect(unknown_database)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE external_roots ("
+                "root_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_path TEXT NOT NULL,"
+                "mount_path TEXT NOT NULL, authorized_at REAL NOT NULL, revoked_at REAL NULL,"
+                + declaration
+                + ", UNIQUE(project_id, source_path))"
+            )
+            connection.execute(
+                "INSERT INTO external_roots (root_id,project_id,source_path,mount_path,authorized_at)"
+                " VALUES ('future-root','project','/selected','resources/selected',1)"
+            )
+            original_schema = connection.execute(
+                "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+            ).fetchall()
+            original_rows = connection.execute("SELECT * FROM external_roots").fetchall()
+        try:
+            ContentCatalog(unknown_database)
+        except sqlite3.DatabaseError as error:
+            check(
+                "未知授权列明确拒绝迁移",
+                "unsupported external root schema" in str(error),
+                str(error),
+            )
+        else:
+            check("未知授权列明确拒绝迁移", False)
+        with closing(sqlite3.connect(unknown_database)) as connection, connection:
+            check(
+                "未知授权格式保留schema和完整行",
+                connection.execute(
+                    "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+                ).fetchall()
+                == original_schema
+                and connection.execute("SELECT * FROM external_roots").fetchall() == original_rows,
+            )
+
     database = root / "content.sqlite3"
     catalog = ContentCatalog(database)
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     project = content.create_project("授权测试")
     directory = Path(project.root)
+
+    resource_directory = directory / MANAGED_RESOURCES_ROOT_RELATIVE
+    resource_directory.rmdir()
+    check(
+        "资源根路径查询不补建目录",
+        content.root_path(project.id, RootKind.RESOURCES) == MANAGED_RESOURCES_ROOT_RELATIVE
+        and not resource_directory.exists(),
+    )
+    content.root(project.id, RootKind.RESOURCES)
+    check("显式根准备仍创建目录", resource_directory.is_dir())
 
     streamed = directory / MANAGED_RESOURCES_ROOT_RELATIVE / "流式版本.bin"
     streamed_payload = b"streamed-version\0" * 131_072
@@ -100,6 +659,87 @@ def main() -> int:
             capture.revision,
         )
         check("稳定采集写入调用方流", captured.read() == streamed_payload)
+
+    with (
+        closing(sqlite3.connect(database)) as source,
+        closing(sqlite3.connect(":memory:")) as copied,
+    ):
+        source.backup(copied)
+        copied.row_factory = sqlite3.Row
+        original_rows = tuple(source.iterdump())
+        plan = ContentCatalog.project_row(copied, project.id)
+        assert plan is not None
+        reference = ProjectRegistry.creation_result(plan)
+        mounts = ContentCatalog.external_root_rows(copied, project.id)
+        scope = ContentService.project_space(reference, mounts)
+        with (
+            patch.object(
+                ContentCatalog,
+                "_connect",
+                side_effect=AssertionError("private capture reopened catalog"),
+            ),
+            io.BytesIO() as captured,
+        ):
+            preview = ContentService.capture_from_space(
+                scope,
+                project.id,
+                f"{MANAGED_RESOURCES_ROOT_RELATIVE}/流式版本.bin",
+                len(streamed_payload),
+                captured,
+            )
+            check(
+                "私有目录视图复用实际稳定采集",
+                preview == capture and captured.read() == streamed_payload,
+            )
+        check(
+            "私有采集不修改目录记录或源文件",
+            tuple(source.iterdump()) == original_rows and streamed.read_bytes() == streamed_payload,
+        )
+
+        def expired():
+            raise TimeoutError("capture deadline")
+
+        with io.BytesIO() as captured:
+            try:
+                ContentService.capture_from_space(
+                    scope,
+                    project.id,
+                    f"{MANAGED_RESOURCES_ROOT_RELATIVE}/流式版本.bin",
+                    len(streamed_payload),
+                    captured,
+                    check=expired,
+                )
+            except TimeoutError:
+                check("预检采集遵守调用方时限", captured.getvalue() == b"")
+            else:
+                check("预检采集遵守调用方时限", False)
+
+    capture_path = f"{MANAGED_RESOURCES_ROOT_RELATIVE}/流式版本.bin"
+    for failure in (
+        PermissionError(errno.EPERM, "Operation not permitted", str(streamed)),
+        PermissionError(errno.EACCES, "Permission denied", str(streamed)),
+    ):
+        with (
+            tempfile.TemporaryFile() as captured,
+            patch.object(DirectoryHandle, "open", side_effect=failure),
+        ):
+            try:
+                content.capture_stable(project.id, capture_path, len(streamed_payload), captured)
+            except ContentReadPermissionError as error:
+                check("权限拒绝保留现有读取失败码", error.code == "read_failed")
+                check("权限拒绝只公开项目相对路径", error.path == capture_path)
+                check("保留原始系统异常用于诊断", error.__cause__ is failure)
+            else:
+                check("不可读文件不得采集成功", False)
+    with (
+        tempfile.TemporaryFile() as captured,
+        patch.object(DirectoryHandle, "open", side_effect=OSError(errno.EIO, "I/O error")),
+    ):
+        check(
+            "普通读取失败不误报权限拒绝",
+            code_of(lambda: content.capture_stable(project.id, capture_path, 1024, captured))
+            == "read_failed",
+        )
 
     # ---- 1. 登记、枚举、留痕 ----
     ref = content.authorize_root(project.id, str(external), "外部资料")

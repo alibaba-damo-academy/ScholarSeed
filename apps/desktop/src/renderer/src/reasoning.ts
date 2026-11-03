@@ -1,12 +1,17 @@
 import type { TFunction } from 'i18next'
 
-import type { ModelInfo } from './api'
+import type { ModelInfo, SessionModelSnapshot } from './api'
 
 export const DEFAULT_REASONING_EFFORT = ''
 const REASONING_KEYS = {
-  none: 'reasoning.none', minimal: 'reasoning.minimal', low: 'reasoning.low',
-  medium: 'reasoning.medium', high: 'reasoning.high', xhigh: 'reasoning.xhigh',
-  max: 'reasoning.max', ultra: 'reasoning.ultra'
+  none: { key: 'reasoning.none', compactKey: 'reasoning.noneShort' },
+  minimal: { key: 'reasoning.minimal', compactKey: 'reasoning.minimalShort' },
+  low: { key: 'reasoning.low', compactKey: 'reasoning.lowShort' },
+  medium: { key: 'reasoning.medium', compactKey: 'reasoning.mediumShort' },
+  high: { key: 'reasoning.high', compactKey: 'reasoning.highShort' },
+  xhigh: { key: 'reasoning.xhigh', compactKey: 'reasoning.xhighShort' },
+  max: { key: 'reasoning.max', compactKey: 'reasoning.maxShort' },
+  ultra: { key: 'reasoning.ultra', compactKey: 'reasoning.ultraShort' },
 } as const
 /**
  * Strength order used to pick the lowest declared level. Mirrors the backend's
@@ -14,16 +19,20 @@ const REASONING_KEYS = {
  */
 const EFFORT_STRENGTH_ORDER = Object.keys(REASONING_KEYS)
 
-export function reasoningLabel(value: string, t: TFunction<'conversation'>, compact = false): string {
+export function reasoningLabel(
+  value: string,
+  t: TFunction<'conversation'>,
+  compact = false
+): string {
   if (value === DEFAULT_REASONING_EFFORT) return t('reasoning.default')
-  return Object.prototype.hasOwnProperty.call(REASONING_KEYS, value)
-    ? t(compact ? `${REASONING_KEYS[value as keyof typeof REASONING_KEYS]}Short` : REASONING_KEYS[value as keyof typeof REASONING_KEYS])
-    : value
+  if (!Object.prototype.hasOwnProperty.call(REASONING_KEYS, value)) return value
+  const keys = REASONING_KEYS[value as keyof typeof REASONING_KEYS]
+  return t(compact ? keys.compactKey : keys.key)
 }
 
-function declaredEffortValues(model: ModelInfo): string[] {
-  if (model.reasoning_efforts?.length) return model.reasoning_efforts
-  const option = (model.reasoning_options ?? []).find((entry) => entry.kind === 'effort')
+export function declaredEffortValues(model: ModelInfo | undefined): string[] {
+  if (model?.reasoning_efforts?.length) return model.reasoning_efforts
+  const option = (model?.reasoning_options ?? []).find((entry) => entry.kind === 'effort')
   return option?.values ?? []
 }
 
@@ -45,9 +54,27 @@ export function modelDefaultEffort(model: ModelInfo | undefined): string {
   return lowest ?? values[0]
 }
 
-export function reasoningPreference(model: ModelInfo | undefined, preferences: Record<string, string>): string {
+export function reasoningPreference(
+  model: ModelInfo | undefined,
+  preferences: Record<string, string>
+): string {
   if (!model) return DEFAULT_REASONING_EFFORT
   const effort = preferences[model.key] ?? DEFAULT_REASONING_EFFORT
-  if (model.reasoning_efforts?.includes(effort)) return effort
+  if (declaredEffortValues(model).includes(effort)) return effort
   return modelDefaultEffort(model)
+}
+
+export function confirmedReasoningSelection(
+  snapshot: SessionModelSnapshot | null | undefined,
+  sessionId: string,
+  modelKey: string,
+  effort: string
+): boolean {
+  return (
+    snapshot?.session_id === sessionId &&
+    snapshot.model_id === modelKey &&
+    (snapshot.reasoning_effort ?? DEFAULT_REASONING_EFFORT) === effort &&
+    snapshot.runtime?.model_id === modelKey &&
+    (snapshot.runtime.reasoning_effort ?? DEFAULT_REASONING_EFFORT) === effort
+  )
 }

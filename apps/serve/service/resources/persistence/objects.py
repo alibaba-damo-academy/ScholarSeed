@@ -8,17 +8,18 @@ import os
 import shutil
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import BinaryIO, Iterator, Protocol, cast
+from types import ModuleType
+from typing import BinaryIO, Callable, Iterator, Protocol, cast
 from uuid import uuid4
 
 from fastcdc import fastcdc  # type: ignore[import-untyped]
 
-from service.platform.storage import NOFOLLOW, canonical_root, open_directory
+from service.platform.storage import NOFOLLOW, canonical_root, filesystem_path, open_directory
 from service.resources.persistence.chunks import (
     CHUNK_AVG_BYTES,
     CHUNK_MAX_BYTES,
@@ -38,6 +39,7 @@ class _WindowsLockApi(Protocol):
     def locking(self, descriptor: int, mode: int, byte_count: int) -> None: ...
 
 
+fcntl: ModuleType
 if os.name == "nt":
     import msvcrt as _msvcrt
 
@@ -165,9 +167,193 @@ def _canonical(payload: object) -> bytes:
 
 def _hex(identifier: str) -> str:
     prefix, separator, value = identifier.partition(":")
-    if prefix != "sha256" or separator != ":" or len(value) != 64:
+    if (
+        prefix != "sha256"
+        or separator != ":"
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
         raise CasCorruptError("invalid_object_id")
     return value
+
+
+def _unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise CasCorruptError("duplicate_descriptor_field")
+        result[key] = value
+    return result
+
+
+def _descriptor_size(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise CasCorruptError("invalid_descriptor_size")
+    return value
+
+
+def decode_object_descriptor(
+    object_id: str, data: bytes, read_manifest: Callable[[], bytes]
+) -> ObjectDescriptor:
+    """Read the actual CAS format using caller-owned, qualified byte readers.
+
+    The callback is used only for CHUNKED objects. This does not open paths,
+    create locks, repair metadata, or verify payload bytes; the caller retains
+    directory qualification and supplies bounded reads during preflight.
+    """
+
+    try:
+        _hex(object_id)
+        body = json.loads(data, object_pairs_hook=_unique_fields)
+        if not isinstance(body, dict):
+            raise CasCorruptError("invalid_descriptor")
+        recorded_digest = body.pop("descriptor_digest")
+        if recorded_digest != digest(_canonical(body)):
+            raise CasCorruptError("descriptor_digest_mismatch")
+        if body.get("object_id") != object_id:
+            raise CasCorruptError("descriptor_object_mismatch")
+        if (
+            type(body.get("format_version")) is not int
+            or body["format_version"] != CAS_FORMAT_VERSION
+        ):
+            raise CasCorruptError("unsupported_cas_format")
+        layout = CasLayout(body["layout"])
+        raw_size = _descriptor_size(body["raw_size_bytes"])
+        stored_size = _descriptor_size(body["stored_size_bytes"])
+        chunks: tuple[ChunkRef, ...] = ()
+        if layout is CasLayout.CHUNKED:
+            if body["codec"] != "MANIFEST":
+                raise CasCorruptError("unsupported_cas_codec")
+            manifest_bytes = read_manifest()
+            if digest(manifest_bytes) != body.get("manifest_digest"):
+                raise CasCorruptError("manifest_digest_mismatch")
+            if len(manifest_bytes) != stored_size:
+                raise CasCorruptError("manifest_size_mismatch")
+            manifest = json.loads(manifest_bytes, object_pairs_hook=_unique_fields)
+            if (
+                not isinstance(manifest, dict)
+                or type(manifest.get("manifest_version")) is not int
+                or manifest["manifest_version"] != MANIFEST_VERSION
+                or manifest.get("chunker_profile") != CHUNKER_PROFILE
+                or manifest.get("object_id") != object_id
+                or _descriptor_size(manifest.get("raw_size_bytes")) != raw_size
+                or not isinstance(manifest.get("chunks"), list)
+            ):
+                raise CasCorruptError("invalid_manifest")
+            chunks = tuple(ChunkRef(**item) for item in manifest["chunks"])
+            offset = 0
+            for ordinal, reference in enumerate(chunks):
+                _hex(reference.chunk_id)
+                if (
+                    _descriptor_size(reference.ordinal) != ordinal
+                    or _descriptor_size(reference.raw_offset) != offset
+                ):
+                    raise CasCorruptError("chunk_order_mismatch")
+                length = _descriptor_size(reference.raw_size_bytes)
+                if not 0 < length <= CHUNK_MAX_BYTES:
+                    raise CasCorruptError("chunk_size_mismatch")
+                offset += length
+                if offset > raw_size:
+                    raise CasCorruptError("object_size_mismatch")
+            if offset != raw_size:
+                raise CasCorruptError("object_size_mismatch")
+            codec: WholeCodec | str = "MANIFEST"
+        else:
+            codec = WholeCodec(body["codec"])
+            _hex(body["payload_digest"])
+            if codec is WholeCodec.IDENTITY and raw_size != stored_size:
+                raise CasCorruptError("payload_size_mismatch")
+        return ObjectDescriptor(
+            format_version=CAS_FORMAT_VERSION,
+            object_id=object_id,
+            layout=layout,
+            codec=codec,
+            raw_size_bytes=raw_size,
+            stored_size_bytes=stored_size,
+            descriptor_digest=recorded_digest,
+            payload_digest=body.get("payload_digest"),
+            manifest_digest=body.get("manifest_digest"),
+            chunks=chunks,
+        )
+    except (KeyError, OSError, TypeError, ValueError, AttributeError) as exc:
+        raise CasCorruptError("invalid_descriptor") from exc
+
+
+def verified_chunk(chunk_id: str, data: bytes, payload: bytes) -> bytes:
+    """Read the published chunk's descriptor and bytes without filesystem IO."""
+    try:
+        _hex(chunk_id)
+        body = json.loads(data, object_pairs_hook=_unique_fields)
+        if not isinstance(body, dict):
+            raise CasCorruptError("invalid_chunk_descriptor")
+        recorded = body.pop("descriptor_digest")
+        if recorded != digest(_canonical(body)):
+            raise CasCorruptError("descriptor_digest_mismatch")
+        if body.get("chunk_id") != chunk_id:
+            raise CasCorruptError("chunk_identity_mismatch")
+        if (
+            type(body.get("format_version")) is not int
+            or body["format_version"] != CAS_FORMAT_VERSION
+        ):
+            raise CasCorruptError("unsupported_cas_format")
+        if body.get("codec") != WholeCodec.IDENTITY.value:
+            raise CasCorruptError("unsupported_cas_codec")
+        size = _descriptor_size(body["raw_size_bytes"])
+        if (
+            not 0 < size <= CHUNK_MAX_BYTES
+            or _descriptor_size(body["stored_size_bytes"]) != size
+            or len(payload) != size
+        ):
+            raise CasCorruptError("chunk_size_mismatch")
+        if digest(payload) != chunk_id:
+            raise CasCorruptError("chunk_digest_mismatch")
+        return payload
+    except (KeyError, OSError, TypeError, ValueError, AttributeError) as exc:
+        raise CasCorruptError("invalid_chunk_descriptor") from exc
+
+
+def verified_whole(metadata: ObjectDescriptor, payload: bytes) -> bytes:
+    """Use the normal WHOLE decoder on bytes supplied by a qualified reader."""
+    if metadata.layout is not CasLayout.WHOLE:
+        raise CasCorruptError("invalid_object_layout")
+    if len(payload) != metadata.stored_size_bytes:
+        raise CasCorruptError("payload_size_mismatch")
+    if digest(payload) != metadata.payload_digest:
+        raise CasCorruptError("payload_digest_mismatch")
+    raw = decode_whole(payload, WholeCodec(metadata.codec), metadata.raw_size_bytes)
+    if len(raw) != metadata.raw_size_bytes or digest(raw) != metadata.object_id:
+        raise CasCorruptError("object_digest_mismatch")
+    return raw
+
+
+def verified_chunks(
+    metadata: ObjectDescriptor, read_chunk: Callable[[str], bytes]
+) -> Iterator[bytes]:
+    """Verify ordered payloads through the caller's bounded chunk reader.
+
+    The caller must consume the iterator to completion for whole-object integrity
+    and must retain its read qualifications until the iterator closes.
+    """
+    if metadata.layout is not CasLayout.CHUNKED:
+        raise CasCorruptError("invalid_object_layout")
+    object_digest = sha256()
+    offset = 0
+    try:
+        for ordinal, reference in enumerate(metadata.chunks):
+            if reference.ordinal != ordinal or reference.raw_offset != offset:
+                raise CasCorruptError("chunk_order_mismatch")
+            payload = read_chunk(reference.chunk_id)
+            if len(payload) != reference.raw_size_bytes or digest(payload) != reference.chunk_id:
+                raise CasCorruptError("chunk_digest_mismatch")
+            object_digest.update(payload)
+            offset += len(payload)
+            yield payload
+    except OSError as exc:
+        raise CasCorruptError("cas_payload_missing") from exc
+    if offset != metadata.raw_size_bytes:
+        raise CasCorruptError("object_size_mismatch")
+    if f"sha256:{object_digest.hexdigest()}" != metadata.object_id:
+        raise CasCorruptError("object_digest_mismatch")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -265,8 +451,8 @@ class CasStore:
     """Publish, open and verify immutable raw-byte-addressed objects."""
 
     def __init__(self, root: Path | str, *, project_root: Path | str | None = None) -> None:
-        self._root = Path(root)
-        self._project_root = Path(project_root) if project_root is not None else None
+        self._root = filesystem_path(root)
+        self._project_root = filesystem_path(project_root) if project_root is not None else None
         self._cas = self._root / "cas" / "v1"
         self._objects = self._cas / "objects" / "sha256"
         self._chunks = self._cas / "chunks" / "sha256"
@@ -360,7 +546,7 @@ class CasStore:
 
         _ensure_directory(self._staging, self._project_root)
         with tempfile.TemporaryFile(dir=self._staging) as stream:
-            yield stream
+            yield cast(BinaryIO, stream)
 
     def stage(self, object_id: str, transaction_id: str, ordinal: int) -> Path:
         """Durably materialize a verified object for a restore transaction."""
@@ -470,7 +656,7 @@ class CasStore:
         """Atomically materialize verified original bytes at a target path."""
 
         metadata = self._load_descriptor(object_id)
-        destination = Path(target)
+        destination = filesystem_path(target)
         destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
@@ -544,23 +730,43 @@ class CasStore:
         codec: WholeCodec,
         payload: bytes,
     ) -> None:
-        payload_path = stage / PAYLOAD_FILENAME
+        _write_durable_files(
+            stage,
+            tuple(
+                (stage / name, value)
+                for name, value in self._whole_files(object_id, len(raw), codec, payload)
+            ),
+        )
+
+    @classmethod
+    def _whole_files(
+        cls, object_id: str, raw_size_bytes: int, codec: WholeCodec, payload: bytes
+    ) -> tuple[tuple[str, bytes], ...]:
+        """Encode the files published by the real writer, without filesystem IO."""
         descriptor: dict[str, object] = {
             "codec": codec.value,
             "format_version": CAS_FORMAT_VERSION,
             "layout": CasLayout.WHOLE.value,
             "object_id": object_id,
             "payload_digest": digest(payload),
-            "raw_size_bytes": len(raw),
+            "raw_size_bytes": raw_size_bytes,
             "stored_size_bytes": len(payload),
         }
-        _write_durable_files(
-            stage,
-            (
-                (payload_path, payload),
-                (stage / DESCRIPTOR_FILENAME, self._descriptor_bytes(descriptor)),
-            ),
+        return (
+            (PAYLOAD_FILENAME, payload),
+            (DESCRIPTOR_FILENAME, cls._descriptor_bytes(descriptor)),
         )
+
+    @classmethod
+    def _chunk_files(cls, reference: ChunkRef, payload: bytes) -> tuple[tuple[str, bytes], ...]:
+        metadata = {
+            "chunk_id": reference.chunk_id,
+            "codec": WholeCodec.IDENTITY.value,
+            "format_version": CAS_FORMAT_VERSION,
+            "raw_size_bytes": len(payload),
+            "stored_size_bytes": len(payload),
+        }
+        return ((PAYLOAD_FILENAME, payload), (DESCRIPTOR_FILENAME, cls._descriptor_bytes(metadata)))
 
     def _publish_chunks(self, chunks: tuple[tuple[ChunkRef, bytes], ...]) -> None:
         for reference, payload in chunks:
@@ -572,19 +778,11 @@ class CasStore:
             stage = self._staging / uuid4().hex / "chunk"
             try:
                 _ensure_directory(stage, self._project_root)
-                payload_path = stage / PAYLOAD_FILENAME
-                metadata = {
-                    "chunk_id": reference.chunk_id,
-                    "codec": WholeCodec.IDENTITY.value,
-                    "format_version": CAS_FORMAT_VERSION,
-                    "raw_size_bytes": len(payload),
-                    "stored_size_bytes": len(payload),
-                }
                 _write_durable_files(
                     stage,
-                    (
-                        (payload_path, payload),
-                        (stage / DESCRIPTOR_FILENAME, self._descriptor_bytes(metadata)),
+                    tuple(
+                        (stage / name, value)
+                        for name, value in self._chunk_files(reference, payload)
                     ),
                 )
                 _ensure_directory(target.parent, self._project_root)
@@ -601,38 +799,62 @@ class CasStore:
         expected_object_id: str,
     ) -> tuple[tuple[ChunkRef, bytes], ...]:
         references: list[tuple[ChunkRef, bytes]] = []
+        for reference, payload in self._stream_chunks(
+            raw, raw_size_bytes=raw_size_bytes, expected_object_id=expected_object_id
+        ):
+            self._publish_chunks(((reference, payload),))
+            references.append((reference, b""))
+        return tuple(references)
+
+    @staticmethod
+    def _stream_chunks(
+        raw: BinaryIO,
+        *,
+        raw_size_bytes: int,
+        expected_object_id: str,
+        check: Callable[[], None] | None = None,
+    ) -> Iterator[tuple[ChunkRef, bytes]]:
+        """The writer's bounded-chunk encoder, also consumed by private preview."""
         object_digest = sha256()
         offset = 0
         raw.seek(0)
-        for ordinal, chunk in enumerate(
-            fastcdc(
-                raw,
-                min_size=CHUNK_MIN_BYTES,
-                avg_size=CHUNK_AVG_BYTES,
-                max_size=CHUNK_MAX_BYTES,
-            )
-        ):
-            if chunk.offset != offset or chunk.length <= 0:
-                raise CasCorruptError("chunk_order_mismatch")
-            raw.seek(chunk.offset)
-            payload = raw.read(chunk.length)
-            if len(payload) != chunk.length:
-                raise CasCorruptError("object_size_mismatch")
-            object_digest.update(payload)
-            reference = ChunkRef(
-                ordinal=ordinal,
-                chunk_id=digest(payload),
-                raw_offset=chunk.offset,
-                raw_size_bytes=chunk.length,
-            )
-            self._publish_chunks(((reference, payload),))
-            references.append((reference, b""))
-            offset += chunk.length
+        if check is not None:
+            check()
+        # Private previews can own in-memory captures. fastcdc treats any object
+        # with fileno as a real file, but BytesIO.fileno raises UnsupportedOperation.
+        # Borrow its existing buffer without copying or creating a disk spool.
+        with raw.getbuffer() if isinstance(raw, io.BytesIO) else nullcontext(raw) as chunk_input:
+            for ordinal, chunk in enumerate(
+                fastcdc(
+                    chunk_input,
+                    min_size=CHUNK_MIN_BYTES,
+                    avg_size=CHUNK_AVG_BYTES,
+                    max_size=CHUNK_MAX_BYTES,
+                )
+            ):
+                if check is not None:
+                    check()
+                if chunk.offset != offset or chunk.length <= 0 or chunk.length > CHUNK_MAX_BYTES:
+                    raise CasCorruptError("chunk_order_mismatch")
+                if offset + chunk.length > raw_size_bytes:
+                    raise CasCorruptError("object_size_mismatch")
+                raw.seek(chunk.offset)
+                payload = raw.read(chunk.length)
+                if len(payload) != chunk.length:
+                    raise CasCorruptError("object_size_mismatch")
+                object_digest.update(payload)
+                reference = ChunkRef(
+                    ordinal=ordinal,
+                    chunk_id=digest(payload),
+                    raw_offset=chunk.offset,
+                    raw_size_bytes=chunk.length,
+                )
+                yield reference, payload
+                offset += chunk.length
         if offset != raw_size_bytes:
             raise CasCorruptError("object_size_mismatch")
         if f"sha256:{object_digest.hexdigest()}" != expected_object_id:
             raise CasCorruptError("object_digest_mismatch")
-        return tuple(references)
 
     def _publish_chunked(
         self,
@@ -641,8 +863,19 @@ class CasStore:
         raw_size_bytes: int,
         chunks: tuple[tuple[ChunkRef, bytes], ...],
     ) -> None:
-        manifest = self._manifest_bytes(object_id, raw_size_bytes, chunks)
-        manifest_path = stage / MANIFEST_FILENAME
+        _write_durable_files(
+            stage,
+            tuple(
+                (stage / name, value)
+                for name, value in self._chunked_files(object_id, raw_size_bytes, chunks)
+            ),
+        )
+
+    @classmethod
+    def _chunked_files(
+        cls, object_id: str, raw_size_bytes: int, chunks: tuple[tuple[ChunkRef, bytes], ...]
+    ) -> tuple[tuple[str, bytes], ...]:
+        manifest = cls._manifest_bytes(object_id, raw_size_bytes, chunks)
         descriptor = {
             "codec": "MANIFEST",
             "format_version": CAS_FORMAT_VERSION,
@@ -652,13 +885,85 @@ class CasStore:
             "raw_size_bytes": raw_size_bytes,
             "stored_size_bytes": len(manifest),
         }
-        _write_durable_files(
-            stage,
-            (
-                (manifest_path, manifest),
-                (stage / DESCRIPTOR_FILENAME, self._descriptor_bytes(descriptor)),
-            ),
+        return (
+            (MANIFEST_FILENAME, manifest),
+            (DESCRIPTOR_FILENAME, cls._descriptor_bytes(descriptor)),
         )
+
+    @classmethod
+    def preview_new_stream(
+        cls,
+        raw: BinaryIO,
+        *,
+        raw_size_bytes: int,
+        expected_object_id: str,
+        max_raw_bytes: int,
+        max_chunks: int,
+        check: Callable[[], None],
+        emit_file: Callable[[str, str, str, bytes], None] | None = None,
+    ) -> ObjectDescriptor:
+        """Decode a new stream publication without locks, spools or source writes.
+
+        Existing objects must instead use their actual stored descriptor: put_stream
+        preserves an already published layout. The caller owns stable capture,
+        directory qualification and aggregate read/time limits. Chunk payloads are
+        checked and discarded one at a time. An optional private export sink
+        receives the exact publication bytes; partial output is not evidence
+        unless this method returns successfully and the enclosing pins close.
+        """
+        _hex(expected_object_id)
+        if (
+            type(raw_size_bytes) is not int
+            or type(max_raw_bytes) is not int
+            or type(max_chunks) is not int
+            or not 0 <= raw_size_bytes <= max_raw_bytes
+            or max_chunks < 1
+        ):
+            raise ValueError("CAS publication preview exceeds budget")
+        check()
+        if raw_size_bytes <= WHOLE_MAX_BYTES:
+            raw.seek(0)
+            payload = raw.read(raw_size_bytes + 1)
+            check()
+            if len(payload) != raw_size_bytes or digest(payload) != expected_object_id:
+                raise CasCorruptError("object_digest_mismatch")
+            encoded = encode_whole(payload)
+            files = dict(
+                cls._whole_files(expected_object_id, raw_size_bytes, encoded.codec, encoded.payload)
+            )
+            descriptor = decode_object_descriptor(
+                expected_object_id, files[DESCRIPTOR_FILENAME], lambda: b""
+            )
+            if verified_whole(descriptor, files[PAYLOAD_FILENAME]) != payload:
+                raise CasCorruptError("object_digest_mismatch")
+        else:
+            references: list[tuple[ChunkRef, bytes]] = []
+            for reference, payload in cls._stream_chunks(
+                raw,
+                raw_size_bytes=raw_size_bytes,
+                expected_object_id=expected_object_id,
+                check=check,
+            ):
+                if len(references) >= max_chunks:
+                    raise ValueError("CAS publication preview exceeds chunk budget")
+                files = dict(cls._chunk_files(reference, payload))
+                verified_chunk(
+                    reference.chunk_id, files[DESCRIPTOR_FILENAME], files[PAYLOAD_FILENAME]
+                )
+                if emit_file is not None:
+                    for name, data in files.items():
+                        emit_file("chunks", reference.chunk_id, name, data)
+                references.append((reference, b""))
+            files = dict(cls._chunked_files(expected_object_id, raw_size_bytes, tuple(references)))
+            descriptor = decode_object_descriptor(
+                expected_object_id, files[DESCRIPTOR_FILENAME], lambda: files[MANIFEST_FILENAME]
+            )
+        check()
+        if emit_file is not None:
+            for name, data in files.items():
+                emit_file("objects", expected_object_id, name, data)
+            check()
+        return descriptor
 
     @staticmethod
     def _manifest_bytes(
@@ -683,46 +988,14 @@ class CasStore:
         return _canonical(body)
 
     def _load_descriptor(self, object_id: str) -> ObjectDescriptor:
-        path = self._object_path(object_id) / DESCRIPTOR_FILENAME
+        directory = self._object_path(object_id)
         try:
-            body = json.loads(path.read_text(encoding="utf-8"))
-            recorded_digest = str(body.pop("descriptor_digest"))
-            if recorded_digest != digest(_canonical(body)):
-                raise CasCorruptError("descriptor_digest_mismatch")
-            if body.get("object_id") != object_id:
-                raise CasCorruptError("descriptor_object_mismatch")
-            layout = CasLayout(str(body["layout"]))
-            chunks: tuple[ChunkRef, ...] = ()
-            if layout is CasLayout.CHUNKED:
-                manifest_bytes = (self._object_path(object_id) / MANIFEST_FILENAME).read_bytes()
-                if digest(manifest_bytes) != body.get("manifest_digest"):
-                    raise CasCorruptError("manifest_digest_mismatch")
-                manifest = json.loads(manifest_bytes)
-                if (
-                    manifest.get("manifest_version") != MANIFEST_VERSION
-                    or manifest.get("chunker_profile") != CHUNKER_PROFILE
-                    or manifest.get("object_id") != object_id
-                    or manifest.get("raw_size_bytes") != body.get("raw_size_bytes")
-                ):
-                    raise CasCorruptError("invalid_manifest")
-                chunks = tuple(ChunkRef(**item) for item in manifest.get("chunks", ()))
-            codec_value = str(body["codec"])
-            codec: WholeCodec | str = (
-                WholeCodec(codec_value) if layout is CasLayout.WHOLE else codec_value
+            return decode_object_descriptor(
+                object_id,
+                (directory / DESCRIPTOR_FILENAME).read_bytes(),
+                lambda: (directory / MANIFEST_FILENAME).read_bytes(),
             )
-            return ObjectDescriptor(
-                format_version=int(body["format_version"]),
-                object_id=object_id,
-                layout=layout,
-                codec=codec,
-                raw_size_bytes=int(body["raw_size_bytes"]),
-                stored_size_bytes=int(body["stored_size_bytes"]),
-                descriptor_digest=recorded_digest,
-                payload_digest=body.get("payload_digest"),
-                manifest_digest=body.get("manifest_digest"),
-                chunks=chunks,
-            )
-        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except OSError as exc:
             raise CasCorruptError("invalid_descriptor") from exc
 
     def _read_verified(
@@ -734,9 +1007,7 @@ class CasStore:
         try:
             if metadata.layout is CasLayout.WHOLE:
                 payload = (self._object_path(object_id) / PAYLOAD_FILENAME).read_bytes()
-                if digest(payload) != metadata.payload_digest:
-                    raise CasCorruptError("payload_digest_mismatch")
-                raw = decode_whole(payload, WholeCodec(metadata.codec), metadata.raw_size_bytes)
+                raw = verified_whole(metadata, payload)
             else:
                 raw = b"".join(self._verified_chunks(metadata))
         except OSError as exc:
@@ -746,27 +1017,15 @@ class CasStore:
         return raw
 
     def _verified_chunks(self, metadata: ObjectDescriptor) -> Iterator[bytes]:
-        object_digest = sha256()
-        offset = 0
-        try:
-            for ordinal, reference in enumerate(metadata.chunks):
-                if reference.ordinal != ordinal or reference.raw_offset != offset:
-                    raise CasCorruptError("chunk_order_mismatch")
-                payload = self.chunk_payload_path(reference.chunk_id).read_bytes()
-                if (
-                    len(payload) != reference.raw_size_bytes
-                    or digest(payload) != reference.chunk_id
-                ):
-                    raise CasCorruptError("chunk_digest_mismatch")
-                object_digest.update(payload)
-                offset += len(payload)
-                yield payload
-        except OSError as exc:
-            raise CasCorruptError("cas_payload_missing") from exc
-        if offset != metadata.raw_size_bytes:
-            raise CasCorruptError("object_size_mismatch")
-        if f"sha256:{object_digest.hexdigest()}" != metadata.object_id:
-            raise CasCorruptError("object_digest_mismatch")
+        def read_chunk(identifier: str) -> bytes:
+            directory = self._chunk_path(identifier)
+            return verified_chunk(
+                identifier,
+                (directory / DESCRIPTOR_FILENAME).read_bytes(),
+                (directory / PAYLOAD_FILENAME).read_bytes(),
+            )
+
+        yield from verified_chunks(metadata, read_chunk)
 
     def _object_path(self, object_id: str) -> Path:
         value = _hex(object_id)
@@ -811,5 +1070,9 @@ __all__ = [
     "GcEntry",
     "GcPlan",
     "ObjectDescriptor",
+    "decode_object_descriptor",
+    "verified_whole",
+    "verified_chunk",
+    "verified_chunks",
     "WHOLE_MAX_BYTES",
 ]

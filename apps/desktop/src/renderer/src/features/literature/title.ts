@@ -37,14 +37,14 @@ export type PaperTitleVeto =
   | 'statement'
   | 'name-list'
 
-const MIN_CHARS = 4      // 可见字符下限: CJK 单字信息量高, 4 字已能构成一个短标题
-const MAX_CHARS = 240    // 字符上限: 再长基本是摘要/正文被粘进了标题字段
-const MIN_TOKENS = 2     // 词下限: 单个词更像关键词、文件名或刊名
-const MAX_TOKENS = 40    // 词上限
-const SENTENCE_COUNT_MIN = 2          // 几处句末标点算「段落」而不是标题
-const SENTENCE_CASE_RATIO_MAX = 0.3   // 非首词大写占比低于此值 = 句子式大小写 (散文特征)
-const NAME_LIST_MAX_TOKENS = 9        // 再长就不像作者串了
-const SECTION_MAX_TOKENS = 6          // 栏目词那一支只在整条很短时才否决
+const MIN_CHARS = 4 // 可见字符下限: CJK 单字信息量高, 4 字已能构成一个短标题
+const MAX_CHARS = 240 // 字符上限: 再长基本是摘要/正文被粘进了标题字段
+const MIN_TOKENS = 2 // 词下限: 单个词更像关键词、文件名或刊名
+const MAX_TOKENS = 40 // 词上限
+const SENTENCE_COUNT_MIN = 2 // 几处句末标点算「段落」而不是标题
+const SENTENCE_CASE_RATIO_MAX = 0.3 // 非首词大写占比低于此值 = 句子式大小写 (散文特征)
+const NAME_LIST_MAX_TOKENS = 9 // 再长就不像作者串了
+const SECTION_MAX_TOKENS = 6 // 栏目词那一支只在整条很短时才否决
 
 /**
  * 分词: CJK 单字各算一个词, 其余按下划线以外的连续段整体算一个词。
@@ -65,11 +65,35 @@ const TERMINAL_MARK = /[.!。！？?](?=\s|$)/gu
 const PLACEHOLDER_EDGE_LEADING = /^[\s[\](){}【】《》「」『』"'“”‘’]+/u
 const PLACEHOLDER_EDGE_TRAILING = /[\s[\](){}【】《》「」『』"'“”‘’]+$/u
 const PLACEHOLDER_WORDS: ReadonlySet<string> = new Set([
-  'untitled', 'untitled document', 'no title', 'notitle', 'new document',
-  'unknown', 'unknown title', 'null', 'none', 'n/a', 'na', 'title',
-  '未命名', '无标题', '未命名文档', '无标题文档', '新建文档', '标题',
-  '未填写', '待补充', '未題',
-  '参考文献', '摘要', '结论', '引言', '目录', '附录', '致谢', '正文'
+  'untitled',
+  'untitled document',
+  'no title',
+  'notitle',
+  'new document',
+  'unknown',
+  'unknown title',
+  'null',
+  'none',
+  'n/a',
+  'na',
+  'title',
+  '未命名',
+  '无标题',
+  '未命名文档',
+  '无标题文档',
+  '新建文档',
+  '标题',
+  '未填写',
+  '待补充',
+  '未題',
+  '参考文献',
+  '摘要',
+  '结论',
+  '引言',
+  '目录',
+  '附录',
+  '致谢',
+  '正文',
 ])
 const PLACEHOLDER_PATTERN = new RegExp(
   [
@@ -79,30 +103,28 @@ const PLACEHOLDER_PATTERN = new RegExp(
     '^(?:document|文档)\\s*[-_#]?\\d+$',
     // 网盘/Office 的复制产物: "Copy of X"、"X 的副本"、"X 副本 (1)"
     '^copy\\s+of\\s+.+$',
-    '^.+\\s*(?:的)?副本\\s*(?:\\(\\d+\\))?$'
+    '^.+\\s*(?:的)?副本\\s*(?:\\(\\d+\\))?$',
   ].join('|'),
   'iu'
 )
 
-const URL_PATTERN =
-  /(?:^[a-z][a-z0-9+.\-]*:\/\/|\bwww\.|\b(?:doi|dx\.doi|arxiv)\.org\/|\bmailto:)/iu
-const PATH_PATTERN =
-  /(?:\\|^[~/]|\b[a-z]:[/\\]|\/(?:users|home|mnt|media|tmp|var|opt|data)\/)/iu
+const URL_PATTERN = /(?:^[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\b(?:doi|dx\.doi|arxiv)\.org\/|\bmailto:)/iu
+const PATH_PATTERN = /(?:\\|^[~/]|\b[a-z]:[/\\]|\/(?:users|home|mnt|media|tmp|var|opt|data)\/)/iu
 const FILE_SUFFIX_PATTERN =
   /\.(?:pdf|docx?|rtf|odt|tex|txt|md|markdown|pptx?|xlsx?|csv|tsv|zip|rar|7z|gz|tar|epub|mobi|caj|nh|bib|json|ya?ml|xml|html?|py|ipynb|sh|log|png|jpe?g|gif|tif?f|bmp|svg)$/i
 
 const IDENTIFIER_PATTERNS: readonly RegExp[] = [
-  /^10\.\d{4,9}\/\S+$/,                                          // DOI
-  /^(?:arxiv\s*[:：]\s*)?\d{4}\.\d{4,5}(?:v\d+)?$/,               // arXiv 新式
+  /^10\.\d{4,9}\/\S+$/, // DOI
+  /^(?:arxiv\s*[:：]\s*)?\d{4}\.\d{4,5}(?:v\d+)?$/, // arXiv 新式
   /^(?:arxiv\s*[:：]\s*)?[a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?$/, // arXiv 旧式
   // 带标签的编号: 冒号可省 ("ISBN 978-..."), 但值里必须有数字, 否则 "DOI Resolver"
   // 这类真实词组会被误杀; id/key/ref 太像普通英文词, 只认冒号写法。
   /^(?:doi|arxiv|isbn|issn|pmid|orcid|handle|pii)\s*[:：]?\s*(?=.*\d).+$/iu,
   /^(?:id|key|ref)\s*[:：]\s*\S+$/iu,
-  /^v\d+(?:[.\-]\d+)*$/,                                          // 版本号
-  /^\d{4}\s*[-/年]\s*\d{1,2}(?:\s*[-/月]\s*\d{1,2}\s*日?)?$/,        // 日期
-  /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$/,                     // snake_case
-  /^[a-z]+(?:[A-Z][a-z0-9]*){2,}$/                                // camelCase
+  /^v\d+(?:[.-]\d+)*$/, // 版本号
+  /^\d{4}\s*[-/年]\s*\d{1,2}(?:\s*[-/月]\s*\d{1,2}\s*日?)?$/, // 日期
+  /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$/, // snake_case
+  /^[a-z]+(?:[A-Z][a-z0-9]*){2,}$/, // camelCase
 ]
 
 // 「本文/本研究 + 动词」的自述式开头: "This paper describes ...", "In this work we propose ..."。
@@ -113,7 +135,7 @@ const META_DISCOURSE_PATTERN =
 // 陈述句开头; 只对「句子式大小写」生效, 所以 There Is No Free Lunch 这类标题不受影响。
 const STATEMENT_PATTERNS: readonly RegExp[] = [
   /^(?:the|a|an|this|that|these|those|it|he|she|they|we|you|i)\s+\S+\s+(?:is|are|was|were|be|been|am|has|have|had)\b/iu,
-  /^(?:there|here|it|this|that)\s+(?:is|are|was|were|has|have)\b/iu
+  /^(?:there|here|it|this|that)\s+(?:is|are|was|were|has|have)\b/iu,
 ]
 
 // 小节标题 (PDF/网页抽取的产物)。两处收紧都是为了不误杀真标题: 栏目词只认「+ 数字」,
@@ -122,7 +144,7 @@ const STATEMENT_PATTERNS: readonly RegExp[] = [
 // "Table 3"、"Figure 12: The Curve"、"第3章 实验结果" 会被拦掉。
 const SECTION_PATTERNS: readonly RegExp[] = [
   /^\d+\.\d+(?:\.\d+)*\s+\S/,
-  /^第\s*[\d一二三四五六七八九十百千零]+\s*[章节篇部条款讲]/u
+  /^第\s*[\d一二三四五六七八九十百千零]+\s*[章节篇部条款讲]/u,
 ]
 const SECTION_WORD_PATTERN =
   /^(?:chapter|section|appendix|figure|fig|table|equation|eq)\s+\d+[a-z]?(?:\s|$|[:：.])/i
@@ -137,9 +159,25 @@ const NAME_PAIR_PATTERN = new RegExp(
 )
 // 作者串判据只在没有任何学术词时生效, 避免把 "Deep Learning, Neural Networks" 误杀。
 const ACADEMIC_HINTS: ReadonlySet<string> = new Set([
-  'survey', 'analysis', 'approach', 'framework', 'model', 'learning', 'network',
-  'algorithm', 'evaluation', 'method', 'study', 'review', 'architecture',
-  'optimization', 'detection', 'networks', 'models', 'methods', 'reviews'
+  'survey',
+  'analysis',
+  'approach',
+  'framework',
+  'model',
+  'learning',
+  'network',
+  'algorithm',
+  'evaluation',
+  'method',
+  'study',
+  'review',
+  'architecture',
+  'optimization',
+  'detection',
+  'networks',
+  'models',
+  'methods',
+  'reviews',
 ])
 
 /** 合并所有空白 (含换行): 标题里的换行几乎都是粘贴产物, 不该单独成为否决理由。 */
@@ -158,9 +196,7 @@ function isPlaceholder(text: string): boolean {
 }
 
 function isLocator(text: string): boolean {
-  return (
-    URL_PATTERN.test(text) || PATH_PATTERN.test(text) || FILE_SUFFIX_PATTERN.test(text)
-  )
+  return URL_PATTERN.test(text) || PATH_PATTERN.test(text) || FILE_SUFFIX_PATTERN.test(text)
 }
 
 function isIdentifier(text: string): boolean {
@@ -183,8 +219,7 @@ function isSentenceCase(words: readonly string[]): boolean {
 function isStatement(text: string, words: readonly string[]): boolean {
   if (!isSentenceCase(words)) return false
   return (
-    META_DISCOURSE_PATTERN.test(text) ||
-    STATEMENT_PATTERNS.some((pattern) => pattern.test(text))
+    META_DISCOURSE_PATTERN.test(text) || STATEMENT_PATTERNS.some((pattern) => pattern.test(text))
   )
 }
 

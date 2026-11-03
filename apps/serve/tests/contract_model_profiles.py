@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import stat
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +17,9 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI
+
+from service.platform.activity import Activities
+from tests.storage_permissions import private_file
 
 TEST_HOME = tempfile.TemporaryDirectory()
 # Test isolation must select SCHOLARSEED_HOME before importing path-owning modules.
@@ -32,8 +34,10 @@ from service.chat.service.models import (  # noqa: E402
     RETIRED_NATIVE_MODEL_KEY,
     SUBSCRIPTION_CONNECTION_REQUIRED_CODE,
     ModelService,
+    PersonalConnectionRejectedError,
     SessionModelUnavailableError,
 )
+from service.chat.service.probe import PROBE_BASE_URL_REQUIRED_ERROR  # noqa: E402
 from service.identity.service.account_token import (  # noqa: E402
     CONV_MESSAGE_ID_HEADER,
     CONV_TURN_ID_HEADER,
@@ -153,7 +157,7 @@ def test_store_redaction_and_overlay() -> None:
     )
     check("profile list exposes only custom header names", profile["header_names"] == [header_name])
     check("profile file retains user credential", "personal-test-key" in raw)
-    check("profile file is owner-only", stat.S_IMODE(store.path.stat().st_mode) == 0o600)
+    check("profile file is owner-only", private_file(store.path))
     check("a newly saved connection is enabled", profile["enabled"] is True, str(profile))
     check(
         "the redacted projection drops the derived model_name field",
@@ -288,7 +292,9 @@ def test_header_only_openai_profile() -> None:
     )
 
 
-def build_service(store: ModelProfileStore) -> tuple[Any, dict[str, str]]:
+def build_service(
+    store: ModelProfileStore, *, activities: Activities | None = None
+) -> tuple[Any, dict[str, str]]:
     """Return a ModelService bound to the isolated store plus its selection state."""
     selected = {"model": ""}
     settings = SimpleNamespace(
@@ -300,8 +306,158 @@ def build_service(store: ModelProfileStore) -> tuple[Any, dict[str, str]]:
         settings,  # type: ignore[arg-type]
         CompletionBridge("http://127.0.0.1:9999"),
         profiles=store,
+        activities=activities or Activities(),
     )
     return service, selected
+
+
+def test_catalog_and_selection_preserve_the_owning_service_instance() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        store = ModelProfileStore(Path(directory) / "profiles.json")
+        profile = store.upsert(profile_values())
+        model_key = personal_model_key(profile["id"], "personal-model")
+        first_activities = Activities()
+        second_activities = Activities()
+        first_service, _first_selected = build_service(store, activities=first_activities)
+        second_service, _second_selected = build_service(store, activities=second_activities)
+
+        first_catalog = asyncio.run(first_service.catalog())
+        second_catalog = asyncio.run(second_service.catalog(refresh=True))
+        check(
+            "catalogs identify their actual Activities owner, including refresh",
+            first_catalog.get("service_instance_id") == first_activities.instance_id
+            and second_catalog.get("service_instance_id") == second_activities.instance_id,
+        )
+        first_selection = asyncio.run(first_service.select(model_key, persist=False))
+        second_selection = asyncio.run(second_service.select(model_key, persist=True))
+        check(
+            "persisted and transient selections retain their service instance identity",
+            first_selection.get("service_instance_id") == first_activities.instance_id
+            and second_selection.get("service_instance_id") == second_activities.instance_id,
+        )
+        check(
+            "responses from different service instances cannot share an identity",
+            first_activities.instance_id != second_activities.instance_id
+            and first_catalog.get("service_instance_id")
+            != second_selection.get("service_instance_id"),
+        )
+        check(
+            "a later service selection never relabels an earlier catalog response",
+            first_catalog.get("service_instance_id") == first_activities.instance_id
+            and asyncio.run(first_service.catalog()).get("service_instance_id")
+            == first_activities.instance_id,
+        )
+
+
+def test_execution_catalog_groups_only_compatible_connections() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        store = ModelProfileStore(Path(directory) / "profiles.json")
+        service, _selected = build_service(store)
+        first = store.upsert(
+            profile_values(
+                wire_api="chat_completions",
+                selected_models=[
+                    {
+                        "id": "bridge-a",
+                        "context_window": 32000,
+                        "input_modalities": ["text"],
+                        "reasoning_efforts": ["low"],
+                    }
+                ],
+            ),
+            owner_id="catalog-owner",
+        )
+        second = store.upsert(
+            profile_values(
+                wire_api="chat_completions",
+                base_url="https://second.example/v1",
+                selected_models=[
+                    {
+                        "id": "bridge-b",
+                        "context_window": 64000,
+                        "input_modalities": ["text", "image"],
+                        "reasoning_efforts": ["high"],
+                    }
+                ],
+            ),
+            owner_id="catalog-owner",
+        )
+        direct = store.upsert(
+            profile_values(models=("direct-model",), wire_api="responses"), owner_id="catalog-owner"
+        )
+        store.upsert(
+            profile_values(models=("disabled-model",), enabled=False), owner_id="catalog-owner"
+        )
+        store.upsert(profile_values(models=("another-owner-model",)), owner_id="another-owner")
+        with patch.object(model_module, "load_builtin_work_config", return_value={}):
+            first_spec = service.session_spec(
+                personal_model_key(first["id"], "bridge-a"), user_id="catalog-owner"
+            )
+            second_spec = service.session_spec(
+                personal_model_key(second["id"], "bridge-b"), user_id="catalog-owner"
+            )
+            direct_spec = service.session_spec(
+                personal_model_key(direct["id"], "direct-model"), user_id="catalog-owner"
+            )
+        entries = {entry.model_ref: entry for entry in first_spec.catalog_models}
+        check(
+            "product bridge connections compile one catalog regardless of selection",
+            first_spec.catalog_models == second_spec.catalog_models,
+        )
+        check(
+            "execution catalog excludes direct, disabled and other-owner connections",
+            set(entries) == {"bridge-a", "bridge-b"},
+            str(entries),
+        )
+        check(
+            "each entry retains its own context window",
+            [entries["bridge-a"].context_window, entries["bridge-b"].context_window]
+            == [32000, 64000],
+        )
+        check(
+            "each entry retains its own reasoning levels",
+            entries["bridge-a"].capabilities.reasoning_efforts == ("low",)
+            and entries["bridge-b"].capabilities.reasoning_efforts == ("high",),
+        )
+        check(
+            "each entry retains its own input modalities",
+            entries["bridge-a"].capabilities.input_modalities == ("text",)
+            and entries["bridge-b"].capabilities.input_modalities == ("text", "image"),
+        )
+        check(
+            "direct Responses connection stays isolated",
+            [entry.model_ref for entry in direct_spec.catalog_models] == ["direct-model"],
+        )
+
+
+def test_execution_catalog_rejects_ambiguous_model_definitions() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        store = ModelProfileStore(Path(directory) / "profiles.json")
+        service, _selected = build_service(store)
+        values = profile_values(
+            wire_api="chat_completions",
+            selected_models=[{"id": "same-slug", "context_window": 32000}],
+        )
+        first = store.upsert(values)
+        second = store.upsert({**values, "base_url": "https://another.example/v1"})
+        key = personal_model_key(first["id"], "same-slug")
+        with patch.object(model_module, "load_builtin_work_config", return_value={}):
+            spec = service.session_spec(key)
+            check(
+                "identical model definitions deduplicate across bridged connections",
+                len(spec.catalog_models) == 1,
+            )
+            store.upsert(
+                {**values, "selected_models": [{"id": "same-slug", "context_window": 64000}]},
+                second["id"],
+            )
+            try:
+                service.session_spec(key)
+            except SessionModelUnavailableError as error:
+                conflict = "model_catalog_definition_conflict" in str(error)
+            else:
+                conflict = False
+        check("different definitions sharing one slug fail closed instead of overwriting", conflict)
 
 
 def test_unsaved_model_api_probe() -> None:
@@ -651,6 +807,7 @@ def test_personal_profile_keeps_its_own_credential() -> None:
         bridge,
         account_tokens=SimpleNamespace(current=lambda _user_id: "account-token"),
         profiles=store,
+        activities=Activities(),
     )
     # 个人端点是 Responses-only、又不在生产 bridge 的 source_endpoints 里, 只有声明了思考
     # 深度的调用才真的上桥 —— 要断言桥上那条腿的凭据, 先得让它上桥。
@@ -717,7 +874,7 @@ def test_preset_providers_are_declared_and_registered() -> None:
         not any("anthropic" in row["base_url"] for row in rows),
         str(ids),
     )
-    network_map = Path(__file__).resolve().parents[3] / "wiki" / "architecture" / "network.md"
+    network_map = Path(__file__).resolve().parents[1] / "docs" / "network.md"
     registered = network_map.read_text(encoding="utf-8") if network_map.exists() else ""
     unregistered = [
         row["base_url"]
@@ -726,7 +883,7 @@ def test_preset_providers_are_declared_and_registered() -> None:
         and str(urlparse(row["base_url"]).hostname) not in registered
     ]
     check(
-        "every preset host is registered in arch-network",
+        "every preset host is registered in the network knowledge owner",
         bool(registered) and not unregistered,
         f"map={network_map} missing={unregistered}",
     )
@@ -763,6 +920,22 @@ def test_model_listing_does_not_persist() -> None:
     else:
         refused = False
     check("listing refuses a provider without a translation leg", refused)
+
+
+def test_model_listing_classifies_missing_base_url() -> None:
+    """缺服务地址时拉取返回结构化错误码, 界面才能按类给中文原因而不是透传原文。"""
+    store = ModelProfileStore()
+    service, _selected = build_service(store)
+    result = service.profile_models(
+        {"provider": PERSONAL_PROVIDER, "wire_api": "chat_completions", "model_name": ""}
+    )
+    check("missing base_url listing fails closed", result["ok"] is False, str(result))
+    check(
+        "missing base_url listing carries a structured error class",
+        result.get("error_class") == PROBE_BASE_URL_REQUIRED_ERROR,
+        str(result),
+    )
+    check("missing base_url listing returns no candidates", result["models"] == [], str(result))
 
 
 def test_connection_probe_uses_model_directory() -> None:
@@ -997,12 +1170,17 @@ class _DisconnectedSubscriptions:
     def status(self, owner_id: str, connection_id: str) -> dict[str, Any]:
         return {"state": "disconnected", "account_label": "", "billing": "subscription"}
 
+    async def refresh_expiring(
+        self, owner_id: str, connection_id: str, *, wait: bool = False
+    ) -> None:
+        return None
+
     def sync_on_cooldown(self, owner_id: str, connection_id: str) -> bool:
         return True
 
 
-def test_subscription_disabled_default_is_not_auto_switched() -> None:
-    """订阅连接断开置灰的默认模型不被自动切换：那是用户要显式处理的连接状态。"""
+def test_subscription_disabled_default_is_auto_switched() -> None:
+    """订阅连接断开后，默认模型和执行选择都回落到可用个人连接。"""
 
     store = ModelProfileStore(shared_ownership=True)
     for existing in store.list()["profiles"]:
@@ -1018,6 +1196,7 @@ def test_subscription_disabled_default_is_not_auto_switched() -> None:
         profiles=store,
         subscriptions=_DisconnectedSubscriptions(),  # type: ignore[arg-type]
         ownership_axis=OWNERSHIP_AXIS_MACHINE,
+        activities=Activities(),
     )
     oauth = store.upsert(
         {
@@ -1034,7 +1213,7 @@ def test_subscription_disabled_default_is_not_auto_switched() -> None:
     gateway_catalog = [{"key": GATEWAY_MODEL_KEY, "label": "Qwen", "billing": "api"}]
     personal_key = personal_model_key(personal["id"], "personal-model")
     with patch("service.chat.service.models.available_models", return_value=gateway_catalog):
-        payload = asyncio.run(service.catalog(user_id="u-real"))
+        payload = asyncio.run(service.catalog(user_id=LOCAL_USER_ID))
         rows = {row["key"]: row for row in payload["available_models"]}
         check(
             "目录里确实存在可用的个人连接回落",
@@ -1042,9 +1221,13 @@ def test_subscription_disabled_default_is_not_auto_switched() -> None:
             str(sorted(rows)),
         )
         check(
-            "订阅置灰的默认键保持不变",
-            payload["current_model"] == subscription_key and selected["model"] == subscription_key,
+            "订阅置灰的默认键回落并落盘",
+            payload["current_model"] == personal_key and selected["model"] == personal_key,
             str(payload["current_model"]),
+        )
+        check(
+            "订阅失效的执行选择回落到可用个人连接",
+            service.selected_model_key(subscription_key, user_id=LOCAL_USER_ID) == personal_key,
         )
         row = rows[subscription_key]
         check(
@@ -1065,6 +1248,11 @@ class _RecordingSubscriptions:
     def status(self, owner_id: str, connection_id: str) -> dict[str, Any]:
         self.owners.append(owner_id)
         return {"state": "connected", "account_label": "", "billing": "subscription"}
+
+    async def refresh_expiring(
+        self, owner_id: str, connection_id: str, *, wait: bool = False
+    ) -> None:
+        self.owners.append(owner_id)
 
     async def models(self, owner_id: str, connection_id: str) -> dict[str, Any]:
         self.owners.append(owner_id)
@@ -1100,6 +1288,7 @@ def test_machine_axis_splits_gateway_gate_and_personal_connection_identities() -
         profiles=store,
         subscriptions=subscriptions,  # type: ignore[arg-type]
         ownership_axis=OWNERSHIP_AXIS_MACHINE,
+        activities=Activities(),
     )
     # 登录态下建立的连接: owner 戳是真实账号, 而归属身份是机器级常量。
     profile = store.upsert(
@@ -1473,8 +1662,14 @@ def test_inference_uses_selected_personal_model() -> None:
             models=("inference-first", "inference-second"), image_input=True, pdf_input=True
         )
     )
-    service, _selected = build_service(store)
+    service, selected = build_service(store)
     key = personal_model_key(profile["id"], "inference-second")
+    selected["model"] = key
+    default_connection = service.inference_connection("", user_id="local")
+    check(
+        "an unspecified one-shot model uses the existing product selection",
+        default_connection["key"] == key and default_connection["model"] == "inference-second",
+    )
     connection = service.inference_connection(key, user_id="local")
     check(
         "PDF inference resolves a composite personal selection",
@@ -1800,10 +1995,103 @@ def test_model_visibility_route_hides_and_restores() -> None:
         store.delete(existing["id"])
 
 
+def test_save_rejection_names_the_model_and_upstream() -> None:
+    """保存校验被上游拒绝时, 422 必须带结构化原因: 失败模型 + error_class + 上游原文。
+
+    87453924 的判据。此前 422 只回扁平字符串, 前端只能按状态码归到「检查服务地址与 API Key」,
+    把真正被拒的模型和上游原因藏掉; 结构化 detail 让弹窗能指名道姓, 且不再泄露凭据。
+    """
+    store = ModelProfileStore()
+    service, _selected = build_service(store)
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+    rejected = {
+        "ok": False,
+        "message": "<500> InternalError.Algo: 'agent_api_metadata'",
+        "error_class": "http_status_500",
+    }
+
+    app = FastAPI()
+    app.state.auth_enabled = False
+
+    @app.middleware("http")
+    async def identity(request: Any, call_next: Any) -> Any:
+        request.state.user_id = LOCAL_USER
+        return await call_next(request)
+
+    mount_setting_routes(app, models=service, settings=SimpleNamespace(), runtime=SimpleNamespace())
+
+    async def call() -> tuple[int, Any]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            with patch.object(model_module, "probe_personal_connection", return_value=rejected):
+                response = await client.post(
+                    "/api/serve/model-profiles",
+                    json=profile_values(models=("MiniMax-M2.5", "MiniMax/MiniMax-M2.1")),
+                )
+        return response.status_code, response.json().get("detail")
+
+    status, detail = asyncio.run(call())
+    check("a rejected save is a 422", status == 422, str(status))
+    check(
+        "the 422 carries a structured reason, not a flat string",
+        isinstance(detail, dict),
+        str(detail),
+    )
+    if isinstance(detail, dict):
+        check(
+            "the reason is coded so the renderer never guesses from the status",
+            detail.get("code") == "connection_validation_failed",
+            str(detail),
+        )
+        check(
+            "the reason names the model that was actually called",
+            detail.get("model") == "MiniMax-M2.5",
+            str(detail),
+        )
+        check(
+            "the reason carries the upstream error class",
+            detail.get("error_class") == "http_status_500",
+            str(detail),
+        )
+        check(
+            "the reason carries the upstream text",
+            "InternalError.Algo" in str(detail.get("upstream")),
+            str(detail),
+        )
+        check(
+            "the reason never leaks the credential",
+            "personal-test-key" not in json.dumps(detail),
+            str(detail),
+        )
+
+    # 服务层抛结构化异常, 且仍是 ValueError 子类: 既有 except ValueError 的调用方不破。
+    with patch.object(model_module, "probe_personal_connection", return_value=rejected):
+        try:
+            asyncio.run(service.save_profile(profile_values(models=("MiniMax-M2.5",))))
+        except PersonalConnectionRejectedError as error:
+            raised: PersonalConnectionRejectedError | None = error
+        else:
+            raised = None
+    check("the service raises the structured rejection", raised is not None)
+    if raised is not None:
+        check("the rejection is still a ValueError", isinstance(raised, ValueError))
+        check("the rejection names the model", raised.model == "MiniMax-M2.5", raised.model)
+        check(
+            "the rejection keeps a readable message",
+            "InternalError.Algo" in str(raised),
+            str(raised),
+        )
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+
+
 def main() -> int:
     print("file-backed personal API profiles contract")
     write_builtin_config()
     test_connection_validation_precedes_persistence()
+    test_save_rejection_names_the_model_and_upstream()
     test_store_redaction_and_overlay()
     test_profile_preserves_selected_wire_protocol()
     test_header_only_openai_profile()
@@ -1812,6 +2100,9 @@ def main() -> int:
     test_unsaved_model_api_probe()
     test_connection_probe_uses_model_directory()
     test_personal_profile_is_a_catalog_source()
+    test_catalog_and_selection_preserve_the_owning_service_instance()
+    test_execution_catalog_groups_only_compatible_connections()
+    test_execution_catalog_rejects_ambiguous_model_definitions()
     test_official_personal_endpoint_uses_verified_vendor_capabilities()
     test_official_personal_endpoint_keeps_catalog_and_inference_modalities_aligned()
     test_catalog_display_provenance_preserves_user_labels_and_model_identity()
@@ -1823,11 +2114,12 @@ def main() -> int:
     test_personal_profile_keeps_its_own_credential()
     test_preset_providers_are_declared_and_registered()
     test_model_listing_does_not_persist()
+    test_model_listing_classifies_missing_base_url()
     test_product_catalog_hides_concrete_subscription_models()
     test_builtin_models_greyed_out_when_signed_out()
     test_signed_out_default_auto_switches_to_first_available_model()
     test_signed_out_without_available_models_keeps_the_readable_error()
-    test_subscription_disabled_default_is_not_auto_switched()
+    test_subscription_disabled_default_is_auto_switched()
     test_machine_axis_splits_gateway_gate_and_personal_connection_identities()
     test_declared_empty_legacy_connection_uses_product_gateway()
     test_credential_fields_never_erase_the_builtin_catalog()

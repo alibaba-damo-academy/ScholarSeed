@@ -35,6 +35,12 @@ export function stagedInstallerName(
   buildNumber: string,
   platform: NodeJS.Platform = process.platform
 ): string {
+  if (
+    ![version, buildNumber].every(
+      (value) => typeof value === 'string' && /^[A-Za-z0-9.+_-]{1,128}$/.test(value)
+    )
+  )
+    throw new Error('Invalid staged release identity')
   return `${PAYLOAD_PREFIX}${version}-${buildNumber}${installerExtension(platform)}`
 }
 
@@ -61,7 +67,8 @@ export function updateArtifactKind(name: string): UpdateArtifactKind {
  */
 export function planUpdatePrune(
   entries: readonly UpdateArtifactEntry[],
-  keepPayload: string
+  keepPayload: string | null,
+  retainedPayloads: readonly string[] = []
 ): UpdatePrunePlan {
   const installInFlight = entries.some(
     (entry) => entry.directory && !entry.empty && updateArtifactKind(entry.name) === 'mount'
@@ -71,7 +78,13 @@ export function planUpdatePrune(
   const directories: string[] = []
   for (const entry of entries) {
     const kind = updateArtifactKind(entry.name)
-    if (kind === 'payload' && !entry.directory && entry.name !== keepPayload) files.push(entry.name)
+    if (
+      kind === 'payload' &&
+      !entry.directory &&
+      entry.name !== keepPayload &&
+      !retainedPayloads.includes(entry.name)
+    )
+      files.push(entry.name)
     if (kind === 'mount' && entry.directory && entry.empty) directories.push(entry.name)
   }
   return { files, directories }

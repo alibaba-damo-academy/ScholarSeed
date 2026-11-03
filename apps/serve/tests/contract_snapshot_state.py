@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import stat
+import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +21,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
+from service.platform.activity import Activities
 from service.platform.resources import (
     VERSION_MAX_BYTES,
     FileState,
@@ -31,7 +35,12 @@ from service.platform.resources import (
 )
 from service.resources.api.routes import register_resource_routes
 from service.resources.api.versions import register_version_routes
-from service.resources.domain.version import DiskObservation, ObservationState, SnapshotVersion
+from service.resources.domain.version import (
+    DiskObservation,
+    ObservationState,
+    SnapshotVersion,
+    TurnBaseline,
+)
 from service.resources.persistence import pending
 from service.resources.persistence.version import VersionStore, VersionStoreConflict
 from service.resources.service.activation import ResourceActivation
@@ -79,7 +88,7 @@ class SnapshotStateTests(unittest.TestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("snapshot state")
         self.path = "resources/example.docx"
         self.file = Path(self.project.root) / self.path
@@ -100,6 +109,13 @@ class SnapshotStateTests(unittest.TestCase):
             ResourceRetentionService(self.content, Settings()),
             PdfRecordStore(self.content),
         )
+
+    def _toggle_file_mode(self) -> None:
+        before = stat.S_IMODE(self.file.stat().st_mode)
+        # Windows chmod exposes the read-only attribute, not executable bits.
+        bit = stat.S_IWRITE if sys.platform == "win32" else stat.S_IXUSR
+        self.file.chmod(before ^ bit)
+        self.assertNotEqual(stat.S_IMODE(self.file.stat().st_mode), before)
 
     def test_editor_save_creates_a_version_without_external_drift(self) -> None:
         before = self.versions.capability(self.project.id, self.path)
@@ -122,6 +138,244 @@ class SnapshotStateTests(unittest.TestCase):
             ].snapshot_state,
             SnapshotState.SAVED,
         )
+
+    def _save_at(self, timestamp: int, content: bytes, key: str) -> None:
+        with patch("service.resources.persistence.version._now_ms", return_value=timestamp):
+            self.versions.commit_working(
+                self.project.id,
+                self.path,
+                content,
+                self.store.head(self.initial.file_id)[1],
+                key,
+                automatic_version=True,
+            )
+
+    def test_editor_saves_replace_one_version_within_a_fixed_minute(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"first save", "minute-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        self._save_at(started + 30000, b"second save", "minute-second")
+        self._save_at(started + 59999, b"latest save", "minute-latest")
+        history = self.versions.history(self.project.id, self.path)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].id, first.id)
+        self.assertEqual(history[0].sequence, first.sequence)
+        self.assertEqual(history[0].created_at_ms, started)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"latest save")
+        self.assertEqual(history[1], self.initial)
+        self.assertEqual(self.file.read_bytes(), b"latest save")
+        self.assertEqual(self.store.snapshot_state(self.initial.file_id), SnapshotState.SAVED)
+        self._save_at(started + 60000, b"next minute", "minute-next")
+        history = self.versions.history(self.project.id, self.path)
+        self.assertEqual([version.sequence for version in history], [3, 2, 1])
+        self.assertNotEqual(history[0].id, first.id)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"latest save")
+
+    def test_reopened_service_keeps_the_save_window(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"before restart", "restart-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        self.versions = ResourceVersionService(
+            self.content,
+            ResourceRetentionService(self.content, Settings()),
+            WorkbenchFormatPolicy(),
+            PdfRecordStore(self.content),
+        )
+        self._save_at(started + 1000, b"after restart", "restart-second")
+        history = self.versions.history(self.project.id, self.path)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].id, first.id)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"after restart")
+
+    def test_clock_rollback_does_not_overwrite_a_future_version(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"first save", "clock-first")
+        self._save_at(started - 1, b"clock rollback", "clock-backwards")
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
+
+    def test_unchanged_save_and_retry_do_not_extend_the_window(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        revision = self.store.head(self.initial.file_id)[1]
+        self._save_at(started, b"first save", "retry-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        with patch("service.resources.persistence.version._now_ms", return_value=started + 1000):
+            self.versions.commit_working(
+                self.project.id,
+                self.path,
+                b"first save",
+                revision,
+                "retry-first",
+                automatic_version=True,
+            )
+        self._save_at(started + 59999, b"first save", "retry-unchanged")
+        self.assertEqual(self.versions.history(self.project.id, self.path)[0], first)
+        self._save_at(started + 60000, b"next save", "retry-next")
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
+
+    def test_interrupted_save_recovers_into_the_existing_minute_version(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"first save", "recovery-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        with patch.object(
+            VersionStore, "commit_working_mutation", side_effect=RuntimeError("interrupted")
+        ):
+            with self.assertRaises(RuntimeError):
+                self._save_at(started + 1000, b"recovered save", "recovery-second")
+        with patch("service.resources.persistence.version._now_ms", return_value=started + 2000):
+            self.versions.recover_working_mutations(self.project.id)
+        history = self.versions.history(self.project.id, self.path)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].id, first.id)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"recovered save")
+        self.assertEqual(self.store.working_mutation("recovery-second").state, "ledger_committed")
+
+    def test_named_version_is_not_overwritten(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"named save", "alias-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        self.store.update_alias(first.id, "checkpoint", 0, "test", "alias", "alias-digest")
+        self._save_at(started + 1000, b"later save", "alias-second")
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"named save")
+
+    def test_review_baseline_is_not_overwritten(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"saved baseline", "review-first")
+        self.initial = self.versions.history(self.project.id, self.path)[0]
+        review = self._review(saved_base=True)
+        self._save_at(started + 1000, b"review edit", "review-second")
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
+        self.assertEqual(self.store.pending(self.initial.file_id).review.base, review.base)
+        self.assertEqual(self.versions.read(self.project.id, self.initial.id)[0], b"saved baseline")
+
+    def test_explicit_snapshot_is_not_coalesced(self) -> None:
+        self.file.write_bytes(b"explicit snapshot")
+        first = self.versions.seal(self.project.id, self.path, VersionOrigin.USER).version
+        self._save_at(first.created_at_ms + 1000, b"editor save", "explicit-next")
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"explicit snapshot")
+
+    def test_additive_upgrade_preserves_legacy_versions(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"legacy save", "legacy-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        with transaction(self.content.resolve(self.project.id, PROJECT_DB_RELATIVE)) as connection:
+            connection.execute("ALTER TABLE resources_versions DROP COLUMN editor_save")
+        self.store.ensure()
+        self.store.ensure()
+        self.assertEqual(self.versions.history(self.project.id, self.path)[0], first)
+        with transaction(self.content.resolve(self.project.id, PROJECT_DB_RELATIVE)) as connection:
+            rows = connection.execute("SELECT editor_save FROM resources_versions").fetchall()
+            self.assertEqual([tuple(row) for row in rows], [(0,), (0,)])
+        self._save_at(started + 1000, b"new save", "legacy-second")
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"legacy save")
+
+    def test_unknown_columns_reject_additive_upgrade_without_writing(self) -> None:
+        database = Path(self.content.resolve(self.project.id, PROJECT_DB_RELATIVE))
+        with closing(sqlite3.connect(database)) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("ALTER TABLE resources_versions DROP COLUMN editor_save")
+            writer.execute("ALTER TABLE resources_versions ADD COLUMN user_asset TEXT")
+            writer.execute("UPDATE resources_versions SET user_asset = 'preserved'")
+            writer.commit()
+            wal = Path(str(database) + "-wal")
+            before = database.read_bytes(), wal.read_bytes()
+            logical_before = tuple(writer.iterdump())
+            for operation in (
+                lambda: VersionStore.inspect_schema(database),
+                self.store.ensure,
+                self.store.ensure,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "unsupported resource version"):
+                    operation()
+                self.assertEqual((database.read_bytes(), wal.read_bytes()), before)
+                self.assertEqual(tuple(writer.iterdump()), logical_before)
+
+    def test_active_turn_baseline_freezes_the_editor_version(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"turn baseline", "turn-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        baseline = TurnBaseline(
+            file_id=first.file_id,
+            path=self.path,
+            revision=first.object_id,
+            object_id=first.object_id,
+            mode_bits=first.mode_bits,
+            version_id=first.id,
+        )
+        descriptor = self.versions._cas(self.project.id).verify(first.object_id)
+        self.store.begin_turn(
+            "baseline-session", "baseline-turn", ((baseline, descriptor, None),), (self.path,)
+        )
+        self._save_at(started + 1000, b"user edit during turn", "turn-second")
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 3)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], b"turn baseline")
+
+    def test_different_files_keep_independent_save_windows(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"first file save", "files-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        other_path = "resources/other.docx"
+        (Path(self.project.root) / other_path).write_bytes(b"other initial")
+        other_initial = self.versions.ensure_initial(self.project.id, other_path).version
+        for offset, content in ((1000, b"other save"), (2000, b"other latest")):
+            with patch(
+                "service.resources.persistence.version._now_ms", return_value=started + offset
+            ):
+                self.versions.commit_working(
+                    self.project.id,
+                    other_path,
+                    content,
+                    self.store.head(other_initial.file_id)[1],
+                    content.decode(),
+                    automatic_version=True,
+                )
+        self.assertEqual(self.versions.history(self.project.id, self.path)[0], first)
+        other_history = self.versions.history(self.project.id, other_path)
+        self.assertEqual(len(other_history), 2)
+        self.assertEqual(
+            self.versions.read(self.project.id, other_history[0].id)[0], b"other latest"
+        )
+
+    def test_concurrent_saves_keep_revision_conflict_protection(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"first save", "concurrent-first")
+        first = self.versions.history(self.project.id, self.path)[0]
+        expected_revision = self.store.head(self.initial.file_id)[1]
+
+        def save(content: bytes) -> bytes | str:
+            try:
+                self.versions.commit_working(
+                    self.project.id,
+                    self.path,
+                    content,
+                    expected_revision,
+                    content.decode(),
+                    automatic_version=True,
+                )
+            except ResourceVersionError as exc:
+                return exc.code
+            return content
+
+        with patch("service.resources.persistence.version._now_ms", return_value=started + 1000):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(save, (b"concurrent-a", b"concurrent-b")))
+        self.assertEqual(results.count("revision_conflict"), 1)
+        winner = next(result for result in results if isinstance(result, bytes))
+        self.assertEqual(self.file.read_bytes(), winner)
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 2)
+        self.assertEqual(self.versions.read(self.project.id, first.id)[0], winner)
+
+    def test_coalesced_save_logs_update_instead_of_creation(self) -> None:
+        started = self.initial.created_at_ms + 1000
+        self._save_at(started, b"first save", "event-first")
+        with patch("service.resources.service.history.emit") as emit_event:
+            self._save_at(started + 1000, b"updated save", "event-second")
+        events = [call.args[1].value for call in emit_event.call_args_list]
+        self.assertIn("resources.versions.version.updated", events)
+        self.assertNotIn("resources.versions.version.created", events)
 
     def test_editor_save_keeps_external_pending_for_explicit_confirmation(self) -> None:
         self.file.write_bytes(b"settled external contents")
@@ -155,7 +409,7 @@ class SnapshotStateTests(unittest.TestCase):
 
     def test_capability_detects_metadata_only_disk_changes(self) -> None:
         before = self.file.stat().st_mode & 0o777
-        self.file.chmod(before ^ 0o100)
+        self._toggle_file_mode()
         current = self.versions.capability(self.project.id, self.path)
         self.assertTrue(current.drifted)
         self.assertEqual(current.disk_revision, current.working_revision)
@@ -232,7 +486,7 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
 
     def test_mode_change_seals_a_distinct_snapshot(self) -> None:
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         sealed = self.versions.seal(self.project.id, self.path, VersionOrigin.USER)
         self.assertFalse(sealed.unchanged)
         self.assertEqual(sealed.version.sequence, 2)
@@ -240,7 +494,7 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertNotEqual(sealed.version.mode_bits, self.initial.mode_bits)
 
     def test_external_mode_change_is_pending_without_sealing(self) -> None:
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         self.versions.observe(self.project.id, self.path)
         current = self.versions.capability(self.project.id, self.path)
         self.assertEqual(current.pending.origin, PendingOrigin.EXTERNAL)
@@ -414,7 +668,7 @@ class SnapshotStateTests(unittest.TestCase):
         )
 
     def test_editor_save_does_not_accept_an_agent_review(self) -> None:
-        self._review(saved_base=True)
+        review = self._review(saved_base=True)
         current = self.versions.capability(self.project.id, self.path)
         self.versions.commit_working(
             self.project.id,
@@ -427,7 +681,100 @@ class SnapshotStateTests(unittest.TestCase):
         pending_snapshot = self.store.pending(self.initial.file_id)
         self.assertTrue(pending_snapshot.needs_review)
         self.assertTrue(pending_snapshot.review.edited_by_user)
+        self.assertEqual(pending_snapshot.review, replace(review, edited_by_user=True))
+        self.assertGreater(pending_snapshot.revision, current.pending.revision)
+        history = self.versions.history(self.project.id, self.path)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].origin, VersionOrigin.USER)
+        self.assertEqual(
+            self.versions.read(self.project.id, history[0].id)[0],
+            b"user revision of agent candidate",
+        )
+        self.assertEqual(self.store.snapshot_state(self.initial.file_id), SnapshotState.SAVED)
+        self.assertEqual(
+            self.versions.capability_states(self.project.id, (self.path,))[
+                self.path
+            ].snapshot_state,
+            SnapshotState.SAVED,
+        )
+        self.versions.commit_working(
+            self.project.id,
+            self.path,
+            b"user revision of agent candidate",
+            current.working_revision,
+            "save-reviewed-candidate",
+            automatic_version=True,
+        )
+        self.assertEqual(self.versions.history(self.project.id, self.path), history)
+        reopened = VersionStore(
+            self.content.resolve(self.project.id, PROJECT_DB_RELATIVE), self.project.root
+        )
+        self.assertEqual(reopened.pending(self.initial.file_id), pending_snapshot)
+        self.assertEqual(reopened.snapshot_state(self.initial.file_id), SnapshotState.SAVED)
+        saved = self.versions.capability(self.project.id, self.path)
+        self.versions.commit_working(
+            self.project.id,
+            self.path,
+            b"user revision of agent candidate",
+            saved.working_revision,
+            "save-identical-reviewed-candidate",
+            automatic_version=True,
+        )
+        self.assertEqual(self.versions.history(self.project.id, self.path), history)
+        self._decide(ReviewOutcome.REVISED, "revise-saved-review")
+        self.assertIsNone(self.store.pending(self.initial.file_id))
+        self.assertEqual(self.file.read_bytes(), b"user revision of agent candidate")
+        self.assertIn(history[0], self.versions.history(self.project.id, self.path))
+
+    def test_undo_and_accept_after_editor_save_preserve_user_version(self) -> None:
+        review = self._review(saved_base=True)
+        self.versions.commit_working(
+            self.project.id,
+            self.path,
+            b"saved user revision",
+            self.store.head(self.initial.file_id)[1],
+            "save-before-undo",
+            automatic_version=True,
+        )
+        saved = self.versions.history(self.project.id, self.path)[0]
+        self.assertEqual(saved.origin, VersionOrigin.USER)
+        self._reconcile("restore_candidate")
+        self.assertEqual(self.file.read_bytes(), b"agent candidate")
+        self.assertEqual(self.store.pending(self.initial.file_id).review.base, review.base)
+        self.assertEqual(
+            self.store.pending(self.initial.file_id).review.candidate, review.candidate
+        )
+        self.assertEqual(self.store.snapshot_state(self.initial.file_id), SnapshotState.PENDING)
+        self._decide(ReviewOutcome.ACCEPTED, "accept-after-undo")
+        self.assertIsNone(self.store.pending(self.initial.file_id))
+        self.assertIn(saved, self.versions.history(self.project.id, self.path))
+        self.assertEqual(self.versions.read(self.project.id, saved.id)[0], b"saved user revision")
+
+    def test_interrupted_editor_save_recovers_version_without_completing_review(self) -> None:
+        review = self._review(saved_base=True)
+        revision = self.store.head(self.initial.file_id)[1]
+        with patch.object(
+            VersionStore, "commit_working_mutation", side_effect=RuntimeError("after disk write")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "after disk write"):
+                self.versions.commit_working(
+                    self.project.id,
+                    self.path,
+                    b"recoverable saved revision",
+                    revision,
+                    "interrupted-review-save",
+                    automatic_version=True,
+                )
+        self.assertEqual(self.file.read_bytes(), b"recoverable saved revision")
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
+        self.assertEqual(len(self.versions.recover_working_mutations(self.project.id)), 1)
+        self.assertEqual(self.versions.recover_working_mutations(self.project.id), ())
+        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 2)
+        self.assertEqual(
+            self.store.pending(self.initial.file_id).review,
+            replace(review, edited_by_user=True),
+        )
+        self.assertEqual(self.store.snapshot_state(self.initial.file_id), SnapshotState.SAVED)
 
     def test_keep_external_content_preserves_review_without_writing_or_sealing(self) -> None:
         review = self._review()
@@ -447,7 +794,7 @@ class SnapshotStateTests(unittest.TestCase):
     def test_restore_candidate_keeps_review_and_exact_metadata(self) -> None:
         review = self._review()
         self.file.write_bytes(b"external content")
-        self.file.chmod(review.candidate.mode_bits ^ 0o100)
+        self._toggle_file_mode()
         self._reconcile("restore_candidate")
         current = self.store.pending(self.initial.file_id)
         self.assertEqual(current.review.id, review.id)
@@ -456,13 +803,19 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertEqual(self.store.working_snapshot(self.initial.file_id), review.candidate)
         self.assertEqual(self.file.read_bytes(), b"agent candidate")
         self.assertEqual(self.file.stat().st_mode & 0o777, review.candidate.mode_bits)
-        self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
+        history = self.versions.history(self.project.id, self.path)
+        self.assertEqual(len(history), 2)
+        self.assertTrue(history[0].review_backup)
+        self.assertEqual(history[0].source_review_id, review.id)
+        self.assertEqual(
+            b"".join(self.versions.content(self.project.id, history[0].id)[0]), b"external content"
+        )
 
     def test_review_reconciliation_rejects_stale_metadata_preflight(self) -> None:
         review = self._review()
         self.file.write_bytes(b"external content")
         preview = self.recovery.preview_review_conflict(self.project.id, self.initial.file_id)
-        self.file.chmod(review.candidate.mode_bits ^ 0o100)
+        self._toggle_file_mode()
         with (
             self.assertRaisesRegex(ResourceRecoveryError, "preflight_stale"),
             self.assertLogs("scholarseed.resources.recovery", level="INFO") as logs,
@@ -529,7 +882,9 @@ class SnapshotStateTests(unittest.TestCase):
         self.file.unlink()
         self._reconcile("restore_candidate")
         self.assertEqual(self.file.read_bytes(), b"agent candidate")
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        history = self.store.history_for_file(self.initial.file_id)
+        self.assertEqual(len(history), 2)
+        self.assertTrue(history[0].review_backup)
 
     def test_reconciliation_crash_after_file_apply_recovers_open_review(self) -> None:
         review = self._review()
@@ -548,7 +903,9 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertEqual(len(reopened.recover_pending(self.project.id)), 1)
         self.assertEqual(self.store.pending(self.initial.file_id).review.id, review.id)
         self.assertFalse(self.store.pending(self.initial.file_id).review.edited_by_user)
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        history = self.store.history_for_file(self.initial.file_id)
+        self.assertEqual(len(history), 2)
+        self.assertTrue(history[0].review_backup)
 
     def test_reconciliation_crash_cannot_overwrite_a_newer_external_file(self) -> None:
         self._review()
@@ -614,8 +971,9 @@ class SnapshotStateTests(unittest.TestCase):
         current = self.store.pending(self.initial.file_id)
         self.assertEqual(
             self.versions.capability(self.project.id, self.path).snapshot_state,
-            SnapshotState.PENDING,
+            SnapshotState.SAVED,
         )
+        self.assertTrue(current.needs_review)
         with self.assertRaises(ResourceVersionError):
             self.versions.seal_review(
                 self.project.id,
@@ -647,7 +1005,9 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertEqual(self.file.read_bytes(), b"agent candidate")
         self.assertEqual(self.store.working_snapshot(self.initial.file_id), review.candidate)
         self.assertEqual(self.store.identity(self.path)[0], self.initial.file_id)
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        history = self.store.history_for_file(self.initial.file_id)
+        self.assertEqual(len(history), 2)
+        self.assertTrue(history[0].review_backup)
 
     def test_restore_candidate_does_not_overwrite_occupied_original_path(self) -> None:
         self._review()
@@ -1009,7 +1369,7 @@ class SnapshotStateTests(unittest.TestCase):
             self._discard("discard-external")
         self.assertEqual(self.file.read_bytes(), b"external newer file")
         self.file.write_bytes(b"ordinary draft")
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         with self.assertRaises(ResourceRecoveryError):
             self._discard("discard-external-mode")
         self.assertIsNotNone(self.store.pending(self.initial.file_id))
@@ -1055,15 +1415,19 @@ class SnapshotStateTests(unittest.TestCase):
             key,
         )
 
-    def test_reject_restores_unsaved_user_baseline_without_new_version(self) -> None:
+    def test_reject_restores_unsaved_user_baseline_as_version(self) -> None:
         self._review()
         self._reject("reject-original")
         self.assertEqual(self.file.read_bytes(), b"unsaved user baseline")
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        history = self.store.history_for_file(self.initial.file_id)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].origin, VersionOrigin.RESTORE)
+        self.assertEqual(history[0].object_id, self.store.head(self.initial.file_id)[1])
+        self.assertIsNotNone(history[0].source_review_id)
         current = self.store.pending(self.initial.file_id)
         self.assertEqual(current.origin, PendingOrigin.USER)
         self.assertFalse(current.needs_review)
-        self.assertEqual(self.store.snapshot_state(self.initial.file_id), SnapshotState.PENDING)
+        self.assertEqual(self.store.snapshot_state(self.initial.file_id), SnapshotState.SAVED)
 
     def test_reject_never_overwrites_later_external_edit(self) -> None:
         self._review()
@@ -1091,7 +1455,7 @@ class SnapshotStateTests(unittest.TestCase):
         recovered = restarted.recover_pending(self.project.id)
         self.assertEqual(len(recovered), 1)
         self.assertFalse(self.store.pending(self.initial.file_id).needs_review)
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 2)
         self.assertEqual(restarted.recover_pending(self.project.id), ())
 
     def test_reject_receipt_replay_does_not_overwrite_a_new_user_draft(self) -> None:
@@ -1107,11 +1471,11 @@ class SnapshotStateTests(unittest.TestCase):
             self.project.id, self.initial.file_id, decision, revision, "reject-replay"
         )
         self.assertEqual(self.file.read_bytes(), b"new draft after reject")
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 2)
 
     def test_reject_detects_external_permission_change(self) -> None:
         self._review()
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         with self.assertRaises(ResourceRecoveryError):
             self._reject("reject-mode-conflict")
         self.assertEqual(self.file.read_bytes(), b"agent candidate")
@@ -1198,11 +1562,11 @@ class SnapshotStateTests(unittest.TestCase):
     def test_ordinary_seal_rejects_unobserved_metadata_and_null_version_mismatch(self) -> None:
         self._write(b"pending", "pending")
         payload = self._seal_payload()
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         response = self._seal_http(payload)
         self.assertEqual(response.status_code, 412, response.text)
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
-        self.file.chmod(self.file.stat().st_mode ^ 0o100)
+        self._toggle_file_mode()
         response = self._seal_http({**payload, "expected_version_id": None}, "null-version")
         self.assertEqual(response.status_code, 412, response.text)
 
@@ -1544,7 +1908,7 @@ class SnapshotStateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.content, b"unsaved user baseline")
 
-    def test_review_http_reject_restores_draft_without_appending_version(self) -> None:
+    def test_review_http_reject_restores_draft_as_version(self) -> None:
         review = self._review()
         client = self._client()
         current = self.store.pending(self.initial.file_id)
@@ -1562,7 +1926,7 @@ class SnapshotStateTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.file.read_bytes(), b"unsaved user baseline")
-        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 1)
+        self.assertEqual(len(self.store.history_for_file(self.initial.file_id)), 2)
         restored = self.store.pending(self.initial.file_id)
         self.assertEqual(restored.origin, PendingOrigin.USER)
         self.assertIsNone(restored.review)
@@ -1628,7 +1992,11 @@ class SnapshotStateTests(unittest.TestCase):
         app = FastAPI()
         app.state.content = self.content
         supervisor = ResourceVersionSupervisor(
-            self.content, self.versions, WorkbenchFormatPolicy(), Settings()
+            self.content,
+            self.versions,
+            WorkbenchFormatPolicy(),
+            Settings(),
+            activities=Activities(),
         )
         retention = ResourceRetentionService(self.content, Settings())
         supervisor.bind_preparation(
@@ -1636,7 +2004,9 @@ class SnapshotStateTests(unittest.TestCase):
                 self.content,
                 self.recovery,
                 self.versions,
-                ResourceDeliveryService(self.content, self.versions, supervisor),
+                ResourceDeliveryService(
+                    self.content, self.versions, supervisor, activities=supervisor._activities
+                ),
                 retention,
                 ResourceReviewMigration(self.content, self.versions),
             )
@@ -1676,7 +2046,7 @@ class SnapshotStateTests(unittest.TestCase):
 
     def test_bulk_review_drift_includes_external_permission_changes(self) -> None:
         self._review()
-        self.file.chmod(stat.S_IMODE(self.file.stat().st_mode) ^ stat.S_IXUSR)
+        self._toggle_file_mode()
         self.versions.observe(self.project.id, self.path)
         single = self.versions.capability(self.project.id, self.path)
         bulk = self.versions.capability_states(self.project.id, (self.path,))[self.path]

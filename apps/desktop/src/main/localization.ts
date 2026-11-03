@@ -1,18 +1,20 @@
 import type { i18n } from 'i18next'
 
-import {
-  applyLocalizationLanguage,
-  createLocalization
-} from '../localization/engine'
+import { applyLocalizationLanguage, createLocalization } from '../localization/engine'
 import zh from '../localization/locales/zh/foundation.json'
 import en from '../localization/locales/en/foundation.json'
 import nativeZh from '../localization/locales/zh/native.json'
 import nativeEn from '../localization/locales/en/native.json'
+import accountZh from '../localization/locales/zh/account.json'
+import accountEn from '../localization/locales/en/account.json'
 import { DEFAULT_LANGUAGE, FOUNDATION_NAMESPACE } from '../localization/catalog'
 import type { PreferenceLanguage } from '../preferences'
 
 let instance: i18n | undefined
-const resources = { zh: { [FOUNDATION_NAMESPACE]: zh, native: nativeZh }, en: { [FOUNDATION_NAMESPACE]: en, native: nativeEn } }
+const resources = {
+  zh: { [FOUNDATION_NAMESPACE]: zh, native: nativeZh, account: accountZh },
+  en: { [FOUNDATION_NAMESPACE]: en, native: nativeEn, account: accountEn },
+}
 
 export function mainLocalization(): i18n {
   if (!instance) throw new Error('Main localization has not initialized')
@@ -29,4 +31,26 @@ export function startupFailureTitle(): string {
   return instance?.isInitialized
     ? instance.getFixedT(null, FOUNDATION_NAMESPACE)('startup.applicationFailed')
     : resources[DEFAULT_LANGUAGE][FOUNDATION_NAMESPACE].startup.applicationFailed
+}
+
+/** Available before storage selection, without loading preferences or creating product directories. */
+export function storageFailureMessage(path: string): string {
+  const message = instance?.isInitialized
+    ? instance.getFixedT(null, FOUNDATION_NAMESPACE)('startup.storageUnavailable')
+    : resources[DEFAULT_LANGUAGE][FOUNDATION_NAMESPACE].startup.storageUnavailable
+  return `${message}\n\n${path}`
+}
+
+/** Bundled text only: admission failure must not read untrusted storage preferences. */
+export function startupAdmissionText(): typeof nativeZh.admissionRecovery {
+  if (!instance?.isInitialized) return resources[DEFAULT_LANGUAGE].native.admissionRecovery
+  const t = instance.getFixedT(null, 'native')
+  return {
+    title: t('admissionRecovery.title'),
+    message: t('admissionRecovery.message'),
+    detail: t('admissionRecovery.detail'),
+    retry: t('admissionRecovery.retry'),
+    copy: t('admissionRecovery.copy'),
+    quit: t('admissionRecovery.quit'),
+  }
 }

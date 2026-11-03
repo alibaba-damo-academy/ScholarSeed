@@ -1,4 +1,4 @@
 interface:
-  display_name: "Tiered Academic Search"
+  display_name: "学术文献检索"
   short_description: "Fast-to-deep academic paper discovery"
-  default_prompt: "Use $agentic-search and $web-search to perform a thorough Quality-mode academic paper search, routing every public-web lookup through web-search."
+  default_prompt: "Use $agentic-search and $web-search to perform a thorough Quality-mode academic paper search. Route every public-web lookup through web-search's official-api then codex-native profiles only; never use its automatic or browser profile."

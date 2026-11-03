@@ -1,13 +1,17 @@
 import { Notification, shell } from 'electron'
 
-import {
+import type {
   SystemPermissionId,
   SystemPermissionRecord,
-  SystemPermissionsSnapshot,
+  SystemPermissionsSnapshot
+} from '../permissions'
+import {
   unavailablePermissionRecords
 } from '../permissions'
 
 const MACOS_PLATFORM = 'darwin'
+const WINDOWS_PLATFORM = 'win32'
+const WINDOWS_NOTIFICATIONS_SETTINGS = 'ms-settings:notifications'
 
 const SETTINGS_URLS: Record<SystemPermissionId, string> = {
   'full-disk': 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
@@ -25,7 +29,7 @@ export function readSystemPermissions(): SystemPermissionsSnapshot {
   const planned = Object.fromEntries(
     unavailablePermissionRecords().map((permission) => [permission.id, permission])
   ) as Record<SystemPermissionId, SystemPermissionRecord>
-  const notificationsAvailable = process.platform === MACOS_PLATFORM && Notification.isSupported()
+  const notificationsAvailable = (process.platform === MACOS_PLATFORM || process.platform === WINDOWS_PLATFORM) && Notification.isSupported()
   return {
     platform: process.platform,
     permissions: [
@@ -53,6 +57,10 @@ export function readSystemPermissions(): SystemPermissionsSnapshot {
 }
 
 export async function openSystemPermission(id: SystemPermissionId): Promise<boolean> {
+  if (process.platform === WINDOWS_PLATFORM && id === 'notifications') {
+    await shell.openExternal(WINDOWS_NOTIFICATIONS_SETTINGS)
+    return true
+  }
   const url = SETTINGS_URLS[id]
   if (process.platform !== MACOS_PLATFORM || !url || !ACTIONABLE_SETTINGS_IDS.has(id)) return false
   await shell.openExternal(url)

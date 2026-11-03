@@ -6,6 +6,7 @@ import json
 import re
 
 from io_utils import atomic_write_json, read_json
+from filesystem import filesystem_path, path_exists
 import selection_evidence as evidence
 
 
@@ -24,7 +25,7 @@ def _digest(value):
 
 def bind(work, request, visible, *, artifact):
     papers = evidence._pool(work)
-    artifact(work, "reviews").mkdir(exist_ok=True)
+    filesystem_path(artifact(work, "reviews")).mkdir(exist_ok=True)
     for record in visible:
         key = str(record["id"])
         snapshot = {"id": key, "scope_key": evidence.scope_key(request),
@@ -42,7 +43,7 @@ def verify(work, request, paper, choice, path, *, artifact):
     if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{64}", ref):
         raise ReviewError("review_reference_invalid", field, key, "copy this paper's review_ref from a current evidence record")
     snapshot_path = artifact(work, f"reviews/{ref}.json")
-    if not snapshot_path.exists():
+    if not path_exists(snapshot_path):
         raise ReviewError("review_reference_unseen", field, key, "reference was not issued by an evidence view in this round")
     snapshot = read_json(snapshot_path)
     if _digest(snapshot) != ref:

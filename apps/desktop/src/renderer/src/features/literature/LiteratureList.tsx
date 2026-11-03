@@ -1,13 +1,26 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import {
+  LibraryAction,
+  LIBRARY_HEADER_ACTION_CLASS,
+  LibrarySelectionChange,
+  LibraryToolbar,
+  LibraryToolbarTarget,
+} from '../../components/business/Library'
+import { Groups } from './Groups'
+import { RowTags, TagFilter } from './Tags'
+import { listLiteratureCollections, type LibraryCollection } from './api'
 
 import {
   isAttachmentAvailable,
+  type LiteratureAttachmentSummary,
   type LiteratureFacet,
   type LiteratureProject,
   type LiteratureQuery,
   type LiteratureSummary,
-  type LiteratureTask
+  type LiteratureTask,
 } from '../../contracts/literature'
 import {
   Alert,
@@ -48,22 +61,33 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  semanticTagColorFor,
   Sheet,
   Spinner,
   Tag,
   Tooltip,
-  useToast
+  useToast,
 } from '../../components/ui'
 import emptyImage from '../../assets/empty_img.webp'
-import { hasDraggedFiles } from '../../drag'
+import { hasDraggedFiles, writeLiteratureDrag } from '../../drag'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
-import { ArrowDownToLine, ArrowLeft, FileDown, Link, MonitorDown, Trash } from 'lucide-react'
-import { fileIconForName, IconFont } from '../../components/primitive'
+import {
+  ArrowLeft,
+  ArrowUpFromLine,
+  ChevronDown,
+  Link,
+  MonitorDown,
+  Plus,
+  Trash,
+} from 'lucide-react'
+import { fileIconForName, FileFormatIcon, IconFont } from '../../components/primitive'
+import { writeClipboard } from '../../components/primitive/clipboard'
 import { IMPORT_SOURCES } from './imports'
+import { ImportSourceItem } from './ImportSourceItem'
+import { IdentifierImport } from './IdentifierImport'
 import {
   LiteratureApiError,
+  MAX_EXPORT_RECORDS,
   bulkLiteratures,
   createImportTask,
   deleteLiteratures,
@@ -74,30 +98,29 @@ import {
   importBibliography,
   importPdf,
   listAllLiteratures,
+  literatureQueryKey,
   previewZotero,
   ZOTERO_LIBRARY_ROOT_KEY,
   type PdfImportPhase,
   type ZoteroCollectionNode,
-  type ZoteroPreview
+  type ZoteroPreview,
 } from './api'
-import {
-  catalogue,
-  importDestination,
-  importDestinationLabel,
-  useCatalogue
-} from './catalog'
+import { catalogue, importDestination, importDestinationLabel, useCatalogue } from './catalog'
 import {
   literatureErrorMessage,
   literatureTaskErrorMessage,
   literatureTaskStatusMessage,
-  type LiteratureErrorMessage
+  type LiteratureErrorMessage,
 } from './error'
 import { saveBibtex } from './export'
-import { LiteratureDetail } from './LiteratureDetail'
+import { LiteratureDetail, type LiteratureDetailIntent } from './LiteratureDetail'
+import { LiteratureRowMenu, type RowMenuActions } from './RowMenu'
+import { MetadataBatch } from './MetadataBatch'
 import {
   mergeLiteratureSummaries,
+  literatureCollections,
   replaceLiteratureSummary,
-  timestampLabel
+  timestampLabel,
 } from './projection'
 import { createFormatters } from '../../../../localization/format'
 import {
@@ -105,24 +128,43 @@ import {
   updateZoteroSelection,
   zoteroImportBlocked,
   zoteroNodeState,
-  zoteroSelectionDirectives
+  zoteroSelectionDirectives,
 } from './zotero'
 
-import './literature.css'
-
 const SEARCH_DEBOUNCE_MS = 260
+const LEADING_COLUMN_WIDTH = 72
 const COLUMN_STORAGE_KEY = 'scholarseed.literature.columns.v1'
+const PROJECT_COLUMN_STORAGE_KEY = 'scholarseed.literature.project-columns.v1'
 const SORT_STORAGE_KEY = 'scholarseed.literature.sort.v1'
 // 曲别针列的排序键，与后端 ATTACHMENT_SORT_KEY 同名：有附件=0 排在无附件=1 之前，
 // 次级键是列表原始序。它不在 COLUMN_META 里 —— 这一列固定常驻在标题前，
 // 既是附件有无的标识，也是展开附件行的唯一入口，不能被隐藏或拖走。
 const ATTACHMENT_SORT: NonNullable<LiteratureQuery['sort']> = 'attachment'
 const EMPTY_CELL = '—'
-const CHIP_CELL_CLASS = 'flex items-center gap-1'
+const CHIP_CELL_CLASS = 'flex items-center gap-[var(--vds-space-1)]'
 // 芯片不参与压缩: 否则它们会先自己缩小并内部省略, 单元格就不再溢出, tooltip 也无法判定展示不全。
 const CHIP_CLASS = 'shrink-0 max-w-none'
 // 折叠计数芯片: 同样不参与压缩, 数字宽度稳定避免列表滚动时跳动。
 const MORE_CHIP_CLASS = 'shrink-0 max-w-none tabular-nums'
+// 行元素类名: 既是样式钩子, 也是「这次按下是否落在行上」的判定依据, 只此一处定义。
+const ROW_SELECTOR_CLASS = 'lit-row'
+const ROW_CLASS =
+  'lit-row relative grid min-w-[var(--literature-grid-width)] library-narrow:min-w-[max(var(--vds-library-table-narrow-min-width),var(--literature-grid-width))] items-center min-h-[var(--vds-library-row-height)] text-[length:var(--vds-font-body-lv2)] border-b border-[var(--vds-border-default)] cursor-default bg-[var(--vds-bg-gray-default)] hover:bg-[var(--vds-bg-gray-hover)] [&.is-focused]:bg-[var(--vds-bg-gray-hover)] [&.is-selected]:bg-[var(--vds-brand-light-bg-default)] [&>span]:px-[var(--vds-library-table-cell-padding-inline)] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap'
+const ATTACHMENT_ROW_CLASS =
+  'lit-attachment-row flex min-w-[var(--literature-grid-width)] library-narrow:min-w-[max(var(--vds-library-table-narrow-min-width),var(--literature-grid-width))] min-h-[var(--vds-library-attachment-row-min-height)] cursor-pointer items-center gap-[var(--vds-space-2)] bg-[var(--vds-bg-gray-default)] py-0 pr-[var(--vds-library-attachment-row-padding-inline-end)] pl-[var(--vds-library-attachment-row-padding-inline-start)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-primary)] font-[var(--vds-fw-regular)] [&+.lit-row]:border-t [&+.lit-row]:border-[var(--vds-border-default)] [&_span]:overflow-hidden [&_span]:text-ellipsis [&_span]:whitespace-nowrap'
+const STICKY_CELLS_CLASS = String.raw`lit-sticky-cells sticky left-0 z-[var(--vds-z-local-decoration)] grid h-full grid-cols-[var(--vds-library-sticky-cells-columns)] items-center gap-[var(--vds-library-sticky-cells-gap)] bg-inherit px-[var(--vds-library-sticky-cells-padding-inline)] [&_.vds-checkbox\_\_label]:hidden [&_.vds-checkbox]:min-h-[var(--vds-control-height-xs)]`
+const STICKY_HEADER_CELLS_CLASS = `${STICKY_CELLS_CLASS} z-[var(--vds-z-local-top)]`
+const TABLE_EMPTY_STATE_CLASS =
+  '[&>.vds-empty-state]:[--vds-empty-state-gap:var(--vds-space-1)] [&>.vds-empty-state]:flex [&>.vds-empty-state]:flex-col [&>.vds-empty-state]:items-center [&>.vds-empty-state]:justify-center [&>.vds-empty-state]:min-h-[var(--vds-library-list-empty-min-height)] [&>.vds-empty-state]:text-[var(--vds-text-primary)]'
+const COLUMN_RESIZER_CLASS =
+  'absolute right-[var(--vds-library-column-resizer-right)] top-[var(--vds-library-column-resizer-top)] z-[var(--vds-z-local-control)] h-[var(--vds-library-column-resizer-height)] w-[var(--vds-library-column-resizer-width)] cursor-col-resize hover:border-r-[var(--vds-border-width-2)] hover:border-r-[var(--vds-brand-bg-default)]'
+// 虚拟化只渲染视口内的条目, 行高是首屏估算值: 真实高度由 measureElement 逐条回填,
+// 估算值与 literature.css 的 .lit-row / .lit-attachment-row min-height 同源, 改样式时同步。
+const LIST_ROW_HEIGHT = 45
+const LIST_ATTACHMENT_ROW_HEIGHT = 34
+const LIST_OVERSCAN = 8
+// 目标行滚进窗口需要一次提交, 落焦因此按帧重试; 次数只是兜底, 不是等待策略。
+const ROW_FOCUS_ATTEMPTS = 3
 type ColumnKey =
   | 'title'
   | 'subtitle'
@@ -155,6 +197,7 @@ const COLUMN_META: Record<
     labelKey: `columns.${ColumnKey}`
     sort?: LiteratureQuery['sort']
     minimum: number
+    maximum?: number
   }
 > = {
   title: { labelKey: 'columns.title', sort: 'title', minimum: 180 },
@@ -163,18 +206,18 @@ const COLUMN_META: Record<
   publication: {
     labelKey: 'columns.publication',
     sort: 'publication',
-    minimum: 130
+    minimum: 130,
   },
   year: { labelKey: 'columns.year', sort: 'year', minimum: 64 },
   published_date: {
     labelKey: 'columns.published_date',
     sort: 'published_date',
-    minimum: 110
+    minimum: 110,
   },
   citation_key: {
     labelKey: 'columns.citation_key',
     sort: 'citation_key',
-    minimum: 110
+    minimum: 110,
   },
   item_type: { labelKey: 'columns.item_type', sort: 'item_type', minimum: 100 },
   bib_type: { labelKey: 'columns.bib_type', sort: 'bib_type', minimum: 100 },
@@ -191,36 +234,52 @@ const COLUMN_META: Record<
   created_at: {
     labelKey: 'columns.created_at',
     sort: 'created_at',
-    minimum: 160
+    minimum: 160,
   },
   updated_at: {
     labelKey: 'columns.updated_at',
     sort: 'updated_at',
-    minimum: 160
+    minimum: 160,
   },
   collections: { labelKey: 'columns.collections', minimum: 130 },
-  tags: { labelKey: 'columns.tags', minimum: 120 },
-  projects: { labelKey: 'columns.projects', minimum: 120 }
+  tags: { labelKey: 'columns.tags', minimum: 110 },
+  projects: { labelKey: 'columns.projects', minimum: 120 },
 }
-const DEFAULT_VISIBLE = new Set<ColumnKey>([
-  'title',
-  'creator',
-  'year',
-  'created_at',
-  'projects'
-])
-const DEFAULT_COLUMNS: ColumnSetting[] = (
-  Object.keys(COLUMN_META) as ColumnKey[]
-).map((key) => ({
+const DEFAULT_VISIBLE = new Set<ColumnKey>(['title', 'creator', 'year', 'created_at', 'projects'])
+const DEFAULT_COLUMNS: ColumnSetting[] = (Object.keys(COLUMN_META) as ColumnKey[]).map((key) => ({
   key,
-  width: key === 'title' ? 340 : Math.max(COLUMN_META[key].minimum, 150),
-  visible: DEFAULT_VISIBLE.has(key)
+  width:
+    key === 'tags'
+      ? COLUMN_META.tags.minimum
+      : key === 'title'
+        ? 340
+        : Math.max(COLUMN_META[key].minimum, 150),
+  visible: DEFAULT_VISIBLE.has(key),
 }))
-function loadColumns(): ColumnSetting[] {
+const PROJECT_COLUMN_KEYS: ColumnKey[] = [
+  'title',
+  'subtitle',
+  'creator',
+  'publication',
+  'year',
+  'tags',
+]
+const PROJECT_DEFAULT_COLUMNS: ColumnSetting[] = [
+  ...PROJECT_COLUMN_KEYS,
+  ...(Object.keys(COLUMN_META) as ColumnKey[]).filter((key) => !PROJECT_COLUMN_KEYS.includes(key)),
+].map((key) => ({
+  key,
+  width:
+    key === 'tags'
+      ? COLUMN_META.tags.minimum
+      : key === 'title'
+        ? 300
+        : Math.max(COLUMN_META[key].minimum, 120),
+  visible: key !== 'subtitle' && PROJECT_COLUMN_KEYS.includes(key),
+}))
+function loadColumns(storageKey: string, defaults: ColumnSetting[]): ColumnSetting[] {
   try {
-    const stored = JSON.parse(
-      localStorage.getItem(COLUMN_STORAGE_KEY) ?? '[]'
-    ) as ColumnSetting[]
+    const stored = JSON.parse(localStorage.getItem(storageKey) ?? '[]') as ColumnSetting[]
     if (stored.length && stored.every((entry) => entry.key in COLUMN_META)) {
       const values = new Map(stored.map((entry) => [entry.key, entry]))
       return [
@@ -229,15 +288,18 @@ function loadColumns(): ColumnSetting[] {
           .filter((entry) => entry.key in COLUMN_META)
           .map((entry) => ({
             ...entry,
-            width: Math.max(COLUMN_META[entry.key].minimum, entry.width)
+            width: Math.min(
+              COLUMN_META[entry.key].maximum ?? Infinity,
+              Math.max(COLUMN_META[entry.key].minimum, entry.width)
+            ),
           })),
-        ...DEFAULT_COLUMNS.filter((entry) => !values.has(entry.key))
+        ...defaults.filter((entry) => !values.has(entry.key)),
       ]
     }
   } catch {
     /* use defaults */
   }
-  return DEFAULT_COLUMNS
+  return defaults
 }
 function hasActiveListRefinement(query: LiteratureQuery): boolean {
   return Boolean(query.q?.trim())
@@ -253,6 +315,16 @@ type PdfImportRecord = {
   title?: string
   error?: LiteratureErrorMessage
 }
+/** 摊平后的一维列表条目: 文献行, 或它展开后的一个附件行。虚拟化按条目计量与开窗。 */
+type ListEntry =
+  | { kind: 'item'; item: LiteratureSummary; index: number }
+  | {
+      kind: 'attachment'
+      item: LiteratureSummary
+      index: number
+      attachment: LiteratureAttachmentSummary
+    }
+
 function Row({
   item,
   columns,
@@ -261,23 +333,44 @@ function Row({
   expanded,
   focused,
   isNew,
-  onOpen,
+  menu,
+  projectId,
+  entryIndex,
+  onActivate,
+  onDragStart,
+  onKeyDown,
+  rowRef,
+  tabIndex,
   onOpenFulltext,
-  onToggle
+  onItemUpdated,
+  onTagMinimumWidth,
+  onToggle,
 }: {
   item: LiteratureSummary
   columns: ColumnSetting[]
+  projectPresentation: boolean
   grid: string
   checked: boolean
   expanded: boolean
   focused: boolean
   isNew: boolean
-  onOpen: () => void
+  menu: RowMenuActions
+  projectId?: string
+  /** 虚拟化条目下标: measureElement 从 data-index 读回它计量的是哪一条。 */
+  entryIndex: number
+  onActivate: () => void
+  onDragStart?: (event: React.DragEvent<HTMLDivElement>) => void
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
+  rowRef: (node: HTMLDivElement | null) => void
+  tabIndex: number
   onOpenFulltext: (attachmentId: string) => void
+  onItemUpdated: (item: LiteratureSummary) => void
+  onTagMinimumWidth: (id: string, width: number) => void
   onToggle: () => void
 }): React.JSX.Element {
   const { t: literature, i18n } = useTranslation('literature')
   const format = createFormatters(i18n.resolvedLanguage === 'en' ? 'en' : 'zh')
+  const collections = literatureCollections(item, projectId)
   const facetNames = (values: Array<{ name: string }>): string =>
     values.map((value) => value.name).join('、') || EMPTY_CELL
   // 双击的目标是主附件(全文)。判空必须在渲染层做完: store 的 openLiteratureAttachment
@@ -294,12 +387,19 @@ function Row({
         key={key}
         tooltip={item.title}
         tooltipPortalled
-        wrapperClassName="lit-title-cell"
+        wrapperClassName="lit-title-cell text-[var(--vds-text-primary)]"
       >
-        <strong>{item.title}</strong>
+        <span className="inline-flex max-w-full items-center gap-[var(--vds-space-2)] align-middle">
+          {primaryAttachment ? <FileFormatIcon name={primaryAttachment.name} /> : null}
+          <span className="truncate font-[var(--vds-fw-regular)]">{item.title}</span>
+        </span>
       </EllipsisText>
     ) : key === 'creator' ? (
-      <EllipsisText key={key} tooltipPortalled tooltipContentClassName="[--vds-tooltip-max-height:var(--vds-literature-author-tooltip-max-height)]">
+      <EllipsisText
+        key={key}
+        tooltipPortalled
+        tooltipContentClassName="[--vds-tooltip-max-height:var(--vds-literature-author-tooltip-max-height)]"
+      >
         {item.creators_display || EMPTY_CELL}
       </EllipsisText>
     ) : key === 'publication' ? (
@@ -317,20 +417,11 @@ function Row({
     ) : key === 'projects' ? (
       // 一篇文献可归属多个项目: 列内只画第一个项目, 其余折叠成 +N 芯片。
       // 折叠后单元格通常不再溢出, 所以完整名单由 +N 自己的 tooltip 承担; 单元格 tooltip 仍是全量兜底。
-      <EllipsisText
-        key={key}
-        tooltip={
-          item.projects.length === 0
-            ? literature('list.noProject')
-            : facetNames(item.projects)
-        }
-        tooltipPortalled
-      >
+      // 无归属项目时与作者/出版物/标签列保持一致: 只留空单元格占位, 不画品牌色芯片。
+      <EllipsisText key={key} tooltip={facetNames(item.projects)} tooltipPortalled>
         <span className={CHIP_CELL_CLASS}>
           {item.projects.length === 0 ? (
-            <Badge className={CHIP_CLASS} tone="brand">
-              {literature('list.noProject')}
-            </Badge>
+            EMPTY_CELL
           ) : (
             <>
               <Badge className={CHIP_CLASS} tone="brand">
@@ -345,7 +436,7 @@ function Row({
                   <Badge
                     aria-label={literature('list.moreProjects', {
                       count: item.projects.length - 1,
-                      names: facetNames(item.projects.slice(1))
+                      names: facetNames(item.projects.slice(1)),
                     })}
                     className={MORE_CHIP_CLASS}
                     size="sm"
@@ -360,55 +451,19 @@ function Row({
         </span>
       </EllipsisText>
     ) : key === 'tags' ? (
-      <EllipsisText key={key} tooltip={facetNames(item[key])} tooltipPortalled>
-        <span className={CHIP_CELL_CLASS}>
-          {item.tags.length === 0 ? EMPTY_CELL : (
-            <>
-                <Tag
-                  className="min-w-0 max-w-full"
-                  color={semanticTagColorFor(item.tags[0].id)}
-                >
-                  {item.tags[0].name}
-                </Tag>
-                {item.tags.length > 1 ? (
-                  <Tooltip
-                    className="shrink-0"
-                    content={(
-                      <span className="flex flex-wrap gap-1">
-                        {item.tags.slice(1).map((tag) => (
-                          <Tag color={semanticTagColorFor(tag.id)} key={tag.id}>
-                            {tag.name}
-                          </Tag>
-                        ))}
-                      </span>
-                    )}
-                    contentClassName="[--vds-tooltip-bg:var(--vds-bg-white-default)] [--vds-tooltip-color:var(--vds-text-primary)]"
-                    portalled
-                  >
-                    <Badge
-                      aria-label={literature('list.moreTags', {
-                        count: item.tags.length - 1,
-                        names: facetNames(item.tags.slice(1))
-                      })}
-                      className={MORE_CHIP_CLASS}
-                      size="sm"
-                      tabIndex={0}
-                      tone="neutral"
-                    >
-                      +{item.tags.length - 1}
-                    </Badge>
-                  </Tooltip>
-                ) : null}
-            </>
-          )}
-        </span>
-      </EllipsisText>
+      <RowTags
+        key={`${projectId ?? ''}:${item.id}`}
+        item={item}
+        projectId={projectId}
+        onUpdated={onItemUpdated}
+        onMinimumWidth={onTagMinimumWidth}
+      />
     ) : key === 'collections' ? (
-      <EllipsisText key={key} tooltip={facetNames(item[key])} tooltipPortalled>
+      <EllipsisText key={key} tooltip={facetNames(collections)} tooltipPortalled>
         <span className={CHIP_CELL_CLASS}>
-          {item[key].length === 0
+          {collections.length === 0
             ? EMPTY_CELL
-            : item[key].map((facet) => (
+            : collections.map((facet) => (
                 <Badge className={CHIP_CLASS} key={facet.id} tone="brand">
                   {facet.name}
                 </Badge>
@@ -430,60 +485,58 @@ function Row({
       </EllipsisText>
     )
   return (
-    <div
-      className={`lit-row${checked ? ' is-selected' : ''}${focused ? ' is-focused' : ''}`}
-      style={{ gridTemplateColumns: grid }}
-      onClick={onOpen}
-      onDoubleClick={
-        primaryAttachment
-          ? () => onOpenFulltext(primaryAttachment.id)
-          : undefined
-      }
-    >
-      <div className="lit-sticky-cells">
-        <span
-          className={`lit-unread${isNew ? ' is-on' : ''}`}
-          title={isNew ? literature('list.newImport') : undefined}
-        />
-        <span
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-        >
-          <Checkbox
-            checked={checked}
-            label={literature('list.select', { title: item.title })}
-            onCheckedChange={(value) => catalogue.select(item.id, value)}
+    <LiteratureRowMenu actions={menu} item={item} projectId={projectId}>
+      <div
+        className={`${ROW_CLASS} group/literature font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)] [&_.vds-badge]:!text-[var(--vds-text-tertiary)] [&_.vds-badge]:!font-[var(--vds-fw-regular)] [&_.vds-tag]:!font-[var(--vds-fw-regular)] [&_.vds-tag>span]:!text-[var(--vds-text-tertiary)]${checked ? ' is-selected' : ''}${focused ? ' is-focused' : ''}`}
+        style={{ gridTemplateColumns: grid }}
+        data-index={entryIndex}
+        ref={rowRef}
+        tabIndex={tabIndex}
+        aria-label={item.title}
+        draggable={Boolean(onDragStart)}
+        onDragStart={onDragStart}
+        onClick={onActivate}
+        onKeyDown={onKeyDown}
+        onDoubleClick={primaryAttachment ? () => onOpenFulltext(primaryAttachment.id) : undefined}
+      >
+        <div className={STICKY_CELLS_CLASS}>
+          <span
+            className={`size-[var(--vds-library-unread-indicator-size)] rounded-full${isNew ? ' is-on bg-[var(--vds-brand-bg-default)]' : ''}`}
+            title={isNew ? literature('list.newImport') : undefined}
           />
-        </span>
-        <span
-          className="lit-pdf-cell"
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-        >
-          {item.attachments.length ? (
-            <IconButton
-              label={
-                expanded
-                  ? literature('list.collapseAttachments')
-                  : literature('list.expandAttachments')
-              }
-              variant="ghostIcon"
-              size="sm"
-              icon={
-                <Icon
-                  name={expanded ? 'chevron-down' : 'chevron-right'}
-                  size={13}
-                />
-              }
-              onClick={onToggle}
+          <span
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            <Checkbox
+              checked={checked}
+              label={literature('list.select', { title: item.title })}
+              onCheckedChange={(value) => catalogue.select(item.id, value)}
             />
-          ) : null}
-        </span>
+          </span>
+          <span
+            className="lit-pdf-cell grid place-items-center text-[var(--vds-text-tertiary)]"
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            {item.attachments.length ? (
+              <IconButton
+                label={
+                  expanded
+                    ? literature('list.collapseAttachments')
+                    : literature('list.expandAttachments')
+                }
+                variant="ghostIcon"
+                size="sm"
+                icon={<Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} />}
+                onClick={onToggle}
+              />
+            ) : null}
+          </span>
+        </div>
+        {columns.filter((column) => column.visible).map((column) => cell(column.key))}
       </div>
-      {columns
-        .filter((column) => column.visible)
-        .map((column) => cell(column.key))}
-    </div>
+    </LiteratureRowMenu>
   )
 }
 
@@ -494,7 +547,7 @@ function ZoteroTreeNode({
   node,
   onToggle,
   onToggleUnfiled,
-  parentSelected
+  parentSelected,
 }: {
   depth: number
   directives: ReadonlyMap<string, boolean>
@@ -506,25 +559,15 @@ function ZoteroTreeNode({
 }): React.JSX.Element {
   const { t: literature } = useTranslation('literature')
   const [open, setOpen] = useState(depth < 2)
-  const selected = inheritedZoteroSelection(
-    node.key,
-    parentSelected,
-    directives
-  )
+  const selected = inheritedZoteroSelection(node.key, parentSelected, directives)
   const state = zoteroNodeState(node, parentSelected, directives)
   const displayedState =
-    node.key !== ZOTERO_LIBRARY_ROOT_KEY ||
-    state === 'mixed' ||
-    state === includeUnfiled
+    node.key !== ZOTERO_LIBRARY_ROOT_KEY || state === 'mixed' || state === includeUnfiled
       ? state
       : 'mixed'
   const hasChildren = node.children.length > 0
   return (
-    <div
-      role="treeitem"
-      aria-expanded={hasChildren ? open : undefined}
-      aria-level={depth + 1}
-    >
+    <div role="treeitem" aria-expanded={hasChildren ? open : undefined} aria-level={depth + 1}>
       <div
         className="flex min-h-8 items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-sm)] pl-[calc(var(--zotero-depth)*var(--vds-space-4))] pr-[var(--vds-space-2)] hover:bg-[var(--vds-surface-hover)]"
         style={{ '--zotero-depth': depth } as React.CSSProperties}
@@ -532,13 +575,11 @@ function ZoteroTreeNode({
         {hasChildren ? (
           <IconButton
             label={literature(open ? 'zotero.collapse' : 'zotero.expand', {
-              name: node.name
+              name: node.name,
             })}
             size="sm"
             variant="ghostIcon"
-            icon={
-              <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
-            }
+            icon={<Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />}
             onClick={() => setOpen((current) => !current)}
           />
         ) : (
@@ -546,10 +587,9 @@ function ZoteroTreeNode({
         )}
         <Checkbox
           checked={displayedState}
-          aria-label={literature(
-            displayedState === true ? 'zotero.deselect' : 'zotero.select',
-            { name: node.name }
-          )}
+          aria-label={literature(displayedState === true ? 'zotero.deselect' : 'zotero.select', {
+            name: node.name,
+          })}
           onCheckedChange={(checked) => {
             onToggle(node, checked)
             if (node.key === ZOTERO_LIBRARY_ROOT_KEY) onToggleUnfiled(checked)
@@ -589,9 +629,7 @@ function ZoteroTreeNode({
               <Checkbox
                 checked={includeUnfiled}
                 aria-label={literature(
-                  includeUnfiled
-                    ? 'zotero.deselectUnfiled'
-                    : 'zotero.selectUnfiled'
+                  includeUnfiled ? 'zotero.deselectUnfiled' : 'zotero.selectUnfiled'
                 )}
                 onCheckedChange={onToggleUnfiled}
               />
@@ -609,7 +647,22 @@ function ZoteroTreeNode({
   )
 }
 
-export function LiteratureList(): React.JSX.Element {
+export function LiteratureList({
+  presentation = 'default',
+}: {
+  presentation?: 'default' | 'project'
+}): React.JSX.Element {
+  const projectPresentation = presentation === 'project'
+  const toolbarTarget = useContext(LibraryToolbarTarget)
+  const onSelectionChange = useContext(LibrarySelectionChange)
+  const renderSelection = (content: React.ReactNode): React.ReactNode =>
+    projectPresentation && toolbarTarget ? createPortal(content, toolbarTarget) : content
+  const { t: layoutText } = useTranslation('layout')
+  const [collectionCatalog, setCollectionCatalog] = useState<{
+    projectId: string
+    items: LibraryCollection[]
+  }>({ projectId: '', items: [] })
+  const [collectionsFailed, setCollectionsFailed] = useState(false)
   const { t: literature } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const { toast } = useToast()
@@ -620,30 +673,66 @@ export function LiteratureList(): React.JSX.Element {
   const { act, state } = useApp()
   const returnProject =
     state.homeSelectedProjectId === null
-      ? state.projects.find(
-          (project) => project.id === state.workbenchReturnProjectId
-        )
+      ? state.projects.find((project) => project.id === state.workbenchReturnProjectId)
       : undefined
+  const returnProjectId = returnProject?.id ?? ''
+  /*
+   * scopeProjectId 是作用域 (项目文献库 / 文献中心), 由 LiteratureScope 跟随
+   * homeSelectedProjectId 同步; 下面的 projectId 只是列表过滤条件 query.project_id。
+   * 二者在全览里会分叉: 点侧栏的项目/分类行只写 query.project_id, 作用域仍是全览,
+   * 且这份过滤条件会被 catalogue.scope() 的作用域存档长期保留。只属于项目文献库的
+   * 入口必须判 scopeProjectId, 不能判 projectId。
+   */
   const {
+    projectId: scopeProjectId,
     query,
     selected,
     focusedId,
     focusedAttachmentId,
+    itemsReady,
     reload,
-    importRequest
+    importRequest,
   } = useCatalogue()
+  const hasSelection = projectPresentation && selected.length > 0
+  useEffect(() => {
+    onSelectionChange?.(hasSelection)
+    return () => onSelectionChange?.(false)
+  }, [hasSelection, onSelectionChange])
   const projectId = query.project_id
-  const [items, setItems] = useState<LiteratureSummary[]>([])
+  const projectCollections =
+    collectionCatalog.projectId === scopeProjectId ? collectionCatalog.items : []
+  useEffect(() => {
+    if (projectPresentation && query.recent) catalogue.query({ recent: undefined })
+  }, [projectPresentation, query.recent])
+  useEffect(() => {
+    if (!projectPresentation || !scopeProjectId) return
+    let active = true
+    setCollectionsFailed(false)
+    void listLiteratureCollections(scopeProjectId)
+      .then((collections) => {
+        if (active) setCollectionCatalog({ projectId: scopeProjectId, items: collections })
+      })
+      .catch(() => {
+        if (active) setCollectionsFailed(true)
+      })
+    return () => {
+      active = false
+    }
+  }, [scopeProjectId, projectPresentation, reload])
+  /** 列表取数只认查询内容: 见 literatureQueryKey 的说明。 */
+  const queryKey = useMemo(() => literatureQueryKey(query), [query])
+  const [items, setItems] = useState<LiteratureSummary[]>(() => catalogue.getSnapshot().items)
   const [search, setSearch] = useState(query.q ?? '')
   // 导入落点 = 左侧当前选择; PDF / Bib-RIS / Zotero 三条渠道共用这一份推导。
   const destination = importDestination(query)
-  const [loading, setLoading] = useState(true)
+  const importDestinationOverride = useRef<typeof destination | null>(null)
+  const activeImportDestination = (): typeof destination =>
+    importDestinationOverride.current ?? destination
+  const [loading, setLoading] = useState(!itemsReady)
   const [error, setError] = useState<LiteratureErrorMessage | null>(null)
   const [task, setTask] = useState<LiteratureTask | null>(null)
   const taskError =
-    task && (task.error || task.error_code)
-      ? literatureTaskErrorMessage(task)
-      : null
+    task && (task.error || task.error_code) ? literatureTaskErrorMessage(task) : null
   const [zoteroOpen, setZoteroOpen] = useState(false)
   const [zoteroLoading, setZoteroLoading] = useState(false)
   const [zoteroSubmitting, setZoteroSubmitting] = useState(false)
@@ -651,16 +740,13 @@ export function LiteratureList(): React.JSX.Element {
   // 同一个 key 去受理, 服务端就交回同一个任务, 而不是再导一遍 (文献是追加语义)。
   const zoteroSubmitKey = useRef(crypto.randomUUID())
   const [zoteroPreview, setZoteroPreview] = useState<ZoteroPreview | null>(null)
-  const [zoteroError, setZoteroError] = useState<LiteratureErrorMessage | null>(
-    null
-  )
-  const [zoteroSelection, setZoteroSelection] = useState<Map<string, boolean>>(
-    new Map()
-  )
+  const [zoteroError, setZoteroError] = useState<LiteratureErrorMessage | null>(null)
+  const [zoteroSelection, setZoteroSelection] = useState<Map<string, boolean>>(new Map())
   const [zoteroUnfiled, setZoteroUnfiled] = useState(true)
   const [zoteroCollections, setZoteroCollections] = useState(true)
   const [zoteroDestination, setZoteroDestination] = useState('')
   const [pdfImportOpen, setPdfImportOpen] = useState(false)
+  const [identifierOpen, setIdentifierOpen] = useState(false)
   const [pdfImports, setPdfImports] = useState<PdfImportRecord[]>([])
   const [pdfDropActive, setPdfDropActive] = useState(false)
   const pdfDragDepth = useRef(0)
@@ -668,9 +754,7 @@ export function LiteratureList(): React.JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [batchDialog, setBatchDialog] = useState<BatchDialog>(null)
   const [batchProjects, setBatchProjects] = useState<LiteratureProject[]>([])
-  const [batchCollections, setBatchCollections] = useState<LiteratureFacet[]>(
-    []
-  )
+  const [batchCollections, setBatchCollections] = useState<LiteratureFacet[]>([])
   const [batchTags, setBatchTags] = useState<LiteratureFacet[]>([])
   const [batchProjectId, setBatchProjectId] = useState('')
   const [batchSelection, setBatchSelection] = useState<Set<string>>(new Set())
@@ -679,7 +763,23 @@ export function LiteratureList(): React.JSX.Element {
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchExpanded, setBatchExpanded] = useState<Set<string>>(new Set())
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
-  const [emptyImportOpen, setEmptyImportOpen] = useState(false)
+  // 行右键菜单的「打开详情后立刻做什么」: 详情面板消费一次后回收, nonce 让同一条
+  // 文献连续两次选同一项也能重新触发 (面板已经开着时 id 不变, 靠 nonce 区分)。
+  const [detailIntent, setDetailIntent] = useState<LiteratureDetailIntent | null>(null)
+  const clearDetailIntent = useCallback(() => setDetailIntent(null), [])
+  const retainedFocus = useRef({
+    id: focusedId,
+    attachmentId: focusedAttachmentId,
+  })
+  if (focusedId) {
+    retainedFocus.current = {
+      id: focusedId,
+      attachmentId: focusedAttachmentId,
+    }
+  }
+  // 单条移出/删除的确认目标; 与批量条的 deleteConfirmOpen 分开, 文案里的数量不同。
+  const [removeTarget, setRemoveTarget] = useState<LiteratureSummary | null>(null)
+  const [removing, setRemoving] = useState(false)
   const localUpdates = useRef(
     new Map<
       string,
@@ -692,18 +792,36 @@ export function LiteratureList(): React.JSX.Element {
   )
   const listRequest = useRef(0)
   const pendingListRequest = useRef<number | null>(null)
-  const [columns, setColumns] = useState<ColumnSetting[]>(loadColumns)
+  const [columns, setColumns] = useState<ColumnSetting[]>(() =>
+    loadColumns(
+      projectPresentation ? PROJECT_COLUMN_STORAGE_KEY : COLUMN_STORAGE_KEY,
+      projectPresentation ? PROJECT_DEFAULT_COLUMNS : DEFAULT_COLUMNS
+    )
+  )
   const [draggedColumn, setDraggedColumn] = useState<ColumnKey | null>(null)
   const pdfInput = useRef<HTMLInputElement>(null)
   const bibliographyInput = useRef<HTMLInputElement>(null)
-  const scopedColumns = columns.filter(
-    (column) => !projectId || column.key !== 'projects'
+  const scopedColumns = columns.filter((column) => !projectId || column.key !== 'projects')
+  const [tagWidths, setTagWidths] = useState<Record<string, number>>({})
+  const onTagMinimumWidth = useCallback((id: string, width: number): void => {
+    setTagWidths((current) => (current[id] === width ? current : { ...current, [id]: width }))
+  }, [])
+  const tagMinimum = Math.max(
+    COLUMN_META.tags.minimum,
+    ...items.map((item) => tagWidths[item.id] ?? 0)
   )
   const visibleColumns = scopedColumns.filter((column) => column.visible)
-  const grid = `72px ${visibleColumns.map((column) => `${column.width}px`).join(' ')}`
+  const columnWidths = visibleColumns.map((column) =>
+    column.key === 'tags' ? Math.max(column.width, tagMinimum) : column.width
+  )
+  const grid = `var(--vds-library-sticky-cells-width) ${columnWidths.map((width) => `${width}px`).join(' ')}`
+  const gridWidth = columnWidths.reduce((total, width) => total + width, LEADING_COLUMN_WIDTH)
   const saveColumns = (next: ColumnSetting[]): void => {
     setColumns(next)
-    localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(next))
+    localStorage.setItem(
+      projectPresentation ? PROJECT_COLUMN_STORAGE_KEY : COLUMN_STORAGE_KEY,
+      JSON.stringify(next)
+    )
   }
   const updateVisibleItem = (updated: LiteratureSummary): void => {
     const request = pendingListRequest.current
@@ -730,16 +848,20 @@ export function LiteratureList(): React.JSX.Element {
     const start = event.clientX
     const current = columns.find((column) => column.key === key)
     if (!current) return
+    const initialWidth = key === 'tags' ? Math.max(current.width, tagMinimum) : current.width
     const move = (moveEvent: PointerEvent): void =>
       saveColumns(
         columns.map((column) =>
           column.key === key
             ? {
                 ...column,
-                width: Math.max(
-                  COLUMN_META[key].minimum,
-                  current.width + moveEvent.clientX - start
-                )
+                width: Math.min(
+                  COLUMN_META[key].maximum ?? Infinity,
+                  Math.max(
+                    key === 'tags' ? tagMinimum : COLUMN_META[key].minimum,
+                    initialWidth + moveEvent.clientX - start
+                  )
+                ),
               }
             : column
         )
@@ -753,13 +875,12 @@ export function LiteratureList(): React.JSX.Element {
   }
   useEffect(() => {
     try {
-      const saved = JSON.parse(
-        localStorage.getItem(SORT_STORAGE_KEY) ?? 'null'
-      ) as {
+      const saved = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) ?? 'null') as {
         sort?: LiteratureQuery['sort']
         order?: LiteratureQuery['order']
       } | null
-      if (saved?.sort && saved.order) catalogue.query(saved)
+      if (saved?.sort && saved.order && (saved.sort !== query.sort || saved.order !== query.order))
+        catalogue.query(saved)
     } catch {
       /* use catalogue defaults */
     }
@@ -767,44 +888,41 @@ export function LiteratureList(): React.JSX.Element {
   useEffect(() => {
     const value = search.trim() || undefined
     if (value === query.q) return
-    const timer = window.setTimeout(
-      () => catalogue.query({ q: value }),
-      SEARCH_DEBOUNCE_MS
-    )
+    const timer = window.setTimeout(() => catalogue.query({ q: value }), SEARCH_DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
   }, [query.q, search])
   useEffect(() => {
+    if (catalogue.itemsFresh()) return
     let active = true
     const request = ++listRequest.current
     pendingListRequest.current = request
     const controller = new AbortController()
-    setLoading(true)
+    if (!catalogue.getSnapshot().itemsReady) {
+      setLoading(true)
+      setItems([])
+    }
     setError(null)
     listAllLiteratures(query, controller.signal)
       .then((value) => {
         if (active) {
           const currentUpdates = new Map(
             [...localUpdates.current.entries()]
-              .filter(
-                ([, update]) =>
-                  update.projectId === projectId && update.request === request
-              )
+              .filter(([, update]) => update.projectId === projectId && update.request === request)
               .map(([itemId, update]) => [itemId, update.item])
           )
           const next = mergeLiteratureSummaries(value, currentUpdates)
-          for (const itemId of currentUpdates.keys())
-            localUpdates.current.delete(itemId)
+          for (const itemId of currentUpdates.keys()) localUpdates.current.delete(itemId)
           setItems(next)
           catalogue.items(next)
         }
       })
       .catch((reason: unknown) => {
-        if (active)
+        // 取消不是失败: 换作用域、切项目与卸载都会主动 abort, 那不该在列表上留一条错误,
+        // 也不该被当成一次加载失败上报。
+        if (active && !controller.signal.aborted)
           setError(
             literatureErrorMessage(
-              reason instanceof LiteratureApiError
-                ? reason.failure.code
-                : undefined,
+              reason instanceof LiteratureApiError ? reason.failure.code : undefined,
               reason instanceof Error ? reason.message : undefined,
               'batch.loadFailed'
             )
@@ -819,23 +937,23 @@ export function LiteratureList(): React.JSX.Element {
     return () => {
       active = false
       controller.abort()
-      if (pendingListRequest.current === request)
-        pendingListRequest.current = null
+      if (pendingListRequest.current === request) pendingListRequest.current = null
       for (const [itemId, update] of localUpdates.current)
         if (update.request === request) localUpdates.current.delete(itemId)
     }
-  }, [query, reload])
+    /*
+     * 依赖是 queryKey 而不是 query: 内容没变的引用变化不该取消在飞请求再重拉一遍。
+     * projectId 是 queryKey 的组成部分, 二者同增同减, 闭包里的值不会过期。
+     */
+  }, [queryKey, reload])
   useEffect(() => {
-    if (!task || ['completed', 'failed', 'cancelled'].includes(task.status))
-      return
+    if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) return
     const timer = window.setInterval(() => {
       getLiteratureTask(task.id)
         .then((value) => {
           setTask(value)
           if (value.status === 'completed') {
-            setNewlyImported(
-              (current) => new Set([...current, ...(value.imported_ids ?? [])])
-            )
+            setNewlyImported((current) => new Set([...current, ...(value.imported_ids ?? [])]))
             revealImported()
           }
         })
@@ -845,55 +963,53 @@ export function LiteratureList(): React.JSX.Element {
   }, [task])
   // 导入结果是瞬时反馈：终态用 Toast 承接并收掉 lit-task 横幅，不在列表上常驻。
   useEffect(() => {
-    if (!task || !['completed', 'failed', 'cancelled'].includes(task.status))
-      return
+    if (!task || !['completed', 'failed', 'cancelled'].includes(task.status)) return
     if (task.status === 'completed') {
       toast({
         title: literature('importTask.resultCompleted', {
-          count: task.completed_count
+          count: task.completed_count,
         }),
-        tone: 'success'
+        tone: 'success',
       })
     } else if (task.status === 'cancelled') {
       toast({
         title: literature('importTask.resultCancelled'),
-        tone: 'warning'
+        tone: 'warning',
       })
     } else {
       const message = literatureTaskErrorMessage(task)
       toast({
         title: literature('importTask.failed'),
         description: message.detail ?? literature(message.key),
-        tone: 'error'
+        tone: 'error',
       })
     }
     setTask(null)
   }, [task, literature, toast])
 
-  const allChecked =
-    items.length > 0 && items.every((item) => selected.includes(item.id))
+  const picked = useMemo(() => new Set(selected), [selected])
+  const visibleSelectedCount = items.filter((item) => picked.has(item.id)).length
+  const selectAllState =
+    visibleSelectedCount === 0 ? false : visibleSelectedCount === items.length ? true : 'mixed'
   const filtered = hasActiveListRefinement(query)
   const libraryEmpty = items.length === 0 && !filtered
-  const picked = useMemo(() => new Set(selected), [selected])
-  const deletePicked = async (): Promise<void> => {
-    const count = selected.length
-    setDeleteConfirmOpen(false)
+  /**
+   * 移出项目 / 删除文献的真实动作, 批量条与行右键菜单共用。
+   *
+   * 语义由作用域决定: 项目文献库里是「移出项目」(文献仍留在文献中心), 文献中心里
+   * 才是删除。失败统一走同一条 toast, 调用方只拿布尔结果决定要不要收尾。
+   */
+  const removeLiteratures = async (ids: readonly string[]): Promise<boolean> => {
+    if (!ids.length) return false
     try {
       if (projectId) {
-        await bulkLiteratures(selected, 'unlink_project', {
-          project_id: projectId
+        await bulkLiteratures([...ids], 'unlink_project', {
+          project_id: projectId,
         })
       } else {
-        await deleteLiteratures(selected)
+        await deleteLiteratures([...ids])
       }
-      catalogue.clear()
-      catalogue.reload()
-      toast({
-        title: projectId
-          ? literature('batch.removeSucceeded', { count })
-          : literature('batch.deleteSucceeded', { count }),
-        tone: 'success'
-      })
+      return true
     } catch (reason: unknown) {
       const message = literatureErrorMessage(
         reason instanceof LiteratureApiError ? reason.failure.code : undefined,
@@ -903,26 +1019,166 @@ export function LiteratureList(): React.JSX.Element {
       toast({
         description: message.detail ?? literature(message.key),
         title: literature('batch.deleteFailed'),
-        tone: 'error'
+        tone: 'error',
+      })
+      return false
+    }
+  }
+  const removedToast = (count: number): void => {
+    toast({
+      title: projectId
+        ? literature('batch.removeSucceeded', { count })
+        : literature('batch.deleteSucceeded', { count }),
+      tone: 'success',
+    })
+  }
+  const deletePicked = async (): Promise<void> => {
+    const count = selected.length
+    setDeleteConfirmOpen(false)
+    if (!(await removeLiteratures(selected))) return
+    catalogue.clear()
+    catalogue.reload()
+    removedToast(count)
+  }
+  /** 行右键菜单的移出/删除: 只动这一条, 不牵连批量勾选。 */
+  const confirmRemoveItem = async (): Promise<void> => {
+    const target = removeTarget
+    if (!target || removing) return
+    setRemoving(true)
+    const removed = await removeLiteratures([target.id])
+    setRemoving(false)
+    if (!removed) return
+    setRemoveTarget(null)
+    // select(id, false) 同时收掉焦点: 行已经不在了, 详情面板不该继续指着它。
+    catalogue.select(target.id, false)
+    catalogue.reload()
+    removedToast(1)
+  }
+  /**
+   * 行右键菜单的「复制标题」: 纯前端动作, 不打后端, 也不改库里的题录。
+   *
+   * 走 `writeClipboard` 而不是直接用 `navigator.clipboard`: 后者要求文档处于聚焦态,
+   * 而右键菜单收起的瞬间焦点未必已经回到窗口, 主进程剪贴板能力没有这个前提。
+   */
+  const copyItemTitle = async (item: LiteratureSummary): Promise<void> => {
+    const title = item.title.trim()
+    if (!title) return
+    try {
+      await writeClipboard(title)
+      toast({ title: literature('list.rowMenu.titleCopied'), tone: 'success' })
+    } catch {
+      toast({
+        title: literature('list.rowMenu.copyTitleFailed'),
+        tone: 'error',
       })
     }
   }
-  const runBulk = async (operation: string): Promise<void> => {
-    try {
-      await bulkLiteratures(selected, operation)
-      catalogue.clear()
-      catalogue.reload()
-    } catch (reason) {
-      setError(
-        literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
-          reason instanceof Error ? reason.message : undefined,
-          'batch.bulkFailed'
-        )
-      )
+  /**
+   * 打开详情面板: 行单击与右键菜单的「查看基本信息 / 添加笔记 / 添加附件」共用。
+   *
+   * 「本次新导入」的小蓝点在打开详情后就不再有意义, 所以三条入口都顺手清掉它。
+   */
+  const openDetail = (item: LiteratureSummary, action?: LiteratureDetailIntent['action']): void => {
+    setNewlyImported((current) => {
+      if (!current.has(item.id)) return current
+      const next = new Set(current)
+      next.delete(item.id)
+      return next
+    })
+    setDetailIntent(action ? { action, nonce: Date.now() } : null)
+    catalogue.focus(item.id)
+  }
+  /**
+   * 行单击 / Enter 的详情开关: 抽屉正开着这条就收起, 否则打开这条。
+   *
+   * 双击打开全文时 click 会先触发两次, 一开一关正好抵消, 于是「双击前抽屉是什么
+   * 状态, 关掉 PDF 回来还是什么状态」, 双击路径不需要额外收尾。右键菜单的
+   * 「查看基本信息 / 添加笔记 / 添加附件」是显式意图, 恒打开, 不参与 toggle。
+   */
+  const toggleDetail = (item: LiteratureSummary): void => {
+    if (focusedId === item.id && !focusedAttachmentId) {
+      catalogue.focus(null)
+      return
     }
+    openDetail(item)
+  }
+  /** 行键盘可达: roving tabindex + 方向键移动焦点, Enter 与单击同语义。 */
+  const rowRefs = useRef(new Map<string, HTMLDivElement>())
+  const [keyRowIndex, setKeyRowIndex] = useState(0)
+  /**
+   * 列表窗口化: 文献行与它展开的附件行摊平成一维条目, 只渲染视口内 ± overscan 的部分。
+   * 2000+ 篇时全量挂载意味着数万个 DOM 节点、每单元格一个 ResizeObserver, 以及每次
+   * 状态变更 (敲搜索词、点行开抽屉、勾选) 都要重渲染整表; 窗口化把这些都降到 O(视口)。
+   */
+  const entries = useMemo<ListEntry[]>(() => {
+    const flat: ListEntry[] = []
+    items.forEach((item, index) => {
+      flat.push({ kind: 'item', item, index })
+      if (!expanded.has(item.id)) return
+      for (const attachment of item.attachments)
+        flat.push({ kind: 'attachment', item, index, attachment })
+    })
+    return flat
+  }, [items, expanded])
+  const entryIndexOfItem = useMemo(() => {
+    const positions = new Map<number, number>()
+    entries.forEach((entry, position) => {
+      if (entry.kind === 'item') positions.set(entry.index, position)
+    })
+    return positions
+  }, [entries])
+  const tableScroll = useRef<HTMLDivElement | null>(null)
+  const rowVirtualizer = useVirtualizer({
+    count: entries.length,
+    estimateSize: (entryIndex) =>
+      entries[entryIndex]?.kind === 'attachment' ? LIST_ATTACHMENT_ROW_HEIGHT : LIST_ROW_HEIGHT,
+    getScrollElement: () => tableScroll.current,
+    overscan: LIST_OVERSCAN,
+  })
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const listPadTop = virtualRows[0]?.start ?? 0
+  const listPadBottom = Math.max(0, rowVirtualizer.getTotalSize() - (virtualRows.at(-1)?.end ?? 0))
+  // 目标行可能还在窗口外: 先滚到它, 等它真的挂载后再落焦。
+  const pendingRowFocus = useRef<{ index: number; attempts: number } | null>(null)
+  const focusRow = (itemIndex: number): void => {
+    const entryIndex = entryIndexOfItem.get(itemIndex)
+    if (entryIndex !== undefined) rowVirtualizer.scrollToIndex(entryIndex)
+    pendingRowFocus.current = { index: itemIndex, attempts: ROW_FOCUS_ATTEMPTS }
+  }
+  /*
+   * 没有依赖数组: 落焦要等 scrollToIndex 引起的那次提交把行挂进 DOM, 而那可能发生在
+   * 本次渲染之后的任意一次渲染里。每次提交只读一个 ref 与一个 Map, 成本可忽略。
+   */
+  useEffect(() => {
+    const pending = pendingRowFocus.current
+    if (!pending) return
+    const node = rowRefs.current.get(items[pending.index]?.id ?? '')
+    if (node) {
+      pendingRowFocus.current = null
+      node.focus()
+      return
+    }
+    pendingRowFocus.current =
+      pending.attempts <= 0 ? null : { index: pending.index, attempts: pending.attempts - 1 }
+  })
+  const rowKeyDown = (index: number, event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.nativeEvent.isComposing) return
+    const item = items[index]
+    if (!item) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      toggleDetail(item)
+      return
+    }
+    let next = -1
+    if (event.key === 'ArrowDown') next = Math.min(items.length - 1, index + 1)
+    else if (event.key === 'ArrowUp') next = Math.max(0, index - 1)
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = items.length - 1
+    if (next < 0 || next === index) return
+    event.preventDefault()
+    setKeyRowIndex(next)
+    focusRow(next)
   }
   const openBatch = (kind: Exclude<BatchDialog, null>): void => {
     setBatchLoading(true)
@@ -938,26 +1194,25 @@ export function LiteratureList(): React.JSX.Element {
   useEffect(() => {
     if (!batchDialog) return
     let active = true
-    Promise.all([
-      getLiteratureProjects(),
-      getLiteratureFacets({ project_id: projectId })
-    ])
+    Promise.all([getLiteratureProjects(), getLiteratureFacets({ project_id: projectId })])
       .then(([projectResult, facets]) => {
         if (!active) return
         setBatchProjects(projectResult.projects)
         setBatchCollections(facets.collections)
         setBatchTags(facets.tags)
+        // 默认落点优先级: 来源项目 (从项目跳来全览时带的上下文) > 工作区当前项目 > 第一个。
+        // 来源项目必须确实在候选里: 否则 Select 没有对应项, 提交时会带一个用户看不见的 id。
+        const known = new Set(projectResult.projects.map((project) => project.id))
+        const contextual = known.has(returnProjectId) ? returnProjectId : ''
         setBatchProjectId(
-          projectResult.current || projectResult.projects[0]?.id || ''
+          contextual || projectResult.current || projectResult.projects[0]?.id || ''
         )
       })
       .catch((reason: unknown) => {
         if (!active) return
         setError(
           literatureErrorMessage(
-            reason instanceof LiteratureApiError
-              ? reason.failure.code
-              : undefined,
+            reason instanceof LiteratureApiError ? reason.failure.code : undefined,
             reason instanceof Error ? reason.message : undefined,
             'batch.loadFailed'
           )
@@ -970,7 +1225,7 @@ export function LiteratureList(): React.JSX.Element {
     return () => {
       active = false
     }
-  }, [batchDialog, projectId])
+  }, [batchDialog, projectId, returnProjectId])
   const submitBatch = async (): Promise<void> => {
     if (
       !batchDialog ||
@@ -987,7 +1242,7 @@ export function LiteratureList(): React.JSX.Element {
           : batchDialog === 'collection'
             ? {
                 project_id: projectId,
-                collection_ids: [...batchSelection]
+                collection_ids: [...batchSelection],
               }
             : { tag_ids: [...batchSelection] }
       await bulkLiteratures(
@@ -1005,9 +1260,7 @@ export function LiteratureList(): React.JSX.Element {
     } catch (reason) {
       setError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'batch.saveFailed'
         )
@@ -1032,15 +1285,12 @@ export function LiteratureList(): React.JSX.Element {
     })
   const collectionOptions =
     batchDialog === 'project'
-      ? (batchProjects.find((project) => project.id === batchProjectId)
-          ?.collections ?? [])
+      ? (batchProjects.find((project) => project.id === batchProjectId)?.collections ?? [])
       : batchCollections
   const visibleBatchTags = batchTags.filter((tag) =>
     tag.name.toLowerCase().includes(batchSearch.toLowerCase())
   )
-  const batchCollectionRows = (
-    values: LiteratureFacet[]
-  ): React.JSX.Element[] => {
+  const batchCollectionRows = (values: LiteratureFacet[]): React.JSX.Element[] => {
     const byParent = new Map<string | null, LiteratureFacet[]>()
     values.forEach((value) => {
       const parent = value.parent_id ?? null
@@ -1052,7 +1302,7 @@ export function LiteratureList(): React.JSX.Element {
         return [
           <div
             key={value.id}
-            className="flex items-center gap-1 pl-[calc(var(--tree-depth)*var(--vds-space-4))]"
+            className="flex items-center gap-[var(--vds-space-1)] pl-[calc(var(--tree-depth)*var(--vds-space-4))]"
             style={{ '--tree-depth': depth } as React.CSSProperties}
           >
             {children.length > 0 ? (
@@ -1066,11 +1316,7 @@ export function LiteratureList(): React.JSX.Element {
                 variant="ghostIcon"
                 icon={
                   <Icon
-                    name={
-                      batchExpanded.has(value.id)
-                        ? 'chevron-down'
-                        : 'chevron-right'
-                    }
+                    name={batchExpanded.has(value.id) ? 'chevron-down' : 'chevron-right'}
                     size={12}
                   />
                 }
@@ -1085,7 +1331,7 @@ export function LiteratureList(): React.JSX.Element {
               onCheckedChange={(checked) => toggleBatchValue(value.id, checked)}
             />
           </div>,
-          ...(batchExpanded.has(value.id) ? visit(value.id, depth + 1) : [])
+          ...(batchExpanded.has(value.id) ? visit(value.id, depth + 1) : []),
         ]
       })
     return visit(null, 0)
@@ -1096,12 +1342,15 @@ export function LiteratureList(): React.JSX.Element {
       setError({ key: 'relations.nothingToExport' })
       return
     }
+    // 上限先在前端拦一次: 服务端同样会拒 (422 EXPORT_TOO_MANY_ITEMS), 但没必要让用户
+    // 等一次注定失败的请求。两处共用 MAX_EXPORT_RECORDS 这一个数字。
+    if (ids.length > MAX_EXPORT_RECORDS) {
+      setError({ key: 'relations.exportTooMany' })
+      return
+    }
     const result = await exportBibtex(ids)
     if (!result.ok || typeof result.bibtex !== 'string') {
-      setError({
-        key: 'relations.exportFailed',
-        detail: result.error || undefined
-      })
+      setError(literatureErrorMessage(result.error, undefined, 'relations.exportFailed'))
       return
     }
     // 成功提示的条数以后端实际写入的条目为准: 选中的 id 可能已在别处被删除, 拿请求数会虚报。
@@ -1111,7 +1360,7 @@ export function LiteratureList(): React.JSX.Element {
     if (saved.kind === 'saved') {
       toast({
         title: literature('batch.exportSucceeded', { count: exported }),
-        tone: 'success'
+        tone: 'success',
       })
       return
     }
@@ -1133,27 +1382,28 @@ export function LiteratureList(): React.JSX.Element {
    * 绝不能因为它挡住导入。
    */
   const resolveDestinationLabel = async (): Promise<string> => {
-    const scope = query.without_collection
-      ? literature('panel.unfiled')
-      : destination.projectId
-        ? literature('navigation.project')
-        : literature('navigation.overview')
+    const importDestination = activeImportDestination()
+    const scope =
+      importDestinationOverride.current === null && query.without_collection
+        ? literature('panel.unfiled')
+        : importDestination.projectId
+          ? literature('navigation.project')
+          : literature('navigation.overview')
     try {
       const [facets, projects] = await Promise.all([
-        getLiteratureFacets({ project_id: destination.projectId || undefined }),
-        getLiteratureProjects()
+        getLiteratureFacets({ project_id: importDestination.projectId || undefined }),
+        getLiteratureProjects(),
       ])
-      return importDestinationLabel(
-        destination,
-        facets.collections,
-        projects.projects,
-        scope
-      )
+      return importDestinationLabel(importDestination, facets.collections, projects.projects, scope)
     } catch {
       return scope
     }
   }
   const startImport = async (source: string): Promise<void> => {
+    if (source === 'identifier') {
+      setIdentifierOpen(true)
+      return
+    }
     if (source === 'files') {
       pdfInput.current?.click()
       return
@@ -1173,19 +1423,14 @@ export function LiteratureList(): React.JSX.Element {
       setZoteroCollections(true)
       setZoteroDestination('')
       try {
-        const [preview, label] = await Promise.all([
-          previewZotero(),
-          resolveDestinationLabel()
-        ])
+        const [preview, label] = await Promise.all([previewZotero(), resolveDestinationLabel()])
         setZoteroPreview(preview)
         setZoteroDestination(label)
         setZoteroSelection(new Map([[preview.library.key, true]]))
       } catch (reason) {
         setZoteroError(
           literatureErrorMessage(
-            reason instanceof LiteratureApiError
-              ? reason.failure.code
-              : undefined,
+            reason instanceof LiteratureApiError ? reason.failure.code : undefined,
             reason instanceof Error ? reason.message : undefined,
             'zotero.connectionFailed'
           )
@@ -1200,9 +1445,7 @@ export function LiteratureList(): React.JSX.Element {
     } catch (reason) {
       setError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'batch.importFailed'
         )
@@ -1214,6 +1457,7 @@ export function LiteratureList(): React.JSX.Element {
   useEffect(() => {
     if (!importRequest) return
     catalogue.consumeImportRequest()
+    importDestinationOverride.current = importRequest.destination
     void startImport(importRequest.source)
   }, [importRequest])
   const startZoteroImport = async (): Promise<void> => {
@@ -1224,24 +1468,28 @@ export function LiteratureList(): React.JSX.Element {
     setZoteroError(null)
     try {
       if (!zoteroPreview) return
+      const importDestination = activeImportDestination()
       const selection = zoteroSelectionDirectives(zoteroSelection)
       setTask(
-        await createImportTask('zotero', {
-          project_id: destination.projectId,
-          collection_id: destination.collectionId,
-          selection,
-          include_unfiled: zoteroUnfiled,
-          import_collections: zoteroCollections,
-          preview_revision: zoteroPreview.revision
-        }, zoteroSubmitKey.current)
+        await createImportTask(
+          'zotero',
+          {
+            project_id: importDestination.projectId,
+            collection_id: importDestination.collectionId,
+            selection,
+            include_unfiled: zoteroUnfiled,
+            import_collections: zoteroCollections,
+            preview_revision: zoteroPreview.revision,
+          },
+          zoteroSubmitKey.current
+        )
       )
       setZoteroOpen(false)
+      importDestinationOverride.current = null
     } catch (reason) {
       setZoteroError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'zotero.importFailed'
         )
@@ -1250,39 +1498,30 @@ export function LiteratureList(): React.JSX.Element {
       setZoteroSubmitting(false)
     }
   }
-  const toggleZoteroNode = (
-    node: ZoteroCollectionNode,
-    selected: boolean
-  ): void => {
+  const toggleZoteroNode = (node: ZoteroCollectionNode, selected: boolean): void => {
     setZoteroSelection((current) => {
       return updateZoteroSelection(current, node, selected)
     })
   }
   const importPdfFiles = async (
-    input: FileList | readonly File[]
+    input: FileList | readonly File[],
+    importDestination = destination
   ): Promise<void> => {
     const files = Array.from(input)
     if (!files.length) return
-    const records = files.map(
-      (file, index): PdfImportRecord => ({
-        id: `${index}:${file.name}:${file.size}:${file.lastModified}`,
-        file,
-        name: file.name,
-        progress: 0,
-        status: 'pending'
-      })
-    )
+    const records = files.map((file, index): PdfImportRecord => ({
+      id: `${index}:${file.name}:${file.size}:${file.lastModified}`,
+      file,
+      name: file.name,
+      progress: 0,
+      status: 'pending',
+    }))
     setPdfImports(records)
     setPdfImportOpen(true)
     setError(null)
-    const updateImport = (
-      id: string,
-      update: Partial<PdfImportRecord>
-    ): void => {
+    const updateImport = (id: string, update: Partial<PdfImportRecord>): void => {
       setPdfImports((current) =>
-        current.map((record) =>
-          record.id === id ? { ...record, ...update } : record
-        )
+        current.map((record) => (record.id === id ? { ...record, ...update } : record))
       )
     }
     let landed = 0
@@ -1293,7 +1532,7 @@ export function LiteratureList(): React.JSX.Element {
       ) {
         updateImport(record.id, {
           status: 'failed',
-          error: { key: 'pdfImport.onlyPdf' }
+          error: { key: 'pdfImport.onlyPdf' },
         })
         setPdfImportOpen(true)
         continue
@@ -1301,15 +1540,14 @@ export function LiteratureList(): React.JSX.Element {
       try {
         const item = await importPdf(
           record.file,
-          (progress, phase) =>
-            updateImport(record.id, { progress, status: phase }),
-          destination.projectId,
-          destination.collectionId
+          (progress, phase) => updateImport(record.id, { progress, status: phase }),
+          importDestination.projectId,
+          importDestination.collectionId
         )
         updateImport(record.id, {
           progress: 100,
           status: 'completed',
-          title: item.title
+          title: item.title,
         })
         setNewlyImported((current) => new Set(current).add(item.id))
         landed += 1
@@ -1318,12 +1556,10 @@ export function LiteratureList(): React.JSX.Element {
         updateImport(record.id, {
           status: 'failed',
           error: literatureErrorMessage(
-            reason instanceof LiteratureApiError
-              ? reason.failure.code
-              : undefined,
+            reason instanceof LiteratureApiError ? reason.failure.code : undefined,
             reason instanceof Error ? reason.message : undefined,
             'pdfImport.parseFailed'
-          )
+          ),
         })
       }
     }
@@ -1333,43 +1569,107 @@ export function LiteratureList(): React.JSX.Element {
   const uploadPdf = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const files = [...(event.target.files ?? [])]
     event.target.value = ''
-    void importPdfFiles(files)
+    const importDestination = activeImportDestination()
+    importDestinationOverride.current = null
+    void importPdfFiles(files, importDestination)
   }
   const clearPdfDrop = (): void => {
     pdfDragDepth.current = 0
     setPdfDropActive(false)
   }
-  const uploadBibliography = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ): Promise<void> => {
+  const uploadBibliography = async (event: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
     const files = [...(event.target.files ?? [])]
     event.target.value = ''
     if (!files.length) return
+    const importDestination = activeImportDestination()
+    importDestinationOverride.current = null
     setError(null)
     try {
       const result = await importBibliography(files, {
-        projectId: destination.projectId,
-        collectionId: destination.collectionId
+        projectId: importDestination.projectId,
+        collectionId: importDestination.collectionId,
       })
-      setNewlyImported(
-        (current) =>
-          new Set([...current, ...result.items.map((item) => item.id)])
-      )
+      setNewlyImported((current) => new Set([...current, ...result.items.map((item) => item.id)]))
       if (result.items.length > 0) revealImported()
     } catch (reason) {
       setError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'batch.bibliographyFailed'
         )
       )
     }
   }
+  const renderImportMenu = (iconOnly = false, empty = false): React.JSX.Element => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        {projectPresentation ? (
+          <LibraryAction
+            data-testid="literature-toolbar-import"
+            variant={empty ? 'outline' : 'primary'}
+            collapsible={!empty}
+            label={literature('panel.projectAdd')}
+          />
+        ) : iconOnly ? (
+          <IconButton
+            data-testid="literature-toolbar-import"
+            variant="outline"
+            label={literature('panel.import')}
+            icon={<IconFont type="icon-line-operation-add" />}
+          />
+        ) : (
+          <Button
+            variant="outline"
+            icon={
+              <IconFont
+                type="icon-line-operation-add"
+                className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none"
+              />
+            }
+          >
+            {literature('panel.import')}
+          </Button>
+        )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-[var(--vds-library-import-menu-width)]">
+        {scopeProjectId ? (
+          <>
+            <DropdownMenuItem
+              onSelect={() => {
+                act.openWorkbenchView('literature', {
+                  returnProjectId: scopeProjectId,
+                })
+              }}
+            >
+              <Link />
+              {literature('panel.linkFromOverview')}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        {/* 菜单靠视口右缘（工具栏 .lit-actions 右对齐），提示气泡只能向左展开。 */}
+        {IMPORT_SOURCES.map((source) => (
+          <ImportSourceItem
+            key={source.value}
+            hint={source.hintKey ? literature(source.hintKey) : undefined}
+            hintSide="left"
+            icon={source.icon}
+            label={literature(source.labelKey)}
+            onSelect={() => {
+              importDestinationOverride.current = null
+              void startImport(source.value)
+            }}
+          />
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
   return (
-    <section className="lit-page" data-testid="literature-overview">
+    <section
+      className="lit-page h-full flex flex-col bg-[var(--vds-bg-gray-default)] text-[var(--vds-text-primary)] [--lit-muted:var(--vds-text-tertiary)] [--lit-green:var(--vds-brand-bg-default)] [--lit-muted-bg:var(--vds-bg-gray-default)] [--lit-text:var(--vds-text-primary)] [--lit-line:var(--vds-border-default)]"
+      data-testid="literature-overview"
+    >
       <Input
         ref={pdfInput}
         className="hidden"
@@ -1388,6 +1688,17 @@ export function LiteratureList(): React.JSX.Element {
         aria-label={literature('pdfImport.chooseBibliography')}
         onChange={(event) => void uploadBibliography(event)}
       />
+      {identifierOpen ? (
+        <IdentifierImport
+          onClose={() => setIdentifierOpen(false)}
+          onImported={(item) => {
+            importDestinationOverride.current = null
+            setNewlyImported((current) => new Set(current).add(item.id))
+            revealImported()
+          }}
+          resolveDestination={activeImportDestination}
+        />
+      ) : null}
       <Dialog
         open={pdfImportOpen}
         onOpenChange={(open) => {
@@ -1400,9 +1711,7 @@ export function LiteratureList(): React.JSX.Element {
         <DialogContent className="w-[min(720px,calc(100vw-48px))] !gap-[var(--vds-space-2)]">
           <DialogHeader>
             <DialogTitle>{literature('panel.importPdf')}</DialogTitle>
-            <DialogDescription>
-              {literature('pdfImport.description')}
-            </DialogDescription>
+            <DialogDescription>{literature('pdfImport.description')}</DialogDescription>
           </DialogHeader>
           <ScrollArea
             className="max-h-[min(420px,55vh)]"
@@ -1414,12 +1723,12 @@ export function LiteratureList(): React.JSX.Element {
                 className="rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]"
               >
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-[var(--vds-space-3)]">
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-[calc(var(--vds-space-3)/2)]">
+                  <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-[calc(var(--vds-space-3)/2)]">
+                    <div className="contents">
                       {React.createElement(fileIconForName(record.name), {
                         className: 'shrink-0 text-[var(--vds-icon-outline-default)]',
                         size: 15,
-                        strokeWidth: 1.8
+                        strokeWidth: 1.8,
                       })}
                       <strong
                         className="block min-w-0 truncate text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]"
@@ -1429,20 +1738,22 @@ export function LiteratureList(): React.JSX.Element {
                       </strong>
                     </div>
                     {!['completed', 'failed'].includes(record.status) ? (
-                      <span className="ml-[calc(15px+var(--vds-space-3)/2)] mt-[var(--vds-space-1)] block text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
-                      {record.status === 'pending'
-                        ? literature('pdfImport.pending')
-                        : record.status === 'uploading'
-                          ? literature('pdfImport.uploading', {
-                              progress: record.progress
-                            })
-                          : literature('pdfImport.parsing')}
+                      <span className="col-start-2 mt-[var(--vds-space-1)] block text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
+                        {record.status === 'pending'
+                          ? literature('pdfImport.pending')
+                          : record.status === 'uploading'
+                            ? literature('pdfImport.uploading', {
+                                progress: record.progress,
+                              })
+                            : literature('pdfImport.parsing')}
                       </span>
                     ) : null}
                   </div>
                   {record.status === 'completed' || record.status === 'failed' ? (
                     <Tag tone={record.status === 'completed' ? 'success' : 'error'}>
-                      {literature(record.status === 'completed' ? 'pdfImport.completed' : 'pdfImport.failed')}
+                      {literature(
+                        record.status === 'completed' ? 'pdfImport.completed' : 'pdfImport.failed'
+                      )}
                     </Tag>
                   ) : (
                     <Spinner size="sm" />
@@ -1471,9 +1782,7 @@ export function LiteratureList(): React.JSX.Element {
                     className="mt-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] !px-[var(--vds-space-4)] !py-[var(--vds-space-3)]"
                     tone="error"
                     title={literature('pdfImport.failure')}
-                    description={
-                      record.error.detail ?? literature(record.error.key)
-                    }
+                    description={record.error.detail ?? literature(record.error.key)}
                   />
                 ) : null}
               </div>
@@ -1486,13 +1795,9 @@ export function LiteratureList(): React.JSX.Element {
                   ? 'pdfImport.summaryWithFailures'
                   : 'pdfImport.summary',
                 {
-                  completed: pdfImports.filter(
-                    (record) => record.status === 'completed'
-                  ).length,
+                  completed: pdfImports.filter((record) => record.status === 'completed').length,
                   total: pdfImports.length,
-                  failed: pdfImports.filter(
-                    (record) => record.status === 'failed'
-                  ).length
+                  failed: pdfImports.filter((record) => record.status === 'failed').length,
                 }
               )}
             </span>
@@ -1507,16 +1812,17 @@ export function LiteratureList(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={zoteroOpen} onOpenChange={setZoteroOpen}>
-        <DialogContent
-          data-ways="zotero"
-          className="w-[min(720px,calc(100vw-48px))]"
-        >
+      <Dialog
+        open={zoteroOpen}
+        onOpenChange={(open) => {
+          setZoteroOpen(open)
+          if (!open) importDestinationOverride.current = null
+        }}
+      >
+        <DialogContent data-ways="zotero" className="w-[min(720px,calc(100vw-48px))]">
           <DialogHeader>
             <DialogTitle>{literature('zotero.title')}</DialogTitle>
-            <DialogDescription>
-              {literature('zotero.description')}
-            </DialogDescription>
+            <DialogDescription>{literature('zotero.description')}</DialogDescription>
           </DialogHeader>
           <div className="flex min-h-40 flex-col gap-3 py-3">
             {zoteroLoading ? (
@@ -1535,14 +1841,12 @@ export function LiteratureList(): React.JSX.Element {
                 <div className="flex items-center gap-3 rounded-md border border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-3 py-2">
                   <Icon name="plug" size={16} />
                   <div className="min-w-0 flex-1">
-                    <strong className="block text-sm">
-                      {literature('zotero.connected')}
-                    </strong>
+                    <strong className="block text-sm">{literature('zotero.connected')}</strong>
                     <span className="text-xs text-[var(--vds-text-secondary)]">
                       {literature('zotero.summary', {
                         items: zoteroPreview.items,
                         pdfs: zoteroPreview.pdfs,
-                        collections: zoteroPreview.collections
+                        collections: zoteroPreview.collections,
                       })}
                     </span>
                   </div>
@@ -1553,7 +1857,7 @@ export function LiteratureList(): React.JSX.Element {
                   viewportClassName="p-[var(--vds-space-2)]"
                   viewportProps={{
                     role: 'tree',
-                    'aria-label': literature('zotero.tree')
+                    'aria-label': literature('zotero.tree'),
                   }}
                 >
                   <ZoteroTreeNode
@@ -1568,9 +1872,9 @@ export function LiteratureList(): React.JSX.Element {
                 </ScrollArea>
                 <div className="rounded-md border border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-3">
                   {zoteroDestination ? (
-                    <p className="m-0 mb-2 truncate text-xs text-[var(--vds-text-primary)]">
+                    <p className="m-0 mb-[var(--vds-space-2)] truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-caption)] text-[var(--vds-text-primary)]">
                       {literature('panel.importDestination', {
-                        target: zoteroDestination
+                        target: zoteroDestination,
                       })}
                     </p>
                   ) : null}
@@ -1590,7 +1894,13 @@ export function LiteratureList(): React.JSX.Element {
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setZoteroOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setZoteroOpen(false)
+                importDestinationOverride.current = null
+              }}
+            >
               {literature('batch.cancel')}
             </Button>
             <Button
@@ -1608,7 +1918,16 @@ export function LiteratureList(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <header className="lit-toolbar" data-workbench-divider>
+      <header
+        className={
+          projectPresentation
+            ? returnProject
+              ? 'shrink-0 p-[var(--vds-space-5)] pb-0'
+              : 'contents'
+            : 'lit-toolbar min-h-[var(--vds-workbench-content-toolbar-height)] py-[var(--vds-library-toolbar-padding-block)] px-[var(--vds-library-toolbar-padding-inline)] border-b border-[var(--vds-border-default)] flex items-center justify-end gap-[var(--vds-space-2)] min-w-0 flex-wrap'
+        }
+        data-workbench-divider
+      >
         {returnProject ? (
           <Button
             data-testid="literature-return-project"
@@ -1618,110 +1937,141 @@ export function LiteratureList(): React.JSX.Element {
             icon={<ArrowLeft />}
             onClick={() => {
               act.selectProject(returnProject.id)
-              act.openWorkbenchView('literature', { preserveProject: true })
+              act.openWorkbenchView('resource', { preserveProject: true })
             }}
           >
             {literature('navigation.returnProject')}
           </Button>
         ) : null}
         {selected.length > 0 ? (
-          <div className="lit-batch">
-            <strong>
-              {literature('batch.selected', { count: selected.length })}
-            </strong>
-            {!projectId ? (
+          renderSelection(
+            <div
+              data-testid="literature-selection-toolbar"
+              className="flex min-w-max flex-1 items-center justify-end gap-[var(--vds-space-2)] whitespace-nowrap text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]"
+            >
+              <span className="font-[var(--vds-fw-regular)]">
+                {literature('batch.selected', { count: selected.length })}
+              </span>
+              <MetadataBatch
+                entries={selected.map((id) => ({
+                  id,
+                  title: items.find((item) => item.id === id)?.title ?? id,
+                }))}
+                projectId={projectId}
+                triggerVariant="tertiary"
+              />
               <Button
                 size="md"
-                variant="secondary"
-                icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-                onClick={() => void openBatch('project')}
+                variant="tertiary"
+                icon={<ArrowUpFromLine size={14} />}
+                onClick={() => void exportSelected()}
               >
-                {literature('linkProject.title')}
+                {literature('batch.export')}
               </Button>
-            ) : null}
-            <Button
-              size="md"
-              variant="secondary"
-              icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-              onClick={() => void openBatch('collection')}
-            >
-              {projectId
-                ? literature('batch.addCollection')
-                : literature('batch.collection')}
-            </Button>
-            <Button
-              size="md"
-              variant="secondary"
-              icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-              onClick={() => void openBatch('tag')}
-            >
-              {literature('batch.tag')}
-            </Button>
-            <Button
-              size="md"
-              variant="secondary"
-              icon={<ArrowDownToLine size={14} />}
-              onClick={() => void exportSelected()}
-            >
-              {literature('batch.export')}
-            </Button>
-            <Button
-              size="md"
-              variant="danger"
-              icon={<Trash size={14} />}
-              onClick={() => setDeleteConfirmOpen(true)}
-            >
-              {projectId ? literature('batch.removeProject') : ui('delete')}
-            </Button>
-            <AlertDialog
-              open={deleteConfirmOpen}
-              onOpenChange={setDeleteConfirmOpen}
-            >
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>
-                    {projectId
-                      ? literature('batch.removeProject')
-                      : literature('batch.deleteTitle')}
-                  </AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {projectId
-                      ? literature('batch.removeDescription', {
-                          count: selected.length
-                        })
-                      : literature('batch.deleteDescription', {
-                          count: selected.length
-                        })}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{ui('cancel')}</AlertDialogCancel>
-                  <AlertDialogAction
-                    className="![background:var(--vds-error-bg-default)] ![color:var(--vds-static-white)]"
-                    onClick={(event) => {
-                      event.preventDefault()
-                      void deletePicked()
-                    }}
-                  >
-                    {projectId
-                      ? literature('batch.confirmRemove')
-                      : literature('batch.confirmDelete')}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-            <Button
-              size="md"
-              variant="outline"
-              onClick={() => catalogue.clear()}
-            >
-              {ui('cancel')}
-            </Button>
-          </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="md" variant="tertiary" icon={<Plus />}>
+                    {literature('batch.addTo')}
+                    <ChevronDown />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => void openBatch('collection')}>
+                    {literature('batch.collection')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void openBatch('project')}>
+                    {literature('batch.project')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void openBatch('tag')}>
+                    {literature('batch.tag')}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button
+                size="md"
+                variant="danger"
+                icon={<Trash size={14} />}
+                onClick={() => setDeleteConfirmOpen(true)}
+              >
+                {ui('delete')}
+              </Button>
+              <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      {projectId
+                        ? literature('batch.removeProject')
+                        : literature('batch.deleteTitle')}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      {projectId
+                        ? literature('batch.removeDescription', {
+                            count: selected.length,
+                          })
+                        : literature('batch.deleteDescription', {
+                            count: selected.length,
+                          })}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>{ui('cancel')}</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="![background:var(--vds-error-bg-default)] ![color:var(--vds-static-white)]"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        void deletePicked()
+                      }}
+                    >
+                      {projectId
+                        ? literature('batch.confirmRemove')
+                        : literature('batch.confirmDelete')}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+              <Button size="md" variant="tertiary" onClick={() => catalogue.clear()}>
+                {ui('cancel')}
+              </Button>
+            </div>
+          )
+        ) : projectPresentation ? (
+          <LibraryToolbar
+            searchVisible
+            query={search}
+            onQuery={setSearch}
+            placeholder={literature('panel.projectSearchPlaceholder')}
+            refreshing={loading}
+            onRefresh={() => catalogue.reload()}
+            leading={
+              scopeProjectId && (
+                <Groups
+                  key={scopeProjectId}
+                  projectId={scopeProjectId}
+                  collections={projectCollections}
+                  value={query.without_collection ? 'unfiled' : (query.collection_id?.[0] ?? 'all')}
+                  onValueChange={(value) =>
+                    catalogue.query({
+                      collection_id: value !== 'all' && value !== 'unfiled' ? [value] : undefined,
+                      recent: undefined,
+                      without_collection: value === 'unfiled' ? true : undefined,
+                    })
+                  }
+                  onCollectionsChange={(items) =>
+                    setCollectionCatalog({ projectId: scopeProjectId, items })
+                  }
+                  onReload={() => catalogue.reload()}
+                />
+              )
+            }
+          >
+            {renderImportMenu(true)}
+          </LibraryToolbar>
         ) : (
-          <div className="lit-actions">
+          <div className="lit-actions ml-auto flex items-center gap-[var(--vds-library-list-actions-gap)] [&_.vds-icon-button]:w-[var(--vds-library-action-icon-button-size)] [&_.vds-icon-button]:h-[var(--vds-library-action-icon-button-size)] [&_.vds-icon-button]:text-[var(--vds-text-tertiary)]">
+            <MetadataBatch entries={[]} projectId={projectId} />
+            {renderImportMenu(true)}
             <form
-              className="lit-search"
+              className="lit-search flex w-[var(--vds-library-list-search-width)] items-center gap-[var(--vds-library-list-gap)] ml-[var(--vds-library-list-search-margin-left)]"
               onSubmit={(event) => event.preventDefault()}
             >
               <SearchBox
@@ -1735,12 +2085,11 @@ export function LiteratureList(): React.JSX.Element {
         )}
       </header>
       {task ? (
-        <div className="lit-task">
+        <div className="lit-task flex items-center gap-[var(--vds-library-list-gap)] border-b border-[var(--vds-border-default)] p-[var(--vds-library-list-task-padding)] text-[length:var(--vds-font-body-lv1)]">
           <span>
-            {literature('list.importTask')} ·{' '}
-            {literature(literatureTaskStatusMessage(task.status))}
+            {literature('list.importTask')} · {literature(literatureTaskStatusMessage(task.status))}
           </span>
-          <ProgressBar value={Math.round(task.progress * 100)} />
+          <ProgressBar className="flex-1" value={Math.round(task.progress * 100)} />
           <span>
             {task.completed_count}/{task.total_count}
           </span>
@@ -1752,19 +2101,53 @@ export function LiteratureList(): React.JSX.Element {
           ) : null}
         </div>
       ) : null}
+      {query.download_session_id ? (
+        <Alert
+          data-testid="literature-download-scope"
+          description={literature('downloads.scope')}
+          action={
+            <Button size="sm" variant="ghost" onClick={() => catalogue.navigate()}>
+              {literature('downloads.exitScope')}
+            </Button>
+          }
+        />
+      ) : null}
+      {collectionsFailed ? (
+        <div
+          className="lit-error m-[var(--vds-library-list-error-margin)] flex items-center justify-between gap-[var(--vds-library-list-gap)] p-[var(--vds-library-list-error-padding)]"
+          role="alert"
+        >
+          <span>{layoutText('readFailed')}</span>
+          <Button size="sm" variant="ghost" onClick={() => catalogue.reload()}>
+            {ui('retry')}
+          </Button>
+        </div>
+      ) : null}
       {error ? (
-        <div className="lit-error">
+        <div className="lit-error m-[var(--vds-library-list-error-margin)] flex items-center justify-between gap-[var(--vds-library-list-gap)] p-[var(--vds-library-list-error-padding)]">
           <span>{error.detail ?? literature(error.key)}</span>
           <Button size="sm" variant="ghost" onClick={() => catalogue.reload()}>
             {ui('retry')}
           </Button>
         </div>
       ) : null}
-      <div className={`lit-body${focusedId ? ' has-detail' : ''} isolate p-4`}>
+      <div
+        className={`lit-body relative flex flex-1 min-h-0 items-stretch overflow-hidden${focusedId ? ' has-detail' : ''} isolate ${projectPresentation ? 'p-[var(--vds-space-4)]' : 'p-4'}`}
+      >
         <div
           className="relative flex flex-1 min-w-0"
           data-drop-active={pdfDropActive ? 'true' : 'false'}
           data-testid="literature-drop-target"
+          onPointerDownCapture={(event) => {
+            if (event.button !== 0 || !focusedId) return
+            // 落在行上的按下交给行自己的 onClick 去决定开还是关: 这里先关一次的话,
+            // 随后的 click 读到的已经是清空后的 focusedId, 抽屉会被立刻重新打开,
+            // 于是「再点一次收起」永远不成立。行内的复选框、附件展开等子控件也
+            // 因此保住抽屉状态 —— 它们本来就在 click 上 stopPropagation。
+            if ((event.target as HTMLElement).closest(`.${ROW_SELECTOR_CLASS}`)) return
+            catalogue.focus(null)
+            setDetailIntent(null)
+          }}
           onDragEnter={(event) => {
             if (!hasDraggedFiles(event.dataTransfer)) return
             event.preventDefault()
@@ -1792,15 +2175,19 @@ export function LiteratureList(): React.JSX.Element {
             void importPdfFiles(event.dataTransfer.files)
           }}
         >
-          <div className="lit-table flex-1 min-w-0 overflow-x-auto overflow-y-auto rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-line-1)] bg-[var(--vds-bg-gray-default)]">
+          <div
+            className={`lit-table ${TABLE_EMPTY_STATE_CLASS} flex-1 w-full min-w-0 overflow-x-auto overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-line-1)] ${projectPresentation ? '[&>.lit-table-head]:min-w-[max(var(--vds-library-paper-width),var(--literature-grid-width))] [&>.lit-row]:min-w-[max(var(--vds-library-paper-width),var(--literature-grid-width))] [&>.lit-attachment-row]:min-w-[max(var(--vds-library-paper-width),var(--literature-grid-width))] [&_.lit-table-head]:bg-[var(--vds-library-header-background)]' : ''} bg-[var(--vds-bg-gray-default)]`}
+            style={{ '--literature-grid-width': `${gridWidth}px` } as React.CSSProperties}
+            ref={tableScroll}
+          >
             <div
-              className="lit-table-head"
+              className="lit-table-head sticky top-0 z-[var(--vds-z-local-top)] h-[var(--vds-library-header-height)] relative grid min-w-[var(--literature-grid-width)] library-narrow:min-w-[max(var(--vds-library-table-narrow-min-width),var(--literature-grid-width))] items-center border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-hover)] text-[var(--vds-text-tertiary)] text-[length:var(--vds-font-body-lv2)] [&>span]:px-[var(--vds-library-table-cell-padding-inline)] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap"
               style={{ gridTemplateColumns: grid }}
             >
-              <div className="lit-sticky-cells">
+              <div className={STICKY_HEADER_CELLS_CLASS}>
                 <span />
                 <Checkbox
-                  checked={allChecked}
+                  checked={selectAllState}
                   label={literature('list.selectAll')}
                   onCheckedChange={(checked) =>
                     catalogue.selectAll(
@@ -1809,7 +2196,7 @@ export function LiteratureList(): React.JSX.Element {
                     )
                   }
                 />
-                <span className="lit-pdf-cell">
+                <span className="lit-pdf-cell grid place-items-center text-[var(--vds-text-tertiary)]">
                   <IconButton
                     label={literature('list.sortByAttachment')}
                     variant="ghostIcon"
@@ -1822,59 +2209,65 @@ export function LiteratureList(): React.JSX.Element {
               {visibleColumns.map((column) => (
                 <span
                   key={column.key}
-                  className="lit-column-head"
+                  className={`lit-column-head relative flex h-full items-center p-0 font-[var(--vds-fw-regular)] [&_button]:!font-[var(--vds-fw-regular)]${column.key === 'title' ? ' text-[var(--vds-text-primary)]' : ''}`}
                   draggable
                   onDragStart={() => setDraggedColumn(column.key)}
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={() => {
                     if (!draggedColumn || draggedColumn === column.key) return
                     const next = [...columns]
-                    const from = next.findIndex(
-                      (entry) => entry.key === draggedColumn
-                    )
-                    const to = next.findIndex(
-                      (entry) => entry.key === column.key
-                    )
+                    const from = next.findIndex((entry) => entry.key === draggedColumn)
+                    const to = next.findIndex((entry) => entry.key === column.key)
                     const [moved] = next.splice(from, 1)
                     next.splice(to, 0, moved)
                     saveColumns(next)
                     setDraggedColumn(null)
                   }}
                 >
-                  <Button
-                    variant="ghost"
-                    size="md"
-                    disabled={!COLUMN_META[column.key].sort}
-                    onClick={() => {
-                      const sort = COLUMN_META[column.key].sort
-                      if (!sort) return
-                      applySort(sort)
-                    }}
-                  >
-                    <EllipsisText
-                      tooltipPortalled
-                      tooltipSide="bottom"
-                      wrapperClassName="min-w-0"
+                  {column.key === 'tags' ? (
+                    <TagFilter />
+                  ) : COLUMN_META[column.key].sort ? (
+                    <Button
+                      variant="ghost"
+                      size="md"
+                      className={`${LIBRARY_HEADER_ACTION_CLASS} !mx-[var(--vds-space-2)] !w-[calc(100%-var(--vds-space-2)-var(--vds-space-2))]`}
+                      onClick={() => applySort(COLUMN_META[column.key].sort!)}
                     >
-                      {literature(COLUMN_META[column.key].labelKey)}
-                    </EllipsisText>
-                    {query.sort === COLUMN_META[column.key].sort ? (
-                      <span
-                        className={query.order === 'asc' ? 'rotate-180' : ''}
+                      <EllipsisText
+                        tooltipPortalled
+                        tooltipSide="bottom"
+                        wrapperClassName="min-w-0"
                       >
-                        <Icon name="chevron-down" size={11} />
-                      </span>
-                    ) : null}
-                  </Button>
+                        {projectPresentation && column.key === 'publication'
+                          ? literature('columns.journal')
+                          : literature(COLUMN_META[column.key].labelKey)}
+                      </EllipsisText>
+                      {query.sort === COLUMN_META[column.key].sort ? (
+                        <span className={query.order === 'asc' ? 'rotate-180' : ''}>
+                          <Icon name="chevron-down" size={11} />
+                        </span>
+                      ) : null}
+                    </Button>
+                  ) : (
+                    <span className="flex h-full min-w-0 items-center px-[var(--vds-space-2)]">
+                      <EllipsisText
+                        tooltipPortalled
+                        tooltipSide="bottom"
+                        wrapperClassName="min-w-0"
+                      >
+                        {literature(COLUMN_META[column.key].labelKey)}
+                      </EllipsisText>
+                    </span>
+                  )}
                   <i
-                    className="lit-column-resizer"
+                    className={COLUMN_RESIZER_CLASS}
                     onPointerDown={(event) => resizeColumn(column.key, event)}
                   />
                 </span>
               ))}
             </div>
             {loading ? (
-              <div className="lit-loading">
+              <div className="grid min-h-[var(--vds-library-loading-min-height)] place-items-center">
                 <Spinner aria-label={literature('list.loading')} />
               </div>
             ) : items.length === 0 ? (
@@ -1882,47 +2275,7 @@ export function LiteratureList(): React.JSX.Element {
                 <EmptyState
                   image={{ src: emptyImage, alt: '' }}
                   title={literature('list.empty')}
-                  action={
-                    <DropdownMenu open={emptyImportOpen} onOpenChange={setEmptyImportOpen}>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}>
-                          {literature('panel.import')}
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent className="w-52">
-                        {projectId ? (
-                          <>
-                            <DropdownMenuItem
-                              onSelect={() => {
-                                act.openWorkbenchView('literature', { returnProjectId: projectId })
-                              }}
-                            >
-                              <Link />
-                              {literature('panel.linkFromOverview')}
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                          </>
-                        ) : null}
-                        {IMPORT_SOURCES.map((source) => (
-                          <DropdownMenuItem
-                            key={source.value}
-                            onSelect={() => {
-                              void startImport(source.value)
-                            }}
-                          >
-                            {source.icon === 'local-pdf' ? (
-                              <MonitorDown />
-                            ) : source.icon === 'bib-ris' ? (
-                              <FileDown />
-                            ) : (
-                              <IconFont type="icon-zotero" />
-                            )}
-                            {literature(source.labelKey)}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  }
+                  action={renderImportMenu(false, true)}
                 />
               ) : (
                 <EmptyState
@@ -1932,63 +2285,30 @@ export function LiteratureList(): React.JSX.Element {
                 />
               )
             ) : (
-              items.flatMap((item) => [
-                <Row
-                  key={item.id}
-                  item={item}
-                  columns={scopedColumns}
-                  grid={grid}
-                  checked={picked.has(item.id)}
-                  isNew={newlyImported.has(item.id)}
-                  expanded={expanded.has(item.id)}
-                  focused={focusedId === item.id && !focusedAttachmentId}
-                  onToggle={() =>
-                    setExpanded((current) => {
-                      const next = new Set(current)
-                      if (next.has(item.id)) next.delete(item.id)
-                      else next.add(item.id)
-                      return next
-                    })
-                  }
-                  onOpen={() => {
-                    setNewlyImported((current) => {
-                      if (!current.has(item.id)) return current
-                      const next = new Set(current)
-                      next.delete(item.id)
-                      return next
-                    })
-                    catalogue.focus(item.id)
-                  }}
-                  onOpenFulltext={(attachmentId) =>
-                    act.openLiteratureAttachment(item.id, attachmentId)
-                  }
-                />,
-                ...(expanded.has(item.id)
-                  ? item.attachments.map((attachment) => (
+              <>
+                <div aria-hidden style={{ height: listPadTop }} />
+                {virtualRows.map((virtual) => {
+                  const entry = entries[virtual.index]
+                  if (!entry) return null
+                  if (entry.kind === 'attachment') {
+                    const { attachment, item } = entry
+                    return (
                       <div
                         key={attachment.id}
+                        data-index={virtual.index}
                         data-testid={`literature-attachment-${attachment.id}`}
-                        className={
-                          focusedAttachmentId === attachment.id
-                            ? 'lit-attachment-row is-focused'
-                            : 'lit-attachment-row'
-                        }
-                        onClick={() =>
-                          catalogue.focusAttachment(item.id, attachment.id)
-                        }
+                        ref={rowVirtualizer.measureElement}
+                        className={`${ATTACHMENT_ROW_CLASS}${focusedAttachmentId === attachment.id ? ' is-focused' : ''}`}
+                        onClick={() => catalogue.focusAttachment(item.id, attachment.id)}
                         onDoubleClick={
                           isAttachmentAvailable(attachment)
-                            ? () =>
-                                act.openLiteratureAttachment(
-                                  item.id,
-                                  attachment.id
-                                )
+                            ? () => act.openLiteratureAttachment(item.id, attachment.id)
                             : undefined
                         }
                       >
                         {React.createElement(fileIconForName(attachment.name), {
                           size: 16,
-                          strokeWidth: 1.8
+                          strokeWidth: 1.8,
                         })}
                         <EllipsisText
                           tooltip={attachment.name}
@@ -2000,9 +2320,71 @@ export function LiteratureList(): React.JSX.Element {
                             : attachment.name}
                         </EllipsisText>
                       </div>
-                    ))
-                  : [])
-              ])
+                    )
+                  }
+                  const { item, index } = entry
+                  return (
+                    <Row
+                      key={item.id}
+                      item={item}
+                      onItemUpdated={updateVisibleItem}
+                      onTagMinimumWidth={onTagMinimumWidth}
+                      entryIndex={virtual.index}
+                      columns={scopedColumns}
+                      projectPresentation={projectPresentation}
+                      grid={grid}
+                      checked={picked.has(item.id)}
+                      isNew={newlyImported.has(item.id)}
+                      expanded={expanded.has(item.id)}
+                      focused={focusedId === item.id && !focusedAttachmentId}
+                      projectId={projectId}
+                      onDragStart={
+                        projectPresentation && scopeProjectId
+                          ? (event) =>
+                              writeLiteratureDrag(
+                                event.dataTransfer,
+                                scopeProjectId,
+                                item,
+                                items.filter((entry) => selected.includes(entry.id))
+                              )
+                          : undefined
+                      }
+                      menu={{
+                        viewPdf: (attachmentId) =>
+                          act.openLiteratureAttachment(item.id, attachmentId),
+                        copyTitle: () => void copyItemTitle(item),
+                        viewInfo: () => openDetail(item),
+                        addNote: () => openDetail(item, 'note'),
+                        addAttachment: () => openDetail(item, 'attachment'),
+                        remove: () => setRemoveTarget(item),
+                      }}
+                      rowRef={(node) => {
+                        rowVirtualizer.measureElement(node)
+                        if (node) rowRefs.current.set(item.id, node)
+                        else rowRefs.current.delete(item.id)
+                      }}
+                      tabIndex={index === keyRowIndex ? 0 : -1}
+                      onKeyDown={(event) => rowKeyDown(index, event)}
+                      onToggle={() =>
+                        setExpanded((current) => {
+                          const next = new Set(current)
+                          if (next.has(item.id)) next.delete(item.id)
+                          else next.add(item.id)
+                          return next
+                        })
+                      }
+                      onActivate={() => {
+                        setKeyRowIndex(index)
+                        toggleDetail(item)
+                      }}
+                      onOpenFulltext={(attachmentId) =>
+                        act.openLiteratureAttachment(item.id, attachmentId)
+                      }
+                    />
+                  )
+                })}
+                <div aria-hidden style={{ height: listPadBottom }} />
+              </>
             )}
           </div>
           {pdfDropActive ? (
@@ -2016,7 +2398,9 @@ export function LiteratureList(): React.JSX.Element {
               </span>
             </div>
           ) : null}
-          <div className="lit-column-actions">
+          <div
+            className={`lit-column-actions absolute top-0 right-0 z-[var(--vds-z-scroll-control)] w-[var(--vds-library-column-actions-width)] h-[var(--vds-library-header-height)] flex items-center justify-center bg-[var(--vds-bg-gray-hover)] border-t border-r border-[var(--vds-line-1)] rounded-tr-[var(--vds-radius-6)] ${projectPresentation ? 'opacity-0 hover:opacity-[var(--vds-opacity-full)] focus-within:opacity-[var(--vds-opacity-full)]' : ''}`}
+          >
             <Popover>
               <PopoverTrigger asChild>
                 <IconButton
@@ -2046,9 +2430,7 @@ export function LiteratureList(): React.JSX.Element {
                       onCheckedChange={(visible) =>
                         saveColumns(
                           columns.map((entry) =>
-                            entry.key === column.key
-                              ? { ...entry, visible }
-                              : entry
+                            entry.key === column.key ? { ...entry, visible } : entry
                           )
                         )
                       }
@@ -2058,7 +2440,9 @@ export function LiteratureList(): React.JSX.Element {
                 <Button
                   className="mt-3 w-full"
                   variant="outline"
-                  onClick={() => saveColumns(DEFAULT_COLUMNS)}
+                  onClick={() =>
+                    saveColumns(projectPresentation ? PROJECT_DEFAULT_COLUMNS : DEFAULT_COLUMNS)
+                  }
                 >
                   {literature('list.restoreColumns')}
                 </Button>
@@ -2069,13 +2453,20 @@ export function LiteratureList(): React.JSX.Element {
         <Sheet
           open={Boolean(focusedId)}
           onOpenChange={(open) => {
-            if (!open) catalogue.focus(null)
+            if (open) return
+            catalogue.focus(null)
+            setDetailIntent(null)
           }}
         >
           <LiteratureDetail
-            id={focusedId}
-            attachmentId={focusedAttachmentId}
-            onClose={() => catalogue.focus(null)}
+            id={focusedId ?? retainedFocus.current.id}
+            attachmentId={focusedId ? focusedAttachmentId : retainedFocus.current.attachmentId}
+            intent={detailIntent}
+            onClose={() => {
+              catalogue.focus(null)
+              setDetailIntent(null)
+            }}
+            onIntentConsumed={clearDetailIntent}
             onItemUpdated={updateVisibleItem}
           />
         </Sheet>
@@ -2102,9 +2493,11 @@ export function LiteratureList(): React.JSX.Element {
             </DialogDescription>
           </DialogHeader>
           {batchDialog === 'project' && batchProjects.length === 0 ? (
-            <p className="m-0 text-xs leading-5 text-[var(--vds-text-secondary)]">
-              {literature('batch.noProjects')}
-            </p>
+            <EmptyState
+              variant="compact"
+              icon={<Icon name="folder" />}
+              title={literature('batch.noProjects')}
+            />
           ) : batchDialog === 'project' ? (
             <Select
               disabled={batchLoading || batchSaving}
@@ -2114,10 +2507,7 @@ export function LiteratureList(): React.JSX.Element {
                 setBatchSelection(new Set())
               }}
             >
-              <SelectTrigger
-                aria-label={literature('batch.selectProject')}
-                className="mb-3 w-full"
-              >
+              <SelectTrigger aria-label={literature('batch.selectProject')} className="mb-3 w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -2142,9 +2532,8 @@ export function LiteratureList(): React.JSX.Element {
             <p className="m-0 text-xs leading-5 text-[var(--vds-text-secondary)]">
               {literature('batch.noCustom')}
             </p>
-          ) : batchDialog === 'project' &&
-            batchProjects.length === 0 ? null : batchDialog === 'project' &&
-            collectionOptions.length === 0 ? (
+          ) : batchDialog === 'project' && batchProjects.length === 0 ? null : batchDialog ===
+              'project' && collectionOptions.length === 0 ? (
             <p className="m-0 text-xs leading-5 text-[var(--vds-text-secondary)]">
               {literature('batch.noProjectCollections')}
             </p>
@@ -2156,9 +2545,7 @@ export function LiteratureList(): React.JSX.Element {
             <ScrollArea
               className="max-h-[min(360px,50vh)] rounded-md border border-[var(--vds-border-default)]"
               viewportClassName={
-                batchDialog === 'tag'
-                  ? 'flex flex-wrap items-center gap-x-3 gap-y-2 p-3'
-                  : 'p-3'
+                batchDialog === 'tag' ? 'flex flex-wrap items-center gap-x-3 gap-y-2 p-3' : 'p-3'
               }
             >
               {batchDialog === 'tag'
@@ -2167,9 +2554,7 @@ export function LiteratureList(): React.JSX.Element {
                       key={value.id}
                       checked={batchSelection.has(value.id)}
                       label={value.name}
-                      onCheckedChange={(checked) =>
-                        toggleBatchValue(value.id, checked)
-                      }
+                      onCheckedChange={(checked) => toggleBatchValue(value.id, checked)}
                     />
                   ))
                 : batchCollectionRows(collectionOptions)}
@@ -2183,9 +2568,7 @@ export function LiteratureList(): React.JSX.Element {
               disabled={
                 batchLoading ||
                 batchSaving ||
-                (batchDialog === 'project'
-                  ? !batchProjectId
-                  : batchSelection.size === 0)
+                (batchDialog === 'project' ? !batchProjectId : batchSelection.size === 0)
               }
               loading={batchLoading || batchSaving}
               onClick={() => void submitBatch()}
@@ -2195,6 +2578,42 @@ export function LiteratureList(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <AlertDialog
+        open={removeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !removing) setRemoveTarget(null)
+        }}
+      >
+        <AlertDialogContent data-testid="literature-row-remove-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {projectId ? literature('batch.removeProject') : literature('batch.deleteTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {projectId
+                ? literature('list.rowMenu.removeDescription', {
+                    title: removeTarget?.title ?? '',
+                  })
+                : literature('list.rowMenu.deleteDescription', {
+                    title: removeTarget?.title ?? '',
+                  })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removing}>{ui('cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              className="![background:var(--vds-error-bg-default)] ![color:var(--vds-static-white)]"
+              disabled={removing}
+              onClick={(event) => {
+                event.preventDefault()
+                void confirmRemoveItem()
+              }}
+            >
+              {projectId ? literature('batch.confirmRemove') : literature('batch.confirmDelete')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }

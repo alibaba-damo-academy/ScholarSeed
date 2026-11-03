@@ -1,18 +1,20 @@
+import { applicationExecutable } from './resources.ts'
+import { desktopDirectoryWriter } from './writer'
 // ScholarSeed desktop update client. The main process is the single state owner;
 // release identity comes from the immutable packaged product.json policy.
 
-import { app, shell } from 'electron'
+import { app, autoUpdater, shell } from 'electron'
 import { spawn } from 'child_process'
 import type { ChildProcess } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
+import { ActivationCandidateChanged, requestActivationGrant } from './update-authorization.ts'
+export { ActivationCandidateChanged } from './update-authorization.ts'
 import {
-  accessSync,
-  appendFileSync,
-  constants as fsConstants,
   createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
+  lstatSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -20,23 +22,77 @@ import {
   rmdirSync,
   rmSync,
   statSync,
-  writeFileSync
+  writeFileSync,
 } from 'fs'
 import { basename, dirname, join, resolve } from 'path'
+import { removeUpdateArtifact } from './update-files'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+
+import { InstallationProgress } from './installation.ts'
+import {
+  SquirrelInstallation,
+  discardOnTerminalSquirrelFailure,
+  readSquirrelHandoff,
+  type SquirrelArchive,
+  type SquirrelLaunchCleanup,
+  shipItDiagnostics,
+} from './squirrel.ts'
+import {
+  bindSquirrelRequest,
+  inspectSquirrelStartup,
+  settleSquirrelStartup,
+  inspectSquirrelIdle,
+  squirrelLaunchSuperseded,
+  squirrelAdmission,
+  type SquirrelAdmission,
+  type SquirrelStartupStatus,
+} from './squirrelstartup.ts'
+import { retryMacCleanup } from './squirrelcleanup.ts'
+import { RotatingFileLog } from './logfile'
+import { redactUpdateLog } from './redaction.ts'
+import { readRecord, writeJson } from './journal.ts'
+import {
+  appendPreviewContext,
+  previewAllows,
+  previewContext,
+  previewLine,
+  previewScope,
+  restorePreviewPolicy,
+  samePreviewArtifact,
+  PREVIEW_STATE_FILE,
+  PREVIEW_STATE_LIMIT,
+  PREVIEW_STATE_SCHEMA,
+} from './preview.ts'
+import type { PreviewContext } from './preview.ts'
+import { isPreviewUpdateChannel } from '../updates.ts'
+import type { PreviewUpdatePolicy, PreviewUpdateLine } from '../updates.ts'
+import type { PreparationCheckpoint } from './preparation.ts'
 
 import {
   AUTHENTICODE_REPORT_KEYS,
   classifyAuthenticodeStatus,
   parseAuthenticodeReport,
-  publisherSubjectsMatch
+  publisherSubjectsMatch,
 } from './authenticode.ts'
-import { desktopHome, LOGS_DIRNAME, resolveProductConfig } from './backend'
+import { LOGS_DIRNAME, resolveProductConfig } from './backend'
+import { desktopHome } from './storage'
+import { classifyMacosTrust, parseCodesignIdentity } from './codesign.ts'
+import {
+  NotarizationError,
+  notarizationHash,
+  verifyNotarization,
+  type OfflineNotarization,
+} from './notarization.ts'
+import { readMachArchitectures } from './macho.ts'
+import { PreparedArchive, PreparedArtifactChangedError, preparedIdentity } from './prepared.ts'
 import { systemCacheDir } from './cachedir.ts'
 import {
   DECISION_CANCEL,
   DECISION_COMMIT,
   DECISION_FILE,
   DECISION_KEYS,
+  ELEVATION_FILE,
   HANDSHAKE_HOME_ENV,
   HANDSHAKE_NONCE_ENV,
   HANDSHAKE_PID_ENV,
@@ -44,7 +100,7 @@ import {
   INSTALL_SUBDIRNAME,
   READY_FILE,
   READY_POLL_INTERVAL_MS,
-  READY_TIMEOUT_MS,
+  InstallerReadiness,
   REQUEST_FILE,
   REQUEST_KEYS,
   UPDATE_ID_ARGUMENT_PREFIX,
@@ -57,19 +113,19 @@ import {
   readyPointsToLiveProcess,
   serializeRecord,
   splitFiletime,
-  validateReady
 } from './handshake.ts'
-import type { HandshakeDecision, HandshakeRequest, ReadyRecord } from './handshake.ts'
+import type { HandshakeDecision, HandshakeRequest, ReadyRecord, ReadyOutcome } from './handshake.ts'
 import { MACOS_HDIUTIL, mountPointsOfImage, readHdiutilInfoPlist } from './mounts.ts'
 import { planUpdatePrune, stagedInstallerName, updateArtifactKind } from './staging.ts'
 import type { UpdateArtifactEntry } from './staging.ts'
+import { requireCommandAsync, runCommandAsync, type CommandOptions } from './subprocess.ts'
 import {
   UPDATE_PATH_PREFIX,
   buildUpdateCheckUrl,
   desktopArchType,
   identityMismatches,
   parseDownloadInfo,
-  parseUpdateCheckResult
+  parseUpdateCheckResult,
 } from './release.ts'
 import type { DesktopUpdateConfig } from './release.ts'
 import { LOCAL_RELEASE_LANE } from './product.ts'
@@ -81,17 +137,19 @@ import type {
   UpdateDiagnosis,
   UpdateInstallFallback,
   UpdateProgress,
-  UpdateSnapshot
+  UpdateSnapshot,
 } from '../updates.ts'
 import { isNewerRelease } from './version.ts'
 
 export type LogSink = (line: string) => void
 
 const UPDATE_CACHE_DIRNAME = 'scholarseed-update'
+const PREVIEW_CANDIDATE_DIRNAME = 'preview'
 const UPDATE_STATE_DIRNAME = 'updates'
 // 计时/结果日志额外落一份到 $SCHOLARSEED_HOME/logs/update.log（见 persistUpdateLog）。
 const UPDATE_LOG_FILE = 'update.log'
-const ROLLBACK_STATE_FILE = 'rollback.json'
+const UPDATE_LOG_MAX_BYTES = 4 * 1024 * 1024
+let updateLog: RotatingFileLog | null = null
 const REQUEST_TIMEOUT_MS = 8000
 const MACOS_PLATFORM = 'darwin'
 const MACOS_ARM64_ARCH_TYPE = 'darwin-arm64'
@@ -114,35 +172,25 @@ const VERIFY_REPORT_SUFFIX = '.verify.json'
 // Status 的三档语义（valid / 确证坏 / 本机不可判定）与发布者 DN 的同发布者判定在
 // authenticode.ts：纯判定、可单测。用内置 cmdlet 而非内联 WinVerifyTrust，是因为后者依赖
 // Add-Type / [PSCustomObject] / 静态属性赋值，在 PowerShell 受限语言模式下全部被禁（bug 87042987）。
-// chcp.com 报的活动控制台代码页 → TextDecoder 标签。中文 Windows 是 936(GBK)；不在表里或探测
-// 失败都退回 UTF-8。**这只影响日志/stderr 的可读性**：签名校验的判定输入走 `Set-Content -Encoding
-// UTF8` 写出的报告文件（见 authenticode.ts parseAuthenticodeReport），与这里的探测结果无关，探测
-// 失败不会再变成一次安全拦截。
-const WINDOWS_CODE_PAGE_ENCODINGS: Readonly<Record<string, string>> = {
-  '932': 'shift_jis',
-  '936': 'gbk',
-  '949': 'euc-kr',
-  '950': 'big5',
-  '1251': 'windows-1251',
-  '1252': 'windows-1252',
-  '65001': 'utf-8'
-}
-const FALLBACK_CONSOLE_ENCODING = 'utf-8'
 const MACOS_DITTO = '/usr/bin/ditto'
 const PRODUCT_APPLICATION = 'ScholarSeed.app'
-const INSTALL_STAGING_SUFFIX = '.scholarseed-new'
-const INSTALL_PREVIOUS_SUFFIX = '.scholarseed-previous'
-const INSTALL_FAILED_SUFFIX = '.scholarseed-failed'
-const INSTALLER_EXIT_WAIT_ATTEMPTS = 300
-const INSTALLER_EXIT_WAIT_SECONDS = 0.1
-const INSTALL_CONFIRM_WAIT_ATTEMPTS = 120
-const INSTALL_CONFIRM_WAIT_SECONDS = 0.5
 // 同一镜像已经挂着时 hdiutil attach 恒报 resource busy（报错文案还随系统语言本地化，不能
 // 拿错误串当判据）：陈旧挂载可能来自崩掉的上一轮、手动安装兜底在 Finder 里留下的卷。attach
 // 前按 image-path 清扫是自己的挂载态恢复；重试一次覆盖 detach 尚未落定的瞬态忙。
 const DMG_ATTACH_ATTEMPTS = 2
 const DMG_ATTACH_RETRY_DELAY_MS = 1500
-const UPDATE_TOKEN_ARGUMENT = '--scholarseed-update-token='
+const nativeNotarization: OfflineNotarization | undefined =
+  process.platform === 'darwin' ? require('./notarization.node') : undefined
+
+// macOS 安装准备链的外部命令上限（bug 87253073）：hdiutil/codesign 任一条挂起
+// （本地校验、diskarbitration 忙）都不会自己退出，没有上限遮罩就永久转圈、用户只能
+// 强杀。挂载类命令给 2 分钟；签名/公证校验在慢盘上 codesign --deep 本来就要几十秒，给 3 分钟；
+// ditto 整包拷贝按最慢机械盘估 10 分钟。超时即失败并回到可重试态，绝不无限等。
+const MACOS_MOUNT_COMMAND_TIMEOUT_MS = 120_000
+const MACOS_SIGNATURE_COMMAND_TIMEOUT_MS = 180_000
+const MACOS_STAGE_COPY_TIMEOUT_MS = 600_000
+// Fast compression keeps Squirrel's whole-download NSData below its native limit.
+const MACOS_ZIP_COMPRESSION_LEVEL = '1'
 // 更新后拉起的新实例用它在启动期把 app-started / health-confirmed 绑回本轮 updateId。
 const UPDATE_ID_ARGUMENT = '--scholarseed-update-id='
 // 结构化事件行的 schema 版本（提案 §5.1 字段契约）。
@@ -157,12 +205,6 @@ const HTTP_RANGE_NOT_SATISFIABLE = 416
 const DOWNLOAD_METADATA_FAILED = 'download metadata failed'
 export const NO_STAGED_UPDATE = 'no staged update to install'
 
-interface RollbackState {
-  version: string
-  reason: string
-  at: number
-}
-
 /**
  * 一个已下载并通过 SHA-512 校验、等用户挑时间重启的安装包。
  *
@@ -174,6 +216,7 @@ interface ReadyState {
   at: number
   path: string
   meta: LatestVersionMeta
+  archive?: SquirrelArchive
 }
 
 /** 弹窗收起确认；key 是 `updateCandidateKey` 算出来的候选身份。 */
@@ -192,8 +235,172 @@ export function resolveDesktopConfig(log: LogSink): DesktopUpdateConfig {
     bundleId: product.bundleId,
     expectedTeamId: product.expectedTeamId,
     expectedWindowsPublisher: product.expectedWindowsPublisher,
-    releaseLane: product.releaseLane
+    releaseLane: product.releaseLane,
   }
+}
+
+let previewPolicy: PreviewUpdatePolicy | null = null
+let previewRevision = 0
+let previewLines: PreviewUpdateLine[] = []
+const validatedPreviewCandidates = new Map<string, LatestVersionMeta>()
+
+export function previewUpdatesEnabled(log: LogSink): boolean {
+  return isPreviewUpdateChannel(resolveDesktopConfig(log).channel)
+}
+
+function previewSource(log: LogSink): string {
+  const config = resolveDesktopConfig(log)
+  return JSON.stringify([
+    config.productId,
+    config.bundleId,
+    archType(),
+    app.getVersion(),
+    config.buildNumber,
+  ])
+}
+
+export function getPreviewUpdatePolicy(log: LogSink): PreviewUpdatePolicy {
+  if (!previewUpdatesEnabled(log)) throw new Error('Preview update controls are unavailable')
+  if (!previewPolicy) {
+    const config = resolveDesktopConfig(log)
+    const path = join(updateStateDirectory(), PREVIEW_STATE_FILE)
+    try {
+      const record = JSON.parse(readRecord(path, PREVIEW_STATE_LIMIT).toString('utf8'))
+      const source = previewSource(log)
+      previewPolicy = restorePreviewPolicy(
+        record,
+        source,
+        (candidate) =>
+          parseUpdateCheckResult({ has_update: true, latest: candidate }, config, archType() || '')
+            .latest!
+      )
+      if (record.source !== source) {
+        const restored = previewPolicy
+        // Consume old source consent durably, so reinstalling it cannot revive the target.
+        previewPolicy = null
+        writePreviewUpdatePolicy(restored, log)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      previewPolicy = { scope: 'current-line' }
+    }
+  }
+  if (!previewPolicy) throw new Error('Preview policy could not be restored')
+  return structuredClone(previewPolicy)
+}
+
+export function previewPolicyRevision(): number {
+  return previewRevision
+}
+
+export function writePreviewUpdatePolicy(policy: PreviewUpdatePolicy, log: LogSink): void {
+  if (!previewUpdatesEnabled(log)) throw new Error('Preview update controls are unavailable')
+  previewScope(policy.scope)
+  const writer = desktopDirectoryWriter(updateStateDirectory())
+  try {
+    writeJson(join(updateStateDirectory(), PREVIEW_STATE_FILE), {
+      ...policy,
+      schema: PREVIEW_STATE_SCHEMA,
+      source: previewSource(log),
+    })
+    previewPolicy = structuredClone(policy)
+    previewRevision += 1
+    previewLines = []
+    validatedPreviewCandidates.clear()
+  } finally {
+    writer.close()
+  }
+}
+
+export function previewCandidateAllowed(candidate: LatestVersionMeta, log: LogSink): boolean {
+  if (!previewUpdatesEnabled(log)) return true
+  const config = resolveDesktopConfig(log)
+  return previewAllows(getPreviewUpdatePolicy(log), app.getVersion(), config.buildNumber, candidate)
+}
+
+export function isCurrentPreviewResult(result: UpdateCheckResult): boolean {
+  return result.previewRevision === undefined || result.previewRevision === previewRevision
+}
+
+function currentPreviewContext(log: LogSink): PreviewContext {
+  const config = resolveDesktopConfig(log)
+  return previewContext(
+    getPreviewUpdatePolicy(log),
+    app.getVersion(),
+    config.buildNumber,
+    archType() === 'windows-amd64' && config.releaseLane === 'distribution' ? 'velopack' : undefined
+  )
+}
+
+export async function listPreviewUpdateLines(log: LogSink): Promise<PreviewUpdateLine[]> {
+  const config = resolveDesktopConfig(log)
+  const context = currentPreviewContext(log)
+  const revision = previewRevision
+  const url = new URL(buildUpdateCheckUrl(config, app.getVersion(), archType() || ''))
+  url.pathname = `${UPDATE_PATH_PREFIX}/preview/lines`
+  url.searchParams.delete('channel')
+  appendPreviewContext(url, context)
+  url.searchParams.delete('target_id')
+  url.searchParams.delete('target_line')
+  const raw = (await getJson(url.toString(), log)) as { lines?: unknown }
+  if (revision !== previewRevision) throw new Error('Preview policy changed during discovery')
+  if (!Array.isArray(raw?.lines) || raw.lines.length > 100) throw new Error('Invalid preview lines')
+  const seen = new Set<string>()
+  previewLines = raw.lines.map((item) => {
+    if (!item || typeof item !== 'object') throw new Error('Invalid preview line')
+    const latest = parseUpdateCheckResult(
+      { has_update: true, latest: item.latest },
+      config,
+      archType() || ''
+    ).latest!
+    if (
+      item.line !== previewLine(latest.version) ||
+      item.line === previewLine(app.getVersion()) ||
+      isNewerRelease(
+        { version: app.getVersion(), buildNumber: config.buildNumber },
+        { version: latest.version, buildNumber: latest.build_number }
+      ) !== true ||
+      seen.has(item.line)
+    )
+      throw new Error('Invalid preview target line')
+    seen.add(item.line)
+    return { line: item.line, latest }
+  })
+  return structuredClone(previewLines)
+}
+
+export function previewTarget(id: unknown, log: LogSink): LatestVersionMeta {
+  getPreviewUpdatePolicy(log)
+  if (typeof id !== 'string') throw new Error('Invalid preview target')
+  const line = previewLines.find((entry) => entry.latest.id === id)
+  if (!line) throw new Error('Preview target is no longer listed')
+  return structuredClone(line.latest)
+}
+
+/** Online eligibility is checked even when the archive is already cached. */
+export async function validatePreviewCandidate(
+  candidate: LatestVersionMeta,
+  log: LogSink,
+  signal?: AbortSignal
+): Promise<void> {
+  if (!previewUpdatesEnabled(log)) return
+  if (!previewCandidateAllowed(candidate, log))
+    throw new Error('Preview candidate is outside the selected range')
+  const revision = previewRevision
+  const fresh = await getDownloadInfo(candidate.id, log, signal)
+  if (revision !== previewRevision || !samePreviewArtifact(candidate, fresh))
+    throw new Error('Preview candidate changed during validation')
+  validatedPreviewCandidates.set(candidate.id, structuredClone(fresh))
+}
+
+export function previewCandidateValidated(candidate: LatestVersionMeta, log: LogSink): boolean {
+  if (!previewUpdatesEnabled(log)) return true
+  const validated = validatedPreviewCandidates.get(candidate.id)
+  return (
+    !!validated &&
+    samePreviewArtifact(validated, candidate) &&
+    previewCandidateAllowed(candidate, log)
+  )
 }
 
 export function archType(platform = process.platform, arch = process.arch): string | null {
@@ -212,15 +419,19 @@ function monotonicUpdateResult(
     { version: result.latest.version, buildNumber: result.latest.build_number }
   )
   if (newer !== false) return result
-  log(`[update] ignored non-monotonic candidate ${result.latest.version}-${result.latest.build_number}\n`)
+  log(
+    `[update] ignored non-monotonic candidate ${result.latest.version}-${result.latest.build_number}\n`
+  )
   return { has_update: false, latest: null }
 }
 
-async function getJson(url: string, log: LogSink): Promise<unknown> {
+async function getJson(url: string, log: LogSink, signal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
-    const response = await fetch(url, { signal: controller.signal })
+    const response = await fetch(url, {
+      signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+    })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     return await response.json()
   } catch (error) {
@@ -231,23 +442,153 @@ async function getJson(url: string, log: LogSink): Promise<unknown> {
   }
 }
 
+export async function authorizeActivation(
+  candidate: LatestVersionMeta,
+  log: LogSink,
+  signal: AbortSignal
+): Promise<() => void> {
+  const product = resolveProductConfig(log)
+  if (!Object.keys(product.updateActivationKeys).length) {
+    throw new Error('update activation trust roots are not configured')
+  }
+  const config = resolveDesktopConfig(log)
+  parseUpdateCheckResult({ has_update: true, latest: candidate }, config, archType() || '')
+  if (
+    isNewerRelease(
+      { version: app.getVersion(), buildNumber: config.buildNumber },
+      { version: candidate.version, buildNumber: candidate.build_number }
+    ) !== true
+  )
+    throw new Error('prepared update is not newer than the running release')
+  await validatePreviewCandidate(candidate, log, signal)
+  const revision = previewRevision
+  const context = previewUpdatesEnabled(log) ? currentPreviewContext(log) : undefined
+  const grant = await requestActivationGrant(
+    `${product.updateBaseUrl}${UPDATE_PATH_PREFIX}/authorize-activation`,
+    product.updateActivationKeys,
+    candidate,
+    signal,
+    REQUEST_TIMEOUT_MS,
+    context
+  )
+  logUpdateLine(
+    log,
+    `[update] activation authorized candidate=${candidate.id} revision=${grant.revision}\n`
+  )
+  return () => {
+    if (context && (revision !== previewRevision || !previewCandidateAllowed(candidate, log)))
+      throw new Error('Preview policy changed before activation')
+    grant.assertValid()
+  }
+}
+
 function updateStateDirectory(): string {
   return join(desktopHome(), UPDATE_STATE_DIRNAME)
 }
 
-export async function checkForUpdate(log: LogSink): Promise<UpdateCheckResult> {
+// Candidate records and payloads may be revoked independently of release.
+// Keep installation/recovery journals at their existing paths.
+function candidateStateDirectory(): string {
+  const directory = updateStateDirectory()
+  return previewUpdatesEnabled(() => {}) ? join(directory, PREVIEW_CANDIDATE_DIRNAME) : directory
+}
+
+const PREPARATION_STATE_FILE = 'preparation.json'
+const REJECTED_STATE_FILE = 'rejected.json'
+const REJECTED_STATE_LIMIT = 4096
+
+function rejectedUpdatePath(): string {
+  return join(candidateStateDirectory(), REJECTED_STATE_FILE)
+}
+
+function readRejectedUpdate(): { id: string; revision: string } | null {
+  try {
+    const record = JSON.parse(
+      readRecord(rejectedUpdatePath(), REJECTED_STATE_LIMIT).toString('utf8')
+    )
+    if (
+      typeof record.id !== 'string' ||
+      !record.id ||
+      typeof record.revision !== 'string' ||
+      !record.revision
+    )
+      throw new Error('Invalid rejected update record')
+    return record
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** Persist revocation before cleanup so a crash cannot restore installation readiness. */
+export function discardRejectedUpdate(candidate: LatestVersionMeta, log: LogSink): void {
+  const staged = readReadyState()
+  writeJson(rejectedUpdatePath(), { id: candidate.id, revision: randomUUID() })
+  validatedPreviewCandidates.delete(candidate.id)
+  if (staged?.meta.id === candidate.id) dropStagedUpdate(staged, log)
+  const checkpoint = readPreparationCheckpoint()
+  if (checkpoint?.desiredRelease.id === candidate.id)
+    rmSync(join(candidateStateDirectory(), PREPARATION_STATE_FILE), { force: true })
+  logUpdateEvent(log, { phase: 'activation', event: 'candidate-revoked', updateId: candidate.id })
+}
+
+export function readPreparationCheckpoint(): PreparationCheckpoint | null {
+  try {
+    const value = JSON.parse(
+      readFileSync(join(candidateStateDirectory(), PREPARATION_STATE_FILE), 'utf8')
+    )
+    return Number.isSafeInteger(value?.generation) &&
+      value.generation >= 0 &&
+      typeof value.desiredRelease?.id === 'string'
+      ? value
+      : null
+  } catch {
+    return null
+  }
+}
+
+export function writePreparationCheckpoint(value: PreparationCheckpoint): void {
+  writeJson(join(candidateStateDirectory(), PREPARATION_STATE_FILE), value)
+}
+
+export async function checkForUpdate(
+  log: LogSink,
+  signal?: AbortSignal
+): Promise<UpdateCheckResult> {
   const targetArchType = archType()
-  if (!targetArchType) throw new Error(`unsupported desktop target ${process.platform}/${process.arch}`)
+  if (!targetArchType)
+    throw new Error(`unsupported desktop target ${process.platform}/${process.arch}`)
   const config = resolveDesktopConfig(log)
   if (!config.baseUrl) throw new Error('packaged product policy has no update base URL')
   const version = app.getVersion()
-  const raw = await getJson(buildUpdateCheckUrl(config, version, targetArchType), log)
-  return monotonicUpdateResult(
+  const policy = previewUpdatesEnabled(log) ? getPreviewUpdatePolicy(log) : null
+  const revision = previewRevision
+  const url = new URL(buildUpdateCheckUrl(config, version, targetArchType))
+  if (policy) appendPreviewContext(url, currentPreviewContext(log))
+  const raw = await getJson(url.toString(), log, signal)
+  const result = monotonicUpdateResult(
     version,
     config,
     parseUpdateCheckResult(raw, config, targetArchType),
     log
   )
+  if (policy && result.latest && !previewAllows(policy, version, config.buildNumber, result.latest))
+    throw new Error('Server returned a preview candidate outside the selected range')
+  // A publication response alone cannot undo an activation rejection. Revalidate
+  // that same candidate online; this short-lived grant is never reused for installation.
+  const rejected = readRejectedUpdate()
+  if (result.latest && rejected?.id === result.latest.id) {
+    const assertValid = await authorizeActivation(
+      result.latest,
+      log,
+      signal ?? new AbortController().signal
+    )
+    assertValid()
+    if (readRejectedUpdate()?.revision !== rejected.revision)
+      throw new ActivationCandidateChanged('candidate rejection changed during revalidation')
+    rmSync(rejectedUpdatePath(), { force: true })
+  }
+  return policy ? { ...result, previewRevision: revision } : result
 }
 
 // Local-lane builds carry no signing expectation (product.ts only mandates
@@ -271,10 +612,10 @@ export async function diagnoseUpdate(log: LogSink): Promise<UpdateDiagnosis> {
       productId: config.productId,
       bundleId: config.bundleId,
       expectedTeamId: config.expectedTeamId,
-      channel: config.channel
+      channel: config.channel,
     },
     server: null,
-    mismatches: []
+    mismatches: [],
   }
   if (!targetArchType) {
     diagnosis.error = `unsupported desktop target ${process.platform}/${process.arch}`
@@ -307,7 +648,7 @@ export async function diagnoseUpdate(log: LogSink): Promise<UpdateDiagnosis> {
     ...(text('team_id') ? { team_id: text('team_id') } : {}),
     channel: text('channel'),
     file_size: typeof row.file_size === 'number' ? row.file_size : 0,
-    sha512: text('sha512')
+    sha512: text('sha512'),
   }
   diagnosis.server = {
     version: meta.version,
@@ -316,21 +657,31 @@ export async function diagnoseUpdate(log: LogSink): Promise<UpdateDiagnosis> {
     bundleId: meta.bundle_id,
     teamId: meta.team_id ?? '',
     channel: meta.channel,
-    archType: meta.arch_type
+    archType: meta.arch_type,
   }
   diagnosis.mismatches = identityMismatches(meta, config, targetArchType)
   return diagnosis
 }
 
-export async function getDownloadInfo(id: string, log: LogSink): Promise<DownloadInfo> {
+export async function getDownloadInfo(
+  id: string,
+  log: LogSink,
+  signal?: AbortSignal
+): Promise<DownloadInfo> {
   const targetArchType = archType()
   if (!targetArchType) throw new Error('unsupported desktop target')
   const config = resolveDesktopConfig(log)
-  const raw = await getJson(
-    `${config.baseUrl}${UPDATE_PATH_PREFIX}/packages/${encodeURIComponent(id)}/download`,
-    log
+  const preview = previewUpdatesEnabled(log)
+  const url = new URL(
+    `${config.baseUrl}${UPDATE_PATH_PREFIX}/packages/${encodeURIComponent(id)}/download`
   )
-  return parseDownloadInfo(raw, config, targetArchType, id)
+  if (preview) appendPreviewContext(url, currentPreviewContext(log))
+  const revision = previewRevision
+  const raw = await getJson(url.toString(), log, signal)
+  const info = parseDownloadInfo(raw, config, targetArchType, id)
+  if (preview && (revision !== previewRevision || !previewCandidateAllowed(info, log)))
+    throw new Error('Preview download is outside the selected range')
+  return info
 }
 
 /**
@@ -341,7 +692,8 @@ export async function getDownloadInfo(id: string, log: LogSink): Promise<Downloa
  * 本来就是系统与用户清理工具的管辖范围，要腾空间的用户找得到它。
  */
 function updateCacheDir(): string {
-  const directory = join(systemCacheDir(), UPDATE_CACHE_DIRNAME)
+  const root = join(systemCacheDir(), UPDATE_CACHE_DIRNAME)
+  const directory = previewUpdatesEnabled(() => {}) ? join(root, PREVIEW_CANDIDATE_DIRNAME) : root
   mkdirSync(directory, { recursive: true })
   return directory
 }
@@ -358,17 +710,21 @@ function stagedInstallerPath(meta: LatestVersionMeta): string {
  * ENOTEMPTY/EBUSY 失败，绝不会顺着挂载点删掉卷内内容（rmSync 加 recursive 就会）。
  * 清理失败只记日志：它是省磁盘的附带动作，不该把一次更新变成失败。
  */
-function pruneUpdateArtifacts(keepPayload: string, log: LogSink): void {
+function pruneUpdateArtifacts(
+  keepPayload: string | null,
+  log: LogSink,
+  retainedPayloads: readonly string[] = []
+): void {
   const directory = updateCacheDir()
   try {
     const entries: UpdateArtifactEntry[] = readdirSync(directory, { withFileTypes: true }).map(
       (entry) => ({
         name: entry.name,
         directory: entry.isDirectory(),
-        empty: entry.isDirectory() && readdirSync(join(directory, entry.name)).length === 0
+        empty: entry.isDirectory() && readdirSync(join(directory, entry.name)).length === 0,
       })
     )
-    const plan = planUpdatePrune(entries, keepPayload)
+    const plan = planUpdatePrune(entries, keepPayload, retainedPayloads)
     for (const name of plan.files) {
       rmSync(join(directory, name), { force: true })
       log(`[update] pruned superseded installer ${name}\n`)
@@ -414,12 +770,13 @@ async function streamToFile(
   destination: string,
   expectedSize: number,
   resumeFrom: number,
-  onProgress: (percent: number, receivedBytes: number) => void
+  onProgress: (percent: number, receivedBytes: number) => void,
+  signal?: AbortSignal
 ): Promise<number> {
-  const response = await fetch(
-    url,
-    resumeFrom > 0 ? { headers: { Range: `bytes=${resumeFrom}-` } } : {}
-  )
+  const response = await fetch(url, {
+    signal,
+    ...(resumeFrom > 0 ? { headers: { Range: `bytes=${resumeFrom}-` } } : {}),
+  })
   if (response.status === HTTP_RANGE_NOT_SATISFIABLE) return response.status
   if (!response.ok || !response.body) throw new Error(`download HTTP ${response.status}`)
   const partial = response.status === HTTP_PARTIAL_CONTENT
@@ -429,22 +786,24 @@ async function streamToFile(
     throw new Error('download Content-Length differs from release metadata')
   }
   const output = createWriteStream(destination, { flags: partial ? 'a' : 'w' })
-  const reader = response.body.getReader()
   let received = start
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (!value) continue
-      received += value.length
-      await new Promise<void>((resolve, reject) => {
-        output.write(Buffer.from(value), (error) => (error ? reject(error) : resolve()))
-      })
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      received += chunk.length
+      if (received > expectedSize) {
+        callback(new Error('download exceeds release size'))
+        return
+      }
       onProgress(Math.min(100, Math.round((received / expectedSize) * 100)), received)
-    }
-  } finally {
-    await new Promise<void>((resolve) => output.end(resolve))
-  }
+      callback(null, chunk)
+    },
+  })
+  await pipeline(
+    Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
+    counter,
+    output,
+    { signal }
+  )
   if (received !== expectedSize || statSync(destination).size !== expectedSize) {
     throw new Error(`download size mismatch: got ${received}, expected ${expectedSize}`)
   }
@@ -455,7 +814,8 @@ async function downloadWithProgress(
   url: string,
   destination: string,
   expectedSize: number,
-  onProgress: (percent: number, receivedBytes: number) => void
+  onProgress: (percent: number, receivedBytes: number) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const resumeFrom = resumePointOf(destination, expectedSize)
   if (resumeFrom === expectedSize) {
@@ -463,14 +823,11 @@ async function downloadWithProgress(
     onProgress(100, expectedSize)
     return
   }
-  onProgress(
-    Math.min(100, Math.round((resumeFrom / expectedSize) * 100)),
-    resumeFrom
-  )
-  const status = await streamToFile(url, destination, expectedSize, resumeFrom, onProgress)
+  onProgress(Math.min(100, Math.round((resumeFrom / expectedSize) * 100)), resumeFrom)
+  const status = await streamToFile(url, destination, expectedSize, resumeFrom, onProgress, signal)
   if (status === HTTP_RANGE_NOT_SATISFIABLE) {
     rmSync(destination, { force: true })
-    const fresh = await streamToFile(url, destination, expectedSize, 0, onProgress)
+    const fresh = await streamToFile(url, destination, expectedSize, 0, onProgress, signal)
     if (fresh !== HTTP_OK) throw new Error(`download HTTP ${fresh}`)
     return
   }
@@ -479,106 +836,14 @@ async function downloadWithProgress(
   }
 }
 
-function sha512OfFile(path: string): Promise<string> {
+function sha512OfFile(path: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash('sha512')
-    const stream = createReadStream(path)
+    const stream = createReadStream(path, { signal })
     stream.on('error', reject)
     stream.on('data', (chunk: Buffer | string) => hash.update(chunk))
     stream.on('end', () => resolve(hash.digest('hex')))
   })
-}
-
-/**
- * 子进程输出该按哪种编码解码（带缓存）。
- *
- * Windows 控制台程序（powershell.exe 等）按 OEM 代码页输出，中文系统是 936(GBK)。Node 一律
- * `toString('utf8')` 会把 GBK 字节解成乱码——更新失败时的 PowerShell 中文报错进日志/弹窗就不可读
- * （bug 87042987）。这里探测一次活动代码页并缓存。`chcp.com` 是原生可执行、不经 PowerShell，
- * 因此不受受限语言模式影响。非 Windows 一律 UTF-8。
- */
-let cachedConsoleEncoding: Promise<string> | null = null
-
-function consoleOutputEncoding(): Promise<string> {
-  if (process.platform !== WINDOWS_PLATFORM) return Promise.resolve(FALLBACK_CONSOLE_ENCODING)
-  if (!cachedConsoleEncoding) cachedConsoleEncoding = detectConsoleEncoding()
-  return cachedConsoleEncoding
-}
-
-function detectConsoleEncoding(): Promise<string> {
-  return new Promise((resolve) => {
-    const child = spawn('chcp.com', [], { windowsHide: true })
-    let out = ''
-    child.stdout.on('data', (chunk: Buffer) => {
-      out += chunk.toString('ascii')
-    })
-    child.on('error', () => resolve(FALLBACK_CONSOLE_ENCODING))
-    // chcp 输出形如 "Active code page: 936"（纯 ASCII），取第一个数字查表。
-    child.on('close', () => {
-      const match = out.match(/\d+/)
-      resolve(match ? WINDOWS_CODE_PAGE_ENCODINGS[match[0]] ?? FALLBACK_CONSOLE_ENCODING : FALLBACK_CONSOLE_ENCODING)
-    })
-  })
-}
-
-function decodeConsoleOutput(buffer: Buffer, encoding: string): string {
-  try {
-    return new TextDecoder(encoding).decode(buffer).trim()
-  } catch {
-    // 极少数 ICU 不识别的代码页标签退回 UTF-8，至少 ASCII 部分仍可读。
-    return buffer.toString('utf8').trim()
-  }
-}
-
-/**
- * 异步跑一条命令，绝不阻塞主进程事件循环。
- *
- * Electron 主进程与 macOS 的 AppKit 主线程是同一个：任何 spawnSync 都会把整条事件循环冻住，
- * 期间原生窗口控件（红绿灯）收不到点击——macOS 安装链的 ditto 拷贝整包 + codesign --deep /
- * spctl / stapler 校验动辄十几到几十秒，用户就点不动最小化/关闭（本次 bug）。改成异步 spawn 后，
- * 等命令期间事件循环照常转，窗口保持可响应。Windows 侧的签名校验同理由它承载。
- *
- * 输出按 consoleOutputEncoding() 解码、且**收齐字节再整体解码**：逐块 toString 会把跨块的多字节
- * 字符（UTF-8 中文、GBK 双字节）截断成乱码。
- */
-function runCommandAsync(
-  executable: string,
-  args: string[],
-  options: { env?: NodeJS.ProcessEnv; windowsHide?: boolean } = {}
-): Promise<AsyncCommandResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { windowsHide: true, ...options })
-    const stdoutChunks: Buffer[] = []
-    const stderrChunks: Buffer[] = []
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk))
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk))
-    child.on('error', reject)
-    child.on('close', (status) => {
-      void consoleOutputEncoding().then((encoding) => {
-        resolve({
-          status,
-          stdout: decodeConsoleOutput(Buffer.concat(stdoutChunks), encoding),
-          stderr: decodeConsoleOutput(Buffer.concat(stderrChunks), encoding),
-          encoding
-        })
-      })
-    })
-  })
-}
-
-/**
- * requireCommand 的异步版：非 0 退出抛错（fail-closed 语义不变），返回 stdout+stderr 合并文本 ——
- * 与旧同步版逐字一致，因为 codesign -d 把元数据写到 stderr、plutil 写到 stdout，调用方依赖合并结果。
- */
-async function requireCommandAsync(
-  executable: string,
-  args: string[],
-  label: string
-): Promise<string> {
-  const result = await runCommandAsync(executable, args)
-  const output = `${result.stdout}\n${result.stderr}`.trim()
-  if (result.status !== 0) throw new Error(`${label} failed: ${output}`)
-  return output
 }
 
 /**
@@ -590,11 +855,20 @@ async function requireCommandAsync(
  * 直接抛错）。所以要在真机上按日志定位「2 分钟花在哪一步」，这些行必须自己落盘。放在 logs/ 下
  * 还能被问题反馈的日志打包一并收走。写失败只吞掉——日志是附带动作，绝不能把一次更新搞砸。
  */
+export async function closeUpdateLog(): Promise<void> {
+  await updateLog?.end()
+}
+
 function persistUpdateLog(line: string): void {
   try {
     const directory = join(desktopHome(), LOGS_DIRNAME)
-    mkdirSync(directory, { recursive: true })
-    appendFileSync(join(directory, UPDATE_LOG_FILE), line)
+    // 行内带时间戳：反馈包里的 update.log 是唯一真机现场，没有时刻就无法回答「卡了多久、
+    // 和截图/反馈提交时刻怎么对齐」（bug 87253073 的定位正是止步于此）。
+    updateLog ??= new RotatingFileLog(join(directory, UPDATE_LOG_FILE), {
+      maxBytes: UPDATE_LOG_MAX_BYTES,
+      acquireWriter: () => desktopDirectoryWriter(directory),
+    })
+    updateLog.write(`[${new Date().toISOString()}] ${redactUpdateLog(line)}`)
   } catch {
     // 落盘失败不影响更新本身。
   }
@@ -611,27 +885,57 @@ function logTiming(log: LogSink, label: string, startedAt: number): void {
   persistUpdateLog(line)
 }
 
-interface AsyncCommandResult {
-  status: number | null
-  stdout: string
-  stderr: string
-  /** 实际用来解码 stdout/stderr 的编码标签。落日志用：探测静默回退时这是唯一的现场证据。 */
-  encoding: string
+/** 一行更新诊断同时进主进程 log sink 与 update.log 落盘。 */
+function logUpdateLine(log: LogSink, line: string): void {
+  log(line)
+  persistUpdateLog(line)
 }
 
-/** 签名校验失败的类别，决定 installWindows 回报哪种 errorFallback（见 updates.ts）。 */
-type WindowsVerifyFailure =
+/**
+ * 跑准备链的一步并留下「开始 / 耗时 / 失败」三类落盘日志（bug 87253073）。
+ *
+ * 准备阶段此前只有清理残留挂载和 attach 失败会落盘，真机卡住时日志里看不出卡在哪一步；
+ * 有了 start 行，下一次反馈即使再次挂起，也能从「最后一条 start 没有对应 took」直接指认步骤。
+ */
+async function runLoggedCommand(
+  log: LogSink,
+  label: string,
+  executable: string,
+  args: string[],
+  options: CommandOptions = {}
+): Promise<string> {
+  logUpdateLine(log, `[update] step start ${label}\n`)
+  const startedAt = Date.now()
+  try {
+    const output = await requireCommandAsync(executable, args, label, options)
+    logTiming(log, label, startedAt)
+    return output
+  } catch (error) {
+    logUpdateLine(log, `[update] step failed ${label}: ${String(error)}\n`)
+    throw error
+  }
+}
+
+/**
+ * 签名校验失败的类别，决定 Windows native owner / Squirrel.Mac 回报哪种 errorFallback（见 updates.ts）。
+ * 平台中立：Windows(Authenticode) 与 macOS(codesign 离线信任锚) 共用同一套分类与文案映射。
+ */
+type UpdateVerifyFailure =
   | 'verify-env-unavailable'
   | 'signature-untrusted'
   | 'signature-indeterminate'
+  | 'notarization-indeterminate'
   | 'publisher-mismatch'
 
 /**
- * 带类别的校验失败。installWindows 据此把「校验环境不可用」与「签名不可信」分开上报；原始诊断
- * （可能含代码页乱码的 PowerShell stderr）只落 update.log，不进用户文案。
+ * 带类别的校验失败。installWindows / macOS 准备与安装据此把「校验环境不可用」与「签名不可信」分开上报；
+ * 原始诊断（可能含代码页乱码的 PowerShell stderr）只落 update.log，不进用户文案。
  */
-class WindowsVerifyError extends Error {
-  constructor(message: string, readonly kind: WindowsVerifyFailure) {
+class UpdateVerifyError extends Error {
+  constructor(
+    message: string,
+    readonly kind: UpdateVerifyFailure
+  ) {
     super(message)
   }
 }
@@ -674,7 +978,7 @@ function readVerifyReport(reportPath: string): string {
  * 且回退不落日志）、以及靠 `ConvertTo-Json` 把非 ASCII 转义成 `\uXXXX`（PS 5.1.17763 实测不转义）。
  * 文件编码由 cmdlet 参数显式决定，与代码页和序列化器实现都无关。报告不合规即按「校验没能执行」处理
  * —— 传输/解码降级永远不落成「发布者不符」的安全拦截（见 authenticode.ts parseAuthenticodeReport）。
- * 任一步不通过都抛 WindowsVerifyError（fail-closed），绝不放行未验证的包。
+ * 任一步不通过都抛 UpdateVerifyError（fail-closed），绝不放行未验证的包。
  *
  * 代价：cmdlet 走系统默认验签策略（可能联网抓 AIA / 做吊销检查），不像 WinVerifyTrust 能显式关联网。
  * 上一轮真机实测该校验约 1990ms；用户报的「≥2min 才安装」已定位在退出后 NSIS 静默解压、与验签无关，故
@@ -721,9 +1025,9 @@ Set-Content -LiteralPath $env:${WINDOWS_VERIFY_REPORT_ENV} -Value $report -Encod
       env: {
         ...process.env,
         [WINDOWS_INSTALLER_ENV]: installer,
-        [WINDOWS_VERIFY_REPORT_ENV]: reportPath
+        [WINDOWS_VERIFY_REPORT_ENV]: reportPath,
       },
-      windowsHide: true
+      windowsHide: true,
     }
   )
   // stdout 只作诊断，绝不参与判定。
@@ -731,14 +1035,14 @@ Set-Content -LiteralPath $env:${WINDOWS_VERIFY_REPORT_ENV} -Value $report -Encod
   // 两类情况都归「校验**没能执行**」而不是「签名不可信」：命令没跑成（PowerShell 缺失/被策略
   // 拦截/非零退出），或跑成了但报告读不到、不满足 JSON 契约、或仍带着 U+FFFD 编码降级指纹。
   // 传输/解码降级绝不能变成一次发布者不符的安全拦截（bug 87108457）。原始输出与实际选用的解码
-  // 编码一并落盘供定位，界面给手动安装引导（见 windowsInstallFallback）。
+  // 编码一并落盘供定位，界面给手动安装引导（见 updateInstallFallback）。
   if (result.status !== 0 || report === null) {
     persistUpdateLog(
       result.status === 0
         ? `[update] Windows verification report is unusable: path=${reportPath} stdoutEncoding=${result.encoding} stdout=${result.stdout}\n`
         : `[update] Windows verification command failed: exit=${result.status} stdoutEncoding=${result.encoding} stderr=${result.stderr} stdout=${result.stdout}\n`
     )
-    throw new WindowsVerifyError(
+    throw new UpdateVerifyError(
       'Windows Authenticode verification could not be performed',
       'verify-env-unavailable'
     )
@@ -760,13 +1064,13 @@ Set-Content -LiteralPath $env:${WINDOWS_VERIFY_REPORT_ENV} -Value $report -Encod
       persistUpdateLog(
         `[update] Windows installer signature trust undecidable on this machine: status=${status}\n`
       )
-      throw new WindowsVerifyError(
+      throw new UpdateVerifyError(
         `Windows installer signature trust could not be determined on this machine: ${status}`,
         'signature-indeterminate'
       )
     }
     persistUpdateLog(`[update] Windows installer signature not trusted: status=${status}\n`)
-    throw new WindowsVerifyError(
+    throw new UpdateVerifyError(
       `Windows installer signature is not trusted: ${status}`,
       'signature-untrusted'
     )
@@ -777,19 +1081,24 @@ Set-Content -LiteralPath $env:${WINDOWS_VERIFY_REPORT_ENV} -Value $report -Encod
     persistUpdateLog(
       `[update] Windows publisher mismatch: got "${subject}" expected "${expectedPublisher}"\n`
     )
-    throw new WindowsVerifyError(
+    throw new UpdateVerifyError(
       'Windows installer signature differs from packaged product policy',
       'publisher-mismatch'
     )
   }
 }
 
-/** 把校验/安装异常映射成结构化 errorFallback；原始文本只落日志，不进用户文案。 */
-function windowsInstallFallback(error: unknown): UpdateInstallFallback {
-  if (error instanceof WindowsVerifyError) {
+/** 把校验/安装异常映射成结构化 errorFallback；原始文本只落日志，不进用户文案（Windows/macOS 共用）。 */
+function updateInstallFallback(error: unknown): UpdateInstallFallback {
+  if (error instanceof UpdateVerifyError) {
     if (error.kind === 'verify-env-unavailable') return 'install_verify_unavailable'
     if (error.kind === 'signature-indeterminate') return 'install_signature_indeterminate'
+    if (error.kind === 'notarization-indeterminate') return 'install_notarization_indeterminate'
     return 'install_signature_untrusted'
+  }
+  // 校验工具本身缺失（codesign ENOENT）＝本机无法执行校验，不是签名不可信（bug 87435837）。
+  if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+    return 'install_verify_unavailable'
   }
   return 'install_failed'
 }
@@ -807,14 +1116,20 @@ interface UpdateEventFields {
   fromVersion?: string
   toVersion?: string
   elapsedMs?: number
+  generation?: number
+  reclaimedBytes?: number
+  remainingBytes?: number
+  nextAttemptAt?: number
+  payloadBytes?: number
+  archiveBytes?: number
 }
 
-function logUpdateEvent(log: LogSink, fields: UpdateEventFields): void {
+export function logUpdateEvent(log: LogSink, fields: UpdateEventFields): void {
   const line = `${JSON.stringify({
     schemaVersion: UPDATE_EVENT_SCHEMA_VERSION,
     timestampUtc: new Date().toISOString(),
     processId: process.pid,
-    ...fields
+    ...fields,
   })}\n`
   log(line)
   persistUpdateLog(line)
@@ -870,35 +1185,6 @@ async function windowsProcessCreationFiletime(pid: number): Promise<string | nul
 }
 
 /**
- * NSIS 侧安装器日志与 boot 探针矩阵各文件的字节数（-1 = 不存在/不可读）。
- *
- * install.log 两轮真机恒 0 字节（握手各阶段明确跑过却一行没落），而安装器写失败是静默的；
- * 探针矩阵（installer.nsh ssProbeWritePrimitives）用四种写原语组合各写一个独立文件，
- * 这里把六个尺寸一次落进 update.log，真机一轮即可指认坏原语。不在 Node 侧落这行，
- * 下一次「静默」在现场日志里仍然无从归因。
- */
-const INSTALLER_LOG_PROBE_FILES = [
-  'install.log',
-  'install-prev.log',
-  'install-probe-a.log',
-  'install-probe-w.log',
-  'install-probe-u16.log',
-  'install-probe-x.log'
-] as const
-
-function installerLogSizes(): string {
-  return INSTALLER_LOG_PROBE_FILES.map((name) => {
-    try {
-      return `${name}=${statSync(join(desktopHome(), LOGS_DIRNAME, name)).size}`
-    } catch {
-      return `${name}=-1`
-    }
-  }).join(' ')
-}
-
-type ReadyOutcome = 'ready' | 'timeout' | 'installer-exited' | 'invalid-ready'
-
-/**
  * 上一轮协议安装器是否仍活着：扫握手目录里的 ready.ini，用 installerPid + 创建时刻双重比对。
  *
  * 没有这道闸时，重拉的客户端会对还挂着的安装器再 spawn 一个：模板的
@@ -917,7 +1203,7 @@ async function findRunningProtocolInstaller(): Promise<ReadyRecord | null> {
     if (!isValidUpdateId(entry)) continue
     let record: ReadyRecord | null = null
     try {
-      record = parseReady(readFileSync(join(updateStateDirectory(), INSTALL_SUBDIRNAME, entry, READY_FILE)))
+      record = readInstallerRecord(join(updateStateDirectory(), INSTALL_SUBDIRNAME, entry))
     } catch {
       continue // 没有 ready.ini 或写到一半：本轮握手没成立过，不构成并发安装器。
     }
@@ -926,6 +1212,18 @@ async function findRunningProtocolInstaller(): Promise<ReadyRecord | null> {
     if (creation === null) continue
     const { low, high } = splitFiletime(creation)
     if (readyPointsToLiveProcess(record, Number(record.installerPid), low, high)) return record
+  }
+  return null
+}
+
+function readInstallerRecord(directory: string): ReadyRecord | null {
+  for (const filename of [READY_FILE, ELEVATION_FILE]) {
+    try {
+      const record = parseReady(readFileSync(join(directory, filename)))
+      if (record !== null) return record
+    } catch {
+      continue
+    }
   }
   return null
 }
@@ -940,17 +1238,19 @@ async function findRunningProtocolInstaller(): Promise<ReadyRecord | null> {
 function waitForInstallerReady(
   directory: string,
   request: HandshakeRequest,
-  child: ChildProcess
-): Promise<ReadyOutcome> {
+  child: ChildProcess,
+  signal?: AbortSignal
+): Promise<ReadyOutcome | 'cancelled'> {
   return new Promise((resolve) => {
     let settled = false
-    const deadline = Date.now() + READY_TIMEOUT_MS
-    function finish(outcome: ReadyOutcome): void {
+    const readiness = new InstallerReadiness(request, child.pid!, Date.now())
+    function finish(outcome: ReadyOutcome | 'cancelled'): void {
       if (settled) return
       settled = true
       clearInterval(timer)
       child.off('exit', onExit)
       child.off('error', onError)
+      signal?.removeEventListener('abort', onAbort)
       resolve(outcome)
     }
     function onExit(code: number | null): void {
@@ -961,30 +1261,22 @@ function waitForInstallerReady(
       persistUpdateLog(`[update] installer spawn error during handshake: ${String(error)}\n`)
       finish('installer-exited')
     }
+    const onAbort = (): void => finish('cancelled')
     const timer = setInterval(() => {
       if (settled) return
-      if (Date.now() > deadline) {
-        finish('timeout')
-        return
-      }
       let record: ReadyRecord | null = null
       try {
-        record = parseReady(readFileSync(join(directory, READY_FILE)))
+        record = readInstallerRecord(directory)
       } catch {
-        return // 还没写出：下一拍再看，超时兜底。
+        record = null
       }
-      if (record === null) return // 文件存在但不可解析（写到一半或格式坏）：轮询到超时。
-      if (!validateReady(record, request)) {
-        persistUpdateLog(
-          `[update] ready record identity mismatch: updateId=${record.updateId} expected=${request.updateId}\n`
-        )
-        finish('invalid-ready')
-        return
-      }
-      finish('ready')
+      const outcome = readiness.observe(record, Date.now())
+      if (outcome !== null) finish(outcome)
     }, READY_POLL_INTERVAL_MS)
     child.once('exit', onExit)
     child.once('error', onError)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
   })
 }
 
@@ -998,10 +1290,11 @@ function publishHandshakeDecision(
   directory: string,
   request: HandshakeRequest,
   decision: HandshakeDecision,
-  log: LogSink
-): void {
+  log: LogSink,
+  assertAuthorized?: () => void
+): boolean {
+  const temporary = join(directory, `decision-${randomUUID()}.tmp`)
   try {
-    const temporary = join(directory, `decision-${randomUUID()}.tmp`)
     writeFileSync(
       temporary,
       encodeRecord(
@@ -1009,21 +1302,38 @@ function publishHandshakeDecision(
           schemaVersion: HANDSHAKE_SCHEMA_VERSION,
           updateId: request.updateId,
           nonce: request.nonce,
-          decision
+          decision,
         })
       )
     )
+    if (decision === DECISION_COMMIT && !assertAuthorized)
+      throw new Error('activation authorization is required')
+    assertAuthorized?.()
     renameSync(temporary, join(directory, DECISION_FILE))
-    logUpdateEvent(log, { phase: 'handoff', event: 'decision', result: decision, updateId: request.updateId })
+    logUpdateEvent(log, {
+      phase: 'handoff',
+      event: 'decision',
+      result: decision,
+      updateId: request.updateId,
+    })
+    return true
   } catch (error) {
+    try {
+      rmSync(temporary, { force: true })
+    } catch (cleanupError) {
+      persistUpdateLog(`[update] decision temporary cleanup failed: ${String(cleanupError)}\n`)
+    }
     persistUpdateLog(`[update] decision publish failed (${decision}): ${String(error)}\n`)
+    return false
   }
 }
 
 export async function installWindows(
   installer: string,
   meta: LatestVersionMeta,
-  log: LogSink
+  log: LogSink,
+  authorize?: (candidate: LatestVersionMeta) => Promise<() => void>,
+  signal?: AbortSignal
 ): Promise<StartUpdateResult> {
   const fromVersion = app.getVersion()
   const toVersion = `${meta.version}-${meta.build_number}`
@@ -1046,7 +1356,7 @@ export async function installWindows(
         errorCode: 'installer-alive',
         updateId: running.updateId,
         fromVersion,
-        toVersion
+        toVersion,
       })
       return { ok: false, errorFallback: 'install_already_running' }
     }
@@ -1054,7 +1364,7 @@ export async function installWindows(
     await verifyWindowsInstaller(installer, config.expectedWindowsPublisher, log)
 
     // 握手上下文（SID + 进程创建时刻）任一取不到就不做自动交接：不退出 app，
-    // 打开完整安装包走手动流程（提案 §5.1 首轮自动握手只支持同用户、非提权、上下文完整）。
+    // 打开完整安装包走手动流程；自动握手要求原用户上下文完整。
     const sid = await windowsUserSid()
     const filetime = await windowsProcessCreationFiletime(process.pid)
     if (sid === null || filetime === null) {
@@ -1065,8 +1375,12 @@ export async function installWindows(
         errorCode: sid === null ? 'caller-sid-unavailable' : 'caller-creation-time-unavailable',
         updateId,
         fromVersion,
-        toVersion
+        toVersion,
       })
+      const assertAuthorized = await authorize?.(meta)
+      signal?.throwIfAborted()
+      if (!assertAuthorized) throw new Error('activation authorization is required')
+      assertAuthorized()
       await shell.openPath(installer)
       return { ok: true, mode: 'manual' }
     }
@@ -1082,7 +1396,7 @@ export async function installWindows(
       callerCreationHigh: high,
       fromVersion,
       toVersion,
-      installDir: resolve(dirname(process.execPath))
+      installDir: resolve(dirname(applicationExecutable(app))),
     }
     directory = handshakeDirectory(join(updateStateDirectory(), 'install'), updateId)
     mkdirSync(directory, { recursive: true })
@@ -1091,28 +1405,35 @@ export async function installWindows(
       encodeRecord(serializeRecord(REQUEST_KEYS, request))
     )
 
+    signal?.throwIfAborted()
     const spawnStartedAt = Date.now()
+    // spawn 选项不带窗口隐藏旗标：GUI 子系统无控制台可藏，而该旗标的 SW_HIDE 会隐掉安装器
+    // 第一个窗口——任何「等用户」状态（fail-closed 弹窗、模板交互页）都会变成看不见的模态
+    // 挂死（2026-09-23 真机：安装模式页被隐 → 安装器永生 → B 闸永久拦死后续更新）。
     child = spawn(installer, [WINDOWS_UPDATE_ARGUMENT, `${UPDATE_ID_ARGUMENT_PREFIX}${updateId}`], {
       detached: true,
       stdio: 'ignore',
-      windowsHide: true,
       env: {
         ...process.env,
         [HANDSHAKE_HOME_ENV]: desktopHome(),
-        [HANDSHAKE_NONCE_ENV]: request.nonce
-      }
+        [HANDSHAKE_NONCE_ENV]: request.nonce,
+      },
     })
     if (!child.pid) throw new Error('Windows installer did not start')
-    logUpdateEvent(log, { phase: 'installer-start', event: 'spawn', result: 'ok', updateId, fromVersion, toVersion })
+    logUpdateEvent(log, {
+      phase: 'installer-start',
+      event: 'spawn',
+      result: 'ok',
+      updateId,
+      fromVersion,
+      toVersion,
+    })
 
-    const outcome = await waitForInstallerReady(directory, request, child)
+    const outcome = await waitForInstallerReady(directory, request, child, signal)
     const elapsedMs = Date.now() - spawnStartedAt
-    persistUpdateLog(`[update] installer log sizes: ${installerLogSizes()} after handshake outcome=${outcome}\n`)
     if (outcome !== 'ready') {
-      // 超时/协议失败：发布 cancel（安装器收到后在卸载前退出）、终止安装器进程——此刻它
-      // 还停在 customInit 的等待循环里，没有发生任何安装动作，kill 是安全的。
       publishHandshakeDecision(directory, request, DECISION_CANCEL, log)
-      child.kill()
+      child.unref()
       logUpdateEvent(log, {
         phase: 'installer-ready',
         event: 'wait',
@@ -1121,11 +1442,19 @@ export async function installWindows(
         updateId,
         fromVersion,
         toVersion,
-        elapsedMs
+        elapsedMs,
       })
-      return { ok: false, errorFallback: 'install_failed' }
+      return outcome === 'cancelled'
+        ? { ok: false, cancelled: true }
+        : { ok: false, errorFallback: 'install_failed' }
     }
-    publishHandshakeDecision(directory, request, DECISION_COMMIT, log)
+    const assertAuthorized = await authorize?.(meta)
+    signal?.throwIfAborted()
+    if (!assertAuthorized) throw new Error('activation authorization is required')
+    assertAuthorized()
+    if (!publishHandshakeDecision(directory, request, DECISION_COMMIT, log, assertAuthorized)) {
+      throw new Error('Windows update commit could not be persisted')
+    }
     logUpdateEvent(log, {
       phase: 'installer-ready',
       event: 'wait',
@@ -1133,7 +1462,7 @@ export async function installWindows(
       updateId,
       fromVersion,
       toVersion,
-      elapsedMs
+      elapsedMs,
     })
     // commit 已发布才 unref：安装器接下来等本进程退出（≤60s），随后卸载/安装/拉起。
     child.unref()
@@ -1143,10 +1472,12 @@ export async function installWindows(
     // 原始诊断（含可能的代码页乱码 stderr）只落 update.log；回报结构化分类，界面给本地化文案。
     if (child && directory && request) {
       publishHandshakeDecision(directory, request, DECISION_CANCEL, log)
-      child.kill()
+      child.unref()
     }
     persistUpdateLog(`[update] Windows install failed: ${String(error)}\n`)
-    return { ok: false, errorFallback: windowsInstallFallback(error) }
+    return signal?.aborted
+      ? { ok: false, cancelled: true }
+      : { ok: false, errorFallback: updateInstallFallback(error) }
   }
 }
 
@@ -1173,23 +1504,8 @@ export function logUpdateLifecycleEvent(
     event,
     result: 'ok',
     updateId,
-    fromVersion: app.getVersion()
+    fromVersion: app.getVersion(),
   })
-}
-
-function currentAppBundlePath(): string | null {
-  const marker = '.app/'
-  const index = process.execPath.indexOf(marker)
-  return index === -1 ? null : process.execPath.slice(0, index + marker.length - 1)
-}
-
-function isWritable(path: string): boolean {
-  try {
-    accessSync(path, fsConstants.W_OK)
-    return true
-  } catch {
-    return false
-  }
 }
 
 function realpathOrSelf(path: string): string {
@@ -1210,28 +1526,49 @@ function delayMs(ms: number): Promise<void> {
  * 的卷、用户自己双击过暂存包。卷是只读安装介质，没有任何合法持有者能横跨一次安装，force
  * 卸载是根因恢复而不是重试碰运气。探针失败只降级为不清扫：恢复手段不能变成安装前置条件。
  */
-async function detachStaleMountsOf(dmgPath: string, log: LogSink): Promise<void> {
+async function detachStaleMountsOf(
+  dmgPath: string,
+  log: LogSink,
+  installation: InstallationProgress
+): Promise<void> {
+  installation.step('mounts')
   let points: string[]
   try {
-    const info = await readHdiutilInfoPlist()
+    const info = await readHdiutilInfoPlist({
+      timeoutMs: MACOS_MOUNT_COMMAND_TIMEOUT_MS,
+      signal: installation.signal,
+    })
     points = mountPointsOfImage(info, [dmgPath, realpathOrSelf(dmgPath)])
   } catch (error) {
+    installation.signal?.throwIfAborted()
     log(`[update] stale mount probe skipped: ${String(error)}\n`)
     return
   }
   for (const point of points) {
-    const line = `[update] detaching stale mount ${point} of staged installer\n`
-    log(line)
-    persistUpdateLog(line)
-    const result = await runCommandAsync(MACOS_HDIUTIL, ['detach', point, '-force'])
+    installation.step('mounts', MACOS_MOUNT_COMMAND_TIMEOUT_MS)
+    logUpdateLine(log, `[update] detaching stale mount ${point} of staged installer\n`)
+    const result = await runCommandAsync(MACOS_HDIUTIL, ['detach', point, '-force'], {
+      signal: installation.signal,
+      timeoutMs: MACOS_MOUNT_COMMAND_TIMEOUT_MS,
+    })
     if (result.status !== 0) {
-      log(`[update] stale mount detach failed ${point}: ${result.stderr || result.stdout}\n`)
+      logUpdateLine(
+        log,
+        `[update] stale mount detach failed ${point}: ${result.stderr || result.stdout}\n`
+      )
     }
   }
 }
 
-async function mountDmg(dmgPath: string, log: LogSink): Promise<string> {
-  await requireCommandAsync(MACOS_HDIUTIL, ['verify', dmgPath], 'DMG verification')
+async function mountDmg(
+  dmgPath: string,
+  log: LogSink,
+  installation: InstallationProgress
+): Promise<string> {
+  const { signal } = installation
+  // 安装期不再对 DMG 做 hdiutil 完整性预校验（bug 87435837 性能）：整包字节已由 SHA-512 对着
+  // HTTPS 发布元数据在下载与安装前各钉死一次，打包期 verify.cjs 也已 hdiutil 校验过，attach 对
+  // 结构损坏自身会失败；此处省掉一次全量只读校验（真机 ~37s）。
   const mount = join(updateCacheDir(), `mount-${randomUUID()}`)
   mkdirSync(mount, { recursive: true })
   const attachArgs = [
@@ -1241,204 +1578,468 @@ async function mountDmg(dmgPath: string, log: LogSink): Promise<string> {
     '-noautoopen',
     '-mountpoint',
     mount,
-    dmgPath
+    dmgPath,
   ]
-  let lastError: unknown = null
-  for (let attempt = 1; attempt <= DMG_ATTACH_ATTEMPTS; attempt++) {
-    if (attempt > 1) await delayMs(DMG_ATTACH_RETRY_DELAY_MS)
-    await detachStaleMountsOf(dmgPath, log)
-    try {
-      await requireCommandAsync(MACOS_HDIUTIL, attachArgs, 'DMG attach')
-      return mount
-    } catch (error) {
-      lastError = error
-      persistUpdateLog(`[update] DMG attach attempt ${attempt} failed: ${String(error)}\n`)
+  let transferred = false
+  try {
+    let lastError: unknown = null
+    for (let attempt = 1; attempt <= DMG_ATTACH_ATTEMPTS; attempt++) {
+      signal?.throwIfAborted()
+      if (attempt > 1) await delayMs(DMG_ATTACH_RETRY_DELAY_MS)
+      await detachStaleMountsOf(dmgPath, log, installation)
+      installation.step('mounting', MACOS_MOUNT_COMMAND_TIMEOUT_MS)
+      try {
+        await runLoggedCommand(log, `DMG attach attempt ${attempt}`, MACOS_HDIUTIL, attachArgs, {
+          timeoutMs: MACOS_MOUNT_COMMAND_TIMEOUT_MS,
+          signal,
+        })
+        signal?.throwIfAborted()
+        transferred = true
+        return mount
+      } catch (error) {
+        lastError = error
+        signal?.throwIfAborted()
+      }
+    }
+    throw lastError
+  } finally {
+    if (!transferred) {
+      // Even an interrupted attach can have mounted the volume before exiting.
+      await runCommandAsync(MACOS_HDIUTIL, ['detach', mount, '-force'], {
+        timeoutMs: MACOS_MOUNT_COMMAND_TIMEOUT_MS,
+      })
+      try {
+        rmdirSync(mount)
+      } catch {
+        /* Never recursively remove a mounted volume. */
+      }
     }
   }
-  throw lastError
 }
 
-async function plistValue(appPath: string, field: string): Promise<string> {
-  return await requireCommandAsync(
+async function plistValue(
+  appPath: string,
+  field: string,
+  log: LogSink,
+  installation: InstallationProgress,
+  application: 'source' | 'staged'
+): Promise<string> {
+  const { signal } = installation
+  installation.step('identity', MACOS_SIGNATURE_COMMAND_TIMEOUT_MS, application)
+  return await runLoggedCommand(
+    log,
+    `read ${field}`,
     '/usr/bin/plutil',
     ['-extract', field, 'raw', join(appPath, 'Contents/Info.plist')],
-    `read ${field}`
+    { timeoutMs: MACOS_SIGNATURE_COMMAND_TIMEOUT_MS, signal }
   )
-}
-
-async function signedTeamId(appPath: string): Promise<string> {
-  const output = await requireCommandAsync('codesign', ['-d', '--verbose=4', appPath], 'codesign metadata')
-  const match = output.match(/^TeamIdentifier=(.+)$/m)
-  return match ? match[1].trim() : ''
 }
 
 async function verifyMountedApplication(
   appPath: string,
   meta: LatestVersionMeta,
-  config: DesktopUpdateConfig
+  config: DesktopUpdateConfig,
+  log: LogSink,
+  installation: InstallationProgress,
+  application: 'source' | 'staged'
 ): Promise<void> {
-  // 每一步都 await：校验命令非 0 退出会抛错、在安装推进前中断（fail-closed）。漏掉任何一个
-  // await 都会让 codesign/spctl/stapler 变成后台即发即忘、安装先于校验完成 —— 那是安全洞。
-  if ((await plistValue(appPath, 'CFBundleIdentifier')) !== config.bundleId) {
-    throw new Error('downloaded app Bundle ID differs from packaged product policy')
-  }
-  if ((await plistValue(appPath, 'CFBundleShortVersionString')) !== meta.version) {
-    throw new Error('downloaded app version differs from release metadata')
-  }
-  const executable = await plistValue(appPath, 'CFBundleExecutable')
-  const architectures = (
-    await requireCommandAsync(
-      '/usr/bin/lipo',
-      ['-archs', join(appPath, 'Contents/MacOS', executable)],
-      'application architecture check'
-    )
-  ).split(/\s+/)
-  const expectedArch = meta.arch_type === MACOS_ARM64_ARCH_TYPE ? MACOS_ARM64 : MACOS_X86_64
-  if (!architectures.includes(expectedArch)) throw new Error('downloaded app architecture is incompatible')
-  await requireCommandAsync('codesign', ['--verify', '--deep', '--strict', appPath], 'application signature')
-  await requireCommandAsync('spctl', ['--assess', '--type', 'execute', appPath], 'Gatekeeper assessment')
-  await requireCommandAsync('xcrun', ['stapler', 'validate', appPath], 'notarization ticket')
-  if ((await signedTeamId(appPath)) !== config.expectedTeamId || meta.team_id !== config.expectedTeamId) {
-    throw new Error('downloaded app Apple Team ID differs from packaged product policy')
-  }
-}
-
-async function openInstallerFallback(
-  dmgPath: string,
-  reason: string,
-  log: LogSink
-): Promise<StartUpdateResult> {
-  log(`[update] ${reason}; opening verified installer for manual installation\n`)
-  await shell.openPath(dmgPath)
-  return { ok: true, mode: 'manual' }
-}
-
-function confirmationPath(token: string): string {
-  return join(updateStateDirectory(), `confirmed-${token}`)
-}
-
-function rollbackPath(): string {
-  return join(updateStateDirectory(), ROLLBACK_STATE_FILE)
-}
-
-export function pendingUpdateToken(argv: string[] = process.argv): string | null {
-  const value = argv.find((argument) => argument.startsWith(UPDATE_TOKEN_ARGUMENT))
-  return value ? value.slice(UPDATE_TOKEN_ARGUMENT.length) : null
-}
-
-export function confirmInstalledUpdate(token: string, log: LogSink): void {
-  if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error('invalid update confirmation token')
-  const path = confirmationPath(token)
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${app.getVersion()}\n`, { flag: 'wx' })
-  log(`[update] confirmed healthy relaunch version=${app.getVersion()}\n`)
-}
-
-export function consumeRollbackState(): RollbackState | null {
+  const { signal } = installation
+  // Local identity, integrity and the attached Apple-signed ticket are all required.
+  // Ticket verification never queries Apple or accepts a previous cached verdict.
   try {
-    const path = rollbackPath()
-    const value = JSON.parse(readFileSync(path, 'utf8')) as RollbackState
-    rmSync(path, { force: true })
-    return value
-  } catch {
-    return null
+    if (
+      (await plistValue(appPath, 'CFBundleIdentifier', log, installation, application)) !==
+      config.bundleId
+    ) {
+      throw new UpdateVerifyError(
+        'downloaded app Bundle ID differs from packaged product policy',
+        'signature-untrusted'
+      )
+    }
+    if (
+      (await plistValue(appPath, 'CFBundleShortVersionString', log, installation, application)) !==
+      meta.version
+    ) {
+      throw new UpdateVerifyError(
+        'downloaded app version differs from release metadata',
+        'signature-untrusted'
+      )
+    }
+    const bundledPolicy = JSON.parse(
+      readFileSync(join(appPath, 'Contents/Resources/product.json'), 'utf8')
+    ) as Record<string, unknown>
+    if (
+      bundledPolicy.build_number !== meta.build_number ||
+      bundledPolicy.product_id !== meta.product_id
+    ) {
+      throw new UpdateVerifyError(
+        'downloaded app build identity differs from release metadata',
+        'signature-untrusted'
+      )
+    }
+    const executable = await plistValue(
+      appPath,
+      'CFBundleExecutable',
+      log,
+      installation,
+      application
+    )
+    installation.step('identity', MACOS_SIGNATURE_COMMAND_TIMEOUT_MS, application)
+    const architectures = await readMachArchitectures(
+      join(appPath, 'Contents/MacOS', executable),
+      signal
+    )
+    logUpdateLine(log, `[update] application architecture check: ${architectures.join(' ')}\n`)
+    const expectedArch = meta.arch_type === MACOS_ARM64_ARCH_TYPE ? MACOS_ARM64 : MACOS_X86_64
+    if (!architectures.includes(expectedArch))
+      throw new UpdateVerifyError(
+        'downloaded app architecture is incompatible',
+        'signature-untrusted'
+      )
+    // 身份锚：一次 `codesign -d --verbose=4` 解析出 Developer ID 链 / TeamID / 硬化运行时 / 安全时间戳 /
+    // Identifier，交纯模块 classifyMacosTrust 离线判定（可 node --test 直接跑）。承重判据是
+    // TeamIdentifier==expectedTeamId：Authority 行是自报文本、可被伪造链拼出，TeamID 来自真实证书 OU
+    // 且受随后的原生离线严格签名校验保护，故空 / not set 一律拒（见 codesign.ts）。
+    installation.step('publisher', MACOS_SIGNATURE_COMMAND_TIMEOUT_MS, application)
+    const identityOutput = await runLoggedCommand(
+      log,
+      'codesign metadata',
+      'codesign',
+      ['-d', '--verbose=4', appPath],
+      { timeoutMs: MACOS_SIGNATURE_COMMAND_TIMEOUT_MS, signal }
+    )
+    const identity = parseCodesignIdentity(identityOutput)
+    const verdict = classifyMacosTrust(identity, {
+      expectedTeamId: config.expectedTeamId,
+      expectedBundleId: config.bundleId,
+      metaTeamId: meta.team_id ?? '',
+    })
+    if (!verdict.trusted) {
+      // 拒绝原因只落 update.log 与错误诊断，不进用户文案（用户文案由 errorFallback 分类决定）。
+      persistUpdateLog(
+        `[update] macOS offline trust anchor rejected (${application}): ${verdict.reason}\n`
+      )
+      throw new UpdateVerifyError(
+        `downloaded app failed the macOS offline trust anchor: ${verdict.reason}`,
+        'signature-untrusted'
+      )
+    }
+    await verifyMountedNotarization(appPath, log, installation, application)
+    // 离线锚明细落盘供审计（含 cdhash，便于事后吊销核对）。
+    persistUpdateLog(
+      `[update] macOS offline trust anchor passed (${application}): ` +
+        `developerId="${identity.developerIdAuthority}" teamId=${identity.teamIdentifier} ` +
+        `hardenedRuntime=${identity.hardenedRuntime} secureTimestamp=${identity.hasSecureTimestamp} ` +
+        `identifier=${identity.identifier} cdhash=${identity.cdhash}\n`
+    )
+  } catch (error) {
+    if (error instanceof UpdateVerifyError) throw error
+    // 取消必须原样向上传播：绝不把 abort 误判成签名失败后继续 ditto/重启。
+    if (signal?.aborted) throw error
+    // 校验工具缺失（codesign ENOENT）＝本机无法执行校验，非签名不可信（引导手动下载而非官方渠道重取）。
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+      throw new UpdateVerifyError(
+        'macOS code signing verification tool is unavailable',
+        'verify-env-unavailable'
+      )
+    }
+    // Other local identity/integrity failures remain a security rejection.
+    throw new UpdateVerifyError(
+      `downloaded app failed macOS signature verification: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      'signature-untrusted'
+    )
   }
 }
 
-function installerScript(): string {
-  return [
-    '#!/bin/bash',
-    'set -u',
-    'APP_PID="$1"; MOUNT="$2"; STAGE="$3"; DEST="$4"; DMG="$5"; PREVIOUS="$6"; CONFIRM="$7"; ROLLBACK="$8"; TOKEN="$9"; VERSION="${10}"',
-    `for _ in $(seq 1 ${INSTALLER_EXIT_WAIT_ATTEMPTS}); do kill -0 "$APP_PID" 2>/dev/null || break; sleep ${INSTALLER_EXIT_WAIT_SECONDS}; done`,
-    'if kill -0 "$APP_PID" 2>/dev/null; then',
-    `  ${MACOS_HDIUTIL} detach "$MOUNT" -force >/dev/null 2>&1 || true`,
-    '  rm -rf "$STAGE"; rm -f "$DMG" "$0"',
-    '  exit 1',
-    'fi',
-    'rm -rf "$PREVIOUS"',
-    'if ! mv "$DEST" "$PREVIOUS" || ! mv "$STAGE" "$DEST"; then',
-    '  [[ -e "$PREVIOUS" && ! -e "$DEST" ]] && mv "$PREVIOUS" "$DEST"',
-    '  exit 1',
-    'fi',
-    '/usr/bin/open -n "$DEST" --args "' + UPDATE_TOKEN_ARGUMENT + '$TOKEN"',
-    `for _ in $(seq 1 ${INSTALL_CONFIRM_WAIT_ATTEMPTS}); do [[ -f "$CONFIRM" ]] && break; sleep ${INSTALL_CONFIRM_WAIT_SECONDS}; done`,
-    'if [[ -f "$CONFIRM" ]]; then',
-    '  rm -rf "$PREVIOUS"; rm -f "$CONFIRM"',
-    'else',
-    '  FAILED="${DEST}' + INSTALL_FAILED_SUFFIX + '-$TOKEN"',
-    '  rm -rf "$FAILED"; mv "$DEST" "$FAILED"; mv "$PREVIOUS" "$DEST"',
-    '  mkdir -p "$(dirname "$ROLLBACK")"',
-    '  printf \'{"version":"%s","reason":"health confirmation timeout","at":%s}\\n\' "$VERSION" "$(date +%s000)" > "$ROLLBACK"',
-    '  /usr/bin/open -n "$DEST"',
-    'fi',
-    `${MACOS_HDIUTIL} detach "$MOUNT" -force >/dev/null 2>&1 || true`,
-    'rm -f "$DMG" "$0"',
-    ''
-  ].join('\n')
+/** Attached ticket authenticity is independent of archive integrity. Native Squirrel
+ * performs the final nested/strict signature check on the actual extracted ZIP.
+ */
+async function verifyMountedNotarization(
+  appPath: string,
+  log: LogSink,
+  installation: InstallationProgress,
+  application: 'source' | 'staged'
+): Promise<void> {
+  const { signal } = installation
+  try {
+    installation.step('notarization', MACOS_SIGNATURE_COMMAND_TIMEOUT_MS, application)
+    const ticketStartedAt = Date.now()
+    logUpdateLine(log, '[update] step start notarization ticket\n')
+    const executable = await plistValue(
+      appPath,
+      'CFBundleExecutable',
+      log,
+      installation,
+      application
+    )
+    const architectures = await readMachArchitectures(
+      join(appPath, 'Contents/MacOS', executable),
+      signal
+    )
+    const hashes: Buffer[] = []
+    for (const arch of architectures) {
+      const metadata = await runLoggedCommand(
+        log,
+        `ticket code directory ${arch}`,
+        '/usr/bin/codesign',
+        ['-d', '--verbose=4', '--arch', arch, appPath],
+        { timeoutMs: MACOS_SIGNATURE_COMMAND_TIMEOUT_MS, signal }
+      )
+      hashes.push(notarizationHash(metadata))
+    }
+    await verifyNotarization({
+      appPath,
+      hashes,
+      native: nativeNotarization,
+      timeoutMs: MACOS_SIGNATURE_COMMAND_TIMEOUT_MS,
+      signal,
+    })
+    logUpdateLine(
+      log,
+      `[update] offline Apple ticket passed: architectures=${architectures.join(',')} cdhashes=${hashes.map((hash) => hash.toString('hex')).join(',')}\n`
+    )
+    logTiming(log, 'notarization ticket', ticketStartedAt)
+  } catch (error) {
+    if (signal?.aborted) throw error
+    if (error instanceof NotarizationError) {
+      const kind: UpdateVerifyFailure =
+        error.verdict === 'untrusted'
+          ? 'signature-untrusted'
+          : error.verdict === 'unavailable'
+            ? 'verify-env-unavailable'
+            : 'notarization-indeterminate'
+      throw new UpdateVerifyError(error.message, kind)
+    }
+    throw error
+  }
 }
 
-async function installDmg(
+const SQUIRREL_HANDOFF_FILE = 'squirrel.json'
+let squirrel: SquirrelInstallation | null = null
+let squirrelRecoveryRequired = false
+let macPrepared: { receipt: PreparedArchive; workspace: string } | null = null
+let macPreparationEpoch = 0
+export function macPreparationReady(meta: LatestVersionMeta): boolean {
+  const ready = readReadyState()
+  return (
+    !!ready?.archive &&
+    preparedIdentity(ready.meta) === preparedIdentity(meta) &&
+    !!macPrepared?.receipt.matches(meta, ready.archive)
+  )
+}
+
+/** Mount lifetime is owned here, including failures and cancellation. The caller
+ * can only operate on the exact application in this read-only source volume.
+ */
+async function withMountedDmg<T>(
+  dmgPath: string,
+  installation: InstallationProgress,
+  log: LogSink,
+  operation: (source: string) => Promise<T>
+): Promise<T> {
+  const mount = await mountDmg(dmgPath, log, installation)
+  try {
+    const source = join(mount, PRODUCT_APPLICATION)
+    if (
+      !lstatSync(source).isDirectory() ||
+      realpathSync(source) !== join(realpathSync(mount), PRODUCT_APPLICATION)
+    )
+      throw new Error('DMG application must be an exact directory inside the mounted image')
+    installation.signal?.throwIfAborted()
+    return await operation(source)
+  } finally {
+    // Cleanup must not inherit an already-aborted operation signal.
+    await runLoggedCommand(log, 'detach update image', MACOS_HDIUTIL, ['detach', mount, '-force'], {
+      timeoutMs: MACOS_MOUNT_COMMAND_TIMEOUT_MS,
+    })
+    rmdirSync(mount)
+  }
+}
+
+function squirrelHandoffPath(home = desktopHome()): string {
+  return join(home, UPDATE_STATE_DIRNAME, SQUIRREL_HANDOFF_FILE)
+}
+
+export async function macStartupAdmission(
+  home: string,
+  log: LogSink,
+  expected?: { candidate: string; targetBuild: string; sourceBuild?: string }
+): Promise<SquirrelAdmission> {
+  if (process.platform !== MACOS_PLATFORM || !app.isPackaged) return 'allow'
+  try {
+    const handoff = readSquirrelHandoff(squirrelHandoffPath(home))
+    if (
+      expected &&
+      (!handoff ||
+        handoff.candidate !== expected.candidate ||
+        handoff.buildNumber !== expected.targetBuild)
+    )
+      throw new Error('Mac launch context does not match the pending handoff')
+    const config = resolveDesktopConfig(log)
+    const current = { version: app.getVersion(), buildNumber: config.buildNumber }
+    if (squirrelAdmission(current, handoff, 'unconfirmed') === 'allow') {
+      if (!expected || !squirrelLaunchSuperseded(config.buildNumber, expected)) return 'allow'
+      if (!(await inspectSquirrelIdle(systemCacheDir(), config.bundleId)))
+        throw new Error(
+          'Superseded Mac launch still has native update activity or uncertain evidence'
+        )
+      if (
+        JSON.stringify(readSquirrelHandoff(squirrelHandoffPath(home))) !== JSON.stringify(handoff)
+      )
+        throw new Error('Mac handoff changed during superseded startup admission')
+      log(`[update] startup admission=superseded candidate=${handoff!.candidate}\n`)
+      return 'superseded'
+    }
+    const status = await settleSquirrelStartup(() =>
+      inspectSquirrelStartup(
+        handoff!,
+        systemCacheDir(),
+        config.bundleId,
+        resolve(dirname(process.execPath), '..', '..')
+      )
+    )
+    if (JSON.stringify(readSquirrelHandoff(squirrelHandoffPath(home))) !== JSON.stringify(handoff))
+      throw new Error('Mac handoff changed during startup admission')
+    const admission = squirrelAdmission(current, handoff, status)
+    log(
+      `[update] startup admission=${admission} status=${status} candidate=${handoff!.candidate}\n`
+    )
+    return admission
+  } catch (error) {
+    log(`[update] startup admission=exit evidence unavailable: ${String(error)}\n`)
+    return 'exit'
+  }
+}
+
+export function macHandoffCommitted(): boolean {
+  return process.platform === MACOS_PLATFORM && (squirrelRecoveryRequired || !!squirrel?.committed)
+}
+
+/** Only selects a startup notice. The consumed handoff still forbids backend startup. */
+export async function macStartupStatus(log: LogSink): Promise<SquirrelStartupStatus> {
+  try {
+    const handoff = readSquirrelHandoff(squirrelHandoffPath())
+    if (!handoff) return 'unconfirmed'
+    const status = await inspectSquirrelStartup(
+      handoff,
+      systemCacheDir(),
+      resolveDesktopConfig(log).bundleId,
+      resolve(dirname(process.execPath), '..', '..')
+    )
+    logUpdateEvent(log, {
+      phase: 'macos-install',
+      event: `startup-${status}`,
+      updateId: handoff.candidate,
+    })
+    return status
+  } catch {
+    return 'unconfirmed'
+  }
+}
+
+export async function syncMacUpdateDiagnostics(log: LogSink): Promise<void> {
+  if (process.platform !== MACOS_PLATFORM) return
+  const config = resolveDesktopConfig(log)
+  try {
+    for (const item of await shipItDiagnostics(systemCacheDir(), config.bundleId))
+      persistUpdateLog(`[update] ShipIt ${item.name}\n${item.text}\n`)
+    await updateLog?.flush()
+  } catch (error) {
+    logUpdateLine(log, `[update] ShipIt diagnostics unavailable: ${String(error)}\n`)
+  }
+}
+
+let macCleanupStarted = false
+export function startMacDeferredCleanup(log: LogSink): void {
+  if (macCleanupStarted || process.platform !== MACOS_PLATFORM || !app.isPackaged) return
+  macCleanupStarted = true
+  void retryMacCleanup(
+    {
+      platform: process.platform,
+      packaged: app.isPackaged,
+      application: resolve(dirname(process.execPath), '..', '..'),
+      bundle: resolveDesktopConfig(log).bundleId,
+    },
+    (line) => logUpdateLine(log, line)
+  ).catch(() => {
+    logUpdateLine(log, '[update-cleanup] event=scheduling-failed\n')
+  })
+}
+
+export function quitMacUpdate(): void {
+  if (!squirrel) throw new Error('Squirrel installation unavailable')
+  squirrel.quitAndInstall()
+}
+
+function preparedApplicationDirectory(meta: LatestVersionMeta): string {
+  return join(updateCacheDir(), `${stagedInstallerName(meta.version, meta.build_number)}.prepared`)
+}
+
+async function prepareDmg(
   dmgPath: string,
   meta: LatestVersionMeta,
-  onProgress: (progress: UpdateProgress) => void,
+  installation: InstallationProgress,
   log: LogSink
-): Promise<StartUpdateResult> {
-  const config = resolveDesktopConfig(log)
-  let mount = ''
+): Promise<NonNullable<typeof macPrepared>> {
+  if (process.platform !== MACOS_PLATFORM || !app.isPackaged)
+    throw new Error('automatic update requires a packaged macOS application')
+  meta = Object.freeze({ ...meta })
+  const { signal } = installation
+  const epoch = macPreparationEpoch
+  const directory = preparedApplicationDirectory(meta)
+  const archive = join(directory, 'application.zip')
+  const startedAt = Date.now()
+  await removeUpdateArtifact(directory)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
   try {
-    mount = await mountDmg(dmgPath, log)
-    const sourceApp = join(mount, PRODUCT_APPLICATION)
-    if (!existsSync(sourceApp)) throw new Error(`DMG does not contain exact ${PRODUCT_APPLICATION}`)
-    await verifyMountedApplication(sourceApp, meta, config)
-
-    if (process.platform !== MACOS_PLATFORM || !app.isPackaged) {
-      return await openInstallerFallback(dmgPath, 'automatic replacement is available only to packaged macOS builds', log)
-    }
-    const destination = currentAppBundlePath()
-    if (!destination || !isWritable(dirname(destination)) || !isWritable(destination)) {
-      return await openInstallerFallback(dmgPath, 'installed application is not writable', log)
-    }
-    const stage = `${destination}${INSTALL_STAGING_SUFFIX}`
-    const previous = `${destination}${INSTALL_PREVIOUS_SUFFIX}`
-    rmSync(stage, { recursive: true, force: true })
-    onProgress({ phase: 'installing', install_stage: 'copying' })
-    await requireCommandAsync(MACOS_DITTO, [sourceApp, stage], 'stage application')
-    await verifyMountedApplication(stage, meta, config)
-
-    const token = randomUUID()
-    const confirm = confirmationPath(token)
-    const scriptPath = join(updateCacheDir(), `install-${token}.sh`)
-    mkdirSync(dirname(confirm), { recursive: true })
-    rmSync(confirm, { force: true })
-    writeFileSync(scriptPath, installerScript(), { mode: 0o700, flag: 'wx' })
-    onProgress({ phase: 'installing', install_stage: 'restarting' })
-    const child = spawn('/bin/bash', [
-      scriptPath,
-      String(process.pid),
-      mount,
-      stage,
-      destination,
+    const receipt = await PreparedArchive.create(
+      meta,
       dmgPath,
-      previous,
-      confirm,
-      rollbackPath(),
-      token,
-      meta.version
-    ], { detached: true, stdio: 'ignore' })
-    child.unref()
-    mount = ''
-    return { ok: true, mode: 'auto' }
+      archive,
+      () =>
+        withMountedDmg(dmgPath, installation, log, async (source) => {
+          await verifyMountedApplication(
+            source,
+            meta,
+            resolveDesktopConfig(log),
+            log,
+            installation,
+            'source'
+          )
+          installation.step('copying', MACOS_STAGE_COPY_TIMEOUT_MS)
+          await runLoggedCommand(
+            log,
+            'archive mounted application',
+            MACOS_DITTO,
+            [
+              '-c',
+              '-k',
+              '--zlibCompressionLevel',
+              MACOS_ZIP_COMPRESSION_LEVEL,
+              '--sequesterRsrc',
+              '--keepParent',
+              source,
+              archive,
+            ],
+            { timeoutMs: MACOS_STAGE_COPY_TIMEOUT_MS, signal }
+          )
+        }),
+      signal
+    )
+    signal?.throwIfAborted()
+    if (epoch !== macPreparationEpoch) throw new Error('macOS preparation was superseded')
+    logTiming(log, 'final ZIP preparation', startedAt)
+    return { receipt, workspace: directory }
   } catch (error) {
-    return { ok: false, error: String(error) }
-  } finally {
-    // 卸载挂载点：best-effort，失败不该把一次安装判成失败；异步化以免再冻主线程。
-    if (mount) await runCommandAsync(MACOS_HDIUTIL, ['detach', mount, '-force']).catch(() => {})
+    await removeUpdateArtifact(directory)
+    throw error
   }
 }
 
 function readyStatePath(): string {
-  return join(updateStateDirectory(), READY_STATE_FILE)
+  return join(candidateStateDirectory(), READY_STATE_FILE)
 }
 
 /**
@@ -1451,9 +2052,23 @@ export function readReadyState(): ReadyState | null {
   try {
     const value = JSON.parse(readFileSync(readyStatePath(), 'utf8')) as ReadyState
     const meta = value.meta
+    if (meta && readRejectedUpdate()?.id === meta.id) return null
     if (typeof value.path !== 'string' || !meta || typeof meta.sha512 !== 'string') return null
+    if (value.path !== stagedInstallerPath(meta)) return null
     if (typeof meta.file_size !== 'number' || meta.file_size <= 0) return null
     if (!existsSync(value.path) || statSync(value.path).size !== meta.file_size) return null
+    if (process.platform === MACOS_PLATFORM) {
+      const archive = value.archive
+      if (
+        !archive ||
+        archive.path !== join(preparedApplicationDirectory(meta), 'application.zip') ||
+        !/^[a-f0-9]{128}$/i.test(archive.sha512) ||
+        !Number.isSafeInteger(archive.size) ||
+        archive.size <= 0 ||
+        statSync(archive.path).size !== archive.size
+      )
+        return null
+    }
     return value
   } catch {
     return null
@@ -1462,11 +2077,12 @@ export function readReadyState(): ReadyState | null {
 
 function writeReadyState(ready: ReadyState): void {
   const path = readyStatePath()
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(ready), 'utf8')
+  writeJson(path, ready)
 }
 
 export function clearReadyState(): void {
+  macPreparationEpoch += 1
+  macPrepared = null
   rmSync(readyStatePath(), { force: true })
 }
 
@@ -1476,12 +2092,14 @@ export function clearReadyState(): void {
  * 归主进程持有而不是渲染层：渲染层的 origin 含后端随机端口，localStorage 按 origin
  * 分区，写在那里的确认每次启动都读不回来（bug 86968393）。落盘才跨客户端重启有效。
  *
- * 目录可注入，与本文件 `pendingUpdateToken(argv = process.argv)` 同一个写法：生产走
+ * 目录可注入：生产走
  * 默认值，测试用真实临时目录验落盘与读回。
  */
 export function readAnnouncedKey(directory: string = updateStateDirectory()): string | null {
   try {
-    const value = JSON.parse(readFileSync(join(directory, ANNOUNCED_STATE_FILE), 'utf8')) as AnnouncedState
+    const value = JSON.parse(
+      readFileSync(join(directory, ANNOUNCED_STATE_FILE), 'utf8')
+    ) as AnnouncedState
     return typeof value.key === 'string' && value.key ? value.key : null
   } catch {
     return null
@@ -1497,16 +2115,21 @@ export function writeAnnouncedKey(key: string, directory: string = updateStateDi
 
 /**
  * 过期暂存包本体也要回收：清掉 ready 记录只解决「别再报已就绪」，几百 MB 的文件还躺在
- * 磁盘上。手动兜底安装（openInstallerFallback）留下的包走的正是这条路 —— 当时不删是因为
- * 用户还要拿它装，装完下次启动就该清掉。
+ * 磁盘上。旧候选的安装包在实际安装完成或被更新候选替代后回收。
  *
  * 只删文件名符合本模块命名的东西：ready.json 是磁盘上的可变状态，不能拿它当任意路径的
  * 删除授权。
  */
 function removeStaleInstaller(path: string, log: LogSink): void {
-  if (updateArtifactKind(basename(path)) !== 'payload') return
-  rmSync(path, { force: true })
-  log(`[update] pruned stale installer ${basename(path)}\n`)
+  if (dirname(path) !== updateCacheDir() || updateArtifactKind(basename(path)) !== 'payload') return
+  try {
+    rmSync(path, { force: true })
+    log(`[update] pruned stale installer ${basename(path)}\n`)
+  } catch (error) {
+    // A locked obsolete payload is cleanup debt, not a failed new candidate.
+    // Later cache pruning retries it; never keep ready permission for its sake.
+    log(`[update] stale installer cleanup deferred ${basename(path)}: ${String(error)}\n`)
+  }
 }
 
 /**
@@ -1520,6 +2143,13 @@ function removeStaleInstaller(path: string, log: LogSink): void {
 function dropStagedUpdate(staged: ReadyState, log: LogSink): void {
   clearReadyState()
   removeStaleInstaller(staged.path, log)
+  if (process.platform === MACOS_PLATFORM && !macHandoffCommitted()) {
+    try {
+      rmSync(preparedApplicationDirectory(staged.meta), { recursive: true, force: true })
+    } catch (error) {
+      log(`[update] prepared archive cleanup deferred: ${String(error)}\n`)
+    }
+  }
 }
 
 /**
@@ -1533,11 +2163,27 @@ function dropStagedUpdate(staged: ReadyState, log: LogSink): void {
  * 丢掉安装失败留在 ready 相位上的唯一结果表面（bug 86968393）。排不出先后（身份串不合契约）
  * 时同样不动，让已经下载好的那一个继续有效。
  */
-export function supersedeStagedUpdate(
-  candidate: LatestVersionMeta | null,
-  log: LogSink
-): boolean {
-  if (!candidate) return false
+/** Revoke only this updater's candidate records after its workers have stopped. */
+export function discardPreviewPreparation(log: LogSink): void {
+  if (!previewUpdatesEnabled(log)) return
+  if (macHandoffCommitted()) throw new Error('Update handoff already committed')
+  validatedPreviewCandidates.clear()
+  const writer = desktopDirectoryWriter(updateStateDirectory())
+  try {
+    const staged = readReadyState()
+    if (staged) dropStagedUpdate(staged, log)
+    else clearReadyState()
+    rmSync(join(candidateStateDirectory(), PREPARATION_STATE_FILE), { force: true })
+    // A cancelled download has no ready record yet. Its resumable payload must
+    // also be reclaimed after the preparation worker has drained.
+    pruneUpdateArtifacts(null, log)
+  } finally {
+    writer.close()
+  }
+}
+
+export function supersedeStagedUpdate(candidate: LatestVersionMeta | null, log: LogSink): boolean {
+  if (!candidate || macHandoffCommitted()) return false
   const staged = readReadyState()
   if (!staged) return false
   const newer = isNewerRelease(
@@ -1547,16 +2193,37 @@ export function supersedeStagedUpdate(
   if (newer !== true) return false
   log(
     `[update] staged ${staged.meta.version}-${staged.meta.build_number} superseded by ` +
-    `${candidate.version}-${candidate.build_number}\n`
+      `${candidate.version}-${candidate.build_number}\n`
   )
   dropStagedUpdate(staged, log)
   return true
 }
 
+async function discardPreparedApplications(
+  log: LogSink,
+  keep: string,
+  retained: readonly string[] = []
+): Promise<void> {
+  if (process.platform !== MACOS_PLATFORM) return
+  if (macHandoffCommitted()) throw new Error('Squirrel handoff requires recovery')
+  for (const entry of readdirSync(updateCacheDir(), { withFileTypes: true })) {
+    if (!entry.name.endsWith('.dmg.prepared') || !entry.name.startsWith('scholarseed-')) continue
+    if (entry.name === keep || retained.includes(entry.name)) continue
+    await removeUpdateArtifact(join(updateCacheDir(), entry.name))
+  }
+  logUpdateEvent(log, { phase: 'gc', event: 'discard-prepared-archives', result: 'ok' })
+}
+
 /** stageUpdate 的结果：要么停在「已就绪」，要么带着「部分包是否保留」失败。 */
 export type StageUpdateResult =
   | { ok: true; ready: ReadyState }
-  | { ok: false; error: string; resumable: boolean }
+  | {
+      ok: false
+      error?: string
+      errorFallback?: UpdateInstallFallback
+      errorOrigin: 'download' | 'preparation'
+      resumable: boolean
+    }
 
 /**
  * 下载并校验安装包，然后停在「已就绪」。
@@ -1567,20 +2234,49 @@ export type StageUpdateResult =
 export async function stageUpdate(
   id: string,
   onProgress: (progress: UpdateProgress) => void,
-  log: LogSink
+  log: LogSink,
+  signal?: AbortSignal
 ): Promise<StageUpdateResult> {
+  const previousPreparation = macPrepared
+  const previousReady = process.platform === MACOS_PLATFORM ? readReadyState() : null
+  if (previousReady?.meta.id === id && macPreparationReady(previousReady.meta))
+    return { ok: true, ready: previousReady }
+  try {
+    // Only the preparation owner calls this after its previous worker has drained.
+    if (macHandoffCommitted()) throw new Error('Squirrel handoff requires recovery')
+    if (process.platform !== MACOS_PLATFORM) clearReadyState()
+    signal?.throwIfAborted()
+  } catch (error) {
+    return { ok: false, error: String(error), errorOrigin: 'preparation', resumable: false }
+  }
   let info: DownloadInfo
   try {
-    info = await getDownloadInfo(id, log)
+    info = await getDownloadInfo(id, log, signal)
+    signal?.throwIfAborted()
   } catch (error) {
     return {
       ok: false,
       error: `${DOWNLOAD_METADATA_FAILED}: ${String(error)}`,
-      resumable: false
+      errorOrigin: 'download',
+      resumable: false,
     }
   }
   const destination = stagedInstallerPath(info)
-  pruneUpdateArtifacts(basename(destination), log)
+  try {
+    await discardPreparedApplications(
+      log,
+      basename(preparedApplicationDirectory(info)),
+      previousReady ? [basename(preparedApplicationDirectory(previousReady.meta))] : []
+    )
+    signal?.throwIfAborted()
+  } catch (error) {
+    return { ok: false, error: String(error), errorOrigin: 'preparation', resumable: false }
+  }
+  pruneUpdateArtifacts(
+    basename(destination),
+    log,
+    previousReady ? [basename(previousReady.path)] : []
+  )
   onProgress({ phase: 'downloading', percent: 0, receivedBytes: 0 })
   try {
     const downloadStartedAt = Date.now()
@@ -1588,12 +2284,13 @@ export async function stageUpdate(
       info.download_url,
       destination,
       info.file_size,
-      (percent, receivedBytes) => onProgress({ phase: 'downloading', percent, receivedBytes })
+      (percent, receivedBytes) => onProgress({ phase: 'downloading', percent, receivedBytes }),
+      signal
     )
     logTiming(log, `downloaded installer (${info.file_size} bytes)`, downloadStartedAt)
     onProgress({ phase: 'verifying' })
     const verifyStartedAt = Date.now()
-    const actual = await sha512OfFile(destination)
+    const actual = await sha512OfFile(destination, signal)
     logTiming(log, `downloaded installer SHA-512 (${info.file_size} bytes)`, verifyStartedAt)
     if (actual.toLowerCase() !== info.sha512.toLowerCase()) {
       // 完整但哈希不对：续传救不了它，删掉让下一次从头下。
@@ -1605,58 +2302,275 @@ export async function stageUpdate(
     return {
       ok: false,
       error: String(error),
-      resumable: downloadResumable(destination, info.file_size)
+      errorOrigin: 'download',
+      resumable: downloadResumable(destination, info.file_size),
     }
   }
   // 签名下载链接是短期的、安装阶段也用不到，不落盘。
   const { download_url: _downloadUrl, ...meta } = info
-  const ready: ReadyState = { at: Date.now(), path: destination, meta }
-  writeReadyState(ready)
+  let archive: SquirrelArchive | undefined
+  let prepared: NonNullable<typeof macPrepared> | null = null
+  if (process.platform === MACOS_PLATFORM) {
+    const preparation = new InstallationProgress(
+      (progress) => onProgress({ ...progress, phase: 'preparing' }),
+      signal,
+      (event) =>
+        logUpdateEvent(log, { ...event, fromVersion: app.getVersion(), toVersion: meta.version })
+    )
+    try {
+      // Cold state always reconstructs the trusted DMG -> ZIP relationship.
+      prepared = await prepareDmg(destination, meta, preparation, log)
+      archive = prepared.receipt.archive
+      signal?.throwIfAborted()
+    } catch (error) {
+      if (prepared) await removeUpdateArtifact(prepared.workspace)
+      persistUpdateLog(`[update] macOS preparation failed: ${String(error)}\n`)
+      if (!signal?.aborted && error instanceof UpdateVerifyError) {
+        return {
+          ok: false,
+          errorFallback: updateInstallFallback(error),
+          errorOrigin: 'preparation',
+          resumable: error.kind === 'notarization-indeterminate',
+        }
+      }
+      return { ok: false, error: String(error), errorOrigin: 'preparation', resumable: true }
+    } finally {
+      preparation.dispose()
+    }
+  }
+  const ready: ReadyState = { at: Date.now(), path: destination, meta, archive }
+  try {
+    signal?.throwIfAborted()
+    writeReadyState(ready)
+    if (prepared) macPrepared = prepared
+  } catch (error) {
+    const published = readReadyState()
+    if (
+      prepared &&
+      published?.archive &&
+      prepared.receipt.matches(published.meta, published.archive)
+    ) {
+      macPrepared = prepared
+    } else {
+      macPrepared = previousPreparation
+      if (prepared) await removeUpdateArtifact(prepared.workspace)
+    }
+    return { ok: false, error: String(error), errorOrigin: 'preparation', resumable: true }
+  }
+  if (previousReady && previousReady.meta.id !== ready.meta.id) {
+    removeStaleInstaller(previousReady.path, log)
+    try {
+      await removeUpdateArtifact(preparedApplicationDirectory(previousReady.meta))
+    } catch (error) {
+      log(`[update] previous prepared archive cleanup deferred: ${String(error)}\n`)
+    }
+  }
   log(`[update] staged ${meta.version}-${meta.build_number}\n`)
+  logUpdateEvent(log, {
+    phase: 'preparation',
+    event: 'artifacts-published',
+    result: 'ok',
+    updateId: meta.id,
+    payloadBytes: meta.file_size,
+    archiveBytes: archive?.size,
+  })
   return { ok: true, ready }
 }
 
 /**
  * 安装已暂存的更新包。
  *
- * 重新校验一次 SHA-512：暂存包可能是在上一次客户端运行时下载的，中间磁盘上的文件
- * 可以被任何东西改过，不能因为下载时验过就一路信到安装。
+ * A live macOS receipt reuses only the final ZIP; source identity and current
+ * trust are refreshed from the digest-bound read-only DMG before handoff. Restored state and Windows still
+ * recheck the installer. The native feed always verifies the actual ZIP bytes.
  */
 export async function installStagedUpdate(
   onProgress: (progress: UpdateProgress) => void,
-  log: LogSink
+  log: LogSink,
+  signal?: AbortSignal,
+  authorize?: (candidate: LatestVersionMeta) => Promise<() => void>,
+  prepareLaunch?: (candidate: LatestVersionMeta) => SquirrelLaunchCleanup
 ): Promise<StartUpdateResult> {
+  if (!authorize) {
+    log('[update] activation authorization is required\n')
+    return { ok: false, errorFallback: 'activation_authorization_required' }
+  }
   const staged = readReadyState()
   if (!staged) return { ok: false, error: NO_STAGED_UPDATE }
-  onProgress({ phase: 'verifying' })
+  const installation =
+    process.platform === WINDOWS_PLATFORM
+      ? undefined
+      : new InstallationProgress(onProgress, signal, (event) =>
+          logUpdateEvent(log, {
+            ...event,
+            fromVersion: app.getVersion(),
+            // 带上 build_number（与 Windows 路径对齐）：日志才看得出装的是哪个构建，同一 version
+            // 可有多个 build（bug 87435837 现场正因缺它无法从日志定位目标产物）。
+            toVersion: `${staged.meta.version}-${staged.meta.build_number}`,
+          })
+        )
+  let discardLaunch: SquirrelLaunchCleanup | undefined
   try {
-    const startedAt = Date.now()
-    const actual = await sha512OfFile(staged.path)
-    logTiming(log, `staged installer SHA-512 re-verify (${staged.meta.file_size} bytes)`, startedAt)
-    if (actual.toLowerCase() !== staged.meta.sha512.toLowerCase()) {
-      rmSync(staged.path, { force: true })
-      clearReadyState()
-      throw new Error('staged installer no longer matches its release metadata')
+    if (installation) installation.step('package')
+    else onProgress({ phase: 'verifying' })
+    // A live receipt binds the previously checked DMG to the verified final ZIP.
+    // Windows and restored/mismatched macOS state still require installer recheck.
+    if (
+      !installation ||
+      !staged.archive ||
+      !macPrepared?.receipt.matches(staged.meta, staged.archive)
+    ) {
+      const startedAt = Date.now()
+      const actual = await sha512OfFile(staged.path, signal)
+      logTiming(
+        log,
+        `staged installer SHA-512 re-verify (${staged.meta.file_size} bytes)`,
+        startedAt
+      )
+      if (actual.toLowerCase() !== staged.meta.sha512.toLowerCase()) {
+        rmSync(staged.path, { force: true })
+        clearReadyState()
+        throw new Error('staged installer no longer matches its release metadata')
+      }
     }
+    if (installation) {
+      if (macHandoffCommitted()) throw new Error('Squirrel handoff already consumed')
+      if (!staged.archive) throw new Error('Squirrel archive is not prepared')
+      let prepared = macPrepared
+      if (!prepared?.receipt.matches(staged.meta, staged.archive)) {
+        if (prepared) await removeUpdateArtifact(prepared.workspace)
+        macPrepared = null
+        prepared = await prepareDmg(staged.path, staged.meta, installation, log)
+        macPrepared = prepared
+        // Replace stale disk hints only with this process's verified conversion.
+        writeReadyState({ ...staged, archive: prepared.receipt.archive })
+      }
+      const startedAt = Date.now()
+      const frozen = await prepared.receipt.revalidate(
+        () =>
+          withMountedDmg(staged.path, installation, log, (source) =>
+            verifyMountedNotarization(source, log, installation, 'source')
+          ),
+        signal
+      )
+      logTiming(log, 'final ZIP and current source trust recheck', startedAt)
+      logUpdateEvent(log, {
+        phase: 'macos-install',
+        event: 'reuse-prepared-archive',
+        updateId: staged.meta.id,
+      })
+      // Background identity is byte-bound; native Squirrel must validate the actual
+      // extracted ZIP before emitting update-downloaded. Never quit on this receipt.
+      // The pinned feed verifies the full final ZIP before and during every transfer.
+      // A receipt grants no installation authorization.
+      signal?.throwIfAborted()
+      squirrel = new SquirrelInstallation(
+        autoUpdater,
+        squirrelHandoffPath(),
+        (event) => {
+          logUpdateEvent(log, {
+            phase: 'macos-install',
+            event,
+            updateId: staged.meta.id,
+            toVersion: staged.meta.version,
+          })
+          // A committed handoff whose native installer terminally fails will never relaunch
+          // the target; drop the launch context so this live session recovers storage and
+          // future updates instead of carrying a dead transaction.
+          discardLaunch = discardOnTerminalSquirrelFailure(event, discardLaunch)
+        },
+        undefined,
+        (identity) =>
+          bindSquirrelRequest(
+            systemCacheDir(),
+            resolveDesktopConfig(log).bundleId,
+            resolve(dirname(process.execPath), '..', '..'),
+            identity
+          )
+      )
+      await squirrel.prepare(
+        frozen,
+        {
+          version: staged.meta.version,
+          buildNumber: staged.meta.build_number,
+          candidate: staged.meta.id,
+          at: Date.now(),
+          state: 'requested',
+        },
+        async () => {
+          signal?.throwIfAborted()
+          const guard = await authorize(staged.meta)
+          return () => {
+            signal?.throwIfAborted()
+            guard()
+            if (!prepareLaunch) throw new Error('Mac update launch context is required')
+            discardLaunch = prepareLaunch(staged.meta)
+            installation.step('restarting')
+          }
+        }
+      )
+      installation.finish('handoff')
+      return { ok: true, mode: 'auto' }
+    }
+    onProgress({ phase: 'installing', install_stage: 'preparing' })
+    return await installWindows(staged.path, staged.meta, log, authorize, signal)
   } catch (error) {
+    installation?.finish(signal?.aborted && !macHandoffCommitted() ? 'cancelled' : 'failed')
+    persistUpdateLog(`[update] installation failed: ${String(error)}\n`)
+    if (error instanceof ActivationCandidateChanged) {
+      try {
+        discardRejectedUpdate(staged.meta, log)
+        return { ok: false, errorFallback: 'activation_candidate_changed' }
+      } catch (recovery) {
+        log(`[update] candidate revocation failed: ${String(recovery)}\n`)
+        return { ok: false, errorFallback: 'activation_recovery_required' }
+      }
+    }
+    if (error instanceof PreparedArtifactChangedError) macPrepared = null
+    if (installation && signal?.aborted && !macHandoffCommitted())
+      return { ok: false, cancelled: true }
+    if (error instanceof UpdateVerifyError)
+      return { ok: false, errorFallback: updateInstallFallback(error) }
     return { ok: false, error: String(error) }
+  } finally {
+    installation?.dispose()
+    if (!macHandoffCommitted()) discardLaunch?.()
+    if (squirrel && !squirrel.committed) {
+      squirrel.dispose()
+      squirrel = null
+    }
+    await updateLog?.flush()
   }
-  onProgress({ phase: 'installing', install_stage: 'preparing' })
-  if (process.platform === WINDOWS_PLATFORM) {
-    return await installWindows(staged.path, staged.meta, log)
-  }
-  return await installDmg(staged.path, staged.meta, onProgress, log)
 }
 
 export function initialUpdateSnapshot(log: LogSink): UpdateSnapshot {
-  const rollback = consumeRollbackState()
-  if (rollback) {
-    return {
-      phase: 'rolled-back',
-      currentVersion: app.getVersion(),
-      rollbackVersion: rollback.version,
-      error: rollback.reason,
-      errorOrigin: 'install'
+  if (process.platform === MACOS_PLATFORM) {
+    try {
+      const handoff = readSquirrelHandoff(squirrelHandoffPath())
+      if (handoff) {
+        const newer = isNewerRelease(
+          { version: app.getVersion(), buildNumber: resolveDesktopConfig(log).buildNumber },
+          { version: handoff.version, buildNumber: handoff.buildNumber }
+        )
+        if (newer !== false) throw new Error('Squirrel installation requires recovery')
+        logUpdateEvent(log, {
+          phase: 'macos-install',
+          event: 'installed-build-observed',
+          updateId: handoff.candidate,
+          toVersion: handoff.version,
+          result: 'success',
+        })
+        rmSync(squirrelHandoffPath(), { force: true })
+      }
+    } catch (error) {
+      squirrelRecoveryRequired = true
+      return {
+        phase: 'failed',
+        currentVersion: app.getVersion(),
+        error: String(error),
+        errorFallback: 'activation_recovery_required',
+        errorOrigin: 'install',
+      }
     }
   }
   const currentVersion = app.getVersion()
@@ -1670,17 +2584,13 @@ export function initialUpdateSnapshot(log: LogSink): UpdateSnapshot {
       { version: staged.meta.version, buildNumber: staged.meta.build_number }
     )
     if (newer === false) {
-      log(`[update] dropped stale staged update ${staged.meta.version}-${staged.meta.build_number}\n`)
+      log(
+        `[update] dropped stale staged update ${staged.meta.version}-${staged.meta.build_number}\n`
+      )
       dropStagedUpdate(staged, log)
-    } else {
-      return {
-        phase: 'ready',
-        currentVersion,
-        candidate: staged.meta,
-        percent: 100,
-        receivedBytes: staged.meta.file_size
-      }
     }
   }
+  // Disk state is only a reusable payload. A fresh check/preparation must select
+  // it before the UI offers installation, including after an older client failed.
   return { phase: 'idle', currentVersion }
 }

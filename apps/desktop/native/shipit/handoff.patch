@@ -1,0 +1,110 @@
+--- a/Squirrel/SQRLUpdater.m
++++ b/Squirrel/SQRLUpdater.m
+@@ -7,6 +7,7 @@
+ //
+ 
+ #import "SQRLUpdater.h"
++#import "handoff.h"
+ #import "NSBundle+SQRLVersionExtensions.h"
+ #import "NSError+SQRLVerbosityExtensions.h"
+ #import "NSProcessInfo+SQRLVersionExtensions.h"
+@@ -221,14 +222,13 @@
+ 		NSMutableURLRequest *request = [self.updateRequest mutableCopy];
+ 		[request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+ 
+-		return [[[[[[[[self
+-			performHousekeeping]
++		return [[[[[[[SSSquirrelTiming(@"housekeeping", [[self performHousekeeping] ignoreValues], NO)
+ 
+ 			//! get file from server
+ 			then:^{
+ 				self.state = SQRLUpdaterStateCheckingForUpdate;
+ 
+-				return [NSURLConnection rac_sendAsynchronousRequest:request];
++				return SSSquirrelTiming(@"feed-transfer", [NSURLConnection rac_sendAsynchronousRequest:request], YES);
+ 			}]
+ 			reduceEach:^(NSURLResponse *response, NSData *bodyData) {
+ 				BOOL readOnlyVolume = [self isRunningOnReadOnlyVolume];
+@@ -439,8 +439,7 @@
+ - (RACSignal *)downloadAndPrepareUpdate:(SQRLUpdate *)update {
+ 	NSParameterAssert(update != nil);
+ 
+-	return [[[self
+-		uniqueTemporaryDirectoryForUpdate]
++	return [[SSSquirrelTiming(@"prepare-directory", [self uniqueTemporaryDirectoryForUpdate], YES)
+ 		flattenMap:^(NSURL *downloadDirectory) {
+ 			void (^cleanUp)(void) = ^{
+ 				NSError *error;
+@@ -473,7 +472,10 @@
+ 		defer:^{
+ 			NSURL *zipOutputURL = [downloadDirectory URLByAppendingPathComponent:name];
+ 			NSError *error = nil;
+-			if ([data writeToURL:zipOutputURL options:NSDataWritingAtomic error:&error]) {
++			SSSquirrelSpan span = SSSquirrelBegin(@"write-archive");
++			BOOL written = [data writeToURL:zipOutputURL options:NSDataWritingAtomic error:&error];
++			SSSquirrelEnd(@"write-archive", span, written, error.code);
++			if (written) {
+ 				return [RACSignal return:zipOutputURL];
+ 			} else {
+ 				return [RACSignal error:error];
+@@ -483,19 +485,22 @@
+ 			NSLog(@"Download completed to: %@", zipOutputURL);
+ 		}]
+ 		flattenMap:^(NSURL *zipOutputURL) {
+-			return [[[[SQRLZipArchiver
+-				unzipArchiveAtURL:zipOutputURL intoDirectoryAtURL:downloadDirectory]
+-				ignoreValues]
++			return [[SSSquirrelTiming(@"unarchive", [RACSignal defer:^{
++				return [[SQRLZipArchiver unzipArchiveAtURL:zipOutputURL intoDirectoryAtURL:downloadDirectory] ignoreValues];
++			}], NO)
+ 				concat:[RACSignal return:zipOutputURL]]
+ 				doCompleted:^{
+ 					NSError *error = nil;
+-					if (![NSFileManager.defaultManager removeItemAtURL:zipOutputURL error:&error]) {
++					SSSquirrelSpan span = SSSquirrelBegin(@"remove-archive");
++					BOOL removed = [NSFileManager.defaultManager removeItemAtURL:zipOutputURL error:&error];
++					SSSquirrelEnd(@"remove-archive", span, removed, error.code);
++					if (!removed) {
+ 						NSLog(@"Error removing downloaded archive at %@: %@", zipOutputURL, error.sqrl_verboseDescription);
+ 					}
+ 				}];
+ 		}]
+ 		flattenMap:^(NSURL *zipOutputURL) {
+-			return [self updateBundleMatchingCurrentApplicationInDirectory:downloadDirectory];
++			return SSSquirrelTiming(@"find-bundle", [self updateBundleMatchingCurrentApplicationInDirectory:downloadDirectory], YES);
+ 		}]
+ 		setNameWithFormat:@"%@ -unarchiveAndPrepareData:withName: %@ intoDirectory: %@", self, name, downloadDirectory];
+ }
+@@ -516,8 +521,7 @@
+ 
+ 			[zipDownloadRequest setTimeoutInterval:SQURLUpdaterZipDownloadTimeoutSeconds];
+ 
+-			return [[[NSURLConnection
+-				rac_sendAsynchronousRequest:zipDownloadRequest]
++			return [[SSSquirrelTiming(@"archive-transfer", [NSURLConnection rac_sendAsynchronousRequest:zipDownloadRequest], YES)
+ 				reduceEach:^(NSURLResponse *response, NSData *bodyData) {
+ 					if ([response isKindOfClass:NSHTTPURLResponse.class]) {
+ 						NSHTTPURLResponse *httpResponse = (id)response;
+@@ -751,8 +755,7 @@
+ 	NSParameterAssert(update != nil);
+ 	NSParameterAssert(updateBundle != nil);
+ 
+-	return [[[[self.signature
+-		verifyBundleAtURL:updateBundle.bundleURL]
++	return [[[SSSquirrelTiming(@"verify-candidate", [self.signature verifyBundleAtURL:updateBundle.bundleURL], NO)
+ 		then:^{
+ 			NSRunningApplication *currentApplication = NSRunningApplication.currentApplication;
+ 			NSBundle *appBundle = [NSBundle bundleWithURL:currentApplication.bundleURL];
+@@ -822,10 +825,10 @@
+ 			BOOL useUpdateBundleName = [appBundle.sqrl_executableName isEqual:targetBundleURL.lastPathComponent.stringByDeletingPathExtension];
+ 
+ 			SQRLShipItRequest *request = [[SQRLShipItRequest alloc] initWithUpdateBundleURL:update.bundle.bundleURL targetBundleURL:targetBundleURL bundleIdentifier:currentApplication.bundleIdentifier launchAfterInstallation:NO useUpdateBundleName:useUpdateBundleName];
+-			return [request writeUsingURL:self.shipItStateURL];
++			return SSSquirrelTiming(@"write-request", [request writeUsingURL:self.shipItStateURL], NO);
+ 		}]
+ 		then:^{
+-			return self.shipItLauncher;
++			return SSSquirrelTiming(@"launch-helper", self.shipItLauncher, NO);
+ 		}]
+ 		sqrl_addTransactionWithName:NSLocalizedString(@"Preparing update", nil) description:NSLocalizedString(@"An update for %@ is being prepared. Interrupting the process could corrupt the application.", nil), NSRunningApplication.currentApplication.bundleIdentifier]
+ 		setNameWithFormat:@"%@ -prepareUpdateForInstallation: %@", self, update];

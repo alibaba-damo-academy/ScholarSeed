@@ -5,13 +5,25 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import asdict, dataclass, replace
+from functools import lru_cache, partial
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
-from service.persistence.project import ProjectDatabasePath, connect, transaction
+from service.persistence.project import (
+    ProjectDatabasePath,
+    connect,
+    inspect_database,
+    rebuild_table,
+    reject_schema_residue,
+    schema_transaction,
+    sql_tokens,
+    table_clauses,
+    transaction,
+)
 from service.platform.resources import (
     DEFAULT_PENDING_PAGE_SIZE,
     ChangeAttribution,
@@ -59,11 +71,13 @@ from service.resources.domain.version import (
     same_source_identity,
 )
 from service.resources.persistence import batch, migration, pending
+from service.resources.persistence.codecs import WholeCodec
 from service.resources.persistence.objects import CasEntryKind, GcEntry, GcPlan, ObjectDescriptor
 
 OBJECT_READY = "READY"
 MANAGED = "managed"
 MILLISECONDS_PER_SECOND = 1000
+EDITOR_VERSION_WINDOW_MS = 60 * MILLISECONDS_PER_SECOND
 MUTATION_AUDIT_RETENTION_MS = 24 * 60 * 60 * MILLISECONDS_PER_SECOND
 EXTERNAL_OBSERVATION_REASON = "external"
 SQLITE_BIND_BATCH_SIZE = 500
@@ -144,6 +158,60 @@ class CapabilityState:
             or self.working_revision != self.observed_revision
         )
 
+
+VERSIONED_FILES_SELECT = (
+    "SELECT files.file_id, heads.path, heads.file_state, versions.version_id "
+    "FROM resources_files files JOIN resources_heads heads USING(file_id) "
+    "JOIN resources_versions versions ON versions.file_id = files.file_id "
+    "AND versions.sequence = files.next_sequence - 1 "
+)
+PENDING_FILES_SELECT = (
+    "SELECT pending.*, heads.path, heads.file_state, versions.version_id "
+    "FROM resources_pending pending JOIN resources_heads heads USING(file_id) "
+    "JOIN resources_files files USING(file_id) LEFT JOIN resources_versions versions "
+    "ON versions.file_id = files.file_id AND versions.sequence = files.next_sequence - 1 "
+)
+
+CAPABILITY_STATES_SELECT = """
+                        SELECT files.current_path, files.file_id,
+                               heads.revision AS working_revision,
+                               heads.file_state AS head_state,
+                               heads.mode_bits AS head_mode_bits,
+                               versions.version_id,
+                               (versions.version_id IS NOT NULL
+                                AND heads.file_state IS versions.file_state
+                                AND heads.object_id IS versions.object_id
+                                AND heads.path IS versions.path
+                                AND heads.mode_bits IS versions.mode_bits)
+                                   AS snapshot_saved,
+                               observations.revision AS observed_revision,
+                               observations.file_state AS observed_state,
+                               observations.mode_bits AS observed_mode_bits,
+                               pending.*
+                        FROM resources_files AS files
+                        LEFT JOIN resources_heads AS heads ON heads.file_id = files.file_id
+                        LEFT JOIN resources_pending AS pending ON pending.file_id = files.file_id
+                        LEFT JOIN resources_versions AS versions
+                          ON versions.file_id = files.file_id
+                         AND versions.sequence = files.next_sequence - 1
+                        LEFT JOIN resources_observations AS observations
+                          ON observations.observation_id = ? || ':' || files.file_id
+"""
+
+MANAGED_FILES_SELECT = """
+                SELECT files.file_id, files.current_path, files.state, heads.revision,
+                       heads.object_id, heads.mode_bits, heads.annotation_revision,
+                       heads.annotation_object_id,
+                       versions.version_id AS version_id
+                FROM resources_files AS files
+                JOIN resources_heads AS heads ON heads.file_id = files.file_id
+                LEFT JOIN resources_versions AS versions
+                  ON versions.file_id = files.file_id
+                 AND versions.sequence = files.next_sequence - 1
+                WHERE files.management_state = 'managed'
+                  AND (files.state = 'present' OR ?)
+                ORDER BY files.file_id
+"""
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS resources_admissions (
@@ -313,6 +381,8 @@ SCHEMA = (
         origin TEXT NOT NULL CHECK (origin IN (
             'initial_scan','user','external_confirmed','agent','restore','delivery_revert'
         )),
+        review_backup INTEGER NOT NULL DEFAULT 0,
+        editor_save INTEGER NOT NULL DEFAULT 0,
         delivery_id TEXT,
         restored_from_id TEXT REFERENCES resources_versions(version_id),
         restored_from_sequence INTEGER,
@@ -402,6 +472,7 @@ SCHEMA = (
         turn_occurrence_id TEXT NOT NULL REFERENCES resources_turns(turn_occurrence_id) ON DELETE CASCADE,
         event_seq INTEGER NOT NULL,
         input_json TEXT NOT NULL,
+        runtime_event_id TEXT,
         updated_at_ms INTEGER NOT NULL,
         PRIMARY KEY(turn_occurrence_id, event_seq)
     )
@@ -488,6 +559,7 @@ SCHEMA = (
 )
 
 ADDITIVE_COLUMNS = {
+    "resources_turn_tool_calls": (("runtime_event_id", "TEXT"),),
     "resources_review_migrations": (("resolution", "TEXT"),),
     "resources_pending": (
         (
@@ -513,6 +585,8 @@ ADDITIVE_COLUMNS = {
     "resources_versions": (
         ("source_review_id", "TEXT"),
         ("review_outcome", "TEXT CHECK (review_outcome IN ('accepted','revised'))"),
+        ("review_backup", "INTEGER NOT NULL DEFAULT 0"),
+        ("editor_save", "INTEGER NOT NULL DEFAULT 0"),
     ),
     "resources_mutations": (
         ("request_digest", "TEXT"),
@@ -555,9 +629,90 @@ ADDITIVE_COLUMNS = {
     ),
 }
 
+LEGACY_COLUMNS = {
+    "resources_turns": (("opaque_mutation", "INTEGER NOT NULL DEFAULT 0"),),
+}
+LEGACY_SCHEMAS = {"resources_pending": (pending.LEGACY_SCHEMA,)}
+
 
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+@dataclass(frozen=True)
+class ObservationTransition:
+    drifted: bool
+    accepted: bool
+    before: PendingSnapshot | None
+    after: PendingSnapshot | None
+
+
+@dataclass(frozen=True)
+class InitialVersionState:
+    file_id: str | None
+    version: VersionRef | None
+    required: bool
+    deferred: bool
+
+
+@dataclass(frozen=True)
+class InitialVersionPlan:
+    """Explicit first-version identities shared by recovery preview and execution."""
+
+    now_ms: int
+    file_id: str
+    path_id: str
+    version_id: str
+    observation_id: str
+
+    def validate(self) -> None:
+        if type(self.now_ms) is not int or self.now_ms < 0:
+            raise ValueError("invalid initial version timestamp")
+        for value in (self.file_id, self.path_id, self.version_id, self.observation_id):
+            if (
+                not isinstance(value, str)
+                or len(value) != 32
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError("invalid initial version identity")
+        if len({self.file_id, self.path_id, self.version_id, self.observation_id}) != 4:
+            raise ValueError("initial version identities must be distinct")
+
+    @classmethod
+    def fresh(cls, now_ms: int) -> InitialVersionPlan:
+        result = cls(now_ms, *(uuid4().hex for _ in range(4)))
+        result.validate()
+        return result
+
+    @classmethod
+    def for_recovery(
+        cls, attempt: str, operation: str, project: str, path: str, *, now_ms: int
+    ) -> InitialVersionPlan:
+        if (
+            not isinstance(attempt, str)
+            or len(attempt) != 64
+            or any(character not in "0123456789abcdef" for character in attempt)
+        ):
+            raise ValueError("invalid resource recovery attempt")
+        if any(
+            not isinstance(value, str) or not value or "\0" in value
+            for value in (operation, project, path)
+        ):
+            raise ValueError("invalid resource recovery scope")
+        scope = json.dumps(
+            ("scholarseed-initial-version-v1", attempt, operation, project, path, now_ms),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        result = cls(
+            now_ms,
+            *(
+                sha256(scope + b"\0" + role).hexdigest()[:32]
+                for role in (b"file", b"path", b"version", b"observation")
+            ),
+        )
+        result.validate()
+        return result
 
 
 def _version(row: sqlite3.Row) -> VersionRef:
@@ -602,6 +757,7 @@ def _version(row: sqlite3.Row) -> VersionRef:
             if "metadata_revision" in keys and row["metadata_revision"] is not None
             else 0
         ),
+        review_backup=bool(row["review_backup"]) if "review_backup" in keys else False,
     )
 
 
@@ -660,6 +816,25 @@ def _snapshot_identity(row: sqlite3.Row) -> SnapshotIdentity:
     )
 
 
+@dataclass(frozen=True)
+class VersionSchema:
+    create_tables: tuple[str, ...]
+    add_columns: tuple[tuple[str, str], ...]
+    create_indexes: tuple[str, ...]
+    create_triggers: tuple[str, ...] = ()
+    repair_tables: tuple[str, ...] = ()
+
+    @property
+    def needs_write(self) -> bool:
+        return bool(
+            self.create_tables
+            or self.add_columns
+            or self.create_indexes
+            or self.create_triggers
+            or self.repair_tables
+        )
+
+
 class VersionStore:
     """Own all resources_* version relations inside the shared project DB."""
 
@@ -667,21 +842,274 @@ class VersionStore:
         self._database = ProjectDatabasePath(Path(database), Path(project_root))
 
     def ensure(self) -> None:
-        with transaction(self._database, immediate=True) as connection:
-            for statement in SCHEMA:
-                connection.execute(statement)
-            for table, definitions in ADDITIVE_COLUMNS.items():
-                columns = {
-                    str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})")
-                }
-                for name, declaration in definitions:
-                    if name not in columns:
-                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+        # Runtime callers coexist with other admitted SQLite connections. Their
+        # WAL/SHM generations may change across our read connection's closure.
+        # Startup/update inspection below retains the strict stable-source gate.
+        if not self._inspect_path(self._database.path, stable_sidecars=False).needs_write:
+            return
+        with closing(connect(self._database)) as connection, schema_transaction(connection):
+            self.initialize_schema(connection)
 
-    def observe(self, file_id: str, observation: DiskObservation) -> bool:
+    @classmethod
+    def initialize_schema(cls, connection: sqlite3.Connection) -> None:
+        """Apply owner migrations in a caller-owned transaction or private copy."""
+        schema = cls.inspect_connection(connection)
+        if schema.needs_write:
+            cls._initialize(connection)
+        definitions = {name: definition for name, definition, *_ in cls._schema_definitions()[0]}
+        for name in schema.repair_tables:
+            rebuild_table(connection, name, partial(cls._create_repaired_table, definitions[name]))
+        if cls.inspect_connection(connection).needs_write:
+            raise RuntimeError("resource version initialization did not converge")
+
+    @staticmethod
+    def _create_repaired_table(definition: str, connection: sqlite3.Connection, name: str) -> None:
+        connection.execute(f'CREATE TABLE "{name}" ' + definition[definition.index("(") :])
+
+    @classmethod
+    @lru_cache(maxsize=1)
+    def _legacy_definitions(cls) -> dict[str, tuple[tuple[tuple[str, ...], ...], ...]]:
+        result = {}
+        for name, declarations in LEGACY_SCHEMAS.items():
+            variants = []
+            for declaration in declarations:
+                with closing(sqlite3.connect(":memory:")) as reference:
+                    reference.execute(declaration)
+                    variants.append(table_clauses(declaration, name))
+                    for column, definition in ADDITIVE_COLUMNS.get(name, ()):
+                        reference.execute(f'ALTER TABLE "{name}" ADD COLUMN {column} {definition}')
+                    updated = reference.execute(
+                        "SELECT sql FROM sqlite_master WHERE name=?", (name,)
+                    ).fetchone()[0]
+                    variants.append(table_clauses(updated, name))
+            result[name] = tuple(variants)
+        return result
+
+    @staticmethod
+    def _initialize(connection: sqlite3.Connection) -> None:
+        for statement in SCHEMA:
+            connection.execute(statement)
+        for table, definitions in ADDITIVE_COLUMNS.items():
+            columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+            for name, declaration in definitions:
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+    @classmethod
+    def inspect_schema(cls, database: Path) -> VersionSchema:
+        """Read one WAL snapshot within caller-owned directory qualification."""
+        return cls._inspect_path(database, stable_sidecars=True)
+
+    @classmethod
+    def _inspect_path(cls, database: Path, *, stable_sidecars: bool) -> VersionSchema:
+        return inspect_database(database, cls.inspect_connection, stable_sidecars=stable_sidecars)
+
+    @classmethod
+    @lru_cache(maxsize=1)
+    def _schema_definitions(cls):
+        """Compile immutable code declarations only; never cache database state."""
+        with closing(sqlite3.connect(":memory:")) as reference:
+            cls._initialize(reference)
+            tables = tuple(
+                (
+                    name,
+                    sql,
+                    table_clauses(sql, name),
+                    tuple(row[1] for row in reference.execute(f"PRAGMA table_xinfo({name})")),
+                )
+                for name, sql in reference.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='table'"
+                )
+            )
+            indexes = tuple(
+                (name, table, sql, sql_tokens(sql))
+                for name, table, sql in reference.execute(
+                    "SELECT name,tbl_name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+                )
+            )
+            triggers = tuple(
+                (name, table, sql, sql_tokens(sql))
+                for name, table, sql in reference.execute(
+                    "SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger'"
+                )
+            )
+            return tables, indexes, triggers
+
+    @classmethod
+    def preview_triggers(cls) -> tuple[tuple[str, str, str], ...]:
+        """Exact immutable trigger declarations owned by this signed version."""
+        return tuple(
+            (name, table, sql) for name, table, sql, _tokens in cls._schema_definitions()[2]
+        )
+
+    @classmethod
+    def inspect_connection(cls, connection: sqlite3.Connection) -> VersionSchema:
+        objects = {
+            row["name"]: row
+            for row in connection.execute("SELECT name,type,tbl_name,sql FROM sqlite_master")
+        }
+        missing_tables: list[str] = []
+        missing_columns: list[tuple[str, str]] = []
+        missing_indexes: list[str] = []
+        repair_tables: list[str] = []
+        tables, indexes, triggers = cls._schema_definitions()
+        reject_schema_residue(connection, (name for name, *_ in tables))
+        for name, definition, clauses, column_order in tables:
+            if name not in objects:
+                missing_tables.append(name)
+                continue
+            current = objects[name]
+            if current["type"] != "table":
+                raise RuntimeError("unsupported resource version table object")
+            if current["sql"] == definition:
+                continue
+            columns = connection.execute(f"PRAGMA table_xinfo({name})").fetchall()
+            if any(row["hidden"] for row in columns):
+                raise RuntimeError("unsupported resource version generated columns")
+            observed_names = {row["name"] for row in columns}
+            added = {
+                column
+                for column, _ in ADDITIVE_COLUMNS.get(name, ())
+                if column not in observed_names
+            }
+            missing_columns.extend((name, column) for column in sorted(added))
+            expected = tuple(clause for clause in clauses if clause[0] not in added)
+            try:
+                actual = table_clauses(current["sql"], name)
+            except ValueError as error:
+                raise RuntimeError("unsupported resource version declaration") from error
+            legacy_columns = {
+                sql_tokens(f"{column} {declaration}")
+                for column, declaration in LEGACY_COLUMNS.get(name, ())
+            }
+            normalized = tuple(clause for clause in actual if clause not in legacy_columns)
+            if len(normalized) != len(expected) or set(normalized) != set(expected):
+                if any(
+                    len(actual) == len(legacy) and set(actual) == set(legacy)
+                    for legacy in cls._legacy_definitions().get(name, ())
+                ):
+                    repair_tables.append(name)
+                else:
+                    raise RuntimeError("unsupported resource version constraints or columns")
+            if (
+                name not in ADDITIVE_COLUMNS
+                and tuple(row["name"] for row in columns) != column_order
+            ):
+                raise RuntimeError("unsupported resource version column order")
+        for name, table, definition, tokens in indexes:
+            if name not in objects:
+                missing_indexes.append(name)
+            elif (
+                objects[name]["type"] != "index"
+                or objects[name]["tbl_name"] != table
+                or (
+                    objects[name]["sql"] != definition
+                    and sql_tokens(objects[name]["sql"] or "") != tokens
+                )
+            ):
+                raise RuntimeError("unsupported resource version index")
+        missing_triggers = []
+        for name, table, _definition, tokens in triggers:
+            if name not in objects:
+                missing_triggers.append(name)
+            elif (
+                objects[name]["type"] != "trigger"
+                or objects[name]["tbl_name"] != table
+                or sql_tokens(objects[name]["sql"] or "") != tokens
+            ):
+                raise RuntimeError("unsupported resource version trigger")
+        return VersionSchema(
+            tuple(missing_tables),
+            tuple(missing_columns),
+            tuple(missing_indexes),
+            tuple(missing_triggers),
+            tuple(repair_tables),
+        )
+
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Read history/recovery codecs without resuming operations or touching CAS.
+
+        This covers file/observation projections, versions, pending reviews,
+        batches, turn manifests, delivery and restore records. Physical CAS
+        formats still need their own reader before whole-product admission.
+        """
+        for query, parameters, decode in (
+            (VERSIONED_FILES_SELECT, (), cls._versioned_file),
+            (PENDING_FILES_SELECT, (), cls._pending_file),
+            (CAPABILITY_STATES_SELECT, (EXTERNAL_OBSERVATION_REASON,), cls._capability_state),
+            (MANAGED_FILES_SELECT, (False,), cls._managed_file),
+        ):
+            for row in connection.execute(query, parameters):
+                decode(row)
+        for row in connection.execute(
+            "SELECT versions.*,metadata.alias,COALESCE(metadata.revision,0) AS metadata_revision "
+            "FROM resources_versions versions LEFT JOIN resources_version_metadata metadata USING(version_id)"
+        ):
+            _version(row)
+        for table, decode_record in (
+            ("resources_heads", _snapshot_identity),
+            ("resources_pending", pending.from_row),
+            ("resources_mutations", cls._working_mutation),
+            ("resources_turn_changes", cls._turn_baseline),
+            ("resources_restore_members", _restore_member),
+        ):
+            for row in connection.execute(f"SELECT * FROM {table}"):
+                decode_record(row)
+        for row in connection.execute("SELECT * FROM resources_restores"):
+            members = connection.execute(
+                "SELECT * FROM resources_restore_members WHERE transaction_id=? ORDER BY member_order",
+                (row["transaction_id"],),
+            ).fetchall()
+            cls._restore_transaction(row, members)
+        for row in connection.execute("SELECT * FROM resources_turns"):
+            cls._turn_inventory(row)
+            cls._staged_delivery(row)
+            cls._review_result(row)
+            if row["terminal_outcome"] is not None:
+                cls._finalization(connection, row)
+        for row in connection.execute(
+            "SELECT * FROM resources_operations WHERE state=?", (OPERATION_STATE_COMMITTED,)
+        ):
+            cls._operation_payload(row)
+            if row["transaction_id"] is not None:
+                cls._restore_outcome(connection, row)
+        for delivery in connection.execute("SELECT * FROM resources_deliveries"):
+            members = connection.execute(
+                "SELECT members.*,versions.path FROM resources_delivery_members members "
+                "JOIN resources_versions versions ON versions.version_id=members.after_version_id "
+                "WHERE members.delivery_id=? ORDER BY members.file_id",
+                (delivery["delivery_id"],),
+            ).fetchall()
+            cls._delivery_result(delivery, members)
+        for row in connection.execute(
+            "SELECT members.*,versions.path AS after_path,versions.object_id AS after_revision,"
+            "versions.annotation_object_id AS after_annotation_object_id FROM resources_delivery_members members "
+            "LEFT JOIN resources_versions versions ON versions.version_id=members.after_version_id"
+        ):
+            cls._delivery_recovery_member(row)
+        batch.inspect_rows(connection)
+        migration.inspect_rows(connection)
+
+    def observe(
+        self, file_id: str, observation: DiskObservation, *, now_ms: int | None = None
+    ) -> bool:
         """Replace one bounded external observation without advancing any head."""
-
         self.ensure()
+        with transaction(self._database, immediate=True) as connection:
+            return self.observe_rows(
+                connection, file_id, observation, now=_now_ms() if now_ms is None else now_ms
+            )
+
+    @staticmethod
+    def observe_rows(
+        connection: sqlite3.Connection, file_id: str, observation: DiskObservation, *, now: int
+    ) -> bool:
+        """Apply the real observation transition in a live or private transaction."""
+        if not connection.in_transaction:
+            raise ValueError("resource observation requires a transaction")
+        if type(now) is not int or now < 0:
+            raise ValueError("invalid resource observation timestamp")
         identity = f"{EXTERNAL_OBSERVATION_REASON}:{file_id}"
         values = (
             observation.revision,
@@ -691,31 +1119,141 @@ class VersionStore:
             observation.mode_bits,
             observation.annotation_revision,
         )
-        with transaction(self._database, immediate=True) as connection:
-            if observation.state is ObservationState.TOMBSTONE:
-                connection.execute("DELETE FROM resources_admissions WHERE file_id = ?", (file_id,))
-            existing = connection.execute(
-                """SELECT revision, file_state, size_bytes, mtime_ns, mode_bits,
-                          annotation_revision FROM resources_observations
-                   WHERE observation_id = ?""",
-                (identity,),
-            ).fetchone()
-            if existing is not None and tuple(existing) == values:
-                return False
-            connection.execute(
-                """INSERT INTO resources_observations
-                   (observation_id, file_id, revision, file_state, size_bytes,
-                    mtime_ns, mode_bits, annotation_revision, reason, observed_at_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(observation_id) DO UPDATE SET
-                     revision=excluded.revision, file_state=excluded.file_state,
-                     size_bytes=excluded.size_bytes, mtime_ns=excluded.mtime_ns,
-                     mode_bits=excluded.mode_bits,
-                     annotation_revision=excluded.annotation_revision,
-                     observed_at_ms=excluded.observed_at_ms""",
-                (identity, file_id, *values, EXTERNAL_OBSERVATION_REASON, _now_ms()),
-            )
+        if observation.state is ObservationState.TOMBSTONE:
+            connection.execute("DELETE FROM resources_admissions WHERE file_id = ?", (file_id,))
+        existing = connection.execute(
+            """SELECT revision, file_state, size_bytes, mtime_ns, mode_bits,
+                      annotation_revision FROM resources_observations
+               WHERE observation_id = ?""",
+            (identity,),
+        ).fetchone()
+        if existing is not None and tuple(existing) == values:
+            return False
+        connection.execute(
+            """INSERT INTO resources_observations
+               (observation_id, file_id, revision, file_state, size_bytes,
+                mtime_ns, mode_bits, annotation_revision, reason, observed_at_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(observation_id) DO UPDATE SET
+                 revision=excluded.revision, file_state=excluded.file_state,
+                 size_bytes=excluded.size_bytes, mtime_ns=excluded.mtime_ns,
+                 mode_bits=excluded.mode_bits,
+                 annotation_revision=excluded.annotation_revision,
+                 observed_at_ms=excluded.observed_at_ms""",
+            (identity, file_id, *values, EXTERNAL_OBSERVATION_REASON, now),
+        )
         return True
+
+    def reconcile_external(
+        self,
+        file_id: str,
+        path: str,
+        observation: DiskObservation,
+        snapshot: SnapshotVersion | None,
+        descriptor: ObjectDescriptor | None,
+        *,
+        now_ms: int | None = None,
+    ) -> ObservationTransition:
+        """Persist one captured external change and its pending state atomically."""
+        self.ensure()
+        with transaction(self._database, immediate=True) as connection:
+            return self.reconcile_external_rows(
+                connection,
+                file_id,
+                path,
+                observation,
+                snapshot,
+                descriptor,
+                now=_now_ms() if now_ms is None else now_ms,
+            )
+
+    @classmethod
+    def reconcile_external_rows(
+        cls,
+        connection: sqlite3.Connection,
+        file_id: str,
+        path: str,
+        observation: DiskObservation,
+        snapshot: SnapshotVersion | None,
+        descriptor: ObjectDescriptor | None,
+        *,
+        now: int,
+    ) -> ObservationTransition:
+        """Share the real observation/review decision with private recovery copies.
+
+        The caller captures content and verifies CAS first. An unavailable source
+        records drift without replacing the accepted head; open reviews and active
+        execution retain their existing ownership of that head.
+        """
+        if not connection.in_transaction:
+            raise ValueError("external reconciliation requires a transaction")
+        row = connection.execute(
+            "SELECT current_path FROM resources_files WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if row is None or row["current_path"] != path:
+            raise VersionStoreConflict("file_not_managed")
+        available = observation.state is not ObservationState.UNAVAILABLE
+        if available:
+            if (
+                snapshot is None
+                or snapshot.path != path
+                or snapshot.state.value != observation.state.value
+                or snapshot.revision != observation.revision
+                or snapshot.mode_bits != observation.mode_bits
+                or snapshot.mtime_ns != observation.mtime_ns
+            ):
+                raise VersionStoreConflict("observation_snapshot_mismatch")
+            if observation.state is ObservationState.PRESENT and (
+                descriptor is None
+                or descriptor.object_id != snapshot.object_id
+                or snapshot.object_id != observation.revision
+                or descriptor.raw_size_bytes != observation.size_bytes
+            ):
+                raise VersionStoreConflict("observation_object_mismatch")
+            if observation.state is ObservationState.TOMBSTONE and (
+                descriptor is not None or snapshot.object_id is not None
+            ):
+                raise VersionStoreConflict("tombstone_observation_has_object")
+        elif snapshot is not None or descriptor is not None:
+            raise VersionStoreConflict("unavailable_observation_has_snapshot")
+        changed = cls.observe_rows(connection, file_id, observation, now=now)
+        head = connection.execute(
+            "SELECT * FROM resources_heads WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        identity = _snapshot_identity(head) if head is not None else None
+        observed = (
+            SnapshotIdentity(
+                observation.revision,
+                FileState(observation.state.value),
+                path,
+                observation.mode_bits,
+                None,
+            )
+            if available
+            else None
+        )
+        drifted = not available or not same_source_identity(identity, observed)
+        before = pending.read(connection, file_id)
+        accepted = bool(
+            available
+            and drifted
+            and not (before and before.review)
+            and not cls._initialization_deferred(connection, path)
+        )
+        if accepted:
+            assert snapshot is not None
+            cls.accept_working_rows(
+                connection,
+                file_id,
+                snapshot,
+                descriptor,
+                None,
+                PendingOrigin.EXTERNAL.value,
+                now=now,
+            )
+        return ObservationTransition(
+            changed and drifted, accepted, before, pending.read(connection, file_id)
+        )
 
     def history(self, path: str) -> tuple[VersionRef, ...]:
         if not self._database.exists():
@@ -813,7 +1351,7 @@ class VersionStore:
                 FROM resources_versions AS versions
                 LEFT JOIN resources_version_metadata AS metadata USING(version_id)
                 WHERE {predicate}
-                ORDER BY versions.sequence {'ASC' if ascending else 'DESC'} LIMIT ?
+                ORDER BY versions.sequence {"ASC" if ascending else "DESC"} LIMIT ?
                 """,
                 (*values, limit),
             ).fetchall()
@@ -1078,19 +1616,25 @@ class VersionStore:
         if not selected or not self._database.exists():
             return {}
         self.ensure()
-        states: dict[str, bool] = {path: False for path in selected}
         with transaction(self._database) as connection:
-            for offset in range(0, len(selected), SQLITE_BIND_BATCH_SIZE):
-                batch = selected[offset : offset + SQLITE_BIND_BATCH_SIZE]
-                placeholders = ",".join("?" for _ in batch)
-                rows = connection.execute(
-                    "SELECT current_path FROM resources_admissions "
-                    "JOIN resources_files USING(file_id) "
-                    f"WHERE current_path IN ({placeholders}) AND state = ? AND source = ?",
-                    (*batch, FileState.PRESENT.value, ADMISSION_SOURCE_MANUAL),
-                ).fetchall()
-                for row in rows:
-                    states[str(row["current_path"])] = True
+            return self.manual_admitted_rows(connection, selected)
+
+    @staticmethod
+    def manual_admitted_rows(
+        connection: sqlite3.Connection, paths: tuple[str, ...]
+    ) -> dict[str, bool]:
+        selected = tuple(dict.fromkeys(paths))
+        states: dict[str, bool] = {path: False for path in selected}
+        for offset in range(0, len(selected), SQLITE_BIND_BATCH_SIZE):
+            batch = selected[offset : offset + SQLITE_BIND_BATCH_SIZE]
+            placeholders = ",".join("?" for _ in batch)
+            rows = connection.execute(
+                "SELECT current_path FROM resources_admissions JOIN resources_files USING(file_id) "
+                f"WHERE current_path IN ({placeholders}) AND state = ? AND source = ?",
+                (*batch, FileState.PRESENT.value, ADMISSION_SOURCE_MANUAL),
+            ).fetchall()
+            for row in rows:
+                states[str(row["current_path"])] = True
         return states
 
     def admit(
@@ -1169,27 +1713,29 @@ class VersionStore:
 
     def identity(self, path: str) -> tuple[str, str | None, str | None] | None:
         """Return file id, WorkingHead revision and VersionHead id for a path."""
-
         if not self._database.exists():
             return None
         self.ensure()
-        connection = connect(self._database)
-        try:
-            row = connection.execute(
-                """
-                SELECT files.file_id, heads.revision,
-                       versions.version_id AS version_id
-                FROM resources_files AS files
-                LEFT JOIN resources_heads AS heads ON heads.file_id = files.file_id
-                LEFT JOIN resources_versions AS versions
-                  ON versions.file_id = files.file_id
-                 AND versions.sequence = files.next_sequence - 1
-                WHERE files.current_path = ?
-                """,
-                (path,),
-            ).fetchone()
-        finally:
-            connection.close()
+        with closing(connect(self._database)) as connection:
+            return self.identity_rows(connection, path)
+
+    @staticmethod
+    def identity_rows(
+        connection: sqlite3.Connection, path: str
+    ) -> tuple[str, str | None, str | None] | None:
+        row = connection.execute(
+            """
+            SELECT files.file_id, heads.revision,
+                   versions.version_id AS version_id
+            FROM resources_files AS files
+            LEFT JOIN resources_heads AS heads ON heads.file_id = files.file_id
+            LEFT JOIN resources_versions AS versions
+              ON versions.file_id = files.file_id
+             AND versions.sequence = files.next_sequence - 1
+            WHERE files.current_path = ?
+            """,
+            (path,),
+        ).fetchone()
         if row is None:
             return None
         return (
@@ -1206,22 +1752,19 @@ class VersionStore:
         self.ensure()
         with transaction(self._database) as connection:
             rows = connection.execute(
-                "SELECT files.file_id, heads.path, heads.file_state, versions.version_id "
-                "FROM resources_files files JOIN resources_heads heads USING(file_id) "
-                "JOIN resources_versions versions ON versions.file_id = files.file_id "
-                "AND versions.sequence = files.next_sequence - 1 "
-                "WHERE heads.file_state = ? AND files.file_id > ? "
+                VERSIONED_FILES_SELECT + "WHERE heads.file_state = ? AND files.file_id > ? "
                 "ORDER BY files.file_id LIMIT ?",
                 (state.value, after_file_id, limit),
             ).fetchall()
-        return tuple(
-            VersionedFile(
-                file_id=row["file_id"],
-                path=row["path"],
-                state=FileState(row["file_state"]),
-                version_id=row["version_id"],
-            )
-            for row in rows
+        return tuple(self._versioned_file(row) for row in rows)
+
+    @staticmethod
+    def _versioned_file(row: sqlite3.Row) -> VersionedFile:
+        return VersionedFile(
+            file_id=row["file_id"],
+            path=row["path"],
+            state=FileState(row["file_state"]),
+            version_id=row["version_id"],
         )
 
     def pending_files(
@@ -1234,27 +1777,17 @@ class VersionStore:
         self.ensure()
         with transaction(self._database) as connection:
             rows = connection.execute(
-                "SELECT pending.*, heads.path, heads.file_state, versions.version_id "
-                "FROM resources_pending pending JOIN resources_heads heads USING(file_id) "
-                "JOIN resources_files files USING(file_id) LEFT JOIN resources_versions versions "
-                "ON versions.file_id = files.file_id AND versions.sequence = files.next_sequence - 1 "
-                "WHERE pending.file_id > ? ORDER BY pending.file_id LIMIT ?",
+                PENDING_FILES_SELECT + "WHERE pending.file_id > ? ORDER BY pending.file_id LIMIT ?",
                 (after_file_id, limit),
             ).fetchall()
-            files: list[PendingFile] = []
-            for row in rows:
-                snapshot = pending.from_row(row)
-                if snapshot is None:
-                    raise VersionStoreConflict("pending_snapshot_missing")
-                files.append(
-                    PendingFile(
-                        row["path"],
-                        FileState(row["file_state"]),
-                        row["version_id"],
-                        snapshot,
-                    )
-                )
-            return tuple(files)
+            return tuple(self._pending_file(row) for row in rows)
+
+    @staticmethod
+    def _pending_file(row: sqlite3.Row) -> PendingFile:
+        snapshot = pending.from_row(row)
+        if snapshot is None:
+            raise VersionStoreConflict("pending_snapshot_missing")
+        return PendingFile(row["path"], FileState(row["file_state"]), row["version_id"], snapshot)
 
     def working_snapshot(self, file_id: str) -> SnapshotIdentity | None:
         """Read the durable working identity without observing or changing disk."""
@@ -1391,9 +1924,6 @@ class VersionStore:
         self.ensure()
         with transaction(self._database) as connection:
             connection.execute("BEGIN")
-            current = pending.read(connection, file_id)
-            if current is not None and current.needs_review:
-                return SnapshotState.PENDING
             working = connection.execute(
                 "SELECT * FROM resources_heads WHERE file_id = ?", (file_id,)
             ).fetchone()
@@ -1424,62 +1954,37 @@ class VersionStore:
                 placeholders = ",".join("?" for _ in batch)
                 rows.extend(
                     connection.execute(
-                        f"""
-                        SELECT files.current_path, files.file_id,
-                               heads.revision AS working_revision,
-                               heads.file_state AS head_state,
-                               heads.mode_bits AS head_mode_bits,
-                               versions.version_id,
-                               (versions.version_id IS NOT NULL
-                                AND pending.review_id IS NULL
-                                AND heads.file_state IS versions.file_state
-                                AND heads.object_id IS versions.object_id
-                                AND heads.path IS versions.path
-                                AND heads.mode_bits IS versions.mode_bits)
-                                   AS snapshot_saved,
-                               observations.revision AS observed_revision,
-                               observations.file_state AS observed_state,
-                               observations.mode_bits AS observed_mode_bits,
-                               pending.*
-                        FROM resources_files AS files
-                        LEFT JOIN resources_heads AS heads ON heads.file_id = files.file_id
-                        LEFT JOIN resources_pending AS pending ON pending.file_id = files.file_id
-                        LEFT JOIN resources_versions AS versions
-                          ON versions.file_id = files.file_id
-                         AND versions.sequence = files.next_sequence - 1
-                        LEFT JOIN resources_observations AS observations
-                          ON observations.observation_id = ? || ':' || files.file_id
-                        WHERE files.current_path IN ({placeholders})
-                        """,
+                        CAPABILITY_STATES_SELECT + f" WHERE files.current_path IN ({placeholders})",
                         (EXTERNAL_OBSERVATION_REASON, *batch),
                     ).fetchall()
                 )
         finally:
             connection.close()
-        return {
-            str(row["current_path"]): CapabilityState(
-                path=str(row["current_path"]),
-                file_id=str(row["file_id"]),
-                working_revision=(
-                    str(row["working_revision"]) if row["working_revision"] is not None else None
-                ),
-                version_id=(str(row["version_id"]) if row["version_id"] is not None else None),
-                snapshot_state=(
-                    SnapshotState.SAVED if row["snapshot_saved"] else SnapshotState.PENDING
-                ),
-                pending=pending.from_row(row),
-                head_state=(str(row["head_state"]) if row["head_state"] is not None else None),
-                head_mode_bits=row["head_mode_bits"],
-                observed_revision=(
-                    str(row["observed_revision"]) if row["observed_revision"] is not None else None
-                ),
-                observed_state=(
-                    str(row["observed_state"]) if row["observed_state"] is not None else None
-                ),
-                observed_mode_bits=row["observed_mode_bits"],
-            )
-            for row in rows
-        }
+        return {str(row["current_path"]): self._capability_state(row) for row in rows}
+
+    @staticmethod
+    def _capability_state(row: sqlite3.Row) -> CapabilityState:
+        return CapabilityState(
+            path=str(row["current_path"]),
+            file_id=str(row["file_id"]),
+            working_revision=(
+                str(row["working_revision"]) if row["working_revision"] is not None else None
+            ),
+            version_id=(str(row["version_id"]) if row["version_id"] is not None else None),
+            snapshot_state=(
+                SnapshotState.SAVED if row["snapshot_saved"] else SnapshotState.PENDING
+            ),
+            pending=pending.from_row(row),
+            head_state=(str(row["head_state"]) if row["head_state"] is not None else None),
+            head_mode_bits=row["head_mode_bits"],
+            observed_revision=(
+                str(row["observed_revision"]) if row["observed_revision"] is not None else None
+            ),
+            observed_state=(
+                str(row["observed_state"]) if row["observed_state"] is not None else None
+            ),
+            observed_mode_bits=row["observed_mode_bits"],
+        )
 
     def tracked_paths(self) -> tuple[str, ...]:
         """Return managed identities including tombstones for restored-root observation."""
@@ -1489,15 +1994,19 @@ class VersionStore:
         self.ensure()
         connection = connect(self._database)
         try:
-            rows = connection.execute(
-                "SELECT current_path FROM resources_files WHERE management_state = ? ORDER BY file_id",
-                (MANAGED,),
-            ).fetchall()
-            return tuple(str(row["current_path"]) for row in rows)
+            return self.tracked_path_rows(connection)
         finally:
             connection.close()
 
-    def managed_files(self) -> tuple[TurnBaseline, ...]:
+    @staticmethod
+    def tracked_path_rows(connection: sqlite3.Connection) -> tuple[str, ...]:
+        rows = connection.execute(
+            "SELECT current_path FROM resources_files WHERE management_state = ? ORDER BY file_id",
+            (MANAGED,),
+        ).fetchall()
+        return tuple(str(row["current_path"]) for row in rows)
+
+    def managed_files(self, *, include_deleted: bool = False) -> tuple[TurnBaseline, ...]:
         """Return current managed file identities before authoritative baseline reads."""
 
         if not self._database.exists():
@@ -1505,43 +2014,29 @@ class VersionStore:
         self.ensure()
         connection = connect(self._database)
         try:
-            rows = connection.execute("""
-                SELECT files.file_id, files.current_path, heads.revision,
-                       heads.object_id, heads.mode_bits, heads.annotation_revision,
-                       heads.annotation_object_id,
-                       versions.version_id AS version_id
-                FROM resources_files AS files
-                JOIN resources_heads AS heads ON heads.file_id = files.file_id
-                LEFT JOIN resources_versions AS versions
-                  ON versions.file_id = files.file_id
-                 AND versions.sequence = files.next_sequence - 1
-                WHERE files.management_state = 'managed'
-                  AND files.state = 'present'
-                ORDER BY files.file_id
-                """).fetchall()
+            rows = connection.execute(MANAGED_FILES_SELECT, (include_deleted,)).fetchall()
         finally:
             connection.close()
-        return tuple(
-            TurnBaseline(
-                file_id=str(row["file_id"]),
-                path=str(row["current_path"]),
-                revision=str(row["revision"]),
-                object_id=str(row["object_id"]),
-                mode_bits=int(row["mode_bits"]),
-                version_id=(str(row["version_id"]) if row["version_id"] is not None else None),
-                annotation_revision=(
-                    str(row["annotation_revision"])
-                    if row["annotation_revision"] is not None
-                    else None
-                ),
-                annotation_object_id=(
-                    str(row["annotation_object_id"])
-                    if row["annotation_object_id"] is not None
-                    else None
-                ),
-                state=FileState.PRESENT,
-            )
-            for row in rows
+        return tuple(self._managed_file(row) for row in rows)
+
+    @staticmethod
+    def _managed_file(row: sqlite3.Row) -> TurnBaseline:
+        return TurnBaseline(
+            file_id=str(row["file_id"]),
+            path=str(row["current_path"]),
+            revision=str(row["revision"]) if row["revision"] is not None else None,
+            object_id=str(row["object_id"]) if row["object_id"] is not None else None,
+            mode_bits=int(row["mode_bits"]) if row["mode_bits"] is not None else None,
+            version_id=(str(row["version_id"]) if row["version_id"] is not None else None),
+            annotation_revision=(
+                str(row["annotation_revision"]) if row["annotation_revision"] is not None else None
+            ),
+            annotation_object_id=(
+                str(row["annotation_object_id"])
+                if row["annotation_object_id"] is not None
+                else None
+            ),
+            state=FileState(row["state"]),
         )
 
     def begin_turn(
@@ -1668,6 +2163,10 @@ class VersionStore:
             ).fetchone()
         finally:
             connection.close()
+        return self._turn_inventory(row)
+
+    @staticmethod
+    def _turn_inventory(row: sqlite3.Row | None) -> frozenset[str] | None:
         if row is None or row["initial_paths_json"] is None:
             return None
         try:
@@ -1698,36 +2197,35 @@ class VersionStore:
             ).fetchall()
         finally:
             connection.close()
-        return tuple(
-            TurnBaseline(
-                file_id=str(row["file_id"]),
-                path=str(row["baseline_path"]),
-                revision=str(row["baseline_revision"]),
-                object_id=str(row["baseline_object_id"]),
-                mode_bits=int(row["baseline_mode_bits"]),
-                version_id=(
-                    str(row["baseline_version_id"])
-                    if row["baseline_version_id"] is not None
-                    else None
-                ),
-                pending_origin=(
-                    PendingOrigin(row["baseline_pending_origin"])
-                    if row["baseline_pending_origin"]
-                    else None
-                ),
-                annotation_revision=(
-                    str(row["baseline_annotation_revision"])
-                    if row["baseline_annotation_revision"] is not None
-                    else None
-                ),
-                annotation_object_id=(
-                    str(row["baseline_annotation_object_id"])
-                    if row["baseline_annotation_object_id"] is not None
-                    else None
-                ),
-                state=FileState(str(row["baseline_state"])),
-            )
-            for row in rows
+        return tuple(self._turn_baseline(row) for row in rows)
+
+    @staticmethod
+    def _turn_baseline(row: sqlite3.Row) -> TurnBaseline:
+        return TurnBaseline(
+            file_id=str(row["file_id"]),
+            path=str(row["baseline_path"]),
+            revision=str(row["baseline_revision"]),
+            object_id=str(row["baseline_object_id"]),
+            mode_bits=int(row["baseline_mode_bits"]),
+            version_id=(
+                str(row["baseline_version_id"]) if row["baseline_version_id"] is not None else None
+            ),
+            pending_origin=(
+                PendingOrigin(row["baseline_pending_origin"])
+                if row["baseline_pending_origin"]
+                else None
+            ),
+            annotation_revision=(
+                str(row["baseline_annotation_revision"])
+                if row["baseline_annotation_revision"] is not None
+                else None
+            ),
+            annotation_object_id=(
+                str(row["baseline_annotation_object_id"])
+                if row["baseline_annotation_object_id"] is not None
+                else None
+            ),
+            state=FileState(str(row["baseline_state"])),
         )
 
     def record_turn_hint(
@@ -1774,7 +2272,9 @@ class VersionStore:
             )
             return True
 
-    def record_turn_tool_call(self, session_id: str, turn_id: str, input_json: str) -> bool:
+    def record_turn_tool_call(
+        self, session_id: str, turn_id: str, input_json: str, *, event_id: str = ""
+    ) -> bool:
         """Persist one write-capable ToolCall input for terminal filename attribution."""
 
         self.ensure()
@@ -1791,6 +2291,16 @@ class VersionStore:
             if turn is None:
                 return False
             occurrence_id = str(turn["turn_occurrence_id"])
+            if event_id:
+                existing = connection.execute(
+                    "SELECT input_json FROM resources_turn_tool_calls "
+                    "WHERE turn_occurrence_id = ? AND runtime_event_id = ?",
+                    (occurrence_id, event_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing["input_json"] != input_json:
+                        raise VersionStoreConflict("runtime_event_conflict")
+                    return True
             next_row = connection.execute(
                 """
                 SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq
@@ -1801,10 +2311,10 @@ class VersionStore:
             connection.execute(
                 """
                 INSERT INTO resources_turn_tool_calls (
-                    turn_occurrence_id, event_seq, input_json, updated_at_ms
-                ) VALUES (?, ?, ?, ?)
+                    turn_occurrence_id, event_seq, input_json, runtime_event_id, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (occurrence_id, int(next_row["next_seq"]), input_json, now),
+                (occurrence_id, int(next_row["next_seq"]), input_json, event_id or None, now),
             )
             return True
 
@@ -2088,6 +2598,10 @@ class VersionStore:
             ).fetchone()
         finally:
             connection.close()
+        return self._staged_delivery(row)
+
+    @staticmethod
+    def _staged_delivery(row: sqlite3.Row | None) -> tuple[DeliveryDraft, ...] | None:
         if row is None or row["finalization_manifest_json"] is None:
             return None
         try:
@@ -2213,8 +2727,9 @@ class VersionStore:
         finally:
             connection.close()
 
+    @classmethod
     def _finalization(
-        self, connection: sqlite3.Connection, row: sqlite3.Row
+        cls, connection: sqlite3.Connection, row: sqlite3.Row
     ) -> ResourceFinalization:
         paths = connection.execute(
             "SELECT DISTINCT path FROM resources_turn_path_hints WHERE turn_occurrence_id = ? ORDER BY path",
@@ -2227,7 +2742,7 @@ class VersionStore:
                 payload = json.loads(row["finalization_manifest_json"])
                 retryable = all(
                     payload["heads"][member["baseline"]["file_id"]]
-                    == self._terminal_head(
+                    == cls._terminal_head(
                         connection, member["baseline"]["file_id"], member["snapshot"]["path"]
                     )
                     and (
@@ -2440,6 +2955,10 @@ class VersionStore:
             ).fetchone()
         finally:
             connection.close()
+        return self._review_result(row)
+
+    @staticmethod
+    def _review_result(row: sqlite3.Row | None) -> ReviewCaptureResult | None:
         if row is None or row["capture_result_json"] is None:
             return None
         result = json.loads(row["capture_result_json"])
@@ -2492,7 +3011,11 @@ class VersionStore:
                 ):
                     raise VersionStoreConflict("review_batch_member_conflict")
                 prepared.append(
-                    (file_id, decision, self._review_seal(connection, snapshot, decision))
+                    (
+                        file_id,
+                        decision,
+                        self._review_seal(connection, snapshot, decision),
+                    )
                 )
             versions: list[VersionRef] = []
             for file_id, _decision, snapshot in prepared:
@@ -2559,6 +3082,10 @@ class VersionStore:
             ).fetchall()
         finally:
             connection.close()
+        return self._delivery_result(delivery, rows)
+
+    @staticmethod
+    def _delivery_result(delivery: sqlite3.Row, rows: list[sqlite3.Row]) -> DeliveryResult:
         reference = DeliveryRef(
             id=str(delivery["delivery_id"]),
             session_id=str(delivery["session_id"]),
@@ -2611,51 +3138,44 @@ class VersionStore:
             ).fetchall()
         finally:
             connection.close()
-        return tuple(
-            DeliveryRecoveryMember(
-                baseline=TurnBaseline(
-                    file_id=str(row["file_id"]),
-                    path=str(row["before_path"]),
-                    revision=(
-                        str(row["before_object_id"])
-                        if row["before_object_id"] is not None
-                        else None
-                    ),
-                    object_id=(
-                        str(row["before_object_id"])
-                        if row["before_object_id"] is not None
-                        else None
-                    ),
-                    mode_bits=(
-                        int(row["before_mode_bits"])
-                        if row["before_mode_bits"] is not None
-                        else None
-                    ),
-                    version_id=(
-                        str(row["before_version_id"])
-                        if row["before_version_id"] is not None
-                        else None
-                    ),
-                    annotation_object_id=(
-                        str(row["before_annotation_object_id"])
-                        if row["before_annotation_object_id"] is not None
-                        else None
-                    ),
-                    state=FileState(str(row["before_state"])),
+        return tuple(self._delivery_recovery_member(row) for row in rows)
+
+    @staticmethod
+    def _delivery_recovery_member(row: sqlite3.Row) -> DeliveryRecoveryMember:
+        return DeliveryRecoveryMember(
+            baseline=TurnBaseline(
+                file_id=str(row["file_id"]),
+                path=str(row["before_path"]),
+                revision=(
+                    str(row["before_object_id"]) if row["before_object_id"] is not None else None
                 ),
-                after_path=str(row["after_path"]),
-                after_revision=(
-                    str(row["after_revision"]) if row["after_revision"] is not None else None
+                object_id=(
+                    str(row["before_object_id"]) if row["before_object_id"] is not None else None
                 ),
-                after_annotation_object_id=(
-                    str(row["after_annotation_object_id"])
-                    if row["after_annotation_object_id"] is not None
+                mode_bits=(
+                    int(row["before_mode_bits"]) if row["before_mode_bits"] is not None else None
+                ),
+                version_id=(
+                    str(row["before_version_id"]) if row["before_version_id"] is not None else None
+                ),
+                annotation_object_id=(
+                    str(row["before_annotation_object_id"])
+                    if row["before_annotation_object_id"] is not None
                     else None
                 ),
-                after_version_id=str(row["after_version_id"]),
-                change_kind=str(row["change_kind"]),
-            )
-            for row in rows
+                state=FileState(str(row["before_state"])),
+            ),
+            after_path=str(row["after_path"]),
+            after_revision=(
+                str(row["after_revision"]) if row["after_revision"] is not None else None
+            ),
+            after_annotation_object_id=(
+                str(row["after_annotation_object_id"])
+                if row["after_annotation_object_id"] is not None
+                else None
+            ),
+            after_version_id=str(row["after_version_id"]),
+            change_kind=str(row["change_kind"]),
         )
 
     def deliveries(self, limit: int) -> tuple[DeliveryResult, ...]:
@@ -2993,25 +3513,34 @@ class VersionStore:
             ).fetchone()
             if row is None:
                 raise VersionStoreConflict("idempotency_result_unavailable")
-            result = json.loads(str(row["result_json"]))
-            version_ids = tuple(str(item) for item in result.get("version_ids", ()))
-            versions = tuple(
-                _version(version)
-                for version_id in version_ids
-                for version in (
-                    connection.execute(
-                        "SELECT * FROM resources_versions WHERE version_id = ?",
-                        (version_id,),
-                    ).fetchone(),
-                )
-                if version is not None
-            )
-            if len(versions) != len(version_ids):
-                raise VersionStoreConflict("idempotency_result_unavailable")
-            skipped = tuple(str(item) for item in result.get("skipped_file_ids", ()))
-            return versions, skipped
+            return self._restore_outcome(connection, row)
         finally:
             connection.close()
+
+    @staticmethod
+    def _operation_payload(row: sqlite3.Row) -> dict:
+        return json.loads(str(row["result_json"]))
+
+    @classmethod
+    def _restore_outcome(
+        cls, connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> tuple[tuple[VersionRef, ...], tuple[str, ...]]:
+        result = cls._operation_payload(row)
+        version_ids = tuple(str(item) for item in result.get("version_ids", ()))
+        versions = tuple(
+            _version(version)
+            for version_id in version_ids
+            for version in (
+                connection.execute(
+                    "SELECT * FROM resources_versions WHERE version_id = ?", (version_id,)
+                ).fetchone(),
+            )
+            if version is not None
+        )
+        if len(versions) != len(version_ids):
+            raise VersionStoreConflict("idempotency_result_unavailable")
+        skipped = tuple(str(item) for item in result.get("skipped_file_ids", ()))
+        return versions, skipped
 
     def operation_result(
         self,
@@ -3036,7 +3565,7 @@ class VersionStore:
                 return None
             if str(row["state"]) != OPERATION_STATE_COMMITTED:
                 raise VersionStoreConflict("idempotency_operation_incomplete")
-            return json.loads(str(row["result_json"]))
+            return self._operation_payload(row)
         finally:
             connection.close()
 
@@ -3106,6 +3635,12 @@ class VersionStore:
             ).fetchall()
         finally:
             connection.close()
+        return self._restore_transaction(row, member_rows)
+
+    @classmethod
+    def _restore_transaction(
+        cls, row: sqlite3.Row, member_rows: list[sqlite3.Row]
+    ) -> RestoreTransaction:
         return RestoreTransaction(
             id=str(row["transaction_id"]),
             kind=RestoreKind(str(row["kind"])),
@@ -3127,7 +3662,7 @@ class VersionStore:
                 if row["review_id"] is None and row["pending_revision"] is not None
                 else None
             ),
-            review_resolution=self._read_resolution(row["review_resolution"]),
+            review_resolution=cls._read_resolution(row["review_resolution"]),
         )
 
     @staticmethod
@@ -3323,32 +3858,10 @@ class VersionStore:
             if cursor.rowcount != 1:
                 raise VersionStoreConflict("restore_member_not_found")
 
-    def plan_gc(
-        self,
-        epoch: str,
-        physical_objects: frozenset[str],
-        physical_chunks: frozenset[str],
-        *,
-        now_ms: int,
-        grace_ms: int,
-    ) -> GcPlan:
-        """Mark unreachable objects first, then chunks after object grace expires."""
-
-        self.ensure()
-        with transaction(self._database, immediate=True) as connection:
-            connection.execute(
-                """
-                DELETE FROM resources_mutations
-                WHERE state = 'ledger_committed' AND updated_at_ms < ?
-                """,
-                (now_ms - MUTATION_AUDIT_RETENTION_MS,),
-            )
-            # Every object still pointed at by a non-cascading foreign key must stay in
-            # this live set, or the DELETE below trips FOREIGN KEY constraint failed.
-            # Restore members qualify for their whole lifetime: their object FKs do not
-            # cascade and resources_restores rows are never pruned, so a terminal restore
-            # (committed/conflicted/aborted) keeps pinning them just like a delivery does.
-            live_objects = {str(row["object_id"]) for row in connection.execute("""
+    @staticmethod
+    def live_object_ids(connection: sqlite3.Connection) -> frozenset[str]:
+        """The same retained references drive GC and read-only CAS admission."""
+        return frozenset(str(row["object_id"]) for row in connection.execute("""
                     SELECT object_id FROM resources_versions WHERE object_id IS NOT NULL
                     UNION SELECT annotation_object_id FROM resources_versions
                         WHERE annotation_object_id IS NOT NULL
@@ -3389,7 +3902,113 @@ class VersionStore:
                     UNION SELECT target_annotation_object_id FROM resources_restore_members
                         WHERE target_annotation_object_id IS NOT NULL
                     UNION SELECT target_object_id FROM resources_mutations
-                    """)}
+                    """))
+
+    @classmethod
+    def inspect_cas_references(
+        cls, connection: sqlite3.Connection, physical: Mapping[str, ObjectDescriptor]
+    ) -> None:
+        """Cross-check the actual ledger against already verified immutable bytes.
+
+        The caller owns the project qualification and a private projected SQLite
+        snapshot. No repair, GC, object registration or history rewrite occurs.
+        Unreferenced trash may be partway through physical collection; retained
+        history and READY rows must instead have matching live descriptors.
+        """
+        live = cls.live_object_ids(connection)
+        registered = set()
+        for row in connection.execute("SELECT * FROM resources_objects"):
+            identifier = row["object_id"]
+            registered.add(identifier)
+            if identifier not in live and row["state"] != OBJECT_READY:
+                continue
+            descriptor = physical.get(identifier)
+            if descriptor is None or row["state"] != OBJECT_READY:
+                raise ValueError("resource ledger references unavailable CAS object")
+            expected = (
+                descriptor.layout.value,
+                (
+                    descriptor.codec.value
+                    if isinstance(descriptor.codec, WholeCodec)
+                    else descriptor.codec
+                ),
+                descriptor.format_version,
+                descriptor.raw_size_bytes,
+                descriptor.stored_size_bytes,
+                descriptor.descriptor_digest,
+            )
+            actual = tuple(
+                row[key]
+                for key in (
+                    "layout",
+                    "codec",
+                    "format_version",
+                    "raw_size_bytes",
+                    "stored_size_bytes",
+                    "descriptor_digest",
+                )
+            )
+            if actual != expected or row["trash_epoch"] is not None:
+                raise ValueError("resource ledger CAS descriptor mismatch")
+            mappings = tuple(
+                tuple(mapping)
+                for mapping in connection.execute(
+                    "SELECT ordinal,chunk_id,raw_offset,raw_size_bytes FROM resources_object_chunks "
+                    "WHERE object_id=? ORDER BY ordinal",
+                    (identifier,),
+                )
+            )
+            if mappings != tuple(
+                (chunk.ordinal, chunk.chunk_id, chunk.raw_offset, chunk.raw_size_bytes)
+                for chunk in descriptor.chunks
+            ):
+                raise ValueError("resource ledger CAS chunk mapping mismatch")
+            for chunk in descriptor.chunks:
+                recorded = connection.execute(
+                    "SELECT codec,format_version,raw_size_bytes,stored_size_bytes,descriptor_digest,state,trash_epoch "
+                    "FROM resources_chunks WHERE chunk_id=?",
+                    (chunk.chunk_id,),
+                ).fetchone()
+                expected_chunk = (
+                    WholeCodec.IDENTITY.value,
+                    descriptor.format_version,
+                    chunk.raw_size_bytes,
+                    chunk.raw_size_bytes,
+                    chunk.chunk_id,
+                    OBJECT_READY,
+                    None,
+                )
+                if recorded is None or tuple(recorded) != expected_chunk:
+                    raise ValueError("resource ledger CAS chunk descriptor mismatch")
+        if not live <= registered:
+            raise ValueError("resource history references an unregistered CAS object")
+
+    def plan_gc(
+        self,
+        epoch: str,
+        physical_objects: frozenset[str],
+        physical_chunks: frozenset[str],
+        *,
+        now_ms: int,
+        grace_ms: int,
+    ) -> GcPlan:
+        """Mark unreachable objects first, then chunks after object grace expires."""
+
+        self.ensure()
+        with transaction(self._database, immediate=True) as connection:
+            connection.execute(
+                """
+                DELETE FROM resources_mutations
+                WHERE state = 'ledger_committed' AND updated_at_ms < ?
+                """,
+                (now_ms - MUTATION_AUDIT_RETENTION_MS,),
+            )
+            # Every object still pointed at by a non-cascading foreign key must stay in
+            # this live set, or the DELETE below trips FOREIGN KEY constraint failed.
+            # Restore members qualify for their whole lifetime: their object FKs do not
+            # cascade and resources_restores rows are never pruned, so a terminal restore
+            # (committed/conflicted/aborted) keeps pinning them just like a delivery does.
+            live_objects = self.live_object_ids(connection)
             connection.executemany(
                 "DELETE FROM resources_gc_candidates WHERE entry_kind = ? AND identifier = ?",
                 tuple((CasEntryKind.OBJECT.value, identifier) for identifier in live_objects),
@@ -3471,7 +4090,7 @@ class VersionStore:
         connection: sqlite3.Connection,
         kind: CasEntryKind,
         known: frozenset[str],
-        live: set[str],
+        live: set[str] | frozenset[str],
         epoch: str,
         now_ms: int,
         grace_ms: int,
@@ -3526,12 +4145,12 @@ class VersionStore:
             rows = connection.execute(
                 """
                 SELECT version_id, file_id FROM (
-                    SELECT version_id, file_id,
+                    SELECT version_id, file_id, review_backup,
                            ROW_NUMBER() OVER (
                                PARTITION BY file_id ORDER BY sequence DESC
                            ) AS position
                     FROM resources_versions
-                ) WHERE position > ? AND version_id NOT IN (
+                ) WHERE position > ? AND review_backup = 0 AND version_id NOT IN (
                     SELECT base_version_id FROM resources_pending WHERE base_version_id IS NOT NULL
                 ) ORDER BY version_id
                 """,
@@ -3692,6 +4311,88 @@ class VersionStore:
             self._delete_exact(connection, version_ids, delivery_ids)
         return len(version_ids)
 
+    def initial_version_state(self, path: str) -> InitialVersionState:
+        self.ensure()
+        with closing(connect(self._database)) as connection:
+            connection.execute("BEGIN")
+            return self.initial_version_state_rows(connection, path)
+
+    @classmethod
+    def initial_version_state_rows(
+        cls, connection: sqlite3.Connection, path: str
+    ) -> InitialVersionState:
+        latest = connection.execute(
+            "SELECT versions.* FROM resources_versions versions JOIN resources_files files USING(file_id) "
+            "WHERE files.current_path = ? ORDER BY versions.sequence DESC LIMIT 1",
+            (path,),
+        ).fetchone()
+        if latest is not None:
+            version = _version(latest)
+            return InitialVersionState(version.file_id, version, False, False)
+        row = connection.execute(
+            "SELECT file_id FROM resources_files WHERE current_path = ?", (path,)
+        ).fetchone()
+        file_id = str(row["file_id"]) if row is not None else None
+        if file_id is not None and pending.read(connection, file_id) is not None:
+            return InitialVersionState(file_id, None, False, False)
+        deferred = cls._initialization_deferred(connection, path)
+        return InitialVersionState(file_id, None, not (deferred and file_id is not None), deferred)
+
+    def initialize_first(
+        self,
+        snapshot: SnapshotVersion,
+        descriptor: ObjectDescriptor,
+        *,
+        plan: InitialVersionPlan | None = None,
+    ) -> SealResult | None:
+        """Create automatic v1, or retain the actual pending/execution fence."""
+        self.ensure()
+        selected = plan if plan is not None else InitialVersionPlan.fresh(_now_ms())
+        with transaction(self._database, immediate=True) as connection:
+            return self.initialize_first_rows(connection, snapshot, descriptor, plan=selected)
+
+    @classmethod
+    def initialize_first_rows(
+        cls,
+        connection: sqlite3.Connection,
+        snapshot: SnapshotVersion,
+        descriptor: ObjectDescriptor,
+        *,
+        plan: InitialVersionPlan,
+    ) -> SealResult | None:
+        """Run normal automatic initialization on qualified bytes or a private copy."""
+        if not connection.in_transaction:
+            raise ValueError("initial version requires a transaction")
+        plan.validate()
+        if (
+            snapshot.origin is not VersionOrigin.INITIAL_SCAN
+            or snapshot.state is not FileState.PRESENT
+            or snapshot.object_id != snapshot.revision
+            or descriptor.object_id != snapshot.object_id
+        ):
+            raise VersionStoreConflict("invalid_initial_version_snapshot")
+        state = cls.initial_version_state_rows(connection, snapshot.path)
+        if state.version is not None:
+            return SealResult(state.version, unchanged=True)
+        if not state.required:
+            return None
+        if state.deferred:
+            cls.accept_working_rows(
+                connection,
+                None,
+                replace(snapshot, origin=VersionOrigin.USER),
+                descriptor,
+                None,
+                PendingOrigin.EXTERNAL.value,
+                now=plan.now_ms,
+                new_file_id=plan.file_id,
+                new_path_id=plan.path_id,
+            )
+            return None
+        result = cls._seal_snapshot(connection, snapshot, descriptor, plan.now_ms, identities=plan)
+        pending.sync_working(connection, result.version.file_id, PendingOrigin.USER, plan.now_ms)
+        return result
+
     def seal(
         self,
         snapshot: SnapshotVersion,
@@ -3815,7 +4516,65 @@ class VersionStore:
                         now,
                     ),
                 )
-            return result
+        return result
+
+    def backup_review_current(
+        self,
+        file_id: str,
+        review_id: str,
+        expected_pending_revision: int,
+        snapshot: SnapshotVersion,
+        descriptor: ObjectDescriptor | None,
+    ) -> VersionRef:
+        self.ensure()
+        now = _now_ms()
+        with transaction(self._database, immediate=True) as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM resources_versions
+                WHERE file_id = ? AND source_review_id = ? AND review_backup = 1
+                  AND object_id IS ? AND file_state = ? AND path = ? AND mode_bits IS ?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (
+                    file_id,
+                    review_id,
+                    snapshot.object_id,
+                    snapshot.state.value,
+                    snapshot.path,
+                    snapshot.mode_bits,
+                ),
+            ).fetchone()
+            if existing is not None:
+                return _version(existing)
+            current = pending.read(connection, file_id)
+            if current is None or current.review is None or current.review.id != review_id:
+                raise VersionStoreConflict(ReviewConflict.NOT_FOUND.value)
+            if current.revision != expected_pending_revision:
+                raise VersionStoreConflict(ReviewConflict.PENDING_REVISION.value)
+            return self._seal_snapshot(
+                connection,
+                snapshot,
+                descriptor,
+                now,
+                file_id=file_id,
+                force_new=True,
+                review_backup=True,
+            ).version
+
+    def review_backup(self, file_id: str, review_id: str, object_id: str) -> VersionRef | None:
+        self.ensure()
+        with closing(connect(self._database)) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM resources_versions
+                WHERE file_id = ? AND source_review_id = ? AND review_backup = 1
+                  AND object_id = ?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (file_id, review_id, object_id),
+            ).fetchone()
+            return _version(row) if row is not None else None
 
     @staticmethod
     def _validate_seal_snapshot(
@@ -3998,6 +4757,13 @@ class VersionStore:
                     review = current.review
                     if review is None:
                         raise VersionStoreConflict(ReviewConflict.NOT_FOUND.value)
+                    if resolution.choice is ReviewResolutionChoice.RESTORE_CANDIDATE and (
+                        member["before_object_id"] != member["target_object_id"]
+                        or member["before_state"] != member["target_state"]
+                        or member["before_path"] != member["target_path"]
+                        or member["before_mode_bits"] != member["target_mode_bits"]
+                    ):
+                        self._seal_review_backup(connection, file_id, review.id, member, now)
                     if (
                         resolution.choice is ReviewResolutionChoice.RESTORE_CANDIDATE
                         and target != review.candidate
@@ -4035,6 +4801,17 @@ class VersionStore:
                             ReviewOutcome.REJECTED,
                         )
                         current = self._validate_review(connection, file_id, decision)
+                        review = current.review
+                        candidate = review.candidate if review is not None else None
+                        before = SnapshotIdentity(
+                            member["before_object_id"],
+                            FileState(member["before_state"]),
+                            str(member["before_path"]),
+                            member["before_mode_bits"],
+                            member["before_annotation_object_id"],
+                        )
+                        if review is not None and candidate is not None and before != candidate:
+                            self._seal_review_backup(connection, file_id, review.id, member, now)
                     else:
                         current = self._validate_discard(
                             connection,
@@ -4042,7 +4819,31 @@ class VersionStore:
                             int(manifest["pending_revision"]),
                             manifest["source_id"],
                         )
+                    latest = connection.execute(
+                        "SELECT * FROM resources_versions WHERE file_id = ? ORDER BY sequence DESC LIMIT 1",
+                        (file_id,),
+                    ).fetchone()
+                    restored = SnapshotIdentity(
+                        snapshot.object_id,
+                        snapshot.state,
+                        snapshot.path,
+                        snapshot.mode_bits,
+                        snapshot.annotation_object_id,
+                    )
+                    seal_restored_base = manifest["review_id"] is not None and (
+                        latest is None or _snapshot_identity(latest) != restored
+                    )
                     self._cancel_pending(connection, file_id, snapshot, current, now)
+                    if seal_restored_base and current.review is not None:
+                        self._seal_snapshot(
+                            connection,
+                            replace(snapshot, source_review_id=current.review.id),
+                            descriptor,
+                            now,
+                            annotation_descriptor=annotation_descriptor,
+                            file_id=file_id,
+                            force_new=True,
+                        )
                 else:
                     results_list.append(
                         self._seal_snapshot(
@@ -4105,6 +4906,39 @@ class VersionStore:
                     )
         return results
 
+    def _seal_review_backup(
+        self,
+        connection: sqlite3.Connection,
+        file_id: str,
+        review_id: str,
+        member: sqlite3.Row,
+        now: int,
+    ) -> None:
+        row = connection.execute(
+            "SELECT media_type FROM resources_files WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if row is None:
+            raise VersionStoreConflict("file_not_managed")
+        self._seal_snapshot(
+            connection,
+            SnapshotVersion(
+                path=str(member["before_path"]),
+                media_type=str(row["media_type"]),
+                revision=member["before_object_id"],
+                object_id=member["before_object_id"],
+                mode_bits=member["before_mode_bits"],
+                mtime_ns=None,
+                origin=VersionOrigin.EXTERNAL_CONFIRMED,
+                state=FileState(member["before_state"]),
+                source_review_id=review_id,
+            ),
+            None,
+            now,
+            file_id=file_id,
+            force_new=True,
+            review_backup=True,
+        )
+
     def _cancel_pending(
         self,
         connection: sqlite3.Connection,
@@ -4163,8 +4997,9 @@ class VersionStore:
         connection.execute("DELETE FROM resources_pending WHERE file_id = ?", (file_id,))
         pending.sync_working(connection, file_id, origin, now)
 
+    @classmethod
     def _seal_snapshot(
-        self,
+        cls,
         connection: sqlite3.Connection,
         snapshot: SnapshotVersion,
         descriptor: ObjectDescriptor | None,
@@ -4174,11 +5009,18 @@ class VersionStore:
         file_id: str | None = None,
         expected_version_id: str | None = None,
         force_new: bool = False,
+        review_backup: bool = False,
+        editor_save: bool = False,
+        identities: InitialVersionPlan | None = None,
     ) -> SealResult:
+        if identities is not None:
+            identities.validate()
+            if identities.now_ms != now:
+                raise ValueError("initial version clock changed")
         if descriptor is not None:
-            self._record_object(connection, descriptor, now)
+            cls._record_object(connection, descriptor, now)
         if annotation_descriptor is not None:
-            self._record_object(connection, annotation_descriptor, now)
+            cls._record_object(connection, annotation_descriptor, now)
         file_row = connection.execute(
             (
                 "SELECT * FROM resources_files WHERE file_id = ?"
@@ -4188,11 +5030,17 @@ class VersionStore:
             (file_id if file_id is not None else snapshot.path,),
         ).fetchone()
         if file_row is None:
-            file_id = self._insert_file(connection, snapshot, now, file_id)
+            file_id = cls._insert_file(
+                connection,
+                snapshot,
+                now,
+                file_id or (identities.file_id if identities else None),
+                path_id=identities.path_id if identities else None,
+            )
         else:
             file_id = str(file_row["file_id"])
             if str(file_row["current_path"]) != snapshot.path:
-                self._release_discovery_identity(connection, snapshot)
+                cls._release_discovery_identity(connection, snapshot)
                 connection.execute(
                     """
                     UPDATE resources_file_paths SET valid_to_ms = ?
@@ -4207,7 +5055,13 @@ class VersionStore:
                         valid_to_ms, move_origin
                     ) VALUES (?, ?, NULL, ?, ?, NULL, ?)
                     """,
-                    (uuid4().hex, file_id, snapshot.path, now, snapshot.origin.value),
+                    (
+                        identities.path_id if identities else uuid4().hex,
+                        file_id,
+                        snapshot.path,
+                        now,
+                        snapshot.origin.value,
+                    ),
                 )
 
         latest = connection.execute(
@@ -4231,11 +5085,11 @@ class VersionStore:
         ):
             if latest["annotation_object_id"] != snapshot.annotation_object_id:
                 return SealResult(version=_version(latest), unchanged=True)
-            self._advance_head(connection, file_id, snapshot, now)
+            cls._advance_head(connection, file_id, snapshot, now)
             return SealResult(version=_version(latest), unchanged=True)
 
         sequence = int(file_row["next_sequence"]) if file_row is not None else 1
-        version_id = uuid4().hex
+        version_id = identities.version_id if identities else uuid4().hex
         parent_id = str(latest["version_id"]) if latest is not None else None
         connection.execute(
             """
@@ -4244,8 +5098,8 @@ class VersionStore:
                 file_state, root_id, path, mode_bits, annotation_object_id,
                 origin, delivery_id, restored_from_id, restored_from_sequence,
                 restored_from_object_id, source_delivery_id, session_id, turn_id,
-                created_at_ms, source_review_id, review_outcome
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at_ms, source_review_id, review_outcome, review_backup, editor_save
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
@@ -4268,6 +5122,8 @@ class VersionStore:
                 now,
                 snapshot.source_review_id,
                 snapshot.review_outcome.value if snapshot.review_outcome else None,
+                int(review_backup),
+                int(editor_save),
             ),
         )
         connection.execute(
@@ -4294,7 +5150,7 @@ class VersionStore:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                uuid4().hex,
+                identities.observation_id if identities else uuid4().hex,
                 file_id,
                 snapshot.revision,
                 snapshot.state.value,
@@ -4305,7 +5161,7 @@ class VersionStore:
                 now,
             ),
         )
-        self._advance_head(connection, file_id, snapshot, now)
+        cls._advance_head(connection, file_id, snapshot, now)
         row = connection.execute(
             "SELECT * FROM resources_versions WHERE version_id = ?", (version_id,)
         ).fetchone()
@@ -4479,7 +5335,7 @@ class VersionStore:
         """Resolve one durable product mutation without observing the filesystem."""
 
         self.ensure()
-        with connect(self._database) as connection:
+        with closing(connect(self._database)) as connection:
             row = connection.execute(
                 "SELECT * FROM resources_mutations WHERE idempotency_key = ?",
                 (idempotency_key,),
@@ -4506,14 +5362,24 @@ class VersionStore:
             )
             sealed = None
             if seals_version:
-                sealed = self._seal_snapshot(
-                    connection,
-                    snapshot,
-                    None,
-                    now,
-                    annotation_descriptor=annotation_descriptor,
-                    file_id=str(row["file_id"]),
+                editor_save = (
+                    str(row["kind"]) == ProductMutationKind.WRITE.value
+                    and row["request_digest"] is None
                 )
+                if editor_save:
+                    sealed = self._coalesce_working_version(
+                        connection, str(row["file_id"]), snapshot, now, annotation_descriptor
+                    )
+                if sealed is None:
+                    sealed = self._seal_snapshot(
+                        connection,
+                        snapshot,
+                        None,
+                        now,
+                        annotation_descriptor=annotation_descriptor,
+                        file_id=str(row["file_id"]),
+                        editor_save=editor_save,
+                    )
             else:
                 if annotation_descriptor is not None:
                     self._record_object(connection, annotation_descriptor, now)
@@ -4563,6 +5429,86 @@ class VersionStore:
                 (now, mutation_id),
             )
         return sealed
+
+    def _coalesce_working_version(
+        self,
+        connection: sqlite3.Connection,
+        file_id: str,
+        snapshot: SnapshotVersion,
+        now: int,
+        annotation_descriptor: ObjectDescriptor | None,
+    ) -> SealResult | None:
+        version = connection.execute(
+            """
+            SELECT versions.*, metadata.alias,
+                   COALESCE(metadata.revision, 0) AS metadata_revision
+            FROM resources_versions AS versions
+            LEFT JOIN resources_version_metadata AS metadata USING(version_id)
+            WHERE versions.file_id = ? ORDER BY sequence DESC LIMIT 1
+            """,
+            (file_id,),
+        ).fetchone()
+        if version is None:
+            return None
+        version_id = str(version["version_id"])
+        if (
+            snapshot.origin is not VersionOrigin.USER
+            or snapshot.state is not FileState.PRESENT
+            or version["origin"] != VersionOrigin.USER.value
+            or not version["editor_save"]
+            or version["file_state"] != snapshot.state.value
+            or version["path"] != snapshot.path
+            or not 0 <= now - int(version["created_at_ms"]) < EDITOR_VERSION_WINDOW_MS
+            or version["alias"]
+            or version["review_backup"]
+            or version["source_review_id"] is not None
+            or version["session_id"] is not None
+            or version["restored_from_id"] is not None
+        ):
+            return None
+        _version_row, blockers, delivery_ids, _current_id = self._delete_facts(
+            connection, version_id
+        )
+        if delivery_ids or any(blocker != VERSION_DELETE_CURRENT for blocker in blockers):
+            return None
+        references = connection.execute(
+            """
+            SELECT 1 FROM resources_turn_changes WHERE baseline_version_id = :version_id
+            UNION ALL SELECT 1 FROM resources_versions WHERE restored_from_id = :version_id
+            UNION ALL SELECT 1 FROM resources_restores WHERE source_id = :version_id
+            UNION ALL SELECT 1 FROM resources_operations WHERE result_version_id = :version_id
+            UNION ALL SELECT 1 FROM resources_operation_versions WHERE version_id = :version_id
+            UNION ALL SELECT 1 FROM resources_review_batch_members WHERE result_version_id = :version_id
+            LIMIT 1
+            """,
+            {"version_id": version_id},
+        ).fetchone()
+        if references is not None:
+            return None
+        if (
+            version["object_id"] == snapshot.object_id
+            and version["mode_bits"] == snapshot.mode_bits
+            and version["annotation_object_id"] == snapshot.annotation_object_id
+        ):
+            return None
+        if annotation_descriptor is not None:
+            self._record_object(connection, annotation_descriptor, now)
+        connection.execute(
+            """
+            UPDATE resources_versions
+            SET object_id = ?, mode_bits = ?, annotation_object_id = ?
+            WHERE version_id = ?
+            """,
+            (snapshot.object_id, snapshot.mode_bits, snapshot.annotation_object_id, version_id),
+        )
+        self._advance_head(connection, file_id, snapshot, now)
+        updated = replace(
+            _version(version),
+            object_id=snapshot.object_id,
+            mode_bits=snapshot.mode_bits,
+            annotation_object_id=snapshot.annotation_object_id,
+        )
+        return SealResult(version=updated, unchanged=False, replaced=True)
 
     def pending_working_mutations(self) -> tuple[WorkingMutation, ...]:
         """Return intents whose disk/ledger outcome must be reconciled."""
@@ -4619,64 +5565,108 @@ class VersionStore:
         descriptor: ObjectDescriptor | None,
         annotation_descriptor: ObjectDescriptor | None,
         reason: str,
+        *,
+        now_ms: int | None = None,
     ) -> None:
         """Advance WorkingHead after a product write without appending a Version."""
-
         self.ensure()
-        now = _now_ms()
         with transaction(self._database, immediate=True) as connection:
-            if file_id is None:
-                file_id = self._insert_file(connection, snapshot, now)
-            else:
-                exists = connection.execute(
-                    "SELECT 1 FROM resources_files WHERE file_id = ?", (file_id,)
-                ).fetchone()
-                if exists is None:
-                    raise VersionStoreConflict("file_not_managed")
-            if descriptor is not None:
-                self._record_object(connection, descriptor, now)
-            if annotation_descriptor is not None:
-                self._record_object(connection, annotation_descriptor, now)
+            self.accept_working_rows(
+                connection,
+                file_id,
+                snapshot,
+                descriptor,
+                annotation_descriptor,
+                reason,
+                now=_now_ms() if now_ms is None else now_ms,
+                new_file_id=uuid4().hex if file_id is None else None,
+                new_path_id=uuid4().hex if file_id is None else None,
+                observation_id=uuid4().hex if reason != EXTERNAL_OBSERVATION_REASON else None,
+            )
+
+    @classmethod
+    def accept_working_rows(
+        cls,
+        connection: sqlite3.Connection,
+        file_id: str | None,
+        snapshot: SnapshotVersion,
+        descriptor: ObjectDescriptor | None,
+        annotation_descriptor: ObjectDescriptor | None,
+        reason: str,
+        *,
+        now: int,
+        new_file_id: str | None = None,
+        new_path_id: str | None = None,
+        observation_id: str | None = None,
+    ) -> None:
+        """Use actual head/pending writers with explicit projection identities.
+
+        Private callers must supply every new identity; this transition never
+        substitutes random values or samples the wall clock. It does not prove
+        the snapshot's source bytes or publish its referenced CAS objects.
+        """
+        if not connection.in_transaction:
+            raise ValueError("working head recovery requires a transaction")
+        if type(now) is not int or now < 0:
+            raise ValueError("invalid working head timestamp")
+        required = (() if file_id is not None else (new_file_id, new_path_id)) + (
+            () if reason == EXTERNAL_OBSERVATION_REASON else (observation_id,)
+        )
+        if any(not isinstance(value, str) or not value or "\0" in value for value in required):
+            raise ValueError("working head recovery requires explicit identities")
+        PendingOrigin(reason)
+        if file_id is None:
+            file_id = cls._insert_file(connection, snapshot, now, new_file_id, path_id=new_path_id)
+        else:
+            exists = connection.execute(
+                "SELECT 1 FROM resources_files WHERE file_id = ?", (file_id,)
+            ).fetchone()
+            if exists is None:
+                raise VersionStoreConflict("file_not_managed")
+        if descriptor is not None:
+            cls._record_object(connection, descriptor, now)
+        if annotation_descriptor is not None:
+            cls._record_object(connection, annotation_descriptor, now)
+        connection.execute(
+            """
+            UPDATE resources_files
+            SET current_path = ?,
+                media_type = CASE WHEN ? = 'present' THEN ? ELSE media_type END,
+                state = ?, updated_at_ms = ?
+            WHERE file_id = ?
+            """,
+            (
+                snapshot.path,
+                snapshot.state.value,
+                snapshot.media_type,
+                snapshot.state.value,
+                now,
+                file_id,
+            ),
+        )
+        if reason != EXTERNAL_OBSERVATION_REASON:
             connection.execute(
                 """
-                UPDATE resources_files
-                SET current_path = ?,
-                    media_type = CASE WHEN ? = 'present' THEN ? ELSE media_type END,
-                    state = ?, updated_at_ms = ?
-                WHERE file_id = ?
+                INSERT INTO resources_observations (
+                    observation_id, file_id, revision, file_state, size_bytes,
+                    mtime_ns, mode_bits, reason, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    snapshot.path,
-                    snapshot.state.value,
-                    snapshot.media_type,
-                    snapshot.state.value,
-                    now,
+                    observation_id,
                     file_id,
+                    snapshot.revision,
+                    snapshot.state.value,
+                    descriptor.raw_size_bytes if descriptor is not None else None,
+                    snapshot.mtime_ns,
+                    snapshot.mode_bits,
+                    reason,
+                    now,
                 ),
             )
-            if reason != EXTERNAL_OBSERVATION_REASON:
-                connection.execute(
-                    """
-                    INSERT INTO resources_observations (
-                        observation_id, file_id, revision, file_state, size_bytes,
-                        mtime_ns, mode_bits, reason, observed_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        uuid4().hex,
-                        file_id,
-                        snapshot.revision,
-                        snapshot.state.value,
-                        descriptor.raw_size_bytes if descriptor is not None else None,
-                        snapshot.mtime_ns,
-                        snapshot.mode_bits,
-                        reason,
-                        now,
-                    ),
-                )
-            self._advance_head(connection, file_id, snapshot, now)
+        cls._advance_head(connection, file_id, snapshot, now)
 
-            pending.sync_working(connection, file_id, PendingOrigin(reason), now)
+        pending.sync_working(connection, file_id, PendingOrigin(reason), now)
 
     @staticmethod
     def _release_discovery_identity(
@@ -4721,6 +5711,8 @@ class VersionStore:
         snapshot: SnapshotVersion,
         now: int,
         file_id: str | None = None,
+        *,
+        path_id: str | None = None,
     ) -> str:
         """Register stable identity independently of the first visible Version."""
 
@@ -4740,7 +5732,7 @@ class VersionStore:
                 path_id, file_id, root_id, path, valid_from_ms, valid_to_ms, move_origin
             ) VALUES (?, ?, NULL, ?, ?, NULL, NULL)
             """,
-            (uuid4().hex, identity, snapshot.path, now),
+            (path_id or uuid4().hex, identity, snapshot.path, now),
         )
         return identity
 
@@ -4763,7 +5755,11 @@ class VersionStore:
             (
                 descriptor.object_id,
                 descriptor.layout.value,
-                descriptor.codec.value if hasattr(descriptor.codec, "value") else descriptor.codec,
+                (
+                    descriptor.codec.value
+                    if isinstance(descriptor.codec, WholeCodec)
+                    else descriptor.codec
+                ),
                 descriptor.format_version,
                 descriptor.raw_size_bytes,
                 descriptor.stored_size_bytes,

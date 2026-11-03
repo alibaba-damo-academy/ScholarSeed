@@ -2,8 +2,13 @@
 
 ## Responsibility and authorization
 
-Process selected papers left after the arXiv stage, including non-arXiv OA,
-non-OA and unknown-access papers. Use `non-arXiv` in user-visible messages;
+Recover granted papers that serve could not acquire: the targets come only from
+`downloads/manifest.json` — entries recorded as `failed` (what serve reported for
+a granted acquisition) or `action_required` from a previous paid batch — never
+from metadata access flags or identifier kinds. A terminal `skipped` entry (the
+product did not grant the paper, or it has no arXiv/DOI identifier serve can
+fetch) is never a download target, whatever its metadata says about access.
+Use `non-arXiv` in user-visible messages;
 `paid-download` remains the internal module name, not a claim that a paper is paid.
 
 Require a confirmed `selection.json` with `download_paid: true`, referenced
@@ -36,16 +41,18 @@ For a paused batch, execute the same command with `--resume`. Do not start a
 second adapter for the same run. Cancellation is authoritative: keep the batch
 attached to the workflow so cancellation reaches and reaps its child processes.
 
-Interactive access is the default. The adapter owns browser allocation,
+Interactive access is the default. In both modes, the adapter owns browser allocation,
 verified loopback CDP attachment, process cleanup and retries. Wait when all
 three browser slots are occupied; do not attach to another browser or remove
 locks to force capacity. A login/CAPTCHA pause retains its lease for resume.
-Direct the user to the opened paper tabs in the dedicated Chrome; use the safe
+Direct the user to the opened paper tabs in the dedicated Chrome or Edge; use the safe
 `action.papers` links only if tab creation failed. Generic publisher portals
 are sign-in starting points, not article evidence.
 
 Use `PAPER_DL_MODE=autodev` only for explicitly authorized unattended execution.
-It skips login/CAPTCHA/manual-solve items and continues. Zotero mode must stay
+It adds `--autodev` to the same verified CDP connection, skips
+login/CAPTCHA/manual-solve items, and releases the slot when the batch ends.
+It does not launch headless Chromium or pause for human intervention. Zotero mode must stay
 `off` in both modes. Browser/CDP startup failures are execution errors, not
 grounds for an alternate attachment or reconnection workaround.
 
@@ -53,17 +60,34 @@ grounds for an alternate attachment or reconnection workaround.
 
 The adapter writes `downloads/manifest.json`, verified PDFs under
 `downloads/papers/`, and attempt inputs/reports under
-`downloads/paper-dl-logs/`. Relay its concise `[DOWNLOAD STATUS]` queue and
+`downloads/paper-dl-logs/`. The paper-dl library cache is not a run artifact:
+the adapter points `--storage` at `~/.paper-dl/library` — short by construction
+so the tool's native Windows paths survive deep run directories — and it fails
+fast with `long_path_blocked` before starting any batch whose native downloader
+paths would exceed the Windows path budget. Relay its concise `[DOWNLOAD STATUS]` queue and
 per-paper events using the user-visible label `non-arXiv`, not backend names;
 do not invent percentage progress or repeatedly print the whole manifest.
 A downloaded PDF is not yet read full-text evidence.
+
+PDF publication follows the actual filesystem result, not drive-name comparison:
+
+| Behavior | macOS | Windows |
+| --- | --- | --- |
+| Rename | Try atomic replacement; only `EXDEV` triggers copying | Same, including volumes mounted under the same drive |
+| Cross-device publication | Exclusively create a sibling temporary file, copy, close, then atomically replace | Same; close the temporary handle before replacement |
+| Verification and cleanup | Verify PDF signature and SHA-256 before deleting the copied source | Same; file-lock or permission errors during source cleanup retain verified success with a warning |
+
+Copy, publication or verification failure remains a failed download and preserves
+the copied source for retry. Temporary-file cleanup errors are reported without
+masking the original failure. The prewritten identity ledger supports recovery;
+it does not itself prove that publication succeeded.
 
 Prior successes are revalidated before retry. Relocated-file recovery requires
 the paper identity, identifier hash, contained path and PDF SHA-256 binding in
 `downloads/paper-dl-files.json`. A title or preferred filename alone never
 authorizes reuse. Preserve unbound PDFs and request reacquisition or
-explicit manual recovery. Preserve arXiv successes and partial non-arXiv results;
-only remaining or invalid entries are retried.
+explicit manual recovery. Preserve managed (`downloaded`) successes and partial
+non-arXiv results; only remaining or invalid entries are retried.
 
 Follow persisted `action_type`, safe message and resume token for manual work.
 The manifest remains authoritative even if preparing intervention tabs fails.

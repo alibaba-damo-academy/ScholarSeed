@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import multiprocessing
@@ -18,6 +19,7 @@ from damoatrace.recording.budget import ContentBudget
 from damoatrace.recording.content import (
     BLOCK_LIMIT,
     CONTENT_FIELDS,
+    CONTENT_MARKER,
     CONTENT_VERSION,
     DISK_LIMIT,
     RETENTION_SECONDS,
@@ -72,12 +74,105 @@ class BudgetContract(unittest.TestCase):
             root or self.root, offline=True, include_content=True, **kwargs
         ).all_events()
 
+    def test_unknown_content_version_refuses_purge_and_budget_without_changes(self) -> None:
+        for field in (CONTENT_MARKER, "outputs"):
+            for version in (999, True, 1.0, "1", None):
+                for action in ("purge", "enforce", "append"):
+                    with self.subTest(field=field, version=version, action=action):
+                        with tempfile.TemporaryDirectory() as temporary:
+                            root = Path(temporary)
+                            path = root / "one.jsonl"
+                            with EvidenceWriter(path) as writer:
+                                emit(writer)
+                            current = json.loads(path.read_text())
+                            future = copy.deepcopy(current)
+                            if field == CONTENT_MARKER:
+                                future[field] = version
+                            else:
+                                future[field]["version"] = version
+                            path.write_text(json.dumps(current) + "\n" + json.dumps(future) + "\n")
+                            before = path.read_bytes(), path.stat().st_ino
+                            budget = ContentBudget(root, pattern="*.jsonl", limit=0)
+                            with self.assertRaisesRegex(
+                                ValueError, "unsupported diagnostic content"
+                            ):
+                                if action == "purge":
+                                    purge_content(path, all_content=True)
+                                elif action == "enforce":
+                                    budget.enforce()
+                                else:
+                                    budget.append(path, current)
+                            self.assertEqual((path.read_bytes(), path.stat().st_ino), before)
+                            self.assertEqual(list(root.glob(".one.jsonl.*")), [])
+
+    def test_incoming_batch_version_rejected_before_first_append(self) -> None:
+        path = self.root / "one.jsonl"
+        with EvidenceWriter(path) as writer:
+            emit(writer)
+        current = json.loads(path.read_text())
+        future = copy.deepcopy(current)
+        future[CONTENT_MARKER] = 999
+        before = path.read_bytes()
+        budget = ContentBudget(self.root, pattern="*.jsonl", limit=0)
+        with self.assertRaisesRegex(ValueError, "unsupported diagnostic content"):
+            budget.append_many(path, [current, future])
+        self.assertEqual(path.read_bytes(), before)
+
     def test_limits(self) -> None:
         self.assertEqual(
             (BLOCK_LIMIT, TURN_LIMIT, SESSION_LIMIT, DISK_LIMIT),
             (512 * 1024, 4 * 1024**2, 64 * 1024**2, 1024**3),
         )
         self.assertEqual(RETENTION_SECONDS, 14 * 24 * 60 * 60)
+
+    def test_batch_preserves_sequential_budget_policy(self) -> None:
+        results = []
+        for batched in (False, True):
+            root = self.root / str(batched)
+            writer = EvidenceWriter(
+                root / "one.jsonl", budget=ContentBudget(root, pattern="*.jsonl", limit=LIMIT)
+            )
+            if batched:
+                with writer.batch():
+                    for value in (VALUE, VALUE, "oversize" * LIMIT, VALUE):
+                        emit(writer, value, captured_at=time.time())
+            else:
+                for value in (VALUE, VALUE, "oversize" * LIMIT, VALUE):
+                    emit(writer, value, captured_at=time.time())
+            rows = self.rows(root)
+            results.append(
+                [
+                    (block.get("data"), block.get("missing_reason"))
+                    for row in rows
+                    for block in row["outputs"]["blocks"]
+                ]
+            )
+        self.assertEqual(results[0], results[1])
+
+    def test_batch_refreshes_and_writes_once(self) -> None:
+        budget = ContentBudget(self.root, pattern="*.jsonl", limit=100_000)
+        writer = EvidenceWriter(self.root / "one.jsonl", budget=budget)
+        with (
+            patch.object(budget, "_refresh", wraps=budget._refresh) as refresh,
+            patch("damoatrace.recording.budget.make_private") as private,
+        ):
+            with writer.batch():
+                for _ in range(64):
+                    emit(writer)
+            self.assertEqual(refresh.call_count, 1)
+            self.assertEqual(private.call_count, 1)
+        self.assertEqual(len(self.rows()), 64)
+
+    def test_batch_failure_is_not_silently_committed(self) -> None:
+        writer = EvidenceWriter(self.root / "one.jsonl")
+        with (
+            self.assertRaises(OSError),
+            patch.object(writer, "_append_many", side_effect=OSError("full")),
+        ):
+            with writer.batch():
+                emit(writer)
+        emit(writer)
+        self.assertEqual(len(self.rows()), 1)
 
     def test_oldest_block_not_file_and_warm_cache(self) -> None:
         budget = ContentBudget(self.root, pattern="*.jsonl", limit=LIMIT)

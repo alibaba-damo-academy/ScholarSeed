@@ -1,0 +1,11 @@
+{
+  "schema": 2,
+  "policyHash": "315aefe0171b79cf95ac1c1a11a9f3d2d27f390d18b73acf1ee0eb6ef28e8dc4",
+  "outputs": {
+    "apps/desktop/native/security.h": "3a8fbd8846bcb1835f6992027eb158a5ec3c04dc7e6a6ff33c9218a3fcbbd42d",
+    "apps/desktop/updater/internal/security/evaluate.go": "fd6a1540eadae87b68303bd94d5bb6366c5bcf63506b16f2333bcf54cde3a1f7",
+    "apps/serve/service/platform/security.py": "901a3495a063b62a6d5eed129843ede5e6cab4f418ce3bb7aa3fb1f4e325614a",
+    "packages/adapters/codex/scholarseed_codex/permissions.py": "2a13f7ecfc8f0c9d4d7b5a453dc6380e3e5aa1f7f0ca0cbaafa73e89cf073b6a",
+    "scripts/shared/security.cjs": "55fb67ad020dca19d5ea89b24f12f1944d8600a029dd613340071d2c67741d2b"
+  }
+}

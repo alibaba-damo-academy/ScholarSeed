@@ -18,6 +18,8 @@ from browser_pool import (
     REFERENCE,
     BrowserPool,
     PoolError,
+    browser_kind,
+    chrome_executable,
     group_members,
     record_browser_ready,
     stop_process,
@@ -27,6 +29,84 @@ from io_utils import atomic_write_json
 from profile_template import ProfileInUse, require_offline
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "skills/community/precise-literature-search/scripts"
+
+
+class BrowserDiscoveryTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX executable symlinks")
+    def test_resolved_edge_symlink_keeps_edge_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "msedge"
+            executable.touch(mode=0o755)
+            alias = root / "microsoft-edge"
+            alias.symlink_to(executable)
+            with mock.patch.dict(os.environ, {"PAPER_DL_CHROME_EXECUTABLE": str(alias)}):
+                resolved = chrome_executable()
+            self.assertEqual(resolved, str(executable.resolve()))
+            self.assertEqual(browser_kind(resolved), "edge")
+            pool = BrowserPool(root / "pool")
+            self.assertEqual(pool.profile_path(1, browser_kind(resolved)).name, "edge-profile")
+
+    def discover(self, installed, *, windows=False, configured=None):
+        environment = {
+            "LOCALAPPDATA": "/local",
+            "PROGRAMFILES": "/programs",
+            "PROGRAMFILES(X86)": "/x86",
+        }
+        if configured:
+            environment["PAPER_DL_CHROME_EXECUTABLE"] = configured
+        with (
+            mock.patch.dict(os.environ, environment, clear=True),
+            mock.patch("browser_pool.WINDOWS", windows),
+            mock.patch("browser_pool.shutil.which", return_value=None),
+            mock.patch.object(Path, "is_file", lambda path: path.as_posix() in installed),
+            mock.patch("browser_pool.os.access", return_value=True),
+        ):
+            return chrome_executable()
+
+    def test_mac_chrome_priority_and_edge_fallback(self):
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        edge = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+        self.assertEqual(self.discover({chrome, edge}), str(Path(chrome).resolve()))
+        self.assertEqual(self.discover({edge}), str(Path(edge).resolve()))
+        self.assertEqual(browser_kind(edge), "edge")
+
+    def test_windows_chrome_priority_across_install_locations(self):
+        chrome = "/programs/Google/Chrome/Application/chrome.exe"
+        edge = "/local/Microsoft/Edge/Application/msedge.exe"
+        self.assertEqual(self.discover({chrome, edge}, windows=True), str(Path(chrome).resolve()))
+        chromium = "/local/Chromium/Application/chrome.exe"
+        self.assertEqual(self.discover({edge, chromium}, windows=True), str(Path(edge).resolve()))
+        self.assertEqual(self.discover({chromium}, windows=True), str(Path(chromium).resolve()))
+        for base in ("/local", "/programs", "/x86"):
+            edge = base + "/Microsoft/Edge/Application/msedge.exe"
+            self.assertEqual(self.discover({edge}, windows=True), str(Path(edge).resolve()))
+
+    def test_explicit_edge_wins_and_invalid_override_does_not_fall_back(self):
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        edge = "/custom/Microsoft Edge"
+        self.assertEqual(self.discover({chrome, edge}, configured=edge), str(Path(edge).resolve()))
+        with self.assertRaises(PoolError):
+            self.discover({chrome}, configured="/missing/Microsoft Edge")
+        with self.assertRaises(PoolError):
+            self.discover(set())
+
+    def test_edge_user_install_and_path_discovery(self):
+        edge = str(Path.home() / "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        self.assertEqual(self.discover({Path(edge).as_posix()}), str(Path(edge).resolve()))
+        for windows, command in ((True, "msedge.exe"), (False, "microsoft-edge")):
+            executable = str(Path("/custom") / command)
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch("browser_pool.WINDOWS", windows),
+                mock.patch(
+                    "browser_pool.shutil.which",
+                    side_effect=lambda name: executable if name == command else None,
+                ),
+                mock.patch.object(Path, "is_file", lambda path: str(path) == executable),
+                mock.patch("browser_pool.os.access", return_value=True),
+            ):
+                self.assertEqual(chrome_executable(), str(Path(executable).resolve()))
 
 
 class DefaultProfileLayoutTests(unittest.TestCase):
@@ -163,6 +243,33 @@ class BrowserPoolTests(unittest.TestCase):
         lease = self.pool.acquire(self.runs[index])
         self.leases.append(lease)
         return lease
+
+    def test_edge_isolates_profile_and_resume_keeps_original_browser(self):
+        self.pool.prepare(self.runs[0])
+        chrome_profile = self.pool.profile_path(1)
+        (chrome_profile / "Default").mkdir(parents=True)
+        (chrome_profile / "Default/Cookies").write_text("chrome login")
+        lease = self.acquire(0)
+        with (
+            mock.patch("browser_pool.browser_kind", return_value="edge"),
+            mock.patch.dict(os.environ, {"PAPER_DL_TEST_CHROME_START_URL": "edge://newtab/"}),
+        ):
+            lease.ensure_browser(timeout=3)
+        self.assertEqual(lease.profile, self.pool.profile_path(1, "edge"))
+        self.assertEqual(lease.state["browser_kind"], "edge")
+        self.assertFalse((lease.profile / "Default/Cookies").exists())
+        self.assertEqual((chrome_profile / "Default/Cookies").read_text(), "chrome login")
+        endpoint = lease.endpoint
+        lease.save(phase="waiting_user")
+        lease.close()
+        resumed = self.acquire(0)
+        with mock.patch(
+            "browser_pool.chrome_executable", side_effect=AssertionError("must not rediscover")
+        ):
+            resumed.ensure_browser(timeout=3)
+        self.assertEqual(resumed.profile, lease.profile)
+        self.assertEqual(resumed.endpoint, endpoint)
+        resumed.release()
 
     def wait_until(self, predicate, timeout=8):
         deadline = time.monotonic() + timeout

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "directionId": "ACCOUNT-01",
+  "checks": [
+    { "id": "ACCOUNT-LOGIN", "pointIds": ["ACCOUNT-LOGIN-01"], "required": true, "evaluationType": "A" },
+    { "id": "ACCOUNT-RESTORE", "pointIds": ["ACCOUNT-LOGIN-01"], "required": true, "evaluationType": "A" },
+    { "id": "ACCOUNT-STATE", "pointIds": ["ACCOUNT-STATE-01"], "required": true, "evaluationType": "A" }
+  ]
+}

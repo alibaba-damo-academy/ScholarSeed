@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Protocol
 
 
@@ -19,12 +20,18 @@ class RuntimeSecretPort(Protocol):
     async def resolve(self, secret_ref: str) -> RuntimeSecret: ...
 
 
+class LaunchSecretScope(str, Enum):
+    PROCESS = "process"
+    TOOL = "tool"
+
+
 @dataclass(frozen=True)
 class LaunchSecret:
-    """Bind one opaque product secret to a child-process environment name."""
+    """Bind one opaque secret to a process or session tool environment."""
 
     name: str
     secret_ref: str
+    scope: LaunchSecretScope = LaunchSecretScope.PROCESS
 
 
 @dataclass(frozen=True)
@@ -40,4 +47,10 @@ class LaunchSecretIntent:
     remove_environment: tuple[str, ...] = ()
 
 
-__all__ = ["LaunchSecret", "LaunchSecretIntent", "RuntimeSecret", "RuntimeSecretPort"]
+__all__ = [
+    "LaunchSecret",
+    "LaunchSecretIntent",
+    "LaunchSecretScope",
+    "RuntimeSecret",
+    "RuntimeSecretPort",
+]

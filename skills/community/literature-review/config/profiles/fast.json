@@ -32,7 +32,7 @@
     {
       "id": "fulltext",
       "title": "Acquire the full text of every selected paper",
-      "description": "Parse supplied local PDF snapshots first; download other sources from PaperHub and recover trusted abstracts for no-text records. Report fulltext, abstract_only and no_text distinctly.",
+      "description": "Parse supplied local PDF snapshots first; otherwise try PaperHub by document ID, then a known arXiv ID with a short deadline. Use existing abstracts when neither source succeeds. Report fulltext, abstract_only and no_text distinctly.",
       "command": [
         "scholarseed-skill-python",
         "${SLR_HOME}/scripts/processing/fetch_fulltext.py",
@@ -40,7 +40,7 @@
         "--concurrency",
         "8",
         "--sources",
-        "paperhub"
+        "paperhub,arxiv_pdf"
       ],
       "cwd": "workspace",
       "timeout_sec": 2400,

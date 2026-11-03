@@ -2,7 +2,7 @@
   "title": "Projects",
   "archive": {
     "title": "Archive “{{name}}”?",
-    "description": "The project will be hidden from Home and default lists. Its files and conversations will be kept. You can view or restore archived projects in Settings → Archives.",
+    "description": "The project will be hidden from Home and default lists. Its files and tasks will be kept. You can view or restore archived projects in Settings → Archives.",
     "cancel": "Cancel",
     "confirm": "Archive"
   },
@@ -19,7 +19,7 @@
   "noLinks": "No external files or directories linked",
   "workspaceRoot": "Root for new projects",
   "trash": "Recently deleted",
-  "openTrash": "View in Trash",
+  "openTrash": "View in the {{trash}}",
   "errors": {
     "mount_conflict": "An item with this name already exists in the library. Choose another mount name.",
     "mount_required": "Mount name is required.",
@@ -42,15 +42,16 @@
     "too_many_entries": "Too many entries at the project root. Organize them first.",
     "cannot_forget_current_project": "This is the current project. Switch to another project first.",
     "cannot_archive_current_project": "This is the current project. Switch to another project before archiving it.",
-    "name_too_long": "Project names can contain up to {{max}} characters."
+    "reveal_unavailable": "Could not show the project folder: {{path}}. It may not exist or be inaccessible.",
+    "name_too_long": "Project names can contain up to {{max}} characters.",
+    "project_creation_recovery_required": "Project creation needs recovery. Check the unfinished creations below."
   },
   "notices": {
+    "archivesReadFailed": "Unable to load archived projects. Please retry.",
     "renamed": "Renamed. The local folder name is unchanged.",
     "archived": "Archived. The project is hidden from default lists and can be restored from the archived section.",
     "unarchived": "Unarchived. The project is back in the default lists.",
-    "savedRestart": "Saved. New projects will use the new root after restarting ScholarSeed.",
-    "saved": "Saved.",
-    "linked": "Linked. The Agent gains write access on the next conversation turn.",
+    "linked": "Linked. The Agent gains write access on the next task turn.",
     "planFailed": "Could not load the migration plan.",
     "managed": "Migration completed. The project now uses the managed library layout.",
     "migrated": "Selected entries were migrated. Unselected entries remain at the project root.",
@@ -69,12 +70,9 @@
     "link": "Link local folder",
     "revoke": "Revoke",
     "interrupt": "Interrupt running tasks immediately when revoking access (otherwise write access is removed on the next turn).",
-    "root": "Root folder for new projects",
-    "fromStartup": "(from startup arguments; not explicitly configured)",
-    "openTrash": "View in system trash",
-    "trashHint": "Deleted files go to the system trash. Restore them there to return them to their original locations below.",
-    "migrationTitle": "Migrate “{{name}}” to the managed library layout · {{size}} total",
-    "effectiveRoot": "Currently active: {{path}}"
+    "openTrash": "View in the {{trash}}",
+    "trashHint": "Deleted files go to the {{trash}}. Use “{{restoreAction}}” there to return them to their original locations below.",
+    "migrationTitle": "Migrate “{{name}}” to the managed library layout · {{size}} total"
   },
   "cards": {
     "title": "Projects",
@@ -83,10 +81,10 @@
     "create": "New project",
     "createHint": "Choose an existing local folder or create a research directory",
     "noMatch": "No matching projects",
-    "description": "Project conversations, files, and research artifacts are archived in the selected local folder.",
+    "description": "Project tasks, files, and research artifacts are archived in the selected local folder.",
     "enter": "Open {{name}}",
     "edit": "Edit project {{name}}",
-    "chats": "{{total}} conversations",
+    "chats": "{{total}} tasks",
     "total": "{{total}} projects",
     "withinHour": "Within 1 hour",
     "hoursAgo": "{{total}} hours ago",
@@ -101,6 +99,23 @@
     "materials_one": "<label>Resources</label> <value>{{count}}</value>",
     "materials_other": "<label>Resources</label> <value>{{count}}</value>",
     "literature_one": "<label>Literature</label> <value>{{count}}</value>",
-    "literature_other": "<label>Literature</label> <value>{{count}}</value>"
+    "literature_other": "<label>Literature</label> <value>{{count}}</value>",
+    "materialsUnknown": "<label>Resources</label> <value>—</value>",
+    "literatureUnknown": "<label>Literature</label> <value>—</value>"
+  },
+  "recovery": {
+    "title": "Unfinished project creation",
+    "description": "Some projects could not be created. Their folders and files have been kept. Retry, or keep the files and end creation.",
+    "loading": "Checking unfinished creations…",
+    "loadFailed": "Could not load recovery records. Refresh to try again.",
+    "refresh": "Refresh",
+    "retry": "Retry creation",
+    "preserve": "Keep files and end creation",
+    "confirmTitle": "End creation of “{{name}}”?",
+    "confirmDescription": "This removes the recovery record without registering a project or changing any files in the folder below. You will no longer be able to retry this creation.",
+    "cancel": "Back",
+    "preserved": "Creation ended. The original folder and files have been kept.",
+    "needsRecovery": "Folder ownership still cannot be verified. No files were changed. You can keep the files and end creation.",
+    "failed": "The action did not complete. Refresh to check its status before trying again."
   }
 }

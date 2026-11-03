@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "directionId": "RES-MGMT-01",
+  "checks": [
+    {
+      "id": "RES-COPY-DIR",
+      "pointIds": [
+        "RES-COPY-DIR-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-CONFLICT-RENAME",
+      "pointIds": [
+        "RES-CONFLICT-RENAME-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-CONFLICT-REPLACE",
+      "pointIds": [
+        "RES-CONFLICT-REPLACE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-CHAT-REF",
+      "pointIds": [
+        "RES-CHAT-REF-01"
+      ],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "RES-VERSION-RESTORE",
+      "pointIds": [
+        "RES-VERSION-RESTORE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-AUTOSAVE",
+      "pointIds": [
+        "RES-AUTOSAVE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-LINK-DIR",
+      "pointIds": [
+        "RES-LINK-DIR-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-CREATE-FOLDER",
+      "pointIds": [
+        "RES-CREATE-FOLDER-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-CREATE-MD",
+      "pointIds": [
+        "RES-CREATE-MD-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-RENAME",
+      "pointIds": [
+        "RES-RENAME-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-MOVE",
+      "pointIds": [
+        "RES-MOVE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-FILTER-NAME",
+      "pointIds": [
+        "RES-LIST-FILTER-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-FILTER-TYPE",
+      "pointIds": [
+        "RES-LIST-FILTER-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-FILTER-SOURCE",
+      "pointIds": [
+        "RES-LIST-FILTER-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-DUPLICATE",
+      "pointIds": [
+        "RES-DUPLICATE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-VIEW-MODE",
+      "pointIds": [
+        "RES-VIEW-MODE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-VERSION-COUNT",
+      "pointIds": [
+        "RES-VERSION-POLICY-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "RES-VERSION-SIZE",
+      "pointIds": [
+        "RES-VERSION-POLICY-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

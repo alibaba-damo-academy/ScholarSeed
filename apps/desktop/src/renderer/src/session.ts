@@ -13,6 +13,18 @@ export interface SessionTitle {
   title_fallback?: SessionTitleFallback
 }
 
+export interface ArchivedTask extends SessionTitle {
+  session_id: string
+  project_path?: string | null
+}
+
+export function archivedTaskForProject(
+  task: ArchivedTask | null,
+  projectPath: string | null | undefined
+): ArchivedTask | null {
+  return projectPath && task?.project_path === projectPath ? task : null
+}
+
 export function sessionTitleFallback(value: unknown): SessionTitleFallback {
   return value === 'new_session' ? value : null
 }
@@ -21,26 +33,60 @@ export function sessionDisplayTitle(session: SessionTitle, t: TFunction<'assista
   return sessionTitleFallback(session.title_fallback) ? t('panel.new') : session.title
 }
 
+export function sessionProjectName(
+  session: { project_path?: string | null },
+  projects: readonly { path: string; name: string }[],
+  unassigned: string
+): string {
+  const projectPath = session.project_path
+  if (!projectPath) return unassigned
+  return projects.find((project) => project.path === projectPath)?.name || projectPath
+}
+
 /** An absent title in a legacy open response cannot replace a local title. */
-export function openedSessionTitle(opened: { title?: string; title_fallback?: unknown }): Partial<SessionTitle> {
+export function openedSessionTitle(opened: {
+  title?: string
+  title_fallback?: unknown
+}): Partial<SessionTitle> {
   return typeof opened.title === 'string'
-    ? { title: opened.title, title_fallback: sessionTitleFallback(opened.title_fallback) } : {}
+    ? { title: opened.title, title_fallback: sessionTitleFallback(opened.title_fallback) }
+    : {}
 }
 
 /** Preserve the existing catalog/local precedence while selecting the entire title pair. */
-export function mergedSessionTitle(existing: SessionTitle | undefined, thread: SessionTitle, id: string): SessionTitle {
-  const placeholder = !existing?.title || existing.title === CANONICAL_NEW_SESSION_TITLE || existing.title === LEGACY_SESSION_TITLE || existing.title.startsWith(SESSION_PLACEHOLDER_PREFIX)
+export function mergedSessionTitle(
+  existing: SessionTitle | undefined,
+  thread: SessionTitle,
+  id: string
+): SessionTitle {
+  const placeholder =
+    !existing?.title ||
+    existing.title_fallback === 'new_session' ||
+    (existing.title_fallback === undefined &&
+      (existing.title === CANONICAL_NEW_SESSION_TITLE ||
+        existing.title === LEGACY_SESSION_TITLE ||
+        existing.title.startsWith(SESSION_PLACEHOLDER_PREFIX)))
   const selected = placeholder
-    ? thread.title ? thread : existing?.title ? existing : undefined
-    : existing?.title ? existing : thread.title ? thread : undefined
+    ? thread.title
+      ? thread
+      : existing?.title
+        ? existing
+        : undefined
+    : existing?.title
+      ? existing
+      : thread.title
+        ? thread
+        : undefined
   return selected
     ? { title: selected.title, title_fallback: sessionTitleFallback(selected.title_fallback) }
     : { title: id.slice(0, SESSION_ID_PREVIEW_LENGTH), title_fallback: null }
 }
 
 /** New drafts retain canonical data; only the rendering layer translates it. */
-export function draftSessionTitle(prompt: string, opened: { title?: string; title_fallback?: unknown }): SessionTitle {
-  if (prompt) return { title: prompt, title_fallback: null }
+export function draftSessionTitle(opened: {
+  title?: string
+  title_fallback?: unknown
+}): SessionTitle {
   return typeof opened.title === 'string'
     ? { title: opened.title, title_fallback: sessionTitleFallback(opened.title_fallback) }
     : { title: CANONICAL_NEW_SESSION_TITLE, title_fallback: 'new_session' }

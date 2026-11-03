@@ -12,7 +12,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import ProjectDatabasePath, transaction
-from service.platform.content import AssetState
+from service.platform.activity import Activities
 from service.platform.resources import (
     FileState,
     PendingOrigin,
@@ -94,7 +94,7 @@ async def exercise() -> None:
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         project = registry.create("交付项目")
         resources = Path(project.root) / "resources"
         first = resources / "first.md"
@@ -110,8 +110,12 @@ async def exercise() -> None:
         retention = ResourceRetentionService(content, settings)
         annotations = PdfRecordStore(content)
         versions = ResourceVersionService(content, retention, WorkbenchFormatPolicy(), annotations)
-        supervisor = ResourceVersionSupervisor(content, versions, WorkbenchFormatPolicy(), settings)
-        deliveries = ResourceDeliveryService(content, versions, supervisor)
+        supervisor = ResourceVersionSupervisor(
+            content, versions, WorkbenchFormatPolicy(), settings, activities=Activities()
+        )
+        deliveries = ResourceDeliveryService(
+            content, versions, supervisor, activities=supervisor._activities
+        )
         supervisor.bind_preparation(
             ResourceActivation(
                 content,
@@ -122,6 +126,17 @@ async def exercise() -> None:
                 ResourceReviewMigration(content, versions),
             )
         )
+
+        with patch.object(deliveries, "_store", side_effect=AssertionError("unrelated database")):
+            await deliveries.begin_turn("unassigned", "unassigned-turn", str(root / "session"))
+            await deliveries.bind_turn("unassigned", "unassigned-turn", "native-unassigned", "g1")
+            await deliveries.record_tool_call(
+                "unassigned", "native-unassigned", {}, generation="g1"
+            )
+            await deliveries.record_change(
+                "unassigned", "native-unassigned", "file", "update", generation="g1"
+            )
+        check("unassigned runtime events never inspect unrelated project databases", True)
 
         await deliveries.begin_turn("session-1", "client-turn-1", project.root)
 
@@ -140,7 +155,9 @@ async def exercise() -> None:
         await deliveries.record_change(
             "session-1", "client-turn-1", str(unchanged), "update", generation="fixture-generation"
         )
-        restarted_deliveries = ResourceDeliveryService(content, versions, supervisor)
+        restarted_deliveries = ResourceDeliveryService(
+            content, versions, supervisor, activities=supervisor._activities
+        )
         unrelated = registry.create("其他项目")
         unrelated_database = content.resolve(unrelated.id, PROJECT_DB_RELATIVE)
         with transaction(
@@ -374,23 +391,27 @@ async def exercise() -> None:
             "session-1", "client-turn-pdf-structural", TurnOutcome.COMPLETED
         )
         pdf_kinds = review_kinds(store, pdf_structural)
-        moved_pdf_history = versions.history(project.id, "resources/agent-target.pdf")
-        moved_pdf_records = annotations.snapshot(project.id, "resources/agent-target.pdf")
+        moved_pdf_history = versions.history(project.id, "resources/agent-source.pdf")
+        moved_pdf_records = annotations.snapshot_asset(
+            project.id, source_empty.record_target.subject_id
+        )
         deleted_pdf_history = versions.history(project.id, "resources/agent-deleted.pdf")
+        moved_pdf_pending = store.pending(source_v1.file_id)
+        deleted_pdf_pending = store.pending(deleted_v1.file_id)
         check(
-            "successful Agent PDF move carries stable records into its candidate",
-            pdf_kinds.get("resources/agent-target.pdf") == "move"
+            "successful Agent PDF move creates no review and retains version and record history",
+            not pdf_kinds
             and moved_pdf_records.record_target.subject_id == source_empty.record_target.subject_id
             and moved_pdf_records.records["comments"]
             == pdf_records(6, "follow Agent move")["comments"]
             and moved_pdf_history[0].file_id == source_v1.file_id
-            and store.pending(source_v1.file_id).review.candidate.annotation_object_id is None
+            and (moved_pdf_pending is None or not moved_pdf_pending.needs_review)
             and moved_pdf_history[0].annotation_object_id is None,
         )
         check(
-            "successful Agent PDF delete keeps record history",
-            pdf_kinds.get("resources/agent-deleted.pdf") == "delete"
-            and store.pending(deleted_v1.file_id).review.candidate.state is FileState.TOMBSTONE
+            "successful Agent PDF delete creates no review and keeps record history",
+            not pdf_structural.review_ids
+            and (deleted_pdf_pending is None or not deleted_pdf_pending.needs_review)
             and deleted_pdf_history[0].id == deleted_v1.id
             and deleted_v1.annotation_object_id is None,
         )
@@ -429,13 +450,12 @@ async def exercise() -> None:
             project.id, failed_pdf_empty.record_target.subject_id
         )
         check(
-            "failed Agent PDF move preserves candidate records with the stable identity",
-            failed_pdf_delivery.file_ids == (failed_pdf_v1.file_id,)
-            and failed_pdf_records.source_state == AssetState.AVAILABLE.value
+            "failed Agent PDF move creates no review and preserves historical records",
+            not failed_pdf_delivery.file_ids
             and failed_pdf_records.records["comments"]
             == pdf_records(8, "failed turn keeps disk state")["comments"]
-            and len(versions.history(project.id, "resources/failed-target.pdf")) == 1
-            and versions.history(project.id, "resources/failed-target.pdf")[0].id
+            and len(versions.history(project.id, "resources/failed-source.pdf")) == 1
+            and versions.history(project.id, "resources/failed-source.pdf")[0].id
             == failed_pdf_v1.id,
         )
 
@@ -444,7 +464,10 @@ async def exercise() -> None:
         await deliveries.begin_turn("session-bound", "client-bound", project.root)
         await deliveries.bind_turn("session-bound", "client-bound", "vendor-bound", "generation-1")
         bound.write_text("after binding\n", encoding="utf-8")
-        rebound = ResourceDeliveryService(content, versions, supervisor)
+        rebound = ResourceDeliveryService(
+            content, versions, supervisor, activities=supervisor._activities
+        )
+        rebound.recover_project(project.id, project.root)
         await rebound.record_change(
             "session-bound", "vendor-bound", str(bound), "update", generation="generation-0"
         )
@@ -496,7 +519,11 @@ async def exercise() -> None:
             )
             result = await deliveries.finish_turn("scan-session", client, outcome)
             rebuilt = ResourceVersionSupervisor(
-                content, versions, WorkbenchFormatPolicy(), settings
+                content,
+                versions,
+                WorkbenchFormatPolicy(),
+                settings,
+                activities=Activities(),
             )
             rebuilt.scan_project(fenced.id)
             history = versions.history(fenced.id, path)
@@ -657,7 +684,9 @@ async def exercise() -> None:
         opaque_delete.unlink()
         opaque_move_source.rename(opaque_move_target)
         opaque_create.write_bytes(b"created by command\n")
-        opaque_restarted = ResourceDeliveryService(content, versions, supervisor)
+        opaque_restarted = ResourceDeliveryService(
+            content, versions, supervisor, activities=supervisor._activities
+        )
         opaque_result = await opaque_restarted.finish_turn(
             "opaque-session", "opaque-client", TurnOutcome.COMPLETED
         )

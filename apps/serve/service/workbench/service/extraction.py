@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import re
-import sys
 from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
 from io import BytesIO
 from itertools import groupby
 from statistics import median
+from typing import cast
 
 import pdfplumber
 from pdfplumber.page import Page
@@ -26,7 +26,7 @@ from service.platform.citations import (
     PdfSpan,
     PdfVisualRegion,
 )
-from service.platform.pdf import pdf_image_bounds
+from service.platform.pdf import PdfRect, pdf_image_bounds
 from service.workbench.service.fonts import GlyphResourceManager
 from service.workbench.service.layout import classify
 from service.workbench.service.sentences import TRUNCATED, SentenceBlock, assemble, sentence_ends
@@ -47,6 +47,7 @@ TEXT_LINE_KIND = "textlinehorizontal"
 REVISION_PREFIX = "sha256:"
 START_PAGE_OPTION = "--start-page"
 END_PAGE_OPTION = "--end-page"
+PARSER_ENCODING = "utf-8"
 UNDECODED_CHARACTER = re.compile(r"\(cid:\d+\)|\ufffd")
 POSITIONED_WORD = re.compile(r"\S+")
 CJK_CHARACTER = re.compile(
@@ -138,8 +139,12 @@ def _page_geometry(bounds: tuple, viewport: tuple, page: int, rotation: int = 0)
     return CitationPage(
         page,
         (
-            tuple(
-                round(max(0.0, min(1.0, value)), COORDINATE_PRECISION) for value in (x0, y0, x1, y1)
+            cast(
+                tuple[float, float, float, float],
+                tuple(
+                    round(max(0.0, min(1.0, value)), COORDINATE_PRECISION)
+                    for value in (x0, y0, x1, y1)
+                ),
             ),
         ),
     )
@@ -158,14 +163,17 @@ def _fragment(
     left, top, right, bottom = bounds
     width, height = right - left, bottom - top
     quads = tuple(
-        tuple(
-            round(value, COORDINATE_PRECISION)
-            for value in (
-                max(0.0, (min(char["x0"] for char in chars) - left) / width),
-                max(0.0, (min(char["top"] for char in chars) - top) / height),
-                min(1.0, (max(char["x1"] for char in chars) - left) / width),
-                min(1.0, (max(char["bottom"] for char in chars) - top) / height),
-            )
+        cast(
+            tuple[float, float, float, float],
+            tuple(
+                round(value, COORDINATE_PRECISION)
+                for value in (
+                    max(0.0, (min(char["x0"] for char in chars) - left) / width),
+                    max(0.0, (min(char["top"] for char in chars) - top) / height),
+                    min(1.0, (max(char["x1"] for char in chars) - left) / width),
+                    min(1.0, (max(char["bottom"] for char in chars) - top) / height),
+                )
+            ),
         )
         for chars in lines.values()
     )
@@ -177,14 +185,17 @@ def _fragment(
             if anchor is not None:
                 positioned.setdefault(anchor[0], []).append(anchor[1])
         for chars in positioned.values():
-            quad = tuple(
-                round(coordinate, COORDINATE_PRECISION)
-                for coordinate in (
-                    max(0.0, (min(char["x0"] for char in chars) - left) / width),
-                    max(0.0, (min(char["top"] for char in chars) - top) / height),
-                    min(1.0, (max(char["x1"] for char in chars) - left) / width),
-                    min(1.0, (max(char["bottom"] for char in chars) - top) / height),
-                )
+            quad = cast(
+                tuple[float, float, float, float],
+                tuple(
+                    round(coordinate, COORDINATE_PRECISION)
+                    for coordinate in (
+                        max(0.0, (min(char["x0"] for char in chars) - left) / width),
+                        max(0.0, (min(char["top"] for char in chars) - top) / height),
+                        min(1.0, (max(char["x1"] for char in chars) - left) / width),
+                        min(1.0, (max(char["bottom"] for char in chars) - top) / height),
+                    )
+                ),
             )
             spans.append(PdfSpan(word.start(), word.end(), page, quad))
     return (
@@ -192,7 +203,15 @@ def _fragment(
     )
 
 
-def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
+def extract(
+    payload: bytes,
+    start_page: int = 0,
+    end_page: int = 0,
+    *,
+    image_bounds: Callable[
+        [bytes, Sequence[int] | None], tuple[tuple[PdfRect, ...], ...]
+    ] = pdf_image_bounds,
+) -> PdfIndex:
     if len(payload) > MAX_DOCUMENT_BYTES:
         raise ValueError("pdf_too_large")
     if bool(start_page) != bool(end_page) or start_page < 0 or end_page < start_page:
@@ -205,7 +224,6 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
     visual_regions: list[PdfVisualRegion] = []
     native_regions: list[CitationPage] = []
     characters = 0
-    image_pages = pdf_image_bounds(payload)
     with pdfplumber.open(BytesIO(payload), laparams=LAYOUT_PARAMETERS) as pdf:
         pdf.rsrcmgr = GlyphResourceManager()
         if len(pdf.pages) > MAX_DOCUMENT_PAGES:
@@ -215,6 +233,7 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
         last_page = end_page or page_count
         if first_page < 1 or last_page > page_count:
             raise ValueError("pdf_page_range_invalid")
+        image_pages = image_bounds(payload, tuple(range(first_page, last_page + 1)))
         for original in pdf.pages[first_page - 1 : last_page]:
             rotation = original.rotation
             # Read in native page orientation; rotate normalized CropBox coordinates
@@ -241,7 +260,7 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
                     image.x1 + bounds[0],
                     image.bottom + bounds[1],
                 )
-                for image in image_pages[page.page_number - 1]
+                for image in image_pages[page.page_number - first_page]
             )
             layout = classify(page, chars, images=images)
             excluded = {ordinal for ordinal, char in enumerate(chars) if layout.omitted(char)}
@@ -472,27 +491,3 @@ def rotate_quad(quad: tuple, rotation: int) -> tuple:
     for _ in range((rotation % FULL_TURN) // QUARTER_TURN):
         x0, y0, x1, y1 = 1 - y1, x0, 1 - y0, x1
     return x0, y0, x1, y1
-
-
-def main() -> int:
-    try:
-        parser = argparse.ArgumentParser()
-        parser.add_argument(START_PAGE_OPTION, type=int, default=0)
-        parser.add_argument(END_PAGE_OPTION, type=int, default=0)
-        arguments = parser.parse_args()
-        result = extract(
-            sys.stdin.buffer.read(MAX_DOCUMENT_BYTES + 1),
-            start_page=arguments.start_page,
-            end_page=arguments.end_page,
-        )
-        print(json.dumps({"ok": True, "index": asdict(result)}, ensure_ascii=False))
-        return 0
-    except Exception as error:
-        # Process boundary: malformed parser input must not terminate Serve. Preserve
-        # an explicit failed result; no partial index is published as success.
-        print(json.dumps({"ok": False, "error": f"pdf_parse_failed:{type(error).__name__}"}))
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

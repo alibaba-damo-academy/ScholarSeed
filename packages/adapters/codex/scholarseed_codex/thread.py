@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
-from collections.abc import Callable
+import random
+import sys
+import uuid
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from scholarseed_codex.mcp import CodexMcpControl
-from scholarseed_codex.model import CodexModelControl
-from scholarseed_codex.permission import sandbox_policy
+from scholarseed_codex.control import CodexRuntimeControl
+from scholarseed_codex.mcp import MCP_STATUS_LIST_METHOD, CodexMcpControl
+from scholarseed_codex.permission import (
+    PERMISSION_SCOPE_SESSION,
+    WINDOWS_PLATFORM,
+    PermissionUpdate,
+    sandbox_policy,
+)
 from scholarseed_codex.pool import CodexHostPool, HostLease
 from scholarseed_codex.process import CodexProcessHost
 from scholarseed_codex.protocol.mcp import JsonValue, McpEvent
@@ -24,17 +35,28 @@ from scholarseed_codex.protocol.session import (
 from scholarseed_codex.protocol.state import (
     CODEX_APP_SERVER_LISTEN,
     CODEX_DEFAULT_SANDBOX_MODE,
+    CODEX_RECOVERY_BACKOFF_MULTIPLIER,
     CODEX_RUNTIME_ID,
     CODEX_SANDBOX_MODES,
+    CODEX_SUBMISSION_RETRY_EXPIRED,
+    CODEX_SUBMISSION_RETRY_STALE,
+    CODEX_TRANSIENT_SUBMISSION_ERRORS,
     AppServerError,
+    logger,
     normalized_roots,
 )
-from scholarseed_codex.skill import CodexSkillControl
 from scholarseed_runtime.contract.evidence import RuntimeProcessEvent, RuntimeRpcEvidence
 from scholarseed_runtime.contract.history import HistoryEntry, ResumeTurnSnapshot
-from scholarseed_runtime.contract.input import TurnInput
+from scholarseed_runtime.contract.incident import (
+    RuntimeIncidentKind,
+    RuntimeIncidentState,
+    RuntimeRetryability,
+)
+from scholarseed_runtime.contract.input import SubmissionRetry, TurnInput
+from scholarseed_runtime.contract.resource import RESOURCE_HOST_CONTEXT_REQUIRED
 
 CODEX_MODEL_PROVIDER_CAPABILITIES_METHOD = "modelProvider/capabilities/read"
+CODEX_THREAD_RESTORE_FAILED = "codex_thread_restore_failed"
 
 
 def _json_int(value: JsonValue | None) -> int:
@@ -87,11 +109,12 @@ class CodexThreadSession:
         self._lease = lease
         self._host = lease.host if lease is not None else host
         self._host_pool = host_pool or CodexHostPool()
+        self._owns_pool = host_pool is None and lease is None and host is None
         self._pooled_host = host is None
         self._opened = False
+        self.submission_deadline = 0.0
+        self.submission_attempts = 0
         self.mcp_control: CodexMcpControl | None = None
-        self.skill_control: CodexSkillControl | None = None
-        self.model_control: CodexModelControl | None = None
         self._mcp_unsubscribe: Callable[[], None] | None = None
 
     @property
@@ -143,15 +166,18 @@ class CodexThreadSession:
             self._mcp_unsubscribe()
             self._mcp_unsubscribe = None
         if self._lease is not None:
+            retain = bool(self.request.process_sharing_scope) and sys.platform != WINDOWS_PLATFORM
             if retry:
-                await self._lease.retry_close(expected_generation=expected_generation)
+                await self._lease.retry_close(
+                    expected_generation=expected_generation, retain=retain
+                )
             else:
-                await self._lease.close(safe=True, expected_generation=expected_generation)
+                await self._lease.close(
+                    safe=True, expected_generation=expected_generation, retain=retain
+                )
             self._lease = None
         self._host = None
         self.mcp_control = None
-        self.skill_control = None
-        self.model_control = None
 
     async def open(self) -> None:
         if self._opened:
@@ -160,27 +186,57 @@ class CodexThreadSession:
             self._lease = await self._host_pool.acquire(self.request)
             self._host = self._lease.host
         try:
-            self.session_id, self.model, self._history = await self.host.open_thread(
-                self.request,
-                self._on_event,
-            )
-            self.mcp_control = CodexMcpControl(
-                request=self._thread_request,
-                session_id=lambda: self.session_id,
-            )
-            self._mcp_unsubscribe = self.mcp_control.subscribe(self._on_mcp_event)
-            self.host.set_mcp_handler(self.session_id, self.mcp_control.handle_notification)
-            self.skill_control = CodexSkillControl(
-                request=self.host.request,
-                cwd=self.request.cwd,
-            )
-            self.model_control = CodexModelControl(request=self.host.request)
-            self._opened = True
+            await self._attach()
         except BaseException:
             if self._lease is not None:
                 await self._lease.close()
                 self._lease = None
                 self._host = None
+            if self._owns_pool:
+                await self._host_pool.aclose()
+            raise
+
+    async def _attach(self) -> None:
+        self.session_id, self.model, self._history = await self.host.open_thread(
+            self.request,
+            self._on_event,
+        )
+        self.mcp_control = CodexMcpControl(
+            request=self._thread_request,
+            session_id=lambda: self.session_id,
+            admission=self.host.admission,
+            reload_configuration=(
+                self._host_pool.reload_mcp if self._host_pool.mcp_configuration_enabled else None
+            ),
+        )
+        self._mcp_unsubscribe = self.mcp_control.subscribe(self._on_mcp_event)
+        self.host.set_mcp_handler(
+            self.session_id, self.mcp_control.handle_notification, self.mcp_control.invalidate
+        )
+        self._opened = True
+
+    async def reopen(self, request: CodexSessionOpenRequest) -> None:
+        if not self._opened or self._lease is None or request.resume_session_id != self.session_id:
+            raise AppServerError("Codex thread cannot be reopened in place")
+        await self.host.suspend_thread(self.session_id, self.host.process_generation)
+        if self._mcp_unsubscribe is not None:
+            self._mcp_unsubscribe()
+            self._mcp_unsubscribe = None
+        self._opened = False
+        self.mcp_control = None
+        previous_request = replace(self.request, resume_session_id=self.session_id)
+        self.request = request
+        try:
+            await self._attach()
+        except BaseException:
+            self.request = previous_request
+            try:
+                await self._attach()
+            except BaseException as restore_error:
+                raise AppServerError(
+                    "Codex thread could not restore its previous configuration",
+                    safe_error=CODEX_THREAD_RESTORE_FAILED,
+                ) from restore_error
             raise
 
     async def model_provider_capabilities(self) -> Mapping[str, JsonValue]:
@@ -208,8 +264,28 @@ class CodexThreadSession:
         )
 
     async def _thread_request(self, method: str, params: Any) -> dict[str, Any]:
-        await self.host.ensure_attached(self.session_id)
-        return await self.host.request(method, params)
+        if method == MCP_STATUS_LIST_METHOD:
+            async with self.inventory_control() as control:
+                async with control.reading():
+                    await self.host.ensure_attached(self.session_id)
+                    return await control.request(method, params)
+        generation = await self.host.ensure_attached(self.session_id)
+        return await self.host.request(method, params, generation=generation)
+
+    @asynccontextmanager
+    async def inventory_control(self) -> AsyncIterator[CodexRuntimeControl]:
+        if self._lease is None or not self._opened:
+            raise AppServerError(
+                RESOURCE_HOST_CONTEXT_REQUIRED, safe_error=RESOURCE_HOST_CONTEXT_REQUIRED
+            )
+        control = CodexRuntimeControl(
+            cwd=self.request.cwd, lease=self._lease, host_pool=self._host_pool
+        )
+        await control.open()
+        try:
+            yield control
+        finally:
+            await control.aclose()
 
     async def _on_event(self, event: CodexSessionEvent) -> None:
         payload = dict(event.payload)
@@ -220,6 +296,15 @@ class CodexThreadSession:
             CodexSessionEventKind.TURN_FAILED,
             CodexSessionEventKind.TURN_INTERRUPTED,
         }:
+            self.active_turn_id = ""
+        elif (
+            event.kind == CodexSessionEventKind.TURN_UNKNOWN
+            and event.session_id == self.session_id
+            and event.turn_id == self.active_turn_id
+            and event.incident is not None
+            and event.incident.kind is RuntimeIncidentKind.PROCESS_EXIT
+            and event.incident.state is RuntimeIncidentState.DETECTED
+        ):
             self.active_turn_id = ""
         elif event.kind == CodexSessionEventKind.PLAN_UPDATED:
             raw_todos = payload.get("todos")
@@ -258,7 +343,163 @@ class CodexThreadSession:
 
     async def run(self, turn_input: TurnInput) -> CodexTurnResult:
         await self.open()
-        result = await self.host.attachment(self.session_id).turn.start(turn_input)
+        host = self.host
+        thread_id = self.session_id
+        state = host.attachment(thread_id)
+        turn = state.turn
+        revision = turn.submission_revision
+        request = self.request
+        native_request = state.request
+        model = state.model
+        roots = state.writable_roots
+        logical_input = replace(
+            turn_input, client_user_message_id=turn_input.client_user_message_id or uuid.uuid4().hex
+        )
+        deadline = min(
+            turn_input.submission_deadline or float("inf"),
+            asyncio.get_running_loop().time() + host.recovery_total_timeout,
+        )
+        self.submission_deadline = deadline
+        attempt = turn_input.submission_attempts
+        retry_guard: Callable[[], None] | None = None
+
+        def authorize_intent() -> None:
+            turn.check_submission_revision(revision)
+            if (
+                self.host is not host
+                or self.session_id != thread_id
+                or self.request is not request
+                or host.attachment(thread_id) is not state
+                or state.request is not native_request
+                or state.turn is not turn
+                or state.model != model
+                or state.writable_roots != roots
+            ):
+                raise AppServerError(
+                    CODEX_SUBMISSION_RETRY_STALE,
+                    safe_error=CODEX_SUBMISSION_RETRY_STALE,
+                    submission_not_applied=True,
+                )
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AppServerError(
+                    CODEX_SUBMISSION_RETRY_EXPIRED,
+                    safe_error=CODEX_SUBMISSION_RETRY_EXPIRED,
+                    submission_not_applied=True,
+                )
+
+        while True:
+            if attempt >= host.max_recovery_attempts:
+                raise AppServerError(
+                    CODEX_SUBMISSION_RETRY_EXPIRED,
+                    safe_error=CODEX_SUBMISSION_RETRY_EXPIRED,
+                    submission_not_applied=True,
+                )
+            attempt += 1
+            self.submission_attempts = attempt
+            turn.check_submission_revision(revision)
+            try:
+                result = await turn.start(
+                    logical_input, before_write=retry_guard, deadline=deadline
+                )
+                break
+            except AppServerError as error:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if (
+                    not error.submission_not_applied
+                    or error.safe_error not in CODEX_TRANSIENT_SUBMISSION_ERRORS
+                    or error.retryability is not RuntimeRetryability.USER_RETRYABLE
+                    or error.rpc_code is not None
+                    or attempt >= host.max_recovery_attempts
+                    or remaining <= 0
+                ):
+                    raise
+                authorize_intent()
+                logger.info(
+                    "codex_submission_retry thread_id=%s client_submission_id=%s attempt=%s max_attempts=%s safe_error=%s generation=%s",
+                    thread_id,
+                    logical_input.client_user_message_id,
+                    attempt + 1,
+                    host.max_recovery_attempts,
+                    error.safe_error,
+                    error.generation,
+                )
+                delay = min(
+                    host.recovery_initial_delay
+                    * CODEX_RECOVERY_BACKOFF_MULTIPLIER ** (attempt - 1),
+                    host.recovery_max_delay,
+                )
+                jitter = delay * host.recovery_jitter_ratio
+                delay = min(max(0.0, delay + random.uniform(-jitter, jitter)), remaining)
+                await turn.wait_submission_retry(revision, delay)
+
+                async def prepare_retry(
+                    failed_generation: int = error.generation, current_attempt: int = attempt
+                ) -> Callable[[], None]:
+                    guard = await host.prepare_submission_retry(
+                        thread_id, logical_input.client_user_message_id
+                    )
+
+                    def product_current() -> bool:
+                        return True
+
+                    if logical_input.retry_observer is not None:
+                        product_current = await logical_input.retry_observer(
+                            SubmissionRetry(
+                                failed_generation,
+                                host.process_generation,
+                                deadline,
+                                current_attempt,
+                            )
+                        )
+
+                    def authorize() -> None:
+                        guard()
+                        if not product_current():
+                            raise AppServerError(
+                                CODEX_SUBMISSION_RETRY_STALE,
+                                safe_error=CODEX_SUBMISSION_RETRY_STALE,
+                            )
+
+                    return authorize
+
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        authorize_intent()
+                        native_guard = await turn.prepare_submission_retry(
+                            prepare_retry(),
+                            revision,
+                            deadline,
+                        )
+                        authorize_intent()
+                except TimeoutError:
+                    raise error
+                except Exception as gate_error:
+                    unknown = bool(
+                        turn.active_turn_id
+                        or turn.ambiguous_submission_id
+                        or turn.interrupted_turn_id
+                    )
+                    raise AppServerError(
+                        "Codex submission retry was not admitted",
+                        safe_error=(
+                            gate_error.safe_error
+                            if isinstance(gate_error, AppServerError)
+                            else CODEX_SUBMISSION_RETRY_STALE
+                        ),
+                        generation=host.process_generation,
+                        retryability=(
+                            RuntimeRetryability.UNKNOWN_OUTCOME
+                            if unknown
+                            else RuntimeRetryability.USER_RETRYABLE
+                        ),
+                        submission_not_applied=not unknown,
+                    ) from gate_error
+
+                def authorize_retry(guard: Callable[[], None] = native_guard) -> None:
+                    authorize_intent()
+                    guard()
+
+                retry_guard = authorize_retry
         self.active_turn_id = ""
         self.usage = {
             "input_tokens": result.usage.input_tokens,
@@ -271,6 +512,15 @@ class CodexThreadSession:
     async def steer(self, turn_input: TurnInput) -> str:
         await self.open()
         return await self.host.attachment(self.session_id).turn.steer(turn_input)
+
+    async def update_permissions(self, request: CodexSessionOpenRequest) -> PermissionUpdate:
+        applied = PermissionUpdate(PERMISSION_SCOPE_SESSION)
+        if self._opened:
+            applied = await self.host.update_permissions(self.session_id, request)
+        self.request = request
+        self.sandbox = request.sandbox
+        self.approval_policy = request.approval_policy
+        return applied
 
     async def resolve_hil(
         self,
@@ -299,13 +549,12 @@ class CodexThreadSession:
     async def set_writable_roots(self, roots: tuple[Path, ...]) -> None:
         """替换额外可写根 (`SurfaceWritableRootsPort`)。下一个 turn 生效。
 
-        会话还没开出 thread 时静默无操作: 真正的初始值由
-        `CodexSessionOpenRequest.writable_roots` 带进去, 不在这里补。
+        未打开时更新初始请求，已打开时同时更新 attachment 的下一轮请求。
         """
 
-        if not self.session_id:
-            return
-        await self.host.set_writable_roots(self.session_id, roots)
+        if self.session_id:
+            await self.host.set_writable_roots(self.session_id, roots)
+        self.request = replace(self.request, writable_roots=roots)
 
     async def aclose(self) -> None:
         if self._mcp_unsubscribe is not None:
@@ -313,18 +562,20 @@ class CodexThreadSession:
             self._mcp_unsubscribe = None
         host = self._host
         if host is None:
+            if self._owns_pool:
+                await self._host_pool.aclose()
             return
         if self._opened:
             await host.close_thread(self.session_id)
         self._opened = False
         self.session_id = ""
         self.mcp_control = None
-        self.skill_control = None
-        self.model_control = None
         if self._lease is not None:
             await self._lease.close()
             self._lease = None
             self._host = None
+        if self._owns_pool:
+            await self._host_pool.aclose()
 
 
 __all__ = ["CodexThreadSession"]

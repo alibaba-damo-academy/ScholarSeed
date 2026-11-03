@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import replace
 from hashlib import md5, sha256
 from pathlib import Path
@@ -17,11 +19,19 @@ from fastapi.testclient import TestClient
 
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
-from service.literature.api.routes import register_literature_routes
-from service.literature.domain.model import LIBRARY_INVALID, LiteratureError
+from service.literature.api.catalogue import (
+    EXPORT_TOO_MANY_ITEMS,
+    FACET_ENTRIES_LIMIT,
+    register_global_routes,
+)
+from service.literature.domain.model import (
+    LIBRARY_INVALID,
+    MAX_BATCH_RECORDS,
+    LiteratureError,
+)
 from service.literature.persistence import files as literature_files
+from service.literature.persistence import store as persistence
 from service.literature.persistence.store import (
-    DDL,
     LiteratureRepository,
     connect,
     edit_library,
@@ -37,7 +47,10 @@ from service.literature.schema import (
     LiteratureNote,
     LiteratureView,
 )
+from service.persistence.project import DatabaseBindingError
+from service.platform.activity import Activities
 from service.platform.citations import PDF_INDEX_STATE
+from service.platform.storage import filesystem_path
 
 
 class LiteratureStoreTests(unittest.TestCase):
@@ -47,7 +60,7 @@ class LiteratureStoreTests(unittest.TestCase):
         root = Path(self.temporary.name)
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(root), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = self.content.create_project("事务文献库")
         self.other_project = self.content.create_project("另一个项目")
         self.database = root / "literature.sqlite3"
@@ -66,7 +79,7 @@ class LiteratureStoreTests(unittest.TestCase):
         )
         repository_patch.start()
         self.addCleanup(repository_patch.stop)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("DELETE FROM literature_items")
             connection.execute("UPDATE literature_collections SET parent_id=NULL")
             connection.execute("DELETE FROM literature_collections")
@@ -84,13 +97,300 @@ class LiteratureStoreTests(unittest.TestCase):
         with edit_library(self.project.id) as edit:
             edit.view = LiteratureView(items=(self.item,))
 
+    def legacy_column_database(self) -> Path:
+        database = Path(self.temporary.name) / "legacy-columns.sqlite3"
+        with closing(sqlite3.connect(database)) as connection, connection:
+            for statement in persistence.DDL:
+                if statement.startswith("CREATE TABLE IF NOT EXISTS literature_items("):
+                    connection.execute(statement.replace("arxiv TEXT NOT NULL DEFAULT '',", ""))
+                    connection.execute(
+                        "ALTER TABLE literature_items ADD COLUMN arxiv TEXT NOT NULL DEFAULT ''"
+                    )
+                elif statement.startswith("CREATE TABLE IF NOT EXISTS literature_collections("):
+                    connection.execute(
+                        "CREATE TABLE literature_collections(id TEXT PRIMARY KEY,"
+                        "name TEXT NOT NULL COLLATE NOCASE UNIQUE,"
+                        "parent_id TEXT REFERENCES literature_collections(id) ON DELETE RESTRICT,"
+                        "created_at REAL NOT NULL)"
+                    )
+                    connection.execute(
+                        "ALTER TABLE literature_collections ADD COLUMN project_id TEXT"
+                    )
+                else:
+                    connection.execute(statement)
+            connection.execute(
+                "INSERT INTO literature_items"
+                "(id,item_type,bib_type,title,doi,arxiv,isbn,created_at,updated_at) "
+                "VALUES('kept','document','misc','Kept','doi-kept','arxiv-kept','isbn-kept',1,2)"
+            )
+            connection.execute(
+                "INSERT INTO literature_collections(id,name,parent_id,created_at,project_id) "
+                "VALUES('root','Kept',NULL,1,NULL),('child','Child','root',2,NULL)"
+            )
+            connection.execute("INSERT INTO literature_collection_items VALUES('child','kept')")
+            connection.execute("INSERT INTO literature_projects VALUES('project','kept',1)")
+            connection.execute(
+                "INSERT INTO literature_notes VALUES('note','kept','kept text',1,'Note',2,3,4)"
+            )
+            connection.execute(
+                "INSERT INTO literature_attachments VALUES"
+                "('attachment','kept','Kept.pdf','kept.pdf','revision','pdf','primary',"
+                "'application/pdf',1)"
+            )
+            connection.execute("CREATE INDEX literature_kept_doi ON literature_items(doi)")
+        return database
+
+    def test_legacy_column_order_inspection_is_read_only(self) -> None:
+        database = self.legacy_column_database()
+        with closing(sqlite3.connect(database)) as connection:
+            before = tuple(connection.iterdump())
+        schema = persistence.inspect_schema(database)
+        self.assertTrue(schema.needs_write)
+        self.assertEqual(schema.repair_tables, ("literature_items", "literature_collections"))
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_legacy_column_repair_preserves_rows_relations_and_indexes(self) -> None:
+        database = self.legacy_column_database()
+        with closing(sqlite3.connect(database)) as connection:
+            connection.row_factory = sqlite3.Row
+            tables = [
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            ]
+            before = {
+                table: [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"')]
+                for table in tables
+            }
+        with closing(connect(database)) as connection:
+            self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            for table, rows in before.items():
+                self.assertEqual(
+                    [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"')], rows
+                )
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='literature_kept_doi'"
+                ).fetchone()
+            )
+            self.assertFalse(persistence.classify_schema(connection).needs_write)
+        repository = LiteratureRepository(database)
+        self.assertEqual(repository.get("kept").arxiv, "arxiv-kept")
+        self.assertEqual(repository.get("kept").isbn, "isbn-kept")
+        repository.create_collection("Kept", project_id="another-project")
+        with patch.object(
+            persistence, "rebuild_table", side_effect=AssertionError("repeat repair")
+        ):
+            with closing(connect(database)) as connection:
+                self.assertFalse(persistence.classify_schema(connection).needs_write)
+
+    def test_legacy_column_repair_failure_rolls_back_every_table(self) -> None:
+        database = self.legacy_column_database()
+        with closing(sqlite3.connect(database)) as connection:
+            before = tuple(connection.iterdump())
+        rebuild = persistence.rebuild_table
+
+        def fail_after_repair(connection, table, create):
+            rebuild(connection, table, create)
+            if table == "literature_collections":
+                raise OSError("after real collection repair")
+
+        with patch.object(persistence, "rebuild_table", side_effect=fail_after_repair):
+            with self.assertRaisesRegex(OSError, "collection repair"):
+                connect(database)
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_unknown_collection_constraint_is_not_repaired(self) -> None:
+        database = self.legacy_column_database()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DROP TABLE literature_collections")
+            connection.execute(
+                "CREATE TABLE literature_collections(id TEXT PRIMARY KEY,"
+                "name TEXT NOT NULL COLLATE BINARY UNIQUE,"
+                "parent_id TEXT REFERENCES literature_collections(id) ON DELETE RESTRICT,"
+                "created_at REAL NOT NULL,project_id TEXT)"
+            )
+            before = tuple(connection.iterdump())
+        with self.assertRaises(LiteratureError):
+            connect(database)
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_unknown_legacy_index_is_rejected_without_removal(self) -> None:
+        for name in (
+            "literature_global_collection_names",
+            "literature_project_collection_names",
+        ):
+            for definition in (
+                "CREATE UNIQUE INDEX {name} ON external_owner(value)",
+                "CREATE INDEX {name} ON literature_collections(name COLLATE NOCASE) WHERE project_id IS NULL",
+                "CREATE UNIQUE INDEX {name} ON literature_collections(id)",
+                "CREATE UNIQUE INDEX {name} ON literature_collections(name COLLATE BINARY) WHERE project_id IS NULL",
+            ):
+                with self.subTest(name=name, definition=definition):
+                    with closing(sqlite3.connect(self.database)) as connection, connection:
+                        connection.execute("CREATE TABLE IF NOT EXISTS external_owner(value TEXT)")
+                        connection.execute(definition.format(name=name))
+                        before = tuple(connection.iterdump())
+                    try:
+                        with self.assertRaises(LiteratureError):
+                            connect(self.database).close()
+                        with closing(sqlite3.connect(self.database)) as connection:
+                            self.assertEqual(tuple(connection.iterdump()), before)
+                    finally:
+                        with closing(sqlite3.connect(self.database)) as connection, connection:
+                            connection.execute(f"DROP INDEX IF EXISTS {name}")
+
+    def test_known_legacy_collection_indexes_are_replaced(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                "CREATE UNIQUE INDEX literature_global_collection_names ON literature_collections(name COLLATE NOCASE) WHERE project_id IS NULL"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX literature_project_collection_names ON literature_collections(project_id,name COLLATE NOCASE) WHERE project_id IS NOT NULL"
+            )
+            connection.execute(
+                "INSERT INTO literature_collections VALUES ('kept','Kept',NULL,NULL,1)"
+            )
+        with closing(connect(self.database)) as connection:
+            names = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")
+            }
+            self.assertNotIn("literature_global_collection_names", names)
+            self.assertNotIn("literature_project_collection_names", names)
+            self.assertIn("literature_collection_sibling_names", names)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT name FROM literature_collections WHERE id='kept'"
+                ).fetchone()[0],
+                "Kept",
+            )
+
+    def assert_connection_closed(self, connection: sqlite3.Connection) -> None:
+        with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed"):
+            connection.execute("SELECT 1")
+
+    def test_owned_connections_close_after_write_read_and_early_return(self) -> None:
+        repository = LiteratureRepository(self.database)
+        # Strong references make this independent of CPython garbage collection.
+        for operation in (
+            lambda: repository.save(self.item),
+            repository.list,
+            repository.view,
+            lambda: repository.delete_note("missing", "missing"),
+        ):
+            connection = connect(self.database)
+            self.addCleanup(connection.close)
+            with patch("service.literature.persistence.store.connect", return_value=connection):
+                operation()
+            self.assert_connection_closed(connection)
+        self.assertEqual(repository.get(self.item.id).title, self.item.title)
+
+    def test_owned_connection_rolls_back_and_closes_after_business_error(self) -> None:
+        repository = LiteratureRepository(self.database)
+        connection = connect(self.database)
+        self.addCleanup(connection.close)
+        save = repository._save
+
+        def fail_after_write(*args):
+            save(*args)
+            raise ValueError("injected_after_write")
+
+        with patch("service.literature.persistence.store.connect", return_value=connection):
+            with patch.object(repository, "_save", side_effect=fail_after_write):
+                with self.assertRaisesRegex(ValueError, "injected_after_write"):
+                    repository.save(self.item)
+        self.assert_connection_closed(connection)
+        self.assertIsNone(repository.get(self.item.id))
+
+    def test_owned_connection_closes_when_sqlite_rejects_commit(self) -> None:
+        connection = connect(self.database)
+        self.addCleanup(connection.close)
+        connection.set_authorizer(
+            lambda action, argument, *_: (
+                sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_TRANSACTION and argument == "COMMIT"
+                else sqlite3.SQLITE_OK
+            )
+        )
+        repository = LiteratureRepository(self.database)
+        with patch("service.literature.persistence.store.connect", return_value=connection):
+            with self.assertRaises(sqlite3.DatabaseError):
+                repository.save(self.item)
+        self.assert_connection_closed(connection)
+        self.assertIsNone(repository.get(self.item.id))
+
+    def test_initialization_failure_closes_connection_without_discarding_data(self) -> None:
+        LiteratureRepository(self.database).save(self.item)
+        sqlite_connect = sqlite3.connect
+        for stage in ("pragma", "_migrate_notes", "_require_final_schema"):
+            with self.subTest(stage=stage):
+                if stage == "_migrate_notes":
+                    with closing(sqlite_connect(self.database)) as setup, setup:
+                        setup.execute("DROP INDEX literature_primary_attachment")
+                connection = sqlite3.connect(self.database)
+                self.addCleanup(connection.close)
+                if stage == "pragma":
+                    connection.set_authorizer(
+                        lambda action, *_: (
+                            sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_PRAGMA
+                            else sqlite3.SQLITE_OK
+                        )
+                    )
+                    failure = sqlite3.DatabaseError
+                    stage_patch = nullcontext()
+                else:
+                    failure = RuntimeError
+                    original = getattr(persistence, stage)
+
+                    def fail_owned(current, connection=connection, original=original):
+                        if current is connection:
+                            raise RuntimeError("injected_initialization_failure")
+                        return original(current)
+
+                    stage_patch = patch(
+                        f"service.literature.persistence.store.{stage}",
+                        side_effect=fail_owned,
+                    )
+
+                def open_connection(database, *args, connection=connection, **kwargs):
+                    if database == self.database:
+                        return connection
+                    return sqlite_connect(database, *args, **kwargs)
+
+                with (
+                    patch.object(persistence, "open_database", side_effect=open_connection),
+                    stage_patch,
+                ):
+                    with self.assertRaises(failure):
+                        connect(self.database)
+                self.assert_connection_closed(connection)
+                self.assertEqual(
+                    LiteratureRepository(self.database).get(self.item.id).title, self.item.title
+                )
+
+    def test_borrowed_connection_remains_owned_by_caller(self) -> None:
+        repository = LiteratureRepository(self.database)
+        with closing(connect(self.database)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            repository.save(self.item, connection=connection)
+            self.assertEqual(repository.view(connection=connection).items[0].id, self.item.id)
+            self.assertTrue(connection.in_transaction)
+            connection.rollback()
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertIsNone(repository.get(self.item.id))
+
     def test_empty_read_initializes_one_user_level_database(self) -> None:
         self.assertEqual(load_library(self.project.id), LiteratureView())
         self.assertTrue(self.database.is_file())
 
     def test_fresh_database_creates_the_complete_schema(self) -> None:
         database = Path(self.temporary.name) / "fresh.sqlite3"
-        with connect(database) as connection:
+        with closing(connect(database)) as connection, connection:
             item_columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(literature_items)")
             }
@@ -143,7 +443,7 @@ class LiteratureStoreTests(unittest.TestCase):
         repository = LiteratureRepository(self.database)
         repository.save_all((self.item,))
 
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             attachment_columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(literature_attachments)")
             }
@@ -155,13 +455,13 @@ class LiteratureStoreTests(unittest.TestCase):
     def test_attachment_schema_requires_revision_without_discarding_items(self) -> None:
         repository = LiteratureRepository(self.database)
         repository.save_all((self.item,))
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("ALTER TABLE literature_attachments DROP COLUMN revision")
 
         with self.assertRaisesRegex(LiteratureError, LIBRARY_INVALID):
             connect(self.database)
 
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             stored = connection.execute(
                 "SELECT title FROM literature_items WHERE id=?", (self.item.id,)
             ).fetchone()
@@ -179,7 +479,11 @@ class LiteratureStoreTests(unittest.TestCase):
             # 托管目录之外的路径归 Content 域管, 已经不存在的文件说明清理发生过:
             # 两种都安静跳过, 不能让一次删除因为别人家的文件而失败。
             literature_files.delete_attachments(
-                (str(managed), str(outside), str(root / "already-gone.pdf"))
+                (
+                    str(managed),
+                    str(outside),
+                    str(root / "already-gone.pdf"),
+                )
             )
 
         self.assertFalse(managed.exists())
@@ -311,6 +615,69 @@ class LiteratureStoreTests(unittest.TestCase):
             self.assertTrue(literature_files.is_available_attachment(str(outside)))
             self.assertTrue(literature_files.is_available_attachment(""))
 
+    def test_managed_owner_tokens_are_portable_bounded_and_collision_resistant(self) -> None:
+        payload = b"%PDF-1.4 portable"
+        identities = (
+            "arxiv:2609.10657v1",
+            "arxiv_2609.10657v1",
+            "paper<identifier>?*",
+            "文献" * 100,
+            "owner" * 100,
+        )
+        root = Path(self.temporary.name) / "files"
+        root.mkdir()
+        owners = set()
+        for identity in identities:
+            with self.subTest(identity=identity):
+                managed = literature_files.managed_object(identity, payload, ".pdf")
+                owner = managed.name.split("-", 1)[0]
+                self.assertEqual(owner, sha256(identity.encode("utf-8")).hexdigest())
+                self.assertNotIn(owner, owners)
+                owners.add(owner)
+                with literature_files.LiteratureFileBatch(root) as batch:
+                    batch.stage(managed.name, payload)
+                    batch.commit_operation(lambda: None)
+                with patch.object(literature_files, "SERVICE_LITERATURE_FILES_DIR", root):
+                    self.assertEqual(
+                        literature_files.read_attachment(str(root / managed.name)), payload
+                    )
+        for identity in ("../escape", "..\\escape", "", ".", "..", "owner\x00name"):
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                literature_files.managed_object(identity, payload, ".pdf")
+
+    def test_batch_long_paths_preserve_public_identity_commit_and_rollback(self) -> None:
+        payload = b"%PDF-1.4 long path"
+        root = Path(self.temporary.name) / ("nested-" * 10) / ("nested-" * 10) / "files"
+        filesystem_path(root).mkdir(parents=True)
+        name = literature_files.managed_object("arxiv:2609.10657v1", payload, ".pdf").name
+        destination = root / name
+        self.assertGreater(len(str(destination)), 314)
+        try:
+            with literature_files.LiteratureFileBatch(root) as batch:
+                self.assertEqual(batch.stage(name, payload), str(destination))
+                self.assertEqual(batch.commit_operation(lambda: "committed"), "committed")
+            with patch.object(literature_files, "SERVICE_LITERATURE_FILES_DIR", root):
+                self.assertEqual(literature_files.read_attachment(str(destination)), payload)
+                self.assertTrue(literature_files.is_available_attachment(str(destination)))
+                self.assertEqual(literature_files.attachment_size(str(destination)), len(payload))
+                literature_files.delete_attachments((str(destination),))
+            with self.assertRaisesRegex(RuntimeError, "catalogue failure"):
+                with literature_files.LiteratureFileBatch(root) as batch:
+                    batch.stage(name, payload)
+                    batch.commit_operation(lambda: self.fail_catalogue())
+            self.assertEqual(list(filesystem_path(root).iterdir()), [])
+            with self.assertRaisesRegex(RuntimeError, "before commit"):
+                with literature_files.LiteratureFileBatch(root) as batch:
+                    batch.stage(name, payload)
+                    raise RuntimeError("before commit")
+            self.assertEqual(list(filesystem_path(root).iterdir()), [])
+        finally:
+            shutil.rmtree(filesystem_path(root.parent.parent))
+
+    @staticmethod
+    def fail_catalogue() -> None:
+        raise RuntimeError("catalogue failure")
+
     def test_attachment_size_reports_the_on_disk_bytes_of_managed_files(self) -> None:
         """The row carries no size column, so the projection stats the real file.
 
@@ -372,7 +739,7 @@ class LiteratureStoreTests(unittest.TestCase):
         app.state.content = self.content
         indexes = Mock()
         setattr(app.state, PDF_INDEX_STATE, indexes)
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
 
         with (
@@ -478,7 +845,7 @@ class LiteratureStoreTests(unittest.TestCase):
 
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         result = client.get("/api/v1/literatures", params=filters)
         self.assertEqual(result.status_code, 200, result.text)
@@ -544,7 +911,7 @@ class LiteratureStoreTests(unittest.TestCase):
 
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         result = client.get("/api/v1/literatures", params={"sort": "attachment", "order": "asc"})
         self.assertEqual(result.status_code, 200, result.text)
@@ -645,7 +1012,7 @@ class LiteratureStoreTests(unittest.TestCase):
         self.seed()
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
 
         empty = client.post(f"/api/v1/literatures/{self.item.id}/notes", json={"text": " "})
@@ -682,9 +1049,255 @@ class LiteratureStoreTests(unittest.TestCase):
         missing = client.delete(f"/api/v1/literatures/{self.item.id}/notes/{note['id']}")
         self.assertEqual(missing.status_code, 404)
 
+    def legacy_notes_database(self):
+        database = Path(self.temporary.name) / "atomic-notes.sqlite3"
+        with closing(connect(database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO literature_items(id,item_type,bib_type,title,created_at,updated_at) VALUES('legacy','document','misc','Legacy',1,1)"
+            )
+            connection.execute("DROP TABLE literature_notes")
+            connection.execute(
+                "CREATE TABLE literature_notes(id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,text TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(literature_id,id))"
+            )
+            connection.execute("INSERT INTO literature_notes VALUES('note','legacy','kept text',1)")
+            connection.execute("DROP INDEX literature_primary_attachment")
+        return database
+
+    def test_schema_inspection_missing_database_does_not_create_parent(self):
+        database = Path(self.temporary.name) / "absent" / "literature.sqlite3"
+        schema = persistence.inspect_schema(database)
+        self.assertTrue(schema.needs_write)
+        self.assertEqual(len(schema.create_tables), 8)
+        self.assertFalse(database.parent.exists())
+
+    def test_current_schema_connection_does_not_begin_initialization(self):
+        self.assertFalse(persistence.inspect_schema(self.database).needs_write)
+        with patch.object(persistence, "schema_transaction", side_effect=AssertionError("write")):
+            with closing(connect(self.database)) as connection:
+                self.assertFalse(connection.in_transaction)
+
+    def test_runtime_schema_check_allows_sqlite_sidecar_rotation(self):
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                keeper = sqlite3.connect(self.database)
+                self.addCleanup(keeper.close)
+                keeper.execute("SELECT * FROM literature_items").fetchall()
+                original_reader = persistence.reader
+
+                @contextmanager
+                def rotate_after_close(path, original_reader=original_reader):
+                    nonlocal keeper
+                    with original_reader(path) as connection:
+                        yield connection
+                    keeper.close()
+                    keeper = sqlite3.connect(self.database)
+                    self.addCleanup(keeper.close)
+                    keeper.execute("SELECT * FROM literature_items").fetchall()
+
+                try:
+                    with patch.object(persistence, "reader", rotate_after_close):
+                        if strict:
+                            with self.assertRaises(DatabaseBindingError):
+                                persistence.inspect_schema(self.database)
+                        else:
+                            with closing(connect(self.database)) as connection:
+                                self.assertFalse(connection.in_transaction)
+                finally:
+                    keeper.close()
+
+    def test_schema_checks_reject_main_database_replacement(self):
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                replacement = self.database.with_name("replacement.sqlite3")
+                replacement.write_bytes(self.database.read_bytes())
+                original_reader = persistence.reader
+
+                @contextmanager
+                def replace_after_close(
+                    path, original_reader=original_reader, replacement=replacement
+                ):
+                    with original_reader(path) as connection:
+                        yield connection
+                    replacement.replace(self.database)
+
+                with patch.object(persistence, "reader", replace_after_close):
+                    with self.assertRaises(DatabaseBindingError):
+                        if strict:
+                            persistence.inspect_schema(self.database)
+                        else:
+                            connect(self.database).close()
+
+    def test_runtime_rechecks_a_concurrently_created_database(self):
+        for strict in (False, True):
+            for future in (False, True):
+                with self.subTest(strict=strict, future=future):
+                    database = self.database.with_name(f"created-{strict}-{future}.sqlite3")
+                    classify = persistence.classify_schema
+                    published = False
+
+                    def publish(connection, database=database, future=future, classify=classify):
+                        nonlocal published
+                        schema = classify(connection)
+                        if not published:
+                            published = True
+                            with closing(connect(database)) as creator, creator:
+                                if future:
+                                    creator.execute(
+                                        "ALTER TABLE literature_items ADD COLUMN future TEXT"
+                                    )
+                        return schema
+
+                    with patch.object(persistence, "classify_schema", side_effect=publish):
+                        if strict:
+                            with self.assertRaises(DatabaseBindingError):
+                                persistence.inspect_schema(database)
+                        elif future:
+                            with self.assertRaises(LiteratureError):
+                                connect(database).close()
+                        else:
+                            with closing(connect(database)) as connection:
+                                self.assertFalse(classify(connection).needs_write)
+                    self.assertTrue(published)
+
+    def test_unknown_columns_and_constraints_preserve_database(self):
+        statements = (
+            "ALTER TABLE literature_items ADD COLUMN future TEXT",
+            "ALTER TABLE literature_items ADD COLUMN generated TEXT GENERATED ALWAYS AS (title) VIRTUAL",
+            "DROP TABLE literature_notes; CREATE TABLE literature_notes(id TEXT,literature_id TEXT,text TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(literature_id,id))",
+        )
+        for position, statement in enumerate(statements):
+            with self.subTest(statement=statement):
+                database = Path(self.temporary.name) / f"unknown-{position}.sqlite3"
+                connect(database).close()
+                with closing(sqlite3.connect(database)) as connection, connection:
+                    connection.executescript(statement)
+                    before = tuple(connection.iterdump())
+                with self.assertRaises(LiteratureError):
+                    connect(database).close()
+                with closing(sqlite3.connect(database)) as connection:
+                    self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_owned_column_order_is_repaired_before_positional_writes(self) -> None:
+        database = self.legacy_column_database()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("DROP TABLE literature_projects")
+            connection.execute(
+                "CREATE TABLE literature_projects("
+                "literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,"
+                "project_id TEXT,created_at REAL NOT NULL,PRIMARY KEY(project_id,literature_id))"
+            )
+            connection.execute("INSERT INTO literature_projects VALUES('kept','project',1)")
+        with closing(connect(database)) as connection, connection:
+            connection.execute("INSERT INTO literature_projects VALUES('next','kept',2)")
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in connection.execute(
+                        "SELECT project_id,literature_id,created_at FROM literature_projects ORDER BY created_at"
+                    )
+                ],
+                [("project", "kept", 1.0), ("next", "kept", 2.0)],
+            )
+
+    def test_owned_index_wrong_definition_is_rejected(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("DROP INDEX literature_primary_attachment")
+            connection.execute(
+                "CREATE INDEX literature_primary_attachment ON literature_attachments(literature_id)"
+            )
+            before = tuple(connection.iterdump())
+        with self.assertRaises(LiteratureError):
+            connect(self.database).close()
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_schema_inspection_observes_committed_wal(self):
+        with closing(sqlite3.connect(self.database)) as writer:
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("ALTER TABLE literature_items ADD COLUMN future TEXT")
+            writer.commit()
+            self.assertGreater(Path(str(self.database) + "-wal").stat().st_size, 0)
+            with self.assertRaises(LiteratureError):
+                persistence.inspect_schema(self.database)
+
+    def test_note_initialization_preserves_external_dependencies(self):
+        database = self.legacy_notes_database()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE external_owner(value TEXT REFERENCES literature_items(id))"
+            )
+            connection.execute("INSERT INTO external_owner VALUES('legacy')")
+            connection.execute("CREATE INDEX external_index ON literature_notes(text)")
+            connection.execute(
+                "CREATE TRIGGER external_trigger AFTER UPDATE ON literature_notes BEGIN SELECT 1; END"
+            )
+            before = connection.execute(
+                "SELECT name,sql FROM sqlite_master WHERE name LIKE 'external_%' ORDER BY name"
+            ).fetchall()
+        connect(database).close()
+        self.assertFalse(persistence.inspect_schema(database).needs_write)
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE name LIKE 'external_%' ORDER BY name"
+                ).fetchall(),
+                before,
+            )
+            self.assertEqual(
+                connection.execute("SELECT value FROM external_owner").fetchall(), [("legacy",)]
+            )
+
+    def test_fresh_initialization_failure_leaves_no_partial_tables(self):
+        database = Path(self.temporary.name) / "failed-fresh.sqlite3"
+        with patch.object(persistence, "_migrate_notes", side_effect=OSError("after tables")):
+            with self.assertRaisesRegex(OSError, "after tables"):
+                connect(database)
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(connection.execute("SELECT name FROM sqlite_master").fetchall(), [])
+        with closing(connect(database)) as connection:
+            self.assertFalse(connection.in_transaction)
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name='literature_notes'"
+                ).fetchone()
+            )
+
+    def test_legacy_initialization_returns_committed_connection(self):
+        database = self.legacy_notes_database()
+        with closing(connect(database)) as connection:
+            self.assertFalse(connection.in_transaction)
+            connection.execute("BEGIN IMMEDIATE")
+            connection.rollback()
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT text,title,updated_at,version,position FROM literature_notes"
+                ).fetchall(),
+                [("kept text", "笔记 1", 1.0, 1, 1)],
+            )
+
+    def test_legacy_initialization_failure_rolls_back_ddl_and_backfill(self):
+        database = self.legacy_notes_database()
+        with closing(sqlite3.connect(database)) as connection:
+            before = tuple(connection.iterdump())
+        migrate = persistence._migrate_notes
+
+        def fail_after_backfill(connection):
+            migrate(connection)
+            self.assertEqual(
+                connection.execute("SELECT title FROM literature_notes").fetchone()[0], "笔记 1"
+            )
+            raise OSError("after real note backfill")
+
+        with patch.object(persistence, "_migrate_notes", side_effect=fail_after_backfill):
+            with self.assertRaisesRegex(OSError, "note backfill"):
+                connect(database)
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
     def test_legacy_notes_are_backfilled_without_rebuilding_rows(self) -> None:
         database = Path(self.temporary.name) / "legacy-notes.sqlite3"
-        with connect(database) as connection:
+        with closing(connect(database)) as connection, connection:
             connection.execute(
                 "INSERT INTO literature_items"
                 "(id,item_type,bib_type,title,authors,publication,fulltext,created_at,updated_at) "
@@ -854,7 +1467,7 @@ class LiteratureStoreTests(unittest.TestCase):
     def test_collection_patch_endpoint_validates_name_and_conflicts(self) -> None:
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         repository = LiteratureRepository()
         source = repository.create_collection("Source", project_id=self.project.id)
@@ -898,7 +1511,7 @@ class LiteratureStoreTests(unittest.TestCase):
     def test_project_collection_api_validates_and_projects_scope(self) -> None:
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         repository = LiteratureRepository()
         repository.save(
@@ -952,7 +1565,7 @@ class LiteratureStoreTests(unittest.TestCase):
     def test_detail_replaces_only_the_current_projects_classifications(self) -> None:
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         repository = LiteratureRepository()
         repository.save(self.item, self.project.id)
@@ -990,7 +1603,7 @@ class LiteratureStoreTests(unittest.TestCase):
         repository.save(replace(self.item, tags=("Important",)), self.project.id)
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
 
         response = TestClient(app).delete(f"/api/v1/tags/{tag['id']}")
 
@@ -1006,7 +1619,7 @@ class LiteratureStoreTests(unittest.TestCase):
         repository.save(replace(self.item, id="other-count-item"), self.other_project.id)
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         self.assertEqual(client.get("/api/v1/literatures/counts").json()["all"], 2)
         for project in (self.project, self.other_project):
@@ -1053,7 +1666,7 @@ class LiteratureStoreTests(unittest.TestCase):
 
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         overview = client.get("/api/v1/literatures/facets")
         self.assertEqual(overview.status_code, 200)
@@ -1119,9 +1732,7 @@ class LiteratureStoreTests(unittest.TestCase):
             {"Important": 2, "Shared": 2, "Unused": 0},
         )
         # 选中父分类要按递归子树收敛, 与列表的 collection 口径一致。
-        subtree = repository.scoped_tags(
-            project_id=self.project.id, collection_ids=(parent["id"],)
-        )
+        subtree = repository.scoped_tags(project_id=self.project.id, collection_ids=(parent["id"],))
         self.assertEqual(
             {tag["name"]: tag["count"] for tag in subtree},
             {"Important": 2, "Shared": 1, "Unused": 0},
@@ -1146,7 +1757,7 @@ class LiteratureStoreTests(unittest.TestCase):
 
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         scope = {"project_id": self.project.id, "collection_id": [child["id"]]}
         scoped = client.get("/api/v1/literatures/tag-facets", params=scope)
@@ -1217,7 +1828,7 @@ class LiteratureStoreTests(unittest.TestCase):
         repository.create_collection("Ignored", project_id="deleted-project")
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
 
         payload = TestClient(app).get("/api/v1/literatures/projects").json()
 
@@ -1244,7 +1855,7 @@ class LiteratureStoreTests(unittest.TestCase):
         repository.save(self.item, self.project.id)
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
 
         self.content.set_project_archived(self.project.id, True)
@@ -1268,6 +1879,49 @@ class LiteratureStoreTests(unittest.TestCase):
         summary = client.get("/api/v1/literatures").json()["items"][0]
         self.assertEqual([entry["id"] for entry in summary["projects"]], [self.project.id])
 
+    def test_failed_forget_cleanup_keeps_registration_for_retry(self) -> None:
+        repository = LiteratureRepository()
+        repository.save(self.item, self.project.id)
+        repository.create_collection("Methods", project_id=self.project.id)
+
+        def interrupted(project_id):
+            repository.drop_project_links(project_id)
+            raise OSError("cleanup interrupted")
+
+        self.content.bind_project_forget_sink(interrupted)
+        with self.assertRaises(OSError):
+            self.content.forget_project(self.project.id)
+        self.assertEqual(self.content.project(self.project.id).id, self.project.id)
+        self.assertIsNotNone(repository.get(self.item.id))
+        self.content.bind_project_forget_sink(repository.drop_project_links)
+        self.content.forget_project(self.project.id)
+        self.assertEqual(repository.projects(self.item.id), ())
+        self.assertIsNotNone(repository.get(self.item.id))
+
+    def test_project_unlink_projection_matches_live_rows_and_keeps_literature(self) -> None:
+        repository = LiteratureRepository()
+        repository.save(self.item, self.project.id)
+        repository.save(self.item, self.other_project.id)
+        repository.create_collection("Methods", project_id=self.project.id)
+        with (
+            closing(connect(self.database)) as source,
+            closing(sqlite3.connect(":memory:")) as projected,
+        ):
+            source.backup(projected)
+            projected.row_factory = sqlite3.Row
+            projected.execute("PRAGMA foreign_keys=ON")
+            with self.assertRaises(ValueError):
+                repository.drop_project_link_rows(projected, self.project.id)
+            with projected:
+                projected.execute("BEGIN IMMEDIATE")
+                count = repository.drop_project_link_rows(projected, self.project.id)
+            expected = tuple(projected.iterdump())
+            self.assertIn(self.project.id, repository.projects(self.item.id))
+            self.assertEqual(repository.drop_project_links(self.project.id), count)
+            self.assertEqual(tuple(source.iterdump()), expected)
+            self.assertIsNotNone(repository.get(self.item.id))
+            self.assertEqual(repository.projects(self.item.id), (self.other_project.id,))
+
     def test_forget_project_cleans_literature_links_via_bound_sink(self) -> None:
         repository = LiteratureRepository()
         repository.save(self.item, self.project.id)
@@ -1277,7 +1931,7 @@ class LiteratureStoreTests(unittest.TestCase):
         self.content.forget_project(self.project.id)
 
         self.assertEqual(repository.projects(self.item.id), ())
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             rows = connection.execute(
                 "SELECT COUNT(*) FROM literature_projects WHERE project_id=?",
                 (self.project.id,),
@@ -1299,7 +1953,7 @@ class LiteratureStoreTests(unittest.TestCase):
         repository.save(self.item)
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         payload = {
             "literature_ids": [self.item.id, "missing", self.item.id],
@@ -1338,7 +1992,7 @@ class LiteratureStoreTests(unittest.TestCase):
         repository.save(replace(self.item, id="second-export-item", title="Second"))
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
 
         response = TestClient(app).post(
             "/api/v1/exports",
@@ -1352,8 +2006,212 @@ class LiteratureStoreTests(unittest.TestCase):
         payload = response.json()
         # count 是前端「成功导出 N 条文献」的唯一依据: 库里查不到的 id 不能算进去。
         self.assertEqual(payload["count"], 2)
+        # 请求数与缺失数如实回给调用方, 少导了哪几条自己对得上账。
+        self.assertEqual(payload["requested"], 3)
+        self.assertEqual(payload["missing"], 1)
         entries = [line for line in payload["bibtex"].splitlines() if line.startswith("@")]
         self.assertEqual(len(entries), payload["count"])
+
+    def test_export_covers_selected_entries_beyond_one_page(self) -> None:
+        """导出按 id 取数, 不受列表分页影响。
+
+        回归锚点: 导出曾在 Python 里过滤 ``repository.list()`` (带 LIMIT 200), 库超过
+        一页之后只有最新的一批能被导出 —— 用户全选老条目时会导出 0 条, 界面还报成功。
+        """
+
+        repository = LiteratureRepository()
+        total = MAX_BATCH_RECORDS // 8
+        items = tuple(
+            replace(
+                self.item,
+                id=f"export-item-{index:04d}",
+                title=f"Title {index}",
+                added_at=float(index),
+            )
+            for index in range(total)
+        )
+        repository.save_all(items)
+        app = FastAPI()
+        app.state.content = self.content
+        register_global_routes(app)
+        client = TestClient(app)
+        identifiers = [item.id for item in items]
+
+        everything = client.post(
+            "/api/v1/exports", json={"literature_ids": identifiers, "format": "bibtex"}
+        )
+        self.assertEqual(everything.status_code, 200, everything.text)
+        self.assertEqual(everything.json()["count"], total)
+
+        # 最老的几条一定落在「最新一页」之外, 是旧实现必然丢的那一批。
+        oldest = identifiers[:5]
+        response = client.post(
+            "/api/v1/exports", json={"literature_ids": oldest, "format": "bibtex"}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["count"], len(oldest))
+        self.assertEqual(payload["missing"], 0)
+        entries = [line for line in payload["bibtex"].splitlines() if line.startswith("@")]
+        self.assertEqual(len(entries), len(oldest))
+
+    def test_export_rejects_a_batch_above_the_shared_limit(self) -> None:
+        """超过单批上限直接 422, 绝不静默裁成前 N 条。
+
+        与导入共用 ``MAX_BATCH_RECORDS``: 导出 2000 条得到的 bib 必须能原样导回来。
+        判据是**请求**的条数, 不是命中条数 —— 让用户在发出去之前就知道要分批。
+        """
+
+        repository = LiteratureRepository()
+        repository.save(self.item)
+        app = FastAPI()
+        app.state.content = self.content
+        register_global_routes(app)
+        client = TestClient(app)
+        too_many = [self.item.id, *(f"missing-{index}" for index in range(MAX_BATCH_RECORDS))]
+
+        response = client.post(
+            "/api/v1/exports", json={"literature_ids": too_many, "format": "bibtex"}
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], EXPORT_TOO_MANY_ITEMS)
+        self.assertEqual(detail["max"], MAX_BATCH_RECORDS)
+        self.assertEqual(detail["requested"], MAX_BATCH_RECORDS + 1)
+        self.assertNotIn("bibtex", response.json())
+
+        at_limit = client.post(
+            "/api/v1/exports",
+            json={"literature_ids": [self.item.id] * MAX_BATCH_RECORDS, "format": "bibtex"},
+        )
+        # 去重之后只有一条, 正好在上限内: 上限判的是不同 id 的个数。
+        self.assertEqual(at_limit.status_code, 200, at_limit.text)
+        self.assertEqual(at_limit.json()["count"], 1)
+
+    def test_facets_aggregate_the_whole_scope_and_report_truncation(self) -> None:
+        """facet 是全量聚合, 且截断必须显式。
+
+        回归锚点: 三个聚合维度曾在 Python 里遍历 ``repository.list()`` (带 LIMIT),
+        库超过一页之后年份/类型/期刊只反映最新的一批条目; 现在由 SQL 聚合出全量,
+        再按维度收成 {total, entries, truncated}。
+        """
+
+        repository = LiteratureRepository()
+        total = MAX_BATCH_RECORDS // 8
+        repository.save_all(
+            tuple(
+                replace(
+                    self.item,
+                    id=f"facet-item-{index:04d}",
+                    title=f"Title {index}",
+                    year=1900 + index,
+                    journal=f"Journal {index % 60}",
+                    added_at=float(index),
+                )
+                for index in range(total)
+            ),
+            project_id=self.project.id,
+        )
+        app = FastAPI()
+        app.state.content = self.content
+        register_global_routes(app)
+        client = TestClient(app)
+        scope = {"project_id": self.project.id}
+
+        facets = client.get("/api/v1/literatures/facets", params=scope)
+        self.assertEqual(facets.status_code, 200, facets.text)
+        payload = facets.json()
+        counts = client.get("/api/v1/literatures/counts", params=scope).json()
+        self.assertEqual(counts["all"], total)
+
+        years = payload["years"]
+        self.assertEqual(years["total"], total)
+        self.assertTrue(years["truncated"])
+        self.assertEqual(len(years["entries"]), FACET_ENTRIES_LIMIT)
+        # 每个年份各一条, 计数全相等: 截断留下的是哪一批必须确定 (年份倒序)。
+        self.assertEqual(years["entries"][0]["value"], 1900 + total - 1)
+        self.assertEqual(sum(entry["count"] for entry in years["entries"]), FACET_ENTRIES_LIMIT)
+
+        publications = payload["publications"]
+        self.assertEqual(publications["total"], 60)
+        self.assertTrue(publications["truncated"])
+        self.assertEqual(len(publications["entries"]), FACET_ENTRIES_LIMIT)
+        # 期刊维度取值不均 (index % 60): 计数降序, 截断丢掉的一定是最小的那批。
+        listed = [entry["count"] for entry in publications["entries"]]
+        self.assertEqual(listed, sorted(listed, reverse=True))
+        dropped = publications["total"] - len(listed)
+        self.assertEqual(sum(listed), total - dropped * min(listed))
+
+        item_types = payload["item_types"]
+        self.assertEqual(item_types["total"], 1)
+        self.assertFalse(item_types["truncated"])
+        self.assertEqual(item_types["entries"][0]["count"], total)
+
+        # 分类树与标签是给界面用的, 不套有界视图: 少一行用户就点不到。
+        self.assertIsInstance(payload["collections"], list)
+        self.assertIsInstance(payload["tags"], list)
+
+    def test_bulk_tag_reports_only_the_entries_it_actually_tagged(self) -> None:
+        """批量打标签走成员关系批写, 回执只列真正改到的条目。
+
+        两件事一起锚住: (1) 打标签不再逐条重写题录行, 所以 ``updated_at`` / ``version``
+        与项目内分类成员关系都不动; (2) 库里没有的 id 进 failed, 不再谎报全部成功。
+        """
+
+        repository = LiteratureRepository()
+        collection = repository.create_collection("Methods", project_id=self.project.id)
+        before = repository.save(self.item, self.project.id)
+        repository.associate(
+            (self.item.id,), project_id=self.project.id, collection_ids=(collection["id"],)
+        )
+        app = FastAPI()
+        app.state.content = self.content
+        register_global_routes(app)
+        client = TestClient(app)
+
+        added = client.post(
+            "/api/v1/literatures/bulk",
+            json={
+                "literature_ids": [self.item.id, "missing"],
+                "operation": "add_tags",
+                "parameters": {"tags": ["Important", "Important"]},
+            },
+        )
+
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertEqual(added.json()["succeeded"], [self.item.id])
+        self.assertEqual(
+            added.json()["failed"], [{"id": "missing", "code": "LITERATURE_NOT_FOUND"}]
+        )
+        tagged = repository.get(self.item.id)
+        self.assertEqual(tagged.tags, ("Important",))
+        self.assertEqual((tagged.updated_at, tagged.version), (before.updated_at, before.version))
+        scoped = repository.list(project_id=self.project.id)
+        self.assertEqual(scoped[0].collections, ("Methods",))
+
+        removed = client.post(
+            "/api/v1/literatures/bulk",
+            json={
+                "literature_ids": [self.item.id],
+                "operation": "remove_tags",
+                "parameters": {"tags": ["Important"]},
+            },
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertEqual(removed.json()["succeeded"], [self.item.id])
+        self.assertEqual(repository.get(self.item.id).tags, ())
+        # 删掉不存在的标签名是空操作, 不算失败。
+        unknown = client.post(
+            "/api/v1/literatures/bulk",
+            json={
+                "literature_ids": [self.item.id],
+                "operation": "remove_tags",
+                "parameters": {"tags": ["Never existed"]},
+            },
+        )
+        self.assertEqual(unknown.status_code, 200, unknown.text)
+        self.assertEqual(unknown.json()["succeeded"], [self.item.id])
 
     def test_detail_metadata_and_global_organization_are_editable(self) -> None:
         repository = LiteratureRepository()
@@ -1369,7 +2227,7 @@ class LiteratureStoreTests(unittest.TestCase):
         tag = repository.create_tag("Important")
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
 
         response = TestClient(app).patch(
             f"/api/v1/literatures/{self.item.id}",

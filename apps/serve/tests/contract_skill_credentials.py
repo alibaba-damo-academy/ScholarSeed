@@ -22,17 +22,21 @@ import asyncio
 import os
 import tempfile
 
+from service.platform.activity import Activities
+
 os.environ["SCHOLARSEED_HOME"] = tempfile.mkdtemp(prefix="skill-cred-home-")
 
 from typing import Any  # noqa: E402
 
 import httpx  # noqa: E402
 
+from scholarseed_runtime.contract import LaunchSecretScope  # noqa: E402
 from service.chat.runtime.secrets import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
     _launch_secret_contract,
 )
 from service.identity.service.account_token import AccountTokenHolder  # noqa: E402
 from service.identity.service.skill_credentials import (  # noqa: E402
+    ACCOUNT_TOKEN_ENV,
     GLOBAL_SLOT,
     KEY_NAME,
     SKILL_API_KEY_ENV,
@@ -119,6 +123,7 @@ class _Account:
 def _service(client: _Account, *, base_url: str = BASE_URL, environ: Any = None) -> Any:
     service = SkillCredentialService(
         base_url,
+        activities=Activities(),
         client=client,  # type: ignore[arg-type]
         environ={} if environ is None else environ,
     )
@@ -226,7 +231,7 @@ def test_inherited_env_wins() -> None:
 def test_display_name() -> None:
     print("[5] 工厂不依赖 home 或主机名，全局固定展示名")
     for home in ("/fixture/home-a", "/fixture/home-b"):
-        service = skill_credentials_from_env({"SCHOLARSEED_HOME": home})
+        service = skill_credentials_from_env({"SCHOLARSEED_HOME": home}, activities=Activities())
         check("未配地址不参与", not service.configured())
     client = _Account()
     asyncio.run(_service(client).environment(USER, CREDENTIAL))
@@ -255,6 +260,22 @@ def test_session_uses_opaque_launch_secret_contract() -> None:
     check(
         "无产品凭据时不创建 resolver",
         empty_intent.bindings == () and empty_port is None,
+    )
+    credentials = {SKILL_API_KEY_ENV: "ssk-test", ACCOUNT_TOKEN_ENV: "test.jwt.token"}
+    scoped_intent, scoped_port = _launch_secret_contract(
+        {**credentials, "UNRELATED_SECRET": "private"}, include_skill_credentials=True
+    )
+    assert scoped_port is not None
+    projected = {
+        entry.name: asyncio.run(scoped_port.resolve(entry.secret_ref)).value
+        for entry in scoped_intent.bindings
+        if entry.scope is LaunchSecretScope.TOOL
+    }
+    check("技能凭据显式进入工具作用域，其他进程秘密不泄漏", projected == credentials)
+    inspection, _ = _launch_secret_contract(credentials)
+    check(
+        "库存检查不创建工具凭据",
+        all(entry.scope is LaunchSecretScope.PROCESS for entry in inspection.bindings),
     )
 
 

@@ -1,9 +1,9 @@
 """Non-session model invocation contracts shared by Serve domains.
 
 These records deliberately contain no gateway URL, credential, Session, or persistence
-logic.  Product features submit a named purpose and compiled input to the registered
-Agent provider. One invocation is one isolated runtime turn, which can involve multiple
-model calls. It does not create a product Chat Session or inherit current chat history.
+logic. Product features submit a named purpose and explicit input to the registered
+tool-free model transport. It does not open an Agent runtime, create a product Chat
+Session, or inherit current chat history. Tool-bearing tasks use the invocation domain.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable, Mapping, Protocol, runtime_checkable
+
+TOOL_FREE_UNSUPPORTED = "tool_free_generation_unsupported"
 
 
 class ModelInvocationStatus(str, Enum):
@@ -87,6 +89,7 @@ class ModelInvocationRequest:
     attachments: tuple[ModelAttachment, ...] = ()
     json_output: bool = False
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.DEFAULT
+    require_tool_free: bool = False
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,22 @@
 {
+  "permissions": {
+    "title": "权限与隐私",
+    "description": "查看系统能力的授权状态；实际权限由操作系统与项目授权共同决定。",
+    "checking": "正在检查…",
+    "check": "重新检查",
+    "granted": "已授权",
+    "denied": "未授权",
+    "restricted": "受限制",
+    "not-determined": "未设置",
+    "unavailable": "不可用",
+    "system-managed": "需系统检查",
+    "project-scoped": "按项目授权",
+    "query-error": "查询失败"
+  },
+  "profile": {
+    "loading": "正在确认账号状态…",
+    "unconfirmed": "尚未确认账号登录状态，请重试。"
+  },
   "identity": {
     "defaultName": "书深用户"
   },
@@ -45,11 +63,14 @@
     "chatgptConnected": " · ChatGPT 已连接",
     "chatgptLoginRequired": " · 需登录 ChatGPT",
     "noKey": " · 未设密钥",
+    "apiKeyClear": "清空 API Key",
+    "apiKeyReplacementPlaceholder": "输入新的 API Key",
+    "apiKeyReplacementRequired": "请填写新的 API Key 后再保存、测试或刷新；取消可保留原密钥。",
     "enableNamed": "启用 {{name}}",
     "add": "添加连接",
     "chatgptSubscription": "ChatGPT（订阅登录）",
     "customProvider": "自定义（自建服务或未列出的供应商）",
-    "wireHint": "按服务实际支持的协议选择。Codex 原生工具（如网页搜索）需要 Responses；纯 Chat Completions 端点不能承载这些工具。修改协议后请新建对话，或重启应用后继续原对话。",
+    "wireHint": "按服务实际支持的协议选择。Codex 原生工具（如网页搜索）需要 Responses；纯 Chat Completions 端点不能承载这些工具。修改协议后请新建任务，或重启应用后继续原任务。",
     "wireChatCompletions": "OpenAI 兼容 · /chat/completions",
     "wireResponses": "OpenAI Responses · /responses",
     "reasoningNamed": "{{name}} · 思考深度",
@@ -58,7 +79,11 @@
     "providerModel": "{{provider}} · {{model}}",
     "disabledReasons": {
       "gatewayCredentialRequired": "登录后可使用内置模型",
-      "subscriptionConnectionRequired": "请在模型服务中连接 ChatGPT"
+      "subscriptionConnectionRequired": "请在模型服务中连接 ChatGPT",
+      "subscriptionStorageUnavailable": "本地凭据暂不可访问，请恢复存储访问后重试"
+    },
+    "disabledTags": {
+      "gatewayCredentialRequired": "登录可用"
     },
     "capabilitiesTitle": "模型能力管理",
     "capabilitiesDescription": "在右侧按模型管理思考档位、上下文窗口和输入模态；厂商口径仅作默认建议，保存后的模型声明优先用于会话。",
@@ -72,7 +97,8 @@
     "editEfforts": "编辑思考档位",
     "effortsUnconfirmed": "未确认",
     "tokenPlanPersonal": "阿里云百炼 Token Plan（个人版）",
-    "tokenPlanTeam": "阿里云百炼 Token Plan（团队版）"
+    "tokenPlanTeam": "阿里云百炼 Token Plan（团队版）",
+    "chatgptStorageUnavailable": " · 凭据暂不可访问"
   },
   "sharing": {
     "private": "隐私模式",
@@ -120,13 +146,25 @@
     }
   },
   "update": {
-    "installFailed": "更新安装失败，请重试。"
+    "installFailed": "更新安装失败，请重试。",
+    "launcherMaintenanceRequired": "已安装的启动器需要升级。请正常退出书深，从官方渠道下载最新安装器并安装到原目录，然后重新打开。应用内更新不能替换此启动器。",
+    "preparationConnectionClosed": "更新准备连接已断开，请重试准备。",
+    "preparationFailed": "无法准备更新，请重试准备。",
+    "installationInProgress": "更新正在安装。书深将自动退出以完成安装，请稍候再打开。",
+    "installationFailed": "更新安装失败。请退出并重新打开书深；若仍无法启动，请重新安装最新版本，并在反馈中附上更新诊断日志。",
+    "activationRecoveryRequired": "更新交接结果尚未确认。请退出并重新打开书深；若仍出现此提示，请从官网下载最新版本重新安装，并在反馈中附上更新诊断日志。",
+    "activationCandidateChanged": "此更新已发生变化，已停止重试旧更新包。请重新检查更新。",
+    "activationUnavailable": "当前版本尚不支持应用此更新。",
+    "preparationUnverified": "更新准备状态已失效，请重新准备更新。",
+    "activationAuthorizationRequired": "尚未确认重启更新，请重新发起更新。"
   },
   "loginFailure": {
     "account_base_unavailable": "账号服务地址暂不可用，请稍后重试。",
     "open_browser_failed": "无法打开系统浏览器，请重试。",
     "bad_callback": "登录回调无效，请重新发起登录。",
     "state_mismatch": "本次登录无法与当前客户端匹配，请重新发起登录。",
+    "handoff_unclaimed": "无法匹配本次登录请求。登录可能已过期、应用已重启，或回调进入了其他书深副本。请回到需要登录的书深重新发起登录。",
+    "login_expired": "本次登录等待已过期，请返回书深重新发起登录。",
     "handoff_invalid": "登录凭证无效或已过期，请重新登录。",
     "adopt_failed": "未能在本机完成登录，请重试。",
     "exchange_error": "未能连接账号服务完成登录，请检查网络后重试。",
@@ -168,6 +206,7 @@
     "local_logout_failed": "本地登录凭据未能清除，请重试",
     "logout_revocation_failed": "本机执行凭据清理失败，请重试退出登录。",
     "http_failure": "请求失败（{{status}}）",
+    "unknown": "操作未完成，请重试。",
     "diagnostic": "{{message}}\n{{detail}}"
   },
   "modelSettings": {

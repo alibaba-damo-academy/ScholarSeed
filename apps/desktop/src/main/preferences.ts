@@ -1,20 +1,32 @@
-import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { Buffer } from 'node:buffer'
+import { PreferenceDiagnostics } from '../preference-diagnostics.ts'
 import { dirname, join } from 'path'
+import { desktopStorage } from './storage'
 
-import {
-  defaultRendererPreferences,
-  RendererPreferences,
-  sanitizeRendererPreferences
-} from '../preferences'
+import type { RendererPreferences } from '../preferences'
+import { defaultRendererPreferences, sanitizeRendererPreferences } from '../preferences'
 import { applyMainLanguage } from './localization'
 import { detectRendererLanguage } from './locale'
-
-const RENDERER_PREFERENCES_FILENAME = 'renderer-preferences.json'
-const TEMPORARY_FILE_SUFFIX = '.tmp'
+import { desktopDirectoryWriter } from './writer'
+import { readRecord, writeJson } from './journal.ts'
+import {
+  decodeRendererPreferences,
+  RENDERER_PREFERENCES_FILENAME,
+  RENDERER_PREFERENCES_MAX_BYTES,
+} from './preferences-record.ts'
 
 function preferencesPath(): string {
-  return join(app.getPath('userData'), RENDERER_PREFERENCES_FILENAME)
+  return join(desktopStorage().userData, RENDERER_PREFERENCES_FILENAME)
+}
+
+function readRendererPreferences(filename = preferencesPath()): RendererPreferences {
+  const detected = detectRendererLanguage()
+  try {
+    return decodeRendererPreferences(readRecord(filename, RENDERER_PREFERENCES_MAX_BYTES), detected)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultRendererPreferences(detected)
+    throw error
+  }
 }
 
 /**
@@ -23,38 +35,67 @@ function preferencesPath(): string {
  * 检测本身只有两次同步的 Intl / Electron 取值，每次 boot 调用都够便宜，无需缓存。
  */
 export function loadRendererPreferences(): RendererPreferences {
-  const path = preferencesPath()
+  // Startup selection is a prerequisite, not a corrupt/missing preference file.
+  const filename = preferencesPath()
   const detected = detectRendererLanguage()
-  if (!existsSync(path)) return defaultRendererPreferences(detected)
   try {
-    return sanitizeRendererPreferences(JSON.parse(readFileSync(path, 'utf8')), detected)
+    return readRendererPreferences(filename)
   } catch {
-    return defaultRendererPreferences(detected)
+    return { ...defaultRendererPreferences(detected), browserAutomationEnabled: false }
   }
 }
 
-export function saveRendererPreferences(value: unknown): RendererPreferences {
-  const preferences = sanitizeRendererPreferences(value)
+export function saveRendererPreferences(
+  value: unknown,
+  diagnostics = new PreferenceDiagnostics('main')
+): RendererPreferences {
+  const preferences = diagnostics.runSync('validate', () =>
+    sanitizeRendererPreferences({
+      ...sanitizeRendererPreferences(value),
+      browserAutomationEnabled: diagnostics.runSync('read', readRendererPreferences)
+        .browserAutomationEnabled,
+    })
+  )
+  return writeRendererPreferences(preferences, diagnostics)
+}
+
+export function saveBrowserAutomationPreference(enabled: boolean): RendererPreferences {
+  const preferences = readRendererPreferences()
+  return writeRendererPreferences({ ...preferences, browserAutomationEnabled: enabled })
+}
+
+function writeRendererPreferences(
+  preferences: RendererPreferences,
+  diagnostics = new PreferenceDiagnostics('main')
+): RendererPreferences {
   const path = preferencesPath()
-  const temporaryPath = path + TEMPORARY_FILE_SUFFIX
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(temporaryPath, JSON.stringify(preferences), 'utf8')
-  renameSync(temporaryPath, path)
+  // Refuse a record the actual reader cannot consume before acquiring a writer.
+  diagnostics.runSync('validate', () =>
+    decodeRendererPreferences(Buffer.from(`${JSON.stringify(preferences)}\n`, 'utf8'))
+  )
+  const writer = diagnostics.runSync('acquire', () => desktopDirectoryWriter(dirname(path)))
+  try {
+    diagnostics.runSync('write', () => writeJson(path, preferences))
+  } finally {
+    diagnostics.runSync('release', () => writer.close())
+  }
   return preferences
 }
 
 /** Read the authoritative file and repair the main projection before acknowledging. */
-export async function reconcileRendererPreferences(): Promise<RendererPreferences> {
-  const path = preferencesPath()
-  const preferences = existsSync(path)
-    ? sanitizeRendererPreferences(JSON.parse(readFileSync(path, 'utf8')), detectRendererLanguage())
-    : defaultRendererPreferences(detectRendererLanguage())
-  await applyMainLanguage(preferences.language)
+export async function reconcileRendererPreferences(
+  diagnostics = new PreferenceDiagnostics('main')
+): Promise<RendererPreferences> {
+  const preferences = diagnostics.runSync('read', readRendererPreferences)
+  await diagnostics.run('main-apply', () => applyMainLanguage(preferences.language))
   return preferences
 }
 
-export async function commitRendererPreferences(value: unknown): Promise<RendererPreferences> {
-  const preferences = saveRendererPreferences(value)
-  await applyMainLanguage(preferences.language)
+export async function commitRendererPreferences(
+  value: unknown,
+  diagnostics = new PreferenceDiagnostics('main')
+): Promise<RendererPreferences> {
+  const preferences = saveRendererPreferences(value, diagnostics)
+  await diagnostics.run('main-apply', () => applyMainLanguage(preferences.language))
   return preferences
 }

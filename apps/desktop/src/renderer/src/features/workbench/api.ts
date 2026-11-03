@@ -1,5 +1,12 @@
 import { loadBuiltinDocument, type BuiltinDocumentSource } from './builtin.ts'
-import type { CitationResolution } from '../../contracts/citations'
+import { savedCitationError } from './links.ts'
+import { previewFormat } from './preview/routing.ts'
+import {
+  SAVED_CITATION_ROUTE,
+  savedCitationUrl,
+  artifactCitationUrl,
+  type CitationResolution,
+} from '../../contracts/citations.ts'
 import type {
   DocumentCapabilities,
   LiteratureDocumentSource,
@@ -10,10 +17,17 @@ import type {
   PdfRecordSnapshot,
   PdfRecords,
   RecordOwner,
-  RecordTarget
+  RecordTarget,
+  SelectionAnchor,
+  SessionFileSource,
 } from '../../contracts/workbench'
 import { fetchVersionCapability, type ResourceCapability } from '../../contracts/resources.ts'
 import type { PdfMarkColor } from './pdf/records'
+
+const FAILURE_CODES = {
+  networkError: 'network_error',
+  http: (status: number) => `http_${status}`,
+} as const
 
 export interface ProjectDocumentSource {
   kind: 'project'
@@ -22,23 +36,12 @@ export interface ProjectDocumentSource {
   assetId?: string | null
 }
 
-export interface SessionFileSource {
-  projectScope?: string
-  citation?: { answerId: string; answerRevision: string; handle: string }
-  recordTarget?: RecordTarget
-  kind: 'session-file'
-  sessionId: string
-  path: string
-  revision?: string
-  mediaType?: string
-  renderKind?: string
-}
-
 export interface SessionArtifactSource {
   kind: 'session-artifact'
   sessionId: string
   artifactId: string
   path: string
+  absolutePath?: string
   revision?: string
   mediaType?: string
   renderKind?: string
@@ -85,9 +88,7 @@ export type DocumentSource =
 
 export type LocatedDocumentSource = ProjectDocumentSource | LiteratureDocumentSource
 
-export function isLocatedDocumentSource(
-  source: DocumentSource
-): source is LocatedDocumentSource {
+export function isLocatedDocumentSource(source: DocumentSource): source is LocatedDocumentSource {
   return source.kind === 'project' || source.kind === 'literature'
 }
 
@@ -98,23 +99,27 @@ export async function resolveDocumentLocation(
 ): Promise<{ ok: boolean; error?: string; absolute?: string }> {
   try {
     const literature = source.kind === 'literature'
-    const response = await fetch(literature
-      ? `${base()}/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}/location`
-      : `${base()}/api/resource/reveal`, literature ? {
-        credentials: 'include'
-      } : {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: source.path, project: source.project ?? null })
-      })
-    const payload = await response.json().catch(() => null) as
-      | { detail?: string | { code?: string }; absolute?: string }
-      | null
-    const detail = typeof payload?.detail === 'string'
-      ? payload.detail
-      : payload?.detail?.code
-    if (!response.ok) return { ok: false, error: detail ?? `http_${response.status}` }
+    const response = await fetch(
+      literature
+        ? `${base()}/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}/location`
+        : `${base()}/api/resource/reveal`,
+      literature
+        ? {
+            credentials: 'include',
+          }
+        : {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: source.path, project: source.project ?? null }),
+          }
+    )
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string | { code?: string }
+      absolute?: string
+    } | null
+    const detail = typeof payload?.detail === 'string' ? payload.detail : payload?.detail?.code
+    if (!response.ok) return { ok: false, error: detail ?? FAILURE_CODES.http(response.status) }
     const absolute = payload?.absolute
     if (literature && absolute && window.scholarseed?.addAuthorizedRoot) {
       const authorized = await window.scholarseed.addAuthorizedRoot('external', absolute)
@@ -122,7 +127,7 @@ export async function resolveDocumentLocation(
     }
     return { ok: true, absolute }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'network_error' }
+    return { ok: false, error: error instanceof Error ? error.message : FAILURE_CODES.networkError }
   }
 }
 
@@ -170,9 +175,7 @@ export interface DocumentLoadFailure {
 
 export type DocumentLoadResult = LoadedDocument | DocumentLoadFailure
 
-export function isDocumentLoadFailure(
-  result: DocumentLoadResult
-): result is DocumentLoadFailure {
+export function isDocumentLoadFailure(result: DocumentLoadResult): result is DocumentLoadFailure {
   return 'kind' in result && result.kind === DOCUMENT_LOAD_FAILURE_KIND
 }
 
@@ -181,8 +184,7 @@ export function isMissingDocumentFailure(failure: DocumentLoadFailure): boolean 
 }
 
 export type CommitResult =
-  | { ok: true; revision: string }
-  | { ok: false; error: 'conflict' | 'unavailable' | 'failed' }
+  { ok: true; revision: string } | { ok: false; error: 'conflict' | 'unavailable' | 'failed' }
 
 export type ManagedCopyResult =
   | { ok: true; project: string; path: string; revision: string }
@@ -210,12 +212,12 @@ const READ_ONLY_CAPABILITIES: DocumentCapabilities = {
   can_save: false,
   can_version: false,
   can_diff: false,
-  pending: []
+  pending: [],
 }
 const EDITABLE_ARTIFACT_CAPABILITIES: DocumentCapabilities = {
   ...READ_ONLY_CAPABILITIES,
   can_edit: true,
-  can_save: true
+  can_save: true,
 }
 
 function paramsFor(source: ProjectDocumentSource): URLSearchParams {
@@ -225,7 +227,8 @@ function paramsFor(source: ProjectDocumentSource): URLSearchParams {
 }
 
 function rawUrl(source: Exclude<DocumentSource, ProjectDocumentSource>): string {
-  if (source.kind === 'literature') return `/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}/content`
+  if (source.kind === 'literature')
+    return `/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}/content`
   if (source.kind === 'review-base') {
     const params = new URLSearchParams({ project: source.project })
     return `/api/resource/files/${encodeURIComponent(source.fileId)}/review/${encodeURIComponent(source.reviewId)}/base?${params.toString()}`
@@ -238,7 +241,10 @@ function rawUrl(source: Exclude<DocumentSource, ProjectDocumentSource>): string 
     return `/api/serve/sessions/${encodeURIComponent(source.sessionId)}/artifacts/${encodeURIComponent(source.artifactId)}/raw`
   }
   if (source.kind === 'session-file') {
-    if (source.citation) return `/api/assistant/sessions/${encodeURIComponent(source.sessionId)}/answers/${encodeURIComponent(source.citation.answerId)}/citations/${encodeURIComponent(source.citation.handle)}/raw?answer_revision=${encodeURIComponent(source.citation.answerRevision)}`
+    if (source.artifactCitation) return artifactCitationUrl(source.artifactCitation, 'raw')
+    if (source.savedCitation) return savedCitationUrl(source.savedCitation, 'raw')
+    if (source.citation)
+      return `/api/assistant/sessions/${encodeURIComponent(source.sessionId)}/answers/${encodeURIComponent(source.citation.answerId)}/citations/${encodeURIComponent(source.citation.handle)}/raw?answer_revision=${encodeURIComponent(source.citation.answerRevision)}`
     return `/api/serve/sessions/${encodeURIComponent(source.sessionId)}/files/raw?path=${encodeURIComponent(source.path)}`
   }
   return `/api/research/workspace/file/raw?path=${encodeURIComponent(source.path)}`
@@ -248,10 +254,13 @@ function literatureOpenUrl(source: LiteratureDocumentSource): string {
   return `/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}/open`
 }
 
-export function viewerFromProjection(source: Exclude<DocumentSource, ProjectDocumentSource>): OpenDocumentResult['viewer'] {
+export function viewerFromProjection(
+  source: Exclude<DocumentSource, ProjectDocumentSource>
+): OpenDocumentResult['viewer'] {
   const kind = source.renderKind
   const mediaType = (source.mediaType ?? '').split(';', 1)[0].trim().toLocaleLowerCase()
-  if (kind === 'markdown' || mediaType === 'text/markdown' || mediaType === 'text/x-markdown') return 'markdown'
+  if (kind === 'markdown' || mediaType === 'text/markdown' || mediaType === 'text/x-markdown')
+    return 'markdown'
   if (kind === 'image' || mediaType.startsWith('image/')) return 'image'
   if (mediaType === 'application/pdf') return 'pdf'
   if (mediaType.includes('wordprocessingml')) return 'office'
@@ -272,16 +281,56 @@ export async function digestText(text: string): Promise<string> {
   return digest(new TextEncoder().encode(text))
 }
 
+const SELECTION_SNAPSHOT_ROUTE = '/api/workbench/selection/snapshot'
+const ATTACHMENT_SELECTION_SNAPSHOT_PATH = '/selection-snapshot'
+
+export async function captureSelectionSnapshot(
+  source: ProjectDocumentSource | LiteratureDocumentSource,
+  sourceRevision: string,
+  selection: SelectionAnchor
+): Promise<{ snapshot_text: string; source_revision: string }> {
+  const route =
+    source.kind === 'literature'
+      ? `/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}${ATTACHMENT_SELECTION_SNAPSHOT_PATH}`
+      : SELECTION_SNAPSHOT_ROUTE
+  const body =
+    source.kind === 'literature' && selection.locator.kind === 'calc'
+      ? {
+          source_revision: sourceRevision,
+          sheet: selection.locator.sheet,
+          range: selection.locator.range,
+        }
+      : {
+          project_id: source.kind === 'project' ? source.project : undefined,
+          source_id: source.path,
+          source_revision: sourceRevision,
+          locator_kind: selection.locator.kind,
+          locator: selection.locator,
+          selected_text_hash: await digestText(selection.text),
+        }
+  const response = await fetch(`${base()}${route}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  return response.json()
+}
+
 export function documentIdFor(source: DocumentSource): string {
   if (source.kind === 'builtin') return `builtin:${source.id}`
-  if (source.kind === 'literature') return `literature:${source.literatureId}:attachment:${source.attachmentId}`
-  if (source.kind === 'project') return source.assetId
-    ? `project:${source.project ?? 'current'}:asset:${source.assetId}`
-    : `project:${source.project ?? 'current'}:${source.path}`
+  if (source.kind === 'literature')
+    return `literature:${source.literatureId}:attachment:${source.attachmentId}`
+  if (source.kind === 'project')
+    return source.assetId
+      ? `project:${source.project ?? 'current'}:asset:${source.assetId}`
+      : `project:${source.project ?? 'current'}:${source.path}`
   if (source.kind === 'session-artifact') return `artifact:${source.sessionId}:${source.artifactId}`
   if (source.kind === 'session-file') return `session:${source.sessionId}:${source.path}`
   if (source.kind === 'version') return `version:${source.project}:${source.versionId}`
-  if (source.kind === 'review-base') return `review-base:${source.project}:${source.fileId}:${source.reviewId}:${source.revision}`
+  if (source.kind === 'review-base')
+    return `review-base:${source.project}:${source.fileId}:${source.reviewId}:${source.revision}`
   return `runtime:${source.path}`
 }
 
@@ -293,10 +342,12 @@ export async function loadVersionCapability(
 }
 
 function statusRetryable(status: number): boolean {
-  return status === REQUEST_TIMEOUT_STATUS
-    || status === TOO_EARLY_STATUS
-    || status === TOO_MANY_REQUESTS_STATUS
-    || status >= SERVER_ERROR_STATUS
+  return (
+    status === REQUEST_TIMEOUT_STATUS ||
+    status === TOO_EARLY_STATUS ||
+    status === TOO_MANY_REQUESTS_STATUS ||
+    status >= SERVER_ERROR_STATUS
+  )
 }
 
 async function responseFailure(response: Response): Promise<DocumentLoadFailure> {
@@ -304,8 +355,9 @@ async function responseFailure(response: Response): Promise<DocumentLoadFailure>
   let message = `${HTTP_ERROR_CODE}:${response.status}`
   let retryable = statusRetryable(response.status)
   try {
-    const payload = await response.json() as {
+    const payload = (await response.json()) as {
       detail?: string | { code?: string; message?: string; retryable?: boolean }
+      error?: string
     }
     if (typeof payload.detail === 'string' && payload.detail) {
       code = payload.detail
@@ -314,6 +366,9 @@ async function responseFailure(response: Response): Promise<DocumentLoadFailure>
       code = payload.detail.code || code
       message = payload.detail.message || code
       retryable = payload.detail.retryable ?? retryable
+    } else if (typeof payload.error === 'string' && payload.error) {
+      code = payload.error
+      message = payload.error
     }
   } catch {
     // Preserve the stable HTTP fallback when an upstream returns a non-JSON body.
@@ -323,7 +378,7 @@ async function responseFailure(response: Response): Promise<DocumentLoadFailure>
     code,
     message,
     retryable,
-    status: response.status
+    status: response.status,
   }
 }
 
@@ -334,18 +389,22 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
       const params = paramsFor(source)
       const opened = await fetch(`${base()}/api/workbench/open?${params.toString()}`, {
         credentials: 'include',
-        cache: 'no-store'
+        cache: 'no-store',
       })
       if (!opened.ok) return responseFailure(opened)
       const projection = (await opened.json()) as OpenDocumentResult
       let bytes = new Uint8Array()
       if (projection.viewer !== 'unsupported') {
-        if (projection.viewer === 'spreadsheet' && !projection.capabilities.can_edit) {
+        if (
+          projection.viewer === 'spreadsheet' &&
+          !projection.capabilities.can_edit &&
+          previewFormat(source.path) !== 'xlsx'
+        ) {
           params.set('preview', 'true')
         }
         const content = await fetch(`${base()}/api/workbench/content?${params.toString()}`, {
           credentials: 'include',
-          cache: 'no-store'
+          cache: 'no-store',
         })
         if (!content.ok) return responseFailure(content)
         bytes = new Uint8Array(await content.arrayBuffer())
@@ -354,11 +413,13 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
         ...source,
         project: projection.project_id,
         assetId: projection.asset_id,
-        recordTarget: projection.asset_id ? {
-          owner: 'project_asset' as const,
-          scope_id: projection.project_id,
-          subject_id: projection.asset_id
-        } : undefined
+        recordTarget: projection.asset_id
+          ? {
+              owner: 'project_asset' as const,
+              scope_id: projection.project_id,
+              subject_id: projection.asset_id,
+            }
+          : undefined,
       }
       const versionState = projection.versioning
       return {
@@ -372,24 +433,27 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
         contentKind: projection.content_kind,
         bytes,
         versioning: versionState ?? undefined,
-        externalChange: Boolean(versionState?.drifted)
+        externalChange: Boolean(versionState?.drifted),
       }
     }
     if (source.kind === 'literature') {
       const opened = await fetch(`${base()}${literatureOpenUrl(source)}`, {
         credentials: 'include',
-        cache: 'no-store'
+        cache: 'no-store',
       })
       if (!opened.ok) return responseFailure(opened)
-      const projection = await opened.json() as LiteratureAttachmentProjection
+      const projection = (await opened.json()) as LiteratureAttachmentProjection
       let bytes = new Uint8Array()
       if (projection.capabilities.can_preview) {
-        const preview = projection.viewer === 'spreadsheet' && !projection.capabilities.can_edit
-          ? '?preview=true'
-          : ''
+        const preview =
+          projection.viewer === 'spreadsheet' &&
+          !projection.capabilities.can_edit &&
+          previewFormat(source.path) !== 'xlsx'
+            ? '?preview=true'
+            : ''
         const content = await fetch(`${base()}${rawUrl(source)}${preview}`, {
           credentials: 'include',
-          cache: 'no-store'
+          cache: 'no-store',
         })
         if (!content.ok) return responseFailure(content)
         bytes = new Uint8Array(await content.arrayBuffer())
@@ -397,7 +461,7 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
       const resolvedSource = {
         ...source,
         revision: projection.revision,
-        mediaType: projection.media_type
+        mediaType: projection.media_type,
       }
       return {
         documentId: documentIdFor(source),
@@ -409,16 +473,18 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
         mediaType: projection.media_type,
         contentKind: projection.content_kind,
         bytes,
-        versioning: null
+        versioning: null,
       }
     }
     const response = await fetch(`${base()}${rawUrl(source)}`, { credentials: 'include' })
     if (!response.ok) return responseFailure(response)
     const bytes = new Uint8Array(await response.arrayBuffer())
-    const mediaType = response.headers.get('content-type') || source.mediaType || 'application/octet-stream'
+    const mediaType =
+      response.headers.get('content-type') || source.mediaType || 'application/octet-stream'
     const viewer = viewerFromProjection({ ...source, mediaType })
-    const artifactEditable = source.kind === 'session-artifact'
-      && response.headers.get(ARTIFACT_EDITABLE_HEADER) === 'true'
+    const artifactEditable =
+      source.kind === 'session-artifact' &&
+      response.headers.get(ARTIFACT_EDITABLE_HEADER) === 'true'
     return {
       documentId: documentIdFor(source),
       source,
@@ -427,13 +493,17 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
       capabilities: artifactEditable
         ? EDITABLE_ARTIFACT_CAPABILITIES
         : recordTargetFor(source)
-        ? { ...READ_ONLY_CAPABILITIES, can_select: viewer === 'pdf', can_annotate: viewer === 'pdf' }
-        : READ_ONLY_CAPABILITIES,
-      revision: artifactEditable ? await digest(bytes) : source.revision || await digest(bytes),
+          ? {
+              ...READ_ONLY_CAPABILITIES,
+              can_select: viewer === 'pdf',
+              can_annotate: viewer === 'pdf',
+            }
+          : READ_ONLY_CAPABILITIES,
+      revision: artifactEditable ? await digest(bytes) : source.revision || (await digest(bytes)),
       mediaType,
       contentKind: viewer === 'code' ? 'text' : 'binary',
       bytes,
-      versioning: null
+      versioning: null,
     }
   } catch (error) {
     return {
@@ -441,7 +511,7 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
       code: NETWORK_ERROR_CODE,
       message: error instanceof Error ? error.message : NETWORK_ERROR_CODE,
       retryable: true,
-      status: null
+      status: null,
     }
   }
 }
@@ -451,27 +521,51 @@ export async function commitDocument(
   bytes: Uint8Array,
   revision: string
 ): Promise<CommitResult> {
-  if (source.kind !== 'project' && source.kind !== 'literature' && source.kind !== 'session-artifact') {
+  if (
+    source.kind !== 'project' &&
+    source.kind !== 'literature' &&
+    source.kind !== 'session-artifact'
+  ) {
     return { ok: false, error: 'unavailable' }
   }
   try {
-    const target = source.kind === 'project'
-      ? `/api/workbench/content?${paramsFor(source).toString()}`
-      : rawUrl(source)
+    const target =
+      source.kind === 'project'
+        ? `/api/workbench/content?${paramsFor(source).toString()}`
+        : rawUrl(source)
     const response = await fetch(`${base()}${target}`, {
       method: 'PUT',
       credentials: 'include',
       headers: {
         'Content-Type': 'application/octet-stream',
-        'If-Match': `"${revision}"`
+        'If-Match': `"${revision}"`,
       },
-      body: new Uint8Array(bytes)
+      body: new Uint8Array(bytes),
     })
     if (response.status === 412) return { ok: false, error: 'conflict' }
-    if (!response.ok) return { ok: false, error: 'failed' }
+    if (!response.ok) {
+      let detail = ''
+      try {
+        detail = await response.text()
+      } catch {
+        detail = ''
+      }
+      console.warn('Document commit failed', {
+        source: source.kind,
+        path: source.path,
+        status: response.status,
+        detail,
+      })
+      return { ok: false, error: 'failed' }
+    }
     const next = response.headers.get('etag')?.replace(/^"|"$/g, '')
     return next ? { ok: true, revision: next } : { ok: false, error: 'failed' }
-  } catch {
+  } catch (error) {
+    console.warn('Document commit request failed', {
+      source: source.kind,
+      path: source.path,
+      error,
+    })
     return { ok: false, error: 'failed' }
   }
 }
@@ -489,12 +583,16 @@ export async function createManagedCopy(
       credentials: 'include',
       headers: {
         'Content-Type': 'application/octet-stream',
-        'Idempotency-Key': crypto.randomUUID()
+        'Idempotency-Key': crypto.randomUUID(),
       },
-      body: new Uint8Array(bytes)
+      body: new Uint8Array(bytes),
     })
     if (!response.ok) return { ok: false, error: 'failed' }
-    const payload = await response.json() as { project?: string; path?: string; revision?: string }
+    const payload = (await response.json()) as {
+      project?: string
+      path?: string
+      revision?: string
+    }
     return payload.project && payload.path && payload.revision
       ? { ok: true, project: payload.project, path: payload.path, revision: payload.revision }
       : { ok: false, error: 'failed' }
@@ -523,7 +621,10 @@ function publishPdfRecords(snapshot: PdfRecordSnapshot): void {
   }
 }
 
-export function subscribePdfRecords(source: DocumentSource, listener: (records: PdfRecordSnapshot) => void): () => void {
+export function subscribePdfRecords(
+  source: DocumentSource,
+  listener: (records: PdfRecordSnapshot) => void
+): () => void {
   const key = documentIdFor(source)
   const subscribers = pdfRecordSubscribers.get(key) ?? new Set()
   subscribers.add(listener)
@@ -537,12 +638,24 @@ export function subscribePdfRecords(source: DocumentSource, listener: (records: 
     const generation = pdfRecordSaveGeneration
     try {
       const current = await loadPdfRecords(source)
-      if (active && generation === pdfRecordSaveGeneration && current &&
-        (current.record_revision !== previous?.record_revision || current.source_revision !== previous?.source_revision)) publishPdfRecords(current)
-    } finally { refreshing = false }
+      if (
+        active &&
+        generation === pdfRecordSaveGeneration &&
+        current &&
+        (current.record_revision !== previous?.record_revision ||
+          current.source_revision !== previous?.source_revision)
+      )
+        publishPdfRecords(current)
+    } finally {
+      refreshing = false
+    }
   }
-  const timer = setInterval(() => { void refresh() }, PDF_RECORD_REFRESH_MS)
-  const focused = (): void => { void refresh() }
+  const timer = setInterval(() => {
+    void refresh()
+  }, PDF_RECORD_REFRESH_MS)
+  const focused = (): void => {
+    void refresh()
+  }
   window.addEventListener?.(PDF_RECORD_FOCUS_EVENT, focused)
   return () => {
     active = false
@@ -556,17 +669,18 @@ export function subscribePdfRecords(source: DocumentSource, listener: (records: 
   }
 }
 
-export async function loadPdfRecords(
-  source: DocumentSource
-): Promise<PdfRecordSnapshot | null> {
+export async function loadPdfRecords(source: DocumentSource): Promise<PdfRecordSnapshot | null> {
   const target = recordTargetFor(source)
   if (!target) return null
   try {
     const generation = pdfRecordSaveGeneration
-    const response = await fetch(`${base()}${recordEndpoint(target, source)}`, { credentials: 'include' })
+    const response = await fetch(`${base()}${recordEndpoint(target, source)}`, {
+      credentials: 'include',
+    })
     if (!response.ok) return null
-    const snapshot = await response.json() as PdfRecordSnapshot
-    if (generation === pdfRecordSaveGeneration) pdfRecordSnapshots.set(documentIdFor(source), snapshot)
+    const snapshot = (await response.json()) as PdfRecordSnapshot
+    if (generation === pdfRecordSaveGeneration)
+      pdfRecordSnapshots.set(documentIdFor(source), snapshot)
     return snapshot
   } catch {
     return null
@@ -583,14 +697,14 @@ export async function commitPdfRecords(
   if (!target) return null
   try {
     const response = await fetch(`${base()}${recordEndpoint(target, source)}`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'If-Match': `"${recordRevision}"` },
-        body: JSON.stringify({ records, expected_source_revision: sourceRevision })
-      })
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'If-Match': `"${recordRevision}"` },
+      body: JSON.stringify({ records, expected_source_revision: sourceRevision }),
+    })
     if (response.status === 412) return 'conflict'
     if (!response.ok) return null
-    const saved = await response.json() as PdfRecordSnapshot
+    const saved = (await response.json()) as PdfRecordSnapshot
     pdfRecordSaveGeneration++
     pdfRecordSnapshots.set(documentIdFor(source), saved)
     publishPdfRecords(saved)
@@ -601,8 +715,10 @@ export async function commitPdfRecords(
 }
 
 const RECORD_ENDPOINTS: Record<RecordOwner, (target: RecordTarget, project: string) => string> = {
-  project_asset: (target, project) => `/api/workbench/assets/${encodeURIComponent(target.subject_id)}/pdf/records?${new URLSearchParams({ project })}`,
-  literature_attachment: (target, _project) => `/api/v1/literatures/${encodeURIComponent(target.scope_id)}/attachments/${encodeURIComponent(target.subject_id)}/records`
+  project_asset: (target, project) =>
+    `/api/workbench/assets/${encodeURIComponent(target.subject_id)}/pdf/records?${new URLSearchParams({ project })}`,
+  literature_attachment: (target, _project) =>
+    `/api/v1/literatures/${encodeURIComponent(target.scope_id)}/attachments/${encodeURIComponent(target.subject_id)}/records`,
 }
 
 export function recordTargetFor(source: DocumentSource): RecordTarget | null {
@@ -615,51 +731,84 @@ export function recordTargetFor(source: DocumentSource): RecordTarget | null {
 }
 
 function recordEndpoint(target: RecordTarget, source: DocumentSource): string {
-  const project = source.kind === 'project' ? source.project ?? '' : ''
+  const project = source.kind === 'project' ? (source.project ?? '') : ''
   return RECORD_ENDPOINTS[target.owner](target, project)
 }
 
-export type ImageOperationCode = 'stageUnsupported' | 'stageFailed' | 'releaseFailed' | 'saveUnsupported' | 'saveFailed' | 'readFailed'
+export type ImageOperationCode =
+  | 'stageUnsupported'
+  | 'stageFailed'
+  | 'releaseFailed'
+  | 'saveUnsupported'
+  | 'saveFailed'
+  | 'readFailed'
 export class ImageOperationError extends Error {
-  constructor(readonly code: ImageOperationCode, readonly status?: number) {
+  constructor(
+    readonly code: ImageOperationCode,
+    readonly status?: number
+  ) {
     super(code)
     this.name = 'ImageOperationError'
   }
 }
 
-export interface OfficeImageLease { lease: string; path: string; revision: string }
+export interface OfficeImageLease {
+  lease: string
+  path: string
+  revision: string
+}
 
-export async function stageOfficeImage(source: DocumentSource, bytes: Uint8Array): Promise<OfficeImageLease> {
+export async function stageOfficeImage(
+  source: DocumentSource,
+  bytes: Uint8Array
+): Promise<OfficeImageLease> {
   if (source.kind !== 'project') throw new ImageOperationError('stageUnsupported')
   const response = await fetch(`${base()}/api/workbench/office-images?${paramsFor(source)}`, {
-    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'image/png' },
-    body: new Blob([new Uint8Array(bytes)])
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'image/png' },
+    body: new Blob([new Uint8Array(bytes)]),
   })
   if (!response.ok) throw new ImageOperationError('stageFailed', response.status)
   return response.json() as Promise<OfficeImageLease>
 }
 
-export async function releaseOfficeImage(source: DocumentSource, lease: OfficeImageLease): Promise<void> {
+export async function releaseOfficeImage(
+  source: DocumentSource,
+  lease: OfficeImageLease
+): Promise<void> {
   if (source.kind !== 'project') throw new ImageOperationError('stageUnsupported')
   const params = paramsFor(source)
   params.set('lease', lease.lease)
   const response = await fetch(`${base()}/api/workbench/office-images?${params}`, {
-    method: 'DELETE', credentials: 'include', headers: { 'If-Match': `"${lease.revision}"` }
+    method: 'DELETE',
+    credentials: 'include',
+    headers: { 'If-Match': `"${lease.revision}"` },
   })
-  if (!response.ok && response.status !== 404) throw new ImageOperationError('releaseFailed', response.status)
+  if (!response.ok && response.status !== 404)
+    throw new ImageOperationError('releaseFailed', response.status)
 }
 
 /** Persist first; the editor stores only this portable, URI-encoded relative path. */
 export async function persistMarkdownImage(source: DocumentSource, file: File): Promise<string> {
   if (source.kind !== 'project') throw new ImageOperationError('saveUnsupported')
   const response = await fetch(`${base()}/api/workbench/images?${paramsFor(source)}`, {
-    method: 'POST', credentials: 'include',
-    headers: { 'Content-Type': file.type }, body: file
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': file.type },
+    body: file,
   })
   if (!response.ok) throw new ImageOperationError('saveFailed', response.status)
-  const result = await response.json() as { path: string }
-  return result.path.split('/').map((part) => encodeURIComponent(part).replace(/[!'()*]/g,
-    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)).join('/')
+  const result = (await response.json()) as { path: string }
+  return result.path
+    .split('/')
+    .map((part) =>
+      encodeURIComponent(part).replace(
+        /[!'()*]/g,
+        (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+      )
+    )
+    .join('/')
 }
 
 /** Resolve display only; never replace the Markdown node's persisted src. */
@@ -688,7 +837,10 @@ export function createMarkdownImageResolver(source: DocumentSource): {
       const cached = requests.get(endpoint)
       if (cached) return cached
       const pending = (async () => {
-        const response = await fetch(endpoint, { credentials: 'include', signal: controller.signal })
+        const response = await fetch(endpoint, {
+          credentials: 'include',
+          signal: controller.signal,
+        })
         if (!response.ok) throw new ImageOperationError('readFailed', response.status)
         const blob = await response.blob()
         controller.signal.throwIfAborted()
@@ -707,14 +859,43 @@ export function createMarkdownImageResolver(source: DocumentSource): {
       objectUrls.forEach((url) => URL.revokeObjectURL(url))
       objectUrls.clear()
       requests.clear()
-    }
+    },
   }
 }
 
 /** Resolve only a citation retained by the resource's persisted import receipt. */
-export async function resolveSavedCitation(source: ProjectDocumentSource, handle: string): Promise<CitationResolution> {
+export async function resolveSavedCitation(
+  source: ProjectDocumentSource,
+  handle: string
+): Promise<CitationResolution> {
   const params = new URLSearchParams({ project: source.project ?? '', path: source.path, handle })
-  const response = await fetch(`${base()}/api/assistant/resources/citation?${params}`, { credentials: 'include' })
-  if (!response.ok) throw new Error('saved_citation_unavailable')
+  const response = await fetch(`${base()}${SAVED_CITATION_ROUTE}?${params}`, {
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw savedCitationError(body?.detail)
+  }
+  return response.json()
+}
+
+export async function resolveArtifactCitation(
+  source: SessionArtifactSource,
+  revision: string,
+  handle: string
+): Promise<CitationResolution> {
+  const response = await fetch(
+    `${base()}${artifactCitationUrl({
+      session_id: source.sessionId,
+      artifact_id: source.artifactId,
+      revision,
+      handle,
+    })}`,
+    { credentials: 'include' }
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw savedCitationError(body?.detail)
+  }
   return response.json()
 }

@@ -9,13 +9,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scholarseed-codex"
-version = "0.2.0"
+version = "0.2.1"
 description = "ScholarSeed runtime adapter for the Codex app-server harness"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = ["scholarseed-runtime==0.2.0", "httpx>=0.28,<1"]
+dependencies = ["scholarseed-runtime==0.2.1", "httpx>=0.28,<1", "tomlkit==0.15.1"]
 
 [project.entry-points."scholarseed_runtime.providers"]
 codex = "scholarseed_codex.provider:provider"

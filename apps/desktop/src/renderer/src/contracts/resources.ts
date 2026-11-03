@@ -56,7 +56,6 @@ export {
   decideResourceReviewBatch,
   fetchResourceReviewBatch,
   fetchResourceReviewBatches,
-  hasDirtyReviewEditor,
   fetchReviewMemberContent,
   fetchReviewMemberCurrent,
   fetchReviewBaseline,

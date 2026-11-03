@@ -134,13 +134,27 @@ class ImpressLocatorRequest(BaseModel):
         return self
 
 
+class AnswerLocatorRequest(BaseModel):
+    kind: Literal["answer"]
+    answer_id: str = Field(min_length=1)
+    start_utf16: int = Field(ge=0)
+    end_utf16: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def ordered(self) -> "AnswerLocatorRequest":
+        if self.end_utf16 <= self.start_utf16:
+            raise ValueError("answer locator must not be empty or reversed")
+        return self
+
+
 SelectionLocatorRequest = Annotated[
     TextLocatorRequest
     | MarkdownLocatorRequest
     | PdfLocatorRequest
     | WriterLocatorRequest
     | CalcLocatorRequest
-    | ImpressLocatorRequest,
+    | ImpressLocatorRequest
+    | AnswerLocatorRequest,
     Field(discriminator="kind"),
 ]
 
@@ -150,12 +164,14 @@ class SelectionAnchorRequest(BaseModel):
     locator: SelectionLocatorRequest
     selected_text_hash: str = Field(pattern=SHA256_PATTERN)
     preview_text: str = ""
+    snapshot_text: str = ""
 
 
 class ContextRefRequest(BaseModel):
     ref_id: str = ""
     kind: ContextRefKind
     source_id: str = Field(min_length=1)
+    project_id: str | None = Field(default=None, min_length=1)
     source_revision: str | None = None
     label: str = Field(min_length=1)
     anchor: SelectionAnchorRequest | None = None
@@ -267,6 +283,13 @@ class AssistantLiteratureImportRequest(BaseModel):
     expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=180)
     collection: str = ""
+    collection_id: str = ""
+
+    @model_validator(mode="after")
+    def validate_collection_target(self) -> "AssistantLiteratureImportRequest":
+        if self.collection and self.collection_id:
+            raise ValueError("collection and collection_id are mutually exclusive")
+        return self
 
 
 class AssistantAttachmentImportRequest(BaseModel):

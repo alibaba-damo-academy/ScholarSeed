@@ -31,7 +31,8 @@
 //   {"op":"shot","name":"..."}         capturePage → <dir>/shots/<name>.png
 //   {"op":"quit"}                      graceful app quit
 
-import { BrowserWindow, app } from 'electron'
+import type { BrowserWindow } from 'electron'
+import { app } from 'electron'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 

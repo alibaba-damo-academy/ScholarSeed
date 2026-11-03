@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from hashlib import sha256
 from typing import Dict
 
@@ -56,6 +57,12 @@ CONV_TURN_ID_HEADER = "X-Deeprd-Conv-Turn-id"
 _JWT_SEGMENTS = 3
 
 
+class CredentialCleanup(str, Enum):
+    MATCHED = "matched"
+    ABSENT = "absent"
+    STALE = "stale"
+
+
 def looks_like_jwt(credential: str) -> bool:
     """粗判是否是 JWS 紧凑序列化（三段、段间非空）。不验签、不解析。"""
     parts = str(credential or "").split(".")
@@ -68,6 +75,31 @@ class AccountTokenHolder:
     def __init__(self) -> None:
         self._tokens: Dict[str, str] = {}
         self._revoked: set[str] = set()
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def remember_if_unchanged(self, user_id: str, credential: str, expected_revision: int) -> bool:
+        if expected_revision != self._revision:
+            return False
+        self.remember(user_id, credential)
+        return self.current(user_id) == credential
+
+    def forget_if_current(self, user_id: str, expected_credential: str) -> CredentialCleanup:
+        owner = str(user_id or "").strip()
+        expected = str(expected_credential or "").strip()
+        if owner and looks_like_jwt(expected):
+            self._revoked.add(sha256(expected.encode()).hexdigest())
+        current = self._tokens.get(owner)
+        if current is None:
+            return CredentialCleanup.ABSENT
+        if not expected or current != expected:
+            return CredentialCleanup.STALE
+        del self._tokens[owner]
+        self._revision += 1
+        return CredentialCleanup.MATCHED
 
     def remember(self, user_id: str, credential: str) -> None:
         """记住这次请求带来的凭据（鉴权 middleware 验签成功后调用）。
@@ -83,7 +115,9 @@ class AccountTokenHolder:
             return
         if sha256(token.encode()).hexdigest() in self._revoked:
             return
-        self._tokens[owner] = token
+        if self._tokens.get(owner) != token:
+            self._tokens[owner] = token
+            self._revision += 1
 
     def current(self, user_id: str) -> str:
         """当前已知的 access token；未登录 / 无记录返回空串。"""
@@ -94,13 +128,17 @@ class AccountTokenHolder:
         """登出时清掉（本地不再持有该用户凭据）。"""
 
         token = self._tokens.pop(str(user_id or "").strip(), None)
+        logger.info("account_token_forgotten token_present=%s", bool(token))
         if token:
             self._revoked.add(sha256(token.encode()).hexdigest())
+            self._revision += 1
 
     def clear_all(self) -> None:
         """运行期切到免鉴权模式时全量失效（proposal 18：切换不迁移凭据）。"""
 
+        logger.info("account_tokens_cleared entry_count=%d", len(self._tokens))
         self._tokens.clear()
+        self._revision += 1
 
 
 __all__ = [

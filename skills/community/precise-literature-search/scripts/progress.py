@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from io_utils import atomic_write_json
+from filesystem import canonical_path, filesystem_path
 
 
 PROGRESS_FILENAME = "progress.json"
@@ -39,7 +40,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
 @contextmanager
 def _progress_lock(run_dir: Path) -> Iterator[None]:
     lock_path = run_dir / ".progress.lock"
-    with lock_path.open("a+", encoding="utf-8") as handle:
+    with filesystem_path(lock_path).open("a+", encoding="utf-8") as handle:
         lock_file(handle)
         yield
 
@@ -47,7 +48,7 @@ def _progress_lock(run_dir: Path) -> Iterator[None]:
 def read_progress(run_dir: Path) -> dict[str, Any] | None:
     path = run_dir / PROGRESS_FILENAME
     try:
-        with path.open("r", encoding="utf-8") as handle:
+        with filesystem_path(path).open("r", encoding="utf-8") as handle:
             value = json.load(handle)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
@@ -91,8 +92,8 @@ def update_progress(
     emit: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Atomically replace progress state and optionally emit its readable form."""
-    run_dir = run_dir.resolve()
-    if not run_dir.is_dir():
+    run_dir = canonical_path(run_dir)
+    if not filesystem_path(run_dir).is_dir():
         raise ValueError(f"run directory does not exist: {run_dir}")
     moment = now or _utc_now()
     with _progress_lock(run_dir):
@@ -129,8 +130,9 @@ def heartbeat_if_due(
     emit: Callable[[str], None] | None = None,
 ) -> bool:
     """Refresh and emit the last running state after the silence threshold."""
+    run_dir = canonical_path(run_dir)
     moment = now or _utc_now()
-    with _progress_lock(run_dir.resolve()):
+    with _progress_lock(run_dir):
         previous = read_progress(run_dir)
         if not previous or previous.get("status") != "running":
             return False

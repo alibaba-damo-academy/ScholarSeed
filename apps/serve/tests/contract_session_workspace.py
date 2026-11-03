@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 
+from service.platform.activity import Activities
+
 _HOME = Path(tempfile.mkdtemp(prefix="session-workspace-home-"))
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
 
@@ -179,7 +181,7 @@ class _Live:
             return None
         return {"name": name, "version": "1.2.3", "active": True}
 
-    def pending_hil_snapshot(self) -> list[dict[str, Any]]:
+    def pending_hil_snapshot(self, *, blocking_only: bool = True) -> list[dict[str, Any]]:
         return []
 
     def artifact_snapshot(self) -> list[dict[str, Any]]:
@@ -265,6 +267,7 @@ def _service(root: Path, projects: set[Path]):
     service = SessionService(
         root,
         sessions,  # type: ignore[arg-type]
+        activities=Activities(),
         access=catalog,
         events=events,
         runtime=runtime,  # type: ignore[arg-type]
@@ -275,7 +278,7 @@ def _service(root: Path, projects: set[Path]):
             runtime_model=lambda: "gpt-codex-native",
             permission_mode=lambda: "ask",
         ),
-        credentials=skill_credentials_from_env({}),
+        credentials=skill_credentials_from_env({}, activities=Activities()),
         logger=logging.getLogger(__name__),
     )
     content_catalog = ContentCatalog(_HOME / f"content-{root.name}.sqlite3")
@@ -284,7 +287,7 @@ def _service(root: Path, projects: set[Path]):
         registry.adopt(project)
     app = FastAPI()
     app.state.session_service = service
-    _bind_writable_roots(app, ContentService(registry, content_catalog))
+    _bind_writable_roots(app, ContentService(registry, content_catalog, activities=Activities()))
     return service, catalog, runtime, sessions
 
 

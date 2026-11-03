@@ -1,5 +1,5 @@
 interface:
-  display_name: "Research Idea Partner"
+  display_name: "研究选题构思"
   short_description: "Generate & develop research ideas"
   default_prompt: "Use $research-idea-partner to generate research directions for my topic."
 policy:

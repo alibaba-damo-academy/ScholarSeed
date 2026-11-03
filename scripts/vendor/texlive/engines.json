@@ -1,0 +1,311 @@
+{
+  "source_trees": {
+    "core/kpathsea": "texk/kpathsea",
+    "core/web2c": "texk/web2c",
+    "deps-small/zlib": "libs/zlib/zlib-src",
+    "deps-small/libpng": "libs/libpng/libpng-src",
+    "deps-fonts/freetype": "libs/freetype2/freetype-src",
+    "deps-fonts/graphite": "libs/graphite2/graphite2-src",
+    "deps-shaping/harfbuzz": "libs/harfbuzz/harfbuzz-src",
+    "deps-shaping/teckit": "libs/teckit/TECkit-src",
+    "deps-pplib/pplib": "libs/pplib/pplib-src",
+    "deps-xpdf/source": "libs/xpdf/xpdf-src",
+    "icu/common": "libs/icu/icu-src/source/common",
+    "icu/i18n": "libs/icu/icu-src/source/i18n"
+  },
+  "recipe_trees": {
+    "deps-small/expat": "ptx/libs/expat",
+    "deps-fontconfig/fontconfig": "ptx/libs/fontconfig"
+  },
+  "generated": {
+    "xetex0.c": "7b29f6f6d973747a267f949337dcc56a52b3f75b12e1b287498ce36735bc0368",
+    "xetexini.c": "9eba63ed6e7fbefd247ae10380bc45e9bba6728d959ccdb38fbdb54c390c761c",
+    "xetexcoerce.h": "e13052274d70b062b998c3ba92d6b88065ad9d306bf0ef37974bcec27d1574bb",
+    "xetexd.h": "711a0d576897628fa31f0ac79a31b773463682e50e75af742168de0f81bac3f0",
+    "xetex-pool.c": "65322fb6dfc2db1f79ceb062cb7441c6d525c979b344e3c6c4059d34534d542c",
+    "pdftex0.c": "855b77d143c539fafae8d40378c764fb127c5d9f00b559c1843568bfccf6b897",
+    "pdftexini.c": "4636d7a68f3348feafd266f992344185473f350103bddf453d631981688e3eac",
+    "pdftexcoerce.h": "6ac1b27846df349a22c58470dd4e20daaddcadb0920bf75163c10b6daa5cdecb",
+    "pdftexd.h": "965e2437a13d1369982be34fbfa4003a622eaaabd0f477ec9e25216639d0db52",
+    "pdftex-pool.c": "1798864261e71fd92e13ae960b38625ce5aafe05d8a3ad3014b60ae4d3019d1a"
+  },
+  "reference_dlls": {
+    "xetex.dll": "4c18ab0de9d32e053b5645fc5bed1c2b1498055e547a76a644db2070cd1c5b40",
+    "icudt78.dll": "707b33da2dee78a8092cb55f2057d7e424dfd989d02f9bd2e8ca841180b24c51",
+    "pdftex.dll": "199788b93da06b355cedc4bab1a3695e5c199413176020a708e7658eb2c835bf"
+  },
+  "units": [
+    {
+      "name": "zlib",
+      "base": "deps-small/zlib",
+      "sources": "adler32.c compress.c crc32.c deflate.c gzclose.c gzlib.c gzread.c gzwrite.c infback.c inflate.c inftrees.c inffast.c trees.c uncompr.c zutil.c",
+      "includes": [
+        "deps-small/zlib"
+      ],
+      "defines": [],
+      "cpp": false,
+      "links": []
+    },
+    {
+      "name": "png",
+      "base": "deps-small/libpng",
+      "sources": "png.c pngerror.c pngget.c pngmem.c pngpread.c pngread.c pngrio.c pngrtran.c pngrutil.c pngset.c pngtrans.c pngwio.c pngwrite.c pngwtran.c pngwutil.c",
+      "includes": [
+        "deps-small/libpng",
+        "deps-small/zlib"
+      ],
+      "defines": [],
+      "cpp": false,
+      "links": []
+    },
+    {
+      "name": "expat",
+      "base": "deps-small/expat/lib",
+      "sources": "xmlparse.c xmlrole.c xmltok.c",
+      "includes": [
+        "deps-small/expat/lib"
+      ],
+      "defines": [
+        "NDEBUG=1",
+        "_MBCS",
+        "_LIB",
+        "COMPILED_FROM_DSP=1"
+      ],
+      "cpp": false,
+      "links": []
+    },
+    {
+      "name": "freetype",
+      "base": "deps-fonts/freetype",
+      "sources": "src/autofit/autofit.c src/base/ftbase.c src/base/ftbbox.c src/base/ftbdf.c src/base/ftbitmap.c src/base/ftcid.c src/base/ftfstype.c src/base/ftgasp.c src/base/ftglyph.c src/base/ftgxval.c src/base/ftinit.c src/base/ftmm.c src/base/ftotval.c src/base/ftpatent.c src/base/ftpfr.c src/base/ftstroke.c src/base/ftsynth.c src/base/fttype1.c src/base/ftwinfnt.c src/bdf/bdf.c src/cache/ftcache.c src/cff/cff.c src/cid/type1cid.c src/dlg/dlgwrap.c src/gzip/ftgzip.c src/lzw/ftlzw.c src/pcf/pcf.c src/pfr/pfr.c src/psaux/psaux.c src/pshinter/pshinter.c src/psnames/psmodule.c src/raster/raster.c src/sfnt/sfnt.c src/smooth/smooth.c src/sdf/sdf.c src/svg/svg.c src/truetype/truetype.c src/type1/type1.c src/type42/type42.c src/winfonts/winfnt.c builds/windows/ftdebug.c builds/windows/ftsystem.c",
+      "includes": [
+        "deps-fonts/freetype/include"
+      ],
+      "defines": [
+        "NDEBUG",
+        "_LIB",
+        "FT2_BUILD_LIBRARY"
+      ],
+      "cpp": false,
+      "links": []
+    },
+    {
+      "name": "graphite",
+      "base": "deps-fonts/graphite/src",
+      "sources": "CmapCache.cpp Code.cpp Collider.cpp Decompressor.cpp Face.cpp FeatureMap.cpp FileFace.cpp Font.cpp GlyphCache.cpp GlyphFace.cpp Intervals.cpp Justifier.cpp NameTable.cpp Pass.cpp Position.cpp Segment.cpp Silf.cpp Slot.cpp Sparse.cpp TtfUtil.cpp UtfCodec.cpp call_machine.cpp gr_char_info.cpp gr_face.cpp gr_features.cpp gr_font.cpp gr_logging.cpp gr_segment.cpp gr_slot.cpp json.cpp",
+      "includes": [
+        "deps-fonts/graphite",
+        "deps-fonts/graphite/include",
+        "deps-fonts/graphite/src",
+        "deps-fonts/graphite/src/inc"
+      ],
+      "defines": [
+        "GRAPHITE2_STATIC=1",
+        "GRAPHITE2_NTRACING=1",
+        "_WINDOWS=1",
+        "_SCL_SECURE_NO_WARNINGS=1",
+        "UNICODE=1"
+      ],
+      "cpp": true,
+      "links": []
+    },
+    {
+      "name": "teckit",
+      "base": "deps-shaping/teckit",
+      "sources": "source/Engine.cpp",
+      "includes": [
+        "deps-shaping/teckit",
+        "deps-shaping/teckit/source/Public-headers",
+        "deps-small/zlib"
+      ],
+      "defines": [
+        "HAVE_CONFIG_H"
+      ],
+      "cpp": true,
+      "links": []
+    },
+    {
+      "name": "harfbuzz",
+      "base": "deps-shaping/harfbuzz",
+      "sources": "src/harfbuzz.cc",
+      "includes": [
+        "deps-shaping/harfbuzz",
+        "deps-shaping/harfbuzz/src",
+        "deps-fonts/freetype/include",
+        "deps-fonts/graphite/include"
+      ],
+      "defines": [
+        "HAVE_CONFIG_H=1",
+        "GRAPHITE2_STATIC=1"
+      ],
+      "cpp": true,
+      "links": []
+    },
+    {
+      "name": "fontconfig",
+      "base": "deps-fontconfig/fontconfig/src",
+      "sources": "fcatomic.c fccache.c fccfg.c fccharset.c fccompat.c fcdbg.c fcdefault.c fcdir.c fcformat.c fcfreetype.c fcfs.c fchash.c fcinit.c fclang.c fclist.c fcmatch.c fcmatrix.c fcname.c fcobjs.c fcpat.c fcptrlist.c fcrange.c fcserialize.c fcstat.c fcstr.c fcxml.c fcweight.c ftglue.c",
+      "includes": [
+        "deps-fontconfig/fontconfig/src",
+        "deps-fontconfig/fontconfig",
+        "deps-fonts/freetype/include",
+        "deps-small/expat/lib",
+        "core",
+        "core/kpathsea"
+      ],
+      "defines": [
+        "XML_STATIC=1",
+        "HAVE_CONFIG_H=1",
+        "F_OK=0"
+      ],
+      "cpp": false,
+      "links": []
+    },
+    {
+      "name": "kpathsea",
+      "base": "core/kpathsea",
+      "sources": "tex-file.c absolute.c atou.c cnf.c concat.c concat3.c concatn.c db.c debug.c dir.c elt-dirs.c expand.c extend-fname.c file-p.c find-suffix.c fn.c fontmap.c getopt.c getopt1.c hash.c kdefault.c kpathsea.c line.c magstep.c make-suffix.c path-elt.c pathsearch.c proginit.c progname.c readable.c rm-suffix.c str-list.c str-llist.c tex-glyph.c tex-hush.c tex-make.c tilde.c uppercasify.c variable.c version.c xbasename.c xcalloc.c xdirname.c xfopen.c xfseek.c xftell.c xgetcwd.c xmalloc.c xopendir.c xputenv.c xrealloc.c xstat.c xstrdup.c dirent.c knj.c win32lib.c",
+      "includes": [
+        "core/kpathsea",
+        "core"
+      ],
+      "defines": [
+        "MAKE_KPSE_DLL=1",
+        "HAVE_CONFIG_H"
+      ],
+      "cpp": false,
+      "links": []
+    },
+    {
+      "name": "icu",
+      "base": "icu/common",
+      "sources": "appendable.cpp bmpset.cpp brkeng.cpp brkiter.cpp bytesinkutil.cpp bytestream.cpp bytestrie.cpp bytestriebuilder.cpp bytestrieiterator.cpp caniter.cpp characterproperties.cpp chariter.cpp charstr.cpp cmemory.cpp cstr.cpp cstring.cpp cwchar.cpp dictbe.cpp dictionarydata.cpp dtintrv.cpp edits.cpp emojiprops.cpp errorcode.cpp filteredbrk.cpp filterednormalizer2.cpp icudataver.cpp icuplug.cpp loadednormalizer2impl.cpp localebuilder.cpp localematcher.cpp localeprioritylist.cpp locavailable.cpp locbased.cpp locdispnames.cpp locdistance.cpp locdspnm.cpp locid.cpp loclikely.cpp loclikelysubtags.cpp locmap.cpp locresdata.cpp locutil.cpp lsr.cpp lstmbe.cpp messagepattern.cpp mlbe.cpp normalizer2.cpp normalizer2impl.cpp normlzr.cpp parsepos.cpp patternprops.cpp pluralmap.cpp propname.cpp propsvec.cpp punycode.cpp putil.cpp rbbi.cpp rbbi_cache.cpp rbbidata.cpp rbbinode.cpp rbbirb.cpp rbbiscan.cpp rbbisetb.cpp rbbistbl.cpp rbbitblb.cpp resbund.cpp resbund_cnv.cpp resource.cpp restrace.cpp ruleiter.cpp schriter.cpp serv.cpp servlk.cpp servlkf.cpp servls.cpp servnotf.cpp servrbf.cpp servslkf.cpp sharedobject.cpp simpleformatter.cpp static_unicode_sets.cpp stringpiece.cpp stringtriebuilder.cpp uarrsort.cpp ubidi.cpp ubidi_props.cpp ubidiln.cpp ubiditransform.cpp ubidiwrt.cpp ubrk.cpp ucase.cpp ucasemap.cpp ucasemap_titlecase_brkiter.cpp ucat.cpp uchar.cpp ucharstrie.cpp ucharstriebuilder.cpp ucharstrieiterator.cpp uchriter.cpp ucln_cmn.cpp ucmndata.cpp ucnv.cpp ucnv2022.cpp ucnv_bld.cpp ucnv_cb.cpp ucnv_cnv.cpp ucnv_ct.cpp ucnv_err.cpp ucnv_ext.cpp ucnv_io.cpp ucnv_lmb.cpp ucnv_set.cpp ucnv_u16.cpp ucnv_u32.cpp ucnv_u7.cpp ucnv_u8.cpp ucnvbocu.cpp ucnvdisp.cpp ucnvhz.cpp ucnvisci.cpp ucnvlat1.cpp ucnvmbcs.cpp ucnvscsu.cpp ucnvsel.cpp ucol_swp.cpp ucptrie.cpp ucurr.cpp udata.cpp udatamem.cpp udataswp.cpp uenum.cpp uhash.cpp uhash_us.cpp uidna.cpp uinit.cpp uinvchar.cpp uiter.cpp ulist.cpp uloc.cpp ulocale.cpp ulocbuilder.cpp uloc_keytype.cpp uloc_tag.cpp umapfile.cpp umath.cpp umutablecptrie.cpp umutex.cpp unames.cpp unifiedcache.cpp unifilt.cpp unifunct.cpp uniset.cpp uniset_closure.cpp uniset_props.cpp unisetspan.cpp unistr.cpp unistr_case.cpp unistr_case_locale.cpp unistr_cnv.cpp unistr_props.cpp unistr_titlecase_brkiter.cpp unorm.cpp unormcmp.cpp uobject.cpp uprops.cpp ures_cnv.cpp uresbund.cpp uresdata.cpp usc_impl.cpp uscript.cpp uscript_props.cpp uset.cpp uset_props.cpp usetiter.cpp ushape.cpp usprep.cpp ustack.cpp ustr_cnv.cpp ustr_titlecase_brkiter.cpp ustr_wcs.cpp ustrcase.cpp ustrcase_locale.cpp ustrenum.cpp ustrfmt.cpp ustring.cpp ustrtrns.cpp utext.cpp utf_impl.cpp util.cpp util_props.cpp utrace.cpp utrie.cpp utrie2.cpp utrie2_builder.cpp utrie_swap.cpp uts46.cpp utypes.cpp uvector.cpp uvectr32.cpp uvectr64.cpp wintz.cpp fixedstring.cpp",
+      "includes": [
+        "icu/common",
+        "icu",
+        "icu/common/unicode",
+        "icu/i18n"
+      ],
+      "defines": [
+        "U_COMMON_IMPLEMENTATION=1",
+        "U_EXPORT=",
+        "U_WINDOWS=1",
+        "ICUFORXeTeX=1",
+        "CYGWINMSVC=1"
+      ],
+      "cpp": true,
+      "links": []
+    },
+    {
+      "name": "xpdf",
+      "base": "deps-xpdf/source",
+      "sources": "goo/FixedPoint.cc goo/GHash.cc goo/GList.cc goo/GString.cc goo/Trace.cc goo/gfile.cc goo/gmem.cc goo/gmempp.cc fofi/FoFiBase.cc fofi/FoFiEncodings.cc fofi/FoFiIdentifier.cc fofi/FoFiTrueType.cc fofi/FoFiType1.cc fofi/FoFiType1C.cc xpdf/AcroForm.cc xpdf/Annot.cc xpdf/Array.cc xpdf/BuiltinFont.cc xpdf/BuiltinFontTables.cc xpdf/CMap.cc xpdf/Catalog.cc xpdf/CharCodeToUnicode.cc xpdf/Decrypt.cc xpdf/Dict.cc xpdf/Error.cc xpdf/FontEncodingTables.cc xpdf/Function.cc xpdf/Gfx.cc xpdf/GfxFont.cc xpdf/GfxState.cc xpdf/GlobalParams.cc xpdf/JArithmeticDecoder.cc xpdf/JBIG2Stream.cc xpdf/JPXStream.cc xpdf/Lexer.cc xpdf/Link.cc xpdf/NameToCharCode.cc xpdf/Object.cc xpdf/OptionalContent.cc xpdf/Outline.cc xpdf/OutputDev.cc xpdf/PDF417Barcode.cc xpdf/PDFDoc.cc xpdf/PDFDocEncoding.cc xpdf/PSTokenizer.cc xpdf/Page.cc xpdf/Parser.cc xpdf/SecurityHandler.cc xpdf/Stream.cc xpdf/TextString.cc xpdf/UnicodeMap.cc xpdf/UnicodeRemapping.cc xpdf/UTF8.cc xpdf/XFAScanner.cc xpdf/XRef.cc xpdf/Zoox.cc",
+      "includes": [
+        "deps-xpdf/source",
+        "deps-xpdf/source/goo",
+        "deps-xpdf/source/fofi",
+        "deps-xpdf/source/splash",
+        "deps-xpdf/source/xpdf",
+        "core"
+      ],
+      "defines": [
+        "PDF_PARSER_ONLY"
+      ],
+      "cpp": true,
+      "links": []
+    },
+    {
+      "name": "pplib",
+      "base": "deps-pplib/pplib/src",
+      "sources": "pparray.c ppcrypt.c ppdict.c ppheap.c ppload.c ppstream.c ppxref.c util/utilbasexx.c util/utilcrypt.c util/utilflate.c util/utilfpred.c util/utiliof.c util/utillog.c util/utillzw.c util/utilmd5.c util/utilmem.c util/utilmemheap.c util/utilmemheapiof.c util/utilmeminfo.c util/utilnumber.c util/utilsha.c",
+      "includes": [
+        "deps-pplib/pplib/src",
+        "deps-pplib/pplib/src/util",
+        "deps-small/zlib"
+      ],
+      "defines": [
+        "NO_IMAGE_FILTER=1"
+      ],
+      "cpp": false,
+      "links": []
+    },
+    {
+      "name": "xetex",
+      "base": "core/web2c",
+      "sources": "xetex0.c xetexini.c xetexdir/xetexextra.c xetexdir/trans.c xetex-pool.c xetexdir/XeTeX_ext.c xetexdir/XeTeX_pic.c synctex-xe.c xetexdir/image/bmpimage.c xetexdir/image/jpegimage.c xetexdir/image/mfileio.c xetexdir/image/numbers.c xetexdir/image/pngimage.c libmd5/md5.c xetexdir/XeTeXFontMgr.cpp xetexdir/XeTeXFontMgr_FC.cpp xetexdir/XeTeXLayoutInterface.cpp xetexdir/XeTeXFontInst.cpp xetexdir/XeTeXOTMath.cpp xetexdir/hz.cpp xetexdir/pdfimage.cpp lib/alloca.c lib/basechsuffix.c lib/chartostring.c lib/coredump.c lib/eofeoln.c lib/fprintreal.c lib/inputint.c lib/input2int.c lib/openclose.c lib/printversion.c lib/setupvar.c lib/uexit.c lib/usage.c lib/version.c lib/zround.c",
+      "includes": [
+        "core/web2c",
+        "core",
+        "core/web2c/synctexdir",
+        "core/web2c/xetexdir",
+        "core/web2c/libmd5",
+        "core/web2c/headers",
+        "deps-shaping/harfbuzz/src",
+        "deps-fonts/graphite/include",
+        "deps-fontconfig/fontconfig",
+        "deps-pplib/pplib/src",
+        "deps-small/libpng",
+        "icu/common",
+        "deps-fonts/freetype/include",
+        "deps-small/zlib"
+      ],
+      "defines": [
+        "HAVE_CONFIG_H=1",
+        "XETEX_OTHER=1",
+        "GRAPHITE2_STATIC=1",
+        "ICUFORXeTeX=1",
+        "strdup=_strdup"
+      ],
+      "cpp": false,
+      "links": [
+        "kpathsea",
+        "icu",
+        "icudt",
+        "zlib",
+        "png",
+        "expat",
+        "freetype",
+        "graphite",
+        "fontconfig",
+        "teckit",
+        "harfbuzz",
+        "pplib"
+      ]
+    },
+    {
+      "name": "pdftex",
+      "base": "core/web2c",
+      "sources": "pdftex0.c pdftexini.c pdftexdir/pdftexextra.c pdftex-pool.c synctex-pdf.c libmd5/md5.c pdftexdir/regex/regex.c pdftexdir/avl.c pdftexdir/avlstuff.c pdftexdir/epdf.c pdftexdir/mapfile.c pdftexdir/pdftoepdf.cc pdftexdir/pkin.c pdftexdir/subfont.c pdftexdir/tounicode.c pdftexdir/utils.c pdftexdir/vfpacket.c pdftexdir/writeenc.c pdftexdir/writefont.c pdftexdir/writeimg.c pdftexdir/writejbig2.c pdftexdir/writejpg.c pdftexdir/writepng.c pdftexdir/writet1.c pdftexdir/writet3.c pdftexdir/writettf.c pdftexdir/writezip.c lib/alloca.c lib/basechsuffix.c lib/chartostring.c lib/coredump.c lib/eofeoln.c lib/fprintreal.c lib/inputint.c lib/input2int.c lib/openclose.c lib/printversion.c lib/setupvar.c lib/uexit.c lib/usage.c lib/version.c lib/zround.c",
+      "includes": [
+        "core/web2c",
+        "core",
+        "core/web2c/synctexdir",
+        "core/web2c/pdftexdir",
+        "core/web2c/pdftexdir/regex",
+        "core/web2c/libmd5",
+        "deps-small/libpng",
+        "deps-small/zlib",
+        "deps-xpdf/source",
+        "deps-xpdf/source/goo",
+        "deps-xpdf/source/fofi",
+        "deps-xpdf/source/xpdf"
+      ],
+      "defines": [
+        "HAVE_CONFIG_H=1",
+        "PDF_PARSER_ONLY"
+      ],
+      "cpp": false,
+      "links": [
+        "kpathsea",
+        "zlib",
+        "png",
+        "xpdf"
+      ]
+    }
+  ],
+  "tools": {
+    "cl.exe": "8e4352b523f4ff37b429aea1d340094be1e17bbdf4f687247fc0be92d6eb9440",
+    "link.exe": "7d80b89e242e2ab4d002c3b3508361a45691a01bd1f4be4d19eb765c8d319762",
+    "lib.exe": "c97dcaf4b4e0d28864aa8be6b5ebd2fe56b0aaad19bc4ba43118b48db771e460"
+  }
+}

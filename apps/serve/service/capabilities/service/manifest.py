@@ -26,6 +26,7 @@ from service.capabilities.service.package import (
     read_package,
     validate_paths,
 )
+from service.platform.storage import filesystem_path
 
 LOCK_SCHEMA = 2
 LOCK_FILENAME = "skills.lock.json"
@@ -64,6 +65,7 @@ def verify_runtime_target(lock: dict[str, Any]) -> None:
 
 
 def atomic_write(path: Path, data: bytes) -> None:
+    path = filesystem_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=path.parent, prefix=f".{path.name}.", delete=False

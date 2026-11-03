@@ -27,12 +27,14 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import AsyncIterator, Callable, Iterable
 
 from service.content.domain.model import OWNED_ROOT_KINDS, ContentError, resolve_root, visible
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.enumeration import GITIGNORE_FILENAME
 from service.content.service.space import ProjectSpace, normalize
+from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
 from service.platform.content import (
     EventSource,
     FileEvent,
@@ -42,12 +44,17 @@ from service.platform.content import (
 )
 
 #: 监听后端是否可用。缺 watchfiles 时降级为定时轮询 + RESCAN, 不让产品少一条能力。
+_watchfiles: ModuleType | None
 try:
-    from watchfiles import Change, awatch
+    import watchfiles as _watchfiles
 
     WATCHFILES_AVAILABLE = True
 except ImportError:  # pragma: no cover - 依赖缺失时的降级路径
+    _watchfiles = None
     WATCHFILES_AVAILABLE = False
+
+Change = _watchfiles.Change if _watchfiles is not None else None
+awatch = _watchfiles.awatch if _watchfiles is not None else None
 
 #: 去抖窗口 (秒)。一次保存的多次底层写在这个窗口内归并成一条。
 DEBOUNCE_SECONDS = 0.35
@@ -106,9 +113,11 @@ class FileEventHub:
         catalog: ContentCatalog,
         space_of: Callable[[str], ProjectSpace],
         *,
+        activities: Activities,
         epoch: str = "",
     ) -> None:
         self._catalog = catalog
+        self._activities = activities
         self._space_of = space_of
         # 世代随进程: 重启即换, 于是旧游标一定拿到 RESCAN 而不是错位续传。
         self._epoch = epoch or f"{int(time.time())}-{secrets.token_hex(4)}"
@@ -198,9 +207,9 @@ class FileEventHub:
         project = self._space_of(project_id).project
         queue: asyncio.Queue[FileEvent] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
         self._subscribers.setdefault(project.id, []).append(queue)
-        await self.ensure_watching(project.id)
-        current_epoch, last_seq = self.cursor(project.id)
         try:
+            await self.ensure_watching(project.id)
+            current_epoch, last_seq = self.cursor(project.id)
             for event in self._resume(project, epoch, from_seq, current_epoch, last_seq):
                 yield event
             while not self._stopping.is_set():
@@ -307,39 +316,74 @@ class FileEventHub:
             return
         await self._poll(project_id)
 
+    @contextlib.asynccontextmanager
+    async def _batch(self):
+        resumed = False
+        while True:
+            try:
+                lease = self._activities.enter(ActivityDomain.RESOURCE, root=True)
+                break
+            except MaintenanceActive:
+                resumed = True
+                await self._activities.wait_open()
+        with lease:
+            yield resumed
+
     async def _watch_native(self, project_id: str) -> None:
+        assert awatch is not None
         rescan_after_attach = False
         while not self._stopping.is_set():
-            roots = self.watched_roots(project_id)
-            if not roots:
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
-                continue
-            try:
-                # 显式关闭旧 generator, 释放被撤销根的原生句柄后再订阅新集合。
-                async with contextlib.aclosing(
-                    awatch(
+            retry = False
+            async with self._batch() as resumed:
+                roots = self.watched_roots(project_id)
+                rescan_after_attach |= resumed
+                if roots:
+                    watcher = awatch(
                         *roots,
                         debounce=int(DEBOUNCE_SECONDS * 1000),
                         stop_event=self._stopping,
                         rust_timeout=ROOT_REFRESH_MILLISECONDS,
                         yield_on_timeout=True,
                     )
-                ) as watcher:
-                    async for changes in watcher:
-                        if rescan_after_attach:
-                            # 新句柄已开始观察后再通知重扫, 覆盖重新订阅间隙的写入。
-                            await self._rescan_roots(project_id)
-                            rescan_after_attach = False
-                        await self._publish_batch(project_id, changes)
-                        if roots != self.watched_roots(project_id):
-                            rescan_after_attach = True
-                            break
-            except asyncio.CancelledError:  # pragma: no cover - 正常关闭
-                raise
-            except OSError:
-                # 目录删除或句柄不足不能使监听永久停摆; 重扫后退避重建。
-                await self._rescan_roots(project_id)
-                rescan_after_attach = True
+
+                    async def next_changes():
+                        return await anext(watcher)
+
+                    try:
+                        # One lease spans the native generator's entire lifetime.
+                        # Drain closes it after the current bounded wait, before
+                        # parking for admission; handles cannot outlive the lease.
+                        while not self._stopping.is_set():
+                            try:
+                                changes = await self._activities.finish(
+                                    ActivityDomain.RESOURCE, next_changes
+                                )
+                            except StopAsyncIteration:
+                                break
+                            if rescan_after_attach:
+                                await self._rescan_roots(project_id)
+                                rescan_after_attach = False
+                            await self._publish_batch(project_id, changes)
+                            if roots != self.watched_roots(project_id):
+                                rescan_after_attach = True
+                                break
+                            if self._activities.snapshot().phase is not ActivityPhase.OPEN:
+                                rescan_after_attach = True
+                                break
+                    except OSError:
+                        await self._rescan_roots(project_id)
+                        rescan_after_attach = True
+                        retry = True
+                    finally:
+                        closing = self._activities.enter(ActivityDomain.RESOURCE)
+
+                        async def close_watcher():
+                            await watcher.aclose()
+                            # A failed close retains its receipt and blocks seal.
+                            closing.close()
+
+                        await self._activities.finish(ActivityDomain.RESOURCE, close_watcher)
+            if not roots or retry:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def _rescan_roots(self, project_id: str) -> None:
@@ -348,15 +392,20 @@ class FileEventHub:
             await self._emit(project_id, self._rescan(project, kind))
 
     async def _poll(self, project_id: str) -> None:
-        """降级路径: 定时快照比对。只发 RESCAN, 不假装知道具体是哪个文件变了。"""
-
-        previous = self._snapshot(project_id)
+        """Keep the real snapshot thread and event commit in one admitted batch."""
+        async with self._batch():
+            previous = await self._activities.to_thread(
+                ActivityDomain.RESOURCE, self._snapshot, project_id
+            )
         while not self._stopping.is_set():
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
-            current = self._snapshot(project_id)
-            if current != previous:
-                previous = current
-                await self._emit(project_id, self._rescan(self._space_of(project_id).project))
+            async with self._batch() as resumed:
+                current = await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, self._snapshot, project_id
+                )
+                if current != previous or resumed:
+                    previous = current
+                    await self._emit(project_id, self._rescan(self._space_of(project_id).project))
 
     def _snapshot(self, project_id: str) -> dict[str, tuple[int, int]]:
         snapshot: dict[str, tuple[int, int]] = {}
@@ -457,7 +506,7 @@ def _root_of(space: ProjectSpace, relative: str) -> RootKind:
 def _kind_map() -> dict[object, FileEventKind]:
     """watchfiles 的 Change → 产品事件类型。缺依赖时为空表 (走轮询降级)。"""
 
-    if not WATCHFILES_AVAILABLE:
+    if not WATCHFILES_AVAILABLE or Change is None:
         return {}
     return {
         Change.added: FileEventKind.CREATED,

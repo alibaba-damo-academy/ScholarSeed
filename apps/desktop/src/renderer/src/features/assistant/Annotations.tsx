@@ -6,34 +6,35 @@ import { Copy, MessageCirclePlus, Plus } from 'lucide-react'
 import type { ResourceLocationRef } from '../../contracts/resources'
 import { isCitationUrl } from '../../contracts/citations'
 import { Icon } from '../../icons'
-import type { AnswerSource } from '../../model'
+import type { AnswerCoverage, AnswerSource } from '../../model'
 import { activeThread, useApp } from '../../store'
 import { Markdown } from '../../components/primitive/Markdown'
 import { writeClipboard } from '../../components/primitive/clipboard'
 import { mappedSourceBoundary } from '../../components/markdown/source'
-import {
-  Button,
-  FloatingToolbar,
-  IconButton,
-  Input,
-  useToast
-} from '../../components/ui'
+import { Button, FloatingToolbar, IconButton, Input, useToast } from '../../components/ui'
 import { expandedResourceAncestors } from '../../contracts/resources'
 import { citationSources, fetchResourceDirectoryTree, saveAnswerSelectionToResource } from './api'
 import { ANSWER_ANNOTATION_LOCATION, sha256Text } from './anchors'
 import { ResourceSaveDialog } from './Save'
 import { CitationLink, CitationSources, WebCitationLink } from './Citations'
 import { AnnotationBadgeNote, annotationDisplay } from './Notes'
+import { sentAnswerAnnotationIds } from './state'
 import { defaultExcerptName } from './names'
-import { shouldClosePointerToolbar } from './selection-toolbar'
+import {
+  selectionToolbarPosition,
+  shouldClosePointerToolbar,
+  type SelectionToolbarPosition,
+} from './selection-toolbar'
 import { SessionFileLink } from './Links'
+import { answerProjectSource, sharedTaskSources } from './sources'
 
 const ANSWER_ID_PREFIX = 'answer:'
 const ITEM_ID_PREFIX = 'item:'
 // 设计稿: 注释标识悬浮在被注释文本结束处的上方(蓝色气泡+序号);
 // 零宽行内锚点不参与文字排版, 浮层相对锚点抬升到当前行上方。
 const INLINE_MARKER_ANCHOR_CLASS = 'relative inline-block h-0 w-0'
-const INLINE_MARKER_FLOAT_CLASS = 'absolute bottom-full left-0 z-10 mb-[12px] -translate-x-1/2'
+const INLINE_MARKER_FLOAT_CLASS =
+  'absolute bottom-full left-0 z-[var(--vds-z-local-top)] mb-[var(--vds-space-3)] -translate-x-1/2'
 const ANSWER_ANNOTATION_FOCUS_DURATION_MS = 2400
 const CONVERSATION_STREAM_SELECTOR = '.conversation-stream'
 const SELECTION_TOOLBAR_MAX_WIDTH_PX = 390
@@ -41,26 +42,26 @@ const SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX = 16
 const ANNOTATION_ERROR_MESSAGES = {
   answer_revision_conflict: 'remaining.revisionConflict',
   answer_quote_mismatch: 'remaining.quoteMismatch',
-  assistant_session_unavailable: 'remaining.sessionUnavailable'
+  assistant_session_unavailable: 'remaining.sessionUnavailable',
 } as const
 const ANNOTATION_SAVE_FALLBACK_MESSAGE = 'remaining.annotationFailed'
 const ANSWER_ANNOTATION_SAVE_TOAST_ID = 'answer-annotation-save-failed'
 // 选区菜单项共用一套样式：默认不上底色，仅 hover 时高亮，避免某一项看起来像已选中。
-const SELECTION_ACTION_CLASS = 'w-full justify-start rounded-[var(--vds-radius-3)] !border-0 px-3 !text-[var(--vds-text-primary)] !shadow-none hover:!bg-[var(--vds-surface-hover)]'
+const SELECTION_ACTION_CLASS =
+  'w-full justify-start rounded-[var(--vds-radius-3)] !border-0 px-[var(--vds-space-3)] !text-[var(--vds-text-primary)] !shadow-none hover:!bg-[var(--vds-surface-hover)]'
 
 interface SelectionDraft {
   clientAnnotationId: string
   annotationId?: string
   startUtf16: number
   endUtf16: number
+  selectedMarkdown: string
   previewText: string
   clipboardText: string
   left: number
   width: number
-  top: number
   selectionTop: number
   selectionBottom: number
-  placement: 'above' | 'below'
   mode: 'actions' | 'comment'
 }
 
@@ -79,7 +80,7 @@ function leafBoundary(leaf: HTMLElement, edge: 'first' | 'last'): number | null 
 }
 
 function ownLeaf(node: Node, root: HTMLElement): HTMLElement | null {
-  const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node as HTMLElement
+  const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as HTMLElement)
   const leaf = element?.closest<HTMLElement>('[data-md-source-start]')
   return leaf && root.contains(leaf) ? leaf : null
 }
@@ -138,7 +139,8 @@ function sourceBoundary(
   const element = node as HTMLElement
   const own = ownLeaf(node, root)
   if (own === element) {
-    const prefix = Array.from(element.childNodes).slice(0, offset)
+    const prefix = Array.from(element.childNodes)
+      .slice(0, offset)
       .map((child) => child.textContent ?? '')
       .join('')
     return mappedSourceBoundary(element, prefix.length)
@@ -231,7 +233,9 @@ export function AnnotatedAnswer({
   turnId,
   messageId,
   markdownClassName,
-  answerSources
+  answerSources,
+  answerCoverage,
+  citationPending = false,
 }: {
   citationEnabled: boolean
   text: string
@@ -253,6 +257,8 @@ export function AnnotatedAnswer({
    */
   markdownClassName?: string
   answerSources?: AnswerSource[]
+  answerCoverage?: AnswerCoverage
+  citationPending?: boolean
 }): React.JSX.Element {
   const { state, act } = useApp()
   const { t } = useTranslation('components')
@@ -263,29 +269,39 @@ export function AnnotatedAnswer({
   const commentRef = useRef('')
   const annotationSavingRef = useRef(false)
   const [draft, setDraft] = useState<SelectionDraft | null>(null)
+  const [toolbarPosition, setToolbarPosition] = useState<SelectionToolbarPosition>({
+    placement: 'below',
+    top: 0,
+  })
+  const selectionIdentity = draft?.clientAnnotationId ?? null
+  const selectionTop = draft?.selectionTop ?? 0
+  const selectionBottom = draft?.selectionBottom ?? 0
   useLayoutEffect(() => {
     const root = rootRef.current
     const toolbar = toolbarRef.current
-    if (!draft || !root || !toolbar) return
+    if (!selectionIdentity || !root || !toolbar) return
     const stream = root.closest<HTMLElement>(CONVERSATION_STREAM_SELECTOR)
     const updatePosition = (): void => {
       const rootBounds = root.getBoundingClientRect()
       const streamBounds = stream?.getBoundingClientRect()
       const visibleTop = Math.max(0, streamBounds?.top ?? 0) + SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX
-      const visibleBottom = Math.min(window.innerHeight, streamBounds?.bottom ?? window.innerHeight)
-        - SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX
+      const visibleBottom =
+        Math.min(window.innerHeight, streamBounds?.bottom ?? window.innerHeight) -
+        SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX
       const toolbarHeight = toolbar.getBoundingClientRect().height
-      const selectionTop = rootBounds.top + draft.selectionTop
-      const selectionBottom = rootBounds.top + draft.selectionBottom
-      const spaceBelow = visibleBottom - selectionBottom
-      const spaceAbove = selectionTop - visibleTop
-      const placement = spaceBelow >= toolbarHeight || spaceBelow >= spaceAbove ? 'below' : 'above'
-      const preferredTop = placement === 'below' ? selectionBottom : selectionTop - toolbarHeight
-      const viewportTop = Math.max(visibleTop, Math.min(preferredTop, visibleBottom - toolbarHeight))
-      const top = viewportTop - rootBounds.top + (placement === 'above' ? toolbarHeight : 0)
-      setDraft(current => current && (current.top !== top || current.placement !== placement)
-        ? { ...current, top, placement }
-        : current)
+      setToolbarPosition((current) => {
+        const next = selectionToolbarPosition({
+          currentPlacement: current.placement,
+          devicePixelRatio: window.devicePixelRatio,
+          rootTop: rootBounds.top,
+          selectionBottom: rootBounds.top + selectionBottom,
+          selectionTop: rootBounds.top + selectionTop,
+          toolbarHeight,
+          visibleBottom,
+          visibleTop,
+        })
+        return current.top === next.top && current.placement === next.placement ? current : next
+      })
     }
     updatePosition()
     const observer = new ResizeObserver(updatePosition)
@@ -299,9 +315,11 @@ export function AnnotatedAnswer({
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [draft])
+  }, [selectionBottom, selectionIdentity, selectionTop])
   const draftRef = useRef<SelectionDraft | null>(null)
-  useEffect(() => { draftRef.current = draft }, [draft])
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
   const [comment, setComment] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
@@ -311,51 +329,72 @@ export function AnnotatedAnswer({
   const [resourceTree, setResourceTree] = useState(state.resource.tree)
   const [targetProjectId, setTargetProjectId] = useState('')
   const thread = activeThread(state)
-  const sessionProject = state.projects.find((project) => project.path === thread.projectPath) ?? null
+  const sessionProject =
+    state.projects.find((project) => project.path === thread.projectPath) ?? null
+  const observedSources = useMemo(
+    () => (sessionProject ? sharedTaskSources(thread.conversation, sessionProject.id) : []),
+    [thread.conversation, sessionProject]
+  )
   const targetProject = state.projects.find((project) => project.id === targetProjectId) ?? null
-  const answerId = messageId
-    ?? (eventSeq !== undefined ? `${ANSWER_ID_PREFIX}${eventSeq}` : null)
+  const answerId = messageId ?? (eventSeq !== undefined ? `${ANSWER_ID_PREFIX}${eventSeq}` : null)
   const originalQuestion = useMemo(() => {
     const item = thread.conversation.find(
       (candidate) => candidate.kind === 'user' && candidate.turnId === turnId
     )
     return item?.kind === 'user' ? item.text : ''
   }, [thread.conversation, turnId])
+  const sentAnnotationIds = useMemo(
+    () =>
+      sentAnswerAnnotationIds(
+        thread.conversation,
+        state.aiPanel.refs,
+        state.aiPanel.submittedRefIds
+      ),
+    [thread.conversation, state.aiPanel.refs, state.aiPanel.submittedRefIds]
+  )
   const annotations = useMemo(() => {
     if (!answerId) return []
     const itemId = messageId?.startsWith(ITEM_ID_PREFIX)
       ? messageId.slice(ITEM_ID_PREFIX.length)
       : null
-    // 内联标识由注释实体驱动: 笔记即使已随轮次提交或从 composer 队列移除,
-    // 消息列表中被注释文本上的蓝色标识仍需持续展示。
-    return state.aiPanel.annotations.filter((annotation) => (
-      annotation.answer_id === answerId
-      // 身份漂移容忍: 历史回放后 vendor item id 或旧 answer 方案可能与
-      // 注释保存时的 id 不一致, 用来源身份回退匹配, 保证内联标识仍渲染。
-      || (itemId !== null && annotation.source_item_id === itemId)
-      || (
-        eventSeq !== undefined
-        && annotation.source_product_seq === eventSeq
-        && (!turnId || annotation.source_turn_id === turnId)
-      )
-    ))
+    return state.aiPanel.annotations.filter(
+      (annotation) =>
+        annotation.answer_id === answerId ||
+        // 身份漂移容忍: 历史回放后 vendor item id 或旧 answer 方案可能与
+        // 注释保存时的 id 不一致, 用来源身份回退匹配, 保证内联标识仍渲染。
+        (itemId !== null && annotation.source_item_id === itemId) ||
+        (eventSeq !== undefined &&
+          annotation.source_product_seq === eventSeq &&
+          (!turnId || annotation.source_turn_id === turnId))
+    )
   }, [answerId, eventSeq, messageId, state.aiPanel.annotations, turnId])
   const annotationFocus = state.aiPanel.answerAnnotationFocus
   const focusedAnnotation = useMemo(() => {
     if (
-      !answerId
-      || annotationFocus?.answerId !== answerId
-      || annotationFocus.status !== ANSWER_ANNOTATION_LOCATION.AVAILABLE
-    ) return null
-    return state.aiPanel.annotations.find(
-      (annotation) => annotation.annotation_id === annotationFocus.annotationId
-    ) ?? null
+      !answerId ||
+      annotationFocus?.answerId !== answerId ||
+      annotationFocus.status !== ANSWER_ANNOTATION_LOCATION.AVAILABLE
+    )
+      return null
+    return (
+      state.aiPanel.annotations.find(
+        (annotation) => annotation.annotation_id === annotationFocus.annotationId
+      ) ?? null
+    )
   }, [annotationFocus, answerId, state.aiPanel.annotations])
 
   const captureSelection = (): void => {
     const root = rootRef.current
     const selection = window.getSelection()
-    if (!selectionEnabled || !root || !selection || selection.isCollapsed || selection.rangeCount !== 1 || !answerId) return
+    if (
+      !selectionEnabled ||
+      !root ||
+      !selection ||
+      selection.isCollapsed ||
+      selection.rangeCount !== 1 ||
+      !answerId
+    )
+      return
     const range = selection.getRangeAt(0)
     if (!root.contains(range.commonAncestorContainer)) return
     const clipboardText = selection.toString()
@@ -380,10 +419,15 @@ export function AnnotatedAnswer({
     setComment('')
     commentRef.current = ''
     setSaveError(null)
+    setToolbarPosition({
+      placement: 'below',
+      top: selectionBounds.bottom - rootBounds.top,
+    })
     setDraft({
       clientAnnotationId: crypto.randomUUID(),
       startUtf16: start,
       endUtf16: end,
+      selectedMarkdown: text.slice(start, end),
       previewText,
       clipboardText,
       width: toolbarWidth,
@@ -394,11 +438,9 @@ export function AnnotatedAnswer({
           selectionBounds.left + selectionBounds.width / 2 - rootBounds.left
         )
       ),
-      top: selectionBounds.bottom - rootBounds.top,
       selectionTop: selectionBounds.top - rootBounds.top,
       selectionBottom: selectionBounds.bottom - rootBounds.top,
-      placement: 'below',
-      mode: 'actions'
+      mode: 'actions',
     })
   }
 
@@ -406,7 +448,7 @@ export function AnnotatedAnswer({
     if (!draft) return
     try {
       await writeClipboard(draft.clipboardText)
-      setDraft(current => current === draft ? null : current)
+      setDraft((current) => (current === draft ? null : current))
       toast({ title: a('remaining.textCopied'), tone: 'success' })
     } catch {
       toast({ title: a('remaining.textCopyFailed'), tone: 'error' })
@@ -419,18 +461,18 @@ export function AnnotatedAnswer({
     if (!project) return
     setTargetProjectId(project.id)
     setSaveLocation({ parent: '', name: defaultExcerptName(draft.previewText, a) })
-    setResourceTree(
-      state.homeSelectedProjectId === project.id ? state.resource.tree : []
-    )
+    setResourceTree(state.homeSelectedProjectId === project.id ? state.resource.tree : [])
     setSaveError(null)
     setSaveDialogOpen(true)
     setSourceCount(null)
     if (answerId && thread.sessionId) {
       void sha256Text(text)
-        .then((revision) => citationSources(thread.sessionId!, answerId, revision, {
-          start: draft.startUtf16,
-          end: draft.endUtf16
-        }))
+        .then((revision) =>
+          citationSources(thread.sessionId!, answerId, revision, {
+            start: draft.startUtf16,
+            end: draft.endUtf16,
+          })
+        )
         .then((result) => setSourceCount(result.sources.length))
         .catch(() => setSourceCount(null))
     }
@@ -450,16 +492,13 @@ export function AnnotatedAnswer({
   }
 
   const showAnnotationError = (error?: string): void => {
-    const messageKey = Object.prototype.hasOwnProperty.call(
-      ANNOTATION_ERROR_MESSAGES,
-      error ?? ''
-    )
+    const messageKey = Object.prototype.hasOwnProperty.call(ANNOTATION_ERROR_MESSAGES, error ?? '')
       ? ANNOTATION_ERROR_MESSAGES[error as keyof typeof ANNOTATION_ERROR_MESSAGES]
       : ANNOTATION_SAVE_FALLBACK_MESSAGE
     toast({
       id: ANSWER_ANNOTATION_SAVE_TOAST_ID,
       tone: 'error',
-      title: a(messageKey)
+      title: a(messageKey),
     })
   }
 
@@ -468,10 +507,9 @@ export function AnnotatedAnswer({
     annotationSavingRef.current = true
     setSaving(true)
     try {
-      const selectedMarkdown = text.slice(draft.startUtf16, draft.endUtf16)
       const [answerRevision, selectedTextHash] = await Promise.all([
         sha256Text(text),
-        sha256Text(selectedMarkdown)
+        sha256Text(draft.selectedMarkdown),
       ])
       const result = await act.createAnswerAnnotation(answerId, {
         client_annotation_id: draft.clientAnnotationId,
@@ -481,16 +519,18 @@ export function AnnotatedAnswer({
         selected_text_hash: selectedTextHash,
         preview_text: draft.previewText,
         comment: '',
-        enqueue: true
+        enqueue: true,
       })
       if (!result.ok || !result.annotation) {
         showAnnotationError(result.error)
         return
       }
       const annotationId = result.annotation.annotation_id
-      setDraft(current => current?.clientAnnotationId === draft.clientAnnotationId
-        ? { ...current, annotationId, mode: 'comment' }
-        : current)
+      setDraft((current) =>
+        current?.clientAnnotationId === draft.clientAnnotationId
+          ? { ...current, annotationId, mode: 'comment' }
+          : current
+      )
       window.getSelection()?.removeAllRanges()
     } catch {
       showAnnotationError()
@@ -505,10 +545,14 @@ export function AnnotatedAnswer({
     annotationSavingRef.current = true
     setSaving(true)
     try {
-      const annotation = state.aiPanel.annotations.find(item => item.annotation_id === draft.annotationId)
+      const annotation = state.aiPanel.annotations.find(
+        (item) => item.annotation_id === draft.annotationId
+      )
       const unchanged = annotation?.comment === commentRef.current.trim()
-      if (unchanged || await act.updateAnswerAnnotation(draft.annotationId, commentRef.current)) {
-        setDraft(current => current?.clientAnnotationId === draft.clientAnnotationId ? null : current)
+      if (unchanged || (await act.updateAnswerAnnotation(draft.annotationId, commentRef.current))) {
+        setDraft((current) =>
+          current?.clientAnnotationId === draft.clientAnnotationId ? null : current
+        )
       } else {
         showAnnotationError()
       }
@@ -522,11 +566,14 @@ export function AnnotatedAnswer({
     if (!draft || saveDialogOpen) return undefined
     const closeOnOutsidePointer = (event: PointerEvent): void => {
       const target = event.target as Node
-      if (!shouldClosePointerToolbar(
-        event.button,
-        toolbarRef.current?.contains(target) ?? false,
-        rootRef.current?.contains(target) ?? false
-      )) return
+      if (
+        !shouldClosePointerToolbar(
+          event.button,
+          toolbarRef.current?.contains(target) ?? false,
+          rootRef.current?.contains(target) ?? false
+        )
+      )
+        return
       closeDraft()
     }
     document.addEventListener('pointerdown', closeOnOutsidePointer, true)
@@ -539,7 +586,9 @@ export function AnnotatedAnswer({
   // pointerup/keyup (drag/keyboard settle), not on every selectionchange, to
   // avoid resetting an active toolbar mode (e.g. comment) mid-interaction.
   const captureSelectionRef = useRef(captureSelection)
-  useEffect(() => { captureSelectionRef.current = captureSelection })
+  useEffect(() => {
+    captureSelectionRef.current = captureSelection
+  })
   useEffect(() => {
     if (!selectionEnabled || !answerId) return undefined
     let scheduled = 0
@@ -567,24 +616,25 @@ export function AnnotatedAnswer({
     }
   }, [selectionEnabled, answerId])
 
-  const displayedAnnotations = focusedAnnotation
-    && !annotations.some((annotation) => annotation.annotation_id === focusedAnnotation.annotation_id)
-    ? [...annotations, focusedAnnotation]
-    : annotations
+  const displayedAnnotations =
+    focusedAnnotation &&
+    !annotations.some((annotation) => annotation.annotation_id === focusedAnnotation.annotation_id)
+      ? [...annotations, focusedAnnotation]
+      : annotations
   const answerAnnotations = displayedAnnotations.map((annotation) => ({
     id: annotation.annotation_id,
     start_utf16: annotation.start_utf16,
     end_utf16: annotation.end_utf16,
-    focused: annotation.annotation_id === focusedAnnotation?.annotation_id
+    focused: annotation.annotation_id === focusedAnnotation?.annotation_id,
   }))
 
   useEffect(() => {
     if (!focusedAnnotation || !annotationFocus || !rootRef.current) return undefined
     const target = Array.from(
       rootRef.current.querySelectorAll<HTMLElement>('[data-scholarseed-answer-annotation-id]')
-    ).find((element) => (
-      element.dataset.scholarseedAnswerAnnotationId === focusedAnnotation.annotation_id
-    ))
+    ).find(
+      (element) => element.dataset.scholarseedAnswerAnnotationId === focusedAnnotation.annotation_id
+    )
     if (!target) return undefined
     const stream = target.closest<HTMLElement>(CONVERSATION_STREAM_SELECTOR)
     if (stream) {
@@ -594,7 +644,7 @@ export function AnnotatedAnswer({
       const streamCenter = streamBounds.top + streamBounds.height / 2
       stream.scrollTo({
         top: stream.scrollTop + targetCenter - streamCenter,
-        behavior: 'smooth'
+        behavior: 'smooth',
       })
     } else {
       target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
@@ -612,20 +662,23 @@ export function AnnotatedAnswer({
     const selectedMarkdown = text.slice(draft.startUtf16, draft.endUtf16)
     const [answerRevision, selectedTextHash] = await Promise.all([
       sha256Text(text),
-      sha256Text(selectedMarkdown)
+      sha256Text(selectedMarkdown),
     ])
-    const result = await saveAnswerSelectionToResource({
-      sessionId: thread.sessionId,
-      projectId: targetProject.id,
-      answerId,
-      answerRevision,
-      startUtf16: draft.startUtf16,
-      endUtf16: draft.endUtf16,
-      selectedTextHash,
-      selectedMarkdown,
-      question: originalQuestion,
-      location: saveLocation
-    }, a)
+    const result = await saveAnswerSelectionToResource(
+      {
+        sessionId: thread.sessionId,
+        projectId: targetProject.id,
+        answerId,
+        answerRevision,
+        startUtf16: draft.startUtf16,
+        endUtf16: draft.endUtf16,
+        selectedTextHash,
+        selectedMarkdown,
+        question: originalQuestion,
+        location: saveLocation,
+      },
+      a
+    )
     setSaving(false)
     if (!result.ok || !result.node) {
       setSaveError(assistantFailureDetail(result) ?? '')
@@ -633,15 +686,23 @@ export function AnnotatedAnswer({
     }
     setSaveDialogOpen(false)
     if (state.homeSelectedProjectId === targetProject.id) {
-      const expanded = expandedResourceAncestors(resourceTree, saveLocation.parent, state.resource.expanded)
+      const expanded = expandedResourceAncestors(
+        resourceTree,
+        saveLocation.parent,
+        state.resource.expanded
+      )
       if (saveLocation.parent) expanded[saveLocation.parent] = true
       await act.reloadResourceTree(expanded)
       act.selectResourceFile(result.node.path)
     }
-    act.noticeResource('ok', { key: 'feedback.savedResource', name: result.node.name }, {
-      path: result.node.path,
-      projectId: targetProject.id
-    })
+    act.noticeResource(
+      'ok',
+      { key: 'feedback.savedResource', name: result.node.name },
+      {
+        path: result.node.path,
+        projectId: targetProject.id,
+      }
+    )
     window.getSelection()?.removeAllRanges()
     setDraft(null)
   }
@@ -654,27 +715,106 @@ export function AnnotatedAnswer({
       onMouseUp={captureSelection}
     >
       <Markdown
+        math
         answerAnnotations={answerAnnotations}
-        className={markdownClassName ?? "md-agent"}
+        className={markdownClassName ?? 'md-agent'}
         evidence={evidence}
-        renderSessionFileLink={thread.sessionId ? (path, children) => <SessionFileLink sessionId={thread.sessionId!} path={path} onOpen={() => act.openFilePreview({ sessionId: thread.sessionId!, path })}>{children}</SessionFileLink> : undefined}
-        citationUrls={answerSources?.flatMap(source => source.citation_urls)}
-        renderCitation={answerId && thread.sessionId && citationEnabled ? (range, children, href) => {
-          const source = answerSources?.find(candidate => candidate.citation_urls.includes(href))
-          if (source?.kind === 'searched') {
-            return <WebCitationLink key={`${thread.sessionId}:${answerId}:${range.start}`} source={source} />
-          }
-          if (source?.kind === 'receipt') {
-            return <CitationLink key={`${thread.sessionId}:${answerId}:${range.start}`} sessionId={thread.sessionId!} answerId={answerId} text={text} range={range} displayNumber={source.number}>{children}</CitationLink>
-          }
-          return isCitationUrl(href)
-            ? <CitationLink key={`${thread.sessionId}:${answerId}:${range.start}`} sessionId={thread.sessionId!} answerId={answerId} text={text} range={range}>{children}</CitationLink>
+        renderSourceLink={(href, children) => {
+          const project = state.projects.find((candidate) => candidate.path === thread.projectPath)
+          const source = project && answerProjectSource(href, project, observedSources)
+          if (!source || !project) return undefined
+          return (
+            <Button
+              unstyled
+              className="inline text-[var(--vds-link)] underline hover:text-[var(--vds-link-hover)]"
+              data-testid="project-source-link"
+              onClick={() => {
+                if (source.kind === 'resource') act.openResourceFile(source.path, project.id)
+                else void act.openLiteratureItem(source.id, project.id)
+              }}
+            >
+              {children}
+            </Button>
+          )
+        }}
+        renderSessionFileLink={
+          thread.sessionId
+            ? (path, children) => (
+                <SessionFileLink
+                  sessionId={thread.sessionId!}
+                  path={path}
+                  onOpen={() => act.openFilePreview({ sessionId: thread.sessionId!, path })}
+                >
+                  {children}
+                </SessionFileLink>
+              )
             : undefined
-        } : undefined}
+        }
+        citationUrls={answerSources?.flatMap((source) => source.citation_urls)}
+        citationReferences={answerSources?.flatMap((source) =>
+          source.kind === 'searched' && source.citation_urls[0]
+            ? (source.reference_labels ?? []).map((label) => ({
+                label,
+                href: source.citation_urls[0],
+              }))
+            : []
+        )}
+        citationPending={citationPending}
+        citationOccurrences={answerSources?.flatMap((source) =>
+          source.kind === 'searched'
+            ? (source.occurrences ?? []).map((occurrence) => ({
+                href: source.citation_urls[0] ?? source.url,
+                end_utf16: occurrence.end_utf16,
+              }))
+            : []
+        )}
+        renderCitation={
+          answerId && thread.sessionId && citationEnabled
+            ? (range, children, href) => {
+                const source = answerSources?.find((candidate) =>
+                  candidate.citation_urls.includes(href)
+                )
+                if (source?.kind === 'searched') {
+                  return (
+                    <WebCitationLink
+                      key={`${thread.sessionId}:${answerId}:${range.start}`}
+                      source={source}
+                    />
+                  )
+                }
+                if (source?.kind === 'receipt') {
+                  return (
+                    <CitationLink
+                      key={`${thread.sessionId}:${answerId}:${range.start}`}
+                      sessionId={thread.sessionId!}
+                      answerId={answerId}
+                      text={text}
+                      range={range}
+                      displayNumber={source.number}
+                    >
+                      {children}
+                    </CitationLink>
+                  )
+                }
+                return isCitationUrl(href) ? (
+                  <CitationLink
+                    key={`${thread.sessionId}:${answerId}:${range.start}`}
+                    sessionId={thread.sessionId!}
+                    answerId={answerId}
+                    text={text}
+                    range={range}
+                  >
+                    {children}
+                  </CitationLink>
+                ) : undefined
+              }
+            : undefined
+        }
         renderAnswerAnnotationMarker={(marker) => {
           const annotation = displayedAnnotations.find((item) => item.annotation_id === marker.id)
-          if (!annotation) return null
-          const number = displayedAnnotations.findIndex(item => item.annotation_id === marker.id) + 1
+          if (!annotation || sentAnnotationIds.has(annotation.annotation_id)) return null
+          const number =
+            displayedAnnotations.findIndex((item) => item.annotation_id === marker.id) + 1
           const noteText = annotation.comment || annotation.preview_text
           return (
             <span className={INLINE_MARKER_ANCHOR_CLASS} key={marker.id}>
@@ -685,9 +825,9 @@ export function AnnotatedAnswer({
                   noteText={noteText}
                   number={number}
                   onRemove={(annotationId) => act.deleteAnswerAnnotation(annotationId)}
-                  onSave={(annotationId, nextComment) => (
+                  onSave={(annotationId, nextComment) =>
                     act.updateAnswerAnnotation(annotationId, nextComment)
-                  )}
+                  }
                 />
               </span>
             </span>
@@ -696,18 +836,28 @@ export function AnnotatedAnswer({
         sourceMapped
         text={text}
       />
-      {answerId && thread.sessionId && citationEnabled && <CitationSources sessionId={thread.sessionId} answerId={answerId} text={text} answerSources={answerSources} />}
+      {answerId && thread.sessionId && (citationEnabled || answerCoverage) && (
+        <CitationSources
+          sessionId={thread.sessionId}
+          answerId={answerId}
+          text={text}
+          answerSources={answerSources}
+          coverage={answerCoverage}
+          resolveEnabled={citationEnabled}
+        />
+      )}
       {draft ? (
         <div
-          className={`answer-selection-anchor flex min-w-0 flex-col items-center -translate-x-1/2 ${draft.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
-            }`}
+          className={`answer-selection-anchor flex min-w-0 flex-col items-center -translate-x-1/2 ${
+            toolbarPosition.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
+          }`}
           ref={toolbarRef}
-          style={{ left: draft.left, top: draft.top, width: draft.width }}
+          style={{ left: draft.left, top: toolbarPosition.top, width: draft.width }}
           onMouseUp={(event) => event.stopPropagation()}
         >
           {draft.mode === 'actions' ? (
             <FloatingToolbar
-              actions={(
+              actions={
                 <div className="flex w-full flex-col">
                   <Button
                     className={SELECTION_ACTION_CLASS}
@@ -739,14 +889,14 @@ export function AnnotatedAnswer({
                     {a('remaining.importAnswer')}
                   </Button>
                 </div>
-              )}
+              }
               className="w-[190px] max-w-full !rounded-[var(--vds-radius-5)]"
               label={a('remaining.selectionActions')}
             />
           ) : (
             <div className="flex w-[328px] max-w-full min-w-0 flex-col gap-1">
               <FloatingToolbar
-                actions={(
+                actions={
                   <>
                     <Input
                       aria-label={a('remaining.comment')}
@@ -777,7 +927,7 @@ export function AnnotatedAnswer({
                       variant="ghost"
                     />
                   </>
-                )}
+                }
                 className="min-h-10 w-full !rounded-[var(--vds-radius-4)] !border-[var(--vds-border-default)] !bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-md)] [&_.vds-field]:flex-1 [&_.vds-floating-toolbar__actions]:gap-1 [&_.vds-floating-toolbar__actions]:p-1.5"
                 expanded
                 label={a('remaining.addAnnotation')}
@@ -800,7 +950,11 @@ export function AnnotatedAnswer({
         selectedProjectId={targetProjectId}
         onProjectChange={sessionProject ? undefined : selectTargetProject}
         saving={saving}
-        summary={sourceCount === null ? t('answerSave.unknown') : t('answerSave.summary', { count: sourceCount })}
+        summary={
+          sourceCount === null
+            ? t('answerSave.unknown')
+            : t('answerSave.summary', { count: sourceCount })
+        }
         title={a('remaining.importAnswer')}
         tree={resourceTree}
       />

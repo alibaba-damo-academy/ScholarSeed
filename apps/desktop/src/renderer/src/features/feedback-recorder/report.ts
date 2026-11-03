@@ -2,16 +2,72 @@ import {
   RECORDER_DESCRIPTION_MAX_LENGTH,
   RECORDER_REPORT_MAX_BYTES,
   RECORDER_SCHEMA_VERSION,
+  RECORDING_REPORT_TOO_LARGE,
   type RecordingReport,
   type RecordingSession,
-  type SummaryFields
+  type SummaryFields,
 } from './model.ts'
 import { targetDisplayLabel, targetLabel, targetLocatorLabel } from './target.ts'
+import { RECORDER_BODY_SUMMARY_MAX_BYTES, summarizeText } from './utils.ts'
 
 const SUMMARY_STEP_LIMIT = 5
 const REPORT_FILENAME = 'feedback-recording.json'
 const DESCRIPTION_LINE_BREAK = '\r\n'
 const DESCRIPTION_LINE_BREAK_PATTERN = /\r\n|\r|\n/g
+const REPORT_METADATA_MAX_BYTES = 200
+const REPORT_BODY_BUDGET_MULTIPLIER = 10
+const REPORT_BUDGET_REDUCTION_FACTOR = 2
+const REPORT_NOTE_BUDGET_MULTIPLIER = 5
+const REPORT_SUMMARY_BUDGET_MULTIPLIER = 25
+const REPORT_IDENTITY_FIELDS = new Set([
+  'sessionId',
+  'stepId',
+  'requestId',
+  'screenshotId',
+  'startedAt',
+  'endedAt',
+  'occurredAt',
+  'status',
+  'kind',
+  'method',
+])
+const REPORT_SUMMARY_FIELDS = new Set(['generated', 'final', 'actual', 'expected', 'additional'])
+
+function boundReportValues<Value>(value: Value, budget: number, key = ''): Value {
+  if (typeof value === 'string') {
+    if (REPORT_IDENTITY_FIELDS.has(key)) return value
+    const limit =
+      key === 'requestBody' || key === 'responseBody'
+        ? Math.max(RECORDER_BODY_SUMMARY_MAX_BYTES, budget * REPORT_BODY_BUDGET_MULTIPLIER)
+        : key === 'value'
+          ? RECORDER_BODY_SUMMARY_MAX_BYTES
+          : REPORT_SUMMARY_FIELDS.has(key)
+            ? budget * REPORT_SUMMARY_BUDGET_MULTIPLIER
+            : key === 'note' || key === 'text'
+              ? budget * REPORT_NOTE_BUDGET_MULTIPLIER
+              : budget
+    return summarizeText(value, limit) as Value
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => boundReportValues(entry, budget)) as Value
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([name, entry]) => [name, boundReportValues(entry, budget, name)])
+    ) as Value
+  }
+  return value
+}
+
+function boundedReport(report: RecordingReport): RecordingReport {
+  let budget = REPORT_METADATA_MAX_BYTES
+  let bounded = boundReportValues(report, budget)
+  while (new Blob([JSON.stringify(bounded)]).size > RECORDER_REPORT_MAX_BYTES && budget > 0) {
+    budget = Math.floor(budget / REPORT_BUDGET_REDUCTION_FACTOR)
+    bounded = boundReportValues(report, budget)
+  }
+  return bounded
+}
 
 export interface SummaryLabels {
   step: (index: number, kind: string, target: string, note: string) => string
@@ -27,6 +83,8 @@ export interface DescriptionLabels {
   operations: string
   requests: string
   empty: string
+  /** 客户端主动取消的请求在状态位上显示什么; 它与失败是两回事。 */
+  cancelled: string
   moreInReport: string
   page: (value: string) => string
   dialog: (value: string) => string
@@ -65,9 +123,12 @@ function sliceWithoutSplittingSurrogatePair(value: string, end: number): string 
   const boundedEnd = Math.max(0, Math.min(value.length, end))
   const previousCodeUnit = value.charCodeAt(boundedEnd - 1)
   const nextCodeUnit = value.charCodeAt(boundedEnd)
-  const endsWithHighSurrogate = previousCodeUnit >= 0xD800 && previousCodeUnit <= 0xDBFF
-  const continuesWithLowSurrogate = nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF
-  return value.slice(0, endsWithHighSurrogate && continuesWithLowSurrogate ? boundedEnd - 1 : boundedEnd)
+  const endsWithHighSurrogate = previousCodeUnit >= 0xd800 && previousCodeUnit <= 0xdbff
+  const continuesWithLowSurrogate = nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff
+  return value.slice(
+    0,
+    endsWithHighSurrogate && continuesWithLowSurrogate ? boundedEnd - 1 : boundedEnd
+  )
 }
 
 export function prepareDescriptionForSubmission(
@@ -83,7 +144,7 @@ export function prepareDescriptionForSubmission(
   const prefix = sliceWithoutSplittingSurrogatePair(normalized, prefixLimit).trimEnd()
   return {
     description: `${prefix}${suffix}`,
-    truncated: true
+    truncated: true,
   }
 }
 
@@ -118,8 +179,8 @@ function appendBoundedSection(
     const hasMore = index < entries.length - 1
     const reservedNotice = hasMore ? `\n${labels.moreInReport}` : ''
     if (
-      description.length + section.length + line.length + reservedNotice.length
-      <= RECORDER_DESCRIPTION_MAX_LENGTH
+      description.length + section.length + line.length + reservedNotice.length <=
+      RECORDER_DESCRIPTION_MAX_LENGTH
     ) {
       section += line
       continue
@@ -142,42 +203,47 @@ export function composeFinalDescription(
     fields.final.trim(),
     fields.actual.trim() ? `${labels.actual}\n${fields.actual.trim()}` : '',
     fields.expected.trim() ? `${labels.expected}\n${fields.expected.trim()}` : '',
-    fields.additional.trim() ? `${labels.additional}\n${fields.additional.trim()}` : ''
+    fields.additional.trim() ? `${labels.additional}\n${fields.additional.trim()}` : '',
   ].filter(Boolean)
   let description = parts.join('\n\n')
   if (!session || description.length > RECORDER_DESCRIPTION_MAX_LENGTH) return description
 
   const stepNumberById = new Map(session.steps.map((step, index) => [step.stepId, index + 1]))
-  const operationLines = session.steps.map((step, index) => labels.operation(
-    index + 1,
-    step.occurredAt,
-    step.elapsedMs,
-    step.kind,
-    targetLabel(step.target),
-    step.value || '',
-    session.notes[step.stepId] || '',
-    [
-      labels.page(
-        step.page.label || (step.page.path && step.page.path !== '/'
-          ? step.page.path
-          : `${step.page.title} | ${step.page.url}`)
-      ),
-      step.page.dialogLabel ? labels.dialog(step.page.dialogLabel) : '',
-      labels.locator(targetLocatorLabel(step.target)),
-      step.target.containerTestIds?.length
-        ? labels.containers(step.target.containerTestIds.join(' > '))
-        : '',
-      step.pointer ? labels.pointer(step.pointer.x, step.pointer.y) : '',
-      step.target.bounds
-        ? labels.bounds(
-          step.target.bounds.x,
-          step.target.bounds.y,
-          step.target.bounds.width,
-          step.target.bounds.height
-        )
-        : ''
-    ].filter(Boolean).join(' | ')
-  ))
+  const operationLines = session.steps.map((step, index) =>
+    labels.operation(
+      index + 1,
+      step.occurredAt,
+      step.elapsedMs,
+      step.kind,
+      targetLabel(step.target),
+      step.value || '',
+      session.notes[step.stepId] || '',
+      [
+        labels.page(
+          step.page.label ||
+            (step.page.path && step.page.path !== '/'
+              ? step.page.path
+              : `${step.page.title} | ${step.page.url}`)
+        ),
+        step.page.dialogLabel ? labels.dialog(step.page.dialogLabel) : '',
+        labels.locator(targetLocatorLabel(step.target)),
+        step.target.containerTestIds?.length
+          ? labels.containers(step.target.containerTestIds.join(' > '))
+          : '',
+        step.pointer ? labels.pointer(step.pointer.x, step.pointer.y) : '',
+        step.target.bounds
+          ? labels.bounds(
+              step.target.bounds.x,
+              step.target.bounds.y,
+              step.target.bounds.width,
+              step.target.bounds.height
+            )
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' | ')
+    )
+  )
   description = appendBoundedSection(description, labels.operations, operationLines, labels)
 
   const requestLines = session.requests.map((request, index) => {
@@ -191,7 +257,11 @@ export function composeFinalDescription(
       elapsedMs,
       request.method,
       request.url,
-      request.status === undefined ? request.error || '-' : String(request.status),
+      request.cancelled
+        ? labels.cancelled
+        : request.status === undefined
+          ? request.error || '-'
+          : String(request.status),
       request.durationMs,
       request.stepId ? stepNumberById.get(request.stepId) : undefined
     )
@@ -205,7 +275,7 @@ export function buildRecordingReport(
   summary: SummaryFields
 ): RecordingReport {
   const stepIds = new Set(session.steps.map((step) => step.stepId))
-  return {
+  return boundedReport({
     schemaVersion: RECORDER_SCHEMA_VERSION,
     session: {
       sessionId: session.sessionId,
@@ -213,27 +283,36 @@ export function buildRecordingReport(
       endedAt,
       initialPage: session.initialPage,
       finalPage: session.finalPage || session.initialPage,
-      status: 'completed'
+      status: 'completed',
     },
     steps: session.steps,
     stepNotes: Object.entries(session.notes)
       .filter(([, text]) => Boolean(text))
       .map(([stepId, text]) => ({ stepId, text })),
+    ...(session.submittedNotes
+      ? {
+          submittedStepNotes: Object.entries(session.submittedNotes)
+            .filter(([stepId]) => stepIds.has(stepId))
+            .flatMap(([stepId, notes]) => notes.map((text) => ({ stepId, text }))),
+        }
+      : {}),
     requests: session.requests,
-    screenshots: session.screenshots.filter((screenshot) => screenshot.stepId && stepIds.has(screenshot.stepId)).map((screenshot) => ({
-      screenshotId: screenshot.screenshotId,
-      ...(screenshot.stepId ? { stepId: screenshot.stepId } : {}),
-      note: screenshot.note,
-      filename: screenshot.renderedFile.name
-    })),
+    screenshots: session.screenshots
+      .filter((screenshot) => screenshot.stepId && stepIds.has(screenshot.stepId))
+      .map((screenshot) => ({
+        screenshotId: screenshot.screenshotId,
+        ...(screenshot.stepId ? { stepId: screenshot.stepId } : {}),
+        note: screenshot.note,
+        filename: screenshot.renderedFile.name,
+      })),
     summary,
-    truncated: session.truncated
-  }
+    truncated: session.truncated,
+  })
 }
 
 export function reportFile(report: RecordingReport): File {
-  const contents = JSON.stringify(report, null, 2)
+  const contents = JSON.stringify(report)
   const blob = new Blob([contents], { type: 'application/json' })
-  if (blob.size > RECORDER_REPORT_MAX_BYTES) throw new Error('recording_report_too_large')
+  if (blob.size > RECORDER_REPORT_MAX_BYTES) throw new Error(RECORDING_REPORT_TOO_LARGE)
   return new File([blob], REPORT_FILENAME, { type: 'application/json' })
 }

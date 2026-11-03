@@ -1,108 +1,82 @@
 /** All visible onboarding copy is resolved through this one key catalogue.
  * Wording lives in localization/locales/{zh,en}/onboarding.json.
- * 待定: project.discovery, project.ai, globalLib.discovery, pdf.figure,
+ * 待定: pdf.figure,
  * pdf.selection and pdf.ai retain the supplied wording pending product review.
  */
 export const OB_COPY = {
-  "center": "center",
-  "view": "view",
-  "seen": "seen",
-  "unseen": "unseen",
-  "reset": "reset",
-  "done": "done",
-  "skip": "skip",
-  "next": "next",
-  "start": "start",
-  "step": "step",
-  "noProject": "noProject",
-  "sample": "sample",
-  "sampleTitle": "sampleTitle",
-  "sampleLimited": "sampleLimited",
-  "unavailable": "unavailable",
-  "noPdf": "noPdf",
-  "openFailed": "openFailed",
-  "home": {
-    "name": "home.name",
-    "description": "home.description",
-    "title": "home.title",
-    "literatureTitle": "home.literatureTitle",
-    "literatureBody": "home.literatureBody",
-    "literatureLink": "home.literatureLink",
-    "projectTitle": "home.projectTitle",
-    "projectBody": "home.projectBody",
-    "projectLink": "home.projectLink",
-    "browse": "home.browse"
+  center: 'center',
+  view: 'view',
+  seen: 'seen',
+  unseen: 'unseen',
+  reset: 'reset',
+  done: 'done',
+  skip: 'skip',
+  next: 'next',
+  start: 'start',
+  step: 'step',
+  noProject: 'noProject',
+  sample: 'sample',
+  sampleTitle: 'sampleTitle',
+  sampleLimited: 'sampleLimited',
+  unavailable: 'unavailable',
+  noPdf: 'noPdf',
+  openFailed: 'openFailed',
+  home: {
+    name: 'home.name',
+    descriptionKey: 'home.description',
+    titleKey: 'home.title',
   },
-  "project": {
-    "name": "project.name",
-    "description": "project.description",
-    "switcher": {
-      "title": "project.switcher.title",
-      "body": "project.switcher.body"
-    },
-    "resources": {
-      "title": "project.resources.title",
-      "body": "project.resources.body"
-    },
-    "discovery": {
-      "title": "project.discovery.title",
-      "body": "project.discovery.body"
-    },
-    "literature": {
-      "title": "project.literature.title",
-      "body": "project.literature.body"
-    },
-    "ai": {
-      "title": "project.ai.title",
-      "body": "project.ai.body"
-    }
+  project: {
+    name: 'project.name',
+    descriptionKey: 'project.description',
+    switcher: { titleKey: 'project.switcher.title', body: 'project.switcher.body' },
+    capabilities: { titleKey: 'project.capabilities.title', body: 'project.capabilities.body' },
+    composer: { titleKey: 'project.composer.title', body: 'project.composer.body' },
+    files: { titleKey: 'project.files.title', body: 'project.files.body' },
+    workspace: { titleKey: 'project.workspace.title', body: 'project.workspace.body' },
   },
-  "globalLib": {
-    "name": "globalLib.name",
-    "description": "globalLib.description",
-    "library": {
-      "title": "globalLib.library.title",
-      "body": "globalLib.library.body"
+  globalLib: {
+    name: 'globalLib.name',
+    descriptionKey: 'globalLib.description',
+    library: {
+      titleKey: 'globalLib.library.title',
+      body: 'globalLib.library.body',
     },
-    "import": {
-      "title": "globalLib.import.title",
-      "body": "globalLib.import.body"
+    import: {
+      titleKey: 'globalLib.import.title',
+      body: 'globalLib.import.body',
     },
-    "discovery": {
-      "title": "globalLib.discovery.title",
-      "body": "globalLib.discovery.body"
+    categories: {
+      titleKey: 'globalLib.categories.title',
+      body: 'globalLib.categories.body',
     },
-    "categories": {
-      "title": "globalLib.categories.title",
-      "body": "globalLib.categories.body"
+    ai: {
+      titleKey: 'globalLib.ai.title',
+      body: 'globalLib.ai.body',
     },
-    "ai": {
-      "title": "globalLib.ai.title",
-      "body": "globalLib.ai.body"
-    }
   },
-  "pdf": {
-    "sampleSelection": {
-      "title": "pdf.sampleSelection.title",
-      "body": "pdf.sampleSelection.body"
+  pdf: {
+    sampleSelection: {
+      titleKey: 'pdf.sampleSelection.title',
+      body: 'pdf.sampleSelection.body',
     },
-    "name": "pdf.name",
-    "description": "pdf.description",
-    "figure": {
-      "title": "pdf.figure.title",
-      "body": "pdf.figure.body"
+    name: 'pdf.name',
+    descriptionKey: 'pdf.description',
+    figure: {
+      titleKey: 'pdf.figure.title',
+      body: 'pdf.figure.body',
     },
-    "tools": {
-      "title": "pdf.tools.title",
-      "body": "pdf.tools.body"
+    tools: {
+      titleKey: 'pdf.tools.title',
+      body: 'pdf.tools.body',
     },
-    "selection": {
-      "title": "pdf.selection.title",
-      "body": "pdf.selection.body"
+    selection: {
+      titleKey: 'pdf.selection.title',
+      body: 'pdf.selection.body',
     },
-    "ai": {
-      "title": "pdf.ai.title",
-      "body": "pdf.ai.body"
-    }
-  }
+    ai: {
+      titleKey: 'pdf.ai.title',
+      body: 'pdf.ai.body',
+    },
+  },
 } as const

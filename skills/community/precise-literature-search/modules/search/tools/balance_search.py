@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from io_utils import atomic_write_json, read_json
+from filesystem import canonical_path, path_exists
 from validate_json import validate_data
 from balance_policy import RetrievalBudgetExhausted, budget_status
 import search_round
@@ -17,7 +18,7 @@ import state as state_tool
 
 
 def run(args: argparse.Namespace) -> dict:
-    work = args.work_dir.resolve()
+    work = canonical_path(args.work_dir)
     dispatch = read_json(work / "dispatch.json")
     if dispatch.get("profile") != "balance":
         raise ValueError("balance runner requires a saved balance dispatch")
@@ -58,7 +59,7 @@ def run(args: argparse.Namespace) -> dict:
         if batch.get("finish_round") is not True:
             raise ValueError("balance citations require finish_round: true")
     path = work / "balance-execution.json"
-    execution = read_json(path) if path.exists() else {}
+    execution = read_json(path) if path_exists(path) else {}
     if execution.get("completed"):
         raise ValueError("balance logical round is complete; finalize or explicitly start a new outer round")
     token = hashlib.sha256(json.dumps(batch, sort_keys=True).encode()).hexdigest()

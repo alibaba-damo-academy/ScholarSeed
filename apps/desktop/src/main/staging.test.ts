@@ -5,7 +5,7 @@ import {
   installerExtension,
   planUpdatePrune,
   stagedInstallerName,
-  updateArtifactKind
+  updateArtifactKind,
 } from './staging.ts'
 import type { UpdateArtifactEntry } from './staging.ts'
 
@@ -19,6 +19,13 @@ function file(name: string): UpdateArtifactEntry {
 function directory(name: string, empty: boolean): UpdateArtifactEntry {
   return { name, directory: true, empty }
 }
+
+test('replacement pruning keeps both the usable ready payload and current attempt', () => {
+  const obsolete = 'scholarseed-0.1.0-202609150900.dmg'
+  const entries = [file(KEEP), file(OLD), file(obsolete), file('user.pdf')]
+  assert.deepEqual(planUpdatePrune(entries, KEEP, [OLD]).files, [obsolete])
+  assert.deepEqual(planUpdatePrune(entries, KEEP).files, [OLD, obsolete])
+})
 
 test('安装包扩展名按平台分派', () => {
   assert.equal(installerExtension('win32'), '.exe')
@@ -76,4 +83,11 @@ test('安装脚本、用户文件与同名目录都不被当暂存包删', () =>
 test('目录里只有目标包时不产生任何动作', () => {
   assert.deepEqual(planUpdatePrune([file(KEEP)], KEEP), { files: [], directories: [] })
   assert.deepEqual(planUpdatePrune([], KEEP), { files: [], directories: [] })
+})
+
+test('mutable staged metadata cannot address paths outside the update cache', () => {
+  for (const invalid of ['../old', 'x/../../other', 'x\\..\\other', '', 'x'.repeat(129)]) {
+    assert.throws(() => stagedInstallerName(invalid, '2026100901'), /Invalid staged release/)
+    assert.throws(() => stagedInstallerName('0.2.0', invalid), /Invalid staged release/)
+  }
 })

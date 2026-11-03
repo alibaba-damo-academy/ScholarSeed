@@ -1,4 +1,4 @@
-import i18next from 'i18next'
+import i18next, { type i18n } from 'i18next'
 
 import type { InteractionPolicyContribution, InteractionQuestion } from '../../contracts/features'
 
@@ -16,6 +16,44 @@ const AUTHORIZATION_HEADERS = new Set(['综述检索授权', '精准检索授权
 const AUTHORIZE = '一键授权'
 const REJECT = '拒绝'
 const RECOMMENDED_SUFFIX = /\s*\(Recommended\)\s*$/i
+const AUTHORIZATION_COPY = [
+  { prefix: 'precise-search-fulltext:', header: 'review.authorization.preciseHeader', question: 'review.authorization.preciseQuestion' },
+  { prefix: 'literature-review-fulltext:', header: 'review.authorization.reviewHeader', question: 'review.authorization.reviewQuestion' },
+  { prefix: 'research-idea-fulltext:', header: 'review.authorization.ideaHeader', question: 'review.authorization.ideaQuestion' }
+] as const
+const AUTHORIZATION_OPTIONS = {
+  [AUTHORIZE]: { labelKey: 'review.authorization.authorize', descriptionKey: 'review.authorization.authorizeDescription' },
+  [REJECT]: { labelKey: 'review.authorization.reject', descriptionKey: 'review.authorization.rejectDescription' }
+} as const
+
+function authorizationCopy(question: InteractionQuestion) {
+  return AUTHORIZATION_COPY.find(copy => question.id?.startsWith(copy.prefix))
+}
+
+function presentAuthorizationQuestion(question: InteractionQuestion, localization: i18n): InteractionQuestion {
+  const copy = authorizationCopy(question)
+  if (!copy) return question
+  return {
+    ...question,
+    header: localization.t(copy.header, { ns: 'literature' }),
+    question: localization.t(copy.question, { ns: 'literature' }),
+    options: question.options.map(option => {
+      const label = authorizationLabel(option.label)
+      if (label !== AUTHORIZE && label !== REJECT) return option
+      const optionCopy = AUTHORIZATION_OPTIONS[label]
+      return {
+        ...option,
+        label: localization.t(optionCopy.labelKey, { ns: 'literature' }),
+        description: localization.t(optionCopy.descriptionKey, { ns: 'literature' })
+      }
+    })
+  }
+}
+
+function presentAuthorizationAnswer(question: InteractionQuestion, answer: string, localization: i18n): string {
+  if (!authorizationCopy(question) || (answer !== AUTHORIZE && answer !== REJECT)) return answer
+  return localization.t(AUTHORIZATION_OPTIONS[answer].labelKey, { ns: 'literature' })
+}
 
 function authorizationLabel(label: string): string {
   return label.replace(RECOMMENDED_SUFFIX, '')
@@ -68,16 +106,55 @@ export const literatureReviewInteraction = {
   get defaultLabel() { return i18next.t('review.interactionDefaultLabel', { ns: 'literature' }) }
 } satisfies InteractionPolicyContribution
 
-export const literatureRetrievalAuthorization: InteractionPolicyContribution = {
-  id: 'literature-corpus-authorization',
-  get title() { return i18next.t('review.authorizationTitle', { ns: 'literature' }) },
-  matches: isRetrievalAuthorization,
-  directDecision: () => 'respond',
-  directPresentation: 'primary-secondary',
-  optionLabel: option => authorizationLabel(option.label),
-  get cancelledLabel() {
-    return (question: InteractionQuestion) => i18next.t('review.authorizationRejected', { ns: 'literature' })
-      || question.options.find(option => authorizationLabel(option.label) === REJECT)?.description
-      || REJECT
+function authorizationPolicy(
+  id: string,
+  matches: (questions: readonly InteractionQuestion[]) => boolean
+): InteractionPolicyContribution {
+  return {
+    id,
+    get title() { return i18next.t('review.authorizationTitle', { ns: 'literature' }) },
+    matches,
+    directDecision: () => 'respond',
+    directPresentation: 'primary-secondary',
+    directSelectionRequired: option => authorizationLabel(option.label) === AUTHORIZE,
+    optionLabel: option => authorizationLabel(option.label),
+    replyTitle: (_question, answer, localization) =>
+      authorizationLabel(answer) === AUTHORIZE
+        ? localization.t('review.authorizationReplyTitle', { ns: 'literature' })
+        : undefined,
+    replyText: (_question, answer, localization) => {
+      const label = authorizationLabel(answer)
+      if (label === AUTHORIZE) return localization.t('review.authorizationReplyGranted', { ns: 'literature' })
+      if (label === REJECT) return localization.t('review.authorizationReplyRejected', { ns: 'literature' })
+      return undefined
+    },
+    presentQuestion: presentAuthorizationQuestion,
+    presentAnswer: presentAuthorizationAnswer,
+    get cancelledLabel() {
+      return (question: InteractionQuestion) => i18next.t('review.authorizationRejected', { ns: 'literature' })
+        || question.options.find(option => authorizationLabel(option.label) === REJECT)?.description
+        || REJECT
+    }
   }
 }
+
+const PRECISE_FULLTEXT_PREFIX = 'precise-search-fulltext:'
+
+/** 精准检索的合并授权卡：单一问题携带论文子集清单，子集经决策值回传、不落账。 */
+function isPreciseSubsetAuthorization(questions: readonly InteractionQuestion[]): boolean {
+  const question = questions[0]
+  return questions.length === 1
+    && (question?.id?.startsWith(PRECISE_FULLTEXT_PREFIX) ?? false)
+    && (question?.papers?.length ?? 0) > 0
+    && isRetrievalAuthorization(questions)
+}
+
+export const preciseFulltextSubsetAuthorization = authorizationPolicy(
+  'precise-fulltext-subset-authorization',
+  isPreciseSubsetAuthorization
+)
+
+export const literatureRetrievalAuthorization = authorizationPolicy(
+  'literature-corpus-authorization',
+  isRetrievalAuthorization
+)

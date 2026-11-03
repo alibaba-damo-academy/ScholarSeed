@@ -593,7 +593,7 @@ class ResourceRecoveryService:
             observed.mode_bits,
             None,
         )
-        if same_source_identity(disk, working):
+        if same_source_identity(disk, working) and not current.review.edited_by_user:
             raise ResourceRecoveryError("review_not_conflicted")
         history = store.history_for_file(file_id, limit=1)
         version_id = history[0].id if history else None
@@ -623,6 +623,46 @@ class ResourceRecoveryService:
                 disk_revision=disk.object_id,
             )
             return ReviewConflictPreview(file_id, review.id, current.revision, disk, token)
+
+    def backup_review_current(
+        self,
+        project_id: str,
+        file_id: str,
+        review_id: str,
+        pending_revision: int,
+        path: str,
+        expected_revision: str,
+    ) -> VersionRef:
+        with self._cas(project_id).writer():
+            store = self._store(project_id)
+            existing = store.review_backup(file_id, review_id, expected_revision)
+            if existing is not None:
+                return existing
+            stable = self._content.stable_snapshot(project_id, path, VERSION_MAX_BYTES)
+            if stable.revision != expected_revision:
+                raise ResourceRecoveryError("review_disk_revision_conflict")
+            cas = self._cas(project_id)
+            object_id = cas.put(stable.content, stable.media_type)
+            snapshot = SnapshotVersion(
+                path=path,
+                media_type=stable.media_type,
+                revision=stable.revision,
+                object_id=object_id,
+                mode_bits=stable.mode_bits,
+                mtime_ns=stable.mtime_ns,
+                origin=VersionOrigin.EXTERNAL_CONFIRMED,
+                source_review_id=review_id,
+            )
+            try:
+                return store.backup_review_current(
+                    file_id,
+                    review_id,
+                    pending_revision,
+                    snapshot,
+                    cas.verify(object_id),
+                )
+            except VersionStoreConflict as exc:
+                raise ResourceRecoveryError(exc.code) from exc
 
     def reconcile_review(
         self, project_id: str, file_id: str, action: str, token: str, idempotency_key: str
@@ -735,11 +775,13 @@ class ResourceRecoveryService:
                     raise ResourceRecoveryError(ReviewConflict.PENDING_REVISION.value)
                 review = current.review
                 head = store.head(file_id)
-                if (
-                    head is None
-                    or head[1] != review.candidate_revision
-                    or not same_source_identity(store.working_snapshot(file_id), review.candidate)
-                    or review.edited_by_user
+                candidate_is_current = (
+                    head is not None
+                    and head[1] == review.candidate_revision
+                    and same_source_identity(store.working_snapshot(file_id), review.candidate)
+                )
+                if (review.edited_by_user and policy is not RestorePolicy.FORCE) or (
+                    not review.edited_by_user and not candidate_is_current
                 ):
                     raise ResourceRecoveryError(ReviewConflict.CANDIDATE_REVISION.value)
                 observed = self._observe(project_id, review.candidate.path, persist=True)
@@ -937,7 +979,7 @@ class ResourceRecoveryService:
                 if position == "target":
                     store.mark_restore_member_applied(transaction.id, member.file_id)
                     continue
-                if position not in {"before", "partial"}:
+                if position not in {"before", "partial", "relocated"}:
                     store.set_restore_state(
                         transaction.id,
                         RestoreState.NEEDS_ATTENTION,
@@ -1040,11 +1082,28 @@ class ResourceRecoveryService:
             return
         if member.target_object_id is None:
             raise ResourceRecoveryError("version_object_missing")
+        relocating = (
+            member.target_path != member.expected_path
+            and member.before_state is FileState.PRESENT
+            and position in {"before", "relocated"}
+        )
+        if relocating and position == "before":
+            if member.expected_revision is None:
+                raise ResourceRecoveryError("preflight_stale")
+            self._content.relocate_file(
+                project_id,
+                member.expected_path,
+                member.target_path,
+                member.expected_revision,
+                notify=False,
+            )
         if position != "partial":
             cas = self._cas(project_id)
             descriptor = cas.verify(member.target_object_id)
             target_expected = (
-                member.expected_revision if member.target_path == member.expected_path else None
+                member.expected_revision
+                if member.target_path == member.expected_path or relocating
+                else None
             )
             with cas.stage_stream(
                 member.target_object_id,
@@ -1062,7 +1121,7 @@ class ResourceRecoveryService:
                     mode_bits=member.target_mode_bits,
                     notify=False,
                 )
-        if member.target_path != member.expected_path:
+        if member.target_path != member.expected_path and not relocating:
             self._annotations.move(project_id, member.expected_path, member.target_path)
             self._content.remove_bytes(
                 project_id,
@@ -1236,6 +1295,15 @@ class ResourceRecoveryService:
             return "target"
         if before_matches:
             return "before"
+        if (
+            member.target_path != member.expected_path
+            and member.before_state is FileState.PRESENT
+            and expected.state is FileState.TOMBSTONE
+            and target.state is FileState.PRESENT
+            and target.mode_bits == member.before_mode_bits
+            and target.revision == member.before_object_id
+        ):
+            return "relocated"
         if (
             member.target_path == member.expected_path
             and target.state is member.target_state

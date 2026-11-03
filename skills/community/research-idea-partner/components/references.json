@@ -1,0 +1,240 @@
+{
+  "data": {
+    "schema_version": "1.0",
+    "project": "样例研究想法",
+    "references": [
+      {
+        "ref_id": "sample-0",
+        "title": "样例 1：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "cited_by": [
+          "ideas.md"
+        ],
+        "claim": "仅作交互预览",
+        "evidence": "样例证据",
+        "verification": "unverified",
+        "has_fulltext": false,
+        "url": "https://example.org/paper/0",
+        "doi": null,
+        "arxiv_id": null
+      },
+      {
+        "ref_id": "sample-1",
+        "title": "样例 2：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "cited_by": [
+          "ideas.md"
+        ],
+        "claim": "仅作交互预览",
+        "evidence": "样例证据",
+        "verification": "unverified",
+        "has_fulltext": false,
+        "url": "https://example.org/paper/1",
+        "doi": null,
+        "arxiv_id": null
+      },
+      {
+        "ref_id": "sample-2",
+        "title": "样例 3：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "cited_by": [
+          "ideas.md"
+        ],
+        "claim": "仅作交互预览",
+        "evidence": "样例证据",
+        "verification": "unverified",
+        "has_fulltext": false,
+        "url": "https://example.org/paper/2",
+        "doi": null,
+        "arxiv_id": null
+      },
+      {
+        "ref_id": "sample-3",
+        "title": "样例 4：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "cited_by": [
+          "ideas.md"
+        ],
+        "claim": "仅作交互预览",
+        "evidence": "样例证据",
+        "verification": "unverified",
+        "has_fulltext": false,
+        "url": "https://example.org/paper/3",
+        "doi": null,
+        "arxiv_id": null
+      },
+      {
+        "ref_id": "sample-4",
+        "title": "样例 5：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "cited_by": [
+          "ideas.md"
+        ],
+        "claim": "仅作交互预览",
+        "evidence": "样例证据",
+        "verification": "unverified",
+        "has_fulltext": false,
+        "url": "https://example.org/paper/4",
+        "doi": null,
+        "arxiv_id": null
+      },
+      {
+        "ref_id": "sample-5",
+        "title": "样例 6：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "cited_by": [
+          "ideas.md"
+        ],
+        "claim": "仅作交互预览",
+        "evidence": "样例证据",
+        "verification": "unverified",
+        "has_fulltext": false,
+        "url": "https://example.org/paper/5",
+        "doi": null,
+        "arxiv_id": null
+      }
+    ],
+    "context": {
+      "projectId": "sample-project",
+      "projectName": "样例项目"
+    }
+  },
+  "responses": {
+    "open-source": {
+      "state": "resolved",
+      "data": {
+        "result": null,
+        "view": {
+          "title": "样例原文",
+          "body": "样例文献：长上下文信息利用\n\n摘要\n本样例比较检索增强与直接长上下文阅读两种方法，用于演示文献查看交互。\n\n方法\n将同一条证据分别放在文本开头、中间和结尾，记录回答是否引用了正确证据。\n\n示例观察\n结果按证据位置分组展示；返回列表后可以继续选择其他文献。\n\n以上内容为虚构预览样例，不代表真实论文或研究结论。",
+          "identifier": {
+            "$input": "refId",
+            "$default": ""
+          }
+        }
+      }
+    },
+    "add-reference": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "id": "sample-imported"
+        }
+      }
+    },
+    "collections": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "$state": "collections"
+        }
+      }
+    },
+    "create-collection": {
+      "state": "resolved",
+      "append": {
+        "collections": {
+          "id": {
+            "$input": "name"
+          },
+          "name": {
+            "$input": "name"
+          },
+          "parent_id": {
+            "$input": "parentId",
+            "$default": null
+          },
+          "project_id": "sample-project"
+        }
+      },
+      "data": {
+        "result": {
+          "id": {
+            "$input": "name"
+          },
+          "name": {
+            "$input": "name"
+          },
+          "parent_id": {
+            "$input": "parentId",
+            "$default": null
+          },
+          "project_id": "sample-project"
+        }
+      }
+    }
+  },
+  "state": {
+    "collections": [
+      {
+        "id": "sample-collection",
+        "name": "样例分类",
+        "project_id": "sample-project"
+      },
+      {
+        "id": "sample-methods",
+        "name": "研究方法",
+        "project_id": "sample-project"
+      },
+      {
+        "id": "sample-context",
+        "name": "长上下文",
+        "parent_id": "sample-methods",
+        "project_id": "sample-project"
+      },
+      {
+        "id": "sample-evidence",
+        "name": "证据对比",
+        "parent_id": "sample-context",
+        "project_id": "sample-project"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "label": "加入失败后重试",
+      "responses": {
+        "add-reference": {
+          "state": "resolved",
+          "data": {
+            "result": {
+              "id": "sample-imported"
+            }
+          },
+          "steps": [
+            {
+              "state": "failed",
+              "data": {
+                "error": "preview_add_failed"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -15,7 +15,7 @@ import type {
   ResourceCapability,
   ResourceImportConflict,
   ResourcePending,
-  ResourceSearchHit
+  ResourceSearchHit,
 } from './api'
 
 /** 导入方式：复制一份到项目 / 关联原文件（PRD「资料导入」双卡片）。 */
@@ -30,13 +30,7 @@ export type ImportMode = 'copy' | 'link'
 export type AssetOrigin = 'local' | 'link'
 
 export type ResourceManagementState =
-  | 'migration_required'
-  | 'managed'
-  | 'git'
-  | 'ignored'
-  | 'oversized'
-  | 'unsupported'
-  | 'unavailable'
+  'migration_required' | 'managed' | 'git' | 'ignored' | 'oversized' | 'unsupported' | 'unavailable'
 
 export interface ResourceNodeVersionState {
   managementState: ResourceManagementState
@@ -56,6 +50,9 @@ export interface ResourceLinkRoot {
 
 /** 资料树节点。 */
 export interface ResourceNode {
+  source?: 'imported' | 'created' | 'linked' | null
+  fileType?: string
+  updatedAt?: number
   /** 相对项目根的路径，作为稳定标识。 */
   path: string
   name: string
@@ -91,11 +88,19 @@ export type ResourceCreateMode = 'create_document' | 'create_folder'
 export const MARKDOWN_SUFFIX = '.md'
 
 /** 与 content 域名称约束一致的本地即时校验。 */
-const FORBIDDEN_RESOURCE_NAME_CHARS = new Set(['\\', '/', '\0'])
+const FORBIDDEN_RESOURCE_NAME_CHARS = new Set(['\\', '/', ':', '\0'])
 const RESERVED_RESOURCE_NAMES = new Set(['.', '..'])
 const RESOURCE_NAME_SUGGESTION_SEPARATOR = ' '
 const RESOURCE_NAME_WHITESPACE_PATTERN = /\s+/gu
 export const INVALID_RESOURCE_NAME_MESSAGE = 'operationError.invalid_name' as const
+export const RESOURCE_CREATE_NAME_LIMIT = 20
+
+export function resourceCreateNameError(value: string): NameDraftState['error'] {
+  return (
+    resourceNameError(value) ??
+    (value.trim().length > RESOURCE_CREATE_NAME_LIMIT ? 'creation.nameTooLong' : null)
+  )
+}
 
 export function resourceNameError(value: string): typeof INVALID_RESOURCE_NAME_MESSAGE | null {
   const cleaned = value.trim()
@@ -112,11 +117,9 @@ export function resourceNameError(value: string): typeof INVALID_RESOURCE_NAME_M
 /** Turn untrusted, generated text into a readable single resource-name suggestion. */
 export function resourceNameSuggestion(value: string, fallback: string): string {
   const cleaned = Array.from(value)
-    .map((character) => (
-      FORBIDDEN_RESOURCE_NAME_CHARS.has(character)
-        ? RESOURCE_NAME_SUGGESTION_SEPARATOR
-        : character
-    ))
+    .map((character) =>
+      FORBIDDEN_RESOURCE_NAME_CHARS.has(character) ? RESOURCE_NAME_SUGGESTION_SEPARATOR : character
+    )
     .join('')
     .replace(RESOURCE_NAME_WHITESPACE_PATTERN, RESOURCE_NAME_SUGGESTION_SEPARATOR)
     .trim()
@@ -135,10 +138,12 @@ const VERSION_POLICY_KEYS = {
   ignored: 'versionBadge.ignored',
   oversized: 'versionBadge.oversized',
   unsupported: 'versionBadge.unsupported',
-  unavailable: 'versionBadge.unavailable'
+  unavailable: 'versionBadge.unavailable',
 } as const
-type VersionBadgeMessage = typeof VERSION_POLICY_KEYS[keyof typeof VERSION_POLICY_KEYS]
-  | 'versionBadge.manualAdmitted' | 'versionBadge.drifted'
+type VersionBadgeMessage =
+  | (typeof VERSION_POLICY_KEYS)[keyof typeof VERSION_POLICY_KEYS]
+  | 'versionBadge.manualAdmitted'
+  | 'versionBadge.drifted'
 
 export interface ResourceVersionBadge {
   label: VersionBadgeMessage
@@ -150,13 +155,18 @@ export interface ResourceVersionBadge {
 export function resourceVersionBadge(node: ResourceNode): ResourceVersionBadge | null {
   if (node.kind !== 'file' || !node.version || node.version.managementState === 'git') return null
   const version = node.version
-  const policy = version.managementState === 'managed' ? null : VERSION_POLICY_KEYS[version.managementState]
+  const policy =
+    version.managementState === 'managed' ? null : VERSION_POLICY_KEYS[version.managementState]
   const label = policy ?? (version.drifted ? 'versionBadge.drifted' : null)
   if (!label) return null
   const description: VersionBadgeMessage[] = [label]
   if (version.manualAdmitted) description.push('versionBadge.manualAdmitted')
   if (version.drifted && label !== 'versionBadge.drifted') description.push('versionBadge.drifted')
-  return { label, description, tone: version.needsReview || version.drifted ? 'warning' : 'neutral' }
+  return {
+    label,
+    description,
+    tone: version.needsReview || version.drifted ? 'warning' : 'neutral',
+  }
 }
 
 /** 按路径找节点；找不到返回 null。 */
@@ -192,7 +202,7 @@ export function withCreatedResource(
       return {
         ...node,
         children,
-        count: Math.max(node.count ?? 0, children.length)
+        count: Math.max(node.count ?? 0, children.length),
       }
     }
     if (!node.children?.length) return node
@@ -311,6 +321,7 @@ export type ImportDialogState =
 
 /** 树上的右键菜单（PRD「资料管理」）；null = 关闭。 */
 export interface NodeMenuState {
+  version?: ResourceNodeVersionState
   anchor?: { bottom: number; left: number; right: number; top: number; width: number }
   path: string
   name: string
@@ -330,7 +341,7 @@ export interface NameDraftState {
   value: string
   /** rename 时不可编辑的原文件后缀；新建 Markdown 时为 `.md`。 */
   suffix: string
-  error: typeof INVALID_RESOURCE_NAME_MESSAGE | null
+  error: ResourceErrorMessage['key'] | 'creation.nameTooLong' | null
   submitting: boolean
 }
 
@@ -341,36 +352,89 @@ export interface ResourceNoticeOpenTarget {
 }
 
 /** Toast 反馈可携带一次真实的新建重试或资料打开入口。 */
-export type ResourceNoticeMessage = ResourceErrorMessage | {
-  namespace: 'tasks'
-  key: 'feedback.completed' | 'feedback.cancelled' | 'feedback.incomplete'
-  name: TaskTitle
-  errorContent?: ReactNode
-  detail?: string
-} | {
-  key: 'feedback.savedDestination'
-  name: string
-  destination: string
-  detail?: string
-} | {
-  key: 'localImport.pickerUnavailable' | 'localImport.dropPathError' | 'panel.invalidDrop' | 'panel.loadFailed' | 'feedback.revealDesktopUnavailable'
-    | 'feedback.cannotOpenSearch' | 'feedback.renameDirty' | 'feedback.nameCopied' | 'feedback.clipboardUnavailable' | 'feedback.locationUnavailable' | 'feedback.pathUnavailable' | 'feedback.pathCopied' | 'feedback.deleteDirty' | 'feedback.trashUnavailable' | 'feedback.unlinkDirty' | 'feedback.moveDirty' | 'feedback.movePathMissing' | 'feedback.alreadyAtRoot' | 'feedback.importChanged' | 'feedback.clipboardFailed' | 'feedback.revealFailed' | 'feedback.trashFailed' | 'feedback.unlinkFailed' | 'feedback.importQueued' | 'feedback.linkQueued' | 'feedback.createUncertain' | 'feedback.linkedCreateFailed' | 'feedback.openBeforeContext'
-  detail?: string
-} | {
-  key: 'feedback.versionAdmitted' | 'feedback.savedResource' | 'feedback.created' | 'feedback.copied' | 'feedback.renamed' | 'feedback.renamedSyncFailed' | 'feedback.moved' | 'feedback.movedSyncFailed' | 'feedback.trashed' | 'feedback.trashReceiptFailed' | 'feedback.trashTabsFailed' | 'feedback.trashContextFailed' | 'feedback.unlinkTabsFailed' | 'feedback.unlinkContextFailed' | 'feedback.unlinked'
-  name: string
-  detail?: string
-} | {
-  key: 'feedback.unlinkedInterrupted'
-  name: string
-  count: number
-  detail?: string
-} | {
-  key: 'feedback.importReplaced' | 'feedback.importRenamed'
-    | 'feedback.linkSuperseded' | 'feedback.linkSupersedeCleanupFailed'
-  count: number
-  detail?: string
-}
+export type ResourceNoticeMessage =
+  | ResourceErrorMessage
+  | {
+      namespace: 'tasks'
+      key: 'feedback.completed' | 'feedback.cancelled' | 'feedback.incomplete'
+      name: TaskTitle
+      errorContent?: ReactNode
+      detail?: string
+      openTaskCenter?: boolean
+    }
+  | {
+      key: 'feedback.savedDestination'
+      name: string
+      destination: string
+      detail?: string
+    }
+  | {
+      key:
+        | 'localImport.pickerUnavailable'
+        | 'localImport.dropPathError'
+        | 'panel.invalidDrop'
+        | 'panel.loadFailed'
+        | 'feedback.revealDesktopUnavailable'
+        | 'feedback.cannotOpenSearch'
+        | 'feedback.renameDirty'
+        | 'feedback.nameCopied'
+        | 'feedback.clipboardUnavailable'
+        | 'feedback.locationUnavailable'
+        | 'feedback.pathUnavailable'
+        | 'feedback.pathCopied'
+        | 'feedback.deleteDirty'
+        | 'feedback.trashUnavailable'
+        | 'feedback.unlinkDirty'
+        | 'feedback.moveDirty'
+        | 'feedback.movePathMissing'
+        | 'feedback.alreadyAtRoot'
+        | 'feedback.importChanged'
+        | 'feedback.clipboardFailed'
+        | 'feedback.revealFailed'
+        | 'feedback.trashFailed'
+        | 'feedback.unlinkFailed'
+        | 'feedback.importQueued'
+        | 'feedback.linkQueued'
+        | 'feedback.createUncertain'
+        | 'feedback.linkedCreateFailed'
+        | 'feedback.openBeforeContext'
+      detail?: string
+    }
+  | {
+      key:
+        | 'feedback.versionAdmitted'
+        | 'feedback.savedResource'
+        | 'feedback.created'
+        | 'feedback.copied'
+        | 'feedback.renamed'
+        | 'feedback.renamedSyncFailed'
+        | 'feedback.moved'
+        | 'feedback.movedSyncFailed'
+        | 'feedback.trashed'
+        | 'feedback.trashReceiptFailed'
+        | 'feedback.trashTabsFailed'
+        | 'feedback.trashContextFailed'
+        | 'feedback.unlinkTabsFailed'
+        | 'feedback.unlinkContextFailed'
+        | 'feedback.unlinked'
+      name: string
+      detail?: string
+    }
+  | {
+      key: 'feedback.unlinkedInterrupted'
+      name: string
+      count: number
+      detail?: string
+    }
+  | {
+      key:
+        | 'feedback.importReplaced'
+        | 'feedback.importRenamed'
+        | 'feedback.linkSuperseded'
+        | 'feedback.linkSupersedeCleanupFailed'
+      count: number
+      detail?: string
+    }
 
 export interface ResourceNoticeState {
   tone: 'ok' | 'error'
@@ -432,28 +496,27 @@ export const BROWSER_SEARCH_MODE = 'visible-browser'
 export const WEB_SEARCH_MODES = [
   OFFICIAL_SEARCH_MODE,
   WEB_SEARCH_CANDIDATES_MODE,
-  BROWSER_SEARCH_MODE
+  BROWSER_SEARCH_MODE,
 ] as const
 export type WebSearchMode = (typeof WEB_SEARCH_MODES)[number]
 
 export type WebSearchStatus =
-  | 'opening'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'interrupted'
-  | 'unknown'
-  | 'unavailable'
+  'opening' | 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown' | 'unavailable'
 
 export interface WebSearchAttempt {
   mode: WebSearchMode
   startedAt: number
   invocationStartedAt?: number
+  resultReadyAt?: number
   completedAt?: number
   invocationId?: string
   invocationEvents: AgentInvocationEvent[]
   /** Renderer receipt time for each retained SSE event, keyed by Invocation sequence. */
   eventObservedAt: Record<number, number>
+  /** Final artifact path used by this provider phase, when it has one. */
+  artifactPath?: string
+  officialSearchId?: string
+  invocationProfile?: string
   resultText?: string
   status: WebSearchStatus
   error?: string
@@ -478,7 +541,8 @@ export interface ResourceWebSearch {
   startedAt: number
   /** Frozen when the complete automatic route becomes terminal. */
   completedAt?: number
-  /** Ordered, isolated evidence for each Skill attempted by the automatic route. */
+  readyAt?: number
+  /** Ordered provider phases from one automatic Invocation, sharing its invocation id. */
   attempts: WebSearchAttempt[]
   /** The executor whose verified output supplies the visible candidates. */
   resolvedMode?: WebSearchMode
@@ -567,26 +631,41 @@ export const INITIAL_RESOURCE_STATE: ResourceState = {
   linkSupersedeConfirm: null,
   moveDialog: null,
   notice: null,
-  loadState: 'idle'
+  loadState: 'idle',
 }
 
 /** Start a clean resource projection for another project while retaining window-owned search jobs. */
 export function resourceStateForProjectSwitch(current: ResourceState): ResourceState {
   return {
     ...INITIAL_RESOURCE_STATE,
-    webSearches: current.webSearches
+    webSearches: current.webSearches,
   }
 }
 
 /** Independent file decorations; editor state is scoped by exact project/path identity. */
-export function resourceTreeIndicators(node: ResourceNode, project: string | null, sessions: readonly DocumentSession[]) {
-  const session = node.kind === 'file' ? sessions.find((item) => item.source.kind === 'project'
-    && item.source.project === project && item.source.path === node.path) : undefined
-  const version = node.kind === 'file' && node.version?.managementState !== 'git' ? node.version : undefined
-  const warnings: Array<'versionBadge.unavailable' | 'versionBadge.drifted' | 'treeStatus.saveError' | 'treeStatus.saveConflict'> = []
+export function resourceTreeIndicators(
+  node: ResourceNode,
+  project: string | null,
+  sessions: readonly DocumentSession[]
+) {
+  const session =
+    node.kind === 'file'
+      ? sessions.find(
+          (item) =>
+            item.source.kind === 'project' &&
+            item.source.project === project &&
+            item.source.path === node.path
+        )
+      : undefined
+  const version =
+    node.kind === 'file' && node.version?.managementState !== 'git' ? node.version : undefined
+  const warnings: Array<'versionBadge.unavailable' | 'versionBadge.drifted'> = []
   if (version?.managementState === 'unavailable') warnings.push('versionBadge.unavailable')
   if (version?.drifted) warnings.push('versionBadge.drifted')
-  if (session?.saveState === 'error') warnings.push('treeStatus.saveError')
-  if (session?.saveState === 'conflict') warnings.push('treeStatus.saveConflict')
-  return { session, dirty: Boolean(session?.dirty), needsReview: Boolean(version?.needsReview), warnings }
+  return {
+    session,
+    dirty: Boolean(session?.dirty),
+    needsReview: Boolean(version?.needsReview),
+    warnings,
+  }
 }

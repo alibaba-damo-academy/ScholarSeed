@@ -1,7 +1,8 @@
-import { appsForFile, OpenWithApp, revealSystemPath } from './api'
+import type { OpenWithApp } from './api'
+import { appsForFile, revealSystemPath } from './api'
 import { uniqueApplications } from './applications'
 import { writeClipboard } from './components/primitive/clipboard'
-import { FilePreviewTarget } from './model'
+import type { FilePreviewTarget } from './model'
 
 const REVEAL_LABEL_KEYS = {
   darwin: 'resources:menu.reveal',

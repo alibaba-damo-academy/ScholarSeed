@@ -13,6 +13,7 @@ from service.chat.service.projects import summarize_project
 from service.content.api.routes import register_content_routes
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 
 PASS = 0
 FAIL = 0
@@ -75,7 +76,20 @@ def legacy_route_is_retired(root: Path) -> None:
     catalog = ContentCatalog(root / "content.sqlite3")
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
+    preview = Path(content.preview_project_directory("研究项目"))
+    check("default directory follows project name", preview.name == "研究项目")
+    check("preview does not create files", not preview.exists())
+    created = content.create_project("研究项目")
+    check("creation uses the previewed directory", created.root == str(preview))
+    check(
+        "duplicate names receive a suffix",
+        Path(content.preview_project_directory("研究项目")).name == "研究项目-2",
+    )
+    check(
+        "Windows reserved names are safe on all hosts",
+        Path(content.preview_project_directory("CON")).name == "project-CON",
+    )
     created = content.create_project("身份层项目")
 
     app = FastAPI()
@@ -104,6 +118,52 @@ def legacy_route_is_retired(root: Path) -> None:
     )
 
 
+def generated_project_names(root: Path) -> None:
+    workspace = root / "workspace"
+    workspace.mkdir()
+    catalog = ContentCatalog(root / "content.sqlite3")
+    registry = ProjectRegistry(str(workspace), catalog)
+    original = registry.create("同名创建测试")
+    evidence = Path(original.root) / "original.txt"
+    evidence.write_text("preserved", encoding="utf-8")
+    for expected in ("同名创建测试-2", "同名创建测试-3"):
+        preview = registry.creation_directory("同名创建测试")
+        created = registry.create("同名创建测试")
+        check(
+            "duplicate project name follows its final generated directory",
+            created.name == expected == Path(created.root).name
+            and created.root == str(preview)
+            and created.id != original.id,
+            str(created),
+        )
+        reopened = ProjectRegistry(str(workspace), ContentCatalog(root / "content.sqlite3"))
+        check("generated project name persists", reopened.resolve(created.id) == created)
+    check(
+        "duplicate creation preserves the original project and content",
+        registry.resolve(original.id) == original
+        and evidence.read_text(encoding="utf-8") == "preserved",
+    )
+    for requested, expected in (
+        ("独立项目", "独立项目"),
+        ("空格 项目", "空格-项目"),
+        ("CON", "project-CON"),
+        ("???", "project"),
+        ("长" * 25, "长" * 24),
+    ):
+        created = registry.create(requested)
+        check(
+            "initial project name matches the normalized automatic directory",
+            created.name == expected == Path(created.root).name,
+            str(created),
+        )
+    renamed = registry.rename(original.id, "后续显示名称")
+    check("rename retains its existing directory", renamed.root == original.root)
+    selected = root / "selected"
+    selected.mkdir()
+    adopted = registry.adopt(selected, "手选目录名称")
+    check("selected directory retains its explicit display name", adopted.name == "手选目录名称")
+
+
 def archive_routes(root: Path) -> None:
     """归档只改默认列表可见性: 服务端过滤 + 可逆 + 当前项目拒绝。
 
@@ -116,7 +176,7 @@ def archive_routes(root: Path) -> None:
     catalog = ContentCatalog(root / "content.sqlite3")
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     current = content.project()
     target = content.create_project("待归档项目")
 
@@ -194,7 +254,7 @@ def creation_order(root: Path) -> None:
     catalog = ContentCatalog(root / "content.sqlite3")
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     seeded = content.project()
     first = content.create_project("先建的项目")
     second = content.create_project("后建的项目")
@@ -226,7 +286,72 @@ def creation_order(root: Path) -> None:
     )
 
 
+def metadata_roundtrip(root: Path) -> None:
+    catalog = ContentCatalog(root / "content.sqlite3")
+    registry = ProjectRegistry(str(root), catalog)
+    content = ContentService(registry, catalog, activities=Activities())
+    project = content.create_project("Before")
+    app = FastAPI()
+    app.state.content = content
+    register_content_routes(app)
+    client = TestClient(app)
+    response = client.patch(
+        "/api/content/projects",
+        json={
+            "id": project.id,
+            "name": "After",
+            "description": "Research",
+            "pinned": True,
+        },
+    )
+    check(
+        "project metadata updates without moving its root",
+        response.status_code == 200
+        and response.json()["root"] == project.root
+        and Path(project.root).is_dir(),
+    )
+    reopened = ProjectRegistry(str(root), ContentCatalog(root / "content.sqlite3"))
+    saved = reopened.resolve(project.id)
+    check("description and pin persist", saved.description == "Research" and saved.pinned)
+    renamed = content.rename_project(project.id, "Again")
+    check(
+        "name-only update preserves metadata", renamed.description == "Research" and renamed.pinned
+    )
+    invalid = client.patch(
+        "/api/content/projects",
+        json={
+            "id": project.id,
+            "name": "Invalid",
+            "pinned": "false",
+        },
+    )
+    check(
+        "invalid metadata is rejected before writes",
+        invalid.status_code == 400 and content.project(project.id).name == "Again",
+    )
+    unpinned = client.patch(
+        "/api/content/projects",
+        json={"id": project.id, "name": "Again", "pinned": False},
+    )
+    reopened = ProjectRegistry(str(root), ContentCatalog(root / "content.sqlite3"))
+    check(
+        "unpin persists across a fresh catalog connection without changing project metadata",
+        unpinned.status_code == 200
+        and not reopened.resolve(project.id).pinned
+        and reopened.resolve(project.id).description == "Research"
+        and reopened.resolve(project.id).root == project.root,
+    )
+
+
 def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="project-names-") as tmp:
+        generated_project_names(Path(tmp).resolve())
+    with tempfile.TemporaryDirectory(prefix="project-tree-") as tmp:
+        project_tree(Path(tmp).resolve())
+    with tempfile.TemporaryDirectory(prefix="project-explorer-") as tmp:
+        project_explorer(Path(tmp).resolve())
+    with tempfile.TemporaryDirectory(prefix="project-metadata-") as tmp:
+        metadata_roundtrip(Path(tmp).resolve())
     with tempfile.TemporaryDirectory(prefix="project-summary-") as tmp:
         scenario(Path(tmp).resolve())
     with tempfile.TemporaryDirectory(prefix="project-routes-") as tmp:
@@ -237,6 +362,163 @@ def main() -> int:
         creation_order(Path(tmp).resolve())
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
+
+
+def project_tree(root: Path) -> None:
+    catalog = ContentCatalog(root / "content.sqlite3")
+    registry = ProjectRegistry(str(root / "workspace"), catalog)
+    content = ContentService(registry, catalog, activities=Activities())
+    project = content.create_project("Explorer")
+    folder = Path(project.root) / "results"
+    folder.mkdir()
+    (folder / "paper.md").write_text("test", encoding="utf-8")
+    app = FastAPI()
+    app.state.content = content
+    register_content_routes(app)
+    client = TestClient(app)
+    url = f"/api/content/projects/{project.id}/tree"
+    response = client.get(url)
+    check(
+        "project tree lists real root directories",
+        response.status_code == 200
+        and any(node["name"] == "results" for node in response.json()["nodes"]),
+    )
+    nested = client.get(url, params={"path": "results"})
+    check(
+        "project tree expands real files",
+        nested.status_code == 200 and nested.json()["nodes"][0]["path"] == "results/paper.md",
+    )
+    check(
+        "project tree rejects parent escape",
+        client.get(url, params={"path": "../"}).status_code == 400,
+    )
+    check(
+        "project tree rejects unknown projects",
+        client.get("/api/content/projects/unknown/tree").status_code == 400,
+    )
+    check(
+        "project tree validates pagination",
+        client.get(url, params={"offset": -1}).status_code == 422,
+    )
+
+
+def project_explorer(root: Path) -> None:
+    catalog = ContentCatalog(root / "content.sqlite3")
+    registry = ProjectRegistry(str(root / "workspace"), catalog)
+    content = ContentService(registry, catalog, activities=Activities())
+    project = content.create_project("Explorer actions")
+    app = FastAPI()
+    app.state.content = content
+    register_content_routes(app)
+    client = TestClient(app)
+    nodes = f"/api/content/projects/{project.id}/nodes"
+    imports = f"/api/content/projects/{project.id}/import"
+
+    invalid_name = "新建新建2026年10月27日16:51:39"
+    for action in ("create_document", "create_folder"):
+        rejected = client.post(nodes, json={"action": action, "name": invalid_name})
+        check(
+            f"explorer rejects colon names before {action}",
+            rejected.status_code == 400 and rejected.json()["detail"] == "invalid_name",
+        )
+    check(
+        "invalid names create no filesystem entries",
+        not any(entry.name.startswith(invalid_name) for entry in Path(project.root).iterdir()),
+    )
+    valid_name = invalid_name.replace(":", "-")
+    corrected = client.post(nodes, json={"action": "create_document", "name": valid_name})
+    check(
+        "corrected timestamp name creates readable Markdown",
+        corrected.status_code == 200
+        and (Path(project.root) / f"{valid_name}.md").read_text(encoding="utf-8") == "",
+    )
+    rejected_rename = client.post(
+        nodes,
+        json={"action": "rename", "path": f"{valid_name}.md", "name": f"{invalid_name}.md"},
+    )
+    check(
+        "rename uses the same name rule and preserves the original",
+        rejected_rename.status_code == 400
+        and rejected_rename.json()["detail"] == "invalid_name"
+        and (Path(project.root) / f"{valid_name}.md").is_file(),
+    )
+
+    folder = client.post(nodes, json={"action": "create_folder", "name": "notes"})
+    check(
+        "explorer creates folder at project root",
+        folder.status_code == 200 and folder.json()["path"] == "notes",
+    )
+    document = client.post(
+        nodes, json={"action": "create_document", "parent": "notes", "name": "draft.md"}
+    )
+    check(
+        "explorer creates Markdown in selected folder",
+        document.status_code == 200 and (Path(project.root) / "notes" / "draft.md").is_file(),
+    )
+    other = client.post(nodes, json={"action": "create_folder", "name": "other"})
+    check("explorer creates another folder", other.status_code == 200)
+    moved = client.post(
+        nodes, json={"action": "move", "path": "notes/draft.md", "target_dir": "other"}
+    )
+    check(
+        "explorer moves exact file with content",
+        moved.status_code == 200
+        and moved.json()["path"] == "other/draft.md"
+        and (Path(project.root) / "other" / "draft.md").read_text(encoding="utf-8") == "",
+    )
+    (Path(project.root) / "notes" / "draft.md").write_text("stay", encoding="utf-8")
+    collision = client.post(
+        nodes, json={"action": "move", "path": "notes/draft.md", "target_dir": "other"}
+    )
+    check(
+        "explorer collision does not overwrite either file",
+        collision.status_code == 400
+        and collision.json()["detail"] == "name_exists"
+        and (Path(project.root) / "notes" / "draft.md").read_text(encoding="utf-8") == "stay",
+    )
+    renamed = client.post(
+        nodes, json={"action": "rename", "path": "notes/draft.md", "name": "final.md"}
+    )
+    check(
+        "explorer renames file",
+        renamed.status_code == 200 and (Path(project.root) / "notes" / "final.md").is_file(),
+    )
+    source = root / "outside.txt"
+    source.write_text("copied", encoding="utf-8")
+    imported = client.post(imports, json={"sources": [str(source)], "target_dir": "notes"})
+    check(
+        "explorer imports a copy into selected folder",
+        imported.status_code == 200
+        and (Path(project.root) / "notes" / "outside.txt").read_text(encoding="utf-8") == "copied"
+        and source.is_file(),
+    )
+    hidden = client.post(nodes, json={"action": "create_folder", "name": ".scholarseed"})
+    check("explorer blocks hidden internal targets", hidden.status_code == 400)
+    escaped = client.post(nodes, json={"action": "create_folder", "parent": "../", "name": "bad"})
+    check("explorer blocks path escape", escaped.status_code == 400 and not (root / "bad").exists())
+    artifact_folder = client.post(nodes, json={"action": "create_folder", "name": "artifacts"})
+    check("explorer creates artifact test folder", artifact_folder.status_code == 200)
+    artifact = client.post(
+        nodes,
+        json={"action": "create_document", "parent": "artifacts", "name": "result.md"},
+    )
+    tree = client.get(f"/api/content/projects/{project.id}/tree", params={"path": "artifacts"})
+    check(
+        "explorer identifies task output files",
+        artifact.status_code == 200
+        and tree.status_code == 200
+        and tree.json()["nodes"][0]["artifact"] is True,
+    )
+    copied = client.post(
+        nodes,
+        json={"action": "copy", "path": "artifacts/result.md", "target_dir": "resources"},
+    )
+    check(
+        "explorer copies artifact to library without moving source",
+        copied.status_code == 200
+        and (Path(project.root) / "artifacts" / "result.md").is_file()
+        and (Path(project.root) / "resources" / "result.md").is_file(),
+    )
 
 
 if __name__ == "__main__":

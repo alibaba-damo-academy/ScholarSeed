@@ -1,10 +1,40 @@
-import type { RecordTarget } from './workbench'
+import type { ArtifactCitationReference, RecordTarget, SavedCitationReference } from './workbench'
+
+export function artifactCitationUrl(
+  reference: ArtifactCitationReference,
+  operation?: 'raw' | 'preview',
+  page?: number
+): string {
+  const root = `/api/assistant/sessions/${encodeURIComponent(reference.session_id)}/artifacts/${encodeURIComponent(reference.artifact_id)}/citations/${encodeURIComponent(reference.handle)}`
+  const params = new URLSearchParams({ revision: reference.revision })
+  if (page != null) params.set('page', String(page))
+  return `${root}${operation ? `/${operation}` : ''}?${params}`
+}
 
 /** Answer citation resolution and temporary PDF navigation, never user annotations. */
 export const CITATION_VIEW_STATE_KEY = 'citationFocus'
+export const SAVED_CITATION_ROUTE = '/api/assistant/resources/citation'
+export function savedCitationUrl(
+  reference: SavedCitationReference,
+  operation: 'raw' | 'preview',
+  page?: number
+): string {
+  const params = new URLSearchParams({
+    project: reference.project_id,
+    path: reference.path,
+    handle: reference.handle,
+  })
+  if (page != null) params.set('page', String(page))
+  return `${SAVED_CITATION_ROUTE}/${operation}?${params}`
+}
 export const isCitationUrl = (url: string): boolean => /^scholarseed-cite:/.test(url)
-export interface CitationPage { page: number; quads: number[][] }
-export interface CitationMatch { pages: CitationPage[] }
+export interface CitationPage {
+  page: number
+  quads: number[][]
+}
+export interface CitationMatch {
+  pages: CitationPage[]
+}
 export interface CitationPresentation {
   version: number
   mode: 'structured_text' | 'region_image' | 'unavailable'
@@ -15,6 +45,8 @@ export interface CitationPresentation {
   manual_check: boolean
 }
 export interface CitationResolution {
+  artifact_citation?: ArtifactCitationReference
+  saved_citation?: SavedCitationReference
   can_open_pdf?: boolean
   pipeline?: string
   fallback_reason?: string
@@ -41,5 +73,11 @@ export interface CitationResolution {
   matches: CitationMatch[]
   presentation: CitationPresentation
 }
-export interface CitationFocus extends CitationMatch { revision: string; sequence: number }
-export interface CitationLinkRange { start: number; end: number }
+export interface CitationFocus extends CitationMatch {
+  revision: string
+  sequence: number
+}
+export interface CitationLinkRange {
+  start: number
+  end: number
+}

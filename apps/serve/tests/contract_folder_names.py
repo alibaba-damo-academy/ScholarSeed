@@ -15,6 +15,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.assets import MARKDOWN_SUFFIX
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.utils import filesystem_error
+from service.platform.activity import Activities
 from service.platform.content import AssetKind
 from service.resources.api.routes import register_resource_routes
 
@@ -29,7 +30,7 @@ class FolderNames(unittest.TestCase):
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
         registry.seed_workspace()
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = self.content.create_project("folder-test")
         self.parent = MANAGED_RESOURCES_ROOT_RELATIVE
 
@@ -98,8 +99,9 @@ class FolderNames(unittest.TestCase):
             with self.assertRaises(ContentError) as caught:
                 self.create(long_name)
         self.assertEqual(caught.exception.code, "name_too_long")
-        with patch("pathlib.Path.exists", return_value=False), patch(
-            "pathlib.Path.mkdir", side_effect=windows_error
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            patch("pathlib.Path.mkdir", side_effect=windows_error),
         ):
             with self.assertRaises(ContentError) as caught:
                 self.create(long_name)
@@ -121,7 +123,7 @@ class FolderNames(unittest.TestCase):
         for name in ("note", "笔记"):
             node = self.content.create(self.project.id, self.parent, name, AssetKind.FILE)
             self.assertEqual(node.name, name + ".md")
-            self.assertEqual(self.content.read_text(self.project.id, node.path), "# " + name + "\n")
+            self.assertEqual(self.content.read_text(self.project.id, node.path), "")
             node = self.content.create_text(self.project.id, self.parent, name, "正文")
             self.assertEqual(node.name, name + " (2).md")
             self.assertEqual(self.content.read_text(self.project.id, node.path), "正文")
@@ -172,8 +174,9 @@ class FolderNames(unittest.TestCase):
     def test_markdown_path_not_found_is_name_too_long(self):
         windows_error = OSError(errno.ENOENT, "path not found")
         windows_error.winerror = 3
-        with patch("pathlib.Path.exists", return_value=False), patch(
-            "service.content.service.port.publish_descriptor", side_effect=windows_error
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            patch("service.content.service.port.publish_descriptor", side_effect=windows_error),
         ):
             with self.assertRaises(ContentError) as caught:
                 self.content.create_text(self.project.id, self.parent, "a" * 260, "正文")

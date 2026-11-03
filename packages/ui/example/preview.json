@@ -1,0 +1,10 @@
+{
+  "data": {
+    "choices": [
+      {"id": "evidence", "label": "证据与评估设置", "description": "比较证据来源、数据集及评估指标。"},
+      {"id": "limits", "label": "适用边界与局限", "description": "比较假设、适用场景与尚未解决的问题。"}
+    ],
+    "selected": []
+  },
+  "responses": {"confirm": {"state": "resolved", "data": {"selected": {"$input": "selected"}}}}
+}

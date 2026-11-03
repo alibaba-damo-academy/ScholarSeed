@@ -70,7 +70,7 @@
     },
     "figures_image": {
       "provider": "idealab",
-      "model": "gpt-image-2",
+      "model": "gpt-image-2-0421-global",
       "quality": "high",
       "timeout": 300
     },

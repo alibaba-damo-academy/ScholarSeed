@@ -21,10 +21,12 @@ import {
   updateCandidateKey,
   type UpdateErrorOrigin,
   type UpdateInstallFallback,
-  type UpdateSnapshot
+  type UpdateSnapshot,
 } from '../../../../updates.ts'
 
 type Listener = () => void
+
+const STORAGE_EXHAUSTED = /(?:^|[\s:])ENOSPC(?=[:,\s]|$)|\bNo space left on device\s*$/im
 
 const listeners = new Set<Listener>()
 let snapshot: UpdateSnapshot | null = null
@@ -79,6 +81,7 @@ export type UpdateAction = 'check' | 'download' | 'install' | 'none'
  */
 export function updateActionOf(state: UpdateSnapshot | null): UpdateAction {
   if (!state) return 'check'
+  if (state.restartPending || state.errorFallback === 'activation_recovery_required') return 'none'
   switch (state.phase) {
     case 'ready':
       return 'install'
@@ -87,6 +90,7 @@ export function updateActionOf(state: UpdateSnapshot | null): UpdateAction {
       return state.candidate ? 'download' : 'check'
     case 'checking':
     case 'downloading':
+    case 'preparing':
     case 'verifying':
     case 'installing':
     case 'restarting':
@@ -105,12 +109,36 @@ export function updateActionOf(state: UpdateSnapshot | null): UpdateAction {
  *
  * 不做任何本地乐观写：相位一律等主进程发布回来，两个入口因此天然同步（PRD 第 12 条）。
  */
-export function runUpdateAction(state: UpdateSnapshot | null): void {
+export async function runUpdateAction(
+  state: UpdateSnapshot | null,
+  confirmedCandidateKey?: string
+): Promise<void> {
   const action = updateActionOf(state)
   const id = state?.candidate?.id
-  if (action === 'download' && id) void window.scholarseed.startUpdate(id)
-  else if (action === 'install') void window.scholarseed.installUpdate()
-  else if (action === 'check') void window.scholarseed.checkUpdate()
+  if (action === 'download' && id) await window.scholarseed.startUpdate(id)
+  else if (action === 'install') {
+    if (!confirmedCandidateKey || confirmedCandidateKey !== updateCandidateKey(state?.candidate))
+      return
+    const current = await window.scholarseed.getUpdateState()
+    if (
+      updateActionOf(current) !== 'install' ||
+      current.candidate?.id !== id ||
+      updateCandidateKey(current.candidate) !== confirmedCandidateKey
+    )
+      return
+    await window.scholarseed.installUpdate(id!)
+  } else if (action === 'check') await window.scholarseed.checkUpdate()
+}
+
+export async function runLatestUpdateAction(state: UpdateSnapshot | null): Promise<void> {
+  if (!state?.latestCandidate || updateActionOf(state) !== 'install') return
+  const current = await window.scholarseed.getUpdateState()
+  if (
+    updateActionOf(current) !== 'install' ||
+    current.latestCandidate?.id !== state.latestCandidate.id
+  )
+    return
+  await window.scholarseed.startUpdate(state.latestCandidate.id)
 }
 
 /** 更新入口是否该常驻：从发现新版本到更新完成前一直保留（PRD 第 2 条）。 */
@@ -118,16 +146,29 @@ export const UPDATE_ENTRY_PHASES: ReadonlySet<UpdateSnapshot['phase']> = new Set
   'available',
   'downloading',
   'verifying',
+  'preparing',
   'ready',
   'installing',
   'restarting',
   'manual',
   'failed',
-  'rolled-back'
+  'rolled-back',
 ])
 
 export function isUpdateEntryVisible(state: UpdateSnapshot | null): boolean {
   return state !== null && UPDATE_ENTRY_PHASES.has(state.phase)
+}
+
+export type UpdateEntryBadge = 'none' | 'unread' | 'warning' | 'ready'
+
+export function updateEntryBadgeOf(
+  state: UpdateSnapshot | null,
+  unread = !isAnnouncementAcknowledged(state)
+): UpdateEntryBadge {
+  if (!isUpdateEntryVisible(state)) return 'none'
+  if (updateFailureOf(state)) return 'warning'
+  if (state?.phase === 'ready') return 'ready'
+  return state?.phase === 'available' && unread ? 'unread' : 'none'
 }
 
 // 安装包体积按十进制 MB 报，与访达对同一个文件显示的数字一致。
@@ -188,6 +229,7 @@ export type UpdatePanelStage = 'available' | 'downloading' | 'ready' | 'failed'
 export function updatePanelStageOf(state: UpdateSnapshot | null): UpdatePanelStage {
   switch (state?.phase) {
     case 'downloading':
+    case 'preparing':
     case 'verifying':
       return 'downloading'
     case 'ready':
@@ -248,12 +290,10 @@ export function updateFailureOf(state: UpdateSnapshot | null): UpdateFailure | n
 }
 
 /** 失败标题：按动作来源选，「下载失败」与「安装失败」是两件不同的事。 */
-export function updateFailureTitle(
-  failure: UpdateFailure,
-  t: TFunction<'components'>
-): string {
+export function updateFailureTitle(failure: UpdateFailure, t: TFunction<'components'>): string {
   if (failure.rolledBack) return t('update.rolledBack')
   if (failure.origin === 'install') return t('update.titleInstallFailed')
+  if (failure.origin === 'preparation') return t('update.titlePreparationFailed')
   if (failure.origin === 'download') return t('update.titleFailed')
   return t('update.checkFailed')
 }
@@ -267,30 +307,51 @@ export function updateFailureText(
   // 结构化分类失败：按类别给可操作的本地化说法，绝不透出原始诊断（Windows 控制台代码页下会乱码，
   // 见 bug 87042987）。校验环境不可用 → 引导手动下载重装；签名不可信 → 安全拦截、引导官方渠道重取；
   // 本机不可判定 → 包字节与签名者都对、缺的是本机链/吊销状态，引导修复环境后重试而非重新下载。
+  if (failure.fallback === 'launcher_maintenance_required')
+    return accountText('update.launcherMaintenanceRequired')
+  if (failure.fallback === 'preparation_connection_closed')
+    return accountText('update.preparationConnectionClosed')
+  if (failure.fallback === 'preparation_failed') return accountText('update.preparationFailed')
+  if (failure.fallback === 'activation_recovery_required')
+    return accountText('update.activationRecoveryRequired')
+  if (failure.fallback === 'activation_candidate_changed')
+    return accountText('update.activationCandidateChanged')
+  if (failure.fallback === 'activation_unavailable')
+    return accountText('update.activationUnavailable')
+  if (failure.fallback === 'preparation_unverified')
+    return accountText('update.preparationUnverified')
+  if (failure.fallback === 'activation_authorization_required')
+    return accountText('update.activationAuthorizationRequired')
   if (failure.fallback === 'install_verify_unavailable') return t('update.installVerifyUnavailable')
-  if (failure.fallback === 'install_signature_untrusted') return t('update.installSignatureUntrusted')
-  if (failure.fallback === 'install_signature_indeterminate') return t('update.installSignatureIndeterminate')
+  if (failure.fallback === 'install_signature_untrusted')
+    return t('update.installSignatureUntrusted')
+  if (failure.fallback === 'install_signature_indeterminate')
+    return t('update.installSignatureIndeterminate')
+  if (failure.fallback === 'install_notarization_indeterminate')
+    return t('update.installNotarizationIndeterminate')
   // 上一轮安装器还活着：重试只会被安装器互斥量 Abort，文案说明在等什么而不是报失败。
+  if (failure.fallback === 'install_in_use') return t('update.installInUse')
+  if (failure.fallback === 'install_occupancy_unknown') return t('update.installOccupancyUnknown')
   if (failure.fallback === 'install_already_running') return t('update.installAlreadyRunning')
   // 笼统 fallback 或拿不到诊断原文时退回通用说法：安装类走 account 命名空间那句既有文案，其余按检查失败报。
   if (failure.fallback || !failure.message) {
+    if (failure.origin === 'preparation') return accountText('update.preparationFailed')
     return failure.origin === 'install'
       ? accountText('update.installFailed')
       : t('update.checkFailed')
   }
+  if (STORAGE_EXHAUSTED.test(failure.message)) return t('update.insufficientSpace')
   if (failure.origin === 'install') return t('update.installFailedSub', { error: failure.message })
+  if (failure.origin === 'preparation')
+    return t('update.preparationFailedSub', { error: failure.message })
   if (failure.origin === 'download') return t('update.failedSub', { error: failure.message })
   return t('update.checkFailedSub', { error: failure.message })
 }
 
 /**
- * 「发现新版本」弹窗是否已经被用户收起过。
- *
- * PRD：每次检测到新版本默认先给弹窗，用户收起或关闭后不再弹，只保留活动栏的常驻
- * 入口。按 version+build_number 记，所以同一版本的下一次构建会重新弹一次；没有候选
- * 包时无从弹起，按已处理算。
- *
- * 确认由主进程持有并随快照下发（`announcedKey`），不在渲染层落任何存储 —— 见文件头。
+ * 候选更新是否已被用户主动查看或确认。
+ * 按 version+build_number 记录未读状态，仅用于常驻入口，不自动展开任何浮层。
+ * 确认由主进程持有并随快照下发（`announcedKey`），渲染层不落存储。
  */
 export function isAnnouncementAcknowledged(state: UpdateSnapshot | null): boolean {
   const key = updateCandidateKey(state?.candidate)
@@ -304,37 +365,27 @@ export function acknowledgeAnnouncement(): void {
 }
 
 export interface UpdateAnnouncement {
-  /** 这个候选包还没被用户收起过：为 true 时入口应自动展开一次浮窗。 */
-  pending: boolean
-  /** 记下「用户已经收起过这个候选包」，之后不再自动展开。 */
+  /** 候选尚未被用户主动查看或确认，与后台准备相位无关。 */
+  unread: boolean
+  /** 记下用户已经主动查看或确认这个候选包。 */
   acknowledge: () => void
 }
 
-/**
- * 「发现新版本」的首次自动提示。
- *
- * PRD：每次检测到新版本默认先给弹窗，用户收起或关闭后不再自动弹，之后只保留活动栏
- * 的常驻入口。按 version+build_number 记，所以同一版本的下一次构建会重新弹一次。
- * 工作台活动栏与 0.1 侧栏底部按 mainView 互斥挂载，两边各自调用不会重复弹。
- *
- * 这里只回答「该不该自动展开」，不持有浮窗的开关：浮窗已经收敛为入口自己的锚定
- * 弹层（不再有独立的居中模态），开关归调用方，两边才能各自保持原有的位置行为。
- */
+/** 常驻更新入口的未读状态；后台相位和构建变化不会自动打开面板。 */
 export function useUpdateAnnouncement(): UpdateAnnouncement {
   const state = useUpdateState()
   const key = updateCandidateKey(state?.candidate)
   const [ackedKey, setAckedKey] = useState<string | null>(null)
 
-  // 权威确认在主进程（落盘后随快照下发），而 ack 是一次异步 IPC：本地再记一份已收起的
-  // 键，收起后 pending 立刻转 false，不必等快照回来，也不会因为读回旧值把浮窗弹回去。
-  const pending = key !== null && ackedKey !== key && !isAnnouncementAcknowledged(state)
+  // 权威确认在主进程；异步 IPC 返回前，本地确认立即清除当前候选的未读标记。
+  const unread = key !== null && ackedKey !== key && !isAnnouncementAcknowledged(state)
 
   return {
-    pending,
+    unread,
     acknowledge: () => {
-      if (!key) return
+      if (!key || !unread) return
       acknowledgeAnnouncement()
       setAckedKey(key)
-    }
+    },
   }
 }

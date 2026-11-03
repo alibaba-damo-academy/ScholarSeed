@@ -22,9 +22,11 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
-TEST_HOME = Path(tempfile.mkdtemp(prefix="scholarseed-skill-install-"))
+TEST_HOME = Path(tempfile.mkdtemp(prefix="scholarseed-skill-install-")).resolve()
 os.environ["SCHOLARSEED_HOME"] = str(TEST_HOME)
+os.environ["SCHOLARSEED_CODEX_HOME"] = str(TEST_HOME / "codex")
 
 # 下面的导入必须晚于上面的 SCHOLARSEED_HOME 隔离, 原因同各行的 `noqa: E402`。
 # `noqa` 只管 flake8/ruff, pylint 要单独豁免, 否则这个被规范认可的隔离写法会被判乱序。
@@ -51,7 +53,12 @@ from service.capabilities.api.routes import (  # noqa: E402
     SKILL_ERROR_DUPLICATE,
     SKILL_ERROR_INVALID,
 )
-from service.capabilities.service.skills import SKILL_CATEGORY_USER  # noqa: E402
+from service.capabilities.service.descriptor import PLUGIN_DESCRIPTOR  # noqa: E402
+from service.capabilities.service.package import PACKAGE_MANIFEST  # noqa: E402
+from service.capabilities.service.skills import (  # noqa: E402
+    SKILL_CATEGORY_USER,
+    load_skill_state,
+)
 
 UPLOAD_URL = "/api/capabilities/skills/upload"
 MANIFEST_NAME = "SKILL.md"
@@ -94,7 +101,83 @@ def listed(client: TestClient) -> dict:
 def main() -> int:
     workspace = TEST_HOME / "workspace"
     workspace.mkdir()
+    legacy = TEST_HOME / "skills" / "legacy-skill"
+    legacy.mkdir(parents=True)
+    (legacy / MANIFEST_NAME).write_text(manifest("legacy-skill"), encoding="utf-8")
+    (legacy / ".origin.json").write_text(
+        json.dumps({"source": "clawhub", "slug": "old-skill"}), encoding="utf-8"
+    )
     with TestClient(create_app(workspace, auth=False)) as client:
+        assert listed(client)["legacy-skill"]["installationSource"] == "unknown"
+
+        preview = client.post(
+            f"{UPLOAD_URL}/preview",
+            files={"file": (MANIFEST_NAME, manifest("preview-only").encode())},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["preview"]["name"] == "preview-only"
+        assert preview.json()["preview"]["description"] == "uploaded by contract test"
+        assert "steps here" in preview.json()["preview"]["document"]
+        assert preview.json()["preview"]["plugin"] is False
+        assert not (TEST_HOME / "skills" / "preview-only").exists()
+        for prefix in ("", "wrapped/"):
+            for metadata in ({}, {PLUGIN_DESCRIPTOR: "not JSON"}, {PACKAGE_MANIFEST: "not JSON"}):
+                name = f"portable-{len(prefix)}-{len(metadata)}-{'plugin' if PLUGIN_DESCRIPTOR in metadata else 'skill'}"
+                payload = zip_bytes(
+                    {
+                        prefix + MANIFEST_NAME: manifest(name),
+                        prefix + "references/guide.md": "Reference content",
+                        **{prefix + path: value for path, value in metadata.items()},
+                    }
+                )
+                preview = client.post(
+                    f"{UPLOAD_URL}/preview", files={"file": ("portable.zip", payload)}
+                )
+                assert preview.status_code == 200, preview.text
+                assert preview.json()["preview"]["plugin"] is False
+                result = upload(client, "portable.zip", payload)
+                assert result.status_code == 200, result.text
+                root = TEST_HOME / "skills" / name
+                assert not (root / PLUGIN_DESCRIPTOR).exists()
+                assert (root / "references/guide.md").read_text() == "Reference content"
+                assert listed(client)[name]["enabled"] is True
+                assert not listed(client)[name].get("plugin")
+
+        payload = zip_bytes(
+            {
+                MANIFEST_NAME: manifest("declared-plugin"),
+                PACKAGE_MANIFEST: "not JSON",
+                PLUGIN_DESCRIPTOR: "not JSON",
+            }
+        )
+        preview = client.post(f"{UPLOAD_URL}/preview", files={"file": ("plugin.zip", payload)})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["preview"]["plugin"] is True
+        refused = upload(client, "plugin.zip", payload)
+        assert refused.status_code == 422, refused.text
+        assert detail(refused)["message"] == "plugin_confirmation_required"
+        assert not (TEST_HOME / "skills" / "declared-plugin").exists()
+        existing = TEST_HOME / "skills" / "declared-plugin"
+        existing.mkdir()
+        (existing / MANIFEST_NAME).write_text(manifest("declared-plugin"), encoding="utf-8")
+        preview = client.post(f"{UPLOAD_URL}/preview", files={"file": ("plugin.zip", payload)})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["preview"]["plugin"] is True
+        for entries in (
+            {"a/SKILL.md": manifest("one"), "b/SKILL.md": manifest("two")},
+            {"SKILL.md": manifest("one"), "other/SKILL.md": manifest("two")},
+            {"SKILL.md": manifest("one"), "../escape": "unsafe"},
+            {"pack/SKILL.md": manifest("one"), "outside.txt": "outside"},
+        ):
+            invalid = client.post(
+                f"{UPLOAD_URL}/preview",
+                files={"file": ("invalid.zip", zip_bytes(entries))},
+            )
+            assert invalid.status_code == 422, invalid.text
+        missing_description = upload(
+            client, MANIFEST_NAME, manifest("missing-description", "").encode()
+        )
+        assert missing_description.status_code == 422, missing_description.text
 
         # 1 单个 .md → 直接安装
         ok = upload(client, MANIFEST_NAME, manifest("contract-doc").encode())
@@ -106,6 +189,7 @@ def main() -> int:
         assert entry["category"] == SKILL_CATEGORY_USER, entry
         assert entry["enabled"] is True and entry["active"] is True, entry
         assert entry["group"] == "user" and entry["removable"] is True, entry
+        assert entry["installationSource"] == "upload", entry
 
         # 落盘在本机用户技能目录 (不上传 SkillHub)
         assert (TEST_HOME / "skills" / "contract-doc" / MANIFEST_NAME).is_file()
@@ -116,6 +200,35 @@ def main() -> int:
         )
         assert ok.status_code == 200, ok.text
         assert ok.json()["installed"]["name"] == "contract-zip"
+        assert listed(client)["contract-zip"]["installationSource"] == "upload"
+        forged = upload(
+            client,
+            "forged.zip",
+            zip_bytes(
+                {
+                    MANIFEST_NAME: manifest("contract-forged"),
+                    ".origin.json": json.dumps({"source": "clawhub", "slug": "old-skill"}),
+                }
+            ),
+        )
+        assert forged.status_code == 200, forged.text
+        assert listed(client)["contract-forged"]["installationSource"] == "upload"
+        assert load_skill_state().installation_sources["contract-forged"] == "upload"
+        with patch("service.capabilities.service.management.ClawHub") as marketplace:
+            marketplace.return_value.base = "https://marketplace.example"
+            marketplace.return_value.detail = AsyncMock(
+                return_value={"moderation": "clean", "namespace": "global"}
+            )
+            marketplace.return_value.download = AsyncMock(
+                return_value=zip_bytes({MANIFEST_NAME: manifest("contract-marketplace")})
+            )
+            installed = client.post(
+                "/api/capabilities/skills/marketplace/items/contract-marketplace/install",
+                json={"version": "1.0", "enabled": False},
+            )
+        assert installed.status_code == 200, installed.text
+        assert listed(client)["contract-marketplace"]["installationSource"] == "marketplace"
+        assert listed(client)["contract-marketplace"]["enabled"] is False
 
         # 3 .zip 缺 SKILL.md → 报错不安装
         bad = upload(client, "test.zip", zip_bytes({"test/readme.txt": "no manifest"}))
@@ -138,16 +251,17 @@ def main() -> int:
             manifest("contract-doc", "overwritten description").encode(),
             overwrite=True,
         )
-        assert over.status_code == 200, over.text
+        assert over.status_code == 422, over.text
         document = client.get("/api/capabilities/skills/contract-doc/document")
-        assert "overwritten description" in document.json()["document"], document.text
+        assert "overwritten description" not in document.json()["document"], document.text
 
         # 4c 覆盖重装必须恢复启用: 先禁用再覆盖装回, 不能残留 disabled
         assert client.delete("/api/capabilities/skills/contract-doc/activate").status_code == 200
         assert listed(client)["contract-doc"]["enabled"] is False
+        assert listed(client)["contract-doc"]["installationSource"] == "upload"
         again = upload(client, MANIFEST_NAME, manifest("contract-doc").encode(), overwrite=True)
-        assert again.status_code == 200, again.text
-        assert listed(client)["contract-doc"]["enabled"] is True, "覆盖重装后应默认启用"
+        assert again.status_code == 422, again.text
+        assert listed(client)["contract-doc"]["enabled"] is False
 
         # 5 文件损坏 → 报具体原因, 不静默失败
         broken = upload(client, "broken.zip", b"PK\x03\x04 this is not a real zip")
@@ -165,6 +279,8 @@ def main() -> int:
         # 7 删除后重新上传同名 → 不该被 deleted 状态永久隐形
         assert client.delete("/api/capabilities/skills/contract-zip").status_code == 200
         assert "contract-zip" not in listed(client)
+        from_state = load_skill_state()
+        assert "contract-zip" not in from_state.installation_sources
         revive = upload(client, "pack.zip", zip_bytes({MANIFEST_NAME: manifest("contract-zip")}))
         assert revive.status_code == 200, revive.text
         assert listed(client)["contract-zip"]["enabled"] is True, "重装后应重新可见并启用"

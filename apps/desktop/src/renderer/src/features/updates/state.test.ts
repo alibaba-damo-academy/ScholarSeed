@@ -1,21 +1,112 @@
+import zhComponents from '../../../../localization/locales/zh/components.json' with { type: 'json' }
+import enComponents from '../../../../localization/locales/en/components.json' with { type: 'json' }
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { createLocalization } from '../../../../localization/engine.ts'
+import enAccount from '../../../../localization/locales/en/account.json' with { type: 'json' }
+import zhAccount from '../../../../localization/locales/zh/account.json' with { type: 'json' }
+
 import type { LatestVersionMeta, UpdateSnapshot } from '../../../../updates'
+import { updateCandidateKey } from '../../../../updates.ts'
 import {
   formatInstallerSize,
   hasMoreReleaseNotes,
   isAnnouncementAcknowledged,
   isUpdateEntryVisible,
   releaseNoteLines,
+  runUpdateAction,
+  runLatestUpdateAction,
   UPDATE_NOTES_COLLAPSED_COUNT,
   updateActionOf,
+  updateEntryBadgeOf,
   updateFailureOf,
   updateFailureText,
   updateFailureTitle,
   updatePanelStageOf,
-  visibleReleaseNotes
+  visibleReleaseNotes,
 } from './state.ts'
+
+test('installation requires explicit confirmation for the same ready candidate', async () => {
+  const calls: string[] = []
+  let current: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: CANDIDATE }
+  const original = globalThis.window
+  Object.assign(globalThis, {
+    window: {
+      scholarseed: {
+        getUpdateState: async () => current,
+        installUpdate: async (expectedId: string) => {
+          assert.equal(expectedId, CANDIDATE.id)
+          calls.push('install')
+          return { ok: true }
+        },
+        startUpdate: async () => {
+          calls.push('download')
+          return { ok: true }
+        },
+        checkUpdate: async () => {
+          calls.push('check')
+          return { ok: true }
+        },
+      },
+    },
+  })
+  try {
+    const key = updateCandidateKey(CANDIDATE)!
+    await runUpdateAction(current)
+    assert.deepEqual(calls, [])
+    await runUpdateAction(current, key)
+    assert.deepEqual(calls, ['install'])
+    const previous = current
+    current = { ...current, candidate: { ...CANDIDATE, id: 'replacement', build_number: 'next' } }
+    await runUpdateAction(previous, key)
+    assert.deepEqual(calls, ['install'])
+    current = { ...previous, phase: 'installing' }
+    await runUpdateAction(previous, key)
+    assert.deepEqual(calls, ['install'])
+    await runUpdateAction({ ...previous, phase: 'available' })
+    await runUpdateAction(null)
+    assert.deepEqual(calls, ['install', 'download', 'check'])
+  } finally {
+    Object.assign(globalThis, { window: original })
+  }
+})
+
+test('ready retains its install action while explicit newer download binds the observed identity', async () => {
+  const calls: string[] = []
+  const original = globalThis.window
+  let current: UpdateSnapshot = {
+    phase: 'ready',
+    currentVersion: '0.2.0',
+    candidate: CANDIDATE,
+    latestCandidate: { ...CANDIDATE, id: 'newest', build_number: '202610131800' },
+  }
+  Object.assign(globalThis, {
+    window: {
+      scholarseed: {
+        getUpdateState: async () => current,
+        startUpdate: async (id: string) => {
+          calls.push(id)
+          return { ok: true }
+        },
+      },
+    },
+  })
+  try {
+    assert.equal(updateActionOf(current), 'install')
+    await runLatestUpdateAction(current)
+    assert.deepEqual(calls, ['newest'])
+    const previous = current
+    current = { ...current, latestCandidate: { ...CANDIDATE, id: 'replacement' } }
+    await runLatestUpdateAction(previous)
+    assert.deepEqual(calls, ['newest'])
+    current = { ...current, phase: 'installing' }
+    await runLatestUpdateAction(current)
+    assert.deepEqual(calls, ['newest'])
+  } finally {
+    Object.assign(globalThis, { window: original })
+  }
+})
 
 // 更新入口有两个表面（工作台活动栏与 0.1 侧栏底部），PRD 第 12 条要求它们是同一个
 // 任务的同一个状态。动作判定与入口可见性因此必须是纯函数、只此一份 —— 这两个测试
@@ -31,12 +122,51 @@ const CANDIDATE: LatestVersionMeta = {
   team_id: 'A1B2C3D4E5',
   channel: 'release',
   file_size: 564_973_100,
-  sha512: 'a'.repeat(128)
+  sha512: 'a'.repeat(128),
 }
 
-function snapshot(phase: UpdateSnapshot['phase'], extra: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
+function snapshot(
+  phase: UpdateSnapshot['phase'],
+  extra: Partial<UpdateSnapshot> = {}
+): UpdateSnapshot {
   return { phase, currentVersion: '0.2.0', ...extra }
 }
+
+test('update entry distinguishes unread releases, failures and ready packages', () => {
+  const available = snapshot('available', { candidate: CANDIDATE })
+  assert.equal(updateEntryBadgeOf(available), 'unread')
+  assert.equal(updateEntryBadgeOf(available, false), 'none')
+  assert.equal(
+    updateEntryBadgeOf({
+      ...available,
+      announcedKey: `${CANDIDATE.version}-${CANDIDATE.build_number}`,
+    }),
+    'none'
+  )
+  assert.equal(updateEntryBadgeOf({ ...available, announcedKey: 'older-build' }), 'unread')
+  assert.equal(isUpdateEntryVisible(available), true)
+  for (const phase of [
+    'downloading',
+    'verifying',
+    'installing',
+    'restarting',
+    'manual',
+    'idle',
+    'up-to-date',
+    'unsupported',
+  ] as const) {
+    assert.equal(updateEntryBadgeOf(snapshot(phase, { candidate: CANDIDATE })), 'none', phase)
+  }
+  assert.equal(updateEntryBadgeOf(null), 'none')
+  assert.equal(updateEntryBadgeOf(snapshot('ready'), false), 'ready')
+  assert.equal(updateEntryBadgeOf(snapshot('failed'), false), 'warning')
+  assert.equal(updateEntryBadgeOf(snapshot('rolled-back'), false), 'warning')
+  assert.equal(
+    updateEntryBadgeOf(snapshot('ready', { errorFallback: 'install_failed' }), false),
+    'warning'
+  )
+  assert.equal(updateEntryBadgeOf(snapshot('available', { error: 'download failed' })), 'warning')
+})
 
 test('the download action is offered exactly where the main process accepts it', () => {
   // 主进程只在 available / failed 且候选包仍是当前那一个时放行下载。
@@ -50,7 +180,15 @@ test('the download action is offered exactly where the main process accepts it',
 test('the install action only exists once the package is staged and verified', () => {
   assert.equal(updateActionOf(snapshot('ready', { candidate: CANDIDATE })), 'install')
   // 下载完但还没校验通过时不能安装；已在下载中时也不能再发起一次下载。
-  for (const phase of ['downloading', 'verifying', 'installing', 'restarting', 'manual', 'checking', 'unsupported'] as const) {
+  for (const phase of [
+    'downloading',
+    'verifying',
+    'installing',
+    'restarting',
+    'manual',
+    'checking',
+    'unsupported',
+  ] as const) {
     assert.equal(updateActionOf(snapshot(phase, { candidate: CANDIDATE })), 'none', phase)
   }
 })
@@ -70,8 +208,15 @@ test('the entry stays from discovery until the update is done, and never before'
     assert.equal(isUpdateEntryVisible(snapshot(phase)), false, phase)
   }
   for (const phase of [
-    'available', 'downloading', 'verifying', 'ready', 'installing',
-    'restarting', 'manual', 'failed', 'rolled-back'
+    'available',
+    'downloading',
+    'verifying',
+    'ready',
+    'installing',
+    'restarting',
+    'manual',
+    'failed',
+    'rolled-back',
   ] as const) {
     assert.equal(isUpdateEntryVisible(snapshot(phase, { candidate: CANDIDATE })), true, phase)
   }
@@ -98,7 +243,11 @@ test('the update popup collapses every main-process phase into its three design 
     assert.equal(updatePanelStageOf(snapshot(phase, { candidate: CANDIDATE })), 'available', phase)
   }
   for (const phase of ['downloading', 'verifying'] as const) {
-    assert.equal(updatePanelStageOf(snapshot(phase, { candidate: CANDIDATE })), 'downloading', phase)
+    assert.equal(
+      updatePanelStageOf(snapshot(phase, { candidate: CANDIDATE })),
+      'downloading',
+      phase
+    )
   }
   for (const phase of ['ready', 'installing', 'restarting', 'manual'] as const) {
     assert.equal(updatePanelStageOf(snapshot(phase, { candidate: CANDIDATE })), 'ready', phase)
@@ -122,10 +271,7 @@ test('release notes collapse exactly at the designed threshold', () => {
   // 超过 3 条：收起时只给前 3 条，展开后给全部（由容器滚动）。
   const many = notes(UPDATE_NOTES_COLLAPSED_COUNT + 4)
   assert.equal(hasMoreReleaseNotes(many), true)
-  assert.deepEqual(
-    visibleReleaseNotes(many, false),
-    many.slice(0, UPDATE_NOTES_COLLAPSED_COUNT)
-  )
+  assert.deepEqual(visibleReleaseNotes(many, false), many.slice(0, UPDATE_NOTES_COLLAPSED_COUNT))
   assert.deepEqual(visibleReleaseNotes(many, true), many)
   // 展开与否都不许改动调用方传进来的那份要点。
   visibleReleaseNotes(many, true)
@@ -137,7 +283,7 @@ test('release notes are split per line and blank lines are dropped', () => {
   assert.deepEqual(releaseNoteLines(''), [])
   assert.deepEqual(releaseNoteLines('  检索式回看\n\n  入库选分类 \n'), [
     '检索式回看',
-    '入库选分类'
+    '入库选分类',
   ])
 })
 
@@ -147,13 +293,26 @@ test('release notes are split per line and blank lines are dropped', () => {
 // 「重启客户端」之后既不重启也看不到任何原因。失败必须是独立的**结果**维度。
 
 const ALL_PHASES = [
-  'idle', 'checking', 'up-to-date', 'available', 'downloading', 'verifying',
-  'ready', 'installing', 'restarting', 'manual', 'failed', 'rolled-back', 'unsupported'
+  'idle',
+  'checking',
+  'up-to-date',
+  'available',
+  'downloading',
+  'verifying',
+  'ready',
+  'installing',
+  'restarting',
+  'manual',
+  'failed',
+  'rolled-back',
+  'unsupported',
 ] as const
 
 test('any phase carrying an error is presented as a failure, ready included', () => {
   for (const phase of ALL_PHASES) {
-    const failure = updateFailureOf(snapshot(phase, { error: 'installer refused', errorOrigin: 'install' }))
+    const failure = updateFailureOf(
+      snapshot(phase, { error: 'installer refused', errorOrigin: 'install' })
+    )
     assert.notEqual(failure, null, phase)
     assert.equal(failure?.message, 'installer refused', phase)
   }
@@ -166,7 +325,7 @@ test('the layout stage and the failure result are orthogonal dimensions', () => 
     candidate: CANDIDATE,
     percent: 100,
     error: 'Error: Windows installer signature differs from packaged product policy',
-    errorOrigin: 'install'
+    errorOrigin: 'install',
   })
   assert.equal(updatePanelStageOf(state), 'ready')
   const failure = updateFailureOf(state)
@@ -191,22 +350,28 @@ test('a phase that declares failure still fails without an error message', () =>
 
 test('rollback is reported as its own outcome, not as a plain install failure', () => {
   assert.equal(
-    updateFailureOf(snapshot('rolled-back', { rollbackVersion: '0.2.0', error: 'health confirmation timeout' }))?.rolledBack,
+    updateFailureOf(
+      snapshot('rolled-back', { rollbackVersion: '0.2.0', error: 'health confirmation timeout' })
+    )?.rolledBack,
     true
   )
   assert.equal(
-    updateFailureOf(snapshot('ready', { candidate: CANDIDATE, error: 'nope', errorOrigin: 'install' }))?.rolledBack,
+    updateFailureOf(
+      snapshot('ready', { candidate: CANDIDATE, error: 'nope', errorOrigin: 'install' })
+    )?.rolledBack,
     false
   )
 })
 
 test('the install fallback marker keeps its origin so the text is not blamed on the download', () => {
-  const failure = updateFailureOf(snapshot('ready', {
-    candidate: CANDIDATE,
-    error: 'update failed',
-    errorFallback: 'install_failed',
-    errorOrigin: 'install'
-  }))
+  const failure = updateFailureOf(
+    snapshot('ready', {
+      candidate: CANDIDATE,
+      error: 'update failed',
+      errorFallback: 'install_failed',
+      errorOrigin: 'install',
+    })
+  )
   assert.equal(failure?.fallback, 'install_failed')
   assert.equal(failure?.origin, 'install')
   // 占位串不能直接给用户看。
@@ -219,22 +384,156 @@ function echo(prefix: string) {
     options?.error ? `${prefix}:${key}:${options.error}` : `${prefix}:${key}`) as never
 }
 
+test('storage exhaustion gives actionable wording without changing the diagnostic or retry action', () => {
+  const messages = [
+    'Error: ENOSPC: no space left on device, write',
+    'Error: archive mounted application failed: ditto: /cache/application.zip:/Contents/file: No space left on device\nditto: /cache/application.zip:/Contents/another: No space left on device',
+    'No space left on device',
+  ]
+  for (const message of messages) {
+    const state = snapshot('failed', {
+      candidate: CANDIDATE,
+      error: message,
+      errorOrigin: 'preparation',
+    })
+    const failure = updateFailureOf(state)!
+    assert.equal(updateFailureText(failure, echo('c'), echo('a')), 'c:update.insufficientSpace')
+    assert.equal(updateFailureTitle(failure, echo('c')), 'c:update.titlePreparationFailed')
+    assert.equal(updateActionOf(state), 'download')
+    assert.equal(failure.message, message)
+    assert.equal(state.error, message)
+  }
+})
+
+test('space wording does not replace other errors or authoritative security failures', () => {
+  for (const message of [
+    'EACCES: permission denied',
+    'request timed out',
+    '/cache/ENOSPC.pdf: permission denied',
+    'No space left on device.txt: permission denied',
+  ]) {
+    const failure = { origin: 'preparation' as const, rolledBack: false, message }
+    assert.equal(
+      updateFailureText(failure, echo('c'), echo('a')),
+      `c:update.preparationFailedSub:${message}`
+    )
+  }
+  const failure = updateFailureOf(
+    snapshot('ready', {
+      error: 'ENOSPC: no space left on device',
+      errorFallback: 'install_signature_untrusted',
+      errorOrigin: 'install',
+    })
+  )!
+  assert.equal(
+    updateFailureText(failure, echo('c'), echo('a')),
+    'c:update.installSignatureUntrusted'
+  )
+})
+
 test('failure wording follows the action that failed', () => {
   const t = echo('c')
   const account = echo('a')
   const cases: Array<[UpdateSnapshot, string, string]> = [
-    [snapshot('ready', { error: 'E', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installFailedSub:E'],
-    [snapshot('failed', { candidate: CANDIDATE, error: 'E', errorOrigin: 'download' }), 'c:update.titleFailed', 'c:update.failedSub:E'],
-    [snapshot('failed', { error: 'E', errorOrigin: 'check' }), 'c:update.checkFailed', 'c:update.checkFailedSub:E'],
-    [snapshot('ready', { error: 'update failed', errorFallback: 'install_failed', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'a:update.installFailed'],
+    [
+      snapshot('failed', {
+        candidate: CANDIDATE,
+        error: 'cache write denied',
+        errorOrigin: 'preparation',
+      }),
+      'c:update.titlePreparationFailed',
+      'c:update.preparationFailedSub:cache write denied',
+    ],
+    [
+      snapshot('ready', { error: 'E', errorOrigin: 'install' }),
+      'c:update.titleInstallFailed',
+      'c:update.installFailedSub:E',
+    ],
+    [
+      snapshot('failed', { candidate: CANDIDATE, error: 'E', errorOrigin: 'download' }),
+      'c:update.titleFailed',
+      'c:update.failedSub:E',
+    ],
+    [
+      snapshot('failed', { error: 'E', errorOrigin: 'check' }),
+      'c:update.checkFailed',
+      'c:update.checkFailedSub:E',
+    ],
+    [
+      snapshot('ready', {
+        error: 'update failed',
+        errorFallback: 'install_failed',
+        errorOrigin: 'install',
+      }),
+      'c:update.titleInstallFailed',
+      'a:update.installFailed',
+    ],
     // bug 87042987：结构化分类各给一句可操作的本地化说法，且即便快照里残留 error 原文也不透出（走分类文案）。
-    [snapshot('ready', { errorFallback: 'install_verify_unavailable', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installVerifyUnavailable'],
-    [snapshot('ready', { error: 'STATUS=乱码', errorFallback: 'install_signature_untrusted', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installSignatureUntrusted'],
+    [
+      snapshot('ready', { errorFallback: 'install_verify_unavailable', errorOrigin: 'install' }),
+      'c:update.titleInstallFailed',
+      'c:update.installVerifyUnavailable',
+    ],
+    [
+      snapshot('ready', {
+        error: 'STATUS=乱码',
+        errorFallback: 'install_signature_untrusted',
+        errorOrigin: 'install',
+      }),
+      'c:update.titleInstallFailed',
+      'c:update.installSignatureUntrusted',
+    ],
     // 本机不可判定（链/吊销状态）是独立分类：文案引导修复环境后重试，而不是重新下载那条死路。
-    [snapshot('ready', { error: 'STATUS=NotTrusted', errorFallback: 'install_signature_indeterminate', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installSignatureIndeterminate'],
+    [
+      snapshot('ready', {
+        error: 'STATUS=NotTrusted',
+        errorFallback: 'install_signature_indeterminate',
+        errorOrigin: 'install',
+      }),
+      'c:update.titleInstallFailed',
+      'c:update.installSignatureIndeterminate',
+    ],
+    [
+      snapshot('ready', {
+        errorFallback: 'install_notarization_indeterminate',
+        errorOrigin: 'install',
+      }),
+      'c:update.titleInstallFailed',
+      'c:update.installNotarizationIndeterminate',
+    ],
+    [
+      snapshot('ready', {
+        error: 'private diagnostic',
+        errorFallback: 'install_in_use',
+        errorOrigin: 'install',
+      }),
+      'c:update.titleInstallFailed',
+      'c:update.installInUse',
+    ],
+    [
+      snapshot('ready', {
+        error: 'private diagnostic',
+        errorFallback: 'install_occupancy_unknown',
+        errorOrigin: 'install',
+      }),
+      'c:update.titleInstallFailed',
+      'c:update.installOccupancyUnknown',
+    ],
     // 上一轮安装器还活着：独立分类，文案说清在等什么，而不是报「安装失败」诱导对着互斥量重试。
-    [snapshot('ready', { errorFallback: 'install_already_running', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installAlreadyRunning'],
-    [snapshot('rolled-back', { rollbackVersion: '0.2.0', error: 'health confirmation timeout', errorOrigin: 'install' }), 'c:update.rolledBack', 'c:update.installFailedSub:health confirmation timeout']
+    [
+      snapshot('ready', { errorFallback: 'install_already_running', errorOrigin: 'install' }),
+      'c:update.titleInstallFailed',
+      'c:update.installAlreadyRunning',
+    ],
+    [
+      snapshot('rolled-back', {
+        rollbackVersion: '0.2.0',
+        error: 'health confirmation timeout',
+        errorOrigin: 'install',
+      }),
+      'c:update.rolledBack',
+      'c:update.installFailedSub:health confirmation timeout',
+    ],
   ]
   for (const [state, title, text] of cases) {
     const failure = updateFailureOf(state)
@@ -251,10 +550,15 @@ test('failure wording follows the action that failed', () => {
 test('the announcement acknowledgement comes from the snapshot, not from renderer storage', () => {
   const key = `${CANDIDATE.version}-${CANDIDATE.build_number}`
   assert.equal(isAnnouncementAcknowledged(snapshot('available', { candidate: CANDIDATE })), false)
-  assert.equal(isAnnouncementAcknowledged(snapshot('available', { candidate: CANDIDATE, announcedKey: key })), true)
+  assert.equal(
+    isAnnouncementAcknowledged(snapshot('available', { candidate: CANDIDATE, announcedKey: key })),
+    true
+  )
   // 认过的是上一个构建：新构建要重新弹一次。
   assert.equal(
-    isAnnouncementAcknowledged(snapshot('available', { candidate: CANDIDATE, announcedKey: '0.2.1-202608271400' })),
+    isAnnouncementAcknowledged(
+      snapshot('available', { candidate: CANDIDATE, announcedKey: '0.2.1-202608271400' })
+    ),
     false
   )
 })
@@ -263,4 +567,96 @@ test('without a candidate there is nothing to announce', () => {
   assert.equal(isAnnouncementAcknowledged(null), true)
   assert.equal(isAnnouncementAcknowledged(snapshot('up-to-date')), true)
   assert.equal(isAnnouncementAcknowledged(snapshot('available')), true)
+})
+
+test('update preparation and activation failures use current-language resources without changing state', async () => {
+  const diagnostics: string[] = []
+  const localization = createLocalization(
+    'zh',
+    {
+      zh: { account: zhAccount },
+      en: { account: enAccount },
+    },
+    {
+      report: (event) => {
+        if (event.kind === 'missing' || event.kind === 'fallback') diagnostics.push(event.kind)
+      },
+    }
+  )
+  const cases = [
+    ['launcher_maintenance_required', 'launcherMaintenanceRequired', 'preparation'],
+    ['preparation_connection_closed', 'preparationConnectionClosed', 'preparation'],
+    ['preparation_failed', 'preparationFailed', 'preparation'],
+    ['activation_candidate_changed', 'activationCandidateChanged', 'check'],
+    ['activation_unavailable', 'activationUnavailable', 'install'],
+    ['activation_recovery_required', 'activationRecoveryRequired', 'install'],
+    ['preparation_unverified', 'preparationUnverified', 'install'],
+    ['activation_authorization_required', 'activationAuthorizationRequired', 'install'],
+  ] as const
+  for (const [code, key, origin] of cases) {
+    const state = snapshot('failed', {
+      errorFallback: code,
+      errorOrigin: origin,
+      error: 'raw diagnostic',
+    })
+    const before = JSON.stringify(state)
+    const failure = updateFailureOf(state)
+    assert.ok(failure)
+    for (const language of ['zh', 'en', 'zh'] as const) {
+      await localization.changeLanguage(language)
+      assert.equal(
+        updateFailureText(failure, echo('unexpected'), localization.getFixedT(null, 'account')),
+        (language === 'zh' ? zhAccount : enAccount).update[key]
+      )
+      assert.equal(failure.message, undefined)
+      assert.equal(JSON.stringify(state), before)
+    }
+  }
+  assert.deepEqual(diagnostics, [])
+})
+
+test('unknown native handoff outcome offers no repeat download or install action', () => {
+  for (const phase of ['failed', 'ready', 'available'] as const) {
+    for (const candidate of [CANDIDATE, undefined]) {
+      const state = snapshot(phase, {
+        candidate,
+        errorFallback: 'activation_recovery_required',
+        errorOrigin: 'install',
+      })
+      assert.equal(updateActionOf(state), 'none')
+      assert.equal(updateFailureOf(state)?.fallback, 'activation_recovery_required')
+    }
+  }
+  assert.equal(
+    updateActionOf(
+      snapshot('failed', {
+        candidate: CANDIDATE,
+        errorFallback: 'preparation_failed',
+        errorOrigin: 'download',
+      })
+    ),
+    'download'
+  )
+})
+
+test('installation occupancy reasons follow language changes and retain staged retry', async () => {
+  const localization = createLocalization('zh', {
+    zh: { components: zhComponents },
+    en: { components: enComponents },
+  })
+  for (const [code, key] of [
+    ['install_in_use', 'installInUse'],
+    ['install_occupancy_unknown', 'installOccupancyUnknown'],
+  ] as const) {
+    const state = snapshot('ready', { errorFallback: code, errorOrigin: 'install' })
+    const failure = updateFailureOf(state)!
+    for (const language of ['zh', 'en', 'zh'] as const) {
+      await localization.changeLanguage(language)
+      assert.equal(
+        updateFailureText(failure, localization.getFixedT(null, 'components'), echo('unused')),
+        (language === 'zh' ? zhComponents : enComponents).update[key]
+      )
+    }
+    assert.equal(state.phase, 'ready')
+  }
 })

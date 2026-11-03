@@ -28,6 +28,8 @@ MANIFEST_MODULE_KEY = "module"
 MANIFEST_ENABLED_KEY = "enabled"
 MANIFEST_ADAPTER_KEY = "adapter"
 MANIFEST_CONFIGURATION_KEY = "configuration"
+MANIFEST_FEATURES_KEY = "features"
+MANIFEST_BROWSER_KEY = "browser"
 TEXT_ENCODING = "utf-8"
 
 
@@ -35,6 +37,27 @@ class RuntimeManifestError(RuntimeError):
     """product.json 缺失、损坏，或选择了一个未启用/未注册的 runtime。"""
 
     safe_error = "runtime_manifest_invalid"
+
+
+@dataclass(frozen=True)
+class ProductFeatures:
+    browser_enabled: bool
+
+
+def parse_product_features(manifest: Mapping[str, Any]) -> ProductFeatures:
+    if MANIFEST_FEATURES_KEY not in manifest:
+        return ProductFeatures(browser_enabled=False)
+    features = manifest[MANIFEST_FEATURES_KEY]
+    if not isinstance(features, dict):
+        raise RuntimeManifestError("product manifest features must be an object")
+    browser = features.get(MANIFEST_BROWSER_KEY, False)
+    if not isinstance(browser, bool):
+        raise RuntimeManifestError("product manifest features.browser must be boolean")
+    return ProductFeatures(browser_enabled=browser)
+
+
+def product_features() -> ProductFeatures:
+    return parse_product_features(load_manifest())
 
 
 @dataclass(frozen=True)
@@ -74,6 +97,7 @@ def load_manifest() -> Mapping[str, Any]:
         raise RuntimeManifestError(f"product manifest is unreadable: {path} ({error})")
     if not isinstance(payload, dict):
         raise RuntimeManifestError(f"product manifest must be a JSON object: {path}")
+    parse_product_features(payload)
     runtimes = payload.get(MANIFEST_RUNTIMES_KEY)
     if not isinstance(runtimes, dict) or not runtimes:
         raise RuntimeManifestError(f"product manifest declares no runtimes: {path}")

@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
+from citation_styles import style_labels
 from confirmation import (
     APPLYING_TIMEOUT,
     APPROVED,
@@ -33,7 +34,69 @@ from confirmation import (
 )
 from publication import validate_publication_choice
 from task_contract import atomic_json, configure, read_request
-from writing_contract import approval_snapshot
+from writing_contract import approval_snapshot, digest
+
+HOST_RECEIPT_FIELDS = frozenset(("packet_id", "snapshot_id", "request_id", "started_at", "deadline_at", "decision"))
+HOST_TIMEOUT_KEY = "timed_out"
+HOST_CANCELLED_KEY = "cancelled"
+HOST_RECEIPT_KEY = "host_receipt"
+
+
+def complete(ws, value):
+    if not isinstance(value, dict) or set(value) != HOST_RECEIPT_FIELDS:
+        raise ValueError("review-complete requires the unchanged bridge confirmation receipt")
+    request_id = value.get("request_id")
+    decision = value.get("decision")
+    if not isinstance(request_id, str) or not request_id or not isinstance(decision, dict):
+        raise ValueError("invalid product review receipt")
+    with lock(ws):
+        packet = _packet(ws, value.get("packet_id"))
+        current = approval_snapshot(ws)
+        existing = _read(_path(ws))
+        if existing.get(HOST_RECEIPT_KEY) == value and existing.get("state") == TIMEOUT_APPLIED:
+            return status(ws, value["packet_id"])
+        recovering = (existing.get(HOST_RECEIPT_KEY) == value
+                      and existing.get("packet_id") == value["packet_id"]
+                      and existing.get("state") == APPLYING_TIMEOUT
+                      and current in (existing.get("snapshot"), existing.get("approval_snapshot")))
+        if not recovering and (packet.get("snapshot") != current or value["snapshot_id"] != digest(current)):
+            raise ValueError("product review receipt belongs to a stale outline or task")
+        if existing.get("packet_id") == value["packet_id"] and existing.get(HOST_RECEIPT_KEY) not in (None, value):
+            raise ValueError("a different product decision already completed this packet")
+        if decision.get(HOST_CANCELLED_KEY):
+            atomic_json(_path(ws), {"packet_id": value["packet_id"], "snapshot": current,
+                                   "state": RESPONDED, HOST_RECEIPT_KEY: value})
+            return {"status": "SUCCESS", "state": RESPONDED, "cancelled": True,
+                    "can_continue": False, "next_action": "Review cancelled. Do not approve or start writing."}
+        if decision.get(HOST_TIMEOUT_KEY):
+            started = value["started_at"]
+            deadline = value["deadline_at"]
+            if (read_request(ws)["outline_review"] != TIMEOUT_MODE
+                    or type(started) not in (int, float) or type(deadline) not in (int, float)
+                    or not math.isfinite(started) or not math.isfinite(deadline)
+                    or deadline - started != SECONDS or time.time() < deadline
+                    or decision.get("answers")
+                    or (existing.get("packet_id") == value["packet_id"] and existing.get("state") == RESPONDED)):
+                raise ValueError("invalid or superseded product timeout receipt")
+            if not recovering:
+                atomic_json(_path(ws), {"packet_id": value["packet_id"], "snapshot": current,
+                    "publication": packet["publication"], "state": WAITING,
+                    "started_at": started, "deadline_at": deadline,
+                    "display_message_id": request_id, HOST_RECEIPT_KEY: value})
+        else:
+            answers = decision.get("answers", {})
+            answer = answers.get(request_id) if isinstance(answers, dict) else None
+            if not isinstance(answer, str) or not answer.strip():
+                raise ValueError("product review receipt has no actual answer")
+            record_response_locked(ws, value["packet_id"], answer, request_id)
+            state = _read(_path(ws))
+            state.update(packet_id=value["packet_id"], snapshot=current, state=RESPONDED,
+                         host_receipt=value, user_response=answer)
+            atomic_json(_path(ws), state)
+            return {"status": "SUCCESS", "state": RESPONDED, "packet_id": value["packet_id"],
+                    "user_response": answer, "message_id": request_id, "can_continue": False,
+                    "next_action": "Use writing approve only for actual confirmation. Apply revision or pause requests without approving."}
+    return apply_timeout(ws, value["packet_id"])
 
 
 def _packet(ws, packet_id):
@@ -233,22 +296,7 @@ def apply_timeout(ws, packet_id):
             parts = ["PDF" if choice["format"] == "latex_pdf" else "Markdown"]
             if choice["format"] == "latex_pdf":
                 parts.append(choice["template"] + (" 模板" if chinese else " template"))
-            styles = (
-                {
-                    "numeric": "数字引用",
-                    "author_year": "作者—年份引用",
-                    "ieee": "IEEE 引用",
-                    "acm": "ACM 引用",
-                }
-                if chinese
-                else {
-                    "numeric": "numeric citations",
-                    "author_year": "author-year citations",
-                    "ieee": "IEEE citations",
-                    "acm": "ACM citations",
-                }
-            )
-            parts.append(styles[choice["citation_style"]])
+            parts.append(style_labels(choice["citation_style"], expected["request"].get("language"))["timeout"])
             settings = ("、" if chinese else ", ").join(parts)
             notice = (
                 "已等待 5 分钟，尚未收到回复。我已按此前展示的推荐设置继续："
@@ -306,6 +354,8 @@ def dispatch(ws, action, value):
         raise ValueError("review input must be an object")
     if action == "review-start":
         return start(ws, value)
+    if action == "review-complete":
+        return complete(ws, value)
     if action == "review-response":
         return response(ws, value)
     allowed = {"packet_id", "wait_seconds"} if action == "review-wait" else {"packet_id"}

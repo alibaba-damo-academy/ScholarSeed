@@ -78,6 +78,7 @@ class ContextOrigin(str, Enum):
 
     EXPLICIT = "explicit"
     CURRENT_DOCUMENT = "current_document"
+    CURRENT_SELECTION = "current_selection"
     IMPLICIT_RETRIEVAL = "implicit_retrieval"
 
 
@@ -95,12 +96,38 @@ class ContextItemRole(str, Enum):
     SCOPE = "scope"
 
 
+class ActiveDocumentKind(str, Enum):
+    PROJECT_FILE = "project_file"
+    LITERATURE = "literature"
+
+
 class ProductTaskType(str, Enum):
     """Structured product task identities admitted before model context is frozen."""
 
     RESEARCH_IDEA = "research_idea"
     PRECISE_SEARCH = "precise_search"
     LITERATURE_REVIEW = "literature_review"
+
+
+@dataclass(frozen=True)
+class FulltextBindingScope:
+    session_id: str
+    project_id: str
+    workspace: str
+    authorization_id: str = ""
+
+
+@dataclass(frozen=True)
+class FulltextTaskContext:
+    """Verified session/run identity; project_id is empty outside a project."""
+
+    owner_id: str
+    project_id: str
+    session_id: str
+    workdir: str
+    task_type: ProductTaskType
+    workspace: str
+    run_id: str
 
 
 class ContextResolutionState(str, Enum):
@@ -139,12 +166,14 @@ class SelectionAnchor:
     """Workbench/Viewer 产生的版本化选区锚点 (架构文档 §3.4)。
 
     PDF 页码和 Markdown UTF-16 区间复用同一个形状，避免 assistant 按文件类型
-    硬编码分支。`preview_text` 只用于页面展示，不能充当模型事实源。
+    硬编码分支。`preview_text` 只用于页面展示。`snapshot_text` 是用户显式加入
+    对话时冻结的完整选中文字，所有格式发送时直接使用，不重新校验来源。
     """
 
     locator: Mapping[str, Any]
     selected_text_hash: str
     preview_text: str = ""
+    snapshot_text: str = ""
     document_id: str | None = None
 
 
@@ -155,7 +184,7 @@ class ContextRef:
     `source_id` 的含义随 `kind` 而定，但**永远是稳定 ID 而非绝对路径**：
     FILE/DIR → 项目内相对路径；LITERATURE → 条目 id；SESSION → 会话 id。
     待发送的普通 FILE 按 source_id 读取最新版；冻结后的 source_revision
-    记录本轮实际读取的版本。精确锚点仍用版本校验来源变化。
+    记录本轮实际读取的版本。选区锚点使用加入对话时冻结的文字与来源版本。
     """
 
     ref_id: str
@@ -168,6 +197,7 @@ class ContextRef:
     origin: ContextOrigin = ContextOrigin.EXPLICIT
     label_fallback: ContextLabelFallback | None = None
     selection_source_label: str | None = None
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +260,21 @@ class AssistantContextResolution:
     issues: tuple[AssistantContextIssue, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class ActiveDocumentResolution:
+    label: str
+    source_revision: str
+    locator: str
+    media_type: str
+    attachment_name: str = ""
+
+
+class ActiveDocumentResolver(Protocol):
+    def resolve_active_document(
+        self, project_id: str, source_id: str, attachment_id: str = ""
+    ) -> ActiveDocumentResolution | None: ...
+
+
 @runtime_checkable
 class AssistantContextProvider(Protocol):
     """由来源域实现并在产品组合根注册的唯一解析端口。"""
@@ -247,6 +292,7 @@ class AssistantContextSelection:
     search_scope: SearchScope
     refs: tuple[ContextRef, ...] = field(default_factory=tuple)
     updated_at: float = 0.0
+    claimed_ref_ids: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -318,6 +364,7 @@ class MessageReferencePayload(TypedDict, total=False):
     kind: str
     source_id: str
     source_revision: str | None
+    project_id: str | None
     label: str
     ref_id: str
     state: str
@@ -372,7 +419,7 @@ class AssistantTurnContextResult:
 
 @dataclass(frozen=True)
 class AssistantAnswer:
-    """Chat 提供的已完成、可稳定寻址的产品回答。"""
+    """Chat 提供的可稳定寻址的产品回答快照。"""
 
     answer_id: str
     session_id: str
@@ -381,12 +428,12 @@ class AssistantAnswer:
     vendor_item_id: str | None
     markdown: str
     revision: str
-    completed_at: float
+    completed_at: float | None
 
 
 @runtime_checkable
 class AssistantAnswerSource(Protocol):
-    """按产品回答身份读取权威最终文本；不可标注时返回 ``None``。"""
+    """按产品回答身份读取权威持久化快照；不可标注时返回 ``None``。"""
 
     def answer(self, *, session_id: str, answer_id: str) -> AssistantAnswer | None: ...
 
@@ -420,6 +467,8 @@ class AssistantTurnContextSource(Protocol):
         expected_revision: int | None,
         question: str,
         metadata_only: bool = False,
+        active_document: Mapping[str, Any] | None = None,
+        selected_literature_ids: tuple[str, ...] = (),
     ) -> AssistantTurnContextResult: ...
 
     def freeze_queued(
@@ -429,6 +478,8 @@ class AssistantTurnContextSource(Protocol):
         client_turn_id: str,
         expected_revision: int | None,
         question: str,
+        active_document: Mapping[str, Any] | None = None,
+        selected_literature_ids: tuple[str, ...] = (),
     ) -> AssistantTurnContextResult:
         """Freeze only context available to this queued turn."""
 
@@ -489,6 +540,7 @@ __all__ = [
     "HistoryScopeSource",
     "ProjectContextPolicy",
     "ProductTaskType",
+    "FulltextTaskContext",
     "SearchScope",
     "SHA256_REVISION_PREFIX",
     "SelectionAnchor",

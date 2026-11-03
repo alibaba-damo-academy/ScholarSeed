@@ -1,6 +1,6 @@
 import { cloneElement, createContext, isValidElement, useContext, useId, useState, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type HTMLAttributes, type ReactElement, type ReactNode } from 'react'
 
-import { IconFont } from '../primitive'
+import { IconFont } from '../primitive/Iconfont'
 import {
   navigationMenuChevronClassName,
   navigationMenuClassName,

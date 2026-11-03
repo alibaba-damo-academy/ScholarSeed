@@ -3,10 +3,11 @@
 import type { TFunction } from 'i18next'
 import {
   findResourceNode,
+  pendingChildCount,
   withResourceChildren,
   type ResourceCreateMode,
   type ResourceNode,
-  type ResourceState
+  type ResourceState,
 } from './state.ts'
 import type { AssistantContextRef } from '../../contracts/assistant'
 import type { FileEvent, RootKind } from '../../contracts/content'
@@ -26,9 +27,10 @@ export interface ResourceTreePage {
 export function beginResourceTreeReload(resource: ResourceState): ResourceState {
   return {
     ...resource,
-    loadState: resource.loadState === 'ready' || resource.loadState === 'refreshing'
-      ? 'refreshing'
-      : 'loading'
+    loadState:
+      resource.loadState === 'ready' || resource.loadState === 'refreshing'
+        ? 'refreshing'
+        : 'loading',
   }
 }
 
@@ -39,7 +41,7 @@ export function finishResourceTreeReload(
   if (!result) {
     return {
       ...resource,
-      loadState: resource.loadState === 'refreshing' ? 'ready' : 'error'
+      loadState: resource.loadState === 'refreshing' ? 'ready' : 'error',
     }
   }
   return {
@@ -47,7 +49,7 @@ export function finishResourceTreeReload(
     tree: result.nodes,
     rootTotal: result.total,
     root: result.root,
-    loadState: 'ready'
+    loadState: 'ready',
   }
 }
 
@@ -71,14 +73,12 @@ export type ResourceMoveError =
   | 'move_scope_mismatch'
   | 'same_parent'
 
-export type ResourceMoveValidation =
-  | { ok: true }
-  | { ok: false; error: ResourceMoveError }
+export type ResourceMoveValidation = { ok: true } | { ok: false; error: ResourceMoveError }
 
 const PATH_CONTEXT_KINDS: ReadonlySet<AssistantContextRef['kind']> = new Set([
   'file',
   'dir',
-  'selection'
+  'selection',
 ])
 
 /**
@@ -157,6 +157,18 @@ export function expandedResourceAncestors(
   return next
 }
 
+export function openResourceDirectory(resource: ResourceState, path: string): ResourceState {
+  if (findResourceNode(resource.tree, path)?.kind !== 'dir') return resource
+  return {
+    ...resource,
+    selected: path,
+    expanded: {
+      ...expandedResourceAncestors(resource.tree, path, resource.expanded),
+      [path]: true,
+    },
+  }
+}
+
 /** 把 OS 绝对路径统一成正斜杠, 让前缀包含判定与分隔符无关 (Windows 反斜杠同样适用)。 */
 function normalizeAbsoluteSource(path: string): string {
   return path.replace(/\\/g, RESOURCE_PATH_SEPARATOR)
@@ -180,7 +192,7 @@ export function deriveLinkOverlapTarget(
       if (item.linkRoot) {
         roots.push({
           source: normalizeAbsoluteSource(item.linkRoot.sourcePath),
-          mount: item.linkRoot.mountPath
+          mount: item.linkRoot.mountPath,
         })
       }
       if (item.children) collect(item.children)
@@ -240,7 +252,7 @@ export function deriveCoveredLinkRoots(
             rootId: linkRoot.rootId,
             mountPath: linkRoot.mountPath,
             sourcePath: linkRoot.sourcePath,
-            name: item.name
+            name: item.name,
           })
         }
       }
@@ -266,14 +278,17 @@ function parentPath(path: string): string {
 }
 
 function resourcePathLineage(nodes: ResourceNode[], path: string): string[] {
-  const hiddenRoot = nodes.length > 0
-    ? parentPath(nodes[0].path)
-    : path.split(RESOURCE_PATH_SEPARATOR)[0] ?? RESOURCE_ROOT_DIRECTORY
+  const hiddenRoot =
+    nodes.length > 0
+      ? parentPath(nodes[0].path)
+      : (path.split(RESOURCE_PATH_SEPARATOR)[0] ?? RESOURCE_ROOT_DIRECTORY)
   if (!hiddenRoot || !path.startsWith(`${hiddenRoot}${RESOURCE_PATH_SEPARATOR}`)) return []
   const relative = path.slice(hiddenRoot.length + RESOURCE_PATH_SEPARATOR.length)
   const names = relative.split(RESOURCE_PATH_SEPARATOR).filter(Boolean)
-  return names.map((_, index) =>
-    `${hiddenRoot}${RESOURCE_PATH_SEPARATOR}${names.slice(0, index + 1).join(RESOURCE_PATH_SEPARATOR)}`)
+  return names.map(
+    (_, index) =>
+      `${hiddenRoot}${RESOURCE_PATH_SEPARATOR}${names.slice(0, index + 1).join(RESOURCE_PATH_SEPARATOR)}`
+  )
 }
 
 /**
@@ -300,10 +315,8 @@ export async function materializeResourcePath(
   for (const target of lineage) {
     if (!findResourceNode(tree, target)) {
       const parentNode = parent ? findResourceNode(tree, parent) : null
-      let offset = parent ? parentNode?.children?.length ?? 0 : tree.length
-      let total = parent
-        ? parentNode?.count ?? Number.POSITIVE_INFINITY
-        : nextRootTotal
+      let offset = parent ? (parentNode?.children?.length ?? 0) : tree.length
+      let total = parent ? (parentNode?.count ?? Number.POSITIVE_INFINITY) : nextRootTotal
 
       while (!findResourceNode(tree, target) && (offset === 0 || offset < total)) {
         const page = await loadPage(parent, offset)
@@ -332,6 +345,47 @@ export async function materializeResourcePath(
   }
 
   return { found: true, rootTotal: nextRootTotal, tree }
+}
+
+export async function prepareResourceOpening(
+  resource: ResourceState,
+  paths: readonly string[],
+  loadPage: ResourceTreePageLoader
+): Promise<ResourceState | null> {
+  const selected = paths[0]
+  if (!selected) return null
+  let next = resource
+  for (const path of paths) {
+    const materialized = await materializeResourcePath(next.tree, next.rootTotal, path, loadPage)
+    if (!materialized.found) return null
+    const target = findResourceNode(materialized.tree, path)
+    if (!target) return null
+    next = {
+      ...next,
+      tree: materialized.tree,
+      rootTotal: materialized.rootTotal,
+      expanded: expandedResourceAncestors(materialized.tree, path, next.expanded),
+    }
+    if (target.kind === 'dir') {
+      next = openResourceDirectory(next, path)
+      if (pendingChildCount(target) > 0) {
+        const offset = target.children?.length ?? 0
+        const page = await loadPage(path, offset)
+        if (!page) return null
+        next = {
+          ...next,
+          tree: withResourceChildren(
+            next.tree,
+            path,
+            page.nodes,
+            page.total,
+            offset === 0 ? 'replace' : 'append'
+          ),
+        }
+      }
+    }
+  }
+  return { ...next, selected }
 }
 
 export function validateResourceMove(
@@ -389,24 +443,28 @@ export function transformResourceContextRefs(
   submittedRefIds: readonly string[],
   before: string,
   after: string | null,
-  exactLabel?: string
+  exactLabel?: string,
+  projectId?: string | null
 ): AssistantContextRef[] {
   const submitted = new Set(submittedRefIds)
   return refs.flatMap((ref) => {
     if (
-      submitted.has(ref.ref_id)
-      || !PATH_CONTEXT_KINDS.has(ref.kind)
-      || !isResourcePathAtOrBelow(ref.source_id, before)
+      submitted.has(ref.ref_id) ||
+      (Boolean(ref.project_id) && ref.project_id !== projectId) ||
+      !PATH_CONTEXT_KINDS.has(ref.kind) ||
+      !isResourcePathAtOrBelow(ref.source_id, before)
     ) {
       return [ref]
     }
     if (after === null) return []
-    return [{
-      ...ref,
-      source_id: relocateResourcePath(ref.source_id, before, after),
-      source_revision: null,
-      label: ref.source_id === before && exactLabel ? exactLabel : ref.label
-    }]
+    return [
+      {
+        ...ref,
+        source_id: relocateResourcePath(ref.source_id, before, after),
+        source_revision: null,
+        label: ref.source_id === before && exactLabel ? exactLabel : ref.label,
+      },
+    ]
   })
 }
 

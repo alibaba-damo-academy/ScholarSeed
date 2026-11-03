@@ -40,6 +40,7 @@ import {
   selectClassName,
   sheetClassName,
   scrollAreaClassName,
+  scrollAreaViewportClassName,
   semanticTagColor,
   semanticTagColorFor,
   semanticTagVariables,
@@ -55,7 +56,7 @@ import {
   toastStyleClassName,
   toggleClassName,
   toggleGroupClassName,
-  inputOtpClassName
+  inputOtpClassName,
 } from './ui/classes.ts'
 import { cxWithOverrides } from './ui/utils.ts'
 
@@ -71,14 +72,23 @@ test('tooltip class contract exposes side and state', () => {
 })
 
 test('sheet and drawer class contracts expose side state', () => {
-  assert.equal(sheetClassName({ className: 'panel', side: 'right' }), 'vds-sheet vds-sheet--right panel')
+  assert.equal(
+    sheetClassName({ className: 'panel', side: 'right' }),
+    'vds-sheet vds-sheet--right panel'
+  )
   assert.equal(sheetClassName({ side: 'bottom' }), 'vds-sheet vds-sheet--bottom')
-  assert.equal(drawerClassName({ className: 'mobile', side: 'left' }), 'vds-drawer vds-drawer--left mobile')
+  assert.equal(
+    drawerClassName({ className: 'mobile', side: 'left' }),
+    'vds-drawer vds-drawer--left mobile'
+  )
   assert.equal(drawerClassName({ side: 'bottom' }), 'vds-drawer vds-drawer--bottom')
 })
 
 test('toast class contract exposes tone state and top-aligns its content', () => {
-  assert.equal(toastClassName({ className: 'notice', tone: 'success' }), 'vds-toast vds-toast--success notice')
+  assert.equal(
+    toastClassName({ className: 'notice', tone: 'success' }),
+    'vds-toast vds-toast--success notice'
+  )
   assert.equal(toastClassName({ tone: 'error' }), 'vds-toast vds-toast--error')
   assert.match(toastStyleClassName(), /items-start/)
   assert.doesNotMatch(toastStyleClassName(), /items-center/)
@@ -91,30 +101,92 @@ test('caller utility classes override matching default layout groups', () => {
   )
 })
 
+test('scroll viewport preserves inherited height constraints without overrides', () => {
+  const classes = scrollAreaViewportClassName({}).split(/\s+/)
+  assert.ok(classes.includes('max-h-[inherit]'))
+  assert.ok(classes.includes('min-h-[inherit]'))
+})
+
+test('scroll viewport explicit maximum height replaces only the inherited maximum', () => {
+  const classes = scrollAreaViewportClassName({ className: 'max-h-[40dvh] flex-1' }).split(/\s+/)
+  assert.ok(classes.includes('max-h-[40dvh]'))
+  assert.ok(classes.includes('min-h-[inherit]'))
+  assert.ok(classes.includes('flex-1'))
+  assert.ok(!classes.includes('max-h-[inherit]'))
+})
+
+test('scroll viewport explicit minimum height replaces only the inherited minimum', () => {
+  const classes = scrollAreaViewportClassName({ className: 'min-h-0' }).split(/\s+/)
+  assert.ok(classes.includes('max-h-[inherit]'))
+  assert.ok(classes.includes('min-h-0'))
+  assert.ok(!classes.includes('min-h-[inherit]'))
+})
+
+test('scroll viewport supports important height overrides and preserves orientation', () => {
+  for (const className of ['!max-h-none !min-h-0', 'max-h-none! min-h-0!']) {
+    const classes = scrollAreaViewportClassName({ className, orientation: 'horizontal' }).split(
+      /\s+/
+    )
+    assert.ok(!classes.includes('max-h-[inherit]'))
+    assert.ok(!classes.includes('min-h-[inherit]'))
+    assert.ok(classes.includes('[overflow-x:auto]'))
+    assert.ok(classes.includes('[overflow-y:hidden]'))
+    for (const override of className.split(' ')) assert.ok(classes.includes(override))
+  }
+})
+
+test('scroll viewport conditional height utilities do not remove unconditional defaults', () => {
+  const classes = scrollAreaViewportClassName({ className: 'md:max-h-64 hover:min-h-0' }).split(
+    /\s+/
+  )
+  assert.ok(classes.includes('max-h-[inherit]'))
+  assert.ok(classes.includes('min-h-[inherit]'))
+  assert.ok(classes.includes('md:max-h-64'))
+  assert.ok(classes.includes('hover:min-h-0'))
+})
+
 test('menu content does not add item gap by default', () => {
   assert.doesNotMatch(menuContentClassName, /\bgap(?:-|\[|x-|y-)/)
 })
 
 test('menu items tint leading icons by item tone', () => {
-  assert.match(menuItemClassName, /\[&>svg:first-child\]:size-4/)
+  assert.match(menuItemClassName, /\[&>svg:first-child\]:size-\[var\(--vds-icon-8\)\]/)
   assert.match(menuItemClassName, /\[&>svg:first-child\]:text-\[var\(--vds-text-tertiary\)\]/)
-  assert.match(menuItemClassName, /\[&>\.vds-icon:first-child\]:size-4/)
-  assert.match(menuItemClassName, /\[&>\.vds-icon:first-child\]:text-\[var\(--vds-text-tertiary\)\]/)
-  assert.match(menuItemClassName, /\[&>\.iconfont:first-child\]:size-4/)
-  assert.match(menuItemClassName, /\[&>\.iconfont:first-child\]:text-\[length:16px\]/)
-  assert.match(menuItemClassName, /\[&>\.iconfont:first-child\]:text-\[var\(--vds-text-tertiary\)\]/)
-  assert.match(menuItemDestructiveClassName, /\[&>svg:first-child\]:size-4/)
-  assert.match(menuItemDestructiveClassName, /\[&>svg:first-child\]:text-\[var\(--vds-error-text-primary\)\]/)
+  assert.match(menuItemClassName, /\[&>\.vds-icon:first-child\]:size-\[var\(--vds-icon-8\)\]/)
+  assert.match(
+    menuItemClassName,
+    /\[&>\.vds-icon:first-child\]:text-\[var\(--vds-text-tertiary\)\]/
+  )
+  assert.match(menuItemClassName, /\[&>\.iconfont:first-child\]:size-\[var\(--vds-icon-8\)\]/)
+  assert.match(
+    menuItemClassName,
+    /\[&>\.iconfont:first-child\]:text-\[length:var\(--vds-icon-8\)\]/
+  )
+  assert.match(
+    menuItemClassName,
+    /\[&>\.iconfont:first-child\]:text-\[var\(--vds-text-tertiary\)\]/
+  )
+  assert.match(menuItemDestructiveClassName, /\[&>svg:first-child\]:size-\[var\(--vds-icon-8\)\]/)
+  assert.match(
+    menuItemDestructiveClassName,
+    /\[&>svg:first-child\]:text-\[var\(--vds-error-text-primary\)\]/
+  )
 })
 
 test('command and resizable class contracts expose shell states', () => {
-  assert.equal(commandClassName({ className: 'palette', disabled: true }), 'vds-command vds-command--disabled palette')
+  assert.equal(
+    commandClassName({ className: 'palette', disabled: true }),
+    'vds-command vds-command--disabled palette'
+  )
   assert.equal(commandClassName({}), 'vds-command')
   assert.equal(
     resizableClassName({ className: 'workspace', direction: 'vertical', disabled: true }),
     'vds-resizable vds-resizable--vertical vds-resizable--disabled workspace'
   )
-  assert.equal(resizableClassName({ direction: 'horizontal' }), 'vds-resizable vds-resizable--horizontal')
+  assert.equal(
+    resizableClassName({ direction: 'horizontal' }),
+    'vds-resizable vds-resizable--horizontal'
+  )
 })
 
 test('slider and input otp class contracts expose interaction states', () => {
@@ -134,7 +206,10 @@ test('slider and input otp class contracts expose interaction states', () => {
 })
 
 test('accordion, scroll area and toggle class contracts expose their states', () => {
-  assert.equal(accordionClassName({ className: 'faq', mode: 'multiple' }), 'vds-accordion vds-accordion--multiple faq')
+  assert.equal(
+    accordionClassName({ className: 'faq', mode: 'multiple' }),
+    'vds-accordion vds-accordion--multiple faq'
+  )
   assert.equal(
     scrollAreaClassName({ className: 'pane', orientation: 'both', shadow: true }),
     'vds-scroll-area vds-scroll-area--both vds-scroll-area--shadow pane'
@@ -152,21 +227,36 @@ test('accordion, scroll area and toggle class contracts expose their states', ()
 test('aspect, breadcrumb, collapsible and tabs class contracts expose their states', () => {
   assert.equal(aspectRatioClassName({ className: 'media' }), 'vds-aspect-ratio media')
   assert.equal(breadcrumbClassName({ className: 'trail' }), 'vds-breadcrumb trail')
-  assert.equal(collapsibleClassName({ className: 'fold', open: true }), 'vds-collapsible vds-collapsible--open fold')
+  assert.equal(
+    collapsibleClassName({ className: 'fold', open: true }),
+    'vds-collapsible vds-collapsible--open fold'
+  )
   assert.equal(collapsibleClassName({ open: false }), 'vds-collapsible')
-  assert.equal(tabsClassName({ className: 'workspace', orientation: 'vertical' }), 'vds-tabs vds-tabs--vertical workspace')
+  assert.equal(
+    tabsClassName({ className: 'workspace', orientation: 'vertical' }),
+    'vds-tabs vds-tabs--vertical workspace'
+  )
 })
 
 test('empty, copy, overlay, table and pagination class contracts expose their states', () => {
   assert.equal(emptyStateClassName({ className: 'blank' }), 'vds-empty-state blank')
-  assert.equal(copyButtonClassName({ status: 'success' }), 'vds-copy-button vds-copy-button--success')
+  assert.equal(
+    copyButtonClassName({ status: 'success' }),
+    'vds-copy-button vds-copy-button--success'
+  )
   assert.equal(
     loadingOverlayClassName({ className: 'panel', tone: 'muted', visible: true }),
     'vds-loading-overlay vds-loading-overlay--muted vds-loading-overlay--visible panel'
   )
-  assert.equal(tableClassName({ className: 'data', density: 'compact' }), 'vds-table vds-table--compact data')
+  assert.equal(
+    tableClassName({ className: 'data', density: 'compact' }),
+    'vds-table vds-table--compact data'
+  )
   assert.equal(paginationClassName({ className: 'pager' }), 'vds-pagination pager')
-  assert.match(paginationItemClassName, /aria-\[current=page\]:bg-\[var\(--vds-brand-bg-default\)\]/)
+  assert.match(
+    paginationItemClassName,
+    /aria-\[current=page\]:bg-\[var\(--vds-brand-bg-default\)\]/
+  )
   assert.match(paginationItemActiveClassName, /text-\[var\(--vds-static-white\)\]/)
 })
 
@@ -197,13 +287,31 @@ test('button class contract includes variant, size and caller class', () => {
     buttonClassName({ className: 'extra', size: 'lg', variant: 'secondary' }),
     'vds-button vds-button--secondary vds-button--lg extra'
   )
-  assert.equal(buttonClassName({ size: 'default', variant: 'default' }), 'vds-button vds-button--primary vds-button--md')
-  assert.equal(buttonClassName({ variant: 'destructive' }), 'vds-button vds-button--danger vds-button--md')
-  assert.equal(buttonClassName({ variant: 'dropzone' }), 'vds-button vds-button--dropzone vds-button--md')
-  assert.equal(buttonClassName({ variant: 'outline' }), 'vds-button vds-button--outline vds-button--md')
-  assert.equal(buttonClassName({ size: 'icon', variant: 'ghostIcon' }), 'vds-button vds-button--ghostIcon vds-button--icon')
-  assert.equal(buttonClassName({ variant: 'warning' }), 'vds-button vds-button--warning vds-button--md')
-  assert.match(buttonStyleClassName({}), /\bfont-normal\b/)
+  assert.equal(
+    buttonClassName({ size: 'default', variant: 'default' }),
+    'vds-button vds-button--primary vds-button--md'
+  )
+  assert.equal(
+    buttonClassName({ variant: 'destructive' }),
+    'vds-button vds-button--danger vds-button--md'
+  )
+  assert.equal(
+    buttonClassName({ variant: 'dropzone' }),
+    'vds-button vds-button--dropzone vds-button--md'
+  )
+  assert.equal(
+    buttonClassName({ variant: 'outline' }),
+    'vds-button vds-button--outline vds-button--md'
+  )
+  assert.equal(
+    buttonClassName({ size: 'icon', variant: 'ghostIcon' }),
+    'vds-button vds-button--ghostIcon vds-button--icon'
+  )
+  assert.equal(
+    buttonClassName({ variant: 'warning' }),
+    'vds-button vds-button--warning vds-button--md'
+  )
+  assert.match(buttonStyleClassName({}), /font-\[var\(--vds-fw-regular\)\]/)
   assert.match(buttonStyleClassName({ variant: 'dropzone' }), /\[border-style:dashed\]/)
   assert.match(buttonStyleClassName({ variant: 'dropzone' }), /data-\[drop-active=true\]/)
   assert.match(buttonStyleClassName({ size: 'md' }), /text-\[length:var\(--vds-font-body-lv2\)\]/)
@@ -283,18 +391,30 @@ test('tag variant contract maps badge-style tones to semantic colors', () => {
   assert.match(tagVariants({ size: 'small' }), /text-\[length:10px\]/)
   assert.match(tagVariants({ size: 'small' }), /leading-\[16px\]/)
   assert.match(tagVariants({ size: 'small' }), /\[padding:2px_6px\]/)
-  assert.match(tagVariants({ variant: 'secondary' }), /--vds-tag-background:var\(--vds-bg-gray-default\)/)
+  assert.match(
+    tagVariants({ variant: 'secondary' }),
+    /--vds-tag-background:var\(--vds-bg-gray-default\)/
+  )
   assert.match(tagVariants({ variant: 'outline' }), /--vds-tag-border:var\(--vds-border-default\)/)
-  assert.match(tagVariants({ variant: 'destructive' }), /--vds-tag-background:var\(--vds-error-light-bg-default\)/)
-  assert.match(tagVariants({ tone: 'success' }), /--vds-tag-background:var\(--vds-success-light-bg-default\)/)
-  assert.match(tagVariants({ tone: 'warning' }), /--vds-tag-background:var\(--vds-warning-light-bg-default\)/)
-  assert.match(tagVariants({ tone: 'danger' }), /--vds-tag-background:var\(--vds-error-light-bg-default\)/)
+  assert.match(
+    tagVariants({ variant: 'destructive' }),
+    /--vds-tag-background:var\(--vds-error-light-bg-default\)/
+  )
+  assert.match(
+    tagVariants({ tone: 'success' }),
+    /--vds-tag-background:var\(--vds-success-light-bg-default\)/
+  )
+  assert.match(
+    tagVariants({ tone: 'warning' }),
+    /--vds-tag-background:var\(--vds-warning-light-bg-default\)/
+  )
+  assert.match(
+    tagVariants({ tone: 'danger' }),
+    /--vds-tag-background:var\(--vds-error-light-bg-default\)/
+  )
   // 选中态只挂状态钩子, 自身不画视觉: 对比由容器把未选中的 chip 压淡来表达。
   // chip 上任何尺寸/字重/描边变化都会让换行排布的标签云在点击瞬间重排跳位。
-  assert.equal(
-    tagVariants({ selected: true }),
-    `${tagVariants()} vds-tag--selected`
-  )
+  assert.equal(tagVariants({ selected: true }), `${tagVariants()} vds-tag--selected`)
   assert.doesNotMatch(tagVariants({ selected: true }), /box-shadow|font-weight|border-width-2/)
   assert.doesNotMatch(tagVariants(), /vds-tag--selected/)
 })
@@ -310,7 +430,7 @@ test('semantic tag colors validate persisted values and select from the shared p
     '--vds-tag-color': 'var(--vds-notice-bg-active)',
     '--vds-tag-accent': 'var(--vds-notice-bg-active)',
     '--vds-tag-close-color': 'var(--vds-notice-bg-default)',
-    '--vds-tag-close-hover-color': 'var(--vds-notice-bg-hover)'
+    '--vds-tag-close-hover-color': 'var(--vds-notice-bg-hover)',
   })
 })
 
@@ -371,12 +491,11 @@ test('select class contract mirrors field invalid and size states', () => {
   assert.equal(selectClassName({ size: 'sm' }), 'vds-select vds-select--sm')
 })
 
-
 test('standard form sizing is opt-in and retains existing medium size contracts', () => {
   for (const styles of [
     buttonStyleClassName({ size: 'standard' }),
     inputStyleClassName({ size: 'standard' }),
-    selectStyleClassName({ size: 'standard' })
+    selectStyleClassName({ size: 'standard' }),
   ]) {
     assert.ok(styles.includes('--vds-control-height-standard'))
     assert.ok(styles.includes('--vds-control-label-line-height'))

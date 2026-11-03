@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import csv
-import re
-from decimal import Decimal, InvalidOperation
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
@@ -29,40 +27,101 @@ from service.content.service.xlsx import XLSX_SUFFIX
 CSV_SUFFIX = ".csv"
 UTF8_SIGNATURE_ENCODING = "utf-8-sig"
 CSV_DELIMITERS = ",;\t|"
-CSV_NUMBER_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?$")
-MAXIMUM_CSV_NUMBER_CHARS = 128
-MAXIMUM_CSV_DECIMAL_EXPANSION = 64
+CSV_DIALECT_SAMPLE_CHARS = 65_536
+CSV_DIALECT_SAMPLE_RECORDS = 32
 CSV_UNSAFE_REASON = "spreadsheet_unsafe_roundtrip"
 
 
-def _csv_dialect(text: str) -> type[csv.Dialect] | csv.Dialect:
-    sample = text[:8192]
-    if not sample:
-        return csv.excel
-    try:
-        return csv.Sniffer().sniff(sample, delimiters=CSV_DELIMITERS)
-    except csv.Error:
-        return csv.excel
+def _csv_delimiter(text: str) -> str:
+    """Same quote-aware, record-consistency score as the Desktop CSV byte index."""
+    sample = (
+        text[:CSV_DIALECT_SAMPLE_CHARS]
+        .encode("utf-8")[:CSV_DIALECT_SAMPLE_CHARS]
+        .decode("utf-8", errors="ignore")
+    )
+    selected, best = ",", 0.0
+    for delimiter in CSV_DELIMITERS:
+        counts: list[int] = []
+        record_start = field_start = 0
+        width = 1
+        quoted = False
+        at = 0
+        while at < len(sample):
+            char = sample[at]
+            if quoted:
+                if char == '"':
+                    if at + 1 < len(sample) and sample[at + 1] == '"':
+                        at += 1
+                    else:
+                        quoted = False
+            elif char == delimiter:
+                width += 1
+                field_start = at + 1
+            elif char in "\r\n":
+                if char == "\r" and at + 1 < len(sample) and sample[at + 1] == "\n":
+                    at += 1
+                counts.append(width)
+                record_start = field_start = at + 1
+                width = 1
+                if len(counts) >= CSV_DIALECT_SAMPLE_RECORDS:
+                    break
+            elif char == '"' and at == field_start:
+                quoted = True
+            at += 1
+        if (
+            at >= len(sample)
+            and len(sample) == len(text)
+            and record_start < len(sample)
+            and not quoted
+        ):
+            counts.append(width)
+        frequencies: dict[int, int] = {}
+        for width in counts:
+            if width > 1:
+                frequencies[width] = frequencies.get(width, 0) + 1
+        for width, frequency in frequencies.items():
+            score = frequency * frequency / max(len(counts), 1) * width
+            if score > best:
+                selected, best = delimiter, score
+    return selected
 
 
-def _normalized_decimal(value: str) -> str:
-    stripped = value.strip()
-    if (
-        not stripped
-        or len(stripped) > MAXIMUM_CSV_NUMBER_CHARS
-        or CSV_NUMBER_PATTERN.fullmatch(stripped) is None
-    ):
-        return value
-    try:
-        number = Decimal(stripped)
-    except InvalidOperation:
-        return value
-    if not number.is_finite() or abs(number.adjusted()) > MAXIMUM_CSV_DECIMAL_EXPANSION:
-        return value
-    normalized = format(number, "f")
-    if "." in normalized:
-        normalized = normalized.rstrip("0").rstrip(".")
-    return "0" if normalized in ("-0", "+0") else normalized
+def _csv_dialect(text: str) -> csv.Dialect:
+    delimiter = _csv_delimiter(text)
+
+    class Dialect(csv.excel):
+        strict = True
+
+    Dialect.delimiter = delimiter
+    return Dialect()
+
+
+def _validate_csv(text: str, delimiter: str) -> None:
+    """Reject syntax which cannot round-trip through the source-string editor."""
+    quoted = closed = False
+    field_start = 0
+    at = 0
+    while at < len(text):
+        char = text[at]
+        if quoted:
+            if char == '"':
+                if at + 1 < len(text) and text[at + 1] == '"':
+                    at += 1
+                else:
+                    quoted, closed = False, True
+        elif char == delimiter:
+            field_start, closed = at + 1, False
+        elif char in "\r\n":
+            if char == "\r" and at + 1 < len(text) and text[at + 1] == "\n":
+                at += 1
+            field_start, closed = at + 1, False
+        elif closed or (char == '"' and at != field_start):
+            raise csv.Error("csv_quotes_invalid")
+        elif char == '"':
+            quoted = True
+        at += 1
+    if quoted:
+        raise csv.Error("csv_quotes_invalid")
 
 
 def _range_bounds(
@@ -133,7 +192,7 @@ def _render_range(
 def _inspect_csv(payload: bytes) -> SpreadsheetInspection:
     try:
         text = payload.decode(UTF8_SIGNATURE_ENCODING)
-        _csv_dialect(text)
+        _validate_csv(text, _csv_dialect(text).delimiter)
     except (UnicodeDecodeError, csv.Error):
         return SpreadsheetInspection(False, CSV_UNSAFE_REASON)
     return SpreadsheetInspection(True)
@@ -143,7 +202,9 @@ def decode_csv(payload: bytes) -> str:
     """Decode CSV bytes without crossing into XLS or XLSX implementations."""
 
     text = payload.decode(UTF8_SIGNATURE_ENCODING)
-    rows = csv.reader(StringIO(text), dialect=_csv_dialect(text))
+    dialect = _csv_dialect(text)
+    _validate_csv(text, dialect.delimiter)
+    rows = csv.reader(StringIO(text, newline=""), dialect=dialect)
     return "\n".join("\t".join(row) for row in rows)
 
 
@@ -153,29 +214,54 @@ def _read_csv_range(
     selected_range: str,
     max_chars: int,
 ) -> SpreadsheetRangeContent:
-    text = payload.decode(UTF8_SIGNATURE_ENCODING)
-    rows = tuple(tuple(row) for row in csv.reader(StringIO(text), dialect=_csv_dialect(text)))
-    maximum_column = max((len(row) for row in rows), default=0)
-    minimum_column, minimum_row, maximum_column, maximum_row = _range_bounds(
-        selected_range,
-        maximum_row=len(rows),
-        maximum_column=maximum_column,
-    )
-    selected_rows = (
-        (
-            _normalized_decimal(row[column - 1]) if column <= len(row) else ""
-            for column in range(minimum_column, maximum_column + 1)
+    try:
+        text = payload.decode(UTF8_SIGNATURE_ENCODING)
+        dialect = _csv_dialect(text)
+        _validate_csv(text, dialect.delimiter)
+        minimum_column, minimum_row, requested_column, requested_row = range_boundaries(
+            selected_range
         )
-        for row in rows[minimum_row - 1 : maximum_row]
-    )
-    return _render_range(
-        selected_rows,
-        minimum_column=minimum_column,
-        minimum_row=minimum_row,
-        maximum_column=maximum_column,
-        maximum_row=maximum_row,
-        max_chars=max_chars,
-    )
+        minimum_column = minimum_column or 1
+        minimum_row = minimum_row or 1
+        maximum_column = requested_column or 0
+        maximum_row = 0
+        selected_rows: list[tuple[str, ...]] = []
+        characters = 0
+        for row_number, row in enumerate(
+            csv.reader(StringIO(text, newline=""), dialect=dialect), 1
+        ):
+            maximum_row = row_number
+            if row_number < minimum_row:
+                continue
+            if requested_row is not None and row_number > requested_row:
+                maximum_row = requested_row
+                break
+            cells = tuple(row[minimum_column - 1 : requested_column])
+            if requested_column is None:
+                maximum_column = max(maximum_column, len(row))
+            characters += (
+                sum(len(cell) for cell in cells) + max(len(cells) - 1, 0) + bool(selected_rows)
+            )
+            if characters > max_chars:
+                raise SpreadsheetRangeTooLarge("spreadsheet_range_too_large")
+            selected_rows.append(cells)
+        if maximum_row < minimum_row or maximum_column < minimum_column or not selected_rows:
+            raise SpreadsheetRangeError("empty_spreadsheet_range")
+        # Missing fields in ragged records retain the existing TSV rectangular contract.
+        width = maximum_column - minimum_column + 1
+        rectangular = (row + ("",) * max(0, width - len(row)) for row in selected_rows)
+        return _render_range(
+            rectangular,
+            minimum_column=minimum_column,
+            minimum_row=minimum_row,
+            maximum_column=maximum_column,
+            maximum_row=maximum_row,
+            max_chars=max_chars,
+        )
+    except (UnicodeDecodeError, csv.Error, ValueError) as exc:
+        if isinstance(exc, SpreadsheetRangeError):
+            raise
+        raise SpreadsheetRangeError("invalid_spreadsheet_range") from exc
 
 
 CSV_PROCESSOR = SpreadsheetProcessor(

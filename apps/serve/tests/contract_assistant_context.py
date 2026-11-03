@@ -8,8 +8,10 @@ import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -37,6 +39,7 @@ from service.chat.persistence.catalog import (
 from service.chat.persistence.events import ProductEventStore
 from service.chat.service.context import SessionContextProvider
 from service.chat.service.history import HistoryService
+from service.persistence.project import rebuild_table
 from service.platform.context import (
     AssistantContextFailureKind,
     AssistantTurnItem,
@@ -92,6 +95,123 @@ def file_ref(
 
 
 class AssistantContextContract(unittest.TestCase):
+    def test_context_api_preserves_large_reference_sets(self) -> None:
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = AssistantService(self.store)
+        register_assistant_routes(app)
+        client = TestClient(app)
+        endpoint = f"/api/assistant/sessions/{SESSION_A}/context"
+        revision = 0
+        for count in (32, 33, 40, 65, 128):
+            with self.subTest(count=count):
+                refs = [
+                    {
+                        "ref_id": f"paper-{index}",
+                        "kind": "literature",
+                        "source_id": f"paper-{index}",
+                        "label": f"Paper {index}",
+                    }
+                    for index in range(count)
+                ]
+                body = {
+                    "expected_revision": revision,
+                    "project_policy": "explicit_only",
+                    "search_scope": "disabled",
+                    "refs": refs,
+                }
+                response = client.patch(endpoint, json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+                revision = response.json()["revision"]
+                expected_ids = [ref["ref_id"] for ref in refs]
+                self.assertEqual(
+                    [ref["ref_id"] for ref in client.get(endpoint).json()["refs"]], expected_ids
+                )
+                self.assertEqual(
+                    [ref.ref_id for ref in AssistantStore(self.database).selection(SESSION_A).refs],
+                    expected_ids,
+                )
+                for invalid in (refs + [refs[0]], [*refs[:-1], {**refs[-1], "source_id": ""}]):
+                    rejected = client.patch(
+                        endpoint, json={**body, "expected_revision": revision, "refs": invalid}
+                    )
+                    self.assertEqual(rejected.status_code, 422, rejected.text)
+                self.assertEqual(client.get(endpoint).json()["revision"], revision)
+
+    def test_default_turn_omits_model_card_but_preserves_snapshot(self) -> None:
+        service = AssistantService(self.store)
+        result = service.freeze(
+            session_id=SESSION_A,
+            client_turn_id="greeting-turn",
+            expected_revision=None,
+            question="你好",
+        )
+        self.assertIsNone(result.failure)
+        self.assertIsNotNone(result.context)
+        context = result.context
+        self.assertEqual(context.model_context, "")
+        self.assertEqual(context.snapshot.search_scope, SearchScope.WEB)
+        self.assertEqual(self.store.snapshot_for_turn(SESSION_A, "greeting-turn"), context.snapshot)
+        cold = AssistantService(AssistantStore(self.database))
+        replay = cold.freeze(
+            session_id=SESSION_A,
+            client_turn_id="greeting-turn",
+            expected_revision=None,
+            question="你好",
+        )
+        self.assertEqual(replay.context, context)
+
+    def test_changed_model_card_hash_still_rejects_replay(self) -> None:
+        service = AssistantService(self.store)
+        arguments = dict(
+            session_id=SESSION_A,
+            client_turn_id="old-renderer-turn",
+            expected_revision=None,
+            question="你好",
+        )
+        frozen = service.freeze(**arguments).context
+        self.assertIsNotNone(frozen)
+        old_hash = hashlib.sha256(b"previous renderer model card").hexdigest()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"UPDATE {ASSISTANT_SNAPSHOT_TABLE} SET model_card_hash = ? WHERE snapshot_id = ?",
+                (old_hash, frozen.snapshot.snapshot_id),
+            )
+        replay = AssistantService(AssistantStore(self.database)).freeze(**arguments)
+        self.assertIsNone(replay.context)
+        self.assertEqual(replay.failure.kind, AssistantContextFailureKind.IDEMPOTENCY_CONFLICT)
+        self.assertIn("model card hash mismatch", replay.failure.detail)
+        self.assertEqual(
+            self.store.snapshot_for_turn(SESSION_A, "old-renderer-turn").model_card_hash, old_hash
+        )
+
+    def test_search_overrides_are_compact_and_reset_to_default(self) -> None:
+        service = AssistantService(self.store)
+        for scope in (SearchScope.DISABLED, SearchScope.WEB, SearchScope.ACADEMIC, SearchScope.WEB):
+            selection = service.replace_selection(
+                session_id=SESSION_A,
+                expected_revision=self.store.selection(SESSION_A).revision,
+                project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+                search_scope=scope,
+                refs=(),
+            )
+            result = service.freeze(
+                session_id=SESSION_A,
+                client_turn_id=f"scope-{selection.revision}",
+                expected_revision=selection.revision,
+                question="你好",
+            )
+            self.assertIsNone(result.failure)
+            self.assertIsNotNone(result.context)
+            if scope is SearchScope.WEB:
+                self.assertEqual(result.context.model_context, "")
+            else:
+                self.assertEqual(
+                    json.loads(result.context.model_context.splitlines()[1]),
+                    {"search_scope": scope.value},
+                )
+
     def test_metadata_only_freeze_never_resolves_selected_source_bytes(self) -> None:
         class ByteReadingProvider:
             def __init__(self) -> None:
@@ -137,7 +257,7 @@ class AssistantContextContract(unittest.TestCase):
             model_id="contract-model",
             portable_history=(HistoryEntry(role="user", text="原始消息"),),
         )
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute(
                 f"UPDATE {SESSION_CATALOG_TABLE} SET title = ?, title_fallback = ? WHERE session_id = ?",
                 (SESSION_TITLE_DEFAULT, SessionTitleFallback.NEW_SESSION, SESSION_B),
@@ -479,7 +599,7 @@ class AssistantContextContract(unittest.TestCase):
         assert failure is not None
         self.assertEqual(failure.issues[0].selection_source_label, ref.selection_source_label)
         self.assertEqual(failure.issues[0].label, ref.label)
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             for table in (ASSISTANT_REF_TABLE, ASSISTANT_ITEM_TABLE):
                 connection.execute(f"ALTER TABLE {table} DROP COLUMN selection_source_label")
         upgraded = AssistantStore(self.database)
@@ -527,17 +647,27 @@ class AssistantContextContract(unittest.TestCase):
             ),
         )
         self.store.create_snapshot(snapshot)
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            definition = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (ASSISTANT_SELECTION_TABLE,)
+            ).fetchone()[0]
             connection.execute(
-                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} RENAME TO broken_selection"
+                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} RENAME TO assistant_context_selection_migration"
             )
             connection.execute(
-                f"CREATE TABLE {ASSISTANT_SELECTION_TABLE} AS SELECT * FROM broken_selection"
+                definition.replace(
+                    f"REFERENCES {SESSION_CATALOG_TABLE}(",
+                    f"REFERENCES {SESSION_CATALOG_TABLE}_migration(",
+                )
             )
+            connection.execute(
+                f"INSERT INTO {ASSISTANT_SELECTION_TABLE} SELECT * FROM assistant_context_selection_migration"
+            )
+            connection.execute("DROP TABLE assistant_context_selection_migration")
         repaired = AssistantStore(self.database)
         self.assertEqual(repaired.selection(SESSION_A), selected)
         self.assertEqual(repaired.snapshot_for_turn(SESSION_A, "repair-turn"), snapshot)
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_old_label_columns_upgrade_without_inventing_provenance(self) -> None:
@@ -558,23 +688,15 @@ class AssistantContextContract(unittest.TestCase):
             items=(AssistantTurnItem("e1", ref, ContextResolutionState.READY),),
         )
         self.store.create_snapshot(snapshot)
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             for table in (ASSISTANT_REF_TABLE, ASSISTANT_ITEM_TABLE):
                 connection.execute(f"ALTER TABLE {table} DROP COLUMN label_fallback")
                 connection.execute(f"ALTER TABLE {table} DROP COLUMN selection_source_label")
-            connection.execute(f"ALTER TABLE {ASSISTANT_REF_TABLE} ADD COLUMN preserved_extra TEXT")
-            connection.execute(f"UPDATE {ASSISTANT_REF_TABLE} SET preserved_extra = 'user-asset'")
         upgraded = AssistantStore(self.database)
         self.assertEqual(upgraded.selection(SESSION_A), selected)
         self.assertEqual(upgraded.snapshot_for_turn(SESSION_A, "legacy-turn"), snapshot)
         self.assertIsNone(upgraded.selection(SESSION_A).refs[0].label_fallback)
-        with sqlite3.connect(self.database) as connection:
-            self.assertEqual(
-                connection.execute(f"SELECT preserved_extra FROM {ASSISTANT_REF_TABLE}").fetchone()[
-                    0
-                ],
-                "user-asset",
-            )
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute(
                 f"UPDATE {ASSISTANT_REF_TABLE} SET label_fallback = 'future-display'"
             )
@@ -708,6 +830,7 @@ class AssistantContextContract(unittest.TestCase):
         legacy_ref = asdict(ref)
         legacy_ref.pop("label_fallback")
         legacy_ref.pop("selection_source_label")
+        legacy_ref.pop("project_id")
         legacy_payload = {
             "client_turn_id": "turn",
             "question_hash": hashlib.sha256("问题".encode()).hexdigest(),
@@ -723,6 +846,14 @@ class AssistantContextContract(unittest.TestCase):
         ).hexdigest()
         self.assertEqual(AssistantService._admission_hash(selected, "turn", "问题"), legacy_hash)
         self.assertEqual(AssistantService._admission_hash(marked, "turn", "问题"), legacy_hash)
+        self.assertNotEqual(
+            AssistantService._admission_hash(
+                replace(selected, refs=(replace(ref, project_id="source-project"),)),
+                "turn",
+                "问题",
+            ),
+            legacy_hash,
+        )
         self.assertNotEqual(
             AssistantService._admission_hash(marked, "turn", "另一个问题"), legacy_hash
         )
@@ -820,7 +951,10 @@ class AssistantContextContract(unittest.TestCase):
         )
         with ProductEventStore(self.database).transaction() as connection:
             self.assertFalse(self.store.clear_for_relocation(SESSION_A, connection))
-        self.assertEqual(self.store.selection(SESSION_A), selected)
+        self.assertEqual(
+            self.store.selection(SESSION_A),
+            replace(selected, claimed_ref_ids=("queued",)),
+        )
 
     def test_snapshot_is_idempotent_and_cascades_with_session(self) -> None:
         ref = file_ref()
@@ -850,7 +984,7 @@ class AssistantContextContract(unittest.TestCase):
         self.assertEqual(self.store.snapshot_for_turn(SESSION_A, "client-turn-a"), snapshot)
 
         self.catalog.release(SESSION_A, OWNER)
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             self.assertEqual(
                 connection.execute(
                     f"SELECT COUNT(*) FROM {ASSISTANT_SELECTION_TABLE} WHERE session_id = ?",
@@ -906,17 +1040,20 @@ class AssistantContextContract(unittest.TestCase):
             expected_revision=selected.revision,
         )
         self.assertEqual(claimed.refs, (persistent, transient))
+        self.assertEqual(self.store.selection(SESSION_A).claimed_ref_ids, (transient.ref_id,))
         with self.assertRaises(AssistantStateConflictError):
             self.replace(selected.revision, refs=(persistent,))
 
         next_ref = file_ref("next-round")
         edited = self.replace(selected.revision, refs=(persistent, transient, next_ref))
+        self.assertEqual(edited.claimed_ref_ids, (transient.ref_id,))
         consumed = self.store.consume_claim(
             session_id=SESSION_A,
             client_turn_id="turn-claim",
         )
         self.assertEqual(consumed.revision, edited.revision + 1)
         self.assertEqual(consumed.refs, (persistent, next_ref))
+        self.assertEqual(consumed.claimed_ref_ids, ())
 
     def test_rejected_turn_releases_next_turn_ref(self) -> None:
         transient = file_ref("transient", ContextRetention.NEXT_TURN)
@@ -933,6 +1070,7 @@ class AssistantContextContract(unittest.TestCase):
         )
 
         self.assertEqual(released, selected)
+        self.assertEqual(released.claimed_ref_ids, ())
 
     def test_snapshot_replay_rejects_a_different_question(self) -> None:
         selected = self.replace(0)
@@ -963,13 +1101,13 @@ class AssistantContextContract(unittest.TestCase):
         assert conflict.failure is not None
         self.assertEqual(conflict.failure.kind, AssistantContextFailureKind.IDEMPOTENCY_CONFLICT)
 
-    def test_store_repairs_catalog_rebuild_foreign_key(self) -> None:
+    def _legacy_foreign_keys(self):
         selected = self.replace(0, refs=(file_ref(),))
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute(f"ALTER TABLE {ASSISTANT_REF_TABLE} RENAME TO broken_ref")
             connection.execute(
-                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} RENAME TO broken_selection"
+                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} RENAME TO assistant_context_selection_migration"
             )
             connection.execute(f"""
                 CREATE TABLE {ASSISTANT_SELECTION_TABLE} (
@@ -984,7 +1122,7 @@ class AssistantContextContract(unittest.TestCase):
                 """)
             connection.execute(f"""
                 INSERT INTO {ASSISTANT_SELECTION_TABLE}
-                SELECT * FROM broken_selection
+                SELECT * FROM assistant_context_selection_migration
                 """)
             connection.execute(f"""
                 CREATE TABLE {ASSISTANT_REF_TABLE} (
@@ -998,7 +1136,7 @@ class AssistantContextContract(unittest.TestCase):
                     order_index INTEGER NOT NULL,
                     PRIMARY KEY(session_id, ref_id),
                     UNIQUE(session_id, order_index),
-                    FOREIGN KEY(session_id) REFERENCES broken_selection(session_id)
+                    FOREIGN KEY(session_id) REFERENCES assistant_context_selection_migration(session_id)
                         ON DELETE CASCADE
                 )
                 """)
@@ -1011,12 +1149,331 @@ class AssistantContextContract(unittest.TestCase):
                 FROM broken_ref
                 """)
             connection.execute("DROP TABLE broken_ref")
-            connection.execute("DROP TABLE broken_selection")
+            connection.execute("DROP TABLE assistant_context_selection_migration")
+
+        return selected
+
+    def test_current_store_reopens_without_write_connection(self) -> None:
+        with patch.object(
+            AssistantStore, "_connect", side_effect=AssertionError("unexpected write")
+        ):
+            AssistantStore(self.database)
+
+    def test_missing_schema_inspection_does_not_create_database(self) -> None:
+        missing = self.database.parent / "absent" / "sessions.sqlite3"
+        self.assertTrue(AssistantStore.inspect_schema(missing).needs_write)
+        self.assertFalse(missing.parent.exists())
+
+    def test_future_column_reopens_without_write_connection(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} ADD COLUMN future_scope TEXT"
+            )
+            before = tuple(connection.iterdump())
+        with patch.object(AssistantStore, "_connect", side_effect=AssertionError("opened writer")):
+            AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_future_default_columns_allow_existing_selection_writes(self) -> None:
+        selected = self.replace(0, refs=(file_ref(),))
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} ADD COLUMN future_revision INTEGER NOT NULL DEFAULT 7"
+            )
+            connection.execute(f"UPDATE {ASSISTANT_SELECTION_TABLE} SET future_revision=23")
+            connection.execute(
+                f"ALTER TABLE {ASSISTANT_REF_TABLE} ADD COLUMN future_label TEXT DEFAULT 'New field' "
+            )
+        reopened = AssistantStore(self.database)
+        self.assertEqual(reopened.selection(SESSION_A), selected)
+        self.replace(selected.revision, refs=(file_ref(),))
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    f"SELECT future_revision FROM {ASSISTANT_SELECTION_TABLE}"
+                ).fetchall(),
+                [(23,)],
+            )
+            self.assertEqual(
+                connection.execute(f"SELECT future_label FROM {ASSISTANT_REF_TABLE}").fetchall(),
+                [("New field",)],
+            )
+
+    def test_future_column_does_not_hide_missing_required_column(self) -> None:
+        self.replace(0, refs=(file_ref(),))
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(f"ALTER TABLE {ASSISTANT_REF_TABLE} ADD COLUMN future_scope TEXT")
+            connection.execute(f"ALTER TABLE {ASSISTANT_REF_TABLE} DROP COLUMN label")
+            before = tuple(connection.iterdump())
+        with patch.object(AssistantStore, "_connect", side_effect=AssertionError("opened writer")):
+            with self.assertRaisesRegex(RuntimeError, "unsupported assistant missing columns"):
+                AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_incompatible_future_columns_are_rejected_without_writes(self) -> None:
+        for declaration in (
+            "TEXT NOT NULL",
+            "TEXT NOT NULL DEFAULT NULL",
+            "TEXT CHECK(future_value IS NULL)",
+            "TEXT REFERENCES session_catalog(session_id)",
+            "TEXT GENERATED ALWAYS AS (session_id) VIRTUAL",
+        ):
+            with self.subTest(declaration=declaration):
+                with closing(sqlite3.connect(self.database)) as connection, connection:
+                    connection.execute(
+                        f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} ADD COLUMN future_value {declaration}"
+                    )
+                    before = tuple(connection.iterdump())
+                with self.assertRaisesRegex(RuntimeError, "unsupported assistant"):
+                    AssistantStore(self.database)
+                with closing(sqlite3.connect(self.database)) as connection, connection:
+                    self.assertEqual(tuple(connection.iterdump()), before)
+                    connection.execute(
+                        f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} DROP COLUMN future_value"
+                    )
+
+    def test_future_column_survives_additive_upgrade(self) -> None:
+        self.replace(0, refs=(file_ref(),))
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(f"ALTER TABLE {ASSISTANT_REF_TABLE} DROP COLUMN label_fallback")
+            connection.execute(f"ALTER TABLE {ASSISTANT_REF_TABLE} ADD COLUMN preserved_extra TEXT")
+            connection.execute(f"UPDATE {ASSISTANT_REF_TABLE} SET preserved_extra='user-asset'")
+        reopened = AssistantStore(self.database)
+        self.assertEqual(reopened.selection(SESSION_A).refs, self.store.selection(SESSION_A).refs)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    f"SELECT preserved_extra, label_fallback FROM {ASSISTANT_REF_TABLE}"
+                ).fetchall(),
+                [("user-asset", None)],
+            )
+        self.assertFalse(AssistantStore.inspect_schema(self.database).needs_write)
+
+    def test_schema_inspection_sees_wal_columns_and_index_without_writing(self) -> None:
+        with closing(sqlite3.connect(self.database)) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute(f"ALTER TABLE {ASSISTANT_REF_TABLE} DROP COLUMN label_fallback")
+            writer.execute(f"DROP INDEX idx_{ASSISTANT_REF_TABLE}_note")
+            writer.commit()
+            wal = Path(str(self.database) + "-wal")
+            before = self.database.read_bytes(), wal.read_bytes()
+            schema = AssistantStore.inspect_schema(self.database)
+            self.assertEqual(schema.add_columns, ((ASSISTANT_REF_TABLE, "label_fallback"),))
+            self.assertEqual(schema.create_indexes, (f"idx_{ASSISTANT_REF_TABLE}_note",))
+            self.assertEqual((self.database.read_bytes(), wal.read_bytes()), before)
+            AssistantStore(self.database)
+            self.assertFalse(AssistantStore.inspect_schema(self.database).needs_write)
+
+    def test_owned_index_predicate_literal_is_not_case_normalized(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            name = f"idx_{ASSISTANT_REF_TABLE}_note"
+            definition = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (name,)
+            ).fetchone()[0]
+            connection.execute(f"DROP INDEX {name}")
+            connection.execute(definition.replace("'note'", "'NOTE'"))
+            before = tuple(connection.iterdump())
+        with self.assertRaisesRegex(RuntimeError, "unsupported assistant owned index"):
+            AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_store_repair_failure_restores_all_tables(self) -> None:
+        self._legacy_foreign_keys()
+        with closing(sqlite3.connect(self.database)) as connection:
+            before = tuple(connection.iterdump())
+
+        def interrupted(connection, table, create):
+            rebuild_table(connection, table, create)
+            raise OSError("interrupted after copying and dropping migration table")
+
+        with patch("service.assistant.persistence.store.rebuild_table", side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, "interrupted after copying"):
+                AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+        repaired = AssistantStore(self.database)
+        self.assertEqual(len(repaired.selection(SESSION_A).refs), 1)
+
+    def test_store_repair_preserves_external_dependents(self) -> None:
+        selected = self._legacy_foreign_keys()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"CREATE TABLE selection_notes(session_id TEXT REFERENCES {ASSISTANT_SELECTION_TABLE}(session_id) ON DELETE CASCADE, note TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO selection_notes VALUES(?, 'preserve note')", (SESSION_A,)
+            )
+            connection.execute("CREATE TABLE selection_changes(revision INTEGER)")
+            connection.execute(
+                f"CREATE INDEX selection_updated ON {ASSISTANT_SELECTION_TABLE}(updated_at)"
+            )
+            connection.execute(
+                f"CREATE TRIGGER selection_changed AFTER UPDATE ON {ASSISTANT_SELECTION_TABLE} BEGIN INSERT INTO selection_changes VALUES(NEW.revision); END"
+            )
+            definitions = connection.execute(
+                "SELECT name,sql FROM sqlite_master WHERE name IN ('selection_updated','selection_changed') ORDER BY name"
+            ).fetchall()
+        self.assertEqual(AssistantStore(self.database).selection(SESSION_A), selected)
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            with self.subTest(check="incoming target"):
+                self.assertEqual(
+                    connection.execute("PRAGMA foreign_key_list(selection_notes)").fetchone()[2],
+                    ASSISTANT_SELECTION_TABLE,
+                )
+            with self.subTest(check="child row"):
+                self.assertEqual(
+                    connection.execute("SELECT * FROM selection_notes").fetchall(),
+                    [(SESSION_A, "preserve note")],
+                )
+            with self.subTest(check="index and trigger"):
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT name,sql FROM sqlite_master WHERE name IN ('selection_updated','selection_changed') ORDER BY name"
+                    ).fetchall(),
+                    definitions,
+                )
+            connection.execute(
+                f"UPDATE {ASSISTANT_SELECTION_TABLE} SET revision=revision+1 WHERE session_id=?",
+                (SESSION_A,),
+            )
+            with self.subTest(check="trigger execution"):
+                self.assertEqual(
+                    connection.execute("SELECT * FROM selection_changes").fetchall(),
+                    [(selected.revision + 1,)],
+                )
+
+    def test_store_repair_preserves_future_column(self) -> None:
+        self._legacy_foreign_keys()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} ADD COLUMN future_scope TEXT"
+            )
+            connection.execute(
+                f"UPDATE {ASSISTANT_SELECTION_TABLE} SET future_scope='preserve this value'"
+            )
+            connection.execute(
+                f'ALTER TABLE {ASSISTANT_SELECTION_TABLE} ADD COLUMN "future score" REAL NOT NULL DEFAULT -1.25'
+            )
+        AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    f"SELECT future_scope FROM {ASSISTANT_SELECTION_TABLE}"
+                ).fetchall(),
+                [("preserve this value",)],
+            )
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(
+                connection.execute(
+                    f'SELECT "future score" FROM {ASSISTANT_SELECTION_TABLE}'
+                ).fetchall(),
+                [(-1.25,)],
+            )
+        self.assertFalse(AssistantStore.inspect_schema(self.database).needs_write)
+
+    def test_store_repair_refuses_unknown_constraint(self) -> None:
+        self._legacy_foreign_keys()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (ASSISTANT_SELECTION_TABLE,)
+            ).fetchone()[0]
+            rows = connection.execute(f"SELECT * FROM {ASSISTANT_SELECTION_TABLE}").fetchall()
+            connection.execute(f"DROP TABLE {ASSISTANT_SELECTION_TABLE}")
+            connection.execute(
+                sql.replace(
+                    "updated_at REAL NOT NULL", "updated_at REAL NOT NULL CHECK(updated_at >= 0)"
+                )
+            )
+            connection.executemany(
+                f"INSERT INTO {ASSISTANT_SELECTION_TABLE} VALUES(?,?,?,?,?)", rows
+            )
+            before = tuple(connection.iterdump())
+        with self.assertRaisesRegex(RuntimeError, "unsupported assistant"):
+            AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_store_repair_refuses_unconstrained_table(self) -> None:
+        self._legacy_foreign_keys()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"ALTER TABLE {ASSISTANT_SELECTION_TABLE} RENAME TO unconstrained_source"
+            )
+            connection.execute(
+                f"CREATE TABLE {ASSISTANT_SELECTION_TABLE} AS SELECT * FROM unconstrained_source"
+            )
+            before = tuple(connection.iterdump())
+        with self.assertRaisesRegex(RuntimeError, "unsupported assistant"):
+            AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_store_repair_refuses_unknown_foreign_target(self) -> None:
+        self._legacy_foreign_keys()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (ASSISTANT_SELECTION_TABLE,)
+            ).fetchone()[0]
+            rows = connection.execute(f"SELECT * FROM {ASSISTANT_SELECTION_TABLE}").fetchall()
+            connection.execute(f"DROP TABLE {ASSISTANT_SELECTION_TABLE}")
+            connection.execute(sql.replace("session_catalog_migration", "unrecognized_sessions"))
+            connection.executemany(
+                f"INSERT INTO {ASSISTANT_SELECTION_TABLE} VALUES(?,?,?,?,?)", rows
+            )
+            before = tuple(connection.iterdump())
+        with self.assertRaisesRegex(RuntimeError, "unsupported assistant"):
+            AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_store_repair_refuses_additional_foreign_constraint(self) -> None:
+        self._legacy_foreign_keys()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (ASSISTANT_SELECTION_TABLE,)
+            ).fetchone()[0]
+            rows = connection.execute(f"SELECT * FROM {ASSISTANT_SELECTION_TABLE}").fetchall()
+            connection.execute(f"DROP TABLE {ASSISTANT_SELECTION_TABLE}")
+            end = sql.rindex(")")
+            connection.execute(
+                sql[:end]
+                + ", FOREIGN KEY(session_id) REFERENCES session_catalog(session_id) ON DELETE CASCADE"
+                + sql[end:]
+            )
+            connection.executemany(
+                f"INSERT INTO {ASSISTANT_SELECTION_TABLE} VALUES(?,?,?,?,?)", rows
+            )
+            before = tuple(connection.iterdump())
+        with self.assertRaisesRegex(RuntimeError, "unsupported assistant"):
+            AssistantStore(self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_store_refuses_existing_migration_residue(self) -> None:
+        for suffix in ("_migration", "_schema_rebuild", "_foreign_key_migration"):
+            with self.subTest(suffix=suffix):
+                table = ASSISTANT_SELECTION_TABLE + suffix
+                with closing(sqlite3.connect(self.database)) as connection, connection:
+                    connection.execute(f"CREATE TABLE {table}(evidence TEXT)")
+                    connection.execute(f"INSERT INTO {table} VALUES('recover this data')")
+                    before = tuple(connection.iterdump())
+                with self.assertRaisesRegex(RuntimeError, "recovery required"):
+                    AssistantStore(self.database)
+                with closing(sqlite3.connect(self.database)) as connection, connection:
+                    self.assertEqual(tuple(connection.iterdump()), before)
+                    connection.execute(f"DROP TABLE {table}")
+
+    def test_store_repairs_catalog_rebuild_foreign_key(self) -> None:
+        selected = self._legacy_foreign_keys()
 
         repaired = AssistantStore(self.database)
         self.assertEqual(repaired.selection(SESSION_A), selected)
         self.assertEqual(repaired.selection(SESSION_A).refs[0].retention, ContextRetention.SESSION)
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.row_factory = sqlite3.Row
             targets = {
                 str(row["table"])
@@ -1071,6 +1528,44 @@ class AssistantContextContract(unittest.TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.json()["detail"]["latest"]["revision"], 1)
 
+    def test_session_api_exposes_claim_without_mislabeling_immutable_conflict(self) -> None:
+        service = AssistantService(self.store)
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = service
+        register_assistant_routes(app)
+        client = TestClient(app)
+        endpoint = f"/api/assistant/sessions/{SESSION_A}/context"
+        patch = {
+            "expected_revision": 0,
+            "project_policy": "explicit_only",
+            "search_scope": "web",
+            "refs": [
+                {
+                    "ref_id": "claimed-file",
+                    "kind": "file",
+                    "source_id": "paper.pdf",
+                    "label": "paper.pdf",
+                    "retention": "next_turn",
+                }
+            ],
+        }
+        selected = client.patch(endpoint, json=patch)
+        self.assertEqual(selected.status_code, 200)
+        self.assertEqual(selected.json()["claimed_ref_ids"], [])
+
+        self.store.claim_for_turn(
+            session_id=SESSION_A,
+            client_turn_id="running-turn",
+            expected_revision=selected.json()["revision"],
+        )
+        self.assertEqual(client.get(endpoint).json()["claimed_ref_ids"], ["claimed-file"])
+        rejected = client.patch(endpoint, json={**patch, "expected_revision": 1, "refs": []})
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(rejected.json()["detail"]["error"], "assistant_claimed_refs_immutable")
+        self.assertEqual(rejected.json()["detail"]["latest"]["claimed_ref_ids"], ["claimed-file"])
+
     def test_session_api_validates_and_round_trips_selection_locator(self) -> None:
         service = AssistantService(self.store)
         app = FastAPI()
@@ -1113,7 +1608,10 @@ class AssistantContextContract(unittest.TestCase):
         returned = accepted.json()["refs"][0]
         self.assertEqual(returned["retention"], "next_turn")
         self.assertEqual(returned["origin"], "explicit")
-        self.assertEqual(returned["anchor"]["locator"], selection_ref["anchor"]["locator"])
+        self.assertEqual(
+            returned["anchor"]["locator"],
+            {**selection_ref["anchor"]["locator"], "segments": None},
+        )
 
         invalid = dict(selection_ref)
         invalid["anchor"] = {
@@ -1186,7 +1684,6 @@ class AssistantContextContract(unittest.TestCase):
             accepted_pdf.json()["refs"][0]["anchor"]["locator"]["text_shape_hash"],
             "sha256:" + "b" * 64,
         )
-
         invalid_pdf_shape = {
             **pdf_ref,
             "anchor": {
@@ -1207,6 +1704,152 @@ class AssistantContextContract(unittest.TestCase):
             },
         )
         self.assertEqual(rejected_pdf_shape.status_code, 422)
+
+    def test_session_api_round_trips_frozen_pdf_selection_text(self) -> None:
+        service = AssistantService(self.store)
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = service
+        register_assistant_routes(app)
+        client = TestClient(app)
+        endpoint = f"/api/assistant/sessions/{SESSION_A}/context"
+        snapshot = "As scientific literature grows rapidly"
+
+        accepted = client.patch(
+            endpoint,
+            json={
+                "expected_revision": 0,
+                "project_policy": "explicit_only",
+                "search_scope": "disabled",
+                "refs": [
+                    {
+                        "kind": "selection",
+                        "source_id": "paper.pdf",
+                        "source_revision": "sha256:" + "1" * 64,
+                        "label": "paper.pdf · 划词",
+                        "retention": "next_turn",
+                        "origin": "explicit",
+                        "anchor": {
+                            "locator": {
+                                "kind": "pdf",
+                                "page": 1,
+                                "quads": [[0.1, 0.2, 0.4, 0.3]],
+                                "text_length": len(snapshot),
+                            },
+                            "selected_text_hash": "sha256:" + "2" * 64,
+                            "preview_text": snapshot,
+                            "snapshot_text": snapshot,
+                        },
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.json()["refs"][0]["anchor"]["snapshot_text"], snapshot)
+        restored = self.store.selection(SESSION_A)
+        self.assertEqual(restored.refs[0].anchor.snapshot_text, snapshot)
+
+    def test_session_api_appends_pdf_quote_while_first_quote_is_claimed(self) -> None:
+        service = AssistantService(self.store)
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = service
+        register_assistant_routes(app)
+        client = TestClient(app)
+        for kind, session_id in (("selection", SESSION_A), ("literature", SESSION_B)):
+            with self.subTest(kind=kind):
+                endpoint = f"/api/assistant/sessions/{session_id}/context"
+                first_ref = {
+                    "ref_id": "first-quote",
+                    "kind": kind,
+                    "source_id": "paper.pdf",
+                    "source_revision": "sha256:" + "1" * 64,
+                    "label": "paper.pdf · 划词",
+                    "selection_source_label": "paper.pdf",
+                    "retention": "next_turn",
+                    "origin": "explicit",
+                    "anchor": {
+                        "document_id": "pdf-attachment" if kind == "literature" else None,
+                        "locator": {
+                            "kind": "pdf",
+                            "page": 1,
+                            "quads": [[0.1, 0.2, 0.4, 0.3]],
+                            "text_length": 7,
+                            "text_shape_hash": "sha256:" + "2" * 64,
+                        },
+                        "selected_text_hash": "sha256:" + "3" * 64,
+                        "preview_text": "quote A",
+                        "snapshot_text": "quote A",
+                    },
+                }
+                patch = {
+                    "expected_revision": 0,
+                    "project_policy": "explicit_only",
+                    "search_scope": "web",
+                    "refs": [first_ref],
+                }
+                selected = client.patch(endpoint, json=patch)
+                self.assertEqual(selected.status_code, 200)
+                frozen = self.store.claim_for_turn(
+                    session_id=session_id,
+                    client_turn_id="first-turn",
+                    expected_revision=selected.json()["revision"],
+                )
+                second_ref = {
+                    **first_ref,
+                    "ref_id": "second-quote",
+                    "anchor": {
+                        **first_ref["anchor"],
+                        "locator": {
+                            **first_ref["anchor"]["locator"],
+                            "quads": [[0.1, 0.4, 0.4, 0.5]],
+                        },
+                        "selected_text_hash": "sha256:" + "4" * 64,
+                        "preview_text": "quote B",
+                        "snapshot_text": "quote B",
+                    },
+                }
+                appended = client.patch(
+                    endpoint,
+                    json={
+                        **patch,
+                        "expected_revision": selected.json()["revision"],
+                        "refs": [*selected.json()["refs"], second_ref],
+                    },
+                )
+                self.assertEqual(appended.status_code, 200, appended.text)
+                selection = appended.json()
+                self.assertEqual(selection["claimed_ref_ids"], ["first-quote"])
+                self.assertEqual(selection["refs"][0], selected.json()["refs"][0])
+                self.assertEqual(self.store.selection(session_id).refs[0], frozen.refs[0])
+
+                modified = {**selection["refs"][0], "label": "changed claimed quote"}
+                rejected = client.patch(
+                    endpoint,
+                    json={
+                        **patch,
+                        "expected_revision": selection["revision"],
+                        "refs": [modified, selection["refs"][1]],
+                    },
+                )
+                self.assertEqual(rejected.status_code, 409)
+                self.assertEqual(
+                    rejected.json()["detail"]["error"], "assistant_claimed_refs_immutable"
+                )
+                remaining = self.store.consume_claim(
+                    session_id=session_id, client_turn_id="first-turn"
+                )
+                self.assertEqual([ref.ref_id for ref in remaining.refs], ["second-quote"])
+                next_turn = self.store.claim_for_turn(
+                    session_id=session_id,
+                    client_turn_id="second-turn",
+                    expected_revision=remaining.revision,
+                )
+                self.assertEqual([ref.ref_id for ref in next_turn.refs], ["second-quote"])
+                self.assertEqual(next_turn.refs[0].anchor.snapshot_text, "quote B")
 
     def test_session_reference_preview_is_snapshot_scoped_and_does_not_resume_target(self) -> None:
         history_entries = (

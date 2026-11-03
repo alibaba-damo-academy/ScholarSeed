@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import hashlib
-import http.client
 import json
 import os
 import sys
@@ -229,7 +228,7 @@ def main(
     environment: Mapping[str, str] | None = None,
     interactive: bool | None = None,
     prompt: Callable[[str], str] = getpass.getpass,
-    connection_factory: Callable[..., http.client.HTTPConnection] = http.client.HTTPSConnection,
+    connection_factory: Callable[..., Any] = official.ProxyAwareConnection,
 ) -> int:
     args = parse_args(argv)
     source = os.environ if environment is None else environment

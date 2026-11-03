@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import logging
 import os
 import re
 import secrets
-from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass, replace
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import urlparse
 
 from scholarseed_runtime.contract import (
     ModelCapabilities,
+    ModelCatalogEntry,
     ModelConnectionMode,
     ModelCredential,
     ModelCredentialPort,
@@ -36,9 +40,15 @@ from service.chat.service.providers import (
     uses_vendor_capability_registry,
 )
 from service.chat.service.settings import SettingsService
-from service.chat.service.subscriptions import SubscriptionService
+from service.chat.service.subscriptions import (
+    SUBSCRIPTION_STORAGE_ERROR,
+    SUBSCRIPTION_UNAVAILABLE_STATE,
+    SubscriptionService,
+)
 from service.identity.service.account_token import CONV_MESSAGE_ID_HEADER, CONV_TURN_ID_HEADER
 from service.identity.utils import LOCAL_USER_ID, OWNERSHIP_AXIS_DEFAULT, owner_id_for
+from service.platform.activity import Activities, ActivityDomain, ActivityLease, MaintenanceActive
+from service.platform.inference import TOOL_FREE_UNSUPPORTED
 from service.settings.capabilities import (
     BUDGET_FORM,
     CAPABILITY_DECLARED_KEY,
@@ -48,11 +58,12 @@ from service.settings.capabilities import (
     CAPABILITY_REASON_KEY,
     CONTEXT_WINDOW_KEY,
     EFFORT_FORM,
+    GATEWAY_CONNECTION,
     IMAGE_INPUT_KEY,
     IMAGE_MODALITY,
     INPUT_MODALITIES_KEY,
-    MAX_OUTPUT_TOKENS_KEY,
     MODALITY_KINDS,
+    OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY,
     PDF_INPUT_KEY,
     PDF_MODALITY,
     REASONING_EFFORTS_KEY,
@@ -67,6 +78,7 @@ from service.settings.capabilities import (
     vendor_capability_hint,
 )
 from service.settings.catalog import (
+    GATEWAY_APPROVAL_MODEL_KEY,
     apply_model_to_config,
     available_models,
     current_model_key,
@@ -94,6 +106,7 @@ from service.settings.connections import (
     parse_personal_model_key,
     personal_model_key,
     prepare_personal_connection,
+    profile_wire_api,
 )
 from service.settings.credentials import CredentialState
 from service.settings.oauth import OAuthFailure
@@ -116,6 +129,7 @@ PERSONAL_MODEL_SOURCE = "personal"
 # refused loudly, because sending OpenAI-shaped bodies to ``/v1/messages`` surfaces as
 # an opaque upstream 404 that a user cannot attribute.
 BYOK_SUPPORTED_PROVIDERS = frozenset({OPENAI_PROVIDER})
+NATIVE_WEB_SEARCH_CAPABILITY_KEY = "native_web_search"
 PERSONAL_CONNECTION_INVALID_ERROR = "连接验证失败，请检查服务地址、凭证和模型："
 PERSONAL_PROVIDER_UNSUPPORTED_ERROR = (
     "only OpenAI-compatible personal endpoints are supported in this version"
@@ -124,12 +138,18 @@ PERSONAL_PROVIDER_UNSUPPORTED_ERROR = (
 # key 时网关必然拒调用，故选择器里置灰并给出可读原因，执行面也据此拦一层防 UI 被绕过。
 GATEWAY_CREDENTIAL_REQUIRED_REASON = "登录后可使用内置模型"
 GATEWAY_CREDENTIAL_REQUIRED_CODE = "gateway_credential_required"
+SUBSCRIPTION_STORAGE_UNAVAILABLE_REASON = "本地凭据暂不可访问，请恢复存储访问后重试"
 SUBSCRIPTION_CONNECTION_REQUIRED_REASON = "请在模型服务中连接 ChatGPT"
 SUBSCRIPTION_CONNECTION_REQUIRED_CODE = "subscription_connection_required"
 GATEWAY_LOGIN_REQUIRED_ERROR = "使用内置模型需先登录；或在设置中配置自有模型连接后再试。"
 OPENAI_PROVIDER_ALIASES = frozenset(("openai", "openai-compatible", "openai_compatible"))
 HEADER_ENV_PATTERN = re.compile(r"[^A-Z0-9]+")
 MODEL_UNAVAILABLE_ERROR = "session_model_unavailable"
+MODEL_CATALOG_CONFLICT = "model_catalog_definition_conflict"
+MODEL_CATALOG_STALE = "model_catalog_changed"
+MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
+BRIDGED_CATALOG_SCOPE = "product-bridge"
+DIRECT_CATALOG_SCOPE = "direct"
 # Codex 出站重试预算按 endpoint 归属分档（proposal 106 / 落实 proposal 42 立场）。
 # 内置网关路自有重试+降级链，Codex 再重试只会对一个确定性拒绝重复打上游，故设 0；
 # BYOK 直连路无网关兜底，保留一次瞬时重连韧性，确定性拒绝最多两次即终态。
@@ -146,6 +166,25 @@ class SessionModelUnavailableError(ValueError):
     """The durable UI model key can no longer be projected to a runtime connection."""
 
     safe_error = MODEL_UNAVAILABLE_ERROR
+
+
+class PersonalConnectionRejectedError(ValueError):
+    """A personal connection failed its pre-save availability check.
+
+    Carries the structured reason — which model was actually called, over which wire
+    protocol, and what the upstream said — so the HTTP layer can hand the renderer an
+    attributable failure instead of a bare status code. Flattening this into a string is
+    what turned one model's upstream 500 into a generic「检查服务地址与 API Key」422 the
+    user could not act on. ``str()`` keeps the existing human-readable message so logs and
+    any caller still catching a plain ``ValueError`` are unaffected.
+    """
+
+    def __init__(self, *, model: str, wire_api: str, error_class: str, upstream: str) -> None:
+        super().__init__(f"{PERSONAL_CONNECTION_INVALID_ERROR}{upstream}")
+        self.model = model
+        self.wire_api = wire_api
+        self.error_class = error_class
+        self.upstream = upstream
 
 
 class SessionCredentialPort(ModelCredentialPort):
@@ -206,6 +245,8 @@ class SessionModelSpec:
     # 就要带到消费方；让下游再按模型名判一次，等于回到 proposal 78 I1 否决的做法。
     reasoning_options: list[dict[str, Any]] | None = None
     capabilities: ModelCapabilities = ModelCapabilities()
+    catalog_models: tuple[ModelCatalogEntry, ...] = ()
+    approval_model_name: str = ""
 
     def runtime_model(
         self, reasoning_effort: str = "", thinking: ModelThinking | None = None
@@ -213,9 +254,12 @@ class SessionModelSpec:
         """Project product configuration into the vendor-neutral Gateway contract."""
 
         revision = (
-            f"model:{self.key}:effort:{reasoning_effort}" f":thinking:{_thinking_token(thinking)}"
+            f"model:{self.key}:effort:{reasoning_effort}:thinking:{_thinking_token(thinking)}"
         )
         provider = dict(self.codex_provider or {})
+        native_web_search = provider.get(NATIVE_WEB_SEARCH_CAPABILITY_KEY)
+        if not isinstance(native_web_search, bool):
+            native_web_search = self.capabilities.native_web_search
         endpoint = str(provider.get("base_url") or "").strip()
         if not endpoint:
             raise SessionModelUnavailableError("model transport endpoint is unavailable")
@@ -248,11 +292,17 @@ class SessionModelSpec:
                 supports_websockets=bool(provider.get("supports_websockets")),
                 stream_max_retries=_retry_budget(provider.get("stream_max_retries")),
                 request_max_retries=_retry_budget(provider.get("request_max_retries")),
+                proxy_bypass_hosts=_proxy_bypass_hosts(provider.get("proxy_bypass_hosts")),
             ),
             context_window=context_window,
             reasoning_effort=reasoning_effort,
             thinking=thinking,
-            capabilities=self.capabilities,
+            capabilities=replace(
+                self.capabilities,
+                native_web_search=native_web_search,
+            ),
+            catalog_models=self.catalog_models,
+            approval_model_ref=self.approval_model_name,
         )
         return intent, credential_port
 
@@ -269,8 +319,12 @@ class ModelService:
         subscriptions: SubscriptionService | None = None,
         turn_ids: Callable[[str], str] | None = None,
         *,
+        activities: Activities,
         ownership_axis: str = OWNERSHIP_AXIS_DEFAULT,
     ) -> None:
+        self._activities = activities
+        self._directory_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._closed = False
         self._settings = settings
         self._completions = completions or CompletionBridge("")
         # AccountTokenHolder（可空）。未配账号服务 / 未登录时整条计量腿静默不参与，
@@ -300,112 +354,130 @@ class ModelService:
         身份恒为机器级常量，拿它判门禁会让内置模型即使登录也永久置灰）。个人连接一律走
         ``_owner_id`` 投影出的归属身份，因此登录/登出/切号都不影响用户自配连接的可见性。
 
-        ``auto_switch``：落盘默认模型被未登录门禁置灰且目录里还有可用模型时，自动切换为
+        ``auto_switch``：落盘默认模型被凭据门禁置灰且目录里还有可用模型时，自动切换为
         第一个可用模型并落盘。显式选择路径（``select``）关掉它——那次调用刚刚按用户意图
         落盘，不应在同一次调用里被改写；下一次目录读取仍会执行切换。
         """
 
-        if refresh:
-            invalidate_codex_auth_cache()
-        config = self._config()
-        owner_id = self._owner_id(user_id)
-        document = self._profiles.list(owner_id=owner_id)
-        models = self._catalog_models(config, document)
-        self._mark_gateway_credential_gate(models, config, user_id)
-        self._mark_subscription_gate(models, owner_id)
-        subscriptions = self._subscriptions
-        if subscriptions is not None:
-            profiles = {
-                item["profile_id"]
-                for item in models
-                if item.get("billing") == SUBSCRIPTION_BILLING and not item.get("disabled")
-            }
-
-            def snapshot_profiles() -> dict[str, dict]:
-                # 快照在私有 profile 上；list() 的 _public 投影是白名单，会丢弃它。
-                out: dict[str, dict] = {}
-                for profile_id in profiles:
-                    private = self._profiles.profile(profile_id, owner_id=owner_id)
-                    if isinstance(private, dict):
-                        out[profile_id] = private
-                return out
-
-            profiles_by_id = snapshot_profiles()
+        with self._activities.enter(ActivityDomain.MODEL):
             if refresh:
-                # 显式 refresh = 配置时刻：并行重拉上游并落快照；读路径本身不打上游。
-                async def resync(profile_id: str) -> tuple[str, bool]:
-                    try:
-                        await subscriptions.sync_directory(owner_id, profile_id)
-                        return profile_id, True
-                    except OAuthFailure:
-                        return profile_id, False
+                invalidate_codex_auth_cache()
+            config = self._config()
+            owner_id = self._owner_id(user_id)
+            document = self._profiles.list(owner_id=owner_id)
+            models = self._catalog_models(config, document)
+            self._mark_gateway_credential_gate(models, config, user_id)
+            subscriptions = self._subscriptions
+            if subscriptions is not None:
+                connection_ids = {
+                    str(item["profile_id"])
+                    for item in models
+                    if item.get("billing") == SUBSCRIPTION_BILLING
+                }
+                await asyncio.gather(
+                    *(
+                        subscriptions.refresh_expiring(owner_id, profile_id, wait=refresh)
+                        for profile_id in connection_ids
+                    )
+                )
+            self._mark_subscription_gate(models, owner_id)
+            if subscriptions is not None:
+                profiles = {
+                    item["profile_id"]
+                    for item in models
+                    if item.get("billing") == SUBSCRIPTION_BILLING and not item.get("disabled")
+                }
 
-                outcomes = await asyncio.gather(*(resync(p) for p in profiles))
+                def snapshot_profiles() -> dict[str, dict]:
+                    # 快照在私有 profile 上；list() 的 _public 投影是白名单，会丢弃它。
+                    out: dict[str, dict] = {}
+                    for profile_id in profiles:
+                        private = self._profiles.profile(profile_id, owner_id=owner_id)
+                        if isinstance(private, dict):
+                            out[profile_id] = private
+                    return out
+
                 profiles_by_id = snapshot_profiles()
-                for profile_id, ok in outcomes:
-                    if not ok:
-                        for item in models:
-                            if item.get("profile_id") == profile_id:
-                                item["reasoning_efforts"] = None
-                                item["reasoning_effort_error"] = (
-                                    "暂时无法读取订阅模型的思考深度，请刷新模型目录。"
-                                )
-            for profile_id in profiles:
-                snapshot = (profiles_by_id.get(profile_id) or {}).get(MODEL_DIRECTORY_KEY)
-                if not isinstance(snapshot, dict) or not snapshot.get("models"):
-                    # 尚无快照（刚登录、未配置）：读路径不打上游，后台配置时拉取自愈，
-                    # 本次先用注册表兜底，界面不阻塞。
-                    self._schedule_directory_sync(owner_id, profile_id)
-                    continue
-                offered = {row["id"]: row for row in snapshot.get("models") or []}
-                for item in models:
-                    if item.get("profile_id") == profile_id:
-                        native = offered.get(item["model_id"], {})
-                        item.update(_subscription_directory_capability(native))
-                        if native.get("reasoning_efforts") is not None:
-                            item["reasoning_efforts"] = native.get("reasoning_efforts")
-                        # Keep the declared form alongside the legacy effort list so the
-                        # renderer can distinguish effort, toggle and fixed-on models.
-                        if native.get("reasoning_options") is not None:
-                            item["reasoning_options"] = native.get("reasoning_options")
-                        item["reasoning_effort"] = native.get("reasoning_effort", "")
-                        # 订阅目录没给思考形态时回落到注册表：OAuth 端点就是厂商官方面，
-                        # 其模型档位属 vendor-doc 真值（与受信预置 BYOK 同一口径），否则
-                        # gpt 这类原生支持 reasoning_effort 的订阅模型连滑块都不出现。
-                        if (
-                            native.get("reasoning_efforts") is None
-                            and native.get("reasoning_options") is None
-                            and not item.get(REASONING_OPTIONS_KEY)
-                            and not item.get(REASONING_EFFORTS_KEY)
-                        ):
-                            declared = bundled_registry().lookup(item["model_id"])
-                            if declared.declared and declared.reasoning_options is not None:
-                                item[REASONING_OPTIONS_KEY] = [
-                                    option_payload(option) for option in declared.reasoning_options
-                                ]
-                                item[REASONING_EFFORTS_KEY] = list(declared.effort_values or ())
-        return {
-            "configured": bool(models),
-            "runtime_id": RUNTIME_ID,
-            # 默认键被未登录门禁置灰时这里会切换并落盘为第一个可用模型，所有读
-            # current_model 的消费方（选择器、invocation、harness）拿到同一个生效键。
-            "current_model": (
-                self._auto_switched_default(config, models)
-                if auto_switch
-                else self._selected_key(config, models)
-            ),
-            "available_models": models,
-            # 管理页专用的另一半分区: 关掉显示的模型绝不进 available_models, 否则对话框又能
-            # 选到它们; 但管理页必须仍能看到它们, 才谈得上恢复。
-            "hidden_models": self._personal_items(document, hidden=True),
-            "subscription_groups": subscription_groups(models),
-            "reason": "" if models else "scholarseed_model_catalog_empty",
-        }
+                if refresh:
+                    # 显式 refresh = 配置时刻：并行重拉上游并落快照；读路径本身不打上游。
+                    async def resync(profile_id: str) -> tuple[str, bool]:
+                        try:
+                            await subscriptions.sync_directory(owner_id, profile_id)
+                            return profile_id, True
+                        except OAuthFailure:
+                            return profile_id, False
+
+                    outcomes = await asyncio.gather(*(resync(p) for p in profiles))
+                    profiles_by_id = snapshot_profiles()
+                    for profile_id, ok in outcomes:
+                        if not ok:
+                            for item in models:
+                                if item.get("profile_id") == profile_id:
+                                    item["reasoning_efforts"] = None
+                                    item["reasoning_effort_error"] = (
+                                        "暂时无法读取订阅模型的思考深度，请刷新模型目录。"
+                                    )
+                for profile_id in profiles:
+                    snapshot = (profiles_by_id.get(profile_id) or {}).get(MODEL_DIRECTORY_KEY)
+                    if not isinstance(snapshot, dict) or not snapshot.get("models"):
+                        # 尚无快照（刚登录、未配置）：读路径不打上游，后台配置时拉取自愈，
+                        # 本次先用注册表兜底，界面不阻塞。
+                        self._schedule_directory_sync(owner_id, profile_id)
+                        continue
+                    offered = {row["id"]: row for row in snapshot.get("models") or []}
+                    for item in models:
+                        if item.get("profile_id") == profile_id:
+                            native = offered.get(item["model_id"], {})
+                            item.update(_subscription_directory_capability(native))
+                            if native.get("reasoning_efforts") is not None:
+                                item["reasoning_efforts"] = native.get("reasoning_efforts")
+                            # Keep the declared form alongside the legacy effort list so the
+                            # renderer can distinguish effort, toggle and fixed-on models.
+                            if native.get("reasoning_options") is not None:
+                                item["reasoning_options"] = native.get("reasoning_options")
+                            item["reasoning_effort"] = native.get("reasoning_effort", "")
+                            # 订阅目录没给思考形态时回落到注册表：OAuth 端点就是厂商官方面，
+                            # 其模型档位属 vendor-doc 真值（与受信预置 BYOK 同一口径），否则
+                            # gpt 这类原生支持 reasoning_effort 的订阅模型连滑块都不出现。
+                            if (
+                                native.get("reasoning_efforts") is None
+                                and native.get("reasoning_options") is None
+                                and not item.get(REASONING_OPTIONS_KEY)
+                                and not item.get(REASONING_EFFORTS_KEY)
+                            ):
+                                declared = bundled_registry().lookup(item["model_id"])
+                                if declared.declared and declared.reasoning_options is not None:
+                                    item[REASONING_OPTIONS_KEY] = [
+                                        option_payload(option)
+                                        for option in declared.reasoning_options
+                                    ]
+                                    item[REASONING_EFFORTS_KEY] = list(declared.effort_values or ())
+            return {
+                "configured": bool(models),
+                "runtime_id": RUNTIME_ID,
+                "service_instance_id": self._activities.instance_id,
+                # 默认键被未登录门禁置灰时这里会切换并落盘为第一个可用模型，所有读
+                # current_model 的消费方（选择器、invocation、harness）拿到同一个生效键。
+                "current_model": (
+                    self._auto_switched_default(config, models)
+                    if auto_switch
+                    else self._selected_key(config, models)
+                ),
+                "available_models": models,
+                # 管理页专用的另一半分区: 关掉显示的模型绝不进 available_models, 否则对话框又能
+                # 选到它们; 但管理页必须仍能看到它们, 才谈得上恢复。
+                "hidden_models": self._personal_items(document, hidden=True),
+                "subscription_groups": subscription_groups(models),
+                "reason": "" if models else "scholarseed_model_catalog_empty",
+            }
 
     def _schedule_directory_sync(self, owner_id: str, profile_id: str) -> None:
         """读路径发现缺快照时后台补拉（配置时加载），不阻塞本次读。"""
 
+        scope = (owner_id, profile_id)
         subscriptions = self._subscriptions
+        if self._closed or scope in self._directory_tasks:
+            return
         if subscriptions is None or subscriptions.sync_on_cooldown(owner_id, profile_id):
             return  # 上游最近在失败，冷却期内不重复锤
 
@@ -420,9 +492,15 @@ class ModelService:
                 )
 
         try:
-            asyncio.get_running_loop().create_task(run())
-        except RuntimeError:
-            pass
+            task = self._activities.spawn(ActivityDomain.MODEL, run, root=True)
+        except (MaintenanceActive, RuntimeError):
+            return
+        self._directory_tasks[scope] = task
+        task.add_done_callback(lambda _done: self._directory_tasks.pop(scope, None))
+
+    async def close(self) -> None:
+        self._closed = True
+        await asyncio.gather(*tuple(self._directory_tasks.values()), return_exceptions=True)
 
     async def validate_effort(self, model_id: str, effort: str, *, user_id: str = "") -> None:
         if not effort:
@@ -467,8 +545,17 @@ class ModelService:
             )
             if state != CredentialState.CONNECTED.value:
                 model["disabled"] = True
-                model["disabled_reason"] = SUBSCRIPTION_CONNECTION_REQUIRED_REASON
-                model["disabled_reason_code"] = SUBSCRIPTION_CONNECTION_REQUIRED_CODE
+                unavailable = state == SUBSCRIPTION_UNAVAILABLE_STATE
+                model["disabled_reason"] = (
+                    SUBSCRIPTION_STORAGE_UNAVAILABLE_REASON
+                    if unavailable
+                    else SUBSCRIPTION_CONNECTION_REQUIRED_REASON
+                )
+                model["disabled_reason_code"] = (
+                    SUBSCRIPTION_STORAGE_ERROR
+                    if unavailable
+                    else SUBSCRIPTION_CONNECTION_REQUIRED_CODE
+                )
 
     @classmethod
     def _mark_gateway_credential_gate(
@@ -494,36 +581,39 @@ class ModelService:
         return next((str(row.get("key") or "") for row in models if not row.get("disabled")), "")
 
     @classmethod
-    def _gateway_blocked(cls, row: Mapping[str, Any] | None) -> bool:
-        """该行是否因未登录网关门禁而不可执行（只认这一个原因码）。
+    def _credential_blocked(cls, row: Mapping[str, Any] | None) -> bool:
+        """Whether the selected model's account or subscription credential is unusable."""
 
-        订阅连接断开等其他置灰原因不参与自动切换：那是用户要显式处理的连接状态，
-        静默换模型会掩盖「去连接 ChatGPT」的引导。
-        """
-
-        return row is not None and str(row.get("disabled_reason_code") or "") == (
-            GATEWAY_CREDENTIAL_REQUIRED_CODE
-        )
+        return row is not None and str(row.get("disabled_reason_code") or "") in {
+            GATEWAY_CREDENTIAL_REQUIRED_CODE,
+            SUBSCRIPTION_CONNECTION_REQUIRED_CODE,
+        }
 
     def _auto_switched_default(self, config: dict[str, Any], models: list[dict[str, Any]]) -> str:
-        """落盘默认模型被未登录门禁置灰时，自动切换为第一个可用模型并落盘。
+        """落盘默认模型被凭据门禁置灰时，自动切换为第一个可用模型并落盘。
 
         幂等：切换后 ``runtime_model()`` 即指向可用键，后续读路径不再触发写入。
-        只处理网关凭据门禁；目录整体不可用（无任何可选行）时保留原键，
+        目录整体不可用（无任何可选行）时保留原键，
         让执行面照旧给出「请先登录或配置自有模型」的可读错误。
         """
 
         selected = self._selected_key(config, models)
         row = next((item for item in models if str(item.get("key") or "") == selected), None)
-        if not self._gateway_blocked(row):
+        if (
+            row is None
+            or not self._credential_blocked(row)
+            or row.get("billing") == SUBSCRIPTION_BILLING
+        ):
             return selected
-        fallback = self._first_selectable_key(models)
+        fallback = self._first_selectable_key(
+            [item for item in models if item.get("billing") != SUBSCRIPTION_BILLING]
+        )
         if not fallback or fallback == selected:
             return selected
         self._settings.set_runtime_model(fallback)
         LOGGER.info(
             "model_default_auto_switched reason=%s from=%s to=%s",
-            GATEWAY_CREDENTIAL_REQUIRED_CODE,
+            str(row.get("disabled_reason_code") or ""),
             selected,
             fallback,
         )
@@ -557,6 +647,40 @@ class ModelService:
                     profile["oauth"] = self._subscriptions.status(owner_id, profile["id"])
         return document
 
+    @asynccontextmanager
+    async def inference(
+        self, model_key: str, *, user_id: str, invocation_id: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        connection = self.inference_connection(
+            model_key, user_id=user_id, invocation_id=invocation_id
+        )
+        if connection["billing"] != SUBSCRIPTION_BILLING:
+            yield connection
+            return
+        profile_id, model_id = parse_personal_model_key(connection["key"])
+        if self._subscriptions is None or not profile_id or not model_id or not invocation_id:
+            raise SessionModelUnavailableError(TOOL_FREE_UNSUPPORTED)
+        registration = self._subscriptions.register(
+            self._owner_id(user_id),
+            profile_id,
+            model_id,
+            invocation_id,
+            {},
+            turn_id_provider=lambda _session_id: invocation_id,
+        )
+        try:
+            yield {
+                **connection,
+                "endpoint": registration.base_url + RESPONSES_SUFFIX,
+                "headers": {},
+                "wire_api": ModelWireProtocol.RESPONSES.value,
+                "model": model_id,
+                "provider": OPENAI_PROVIDER,
+                "trust_env": False,
+            }
+        finally:
+            await self._completions.release_registration(registration)
+
     def inference_connection(
         self, model_key: str, *, user_id: str, invocation_id: str = ""
     ) -> dict[str, Any]:
@@ -566,24 +690,40 @@ class ModelService:
         """
         config = self._config()
         document = self._profiles.list(owner_id=self._owner_id(user_id))
+        if not model_key.strip():
+            model_key = self._available_key("", config, document, user_id=user_id)
         rows = self._catalog_models(config, document)
         self._mark_gateway_credential_gate(rows, config, user_id)
+        self._mark_subscription_gate(rows, self._owner_id(user_id))
         row = next((item for item in rows if item["key"] == model_key), None)
         if row is None:
             raise SessionModelUnavailableError("请先在设置 → 模型服务配置并选择模型。")
+        if row.get("disabled_reason_code") == SUBSCRIPTION_STORAGE_ERROR:
+            raise SessionModelUnavailableError(SUBSCRIPTION_STORAGE_UNAVAILABLE_REASON)
         # 一次性推理（图表解释 / Office 文案 / PDF）与目录投影同一条自动切换语义：
-        # 请求键被未登录门禁置灰且目录里还有可用模型时，回落到第一个可用模型。
-        if self._gateway_blocked(row):
-            fallback = next((item for item in rows if not item.get("disabled")), None)
+        # 请求键被凭据门禁置灰且目录里还有可用模型时，回落到第一个可用模型。
+        if self._credential_blocked(row):
+            if row.get("billing") == SUBSCRIPTION_BILLING:
+                raise SessionModelUnavailableError(SUBSCRIPTION_CONNECTION_REQUIRED_REASON)
+            fallback = next(
+                (
+                    item
+                    for item in rows
+                    if not item.get("disabled") and item.get("billing") != SUBSCRIPTION_BILLING
+                ),
+                None,
+            )
             if fallback is not None:
                 LOGGER.info(
                     "model_invocation_auto_switched reason=%s from=%s to=%s",
-                    GATEWAY_CREDENTIAL_REQUIRED_CODE,
+                    str(row.get("disabled_reason_code") or ""),
                     model_key,
                     fallback["key"],
                 )
                 row = fallback
                 model_key = str(fallback["key"])
+            elif row.get("billing") == SUBSCRIPTION_BILLING:
+                raise SessionModelUnavailableError(SUBSCRIPTION_CONNECTION_REQUIRED_REASON)
         if row.get("billing") == SUBSCRIPTION_BILLING:
             profile = self._profiles.profile(
                 str(row.get("profile_id") or ""), owner_id=self._owner_id(user_id)
@@ -604,9 +744,11 @@ class ModelService:
             return {
                 "key": model_key,
                 "billing": SUBSCRIPTION_BILLING,
+                OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY: False,
                 "image_input": row.get("image_input") is True,
                 "pdf_input": row.get("pdf_input") is True,
                 "context_window": row.get("context_window"),
+                REASONING_OPTIONS_KEY: row.get(REASONING_OPTIONS_KEY),
             }
         personal = row.get("source") == PERSONAL_MODEL_SOURCE
         effective = (
@@ -724,18 +866,37 @@ class ModelService:
     async def _validate_personal_connection(candidate: Mapping[str, Any]) -> None:
         """Check the frozen candidate without writing state or blocking Serve's loop."""
         _require_supported_personal_provider(candidate.get("provider"))
-        validate = (
-            probe_personal_connection if candidate[SELECTED_MODELS_KEY] else list_upstream_models
-        )
+        selected = bool(candidate[SELECTED_MODELS_KEY])
+        validate = probe_personal_connection if selected else list_upstream_models
         result = await asyncio.to_thread(validate, candidate)
-        if not result["ok"]:
-            raise ValueError(f"{PERSONAL_CONNECTION_INVALID_ERROR}{result['message']}")
+        if result["ok"]:
+            return
+        # Only the selected-model path names a model, because only it really called one.
+        # The directory-only path (no selection) failed before any model was exercised, so
+        # there is nothing to attribute and the renderer classifies by ``error_class``.
+        model = str(candidate.get("model_name") or "") if selected else ""
+        error_class = str(result.get("error_class") or "")
+        wire_api = profile_wire_api(candidate)
+        # The upstream reason never reached the logs before, so this 422 was undiagnosable
+        # server-side too. Record the attributable parts only — never the credential.
+        LOGGER.warning(
+            "personal_connection_validation_failed model=%s wire_api=%s error_class=%s",
+            model or "-",
+            wire_api,
+            error_class or "-",
+        )
+        raise PersonalConnectionRejectedError(
+            model=model,
+            wire_api=wire_api,
+            error_class=error_class,
+            upstream=str(result.get("message") or ""),
+        )
 
     async def delete_profile(self, profile_id: str, *, user_id: str = "") -> dict[str, Any]:
         owner_id = self._owner_id(user_id)
         profile = self._profiles.profile(profile_id, owner_id=owner_id)
         if profile is not None and is_oauth_connection(profile) and self._subscriptions is not None:
-            self._subscriptions.disconnect(owner_id, profile_id)
+            await self._subscriptions.disconnect(owner_id, profile_id)
         self._profiles.delete(profile_id, owner_id=owner_id)
         return await self._selection(user_id=user_id)
 
@@ -793,6 +954,7 @@ class ModelService:
     ) -> str:
         models = self._catalog_models(config, document)
         self._mark_gateway_credential_gate(models, config, user_id)
+        self._mark_subscription_gate(models, self._owner_id(user_id))
         selected = model_key.strip() or self._selected_key(config, models)
         available = {str(row.get("key") or "") for row in models}
         if not selected:
@@ -801,20 +963,28 @@ class ModelService:
             raise SessionModelUnavailableError(
                 f"selected ScholarSeed model is unavailable: {selected}; select a configured model connection"
             )
-        # 会话/执行链路拿着已被未登录门禁置灰的键进来时（登出前开的会话、过期缓存），
+        # 会话/执行链路拿着已被凭据门禁置灰的键进来时（登出前开的会话、过期缓存），
         # 回落到第一个可用模型而不是把必然失败的网关调用放行；目录全灰时保持原键，
         # 让下游照旧给出可读错误。
         row = next(item for item in models if str(item.get("key") or "") == selected)
-        if self._gateway_blocked(row):
-            fallback = self._first_selectable_key(models)
+        if row and row.get("disabled_reason_code") == SUBSCRIPTION_STORAGE_ERROR:
+            raise SessionModelUnavailableError(SUBSCRIPTION_STORAGE_UNAVAILABLE_REASON)
+        if self._credential_blocked(row):
+            if row.get("billing") == SUBSCRIPTION_BILLING:
+                raise SessionModelUnavailableError(SUBSCRIPTION_CONNECTION_REQUIRED_REASON)
+            fallback = self._first_selectable_key(
+                [item for item in models if item.get("billing") != SUBSCRIPTION_BILLING]
+            )
             if fallback and fallback != selected:
                 LOGGER.info(
                     "model_resolution_auto_switched reason=%s from=%s to=%s",
-                    GATEWAY_CREDENTIAL_REQUIRED_CODE,
+                    str(row.get("disabled_reason_code") or ""),
                     selected,
                     fallback,
                 )
                 return fallback
+            if row.get("billing") == SUBSCRIPTION_BILLING:
+                raise SessionModelUnavailableError(SUBSCRIPTION_CONNECTION_REQUIRED_REASON)
         return selected
 
     def session_spec(
@@ -827,6 +997,7 @@ class ModelService:
         thinking: ModelThinking | None = None,
         turn_id_provider: Callable[[str], str] | None = None,
         source_text: str | None = None,
+        catalog_activity: ActivityLease | None = None,
     ) -> SessionModelSpec:
         """Project the selected model onto one session's private connection.
 
@@ -851,8 +1022,10 @@ class ModelService:
         selected_row = next(
             row for row in self._catalog_models(config, document) if row["key"] == selected
         )
+        catalog_models = self._catalog_entries(config, document, selected_row, user_id=user_id)
+        approval_model_name = str(selected_row.get(GATEWAY_APPROVAL_MODEL_KEY) or "")
         declared_options = selected_row.get(REASONING_OPTIONS_KEY)
-        reasoning_options = list(declared_options or ()) or None
+        reasoning_options: list[dict[str, Any]] | None = list(declared_options or ()) or None
         capabilities = _runtime_capabilities(selected_row)
         model_run = ModelRun(
             provider_id=str(
@@ -880,6 +1053,18 @@ class ModelService:
                     session_id,
                     {},
                     reasoning_effort=reasoning_effort,
+                    catalog_identity=json.dumps(
+                        [asdict(entry) for entry in catalog_models], sort_keys=True
+                    ),
+                    catalog_activity=catalog_activity,
+                    catalog_resolver=self._catalog_resolver(
+                        config,
+                        document,
+                        selected_row,
+                        user_id=user_id,
+                        registration_owner=owner_id,
+                        registration_connection=personal_profile_id,
+                    ),
                 )
                 return SessionModelSpec(
                     key=selected,
@@ -892,7 +1077,10 @@ class ModelService:
                         tool_protocol=ModelToolProtocol.PROVIDER_NATIVE,
                         input_modalities=capabilities.input_modalities,
                         reasoning_efforts=capabilities.reasoning_efforts,
+                        native_agent_messages=False,
                     ),
+                    catalog_models=catalog_models,
+                    approval_model_name=approval_model_name,
                     codex_provider={
                         "base_url": registration.base_url,
                         "wire_api": ModelWireProtocol.RESPONSES.value,
@@ -900,6 +1088,7 @@ class ModelService:
                         # 网关自有重试+降级，故与内置网关路同档：Codex 侧不再重试。
                         "stream_max_retries": GATEWAY_STREAM_MAX_RETRIES,
                         "request_max_retries": GATEWAY_REQUEST_MAX_RETRIES,
+                        "proxy_bypass_hosts": _proxy_bypass_hosts(registration.proxy_bypass_host),
                     },
                 )
             # ``apply_profile`` 是唯一让个人连接完全决定路由的入口: 它清掉内置配置里
@@ -920,6 +1109,20 @@ class ModelService:
                 thinking=thinking,
                 turn_id_provider=resolve_turn_id,
                 source_text=source_text,
+                renewal_source=lambda: (
+                    owner_id,
+                    selected,
+                    self._config(),
+                    self._profiles.profile(personal_profile_id, owner_id=owner_id),
+                ),
+                catalog_resolver=self._catalog_resolver(
+                    config,
+                    document,
+                    selected_row,
+                    user_id=user_id,
+                    registration_owner="",
+                    catalog_activity=catalog_activity,
+                ),
             )
             return SessionModelSpec(
                 key=selected,
@@ -929,6 +1132,8 @@ class ModelService:
                 billing=API_BILLING,
                 reasoning_options=reasoning_options,
                 capabilities=capabilities,
+                catalog_models=catalog_models,
+                approval_model_name=approval_model_name,
                 executable=self._settings.runtime_executable(),
                 codex_provider=personal_provider,
                 process_environment=personal_environment,
@@ -949,6 +1154,16 @@ class ModelService:
             thinking=thinking,
             turn_id_provider=resolve_turn_id,
             source_text=source_text,
+            renewal_source=lambda: (owner_id, selected, self._config()),
+            approval_model_ref=approval_model_name,
+            catalog_resolver=self._catalog_resolver(
+                config,
+                document,
+                selected_row,
+                user_id=user_id,
+                registration_owner=user_id,
+                catalog_activity=catalog_activity,
+            ),
         )
         return SessionModelSpec(
             key=selected,
@@ -958,6 +1173,8 @@ class ModelService:
             billing=billing,
             reasoning_options=reasoning_options,
             capabilities=capabilities,
+            catalog_models=catalog_models,
+            approval_model_name=approval_model_name,
             executable=self._settings.runtime_executable(),
             codex_provider=provider,
             process_environment=environment,
@@ -972,6 +1189,9 @@ class ModelService:
         """
 
         return self._completions.rebind_owner(session_id, user_id)
+
+    async def suspend_session(self, session_id: str) -> None:
+        await self._completions.suspend(session_id)
 
     def release_session(self, session_id: str) -> int:
         """Drop the bridge registrations a closed session owned.
@@ -1011,6 +1231,221 @@ class ModelService:
         """
 
         return [*cls._available(config), *cls._personal_items(document)]
+
+    def _catalog_scope(
+        self,
+        config: dict[str, Any],
+        document: Mapping[str, Any],
+        row: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        profile_id = str(row.get("profile_id") or "")
+        if profile_id:
+            profile = next(
+                (item for item in document.get("profiles") or () if item.get("id") == profile_id),
+                None,
+            )
+            if profile is None:
+                raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+            endpoint = _base_url(profile).rstrip("/") + RESPONSES_SUFFIX
+            if (
+                is_oauth_connection(profile)
+                or profile_wire_api(profile) == ModelWireProtocol.CHAT_COMPLETIONS.value
+                or self._completions.accepts_source(endpoint)
+            ):
+                return BRIDGED_CATALOG_SCOPE, ""
+            return DIRECT_CATALOG_SCOPE, profile_id
+        choice = resolve_model_choice(str(row["key"]), config)
+        runtime_config = apply_model_to_config(config, choice)
+        endpoint = str(runtime_config.get("call_url") or "")
+        if not endpoint:
+            endpoint = _base_url(runtime_config).rstrip("/") + RESPONSES_SUFFIX
+        if (
+            self._account_tokens is not None
+            or endpoint.endswith(CHAT_COMPLETIONS_SUFFIX)
+            or self._completions.accepts_source(endpoint)
+        ):
+            return BRIDGED_CATALOG_SCOPE, ""
+        return DIRECT_CATALOG_SCOPE, str(row["key"])
+
+    def _catalog_rows(
+        self,
+        config: dict[str, Any],
+        document: Mapping[str, Any],
+        selected_row: Mapping[str, Any],
+        *,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        scope = self._catalog_scope(config, document, selected_row)
+        rows = self._catalog_models(config, document)
+        self._mark_gateway_credential_gate(rows, config, user_id)
+        self._mark_subscription_gate(rows, self._owner_id(user_id))
+        return [
+            row
+            for row in sorted(rows, key=lambda item: str(item["key"]))
+            if not row.get("disabled") and self._catalog_scope(config, document, row) == scope
+        ]
+
+    @staticmethod
+    def _catalog_entry(row: Mapping[str, Any]) -> ModelCatalogEntry:
+        capabilities = _runtime_capabilities(row)
+        if row.get("billing") == SUBSCRIPTION_BILLING:
+            capabilities = replace(
+                capabilities,
+                tool_protocol=ModelToolProtocol.PROVIDER_NATIVE,
+                native_agent_messages=False,
+            )
+        return ModelCatalogEntry(
+            model_ref=wire_model_name(str(row.get("model_id") or row.get("model_name") or "")),
+            capabilities=capabilities,
+            context_window=_optional_int(row.get(CONTEXT_WINDOW_KEY)),
+            approval_model_ref=str(row.get(GATEWAY_APPROVAL_MODEL_KEY) or ""),
+        )
+
+    def _catalog_entries(
+        self,
+        config: dict[str, Any],
+        document: Mapping[str, Any],
+        selected_row: Mapping[str, Any],
+        *,
+        user_id: str,
+    ) -> tuple[ModelCatalogEntry, ...]:
+        entries: dict[str, ModelCatalogEntry] = {}
+        rows = self._catalog_rows(config, document, selected_row, user_id=user_id)
+        for row in rows:
+            model_ref = wire_model_name(str(row.get("model_id") or row.get("model_name") or ""))
+            if not model_ref:
+                continue
+            entry = self._catalog_entry(row)
+            previous = entries.setdefault(model_ref, entry)
+            if previous != entry:
+                raise SessionModelUnavailableError(f"{MODEL_CATALOG_CONFLICT}: {model_ref}")
+        for approval_model in sorted(
+            {entry.approval_model_ref for entry in entries.values()} - {""}
+        ):
+            capability = bundled_registry().lookup(approval_model, GATEWAY_CONNECTION)
+            if not capability.declared:
+                raise SessionModelUnavailableError(
+                    f"auto review model capability is undeclared: {approval_model}"
+                )
+            reviewer = apply_capability(
+                {"model_name": approval_model}, capability, lane=GATEWAY_CONNECTION
+            )
+            entry = ModelCatalogEntry(
+                model_ref=approval_model,
+                capabilities=_runtime_capabilities(reviewer),
+                context_window=_optional_int(reviewer.get(CONTEXT_WINDOW_KEY)),
+                approval_model_ref=approval_model,
+            )
+            previous = entries.setdefault(approval_model, entry)
+            if previous != entry:
+                raise SessionModelUnavailableError(f"{MODEL_CATALOG_CONFLICT}: {approval_model}")
+        return tuple(entries[model_ref] for model_ref in sorted(entries))
+
+    def _catalog_resolver(
+        self,
+        config: dict[str, Any],
+        document: Mapping[str, Any],
+        selected_row: Mapping[str, Any],
+        *,
+        user_id: str,
+        registration_owner: str,
+        registration_connection: str = "",
+        catalog_activity: ActivityLease | None = None,
+    ) -> Callable[[str, str], Awaitable[dict[str, Any]]] | None:
+        frozen_rows = self._catalog_rows(config, document, selected_row, user_id=user_id)
+        native_connections = tuple(
+            sorted(
+                {
+                    str(row["profile_id"])
+                    for row in frozen_rows
+                    if row.get("billing") == SUBSCRIPTION_BILLING
+                }
+            )
+        )
+        if not native_connections:
+            return None
+        native_models = {
+            connection_id: {
+                self._catalog_entry(row).model_ref
+                for row in frozen_rows
+                if row.get("profile_id") == connection_id
+            }
+            for connection_id in native_connections
+        }
+        owner_id = self._owner_id(user_id)
+        selected_key = str(selected_row["key"])
+        required_rows = {
+            str(row["key"]): self._catalog_entry(row)
+            for row in frozen_rows
+            if row.get("billing") == SUBSCRIPTION_BILLING or row["key"] == selected_key
+        }
+
+        def validate() -> None:
+            current_config = self._config()
+            current_document = self._profiles.list(owner_id=owner_id)
+            current_row = next(
+                (
+                    row
+                    for row in self._catalog_models(current_config, current_document)
+                    if row["key"] == selected_key
+                ),
+                None,
+            )
+            if current_row is None:
+                raise SessionModelUnavailableError(MODEL_CATALOG_STALE)
+            current_rows = {
+                str(row["key"]): self._catalog_entry(row)
+                for row in self._catalog_rows(
+                    current_config, current_document, current_row, user_id=user_id
+                )
+            }
+            if any(current_rows.get(key) != entry for key, entry in required_rows.items()):
+                raise SessionModelUnavailableError(MODEL_CATALOG_STALE)
+
+        async def read() -> dict[str, Any]:
+            validate()
+            subscriptions = self._subscriptions
+            if subscriptions is None:
+                raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+            payloads = await asyncio.gather(
+                *(
+                    subscriptions.catalog(owner_id, connection_id)
+                    for connection_id in native_connections
+                )
+            )
+            rows: dict[str, dict[str, Any]] = {}
+            for connection_id, payload in zip(native_connections, payloads, strict=True):
+                source = payload.get("models")
+                if not isinstance(source, list) or not source:
+                    raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+                source_models: set[str] = set()
+                for row in source:
+                    if (
+                        not isinstance(row, dict)
+                        or not isinstance(row.get("slug"), str)
+                        or not row["slug"]
+                    ):
+                        raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+                    source_models.add(row["slug"])
+                    previous = rows.setdefault(row["slug"], copy.deepcopy(row))
+                    if previous != row:
+                        raise SessionModelUnavailableError(
+                            f"{MODEL_CATALOG_CONFLICT}: {row['slug']}"
+                        )
+                if not native_models[connection_id].issubset(source_models):
+                    raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+            validate()
+            return {"models": [rows[model_ref] for model_ref in sorted(rows)]}
+
+        async def resolve(owner: str, connection: str) -> dict[str, Any]:
+            if owner != registration_owner or connection != registration_connection:
+                raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
+            if catalog_activity is None:
+                return await read()
+            with self._activities.continue_from(catalog_activity, ActivityDomain.MODEL):
+                return await read()
+
+        return resolve
 
     @staticmethod
     def _personal_items(
@@ -1232,6 +1667,9 @@ def _codex_provider(
     thinking: ModelThinking | None = None,
     turn_id_provider: Callable[[str], str] | None = None,
     source_text: str | None = None,
+    approval_model_ref: str = "",
+    catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+    renewal_source: Callable[[], object] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     base_url = _base_url(config)
     if not base_url:
@@ -1265,6 +1703,23 @@ def _codex_provider(
         metering_headers = dict(private_headers)
         if session_id:
             metering_headers[CONV_MESSAGE_ID_HEADER] = session_id
+        selected_model = wire_model_name(str(config.get("model_name") or ""))
+        allowed_models = frozenset({selected_model, approval_model_ref} - {""})
+
+        def request_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
+            if str(payload.get("model") or "") not in allowed_models:
+                raise SessionModelUnavailableError(MODEL_UNAVAILABLE_ERROR)
+            return dict(payload)
+
+        def renewal_intent() -> object:
+            return (
+                config,
+                sorted(allowed_models),
+                user_id,
+                account_tokens.revision if account_tokens is not None else None,
+                renewal_source() if renewal_source is not None else None,
+            )
+
         registration = completions.register(
             endpoint=call_url or responses_endpoint,
             responses_endpoint=responses_endpoint,
@@ -1284,15 +1739,23 @@ def _codex_provider(
             reasoning_options=reasoning_options,
             thinking=thinking,
             provider=str(config.get("provider") or ""),
+            approval_model_ref=approval_model_ref,
+            catalog_resolver=catalog_resolver,
+            request_policy=request_policy,
+            renewal_source=renewal_intent,
         )
         return {
             "name": SCHOLARSEED_CODEX_PROVIDER_NAME,
             "base_url": registration.base_url,
+            NATIVE_WEB_SEARCH_CAPABILITY_KEY: False if chat_completions else None,
             "wire_api": "responses",
             "requires_openai_auth": False,
             "supports_websockets": False,
             "stream_max_retries": stream_max_retries,
             "request_max_retries": request_max_retries,
+            # 这条路 Codex 打的是本进程的本机通道，必须绕过宿主系统代理；与上游是
+            # 网关还是 BYOK 无关 —— 判定依据是「经不经 bridge」，不是 endpoint 归属。
+            "proxy_bypass_hosts": _proxy_bypass_hosts(registration.proxy_bypass_host),
         }, {}
     provider: dict[str, Any] = {
         "name": SCHOLARSEED_CODEX_PROVIDER_NAME,
@@ -1301,6 +1764,8 @@ def _codex_provider(
         "supports_websockets": False,
         "stream_max_retries": stream_max_retries,
         "request_max_retries": request_max_retries,
+        # 直连外部上游：保持用户自己的代理语义，不声明任何豁免。
+        "proxy_bypass_hosts": (),
     }
     environment: dict[str, str] = {}
     if api_key:
@@ -1378,9 +1843,20 @@ def _retry_budget(value: Any) -> int | None:
     return parsed if parsed >= 0 else None
 
 
+def _proxy_bypass_hosts(value: Any) -> tuple[str, ...]:
+    """Normalize declared proxy-bypass hosts, dropping empty and duplicate entries."""
+
+    if value is None:
+        return ()
+    declared = value if isinstance(value, (list, tuple)) else (value,)
+    hosts = (str(host).strip() for host in declared)
+    return tuple(dict.fromkeys(host for host in hosts if host))
+
+
 __all__ = [
     "MODEL_UNAVAILABLE_ERROR",
     "ModelService",
+    "PersonalConnectionRejectedError",
     "SessionModelSpec",
     "SessionModelUnavailableError",
 ]

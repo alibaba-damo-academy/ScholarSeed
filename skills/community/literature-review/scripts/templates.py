@@ -19,12 +19,29 @@ import shutil  # noqa: E402
 import sys  # noqa: E402
 
 import slr_paths as _slr_paths  # noqa: E402
-from generation.citation_styles import CITATION_STYLES  # noqa: E402
+from citation_styles import CITATION_STYLES  # noqa: E402
 
 HOME = _slr_paths.HOME
 ASSETS = HOME / "assets"
 RENDERED_TEMPLATE = "neurips"
 FALLBACK_TEMPLATE = RENDERED_TEMPLATE
+
+LATEX_AUTHORING_GUIDANCE = r'''TEMPLATE CAPABILITIES
+The assembled document uses the NeurIPS preprint template for English and
+ctexart with XeLaTeX and Fandol fonts for Chinese. Its mathematical facilities
+come from amsmath, amssymb and bm. Use standard LaTeX mathematics, aligned
+equations, cases, operators and equation references. Blackboard-bold notation
+uses \mathbb with uppercase Latin letters; indicator functions use an explicitly
+defined uppercase blackboard-bold symbol. Bold mathematical symbols use \bm,
+and upright bold Latin symbols use \mathbf. Define notation consistently and
+preserve the meaning of every mathematical statement.
+
+The template provides booktabs, array, tabularx and longtable for tables,
+graphicx for images, caption for captions,
+hyperref for links and natbib for citations. Chapter content supplies prose,
+mathematics and its assigned native tables. The document assembler supplies
+the preamble, package loading, bibliography and figure wrappers. Use the
+supplied citation keys and asset labels within this shared document structure.'''
 
 # English generation has one real code path: the NeurIPS preprint preamble in
 # phase05_merge_full_draft.py. Chinese generation uses ctexart and therefore
@@ -37,6 +54,7 @@ TEMPLATES: dict[str, dict] = {
         "documentclass": "\\documentclass{article}",
         "package": "neurips_2026",
         "package_options": "preprint",
+        "loaded_packages": {"natbib": {"disabled_options": ["nonatbib"]}},
         "files": [
             "assets/templates/neurips/neurips_2026.sty",
         ],

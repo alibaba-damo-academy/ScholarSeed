@@ -19,6 +19,7 @@ from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincip
 from service.chat.runtime.evidence import session_trace_paths
 from service.chat.service.feedback import client_version
 from service.chat.service.recording import RecordingMode, RecordingService
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 
 DIAGNOSTIC_FILENAME = f"{PRODUCT_SLUG}-diagnostic.zip"
 PREVIEW_SECONDS = 5 * 60
@@ -51,8 +52,9 @@ def export_diagnostics(
 class DiagnosticService:
     """Bind explicit export consent to the exact projected evidence watermark."""
 
-    def __init__(self, recording: RecordingService) -> None:
+    def __init__(self, recording: RecordingService, *, activities: Activities) -> None:
         self.recording = recording
+        self.activities = activities
         self._key = secrets.token_bytes(CONFIRMATION_KEY_BYTES)
 
     def _signature(self, values: dict) -> str:
@@ -133,8 +135,17 @@ class DiagnosticService:
 
     async def maintain(self, active_sessions: Callable[[], set[str]]) -> None:
         while True:
+            await self.activities.wait_open()
             try:
-                await asyncio.to_thread(self.expire, active_sessions())
+                with self.activities.enter(ActivityDomain.DIAGNOSTIC, root=True):
+                    await self.activities.finish(
+                        ActivityDomain.DIAGNOSTIC,
+                        lambda: self.activities.to_thread(
+                            ActivityDomain.DIAGNOSTIC, self.expire, active_sessions()
+                        ),
+                    )
+            except MaintenanceActive:
+                continue
             except (OSError, ValueError, sqlite3.Error) as error:
                 LOGGER.warning("Trace expiry maintenance failed: failure=%s", type(error).__name__)
             await asyncio.sleep(MAINTENANCE_SECONDS)

@@ -16,13 +16,24 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
+# Build-only native entry-point generator; never exported into the runtime closure.
+component-build = ["distlib==0.4.0"]
+wheel-build = ["pip", "setuptools==84.0.0", "wheel==0.48.0", "packaging==26.3"]
+# Per-source isolated builders. The suffix selects the runtime source in uv.lock.
+component-build-jieba = ["setuptools==84.0.0"]
+component-build-bibtexparser = ["setuptools==84.2.1"]
+# fastcdc's published CPython 3.12 arm64 wheel requires macOS 14; build for our native target.
+component-build-fastcdc = ["poetry-core==2.5.0", "setuptools==84.0.0", "wheel==0.48.0", "cython==3.2.4"]
 # Desktop runtime closure, including the reviewed bundled-skill requirements.
 # The registry remains the skill policy; the release contract checks this input.
 desktop = [
+    # Preserve the published r3 runtime independently of the wheel builder.
+    "packaging==26.2",
     "pip>=25",
     "jieba==0.42.1",
     "matplotlib==3.10.8",
     "pysbd==0.3.4",
+    "socksio==1.0.0",
     "paper-fulltext-dl",
 ]
 
@@ -43,11 +54,15 @@ dev = [
     "types-PyYAML>=6.0.12",
     "types-openpyxl>=3.1",
     "types-xlrd>=2.0",
-]  # 格式化、静态检查与测试运行器 (npm run fmt / npm run lint / npm run python:typecheck / pytest)
-# pytest 只存在于 dev extra: DMG 的 Python 依赖由 scripts/dependencies.py 用
+]  # 格式化、静态检查与测试运行器 (pnpm ops ci format / ci check lint python / ci check types python / pytest)
+# pytest 只存在于 dev extra: DMG 的 Python 依赖由 scripts/shared/dependencies.py 用
 # `uv export --extra serve --group desktop --no-default-groups` 导出, 不含 dev extra。
 
 # ── uv workspace: 成员各自持有 pyproject / 依赖 / 测试 / 发布边界 ──
+[tool.scholarseed.source-build-targets]
+# Other targets keep upstream wheels; macOS arm64 must also support macOS 13.
+fastcdc = ["darwin-arm64"]
+
 [tool.uv.workspace]
 members = [
     "apps/serve",
@@ -60,9 +75,62 @@ members = [
 scholarseed-runtime = { workspace = true }
 damoatrace = { workspace = true }
 scholarseed-codex = { workspace = true }
+tomlkit = { index = "tomlkit-pypi" }
+aiofile = { index = "tomlkit-pypi" }
+authlib = { index = "tomlkit-pypi" }
+beartype = { index = "tomlkit-pypi" }
+bibtexparser = { index = "tomlkit-pypi" }
+cachetools = { index = "tomlkit-pypi" }
+caio = { index = "tomlkit-pypi" }
+certifi = { index = "tomlkit-pypi" }
+cyclopts = { index = "tomlkit-pypi" }
+dnspython = { index = "tomlkit-pypi" }
+email-validator = { index = "tomlkit-pypi" }
+exceptiongroup = { index = "tomlkit-pypi" }
+fastmcp = { index = "tomlkit-pypi" }
+fastmcp-slim = { index = "tomlkit-pypi" }
+feedparser = { index = "tomlkit-pypi" }
+feedparser-sgmllib = { index = "tomlkit-pypi" }
+griffelib = { index = "tomlkit-pypi" }
+httpcore2 = { index = "tomlkit-pypi" }
+httpx2 = { index = "tomlkit-pypi" }
+httpx2-jsfetch = { index = "tomlkit-pypi" }
+joserfc = { index = "tomlkit-pypi" }
+jsonref = { index = "tomlkit-pypi" }
+jsonschema-path = { index = "tomlkit-pypi" }
+markdownify = { index = "tomlkit-pypi" }
+mcp = { index = "tomlkit-pypi" }
+openapi-pydantic = { index = "tomlkit-pypi" }
+opentelemetry-api = { index = "tomlkit-pypi" }
+pathable = { index = "tomlkit-pypi" }
+pdf-inspector = { index = "tomlkit-pypi" }
+py-key-value-aio = { index = "tomlkit-pypi" }
+pyperclip = { index = "tomlkit-pypi" }
+pyzotero = { index = "tomlkit-pypi" }
+rich-rst = { index = "tomlkit-pypi" }
+tzdata = { index = "tomlkit-pypi" }
+tzlocal = { index = "tomlkit-pypi" }
+uncalled-for = { index = "tomlkit-pypi" }
+unidecode = { index = "tomlkit-pypi" }
+websockets = { index = "tomlkit-pypi" }
+whenever = { index = "tomlkit-pypi" }
+zotero-mcp-server = { index = "tomlkit-pypi" }
 paper-fulltext-dl = { path = "skills/community/precise-literature-search/vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl" }
 
 [tool.uv]
+conflicts = [[
+    { group = "component-build-jieba" },
+    { group = "component-build-bibtexparser" },
+], [
+    { group = "wheel-build" },
+    { group = "component-build-bibtexparser" },
+], [
+    { group = "component-build-fastcdc" },
+    { group = "component-build-bibtexparser" },
+], [
+    { group = "wheel-build" },
+    { group = "desktop" },
+]]
 required-version = ">=0.12.11"
 # The root is a virtual orchestration project, never an installed distribution.
 package = false
@@ -79,6 +147,11 @@ package = false
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple"
 default = true
+
+[[tool.uv.index]]
+name = "tomlkit-pypi"
+url = "https://pypi.org/simple"
+explicit = true
 
 # editable_mode=compat 按包声明, 而不是在命令行上传 —— 静态分析 (pyright pin 了
 # .venv) 与 importlib.metadata 依赖它把源码树直接摊到 .pth 上; 写成命令行 flag 时,

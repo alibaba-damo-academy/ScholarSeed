@@ -33,7 +33,11 @@ from service.chat.schema import (
     WorkflowDefaultRequest,
     WorkspaceRootRequest,
 )
-from service.chat.service.models import GATEWAY_CREDENTIAL_REQUIRED_REASON, ModelService
+from service.chat.service.models import (
+    GATEWAY_CREDENTIAL_REQUIRED_REASON,
+    ModelService,
+    PersonalConnectionRejectedError,
+)
 from service.chat.service.settings import SettingsService
 from service.chat.service.subscriptions import SubscriptionService
 from service.identity.utils import (
@@ -76,6 +80,9 @@ def _log_gateway_credential_gate(request: Request, payload: dict) -> None:
 
 
 PROFILE_INVALID_STATUS = 422
+# Marks a 422 whose body carries the structured availability-check reason instead of a
+# flat string, so the renderer can name the failing model rather than guess from status.
+CONNECTION_VALIDATION_FAILED_CODE = "connection_validation_failed"
 
 
 def _profile_error_status(error: ValueError) -> int:
@@ -86,6 +93,28 @@ def _profile_error_status(error: ValueError) -> int:
         if isinstance(error, UnknownProfileError)
         else PROFILE_INVALID_STATUS
     )
+
+
+def _profile_http_error(error: ValueError) -> HTTPException:
+    """Map a profile failure onto its HTTP response, keeping structured reasons intact.
+
+    A rejected availability check carries which model failed and what the upstream said;
+    flattening it to a string forces the renderer to classify by status code alone, which
+    is how one model's upstream 500 surfaced as「检查服务地址与 API Key」.
+    """
+
+    if isinstance(error, PersonalConnectionRejectedError):
+        return HTTPException(
+            PROFILE_INVALID_STATUS,
+            {
+                "code": CONNECTION_VALIDATION_FAILED_CODE,
+                "model": error.model,
+                "wire_api": error.wire_api,
+                "error_class": error.error_class,
+                "upstream": error.upstream,
+            },
+        )
+    return HTTPException(_profile_error_status(error), str(error))
 
 
 def mount_setting_routes(
@@ -183,7 +212,7 @@ def mount_setting_routes(
                 request.model_dump(exclude_unset=True), user_id=request_user_id(http_request)
             )
         except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
+            raise _profile_http_error(exc) from exc
 
     @app.put("/api/serve/model-profiles/{profile_id}")
     async def update_model_profile(
@@ -196,7 +225,7 @@ def mount_setting_routes(
                 user_id=request_user_id(http_request),
             )
         except ValueError as exc:
-            raise HTTPException(_profile_error_status(exc), str(exc)) from exc
+            raise _profile_http_error(exc) from exc
 
     @app.post("/api/serve/model-profiles/{profile_id}/enabled")
     async def set_model_profile_enabled(
@@ -207,7 +236,7 @@ def mount_setting_routes(
                 profile_id, request.enabled, user_id=request_user_id(http_request)
             )
         except ValueError as exc:
-            raise HTTPException(_profile_error_status(exc), str(exc)) from exc
+            raise _profile_http_error(exc) from exc
 
     @app.post("/api/serve/model-profiles/{profile_id}/models/visibility")
     async def set_model_visibility(
@@ -271,7 +300,7 @@ def mount_setting_routes(
     @app.delete("/api/settings/model-connections/{connection_id}/credentials")
     async def subscription_disconnect(connection_id: str, request: Request) -> dict:
         try:
-            subscription_service().disconnect(request_owner_id(request), connection_id)
+            await subscription_service().disconnect(request_owner_id(request), connection_id)
             return models.profiles(user_id=request_user_id(request))
         except ValueError as error:
             raise HTTPException(_profile_error_status(error), str(error)) from error

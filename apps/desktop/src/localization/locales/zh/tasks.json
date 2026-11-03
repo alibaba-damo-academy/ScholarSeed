@@ -1,18 +1,30 @@
 {
+  "plan": {
+    "timing": {
+      "upperBound": "{{duration}}",
+      "upperBoundExplanation": "未记录此步骤的开始时间。显示从上一条待执行快照或本回合开始到首次完成上报的时间上界，非精确执行用时；已扣除用户等待，不计跨回合空闲。",
+      "notStarted": "未开始",
+      "unrecorded": "未记录用时"
+    }
+  },
   "feedback": {
     "completed": "{{name}}已完成",
     "cancelled": "{{name}}已取消",
-    "incomplete": "{{name}}未全部完成"
+    "incomplete": "{{name}}：部分或全部来源未成功。",
+    "reasonUnavailable": "任务结果未提供失败原因。请在消息中心重试；如仍失败，请保留日志。",
+    "moreFailures_other": "另有 {{count}} 项失败，请在消息中心查看。",
+    "viewTaskCenter": "查看消息中心"
   },
   "center": {
-    "title": "任务中心",
+    "clearCompleted": "一键清除",
+    "title": "消息中心",
+    "noFiles": "无关联文件",
     "description": "可在后台继续执行，切换页面不会中断。",
-    "empty": "暂无后台任务"
+    "empty": "暂无消息"
   },
   "status": {
     "queued": "等待中",
     "running": "进行中",
-    "settling": "收尾中",
     "completed": "已完成",
     "partial": "部分完成",
     "failed": "失败",
@@ -21,7 +33,6 @@
   "progress": {
     "failed": "执行失败",
     "linking": "正在建立关联",
-    "refreshing": "正在刷新资料树",
     "preparing": "准备中",
     "copying": "复制中",
     "scanning_other": "扫描中（已发现 {{count}} 项）",
@@ -48,11 +59,11 @@
       "sourceNotFound": "选中的本地文件或文件夹已不存在。",
       "parentNotWritable": "目标目录不可写，请修复权限或选择其他目录。",
       "targetNotFound": "目标目录不存在。",
-      "nameExists": "该位置已有同名项。",
+      "nameExists": "该位置已有同名项，请改名或选择其他位置后重试。",
       "importFailed": "导入失败，请检查源文件和目录权限。",
       "copyFailed": "复制失败，请检查目录权限。",
-      "rootExists": "同名关联来源已经存在。",
-      "sourceOverlap": "该目录已被父级关联覆盖。",
+      "rootExists": "同名关联来源已经存在，请先检查现有关联或选择其他目录。",
+      "sourceOverlap": "该目录已被父级关联覆盖，请使用现有关联或先解除父级关联。",
       "sourceCoversLinks": "它的子目录已单独关联，可取代子关联后挂载这个父目录。",
       "diskFull": "磁盘空间不足，请清理空间后重试。",
       "storageIoFailed": "本地存储读写失败，请检查磁盘状态后重试。",

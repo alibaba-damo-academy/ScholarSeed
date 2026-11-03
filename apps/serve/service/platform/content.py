@@ -21,6 +21,14 @@ IMPORT_CANCELLED_ERROR = "import_cancelled"
 DISK_FULL_ERROR = "disk_full"
 
 
+class ArtifactSnapshotFailure(str, Enum):
+    BUSY = "artifact_snapshot_busy"
+    ACCESS_DENIED = "artifact_snapshot_access_denied"
+    UNSUPPORTED = "artifact_snapshot_unsupported"
+    DISK_FULL = "artifact_snapshot_disk_full"
+    UNAVAILABLE = "artifact_snapshot_unavailable"
+
+
 #: 导入时的处理方式 (PRD「资料导入」的复制 / 关联双卡片)。
 class ImportMode(str, Enum):
     """COPY 在项目空间内落一份副本; LINK 不搬移原文件。"""
@@ -143,6 +151,7 @@ class ContentSnapshot:
     media_type: str
     size: int
     revision: str
+    writable: bool
 
 
 @dataclass(frozen=True)
@@ -312,6 +321,10 @@ class ProjectRef:
     created_at: float | None = None
     #: 归档时间 (秒)。非空即已归档: 默认列表不显示, 但身份与路径解析不受影响。
     archived_at: float | None = None
+    #: 本次运行内项目不可用的诊断原因；不改变持久化登记。
+    unavailable_reason: str | None = None
+    description: str = ""
+    pinned: bool = False
 
 
 @dataclass(frozen=True)
@@ -459,6 +472,7 @@ class AssetTree:
     #: 两种截断都必须让 UI 看见, 否则用户看到的就是文件凭空消失; 而用同一个总数
     #: 表达它们, 就不会出现「两个字段各说一半」的第二处真相。
     child_total: int | None = None
+    updated_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -479,15 +493,19 @@ class AssetPage:
 
 @runtime_checkable
 class ContentPort(Protocol):
-    def project_relative(self, project_id: str, absolute_path: str) -> str:
-        """Resolve an absolute source against the registered project and mounts."""
-        ...
-
     """content 域对外的窄 Port (开发 1 实现, 开发 2/3/4/5/6 消费)。
 
     只放跳域真正需要的能力。域内细节 (监听器调度、事件归并策略、
     授权缓存) 不进本接口 —— 否则上层会开始依赖这些细节, Port 就失去隔离作用。
     """
+
+    def root_relative(self, project_id: str, root: RootKind) -> str:
+        """Return the project-relative root path without creating directories."""
+        ...
+
+    def project_relative(self, project_id: str, absolute: str) -> str:
+        """Resolve an absolute source against the registered project and mounts."""
+        ...
 
     def resolve(self, project_id: str, path: str) -> str:
         """相对路径 → 经越界校验的绝对路径。越界则拒绝。"""
@@ -638,6 +656,13 @@ class ContentPort(Protocol):
         """Copy one stable generation into a caller-owned seekable stream."""
         ...
 
+    def publish_working_bytes(self, scope: ArtifactScope, path: str, content: bytes) -> bool:
+        """Create an exact working file; return True only for identical existing bytes.
+
+        The caller authorizes the scope; its registered owner supplies the source root.
+        """
+        ...
+
     def capture_artifact(
         self, scope: ArtifactScope, path: str, expected_sha256: str = ""
     ) -> VerifiedArtifactContent:
@@ -650,6 +675,10 @@ class ContentPort(Protocol):
 
     def read_artifact(self, content: VerifiedArtifactContent) -> bytes:
         """Read and verify immutable bytes; never fall back to the working file."""
+        ...
+
+    def remove_artifact(self, content: VerifiedArtifactContent) -> None:
+        """Remove an immutable snapshot only after its publication owner excludes other references."""
         ...
 
     def read_range(self, project_id: str, path: str, start: int, end: int) -> bytes:
@@ -752,6 +781,8 @@ class ContentPort(Protocol):
         self,
         project_id: str,
         observer: ResourceScanObserver | None = None,
+        *,
+        paths: tuple[str, ...] | None = None,
     ) -> tuple[ResourceEntry, ...]:
         """Scan every resource once and report each newly discovered logical file."""
         ...
@@ -761,6 +792,10 @@ class ContentPort(Protocol):
     ) -> tuple[ResourceEntry, ...]:
         """Inspect the requested resource files without recursively scanning the roots."""
         ...
+
+    def root_path(self, project_id: str, root: RootKind) -> str:
+        """Return the logical root path without creating its directory."""
+        raise NotImplementedError
 
     def root(self, project_id: str, root: RootKind) -> FileAssetRef:
         """按种类取根节点本身 (相对项目根的位置)。
@@ -794,6 +829,18 @@ class ContentPort(Protocol):
 
     def move(self, project_id: str, path: str, target_dir: str) -> FileAssetRef:
         """移动。"""
+        ...
+
+    def relocate_file(
+        self,
+        project_id: str,
+        path: str,
+        target: str,
+        expected_revision: str,
+        *,
+        notify: bool = True,
+    ) -> FileAssetRef:
+        """Move the same file to an exact unoccupied path after checking its revision."""
         ...
 
     def copy(self, project_id: str, path: str, target_dir: str | None) -> FileAssetRef:
@@ -834,7 +881,14 @@ class ContentPort(Protocol):
         """把一个已存在的本地目录登记成 LEGACY 项目 (「添加已有文件夹」)。"""
         ...
 
-    def rename_project(self, project_id: str, name: str) -> ProjectRef:
+    def rename_project(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        description: str | None = None,
+        pinned: bool | None = None,
+    ) -> ProjectRef:
         """改显示名。目录、已开会话、关联登记一律不动。"""
         ...
 
@@ -874,17 +928,11 @@ class ContentPort(Protocol):
         """全量预检后在一个事务内激活多处外部根。"""
         ...
 
-    def authorize_import_roots(
-        self, project_id: str, sources: tuple[str, ...], target_dir: str
-    ) -> tuple[ExternalRootRef, ...]:
-        """关联导入并为本地条目、挂载点和同批来源统一避让名称。"""
-        ...
-
     def assert_import_roots_linkable(self, project_id: str, sources: tuple[str, ...]) -> None:
         """关联导入创建任务前的只读包含预检; 与已生效关联根重叠则拒 `source_overlap`。"""
         ...
 
-    def revoke_root(self, root_id: str) -> None:
+    def revoke_root(self, root_id: str, project_id: str | None = None) -> ExternalRootRef:
         """撤销授权。软撤销留痕: 能写项目外文件的能力不能无痕消失。"""
         ...
 
@@ -906,11 +954,11 @@ class ContentPort(Protocol):
         """签发一次性删除令牌。渲染层只持有令牌, 不持有绝对路径。"""
         ...
 
-    def redeem_trash_token(self, token: str) -> str:
+    def redeem_trash_token(self, trash_token: str) -> str:
         """兑换令牌 → 待删绝对路径。仅限 Electron 主进程调用, 用后即焚。"""
         ...
 
-    def complete_trash_token(self, token: str) -> str:
+    def complete_trash_token(self, trash_token: str) -> str:
         """Publish a successful OS trash result and return its logical path."""
         ...
 

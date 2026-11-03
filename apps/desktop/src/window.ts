@@ -6,6 +6,7 @@ export const WORKSPACE_WINDOW_MINIMUM = { width: 1040, height: 660 } as const
 export const WINDOW_CLOSE_PLATFORM = 'win32'
 export const WINDOW_CLOSE_REQUEST_CHANNEL = 'scholarseed:window-close-request'
 export const WINDOW_CLOSE_REPLY_CHANNEL = 'scholarseed:window-close-reply'
+export const WINDOW_FULLSCREEN_CHANNEL = 'scholarseed:window-fullscreen'
 export const WINDOW_CLOSE_ACTION = { cancel: 'cancel', minimize: 'minimize', quit: 'quit' } as const
 export type WindowCloseAction = typeof WINDOW_CLOSE_ACTION[keyof typeof WINDOW_CLOSE_ACTION]
 export type WindowCloseRequest = number | null

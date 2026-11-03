@@ -1,9 +1,12 @@
 # Dedicated Literature Search Agent — Full
 
+For user-facing summaries, follow [User-facing language](../../SKILL.md#user-facing-language).
+Numeric tiers remain internal selection fields, not display labels.
+
 Use the supplied `PLS_PYTHON` and locally generated `PLS_STAGE_TOKEN` for script
-commands. Run the Web route in "Web path" below (the sibling `web-search` skill
-when `WEB_SEARCH_INVOKE` is supplied, else native Web) and save the actual queries,
-durations, statuses and raw results through the recording steps, including failures.
+commands. Use [Web search capability](DECISION_INPUTS.md#web-search-capability)
+and save the actual queries, durations, statuses and raw results through the
+recording steps, including failures.
 This is retrospective accounting: scripts cannot enforce Web call counts.
 Reuse saved outcomes on resume; replaying them or repairing classification does
 not constitute a new search. Research-stage state, tokens and budgets still apply.
@@ -73,32 +76,20 @@ canonical title phrase is usually stronger than a natural-language sentence.
 Before PaperHub fan-out, the search runner uses the first planned PaperHub keyword query as the network-capability probe. It runs that real query by itself. Do not launch the remaining PaperHub queries—keyword queries, concept/title probes, title reconciliation, or citation calls—until this gate succeeds.
 
 - If the runner returns `status: "execution_blocked"` for `EPERM`, `EACCES`, `Operation not permitted`, or `Permission denied`, it has already logged the blocked gate without counting it as a completed scholarly query.
-- Start the complete runner command with the required network capability on its first invocation; in Codex use `sandbox_permissions=require_escalated`. If it remains blocked, return an environment blocker without changing the endpoint, query, or retrieval mode.
-- If the authorized retry succeeds, merge and log it normally, then run the remaining PaperHub work with the same network capability. The successful retry counts once; the blocked probe counts zero completed queries.
-- If the authorized retry reaches PaperHub but still fails at the network or HTTP transport layer, log the retry once with `--status transport_error`, skip the remaining planned PaperHub queries for that iteration, and continue with the Search Agent web supplementary path. Do not generate fifteen equivalent failures.
+- Public-network capability is provided by the product runtime; never request sandbox escalation or any elevated permission for retrieval or download commands. If it remains blocked, return an environment blocker without changing the endpoint, query, or retrieval mode.
+- If a retry with the same capability succeeds, merge and log it normally, then run the remaining PaperHub work with the same network capability. The successful retry counts once; the blocked probe counts zero completed queries.
+- If the retry reaches PaperHub but still fails at the network or HTTP transport layer, log the retry once with `--status transport_error`, skip the remaining planned PaperHub queries for that iteration, and continue with the Search Agent web supplementary path. Do not generate fifteen equivalent failures.
 - If PaperHub returns `authentication_error`, log it once with `tools/state.py log-query --status authentication_error`, skip the remaining PaperHub queries, and report that `SCHOLARSEED_API_KEY` is missing or invalid without printing its value. Do not retry 401/403 responses.
-- If the required capability is denied or unavailable and the retry cannot be attempted, keep the source `execution_blocked` and report an execution-environment blocker. Do not relabel it as `transport_error` or as a PaperHub scholarly-source failure, and do not silently fall back.
+- If the required capability is denied or unavailable and no retry is possible, keep the source `execution_blocked` and report an execution-environment blocker. Do not relabel it as `transport_error` or as a PaperHub scholarly-source failure, and do not silently fall back.
 
-### Web path: official API → native → browser
+### Web path
 
-For 3-5 representative queries per breadth iteration, run this route. When
-`WEB_SEARCH_INVOKE` is non-empty, first run
-`"$PLS_PYTHON" "$WEB_SEARCH_INVOKE" --provider official-api --query "<q>" --limit 20`
-from `WORK`, then read `WORK/web-search-result.json` (overwritten each run; ignore
-its exit code, which reports artifact publication; map `duration_ms` to elapsed
-seconds; each candidate carries `title`,`url`,`description`). On `completed`, use
-its candidates. On `empty` or `unavailable` (error `credential_unavailable`, no
-`SCHOLARSEED_API_KEY`) — a fall-through signal, never a recorded status — or when
-`WEB_SEARCH_INVOKE` is empty, use the executor's own web search tool for the same
-query; if that yields nothing usable and `WEB_SEARCH_INVOKE` is non-empty, run
-`--provider visible-browser` once and read the same artifact. Do not ask the parent
-Skill host to perform these queries or relay raw web results through agent
-messages. If delegation is unavailable and the host is executing this entire
-file-backed protocol directly, that current executor runs the same route itself.
-Record the actual status/timing of the leg that produced each observation: a
-`failed` authorization rejection (401/403) is `authentication_error`, a
-transport/response failure is `transport_error`, and a genuine inability to launch
-a browser is `execution_blocked`.
+For 3-5 representative queries per breadth iteration, use the shared
+[Web search capability](DECISION_INPUTS.md#web-search-capability), including its
+terminal empty semantics and distinct raw artifact per attempt. Do not ask the
+parent Skill host to perform these queries or relay raw results through agent
+messages. If delegation is unavailable, the host executing this entire file-backed
+protocol resolves and uses the capability itself.
 
 For web results from any leg:
 
@@ -207,7 +198,7 @@ Initialize state, pool, query log, and subtopic coverage. Write one `phase: "sea
 
 ### Path C — public web discovery
 
-- Run 3-5 representative natural-language queries through the "Web path" route above (official-api → native → visible-browser).
+- Run 3-5 representative natural-language queries through the shared Web capability above.
 - The current executor runs that route itself; it does not delegate this path back to the parent Skill host.
 - Reconcile scholarly web hits through PaperHub and retain limited scholarly-only records when PaperHub has no match.
 
@@ -304,11 +295,11 @@ scholarseed-skill-python "$SKILL_DIR/modules/search/finalize.py" \
   --input "$REQUEST_JSON" \
   --work-dir "$WORK" \
   --output "$ROUND_DIR/metadata.json" \
-  --report-output "$ROUND_DIR/report.md" \
+  --report-output "$ROUND_DIR/search_report.md" \
   --run-dir "$RUN_DIR"
 ```
 
-Validate `metadata.json`. Ensure `report.md` identifies itself as a candidate assessment and reports PaperHub and Search Agent web status; query and candidate counts; the sanitized PaperHub endpoint when available; errors; fallback use; tiers; and coverage gaps. Selection is not full-text verification.
+Validate `metadata.json`. Ensure `search_report.md` identifies itself as a candidate assessment and reports PaperHub and Search Agent web status; query and candidate counts; the sanitized PaperHub endpoint when available; errors; fallback use; tiers; and coverage gaps. Selection is not full-text verification.
 
 ## Required completion response
 

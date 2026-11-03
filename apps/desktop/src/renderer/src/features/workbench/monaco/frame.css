@@ -1,21 +1,4 @@
-:root {
-  color-scheme: light;
-  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-}
+@import 'tailwindcss' source(none);
 
-:root[data-theme='dark'] {
-  color-scheme: dark;
-}
-
-html,
-body,
-#root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  overflow: hidden;
-}
-
-body {
-  background: transparent;
-}
+@source '../../../../monaco.html';
+@source './frame.ts';

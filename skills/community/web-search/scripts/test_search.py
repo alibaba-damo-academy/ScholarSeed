@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import io
 import json
 import os
-import subprocess
+import ssl
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
+import browser
+import httpx
+import invoke
+import official
 import smoke
 from browser import (
     DEFAULT_LIMIT,
@@ -22,7 +28,10 @@ from browser import (
     ERROR_BROWSER_MISSING,
     ERROR_EXECUTION_DENIED,
     ERROR_INVALID_QUERY,
+    ERROR_PROFILE_BUSY,
+    ERROR_PROFILE_UNAVAILABLE,
     MAXIMUM_LIMIT,
+    RESOURCE_SEARCH_PROFILE_ENV,
     SCHEMA,
     BrowserUnavailableError,
     _wait_for_results,
@@ -32,7 +41,14 @@ from browser import (
     parse_args,
     search,
 )
-from invoke import BRIDGE_COMMAND, OUTPUT_PATH, publish
+from invoke import (
+    OUTPUT_PATH,
+    RECEIPT_MAX_BYTES,
+    RECEIPT_PREFIX,
+    bounded_artifact_path,
+    source_receipt,
+    write_result,
+)
 from official import (
     API_HOST,
     API_PATH,
@@ -45,11 +61,15 @@ from official import PROVIDER as OFFICIAL_PROVIDER
 from official import parse_args as parse_official_args
 from official import search as official_search
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from providers import (
-    BING_FORM_SELECTOR,
+    BING_CONTAINER_SELECTOR,
     BING_FORM_SUBMIT_SCRIPT,
     BING_LANDING_URL,
     BING_QUERY_INPUT_SELECTOR,
+    BING_RESOURCE_WAIT_SELECTOR,
+    BING_SEARCH_BUTTON_SELECTOR,
+    RESOURCE_INTERACTION,
     BingProvider,
     candidate_from_result,
     normalize_url,
@@ -59,44 +79,81 @@ from smoke import main as smoke_main
 
 
 class FakeSearchInput:
-    def __init__(self) -> None:
+    def __init__(self, actions: list[str]) -> None:
+        self.actions = actions
         self.waited = False
         self.value = ""
 
     def wait_for(self, *, state: str, timeout: int) -> None:
+        self.actions.append("input.ready")
         self.waited = state == "visible" and timeout > 0
 
-    def fill(self, value: str) -> None:
+    def fill(self, value: str, *, timeout: int | None = None) -> None:
+        if timeout is not None and timeout <= 0:
+            raise AssertionError("search input timeout must be positive")
+        self.actions.append("input.fill")
         self.value = value
 
+    def evaluate(self, script: str, *, timeout: int) -> None:
+        if script != BING_FORM_SUBMIT_SCRIPT or timeout <= 0:
+            raise AssertionError("invalid form submission")
+        self.actions.append("form.submit")
 
-class FakeSearchForm:
-    def __init__(self) -> None:
-        self.script = ""
 
-    def evaluate(self, script: str) -> None:
-        self.script = script
+class FakeSearchButton:
+    def __init__(self, actions: list[str]) -> None:
+        self.actions = actions
+        self.timeout: int | None = None
+        self.error: Exception | None = None
+
+    def click(self, *, timeout: int) -> None:
+        self.actions.append("button.click")
+        self.timeout = timeout
+        if self.error is not None:
+            raise self.error
 
 
 class FakeSearchPage:
     def __init__(self, result_url: str) -> None:
+        self.actions: list[str] = []
         self.result_url = result_url
-        self.query_input = FakeSearchInput()
-        self.form = FakeSearchForm()
+        self.query_input = FakeSearchInput(self.actions)
+        self.button = FakeSearchButton(self.actions)
         self.goto_call: tuple[str, str, int] | None = None
         self.waited_for_url = False
+        self.elapsed = 0
 
     def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+        self.actions.append("landing")
         self.goto_call = (url, wait_until, timeout)
 
     def locator(self, selector: str):
         if selector == BING_QUERY_INPUT_SELECTOR:
             return self.query_input
-        if selector == BING_FORM_SELECTOR:
-            return self.form
+        if selector == BING_SEARCH_BUTTON_SELECTOR:
+            return self.button
+        if selector in (BING_CONTAINER_SELECTOR, BING_RESOURCE_WAIT_SELECTOR):
+            return self
         raise AssertionError(f"unexpected selector: {selector}")
 
+    @property
+    def first(self):
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    def wait_for(self, *, state: str, timeout: int) -> None:
+        if state != "attached" or timeout <= 0:
+            raise AssertionError("invalid result wait")
+        self.actions.append("container.ready")
+
+    def wait_for_timeout(self, milliseconds: int) -> None:
+        self.elapsed += milliseconds
+        self.actions.append(f"wait:{milliseconds}")
+
     def wait_for_url(self, predicate, *, wait_until: str, timeout: int) -> None:
+        self.actions.append("results.ready")
         self.waited_for_url = predicate(self.result_url) and wait_until == "domcontentloaded"
         if timeout <= 0 or not self.waited_for_url:
             raise AssertionError("result URL did not match the submitted query")
@@ -238,6 +295,304 @@ class FakeConnection:
 
 
 class BrowserSearchContractTest(unittest.TestCase):
+    def test_product_invocation_cannot_select_external_browser_policy(self):
+        args = invoke.parse_args(["--provider", "visible-browser", "--query", "test"])
+        self.assertEqual(args.result_policy, "resource-session")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            invoke.parse_args(
+                ["--provider", "visible-browser", "--query", "test", "--result-policy", "standard"]
+            )
+
+    def test_embedded_response_file_needs_no_process_credentials(self):
+        filename = "web-search-browser-response-" + "a" * 32 + ".json"
+        response = {
+            "ok": True,
+            "url": "https://www.bing.com/search?q=test",
+            "challenge": False,
+            "cards": [
+                {"title": "Result", "href": "https://example.org/", "description": "Summary"}
+            ],
+        }
+        with (
+            patch.object(
+                browser.Path, "open", return_value=io.BytesIO(json.dumps(response).encode())
+            ),
+            patch.object(
+                browser, "execute", side_effect=AssertionError("credentials must stay isolated")
+            ),
+            patch.object(
+                browser, "sync_playwright", side_effect=AssertionError("external browser forbidden")
+            ),
+        ):
+            payload, status = search(
+                parse_args(
+                    [
+                        "--query",
+                        "test",
+                        "--result-policy",
+                        "resource-session",
+                        "--bridge-response",
+                        filename,
+                    ]
+                )
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual(payload["browser"], "embedded")
+        self.assertEqual(payload["candidates"][0]["url"], "https://example.org/")
+
+    def test_embedded_failures_never_launch_external_browser(self):
+        responses = [
+            {"ok": False, "error": "navigation_outcome_unknown"},
+            {"ok": True, "url": "https://example.org/", "challenge": False, "cards": []},
+            {
+                "ok": True,
+                "url": "https://www.bing.com/search?q=test",
+                "challenge": "false",
+                "cards": [],
+            },
+            {
+                "ok": True,
+                "url": "https://www.bing.com/search?q=test",
+                "challenge": False,
+                "cards": [{}],
+            },
+            {
+                "ok": True,
+                "url": "https://www.bing.com/search?q=test",
+                "challenge": True,
+                "cards": [],
+            },
+        ]
+        for response in responses:
+            with (
+                self.subTest(response=response),
+                patch.object(browser, "execute", return_value=response),
+                patch.object(
+                    browser,
+                    "sync_playwright",
+                    side_effect=AssertionError("external browser forbidden"),
+                ),
+            ):
+                payload, status = search(
+                    parse_args(["--query", "test", "--result-policy", "resource-session"])
+                )
+                self.assertNotEqual(status, 0)
+                self.assertEqual(payload["candidates"], [])
+                self.assertEqual(payload["browser"], "embedded")
+
+    def test_resource_search_uses_embedded_bridge_without_launching_browser(self):
+        response = {
+            "ok": True,
+            "url": "https://www.bing.com/search?q=ScholarSeed",
+            "challenge": False,
+            "cards": [],
+        }
+        with (
+            patch.object(browser, "execute", return_value=response, create=True) as bridge,
+            patch.object(
+                browser, "sync_playwright", side_effect=AssertionError("external browser forbidden")
+            ),
+        ):
+            payload, status = search(
+                parse_args(["--query", "ScholarSeed", "--result-policy", "resource-session"])
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual(payload["browser"], "embedded")
+        self.assertEqual(payload["status"], "empty")
+        bridge.assert_called_once()
+
+    def test_resource_launch_argument_does_not_change_conversation_policies(self) -> None:
+        candidate = candidate_from_result("Result", "https://example.org/result", "Summary")
+        extraction = SimpleNamespace(candidates=(candidate,))
+        snapshot = SimpleNamespace(challenged=False, empty=False, extraction=extraction)
+        captured = SimpleNamespace(snapshot=snapshot, diagnostics=lambda: {})
+        for policy in ("standard", "visible-snapshot"):
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as directory:
+                (Path(directory) / "chrome").mkdir()
+                chromium = Mock()
+                provider = Mock()
+                provider.name = "bing"
+                provider.extract.return_value = extraction
+                provider.matches_page.return_value = True
+                with (
+                    patch.dict(os.environ, {RESOURCE_SEARCH_PROFILE_ENV: directory}),
+                    patch("browser.sync_playwright") as playwright,
+                    patch("browser.get_provider", return_value=provider),
+                    patch("browser.capture", return_value=captured),
+                    patch(
+                        "browser._wait_for_results",
+                        return_value=SimpleNamespace(present=True, stable=True, count=1),
+                    ),
+                ):
+                    playwright.return_value.__enter__.return_value = SimpleNamespace(
+                        chromium=chromium
+                    )
+                    result, exit_code = search(
+                        parse_args(["--query", "test", "--result-policy", policy])
+                    )
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(result["status"], "completed")
+                if policy == "resource-session":
+                    chromium.launch.assert_not_called()
+                    chromium.launch_persistent_context.assert_called_once_with(
+                        str(Path(directory) / "chrome"),
+                        channel="chrome",
+                        headless=False,
+                        locale="zh-CN",
+                        args=["--disable-blink-features=AutomationControlled"],
+                    )
+                else:
+                    chromium.launch_persistent_context.assert_not_called()
+                    chromium.launch.assert_called_once_with(channel="chrome", headless=False)
+
+    def test_resource_form_submission_and_waits_share_deadline(self) -> None:
+        query = "大模型检索召回"
+        page = FakeSearchPage(f"https://www.bing.com/search?{urlencode({'q': query})}")
+        BingProvider().search(
+            page,
+            query,
+            3000,
+            remaining=lambda: 3000 - page.elapsed,
+            interaction=RESOURCE_INTERACTION,
+        )
+        self.assertEqual(page.query_input.value, query)
+        self.assertEqual(
+            page.actions,
+            [
+                "landing",
+                "input.ready",
+                "wait:1000",
+                "input.fill",
+                "form.submit",
+                "results.ready",
+                "container.ready",
+                "wait:1500",
+            ],
+        )
+        self.assertEqual(page.elapsed, 2500)
+
+    def test_resource_waits_are_not_truncated_to_remaining_budget(self) -> None:
+        for budget, submitted in ((999, False), (2499, True)):
+            with self.subTest(budget=budget):
+                page = FakeSearchPage("https://www.bing.com/search?q=test")
+                with self.assertRaises(PlaywrightTimeoutError):
+                    BingProvider().search(
+                        page,
+                        "test",
+                        budget,
+                        remaining=lambda: budget - page.elapsed,
+                        interaction=RESOURCE_INTERACTION,
+                    )
+                self.assertEqual("form.submit" in page.actions, submitted)
+                self.assertNotIn("wait:1500", page.actions)
+
+    def test_resource_search_does_not_require_external_profile(self) -> None:
+        for profile in ("", "relative/profile"):
+            with (
+                self.subTest(profile=profile),
+                patch.dict(os.environ, {RESOURCE_SEARCH_PROFILE_ENV: profile}),
+                patch("browser.sync_playwright") as launch,
+                patch(
+                    "browser.execute",
+                    return_value={
+                        "ok": True,
+                        "url": "https://www.bing.com/search?q=test",
+                        "challenge": False,
+                        "cards": [],
+                    },
+                ),
+            ):
+                result, _ = search(
+                    parse_args(["--query", "test", "--result-policy", "resource-session"])
+                )
+                self.assertEqual(result["status"], "empty")
+                self.assertEqual(result["browser"], "embedded")
+                launch.assert_not_called()
+
+    def test_persistent_channel_reuses_profile_and_closes_context(self) -> None:
+        chromium = Mock()
+        playwright = SimpleNamespace(chromium=chromium)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(strict=True)
+            (root / "chrome").mkdir()
+            for _ in range(2):
+                session = launch_browser(
+                    playwright,
+                    "chrome",
+                    locale="zh-CN",
+                    headless=False,
+                    debug=False,
+                    profile_root=root,
+                )
+                self.assertIsNone(session.browser)
+                session.close()
+            self.assertEqual(chromium.launch_persistent_context.call_count, 2)
+            chromium.launch_persistent_context.assert_called_with(
+                str(root / "chrome"), channel="chrome", headless=False, locale="zh-CN"
+            )
+            self.assertEqual(chromium.launch_persistent_context.return_value.close.call_count, 2)
+            chromium.launch.assert_not_called()
+
+    def test_profile_busy_does_not_fall_back_to_another_profile(self) -> None:
+        chromium = Mock()
+        chromium.launch_persistent_context.side_effect = PlaywrightError(
+            "ProcessSingleton SingletonLock exists"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(strict=True)
+            (root / "chrome").mkdir()
+            with self.assertRaises(BrowserUnavailableError) as caught:
+                launch_browser(
+                    SimpleNamespace(chromium=chromium),
+                    "auto",
+                    locale="zh-CN",
+                    headless=False,
+                    debug=False,
+                    profile_root=root,
+                )
+        self.assertEqual(caught.exception.code, ERROR_PROFILE_BUSY)
+        self.assertEqual(chromium.launch_persistent_context.call_count, 1)
+
+    def test_persistent_profile_refuses_missing_and_linked_directories(self) -> None:
+        chromium = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(strict=True)
+            outside = root / "outside"
+            outside.mkdir()
+            profile = root / "owner"
+            profile.mkdir()
+            (profile / "chrome").symlink_to(outside, target_is_directory=True)
+            for selected in (root / "missing", profile):
+                with (
+                    self.subTest(profile=selected),
+                    self.assertRaises(BrowserUnavailableError) as caught,
+                ):
+                    launch_browser(
+                        SimpleNamespace(chromium=chromium),
+                        "chrome",
+                        locale="zh-CN",
+                        headless=False,
+                        debug=False,
+                        profile_root=selected,
+                    )
+                self.assertEqual(caught.exception.code, ERROR_PROFILE_UNAVAILABLE)
+        chromium.launch_persistent_context.assert_not_called()
+
+    def test_default_browser_remains_temporary_even_with_profile_environment(self) -> None:
+        chromium = Mock()
+        with patch.dict(os.environ, {RESOURCE_SEARCH_PROFILE_ENV: "/private/profile"}):
+            session = launch_browser(
+                SimpleNamespace(chromium=chromium),
+                "chrome",
+                locale="zh-CN",
+                headless=False,
+                debug=False,
+            )
+        chromium.launch_persistent_context.assert_not_called()
+        chromium.launch.assert_called_once_with(channel="chrome", headless=False)
+        session.close()
+        chromium.launch.return_value.close.assert_called_once()
+
     def test_default_and_maximum_candidate_limit_are_twenty(self) -> None:
         self.assertEqual(DEFAULT_LIMIT, 20)
         self.assertEqual(MAXIMUM_LIMIT, 20)
@@ -298,7 +653,7 @@ class BrowserSearchContractTest(unittest.TestCase):
                 self.assertEqual(caught.exception.code, expected)
                 self.assertNotIn("Target page", str(caught.exception))
 
-    def test_bing_opens_landing_page_and_submits_exact_query(self) -> None:
+    def test_bing_opens_landing_page_and_clicks_search_for_exact_query(self) -> None:
         provider = BingProvider()
         query = "本机 browser search"
         page = FakeSearchPage(f"https://cn.bing.com/search?{urlencode({'q': query})}")
@@ -308,9 +663,24 @@ class BrowserSearchContractTest(unittest.TestCase):
         self.assertEqual(page.goto_call, (BING_LANDING_URL, "domcontentloaded", 1_000))
         self.assertTrue(page.query_input.waited)
         self.assertEqual(page.query_input.value, query)
-        self.assertEqual(page.form.script, BING_FORM_SUBMIT_SCRIPT)
+        self.assertEqual(page.button.timeout, 1_000)
+        self.assertEqual(
+            page.actions,
+            ["landing", "input.ready", "input.fill", "button.click", "results.ready"],
+        )
         self.assertTrue(page.waited_for_url)
         self.assertEqual(provider.result_selector, "#b_results .b_algo")
+
+    def test_bing_search_click_timeout_does_not_submit_or_extract(self) -> None:
+        page = FakeSearchPage("https://www.bing.com/search?q=attention")
+        page.button.error = PlaywrightTimeoutError("search button was not actionable")
+
+        with self.assertRaises(PlaywrightTimeoutError):
+            BingProvider().search(page, "attention", 1_000)
+
+        self.assertEqual(page.query_input.value, "attention")
+        self.assertFalse(page.waited_for_url)
+        self.assertEqual(page.actions, ["landing", "input.ready", "input.fill", "button.click"])
 
     def test_bing_page_identity_requires_same_search_query(self) -> None:
         provider = BingProvider()
@@ -503,6 +873,56 @@ class BrowserSearchContractTest(unittest.TestCase):
         self.assertEqual(json.loads(kwargs["body"]), {"q": "test", "num": 2})
         self.assertTrue(connection.closed)
 
+    def test_official_default_transport_uses_https_proxy_without_following_redirects(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(302, headers={"Location": "https://example.com/redirect"})
+
+        client_type = httpx.Client
+        options: list[dict[str, object]] = []
+
+        def client_factory(**kwargs):
+            options.append(kwargs)
+            return client_type(
+                timeout=kwargs["timeout"],
+                transport=httpx.MockTransport(respond),
+                follow_redirects=kwargs["follow_redirects"],
+            )
+
+        with (
+            patch.object(
+                official.urllib.request,
+                "getproxies",
+                return_value={
+                    "https": "http://127.0.0.1:52314",
+                    "all": "socks5://127.0.0.1:52315",
+                },
+            ),
+            patch.object(official.urllib.request, "proxy_bypass", return_value=False),
+            patch.object(official.httpx, "Client", side_effect=client_factory),
+        ):
+            payload, exit_code = official_search(
+                parse_official_args(["--query", "test"]),
+                environment={"SCHOLARSEED_API_KEY": "secret"},
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["error"]["code"], ERROR_RESPONSE)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].url, httpx.URL(API_URL))
+        self.assertEqual(requests[0].headers["Authorization"], "Bearer secret")
+        self.assertEqual(options[0]["proxy"], "http://127.0.0.1:52314")
+        self.assertFalse(options[0]["trust_env"])
+        self.assertFalse(options[0]["follow_redirects"])
+        self.assertIsInstance(options[0]["verify"], ssl.SSLContext)
+
+    def test_official_response_read_is_bounded(self) -> None:
+        response = official.ProxyAwareResponse(httpx.Response(200, content=b"abcdef"))
+        self.assertEqual(response.read(0), b"")
+        self.assertEqual(response.read(4), b"abcd")
+
     def test_official_search_logs_safe_transport_failure_diagnostics(self) -> None:
         api_key = "secret-api-key"
         query = "private diagnostic query"
@@ -645,13 +1065,67 @@ class BrowserSearchContractTest(unittest.TestCase):
         self.assertNotIn(api_key, stdout.getvalue())
         self.assertNotIn(api_key, stderr.getvalue())
 
-    def test_invocation_publishes_exact_structured_artifact(self) -> None:
+    def test_invocation_writes_exact_structured_artifact(self) -> None:
         payload = {"schema": "scholarseed.web_search.v1", "status": "failed"}
-        calls: list[tuple] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                self.assertEqual(write_result(payload), 0)
+            finally:
+                os.chdir(previous)
+            self.assertEqual(json.loads((root / OUTPUT_PATH).read_text(encoding="utf-8")), payload)
 
-        def runner(*args, **kwargs):
-            calls.append((args, kwargs))
-            return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="", stderr="")
+    def test_source_receipt_preserves_candidates_and_reports_truncation(self) -> None:
+        payload = {
+            "provider": "official-api",
+            "status": "completed",
+            "query": "weather",
+            "candidates": [
+                {"url": "https://example.com/weather", "title": "Weather", "description": "Rain"}
+            ],
+        }
+        line = source_receipt(payload)
+        self.assertTrue(line.startswith(RECEIPT_PREFIX))
+        result = json.loads(line.removeprefix(RECEIPT_PREFIX))
+        self.assertEqual(result["candidates"], payload["candidates"])
+        payload["candidates"] *= 100
+        line = source_receipt(payload)
+        self.assertLessEqual(len(line.removeprefix(RECEIPT_PREFIX).encode()), RECEIPT_MAX_BYTES)
+        self.assertTrue(json.loads(line.removeprefix(RECEIPT_PREFIX))["truncated"])
+        payload["candidates"] = [
+            {
+                "url": f"https://example.com/{index}",
+                "title": "杭州" * 64,
+                "description": "天气" * 128,
+            }
+            for index in range(20)
+        ]
+        line = source_receipt(payload)
+        result = json.loads(line.removeprefix(RECEIPT_PREFIX))
+        self.assertLessEqual(len(line.removeprefix(RECEIPT_PREFIX).encode()), RECEIPT_MAX_BYTES)
+        self.assertTrue(result["truncated"])
+        self.assertGreater(len(result["candidates"]), 0)
+        self.assertLess(len(result["candidates"]), len(payload["candidates"]))
+
+    def test_source_receipt_stays_on_one_line_for_unicode_query(self) -> None:
+        query = "杭州\u0085天气\u2028预报\u2029来源"
+        line = source_receipt({"provider": "official-api", "status": "empty", "query": query})
+        self.assertEqual(len(line.splitlines()), 1)
+        self.assertEqual(json.loads(line.removeprefix(RECEIPT_PREFIX))["query"], query)
+
+    def test_invocation_accepts_only_relative_json_artifact_names(self) -> None:
+        self.assertEqual(
+            bounded_artifact_path("web-search-official-result.json"),
+            "web-search-official-result.json",
+        )
+        for value in ("/tmp/result.json", "../result.json", "result.txt", ""):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                bounded_artifact_path(value)
+
+    def test_invocation_writes_custom_artifact_path(self) -> None:
+        payload = {"schema": "scholarseed.web_search.v1", "status": "empty"}
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -659,12 +1133,15 @@ class BrowserSearchContractTest(unittest.TestCase):
             try:
                 os.chdir(root)
                 self.assertEqual(
-                    publish(payload, runner=runner, bridge_command=BRIDGE_COMMAND), 0
+                    write_result(payload, artifact_path="web-search-browser-result.json"),
+                    0,
                 )
             finally:
                 os.chdir(previous)
-            self.assertEqual(json.loads((root / OUTPUT_PATH).read_text(encoding="utf-8")), payload)
-        self.assertEqual(calls[0][0][0][:2], [BRIDGE_COMMAND, "artifact"])
+            self.assertEqual(
+                json.loads((root / "web-search-browser-result.json").read_text(encoding="utf-8")),
+                payload,
+            )
 
 
 if __name__ == "__main__":

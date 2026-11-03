@@ -15,6 +15,7 @@ from service.chat.persistence.catalog import (
     SessionStatus,
 )
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
+from service.chat.persistence.worker import PersistenceWorker
 from service.chat.runtime.content import MessageSnapshots
 from service.chat.runtime.live import LiveSession
 from service.chat.service.events import SSE_HEARTBEAT_FRAME, EventService
@@ -93,7 +94,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"seq":3', frames[-1])
 
     async def test_idle_live_stream_emits_a_valid_sse_heartbeat(self) -> None:
-        live = SimpleNamespace(subscribers=[])
+        live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())
         service = EventService({SESSION_ID: live}, self.events, self.logger)  # type: ignore[dict-item]
         stream = service.open(SESSION_ID, 0)
         try:
@@ -103,6 +104,9 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
             ):
                 frame = await anext(stream)
             self.assertEqual(frame, SSE_HEARTBEAT_FRAME)
+            self.assertIn("event: heartbeat\n", frame)
+            self.assertIn("data: {}\n\n", frame)
+            self.assertNotIn("id:", frame)
         finally:
             await stream.aclose()
         self.assertEqual(live.subscribers, [])
@@ -120,7 +124,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_live_wakeup_drains_unbroadcast_events_before_notified_event(self) -> None:
-        live = SimpleNamespace(subscribers=[])
+        live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())
         service = EventService({SESSION_ID: live}, self.events, self.logger)  # type: ignore[dict-item]
         stream = service.open(SESSION_ID, 0)
         try:
@@ -149,7 +153,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
             await stream.aclose()
 
     async def test_slow_subscriber_is_bounded_and_forced_to_replay(self) -> None:
-        live = SimpleNamespace(subscribers=[])
+        live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())
         service = EventService({SESSION_ID: live}, self.events, self.logger)  # type: ignore[dict-item]
         stream = service.open(SESSION_ID, 0)
         with (
@@ -194,6 +198,11 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
         live._events = MagicMock(append=MagicMock(return_value=record))
         live._trace = MagicMock()
         live._logger = self.logger
+        live._persistence = PersistenceWorker()
+        self.addAsyncCleanup(live._persistence.close)
+        live._publication_lock = asyncio.Lock()
+        live._publication_error = None
+        live._broadcast_sequence = 0
 
         committed = await live.publish("message_delta", {"delta": "durable"})
 

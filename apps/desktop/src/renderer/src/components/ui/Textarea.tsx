@@ -19,12 +19,13 @@ export interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElemen
   helperText?: string
   invalid?: boolean
   label?: string
+  labelClassName?: string
   size?: TextareaSize
   unstyled?: boolean
 }
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ className, error, helperText, id, invalid = false, label, size = 'md', unstyled = false, ...props }, ref) => {
+  ({ className, error, helperText, id, invalid = false, label, labelClassName, size = 'md', unstyled = false, ...props }, ref) => {
     const generatedId = useId()
     const textareaId = id ?? generatedId
     const message = error ?? helperText
@@ -49,7 +50,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
 
     return (
       <label className={fieldClassName({})} htmlFor={textareaId}>
-        {label ? <span className={fieldLabelClassName({})} {...(labelSource ? { 'data-i18n-text': labelSource } : {})}>{label}</span> : null}
+        {label ? <span className={fieldLabelClassName({ className: labelClassName })} {...(labelSource ? { 'data-i18n-text': labelSource } : {})}>{label}</span> : null}
         {textarea}
         {message ? (
           <span className={fieldMessageClassName({})} id={messageId} {...(messageSource ? { 'data-i18n-text': messageSource } : {})}>

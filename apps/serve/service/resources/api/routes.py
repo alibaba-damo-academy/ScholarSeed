@@ -21,9 +21,11 @@ from pydantic import ValidationError
 from service.content.domain.model import ContentError
 from service.content.service.port import DEFAULT_MEDIA_TYPE, ContentService
 from service.content.service.tree import DEFAULT_MAX_DEPTH
+from service.platform.activity import ActivityDomain
 from service.platform.content import (
     AssetKind,
     AssetOrigin,
+    AssetPage,
     AssetTree,
     ExternalRootRef,
     RootKind,
@@ -41,6 +43,7 @@ from service.resources.persistence.catalog import (
     ResourceAgentImportCatalog,
     ResourceWebSourceCatalog,
 )
+from service.resources.persistence.listing import ResourceListingCatalog, ResourceSource
 from service.resources.service.excerpts import (
     EXCERPT_TOO_LARGE,
     ResourceExcerptError,
@@ -57,6 +60,8 @@ from service.resources.service.importer import (
     WebImportItem,
     WebImportStatus,
 )
+from service.resources.service.listing import ResourceListing
+from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.writer import ResourceWriterError
 
 #: 资料库路由前缀。
@@ -205,22 +210,6 @@ def _agent_imports(request: Request) -> ResourceAgentImportCatalog:
     return catalog
 
 
-def _relocate_agent_imports(
-    request: Request,
-    project_id: str,
-    source_path: str,
-    target_path: str,
-) -> None:
-    """Relocate optional Agent provenance without making file CRUD depend on it."""
-
-    catalog = getattr(request.app.state, "resource_agent_imports", None)
-    if catalog is None:
-        return
-    if not isinstance(catalog, ResourceAgentImportCatalog):
-        raise HTTPException(status_code=503, detail=RESOURCE_AGENT_IMPORTS_UNAVAILABLE)
-    catalog.relocate(project_id, source_path, target_path)
-
-
 def _web_sources(request: Request) -> ResourceWebSourceCatalog:
     """Return the project-local Web provenance catalogue."""
 
@@ -288,6 +277,7 @@ def _tree_payload(
         "name": node.asset.name,
         "kind": node.asset.kind.value,
         "origin": node.asset.origin.value,
+        "updated_at": node.updated_at,
     }
     if not node.available:
         payload["available"] = False
@@ -314,15 +304,19 @@ def _tree_payload(
         payload["children"] = children
     elif capabilities is not None and node.asset.path in capabilities:
         capability = capabilities[node.asset.path]
-        payload["version"] = {
-            "management_state": capability.management_state.value,
-            "manual_admitted": capability.manual_admitted,
-            "drifted": capability.drifted,
-            "snapshot_state": capability.snapshot_state.value if capability.managed else None,
-            "pending_origin": capability.pending.origin.value if capability.pending else None,
-            "needs_review": capability.pending.needs_review if capability.pending else False,
-        }
+        payload["version"] = _capability_payload(capability)
     return payload
+
+
+def _capability_payload(capability: ResourceCapability) -> dict:
+    return {
+        "management_state": capability.management_state.value,
+        "manual_admitted": capability.manual_admitted,
+        "drifted": capability.drifted,
+        "snapshot_state": capability.snapshot_state.value if capability.managed else None,
+        "pending_origin": capability.pending.origin.value if capability.pending else None,
+        "needs_review": capability.pending.needs_review if capability.pending else False,
+    }
 
 
 def _asset_payload(asset) -> dict:
@@ -366,8 +360,92 @@ def _in_resources_root(content, project: str, path: str) -> str:
     return content.within_root(project, RootKind.RESOURCES, path)
 
 
+def _scan_resource_tree(
+    content: ContentService,
+    project: str,
+    path: str,
+    depth: int,
+    offset: int,
+) -> tuple[AssetPage, str, str, tuple[ExternalRootRef, ...], dict[str, str | None]]:
+    page = (
+        content.subtree(
+            project,
+            _in_resources_root(content, project, path),
+            depth=depth,
+            offset=offset,
+        )
+        if path
+        else content.tree(project, depth=depth, offset=offset)
+    )
+    root = content.project(project).root
+    resource_root = content.root_relative(project, RootKind.RESOURCES)
+    linked_roots = content.external_roots(project)
+    repositories = content.repository_roots(project, _tree_paths(page.children, files_only=False))
+    return page, root, resource_root, linked_roots, repositories
+
+
+def _resource_listing(
+    content: ContentService, project: str, supervisor: ResourceVersionSupervisor | None
+) -> dict:
+    """Materialize the whole disk-backed list away from the HTTP event loop."""
+
+    entries = ResourceListing(content).list(project)
+    linked_roots = content.external_roots(project)
+    paths = tuple(entry.path for entry in entries)
+    repositories = content.repository_roots(project, paths)
+    capabilities = (
+        supervisor.capability_states(project, paths, repositories=repositories)
+        if supervisor is not None
+        else {}
+    )
+    return {
+        "items": [
+            {
+                **asdict(entry),
+                "git_repository": repositories.get(entry.path) == entry.path,
+                **(
+                    {"version": _capability_payload(capabilities[entry.path])}
+                    if entry.path in capabilities
+                    else {}
+                ),
+                "link_root_id": next(
+                    (
+                        root.root_id
+                        for root in linked_roots
+                        if entry.path == root.mount_path
+                        or entry.path.startswith(f"{root.mount_path}/")
+                    ),
+                    None,
+                ),
+            }
+            for entry in entries
+        ],
+        "linked_roots": {
+            root.root_id: {
+                "root_id": root.root_id,
+                "mount_path": root.mount_path,
+                "source_path": root.source_path,
+            }
+            for root in linked_roots
+        },
+    }
+
+
 def register_resource_routes(app: FastAPI) -> None:
     """把资料库路由挂到应用上。"""
+
+    @app.get(f"{RESOURCE_ROUTE_PREFIX}/list")
+    async def resource_list(request: Request, project: str = Query(min_length=1)) -> dict:
+        try:
+            content = _content(request)
+            supervisor = getattr(request.app.state, "resource_version_supervisor", None)
+            if supervisor is not None:
+                await supervisor.activate_project(project)
+            return await request.app.state.activities.to_thread(
+                ActivityDomain.RESOURCE, _resource_listing, content, project, supervisor
+            )
+        except ContentError as exc:
+            raise _fail(exc) from exc
 
     @app.get(f"{RESOURCE_ROUTE_PREFIX}/agent-origin")
     def resource_agent_origin(
@@ -387,6 +465,8 @@ def register_resource_routes(app: FastAPI) -> None:
         return {
             "source_kind": record.source_kind.value,
             "session_id": record.source_session_id,
+            "session_deleted": request.app.state.session_catalog.get(record.source_session_id)
+            is None,
             "turn_id": record.source_turn_id,
             "item_id": record.source_item_id,
             "source_range": (record.source_detail or {}).get("range"),
@@ -442,23 +522,16 @@ def register_resource_routes(app: FastAPI) -> None:
         try:
             if supervisor is not None:
                 await supervisor.activate_project(project or "")
-            page = (
-                content.subtree(
-                    project or "",
-                    _in_resources_root(content, project or "", path),
-                    depth=depth,
-                    offset=offset,
-                )
-                if path
-                else content.tree(project or "", depth=depth, offset=offset)
+            page, root, resource_root, linked_roots, repositories = await asyncio.to_thread(
+                _scan_resource_tree,
+                content,
+                project or "",
+                path,
+                depth,
+                offset,
             )
-            root = content.project(project).root
-            linked_roots = content.external_roots(project or "")
         except ContentError as exc:
             raise _fail(exc) from exc
-        repositories = content.repository_roots(
-            project or "", _tree_paths(page.children, files_only=False)
-        )
         capability_paths = _tree_paths(page.children)
         capabilities = (
             supervisor.capability_states(
@@ -471,6 +544,7 @@ def register_resource_routes(app: FastAPI) -> None:
         )
         return {
             "root": root,
+            "resource_root": resource_root,
             "nodes": [
                 _tree_payload(node, capabilities, linked_roots, repositories)
                 for node in page.children
@@ -811,16 +885,19 @@ def register_resource_routes(app: FastAPI) -> None:
                 asset = content.create(project, parent, name, AssetKind.DIR)
             elif action == "rename":
                 asset = content.rename(project, path, name)
-                _relocate_agent_imports(request, project, path, asset.path)
             elif action == "move":
                 asset = content.move(project, path, target_dir or "")
-                _relocate_agent_imports(request, project, path, asset.path)
             elif action == "copy":
-                asset = content.copy(project, path, target_dir)
+                asset = await asyncio.to_thread(content.copy, project, path, target_dir)
             else:
                 raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail="bad_action")
         except ContentError as exc:
             raise _fail(exc) from exc
+        listing = ResourceListingCatalog(content)
+        if action in {"create_document", "create_folder"}:
+            listing.record(project, (asset,), ResourceSource.CREATED)
+        elif action in {"rename", "move", "copy"}:
+            listing.relocate(project, path, asset.path, copy=action == "copy")
         _schedule_version_scan(request, project)
         return {"action": action, "node": _asset_payload(asset)}
 

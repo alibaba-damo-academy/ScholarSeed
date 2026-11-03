@@ -294,11 +294,11 @@ export async function buildAnnotatedPdf(
 
 export async function exportAnnotatedPdf(
   bytes: Uint8Array,
-  records: PdfRecordSnapshot,
+  records: PdfRecordSnapshot | null,
   suggestedName: string,
   attachmentDescription: string
 ): Promise<PdfExportResult> {
-  const exported = await buildAnnotatedPdf(bytes, records, attachmentDescription)
+  const exported = records ? await buildAnnotatedPdf(bytes, records, attachmentDescription) : bytes
   try {
     const bridge = window.scholarseed
     if (!bridge) throw new Error('desktop save bridge unavailable')

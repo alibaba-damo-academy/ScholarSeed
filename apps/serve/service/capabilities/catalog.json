@@ -1,28 +1,44 @@
 {
   "schema": 3,
-  "required": [
-    "fast-search"
-  ],
+  "required": [],
+  "display_names": {
+    "plugin-create": {"zh": "创建插件", "en": "Create Plugin"},
+    "find-skill": {"zh": "查找与管理技能", "en": "Find and Manage Skills"},
+    "research-idea-partner": {"zh": "科研想法伙伴", "en": "Research Idea Partner"},
+    "design-research-validation": {"zh": "科研验证方案设计", "en": "Research Validation Designer"},
+    "literature-review": {"zh": "文献综述", "en": "Literature Review"},
+    "precise-literature-search": {"zh": "精确检索文献", "en": "Precise Literature Search"},
+    "agentic-search": {"zh": "分档学术检索", "en": "Tiered Academic Search"}
+  },
   "requires_login": [
     "fast-search",
     "agentic-search",
     "precise-literature-search",
     "literature-review",
-    "research-idea-partner"
+    "research-idea-partner",
+    "design-research-validation"
   ],
   "surfaces": {
     "conversation": {
       "skills": [
+        "plugin-create",
+        "find-skill",
         "research-idea-partner",
+        "design-research-validation",
         "literature-review",
         "precise-literature-search",
         "agentic-search"
       ],
-      "sources": []
+      "sources": [
+        "user"
+      ]
     },
     "settings": {
       "skills": [
+        "plugin-create",
+        "find-skill",
         "research-idea-partner",
+        "design-research-validation",
         "literature-review",
         "precise-literature-search",
         "agentic-search"

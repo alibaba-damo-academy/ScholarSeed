@@ -166,6 +166,8 @@
     "areaLabel": "Revenue and expenses area chart"
   },
   "empty": {
+    "openFile": "Open file",
+    "chooseTreeFile": "Select a file from the tree on the left to open it",
     "new": "New project",
     "description": "No projects match the current filters.",
     "title": "No projects yet"
@@ -226,7 +228,7 @@
     "default": "Default notification",
     "titleOnly": "Title only",
     "longDescriptionLabel": "Long description",
-    "longDescription": "This notification demonstrates an unusually long description using a fictional research workflow. It does not represent a real operation. A researcher might import many documents, inspect their metadata, compare different versions, and organize relevant material into a project. Some records may be missing authors or publication dates, while others may contain duplicate titles or incomplete identifiers. Detailed feedback about these conditions can require considerably more space than a short confirmation. This example includes background information, processing notes, and suggested next steps so that the notification can be observed with realistic overflow. Check whether the description truncates cleanly at the existing line limit without pushing the title, icon, or close button out of position. When the window becomes narrower, the notification should respect its normal width constraints instead of expanding across the page. Light and dark themes should preserve readable text and a clear distinction between the title and supporting content. Multiple notifications should remain independent, and dismissing one should not change the others. This is static demonstration text only: it does not upload documents, update metadata, create projects, or send conversation messages. Use this example alongside the default and title-only notifications to compare how the component presents different amounts of information.",
+    "longDescription": "This notification demonstrates an unusually long description using a fictional research workflow. It does not represent a real operation. A researcher might import many documents, inspect their metadata, compare different versions, and organize relevant material into a project. Some records may be missing authors or publication dates, while others may contain duplicate titles or incomplete identifiers. Detailed feedback about these conditions can require considerably more space than a short confirmation. This example includes background information, processing notes, and suggested next steps so that the notification can be observed with realistic overflow. Check whether the description truncates cleanly at the existing line limit without pushing the title, icon, or close button out of position. When the window becomes narrower, the notification should respect its normal width constraints instead of expanding across the page. Light and dark themes should preserve readable text and a clear distinction between the title and supporting content. Multiple notifications should remain independent, and dismissing one should not change the others. This is static demonstration text only: it does not upload documents, update metadata, create projects, or send task messages. Use this example alongside the default and title-only notifications to compare how the component presents different amounts of information.",
     "success": "Success notification",
     "error": "Error notification",
     "warning": "Warning notification"
@@ -476,7 +478,7 @@
     "details": "View details",
     "interpret": "Explain with AI",
     "translate": "Translate with AI",
-    "addToChat": "Add to conversation",
+    "addToChat": "Add to task",
     "selectionActions": "Example text-selection actions",
     "above": "Content above",
     "below": "Content below",
@@ -560,12 +562,12 @@
   },
   "transition": {
     "connecting": "Connecting to the local service and syncing project state...",
-    "restoring": "Restoring conversation",
+    "restoring": "Restoring task",
     "preparing": "Preparing the workspace and connecting to Codex Runtime...",
-    "creating": "Creating a new conversation",
+    "creating": "Creating a new task",
     "reload": "Reload",
     "errorDescription": "The local service did not return the session catalog. You can retry now.",
-    "errorTitle": "The conversation has not finished loading",
+    "errorTitle": "The task has not finished loading",
     "sending": "Sending"
   },
   "business": {
@@ -630,7 +632,31 @@
     "save": "Save",
     "section": "Basic information",
     "hint": "This composition example has no connected save action.",
-    "name": "Name",
+    "name": "Page",
     "placeholder": "Enter a name"
+  },
+  "alerts": {
+    "continue": "Confirm and continue",
+    "interruptedDescription": "The app stopped before the task finished. Some actions may be complete. Confirming will not resend the previous task automatically.",
+    "interruptedTitle": "The previous task was interrupted",
+    "restore": "Restore",
+    "ignore": "Ignore",
+    "recoverDescription": "An unfinished session was detected. You can restore the last saved progress.",
+    "recoverTitle": "Recoverable content found",
+    "keepMine": "Keep my version",
+    "reload": "Reload",
+    "conflictDescription": "This document was updated in another window. Saving may overwrite the latest content.",
+    "conflictTitle": "Document conflict",
+    "approve": "Approve",
+    "reject": "Reject",
+    "reviewDescription": "A snapshot is ready. Review it before applying it to the current project.",
+    "reviewTitle": "Snapshot awaiting review",
+    "overwrite": "Overwrite",
+    "skip": "Skip",
+    "importDescription": "The imported content duplicates existing literature. Choose whether to overwrite or skip conflicts.",
+    "importTitle": "Import conflict",
+    "retrying": "Retrying",
+    "retryDescription": "The request failed. Reconnecting to the service.",
+    "retryTitle": "Retrying"
   }
 }

@@ -14,15 +14,15 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from service.capabilities.domain import PACKAGE_MANIFEST, SKILL_MANIFEST_NAME
 from service.capabilities.service.install import (
     MAX_PACKAGE_BYTES,
     MAX_UNCOMPRESSED_BYTES,
-    SKILL_MANIFEST_NAME,
     SKILL_NAME_PATTERN,
     parse_skill_frontmatter,
 )
+from service.capabilities.service.utils import json_object
 
-PACKAGE_MANIFEST = ".scholarseed-package.json"
 PRODUCT_METADATA = ".scholarseed.json"
 PACKAGE_SCHEMA = 1
 FILE_MODE = 0o644
@@ -304,7 +304,7 @@ def pack_skill(
     return read_package(output.read_bytes())
 
 
-def read_package(data: bytes) -> SkillPackage:
+def read_archive(data: bytes) -> SkillPackage:
     if len(data) > MAX_PACKAGE_BYTES:
         raise PackageError("ZIP exceeds compressed size limit")
     files: dict[str, Payload] = {}
@@ -336,10 +336,10 @@ def read_package(data: bytes) -> SkillPackage:
     except (zipfile.BadZipFile, RuntimeError) as exc:
         raise PackageError("invalid ZIP payload") from exc
     _check_sizes(files)
-    if PACKAGE_MANIFEST not in files or SKILL_MANIFEST_NAME not in files:
-        raise PackageError("ZIP requires root SKILL.md and .scholarseed-package.json")
+    if PACKAGE_MANIFEST not in files:
+        raise PackageError("ZIP requires root .scholarseed-package.json")
     try:
-        manifest = json.loads(files[PACKAGE_MANIFEST].data)
+        manifest = json_object(files[PACKAGE_MANIFEST].data, limit=MAX_FILE_BYTES)
         if manifest["schema"] != PACKAGE_SCHEMA:
             raise PackageError("unsupported package schema")
         rows = manifest["files"]
@@ -354,21 +354,34 @@ def read_package(data: bytes) -> SkillPackage:
             if len(item.data) != row["size"] or digest(item.data) != row["sha256"]:
                 raise PackageError(f"file integrity mismatch: {path}")
             files[path] = Payload(item.data, row["mode"])
-        metadata, _body = parse_skill_frontmatter(files[SKILL_MANIFEST_NAME].data.decode("utf-8"))
         if not SKILL_NAME_PATTERN.fullmatch(manifest["name"]) or not VERSION_PATTERN.fullmatch(
             manifest["version"]
         ):
             raise PackageError("invalid package name/version")
-        if (
-            metadata.get("name") != manifest["name"]
-            or metadata.get("version") != manifest["version"]
-        ):
-            raise PackageError("frontmatter identity differs from package manifest")
-        if not metadata.get("description") or not isinstance(manifest["dependencies"], dict):
-            raise PackageError("description and dependency declaration are required")
-    except (KeyError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+        if not isinstance(manifest["dependencies"], dict):
+            raise PackageError("dependency declaration is required")
+    except (KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, PackageError):
+            raise
         raise PackageError("invalid package manifest") from exc
     return SkillPackage(manifest["name"], manifest["version"], manifest, files)
+
+
+def read_package(data: bytes) -> SkillPackage:
+    package = read_archive(data)
+    if SKILL_MANIFEST_NAME not in package.files:
+        raise PackageError("ZIP requires root SKILL.md and .scholarseed-package.json")
+    try:
+        metadata, _body = parse_skill_frontmatter(
+            package.files[SKILL_MANIFEST_NAME].data.decode("utf-8")
+        )
+    except (ValueError, UnicodeError) as exc:
+        raise PackageError("invalid package manifest") from exc
+    if metadata.get("name") != package.name or metadata.get("version") != package.version:
+        raise PackageError("frontmatter identity differs from package manifest")
+    if not metadata.get("description"):
+        raise PackageError("description and dependency declaration are required")
+    return package
 
 
 def extract_package(package: SkillPackage, target: Path) -> None:

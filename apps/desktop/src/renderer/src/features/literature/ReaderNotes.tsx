@@ -22,7 +22,7 @@ export function LiteratureNotesTitle(): React.JSX.Element {
 }
 
 export function LiteratureNotesPanel({
-  context
+  context,
 }: {
   context: DocumentPanelContext
 }): React.JSX.Element | null {
@@ -30,11 +30,7 @@ export function LiteratureNotesPanel({
   return literatureId ? <LiteratureNotesPanelContent itemId={literatureId} /> : null
 }
 
-function LiteratureNotesPanelContent({
-  itemId
-}: {
-  itemId: string
-}): React.JSX.Element {
+function LiteratureNotesPanelContent({ itemId }: { itemId: string }): React.JSX.Element {
   const { t } = useTranslation('literature')
   const [state, setState] = useState<NotesState>(INITIAL_STATE)
   const [retryRevision, setRetryRevision] = useState(0)
@@ -67,7 +63,10 @@ function LiteratureNotesPanelContent({
 
   if (state.loading) {
     return (
-      <div className="grid min-h-32 place-items-center" role="status">
+      <div
+        className="grid min-h-[var(--vds-library-reader-note-min-height)] place-items-center"
+        role="status"
+      >
         <Spinner aria-label={t('readerNotes.loading')} />
       </div>
     )
@@ -77,6 +76,7 @@ function LiteratureNotesPanelContent({
     return (
       <div className="p-[var(--vds-space-3)]">
         <Alert
+          layout="stacked"
           action={
             <Button
               size="sm"
@@ -93,7 +93,5 @@ function LiteratureNotesPanelContent({
       </div>
     )
   }
-  return (
-    <SharedLiteratureNotes itemId={itemId} notes={state.notes} onReload={reload} />
-  )
+  return <SharedLiteratureNotes itemId={itemId} notes={state.notes} onReload={reload} />
 }

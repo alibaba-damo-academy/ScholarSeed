@@ -20,7 +20,10 @@ from scholarseed_runtime.contract import (  # noqa: E402
     CapabilitySet,
     CommandReceipt,
     CommandState,
+    DeliveryClass,
     RuntimeBinding,
+    RuntimeEvent,
+    RuntimeEventKind,
     RuntimeInventory,
 )
 from scholarseed_runtime.contract.input import (  # noqa: E402
@@ -30,7 +33,13 @@ from scholarseed_runtime.contract.input import (  # noqa: E402
 from scholarseed_runtime.contract.history import (  # noqa: E402
     TurnStatus,
 )
+from scholarseed_runtime.contract.session import RuntimeActivitySnapshot  # noqa: E402
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive  # noqa: E402
 from service.assistant.persistence.store import AssistantStore  # noqa: E402
+from service.assistant.service.annotations import (  # noqa: E402
+    AnswerAnnotationService,
+    text_revision,
+)
 from service.assistant.service.context import (  # noqa: E402
     ASSISTANT_CONTEXT_HEADER,
     AssistantService,
@@ -51,16 +60,20 @@ from service.chat.constants import (  # noqa: E402
 )
 from service.chat.persistence.artifacts import SessionArtifactStore  # noqa: E402
 from service.chat.persistence.catalog import (  # noqa: E402
+    QUEUE_PURPOSE_RECOVERY,
     QueuedMessageState,
     SessionCatalogStore,
     SessionPrincipal,
     SessionStatus,
+    SubmissionMode,
     UncertaintyKind,
     UncertaintyState,
 )
 from service.chat.persistence.events import ProductEventStore  # noqa: E402
 from service.chat.service.events import EventService  # noqa: E402
+from service.chat.service.recovery import RECOVERY_SOURCE  # noqa: E402
 from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome, RuntimeTurnResult  # noqa: E402
+from scholarseed_runtime.contract.incident import RUNTIME_TURN_NOT_SUBMITTED  # noqa: E402
 
 # SCHOLARSEED_HOME test isolation must precede service imports.
 from service.chat.runtime.live import LiveSession  # noqa: E402
@@ -71,6 +84,8 @@ from service.chat.service.sessions import (  # noqa: E402
     TURN_UNKNOWN_CONFIRM_DECISION,
 )
 from service.chat.runtime.activation import SessionActivationError  # noqa: E402
+from service.chat.runtime.reconfiguration import RECONFIGURATION_STALE  # noqa: E402
+from service.content.domain.model import ContentError, ContentReadPermissionError  # noqa: E402
 from scholarseed_runtime.contract.resource import (  # noqa: E402
     RESOURCE_WAIT_TIMEOUT,
     ResourceReceipt,
@@ -81,11 +96,13 @@ from service.paths import (  # noqa: E402
     SERVICE_SKILLS_DIR,
 )
 from service.platform.context import (  # noqa: E402
+    AssistantAnswer,
     AssistantContextResolution,
     AssistantContextResolvedItem,
     AssistantContextResolveRequest,
     AssistantTurnFinalization,
     ContextLabelFallback,
+    ContextOrigin,
     ContextRef,
     ContextRefKind,
     ContextResolutionState,
@@ -101,6 +118,7 @@ SESSION_ID = "assistant-turn-session"
 OWNER = SessionPrincipal("local")
 CLIENT_TURN = "assistant-client-turn"
 USER_TEXT = "只回答原始问题"
+QUEUE_SETTLEMENT_TIMEOUT_SECONDS = 5
 
 
 class CaptureAdapter:
@@ -130,6 +148,8 @@ class CaptureAdapter:
 
 
 class CaptureDriver:
+    projection_failed = False
+
     def __init__(self, adapter: CaptureAdapter) -> None:
         self.adapter = adapter
 
@@ -161,9 +181,13 @@ class CaptureDriver:
 
 class CaptureSession:
     resource_evidence = None
+    capabilities = CapabilitySet()
 
     def __init__(self, adapter: CaptureAdapter) -> None:
         self.adapter = adapter
+
+    async def activity(self) -> RuntimeActivitySnapshot:
+        return RuntimeActivitySnapshot("fixture", 0, 0, True)
 
     async def steer(self, request: Any) -> CommandReceipt:
         self.adapter.inputs.append(request)
@@ -203,6 +227,994 @@ class ReadyProvider:
 
 
 class AssistantTurnContract(unittest.TestCase):
+    def test_stop_inspects_native_activity_after_product_turn_has_ended(self) -> None:
+        async def scenario() -> None:
+            self.assertFalse(self.live.running)
+            sessions = self.session_service()
+            sessions._runtime = SimpleNamespace(runtime_id=RUNTIME_ID)
+            activity = RuntimeActivitySnapshot("fixture", 0, 0, True, ("native_turn_active",))
+            with (
+                patch.object(
+                    self.live.runtime_session, "activity", new=AsyncMock(return_value=activity)
+                ),
+                patch.object(self.live, "interrupt", new=AsyncMock()) as interrupt,
+            ):
+                result = await sessions.interrupt(SESSION_ID)
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["idle"])
+            interrupt.assert_awaited_once_with(cleanup_background_processes=True)
+
+        asyncio.run(scenario())
+
+    def test_projection_recovery_requires_readable_storage(self) -> None:
+        async def scenario() -> None:
+            previous = self.live.runtime_driver
+            driver = SimpleNamespace(
+                projection_failed=True, recover_projection=AsyncMock(return_value=1)
+            )
+            self.live.runtime_driver = driver
+            error = OSError("persistent storage fault")
+            self.live._publication_error = error
+            try:
+                with patch.object(self.live.persistence, "run", new=AsyncMock(side_effect=error)):
+                    with self.assertRaises(OSError):
+                        await self.live.recover_runtime_projection()
+                driver.recover_projection.assert_not_awaited()
+                self.assertIs(self.live._publication_error, error)
+                await self.live.recover_runtime_projection()
+                driver.recover_projection.assert_awaited_once()
+                self.assertIsNone(self.live._publication_error)
+            finally:
+                self.live.runtime_driver = previous
+
+        asyncio.run(scenario())
+
+    def test_continuation_restores_only_original_turn_skill(self) -> None:
+        self.turns._events = self.events
+        skill_path = self.live.runtime_workdir / "SKILL.md"
+        skill_path.write_text("skill", encoding="utf-8")
+        reference = {"type": "skill", "id": "research", "path": str(skill_path), "status": "1"}
+        for index, origin in enumerate(("turn", "steer")):
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=self.adapter.session_id,
+                vendor_turn_id="original",
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_USER_MESSAGE,
+                payload={
+                    "origin": origin,
+                    "binding": "bound",
+                    "refs": [reference if origin == "turn" else {**reference, "id": "other"}],
+                },
+                idempotency_key=f"binding-{index}",
+            )
+        body = {"continue_turn_id": "original", "input": [{"type": "text", "text": "continue"}]}
+        restored = self.turns._continuation_input(self.live, body)
+        self.assertEqual(
+            restored["input"][-1],
+            {"type": "skill", "name": "research", "path": str(skill_path), "version": "1"},
+        )
+        self.assertEqual(len(body["input"]), 1)
+        unknown = {**body, "continue_turn_id": "unrelated"}
+        self.assertEqual(self.turns._continuation_input(self.live, unknown), unknown)
+        with patch.object(
+            self.live, "skill_identity", new=AsyncMock(return_value={"version": "2"})
+        ):
+            with self.assertRaisesRegex(ValueError, "version"):
+                asyncio.run(self.turns._typed_input(self.live, restored))
+
+    def test_continuation_ignores_cancelled_ambiguous_and_foreign_skill_records(self) -> None:
+        self.turns._events = self.events
+        reference = {"type": "skill", "id": "research", "path": "/skill/SKILL.md", "status": "1"}
+        for name, binding, references in (
+            ("cancelled", "cancelled", [reference]),
+            ("ambiguous", "bound", [reference, reference]),
+            ("unversioned", "bound", [{**reference, "status": ""}]),
+            ("valid", "admitted", [reference]),
+        ):
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=self.adapter.session_id,
+                vendor_turn_id=name,
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_USER_MESSAGE,
+                payload={"origin": "turn", "binding": binding, "refs": references},
+                idempotency_key=f"binding-{name}",
+            )
+            body = {"continue_turn_id": name, "input": [{"type": "text", "text": "continue"}]}
+            restored = self.turns._continuation_input(self.live, body)
+            self.assertEqual(len(restored["input"]), 2 if name == "valid" else 1)
+        self.assertIsNone(self.events.original_user_message_for_turn("another-session", "valid"))
+
+    def test_continuation_admission_persists_inherited_skill_for_next_recovery(self) -> None:
+        self.turns._events = self.events
+        selection = self.select(0)
+        skill_path = self.live.runtime_workdir / "SKILL.md"
+        skill_path.write_text("skill", encoding="utf-8")
+        reference = {"type": "skill", "id": "research", "path": str(skill_path), "status": "1"}
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="original",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_USER_MESSAGE,
+            payload={"origin": "turn", "binding": "bound", "refs": [reference]},
+            idempotency_key="binding-original",
+        )
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="original",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_TURN_FAILED,
+            payload={"retryable": True},
+            idempotency_key="binding-failed",
+        )
+
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            with patch.object(
+                self.live, "skill_identity", new=AsyncMock(return_value={"version": "1"})
+            ):
+                result, status = await self.turns.post(
+                    SESSION_ID,
+                    {
+                        **self.body(selection.revision),
+                        "continue_turn_id": "original",
+                        "wait": False,
+                    },
+                    side=False,
+                )
+                self.assertEqual(status, 202, result)
+                await self.adapter.started.wait()
+                try:
+                    recovery_text = "\n".join(
+                        item.get("text", "") for item in self.adapter.inputs[0].items
+                    )
+                    self.assertIn("Continuation is not an answer or approval", recovery_text)
+                    self.assertIn("Reissue any unanswered interaction", recovery_text)
+                    binding = self.live.active_skill_presentation
+                    self.assertIsNotNone(binding)
+                    self.assertEqual(binding.skill_name, "research")
+                    self.assertEqual(binding.turn_id, CLIENT_TURN)
+                    record = self.events.original_user_message_for_turn(SESSION_ID, CLIENT_TURN)
+                    self.assertIsNotNone(record)
+                    self.assertEqual(record.payload["refs"][0]["id"], "research")
+                    restored = self.turns._continuation_input(
+                        self.live,
+                        {
+                            "continue_turn_id": CLIENT_TURN,
+                            "input": [{"type": "text", "text": "continue"}],
+                        },
+                    )
+                    self.assertEqual(restored["input"][-1]["name"], "research")
+                finally:
+                    self.adapter.release.set()
+                    await self.live.current_task
+
+        asyncio.run(scenario())
+
+    def crash_context(self):
+        assistant = AssistantService(
+            self.store,
+            project_for_session=lambda _session_id: "project-contract",
+            providers={ContextRefKind.FILE: ReadyProvider()},
+        )
+        selected = assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(
+                ContextRef(
+                    ref_id="crash-ref",
+                    kind=ContextRefKind.FILE,
+                    source_id="crash.md",
+                    label="crash.md",
+                    retention=ContextRetention.NEXT_TURN,
+                ),
+            ),
+        )
+        result = assistant.freeze_queued(
+            session_id=SESSION_ID,
+            client_turn_id=CLIENT_TURN,
+            expected_revision=selected.revision,
+            question=USER_TEXT,
+        )
+        self.assertIsNone(result.failure)
+        assistant.finalize(
+            session_id=SESSION_ID,
+            client_turn_id=CLIENT_TURN,
+            outcome=AssistantTurnFinalization.UNKNOWN,
+        )
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=assistant,
+            activities=Activities(),
+            catalog=self.catalog,
+            events=self.events,
+        )
+        return turns, result.context
+
+    def test_crash_retry_preserves_frozen_once_only_context_and_settles_original_claim(self):
+        turns, original = self.crash_context()
+        source = {"client_id": CLIENT_TURN, "question": USER_TEXT}
+        body = {
+            **self.body(original.snapshot.selection_revision, client_turn_id="crash-successor"),
+            "assistant_snapshot_id": original.snapshot.snapshot_id,
+            RECOVERY_SOURCE: source,
+        }
+        admission = SimpleNamespace(
+            turn_input=SimpleNamespace(client_user_message_id="crash-successor"),
+            display_text=USER_TEXT,
+        )
+        queued = turns._freeze_queued_context(self.live, body, admission, recovery=source)
+        resumed = turns._freeze_context(self.live, body, admission, recovery=source)
+        self.assertEqual(queued.snapshot, original.snapshot)
+        self.assertEqual(resumed.model_context, original.model_context)
+        self.assertTrue(queued.snapshot.items)
+        self.catalog.enqueue_message(
+            SESSION_ID, "crash-successor", body, purpose=QUEUE_PURPOSE_RECOVERY
+        )
+        turns._finalize_context(SESSION_ID, "crash-successor", AssistantTurnFinalization.ACCEPTED)
+        self.assertEqual(self.store.selection(SESSION_ID).refs, ())
+
+    def test_completed_crash_recovery_consumes_original_context_claim(self):
+        turns, _original = self.crash_context()
+        turns._complete_recovered_context(self.live, CLIENT_TURN)
+        self.assertEqual(self.store.selection(SESSION_ID).refs, ())
+
+    def test_not_submitted_settlement_retains_failed_queue_without_auto_send(self) -> None:
+        async def scenario() -> None:
+            self.catalog.enqueue_message(SESSION_ID, CLIENT_TURN, self.body(0))
+            self.catalog.begin_queued_submission(SESSION_ID, CLIENT_TURN)
+            await self.turns._settle_queued_outcome(
+                self.live, CLIENT_TURN, RuntimeTurnOutcome.FAILED, RUNTIME_TURN_NOT_SUBMITTED
+            )
+            row = self.catalog.queued_message(SESSION_ID, CLIENT_TURN)
+            self.assertEqual(row.state, QueuedMessageState.FAILED)
+            self.assertEqual(row.safe_error, RUNTIME_TURN_NOT_SUBMITTED)
+            self.assertFalse(self.live.ledger.has_unknown_outcome)
+            await self.turns._drain_next(self.live)
+            self.assertEqual(self.adapter.inputs, [])
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, CLIENT_TURN).state,
+                QueuedMessageState.FAILED,
+            )
+            self.assertIsNone(self.turns._schedule_locked(self.live, CLIENT_TURN))
+
+        asyncio.run(scenario())
+
+    def test_not_submitted_code_cannot_override_an_unknown_outcome(self) -> None:
+        async def scenario() -> None:
+            self.catalog.enqueue_message(SESSION_ID, CLIENT_TURN, self.body(0))
+            self.catalog.begin_queued_submission(SESSION_ID, CLIENT_TURN)
+            await self.turns._settle_queued_outcome(
+                self.live, CLIENT_TURN, RuntimeTurnOutcome.UNKNOWN, RUNTIME_TURN_NOT_SUBMITTED
+            )
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, CLIENT_TURN).state,
+                QueuedMessageState.OUTCOME_UNKNOWN,
+            )
+            await self.turns._drain_next(self.live)
+            self.assertEqual(self.adapter.inputs, [])
+
+        asyncio.run(scenario())
+
+    def test_recover_persisted_not_submitted_settlement_without_resending(self) -> None:
+        async def scenario() -> None:
+            self.catalog.enqueue_message(SESSION_ID, CLIENT_TURN, self.body(0))
+            self.catalog.begin_queued_submission(SESSION_ID, CLIENT_TURN)
+            event = RuntimeEvent(
+                schema_version=1,
+                event_id="not-submitted:settlement",
+                runtime_id=RUNTIME_ID,
+                product_session_id=SESSION_ID,
+                native_session_id=self.adapter.session_id,
+                process_generation=1,
+                sequence=1,
+                kind=RuntimeEventKind.TURN_FAILED,
+                delivery=DeliveryClass.MUST_PERSIST,
+                observed_at="2026-10-29T00:00:00Z",
+                correlation_id=CLIENT_TURN,
+                native_turn_id=CLIENT_TURN,
+                payload={
+                    "safe_error": RUNTIME_TURN_NOT_SUBMITTED,
+                    "error_code": RUNTIME_TURN_NOT_SUBMITTED,
+                },
+            )
+            self.catalog.record_turn_settlement(SESSION_ID, CLIENT_TURN, event)
+            self.catalog.recover_inflight()
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, CLIENT_TURN).state,
+                QueuedMessageState.FAILED,
+            )
+            with patch.object(
+                self.live.runtime_session,
+                "activity",
+                new=AsyncMock(
+                    return_value=RuntimeActivitySnapshot(
+                        "fixture",
+                        0,
+                        0,
+                        True,
+                        execution_tree_complete=True,
+                    )
+                ),
+            ):
+                await asyncio.wait_for(self.turns._recover_settlement(self.live), 2)
+            self.assertIsNone(self.catalog.pending_turn_settlement(SESSION_ID))
+            row = self.catalog.queued_message(SESSION_ID, CLIENT_TURN)
+            self.assertEqual(row.state, QueuedMessageState.FAILED)
+            self.assertEqual(row.safe_error, RUNTIME_TURN_NOT_SUBMITTED)
+            self.assertEqual(self.adapter.inputs, [])
+            self.assertFalse(self.live.ledger.has_unknown_outcome)
+
+        asyncio.run(scenario())
+
+    def test_restart_negative_proof_cannot_downgrade_positive_or_historical_evidence(self) -> None:
+        for mode in (
+            "running",
+            "unknown",
+            "uncertain",
+            "wrong_correlation",
+            "unknown_terminal",
+            "no_proof",
+        ):
+            with self.subTest(mode=mode):
+                request_id = f"negative-proof-{mode}"
+                self.catalog.enqueue_message(SESSION_ID, request_id, self.body(0))
+                self.catalog.begin_queued_submission(SESSION_ID, request_id)
+                event = RuntimeEvent(
+                    schema_version=1,
+                    event_id=f"proof:{mode}",
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=SESSION_ID,
+                    native_session_id=self.adapter.session_id,
+                    native_turn_id=request_id,
+                    process_generation=1,
+                    sequence=1,
+                    kind=(
+                        RuntimeEventKind.TURN_UNKNOWN
+                        if mode == "unknown_terminal"
+                        else RuntimeEventKind.TURN_FAILED
+                    ),
+                    delivery=DeliveryClass.MUST_PERSIST,
+                    observed_at="2026-10-29T00:00:00Z",
+                    correlation_id="another-command" if mode == "wrong_correlation" else request_id,
+                    payload={
+                        "safe_error": RUNTIME_TURN_NOT_SUBMITTED,
+                        "error_code": RUNTIME_TURN_NOT_SUBMITTED,
+                    },
+                )
+                if mode != "no_proof":
+                    self.catalog.record_turn_settlement(SESSION_ID, request_id, event)
+                if mode == "running":
+                    self.catalog.mark_queue_running(SESSION_ID, request_id, "actual-native-turn")
+                elif mode == "unknown":
+                    self.catalog.fail_queued_submission(
+                        SESSION_ID, request_id, unknown=True, safe_error="old-unknown"
+                    )
+                elif mode == "uncertain":
+                    asyncio.run(
+                        self.live.ledger.record_unknown_submission(
+                            request_id, safe_error="old-unknown"
+                        )
+                    )
+                self.catalog.recover_inflight()
+                self.assertEqual(
+                    self.catalog.queued_message(SESSION_ID, request_id).state,
+                    QueuedMessageState.OUTCOME_UNKNOWN,
+                )
+                if mode != "no_proof":
+                    self.catalog.clear_turn_settlement(SESSION_ID, request_id)
+
+    def test_live_not_submitted_result_does_not_complete_the_queue(self) -> None:
+        async def scenario() -> None:
+            failed = RuntimeTurnResult(
+                command_id=CLIENT_TURN,
+                native_turn_id="",
+                outcome=RuntimeTurnOutcome.FAILED,
+                safe_error=RUNTIME_TURN_NOT_SUBMITTED,
+            )
+            with patch.object(
+                self.live.runtime_driver, "submit", new=AsyncMock(return_value=failed)
+            ) as submit:
+                payload, status = await self.turns.post(SESSION_ID, self.body(0), side=False)
+                self.assertEqual(status, 202, payload)
+                await self.turns._drain_next(self.live)
+                self.assertEqual(submit.await_count, 1)
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, CLIENT_TURN).state,
+                QueuedMessageState.FAILED,
+            )
+            self.assertFalse(self.live.ledger.has_unknown_outcome)
+
+        asyncio.run(scenario())
+
+    def test_unknown_turn_continue_checks_activity_and_starts_new_message_once(self) -> None:
+        self.turns._events = self.events
+
+        async def scenario() -> None:
+            self.catalog.enqueue_message(
+                SESSION_ID, "interrupted-turn", {"text": "original request"}
+            )
+            self.catalog.begin_queued_submission(SESSION_ID, "interrupted-turn")
+            self.catalog.fail_queued_submission(
+                SESSION_ID, "interrupted-turn", unknown=True, safe_error="process_exit"
+            )
+            await self.live.ledger.record_unknown_submission(
+                "interrupted-turn", safe_error="process_exit"
+            )
+            self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=self.adapter.session_id,
+                vendor_turn_id="interrupted-turn",
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_TURN_UNKNOWN,
+                payload={},
+                idempotency_key="interrupted-origin",
+            )
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            body = {**self.body(0), "continue_turn_id": "interrupted-turn", "wait": False}
+            for activity in (
+                RuntimeActivitySnapshot("fixture", 0, 0, False),
+                RuntimeActivitySnapshot(
+                    "fixture", 0, 0, True, ("native_background_terminal_active",)
+                ),
+            ):
+                with patch.object(
+                    self.live.runtime_session, "activity", new=AsyncMock(return_value=activity)
+                ):
+                    payload, status = await self.turns.post(SESSION_ID, body, side=False)
+                self.assertEqual(status, 409, payload)
+                self.assertTrue(self.live.ledger.has_unknown_outcome)
+                self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+            with patch.object(
+                self.live.runtime_session,
+                "activity",
+                new=AsyncMock(side_effect=RuntimeError("offline")),
+            ):
+                payload, status = await self.turns.post(SESSION_ID, body, side=False)
+            self.assertEqual(
+                (payload["error"], status), ("previous_turn_activity_unavailable", 409)
+            )
+            payload, status = await self.turns.post(
+                SESSION_ID, {"continue_turn_id": "interrupted-turn"}, side=False
+            )
+            self.assertEqual(status, 400, payload)
+            self.assertTrue(self.live.ledger.has_unknown_outcome)
+            retained_session = self.live.runtime_session
+            self.live.runtime_session = None
+
+            async def prepare_recovery(live, *, request_id, deadline, on_wait):
+                self.assertFalse(live.lifecycle_lock.locked())
+                live.runtime_session = retained_session
+
+            self.turns._prepare = prepare_recovery
+            with patch.object(
+                self.turns,
+                "_confirm_queued_unknown_locked",
+                new=AsyncMock(side_effect=RuntimeError("store busy")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "store busy"):
+                    await self.turns.post(SESSION_ID, body, side=False)
+            self.assertTrue(self.live.ledger.has_unknown_outcome)
+            self.assertIsNotNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+            payload, status = await self.turns.post(SESSION_ID, body, side=False)
+            self.assertEqual(status, 202, payload)
+            self.assertFalse(self.live.ledger.has_unknown_outcome)
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, "interrupted-turn").state,
+                QueuedMessageState.COMPLETED,
+            )
+            duplicate, status = await self.turns.post(
+                SESSION_ID, {**body, "client_user_message_id": "duplicate"}, side=False
+            )
+            self.assertEqual(status, 409, duplicate)
+            await self.adapter.started.wait()
+            repeated, status = await self.turns.post(SESSION_ID, body, side=False)
+            self.assertEqual(status, 202, repeated)
+            self.assertEqual(len(self.adapter.inputs), 1)
+            self.assertIn("Do not blindly replay", self.adapter.inputs[0].items[0]["text"])
+            task = self.live.current_task
+            self.adapter.release.set()
+            await task
+
+        asyncio.run(scenario())
+
+    def test_maintenance_rejects_new_turn_before_enqueue(self) -> None:
+        self.activities.begin()
+        with self.assertRaises(MaintenanceActive):
+            asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+        self.assertEqual(self.adapter.inputs, [])
+
+    def test_expected_model_is_rechecked_inside_lifecycle_before_first_enqueue(self) -> None:
+        async def scenario() -> None:
+            await self.live.lifecycle_lock.acquire()
+            pending = asyncio.create_task(
+                self.turns.post(
+                    SESSION_ID,
+                    self.body(0),
+                    side=False,
+                    expected_model_id="contract-model",
+                    prepared_activity=True,
+                )
+            )
+            try:
+                await asyncio.sleep(0)
+                self.assertFalse(pending.done())
+                self.catalog.set_model(SESSION_ID, OWNER, "replacement-model")
+            finally:
+                self.live.lifecycle_lock.release()
+            payload, status = await asyncio.wait_for(pending, QUEUE_SETTLEMENT_TIMEOUT_SECONDS)
+            self.assertEqual(status, 409, payload)
+            self.assertEqual(payload["error"], RECONFIGURATION_STALE)
+            self.assertIs(payload["preparation_error"], True)
+            self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+            self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+            self.assertEqual(self.adapter.inputs, [])
+            self.assertIsNone(self.live.current_task)
+            self.assertIsNone(self.live.resource_task)
+            self.assertEqual(self.activities.snapshot().counts, {})
+
+        asyncio.run(scenario())
+
+    def test_prepared_turn_continues_its_owned_parent_during_drain_without_new_root(self) -> None:
+        async def scenario() -> None:
+            with self.activities.enter(ActivityDomain.TURN, root=True):
+                generation = self.activities.begin()
+                with self.assertRaises(MaintenanceActive):
+                    await self.turns.post(SESSION_ID, self.body(0), side=False)
+                self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+                payload, status = await self.turns.post(
+                    SESSION_ID,
+                    self.body(0),
+                    side=False,
+                    expected_model_id="contract-model",
+                    prepared_activity=True,
+                )
+                self.assertEqual(status, 202, payload)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(len(self.adapter.inputs), 1)
+                self.assertEqual(
+                    self.catalog.queued_message(SESSION_ID, CLIENT_TURN).state,
+                    QueuedMessageState.COMPLETED,
+                )
+                await self.turns.aclose()
+                self.assertFalse(self.activities.seal(generation))
+            self.assertTrue(self.activities.seal(generation))
+            self.activities.resume(generation)
+            self.assertEqual(self.activities.snapshot().counts, {})
+
+        asyncio.run(scenario())
+
+    def test_prepared_flag_without_owned_parent_does_not_bypass_drain(self) -> None:
+        async def scenario() -> None:
+            generation = self.activities.begin()
+            with self.assertRaises(MaintenanceActive):
+                await self.turns.post(
+                    SESSION_ID,
+                    self.body(0),
+                    side=False,
+                    expected_model_id="contract-model",
+                    prepared_activity=True,
+                )
+            self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+            self.assertEqual(self.adapter.inputs, [])
+            self.assertTrue(self.activities.seal(generation))
+            self.activities.resume(generation)
+
+        asyncio.run(scenario())
+
+    def test_prepared_duplicate_preserves_failed_or_unknown_submission_without_replay(self) -> None:
+        async def scenario() -> None:
+            for unknown in (False, True):
+                with self.subTest(unknown=unknown):
+                    identity = "prepared-unknown" if unknown else "prepared-failed"
+                    body = self.body(0, client_turn_id=identity)
+                    queued, status = await self.turns._enqueue(
+                        self.live, body, submission_mode=SubmissionMode.DIRECT
+                    )
+                    self.assertEqual(status, 202, queued)
+                    self.catalog.begin_queued_submission(SESSION_ID, identity)
+                    self.catalog.fail_queued_submission(
+                        SESSION_ID, identity, unknown=unknown, safe_error="preserved-failure"
+                    )
+                    before = self.catalog.queued_message(SESSION_ID, identity)
+                    expected = (
+                        QueuedMessageState.OUTCOME_UNKNOWN if unknown else QueuedMessageState.FAILED
+                    )
+                    self.assertIs(before.state, expected)
+                    with self.activities.enter(ActivityDomain.TURN, root=True):
+                        payload, status = await self.turns.post(
+                            SESSION_ID,
+                            body,
+                            side=False,
+                            expected_model_id="contract-model",
+                            prepared_activity=True,
+                        )
+                    self.assertIn(status, (202, 409), payload)
+                    await asyncio.sleep(0)
+                    self.assertEqual(self.catalog.queued_message(SESSION_ID, identity), before)
+                    self.assertEqual(self.adapter.inputs, [])
+                    self.assertIsNone(self.live.current_task)
+                    self.assertIsNone(self.live.resource_task)
+            self.assertEqual(self.activities.snapshot().counts, {})
+
+        asyncio.run(scenario())
+
+    def test_maintenance_pauses_queue_and_control_delete_returns(self) -> None:
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            self.catalog.enqueue_message(
+                SESSION_ID, "remove", self.body(0, client_turn_id="remove")
+            )
+            self.catalog.enqueue_message(SESSION_ID, CLIENT_TURN, self.body(0))
+            generation = self.activities.begin()
+            payload, status = await asyncio.wait_for(
+                self.turns.delete_queued(SESSION_ID, "remove"), timeout=2
+            )
+            self.assertEqual(status, 200, payload)
+            self.assertEqual(self.adapter.inputs, [])
+            self.assertEqual(len(self.catalog.queued_messages(SESSION_ID)), 1)
+            self.assertTrue(self.activities.seal(generation))
+            self.activities.resume(generation)
+            try:
+                await asyncio.wait_for(self.adapter.started.wait(), timeout=2)
+                self.assertEqual(len(self.adapter.inputs), 1)
+            finally:
+                self.adapter.release.set()
+                if self.live.current_task is not None:
+                    await self.live.current_task
+                if self.live.resource_task is not None:
+                    await self.live.resource_task
+                await self.turns.aclose()
+            # The queued preparation awaits the execution through shield; its
+            # finally runs on a later loop turn even after current_task completes.
+            async with asyncio.timeout(2):
+                while self.activities.snapshot().counts:
+                    await asyncio.sleep(0)
+            self.assertEqual(self.activities.snapshot().counts, {})
+
+        asyncio.run(scenario())
+
+    def test_completed_turn_with_pending_hil_rejects_before_enqueue(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        with patch.object(
+            self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+        ):
+            payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual((payload["error"], status), ("previous_turn_pending_hil", 409))
+        self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+
+    def test_completed_turn_with_background_activity_rejects_before_enqueue(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        activity = SimpleNamespace(idle=False, blockers=("native_background_terminal_active",))
+        with patch.object(
+            self.live.runtime_session, "activity", new=AsyncMock(return_value=activity)
+        ):
+            payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual((payload["error"], status), ("previous_turn_background_active", 409))
+        self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+
+    def test_pending_settlement_admission_distinguishes_known_outcomes(self) -> None:
+        async def scenario() -> None:
+            nativeTurnId = "previous-native-turn"
+            self.live.active_product_turn_id = "previous-client-turn"
+            await self.live.ledger.activate_turn(nativeTurnId)
+            self.catalog.enqueue_message(SESSION_ID, "queued-next", self.body(0))
+            background = RuntimeActivitySnapshot(
+                "fixture",
+                0,
+                0,
+                True,
+                execution_tree_complete=True,
+                execution_tree_blockers=("native_background_terminal_active",),
+            )
+            idle = RuntimeActivitySnapshot("fixture", 0, 0, True, execution_tree_complete=True)
+            cases = (
+                (background, [], "previous_turn_background_active"),
+                (background, [{"request_id": "hil"}], "previous_turn_pending_hil"),
+                (
+                    RuntimeActivitySnapshot("fixture", 0, 0, False),
+                    [],
+                    "previous_turn_activity_unavailable",
+                ),
+                (RuntimeError("activity unavailable"), [], "previous_turn_activity_unavailable"),
+                (None, [], "previous_turn_activity_unavailable"),
+                (idle, [], "previous_turn_settling"),
+            )
+            for eventKind in (
+                RuntimeEventKind.TURN_COMPLETED,
+                RuntimeEventKind.TURN_FAILED,
+                RuntimeEventKind.TURN_INTERRUPTED,
+                RuntimeEventKind.TURN_UNKNOWN,
+            ):
+                event = RuntimeEvent(
+                    schema_version=1,
+                    event_id=f"pending:{eventKind.value}",
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=SESSION_ID,
+                    native_session_id=self.adapter.session_id,
+                    process_generation=1,
+                    sequence=1,
+                    kind=eventKind,
+                    delivery=DeliveryClass.MUST_PERSIST,
+                    observed_at="fixture",
+                    native_turn_id=nativeTurnId,
+                )
+                self.catalog.record_turn_settlement(SESSION_ID, "previous-client-turn", event)
+                self.catalog.mark_turn_recovery_blocked(SESSION_ID, True)
+                for activity, pendingHil, expectedError in cases:
+                    expected = (
+                        "turn_outcome_unconfirmed"
+                        if eventKind is RuntimeEventKind.TURN_UNKNOWN
+                        else expectedError
+                    )
+                    runtimeSession = self.live.runtime_session
+                    if activity is None:
+                        self.live.runtime_session = None
+                    query = AsyncMock(
+                        side_effect=activity if isinstance(activity, Exception) else None,
+                        return_value=activity,
+                    )
+                    try:
+                        with (
+                            patch.object(runtimeSession, "activity", new=query),
+                            patch.object(
+                                self.live, "pending_hil_snapshot", return_value=pendingHil
+                            ),
+                        ):
+                            for action in ("post", "send_queued", "steer"):
+                                with self.subTest(kind=eventKind, activity=activity, action=action):
+                                    if action == "send_queued":
+                                        payload, status = await self.turns.send_queued(
+                                            SESSION_ID, "queued-next"
+                                        )
+                                    else:
+                                        payload, status = await self.turns.post(
+                                            SESSION_ID,
+                                            {**self.body(0), "queued_message_id": "queued-next"},
+                                            side=action == "steer",
+                                        )
+                                    self.assertEqual((payload["error"], status), (expected, 409))
+                                    self.assertIsNone(
+                                        self.catalog.queued_message(SESSION_ID, CLIENT_TURN)
+                                    )
+                                    self.assertEqual(
+                                        self.catalog.queued_message(
+                                            SESSION_ID, "queued-next"
+                                        ).state,
+                                        QueuedMessageState.QUEUED,
+                                    )
+                                    self.assertEqual(self.adapter.inputs, [])
+                                    self.assertIsNotNone(
+                                        self.catalog.pending_turn_settlement(SESSION_ID)
+                                    )
+                    finally:
+                        self.live.runtime_session = runtimeSession
+                self.catalog.clear_turn_settlement(SESSION_ID, nativeTurnId)
+
+        asyncio.run(scenario())
+
+    def test_online_pending_unknown_rejects_queue_admission(self) -> None:
+        event = RuntimeEvent(
+            schema_version=1,
+            event_id="pending:unknown",
+            runtime_id=RUNTIME_ID,
+            product_session_id=SESSION_ID,
+            native_session_id=self.adapter.session_id,
+            process_generation=1,
+            sequence=1,
+            kind=RuntimeEventKind.TURN_UNKNOWN,
+            delivery=DeliveryClass.MUST_PERSIST,
+            observed_at="fixture",
+            native_turn_id="unknown-native-turn",
+        )
+        self.live.active_product_turn_id = "unknown-client-turn"
+        asyncio.run(self.live.ledger.activate_turn(event.native_turn_id))
+        self.catalog.record_turn_settlement(SESSION_ID, "unknown-client-turn", event)
+        payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual((payload["error"], status), ("turn_outcome_unconfirmed", 409))
+        self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+
+    def test_completed_turn_with_unavailable_activity_rejects_before_enqueue(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        with patch.object(
+            self.live.runtime_session,
+            "activity",
+            new=AsyncMock(side_effect=RuntimeError("unavailable")),
+        ):
+            payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual((payload["error"], status), ("previous_turn_activity_unavailable", 409))
+        self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+
+    def test_completed_turn_with_idle_runtime_admits_next_turn(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual(status, 202, payload)
+        self.assertTrue(payload["accepted"])
+
+    def test_running_turn_still_accepts_next_message_into_queue(self) -> None:
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            first, status = await self.turns.post(
+                SESSION_ID, {**self.body(0), "wait": False}, side=False
+            )
+            self.assertEqual(status, 202, first)
+            await self.adapter.started.wait()
+            with patch.object(
+                self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+            ):
+                second, status = await self.turns.post(
+                    SESSION_ID,
+                    {**self.body(0, client_turn_id="next-turn"), "wait": False},
+                    side=False,
+                )
+            self.assertEqual(status, 202, second)
+            self.assertEqual(second["disposition"], "queued")
+            self.adapter.release.set()
+            if self.live.current_task is not None:
+                await self.live.current_task
+
+        asyncio.run(scenario())
+
+    def test_queued_turn_rejects_retained_activity_before_native_submission(self) -> None:
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            first, status = await self.turns.post(
+                SESSION_ID, {**self.body(0), "wait": False}, side=False
+            )
+            self.assertEqual(status, 202, first)
+            await self.adapter.started.wait()
+            second, status = await self.turns.post(
+                SESSION_ID,
+                {**self.body(0, client_turn_id="queued-next-turn"), "wait": False},
+                side=False,
+            )
+            self.assertEqual(status, 202, second)
+            blocked = RuntimeActivitySnapshot(
+                "fixture", 1, 1, False, ("native_background_terminal_active",)
+            )
+            with patch.object(
+                self.live.runtime_session, "activity", new=AsyncMock(return_value=blocked)
+            ):
+                first_task = self.live.current_task
+                assert first_task is not None
+                self.adapter.release.set()
+                await first_task
+                await asyncio.sleep(0.05)
+            queued = self.catalog.queued_message(SESSION_ID, "queued-next-turn")
+            assert queued is not None
+            self.assertEqual(queued.state, QueuedMessageState.FAILED)
+            self.assertEqual(queued.safe_error, "runtime_resource_wait_blocked")
+            self.assertEqual(len(self.adapter.inputs), 1)
+
+        asyncio.run(scenario())
+
+    def test_queued_turn_rejects_pending_hil_before_native_submission(self) -> None:
+        async def scenario() -> None:
+            queued, status = await self.turns._enqueue(
+                self.live,
+                self.body(0, client_turn_id="queued-after-hil"),
+                submission_mode=SubmissionMode.QUEUED,
+            )
+            self.assertEqual(status, 202, queued)
+            with patch.object(
+                self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+            ):
+                result = await self.turns._prepare_queued(self.live, "queued-after-hil")
+            self.assertEqual(result.error, "runtime_resource_wait_pending_hil")
+            record = self.catalog.queued_message(SESSION_ID, "queued-after-hil")
+            assert record is not None
+            self.assertEqual(record.state, QueuedMessageState.FAILED)
+            self.assertEqual(self.adapter.inputs, [])
+
+        asyncio.run(scenario())
+
+    def test_pending_hil_blocks_suspend_with_a_recorded_reason(self) -> None:
+        async def scenario() -> None:
+            with patch.object(
+                self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+            ):
+                self.assertFalse(await self.live.suspend_runtime())
+            self.assertEqual(self.live.suspend_blockers, ("pending_hil",))
+
+        asyncio.run(scenario())
+
+    def test_failed_turn_recovery_accepts_only_once_and_expires_after_completion(self) -> None:
+        self.turns._events = self.events
+        selection = self.select(0)
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="failed-turn",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_TURN_FAILED,
+            payload={"retryable": True},
+            idempotency_key="recoverable-failure",
+        )
+
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            body = {
+                **self.body(selection.revision),
+                "wait": False,
+                "continue_turn_id": "failed-turn",
+            }
+            first, first_status = await self.turns.post(SESSION_ID, body, side=False)
+            self.assertEqual(first_status, 202)
+            self.assertTrue(first["accepted"])
+            duplicate, status = await self.turns.post(
+                SESSION_ID, {**body, "client_user_message_id": "duplicate"}, side=False
+            )
+            self.assertEqual((duplicate["error"], status), ("continuation_origin_stale", 409))
+            await self.adapter.started.wait()
+            task = self.live.current_task
+            self.adapter.release.set()
+            await task
+            stale, status = await self.turns.post(
+                SESSION_ID, {**body, "client_user_message_id": "after-completion"}, side=False
+            )
+            self.assertEqual((stale["error"], status), ("continuation_origin_stale", 409))
+            self.assertIsNone(self.catalog.queued_message(SESSION_ID, "duplicate"))
+            self.assertIsNone(self.catalog.queued_message(SESSION_ID, "after-completion"))
+
+        asyncio.run(scenario())
+
+    def test_failed_turn_recovery_rejects_stale_origin_before_enqueue(self) -> None:
+        self.turns._events = self.events
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="completed-turn",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_TURN_INTERRUPTED,
+            payload={},
+            idempotency_key="recovery-terminal",
+        )
+        payload, status = asyncio.run(
+            self.turns.post(SESSION_ID, {"continue_turn_id": "old-failure"}, side=False)
+        )
+        self.assertEqual((payload.get("error"), status), ("continuation_origin_stale", 409))
+        self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+
+    def test_continuation_admission_rejects_replaced_or_cancelled_origin(self) -> None:
+        async def scenario() -> None:
+            self.live.last_submission_id = "new-submission"
+            payload, status = await self.turns.post(
+                SESSION_ID, {}, side=False, expected_submission_id="old-submission"
+            )
+            self.assertEqual((payload["error"], status), ("continuation_origin_stale", 409))
+            self.live.interrupt_generation = 1
+            payload, status = await self.turns.post(
+                SESSION_ID,
+                {},
+                side=False,
+                expected_submission_id="new-submission",
+                expected_interrupt_generation=0,
+            )
+            self.assertEqual((payload["error"], status), ("continuation_origin_stale", 409))
+            self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+
+        asyncio.run(scenario())
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="assistant-turn-")
         root = Path(self.temporary.name)
@@ -255,10 +1267,12 @@ class AssistantTurnContract(unittest.TestCase):
         )
         self.store = AssistantStore(self.database)
         self.assistant = AssistantService(self.store)
+        self.activities = Activities()
         self.turns = TurnService(
             {SESSION_ID: self.live},
             self.live._logger,
             context_source=self.assistant,
+            activities=self.activities,
         )
 
     def tearDown(self) -> None:
@@ -269,6 +1283,7 @@ class AssistantTurnContract(unittest.TestCase):
         return SessionService(
             self.live.runtime_workdir,
             {SESSION_ID: self.live} if residents is None else residents,
+            activities=Activities(),
             access=self.catalog,
             events=self.events,
             logger=self.live._logger,
@@ -313,6 +1328,7 @@ class AssistantTurnContract(unittest.TestCase):
             context_source=context,
             catalog=self.catalog,
             events=self.events,
+            activities=Activities(),
         )
         for _attempt in range(2):
             result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
@@ -351,7 +1367,11 @@ class AssistantTurnContract(unittest.TestCase):
         self.catalog.begin_resource_wait(SESSION_ID, request_id, purpose=queued.purpose)
         residents = {}
         turns = TurnService(
-            residents, self.live._logger, catalog=self.catalog, events=self.events
+            residents,
+            self.live._logger,
+            catalog=self.catalog,
+            events=self.events,
+            activities=Activities(),
         )
         result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
         self.assertEqual(status, 200)
@@ -366,7 +1386,9 @@ class AssistantTurnContract(unittest.TestCase):
         request_id = "cold-submitting"
         self.catalog.enqueue_message(SESSION_ID, request_id, {"input": []})
         self.catalog.begin_queued_submission(SESSION_ID, request_id)
-        turns = TurnService({}, self.live._logger, catalog=self.catalog, events=self.events)
+        turns = TurnService(
+            {}, self.live._logger, catalog=self.catalog, events=self.events, activities=Activities()
+        )
         result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
         self.assertEqual(status, 409)
         self.assertEqual(result["error"], "queued_message_not_editable")
@@ -416,6 +1438,33 @@ class AssistantTurnContract(unittest.TestCase):
             refs=refs,
         )
 
+    def test_reference_only_turn_passes_names_to_titles_without_replacing_history(self) -> None:
+        titles = Mock()
+        titles.prepare.return_value = None
+        self.turns.bind_titles(titles)
+        source = self.live.runtime_workdir / "科研综述.md"
+        source.write_text("contract input", encoding="utf-8")
+        selection = self.select(0)
+        for kind in ("file", "skill"):
+            with (
+                self.subTest(kind=kind),
+                patch.object(self.turns, "_require_allowed_skill", new=AsyncMock(return_value="1")),
+            ):
+                body = {
+                    **self.body(selection.revision, client_turn_id=f"title-{kind}"),
+                    "input": [{"type": kind, "path": str(source), "name": source.name}],
+                }
+                payload, status = asyncio.run(self.turns.post(SESSION_ID, body, side=False))
+                self.assertEqual(status, 202, payload)
+                arguments = titles.prepare.call_args
+                self.assertIs(arguments.args[0], self.live)
+                self.assertEqual(arguments.args[1], "")
+                self.assertEqual(arguments.kwargs["turn_id"], f"title-{kind}")
+                self.assertEqual(arguments.kwargs["references"][0]["title"], source.name)
+                message = self.events.latest_kind(SESSION_ID, PRODUCT_EVENT_USER_MESSAGE)
+                self.assertEqual(message.payload["text"], "")
+                self.assertEqual(message.payload["refs"][0]["title"], source.name)
+
     def test_resource_summary_reaches_runtime_without_replacing_user_text(self) -> None:
         summary = 'Resource snapshot state\n[{"path":"notes.md","needs_review":true}]'
         deliveries = SimpleNamespace(
@@ -428,30 +1477,434 @@ class AssistantTurnContract(unittest.TestCase):
             self.live._logger,
             context_source=self.assistant,
             deliveries=deliveries,
+            activities=Activities(),
         )
         selection = self.select(0)
         payload, status = asyncio.run(
             self.turns.post(SESSION_ID, self.body(selection.revision), side=False)
         )
         self.assertEqual(status, 202, payload)
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["disposition"], "direct")
         items = self.adapter.inputs[0].items
         self.assertEqual(items[0]["text"], summary)
         self.assertTrue(any(item.get("text") == USER_TEXT for item in items))
         deliveries.begin_turn.assert_awaited_once()
 
-    def test_open_agent_reviews_block_turn_without_mutating_the_batch(self) -> None:
+    def test_reference_only_turn_reaches_runtime_without_synthetic_user_text(self) -> None:
+        self.assistant = AssistantService(
+            self.store, providers={ContextRefKind.FILE: ReadyProvider()}
+        )
+        self.turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=self.assistant,
+            activities=self.activities,
+        )
+        selection = self.select(
+            0,
+            refs=(
+                ContextRef(
+                    ref_id="file-only",
+                    kind=ContextRefKind.FILE,
+                    source_id="notes.md",
+                    label="notes.md",
+                ),
+            ),
+        )
+        payload, status = asyncio.run(
+            self.turns.post(
+                SESSION_ID,
+                {**self.body(selection.revision), "input": []},
+                side=False,
+            )
+        )
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(len(self.adapter.inputs), 1)
+        self.assertEqual(len(self.adapter.inputs[0].items), 1)
+        self.assertIn("contract evidence", self.adapter.inputs[0].items[0]["text"])
+        messages = [
+            event
+            for event in self.events.replay(SESSION_ID)
+            if event.kind == PRODUCT_EVENT_USER_MESSAGE
+        ]
+        self.assertEqual(messages[-1].payload["text"], "")
+        self.assertTrue(messages[-1].payload["refs"])
+
+    def test_empty_turn_rejects_background_context_and_revision_only(self) -> None:
+        selection = self.select(0)
+        payload, status = asyncio.run(
+            self.turns.post(
+                SESSION_ID,
+                {**self.body(selection.revision), "input": []},
+                side=False,
+            )
+        )
+        self.assertEqual(status, 400, payload)
+        self.assertEqual(payload["detail"], "turn_input_required")
+        self.assertFalse(self.adapter.inputs)
+
+    def test_reference_only_turn_preserves_revision_and_resolution_failures(self) -> None:
+        selection = self.select(
+            0,
+            refs=(
+                ContextRef(
+                    ref_id="unavailable",
+                    kind=ContextRefKind.FILE,
+                    source_id="missing.md",
+                    label="missing.md",
+                ),
+            ),
+        )
+        for revision, expected_status, expected_error in (
+            (0, 409, "assistant_context_revision_conflict"),
+            (selection.revision, 400, "assistant_context_unavailable"),
+        ):
+            with self.subTest(revision=revision):
+                payload, status = asyncio.run(
+                    self.turns.post(
+                        SESSION_ID,
+                        {**self.body(revision), "input": []},
+                        side=False,
+                    )
+                )
+                self.assertEqual(status, expected_status, payload)
+                self.assertEqual(payload["error"], expected_error)
+        self.assertFalse(self.adapter.inputs)
+
+    def test_reference_only_queued_turn_freezes_and_dispatches(self) -> None:
+        self.assistant = AssistantService(
+            self.store, providers={ContextRefKind.FILE: ReadyProvider()}
+        )
+        self.turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=self.assistant,
+            activities=self.activities,
+        )
+        selection = self.select(
+            0,
+            refs=(
+                ContextRef(
+                    ref_id="queued-only",
+                    kind=ContextRefKind.FILE,
+                    source_id="queued.md",
+                    label="queued.md",
+                ),
+            ),
+        )
+
+        async def exercise() -> None:
+            body = {**self.body(selection.revision), "input": []}
+            payload, status = await self.turns._enqueue(
+                self.live,
+                body,
+                submission_mode=SubmissionMode.QUEUED,
+            )
+            self.assertEqual(status, 202, payload)
+            edited, edited_status = await self.turns.update_queued(
+                SESSION_ID,
+                CLIENT_TURN,
+                body,
+            )
+            self.assertEqual(edited_status, 409, edited)
+            self.assertEqual(edited["error"], "queued_message_frozen")
+            await self.turns._prepare_queued(self.live, CLIENT_TURN)
+
+        asyncio.run(exercise())
+        self.assertEqual(len(self.adapter.inputs), 1)
+        self.assertIn("queued.md", self.adapter.inputs[0].items[0]["text"])
+
+    def test_reference_only_current_reply_selection_reaches_runtime(self) -> None:
+        assistant = AssistantService(
+            self.store, providers={ContextRefKind.SELECTION: ReadyProvider()}
+        )
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=assistant,
+            activities=self.activities,
+        )
+        selection = assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(
+                ContextRef(
+                    ref_id="current-reply",
+                    kind=ContextRefKind.SELECTION,
+                    source_id=SESSION_ID,
+                    label="当前回复选区",
+                ),
+            ),
+        )
+        payload, status = asyncio.run(
+            turns.post(
+                SESSION_ID,
+                {**self.body(selection.revision), "input": []},
+                side=False,
+            )
+        )
+        self.assertEqual(status, 202, payload)
+        self.assertIn("contract evidence", self.adapter.inputs[0].items[0]["text"])
+
+    def test_empty_turn_does_not_use_implicit_material_as_user_input(self) -> None:
+        assistant = AssistantService(self.store, providers={ContextRefKind.FILE: ReadyProvider()})
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=assistant,
+            activities=self.activities,
+        )
+        selection = assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(
+                ContextRef(
+                    ref_id="implicit",
+                    kind=ContextRefKind.FILE,
+                    source_id="background.md",
+                    label="background.md",
+                    origin=ContextOrigin.CURRENT_DOCUMENT,
+                ),
+            ),
+        )
+        payload, status = asyncio.run(
+            turns.post(
+                SESSION_ID,
+                {**self.body(selection.revision), "input": []},
+                side=False,
+            )
+        )
+        self.assertEqual(status, 400, payload)
+        self.assertEqual(payload["detail"], "turn_input_required")
+        self.assertFalse(self.adapter.inputs)
+
+    def test_empty_input_remains_invalid_without_context_admission(self) -> None:
+        async def exercise() -> None:
+            for body in ({}, {"input": None}, {"input": []}):
+                with self.subTest(body=body):
+                    with self.assertRaisesRegex(ValueError, "turn_input_required"):
+                        await self.turns._typed_input(self.live, body)
+            queued_id = "editable-empty"
+            self.catalog.enqueue_message(SESSION_ID, queued_id, self.body(0))
+            payload, status = await self.turns.update_queued(
+                SESSION_ID,
+                queued_id,
+                {"input": []},
+            )
+            self.assertEqual(status, 400, payload)
+            self.assertEqual(payload["detail"], "turn_input_required")
+
+        asyncio.run(exercise())
+
+    def test_reference_only_note_reaches_runtime(self) -> None:
+        answer_text = "当前回复原文"
+        answers = Mock()
+        answers.answer.return_value = AssistantAnswer(
+            answer_id="item:reply",
+            session_id=SESSION_ID,
+            turn_id="reply-turn",
+            source_product_seq=1,
+            vendor_item_id="reply",
+            markdown=answer_text,
+            revision=text_revision(answer_text),
+            completed_at=3.0,
+        )
+        annotations = AnswerAnnotationService(self.store, answers)
+        _annotation, selection = annotations.create(
+            session_id=SESSION_ID,
+            answer_id="item:reply",
+            client_annotation_id="reply-note",
+            expected_context_revision=0,
+            answer_revision=text_revision(answer_text),
+            start_utf16=0,
+            end_utf16=len(answer_text),
+            selected_text_hash=text_revision(answer_text),
+            preview_text=answer_text,
+            comment="",
+            enqueue=True,
+        )
+        assistant = AssistantService(self.store, providers={ContextRefKind.NOTE: annotations})
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=assistant,
+            activities=self.activities,
+        )
+        payload, status = asyncio.run(
+            turns.post(
+                SESSION_ID,
+                {**self.body(selection.revision), "input": []},
+                side=False,
+            )
+        )
+        self.assertEqual(status, 202, payload)
+        self.assertIn(answer_text, self.adapter.inputs[0].items[0]["text"])
+
+    def test_reference_only_truncation_requires_material_or_locator(self) -> None:
+        cases = (
+            ("empty-slot", ContextResolutionState.TRUNCATED, (), 400),
+            (
+                "empty-file",
+                ContextResolutionState.READY,
+                (
+                    AssistantContextResolvedItem(
+                        item_id="empty",
+                        source_id="empty",
+                        label="empty",
+                        source_revision="",
+                        text="",
+                    ),
+                ),
+                202,
+            ),
+            (
+                "excerpt",
+                ContextResolutionState.TRUNCATED,
+                (
+                    AssistantContextResolvedItem(
+                        item_id="excerpt",
+                        source_id="excerpt",
+                        label="excerpt",
+                        text="partial",
+                        source_revision="",
+                    ),
+                ),
+                202,
+            ),
+            (
+                "locator",
+                ContextResolutionState.TRUNCATED,
+                (
+                    AssistantContextResolvedItem(
+                        item_id="locator",
+                        source_id="locator",
+                        label="locator",
+                        model_locator="resource://locator",
+                        source_revision="",
+                        text="",
+                    ),
+                ),
+                202,
+            ),
+        )
+        for case, state, items, expected_status in cases:
+            with self.subTest(case=case):
+                provider = Mock()
+                provider.resolve.return_value = AssistantContextResolution(
+                    state=state,
+                    provider_version="turn-contract/v1",
+                    items=items,
+                )
+                assistant = AssistantService(self.store, providers={ContextRefKind.FILE: provider})
+                turns = TurnService(
+                    {SESSION_ID: self.live},
+                    self.live._logger,
+                    context_source=assistant,
+                    activities=self.activities,
+                )
+                selection = assistant.replace_selection(
+                    session_id=SESSION_ID,
+                    expected_revision=assistant.selection(SESSION_ID).revision,
+                    project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+                    search_scope=SearchScope.DISABLED,
+                    refs=(
+                        ContextRef(
+                            ref_id=case,
+                            kind=ContextRefKind.FILE,
+                            source_id=case,
+                            label=case,
+                        ),
+                    ),
+                )
+                payload, status = asyncio.run(
+                    turns.post(
+                        SESSION_ID,
+                        {**self.body(selection.revision, client_turn_id=case), "input": []},
+                        side=False,
+                    )
+                )
+                self.assertEqual(status, expected_status, payload)
+
+    def test_permission_baseline_failure_projects_file_details_without_runtime_submission(
+        self,
+    ) -> None:
+        path = "resources/受限文件.md"
         deliveries = SimpleNamespace(
-            begin_turn=AsyncMock(return_value=ResourceTurnContext()),
+            begin_turn=AsyncMock(side_effect=ContentReadPermissionError(path)),
             finish_turn=AsyncMock(return_value=ReviewCaptureResult()),
         )
-        review_batches = SimpleNamespace(has_open_for_workdir=Mock(return_value=True))
         self.live.project_path = self.live.runtime_workdir
         turns = TurnService(
             {SESSION_ID: self.live},
             self.live._logger,
             context_source=self.assistant,
             deliveries=deliveries,
-            review_batches=review_batches,
+            activities=Activities(),
+        )
+        selection = self.select(0)
+        payload, status = asyncio.run(
+            turns.post(
+                SESSION_ID,
+                self.body(selection.revision),
+                side=False,
+            )
+        )
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(payload["error"], "resource_baseline_permission_denied")
+        queued = self.catalog.queued_message(SESSION_ID, CLIENT_TURN)
+        self.assertEqual(queued.state, QueuedMessageState.FAILED)
+        self.assertEqual(queued.safe_error_details, {"path": path})
+        rejected = next(
+            event for event in self.events.replay(SESSION_ID) if event.kind == "send_now_rejected"
+        )
+        self.assertEqual(rejected.payload["safe_error_details"], {"path": path})
+        self.assertEqual(self.adapter.inputs, [])
+
+    def test_nonpermission_baseline_failure_retains_generic_error(self) -> None:
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(side_effect=ContentError("read_failed")),
+            finish_turn=AsyncMock(return_value=ReviewCaptureResult()),
+        )
+        self.live.project_path = self.live.runtime_workdir
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=self.assistant,
+            deliveries=deliveries,
+            activities=Activities(),
+        )
+        selection = self.select(0)
+        payload, status = asyncio.run(
+            turns.post(
+                SESSION_ID,
+                self.body(selection.revision),
+                side=False,
+            )
+        )
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(payload["error"], "resource_baseline_failed")
+        self.assertEqual(
+            self.catalog.queued_message(SESSION_ID, CLIENT_TURN).safe_error_details, {}
+        )
+        self.assertEqual(self.adapter.inputs, [])
+
+    def test_pending_resource_context_does_not_block_turn(self) -> None:
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(return_value=ResourceTurnContext(model_context="Pending review")),
+            finish_turn=AsyncMock(return_value=ReviewCaptureResult()),
+        )
+        self.live.project_path = self.live.runtime_workdir
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=self.assistant,
+            deliveries=deliveries,
+            activities=Activities(),
         )
         selection = self.select(0)
 
@@ -459,11 +1912,9 @@ class AssistantTurnContract(unittest.TestCase):
             turns.post(SESSION_ID, self.body(selection.revision), side=False)
         )
 
-        self.assertEqual(status, 409, payload)
-        self.assertEqual(payload["error"], "resource_review_required")
-        review_batches.has_open_for_workdir.assert_called_once_with(str(self.live.runtime_workdir))
-        deliveries.begin_turn.assert_not_awaited()
-        self.assertEqual(self.adapter.inputs, [])
+        self.assertEqual(status, 202, payload)
+        deliveries.begin_turn.assert_awaited_once()
+        self.assertEqual(len(self.adapter.inputs), 1)
 
     def test_finish_delivery_publishes_durable_review_ready_batch(self) -> None:
         deliveries = SimpleNamespace(
@@ -484,6 +1935,7 @@ class AssistantTurnContract(unittest.TestCase):
             self.live._logger,
             context_source=self.assistant,
             deliveries=deliveries,
+            activities=Activities(),
         )
         selection = self.select(0)
 
@@ -534,6 +1986,7 @@ class AssistantTurnContract(unittest.TestCase):
             self.live._logger,
             context_source=self.assistant,
             deliveries=deliveries,
+            activities=Activities(),
         )
         selection = self.select(0)
 
@@ -563,7 +2016,8 @@ class AssistantTurnContract(unittest.TestCase):
             [InputKind.TEXT.value, InputKind.TEXT.value],
         )
         self.assertTrue(items[0]["text"].startswith(ASSISTANT_CONTEXT_HEADER))
-        self.assertIn("precise-literature-search", items[0]["text"])
+        self.assertIn('"search_scope":"academic"', items[0]["text"])
+        self.assertNotIn("retrieval_directive", items[0]["text"])
         self.assertEqual(items[1]["text"], USER_TEXT)
 
         user_events = [
@@ -596,7 +2050,7 @@ class AssistantTurnContract(unittest.TestCase):
         self.assertEqual(decorated[0]["text"], USER_TEXT)
         self.assertNotIn(ASSISTANT_CONTEXT_HEADER, decorated[0]["text"])
 
-    def test_default_web_scope_guides_existing_search_without_revision(self) -> None:
+    def test_default_web_scope_sends_only_user_text_without_revision(self) -> None:
         body = self.body(0, client_turn_id="default-web-turn")
         body.pop("assistant_context_revision")
 
@@ -605,10 +2059,9 @@ class AssistantTurnContract(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertTrue(payload["ok"])
         items = self.adapter.inputs[0].items
+        self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["kind"], InputKind.TEXT.value)
-        self.assertIn('"search_scope":"web"', items[0]["text"])
-        self.assertIn("existing web-search capability", items[0]["text"])
-        self.assertEqual(items[1]["text"], USER_TEXT)
+        self.assertEqual(items[0]["text"], USER_TEXT)
 
     def test_unavailable_session_label_provenance_reaches_error_without_starting_adapter(
         self,
@@ -731,6 +2184,8 @@ class AssistantTurnContract(unittest.TestCase):
             )
             self.assertEqual(main_status, 202)
             self.assertTrue(main_payload["ok"])
+            self.assertTrue(main_payload["accepted"])
+            self.assertEqual(main_payload["disposition"], "direct")
             await self.adapter.started.wait()
             queued_payload, queued_status = await self.turns.post(
                 SESSION_ID,
@@ -742,7 +2197,12 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(queued_status, 202)
-            self.assertTrue(queued_payload["queued"])
+            self.assertTrue(queued_payload["accepted"])
+            self.assertEqual(queued_payload["disposition"], "queued")
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, "assistant-side-client").submission_mode,
+                SubmissionMode.QUEUED,
+            )
             side_payload, side_status = await self.turns.post(
                 SESSION_ID,
                 {"queued_message_id": queued_payload["queued_message_id"]},
@@ -781,6 +2241,7 @@ class AssistantTurnContract(unittest.TestCase):
             {SESSION_ID: self.live},
             self.live._logger,
             context_source=assistant,
+            activities=Activities(),
         )
         transient = ContextRef(
             ref_id="next-turn",
@@ -830,6 +2291,7 @@ class AssistantTurnContract(unittest.TestCase):
             {SESSION_ID: self.live},
             self.live._logger,
             context_source=assistant,
+            activities=Activities(),
         )
         first = ContextRef(
             ref_id="active-ref",
@@ -905,12 +2367,14 @@ class AssistantTurnContract(unittest.TestCase):
             return {**queued, "listed": listed["messages"]}
 
         queued = asyncio.run(exercise())
-        self.assertTrue(queued["queued"])
+        self.assertTrue(queued["accepted"])
+        self.assertEqual(queued["disposition"], "queued")
         messages, _status = self.session_service().queued(SESSION_ID)
         self.assertEqual(messages["messages"], [])
         queued_row = next(
             row for row in queued["listed"] if row["queued_message_id"] == "queued-turn"
         )
+        self.assertEqual(queued_row["submission_mode"], "queued")
         self.assertEqual(
             [ref["source_id"] for ref in queued_row["assistant_references"]],
             ["queued.md"],
@@ -930,7 +2394,12 @@ class AssistantTurnContract(unittest.TestCase):
         assistant = AssistantService(
             self.store, providers={ContextRefKind.SESSION: ReadyProvider()}
         )
-        turns = TurnService({SESSION_ID: self.live}, self.live._logger, context_source=assistant)
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=assistant,
+            activities=Activities(),
+        )
         reference = ContextRef(
             ref_id="untitled-queued-ref",
             kind=ContextRefKind.SESSION,
@@ -967,7 +2436,8 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(status, 202)
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             durable = SessionCatalogStore(self.database).queued_message(
                 SESSION_ID, "queued-provenance"
             )
@@ -1019,7 +2489,12 @@ class AssistantTurnContract(unittest.TestCase):
         assistant = AssistantService(
             self.store, providers={ContextRefKind.SELECTION: ReadyProvider()}
         )
-        turns = TurnService({SESSION_ID: self.live}, self.live._logger, context_source=assistant)
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=assistant,
+            activities=Activities(),
+        )
         reference = ContextRef(
             ref_id="untitled-queued-ref",
             kind=ContextRefKind.SELECTION,
@@ -1061,7 +2536,8 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(status, 202)
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             durable = SessionCatalogStore(self.database).queued_message(
                 SESSION_ID, "queued-provenance"
             )
@@ -1133,7 +2609,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             task = self.live.current_task
             assert task is not None
             self.adapter.release.set()
@@ -1145,13 +2622,10 @@ class AssistantTurnContract(unittest.TestCase):
 
         asyncio.run(exercise(TurnStatus.FAILED, "failed"))
 
-    def test_queued_dequeue_rechecks_review_admission_without_hidden_acceptance(self) -> None:
+    def test_queued_dequeue_does_not_wait_for_review_decisions(self) -> None:
         selection = self.select(0)
-        review_batches = SimpleNamespace(
-            has_open_for_workdir=Mock(side_effect=(False, False, True))
-        )
         deliveries = SimpleNamespace(
-            begin_turn=AsyncMock(return_value=ResourceTurnContext()),
+            begin_turn=AsyncMock(return_value=ResourceTurnContext(model_context="Pending review")),
             finish_turn=AsyncMock(return_value=ReviewCaptureResult()),
         )
         self.live.project_path = self.live.runtime_workdir
@@ -1160,7 +2634,7 @@ class AssistantTurnContract(unittest.TestCase):
             self.live._logger,
             context_source=self.assistant,
             deliveries=deliveries,
-            review_batches=review_batches,
+            activities=Activities(),
         )
 
         async def exercise() -> None:
@@ -1190,16 +2664,19 @@ class AssistantTurnContract(unittest.TestCase):
             assert task is not None
             self.adapter.release.set()
             await task
-            await asyncio.sleep(0.05)
+
+            async def queue_finished() -> None:
+                while self.catalog.queued_messages(SESSION_ID):
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(queue_finished(), timeout=QUEUE_SETTLEMENT_TIMEOUT_SECONDS)
 
         asyncio.run(exercise())
 
-        self.assertEqual(review_batches.has_open_for_workdir.call_count, 3)
-        deliveries.begin_turn.assert_awaited_once()
-        self.assertEqual(len(self.adapter.inputs), 1)
+        self.assertEqual(deliveries.begin_turn.await_count, 2)
+        self.assertEqual(len(self.adapter.inputs), 2)
         queued_rows = self.catalog.queued_messages(SESSION_ID)
-        self.assertEqual(len(queued_rows), 1)
-        self.assertEqual(queued_rows[0].queued_message_id, "queued-after-review")
+        self.assertEqual(queued_rows, ())
 
     def test_completed_runtime_with_failed_finalization_does_not_auto_run_queue(self) -> None:
         selection = self.select(0)
@@ -1235,7 +2712,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             task = self.live.current_task
             assert task is not None
             self.adapter.release.set()
@@ -1260,6 +2738,7 @@ class AssistantTurnContract(unittest.TestCase):
             {SESSION_ID: self.live},
             self.live._logger,
             context_source=assistant,
+            activities=Activities(),
         )
         active = ContextRef(
             ref_id="active-retract-ref",
@@ -1357,7 +2836,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             await self.live.interrupt()
             task = self.live.current_task
             assert task is not None
@@ -1383,6 +2863,7 @@ class AssistantTurnContract(unittest.TestCase):
             {SESSION_ID: self.live},
             self.live._logger,
             context_source=assistant,
+            activities=Activities(),
         )
         active_ref = ContextRef(
             ref_id="continue-active-ref",
@@ -1493,6 +2974,7 @@ class AssistantTurnContract(unittest.TestCase):
                 self.live._logger,
                 prepare=prepare,
                 context_source=self.assistant,
+                activities=Activities(),
             )
             response, status = await turns.post(
                 SESSION_ID,
@@ -1500,14 +2982,16 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(status, 202)
-            self.assertTrue(response["queued"])
+            self.assertTrue(response["accepted"])
+            self.assertEqual(response["disposition"], "direct")
             self.assertFalse(self.live.running)
             self.assertIsNone(self.live.current_task)
             await asyncio.wait_for(waiting.wait(), 1)
             async with self.live.lifecycle_lock:
                 record = self.catalog.queued_message(SESSION_ID, "wait-cancel")
-                self.assertEqual(record.state, QueuedMessageState.WAITING_RESOURCES)
-                self.assertEqual(record.deadline, 12345.0)
+            self.assertEqual(record.state, QueuedMessageState.WAITING_RESOURCES)
+            self.assertEqual(record.deadline, 12345.0)
+            self.assertEqual(record.submission_mode, SubmissionMode.DIRECT)
             self.assertTrue(self.live.waiting_resources)
             removed, remove_status = await turns.delete_queued(SESSION_ID, "wait-cancel")
             self.assertEqual(remove_status, 200)
@@ -1562,6 +3046,7 @@ class AssistantTurnContract(unittest.TestCase):
                         self.live._logger,
                         prepare=prepare,
                         context_source=assistant,
+                        activities=Activities(),
                     )
                     response, status = await turns.post(
                         SESSION_ID,
@@ -1581,6 +3066,141 @@ class AssistantTurnContract(unittest.TestCase):
                     self.assertEqual(self.adapter.inputs, [])
 
         asyncio.run(exercise())
+
+    def test_stop_keeps_admission_closed_until_initialization_cleanup_finishes(self) -> None:
+        selection = self.select(0)
+
+        async def exercise() -> None:
+            entered = asyncio.Event()
+            cleaning = asyncio.Event()
+            released = asyncio.Event()
+
+            async def prepare(live, **_kwargs):
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cleaning.set()
+                    await released.wait()
+
+            turns = TurnService(
+                {SESSION_ID: self.live},
+                self.live._logger,
+                prepare=prepare,
+                context_source=self.assistant,
+                activities=Activities(),
+            )
+            await turns.post(
+                SESSION_ID,
+                {**self.body(selection.revision, client_turn_id="initializing"), "wait": False},
+                side=False,
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+            stopping = asyncio.create_task(self.live.cancel_resource_wait())
+            await asyncio.wait_for(cleaning.wait(), 1)
+            try:
+                self.assertTrue(self.live.interrupting)
+                self.assertFalse(stopping.done())
+                response, status = await turns.post(
+                    SESSION_ID,
+                    self.body(selection.revision, client_turn_id="during-stop"),
+                    side=False,
+                )
+                self.assertEqual(status, 409, response)
+                self.assertEqual(response["error"], "session_interrupting")
+                self.assertEqual(self.adapter.inputs, [])
+            finally:
+                released.set()
+                self.assertTrue(await stopping)
+            self.assertFalse(self.live.interrupting)
+            self.assertTrue(self.live.last_interrupt_succeeded)
+
+        asyncio.run(exercise())
+
+    def test_cancelled_message_remains_visible_and_reaches_next_model_turn(self) -> None:
+        self._exercise_cancelled_message_history()
+
+    def _exercise_cancelled_message_history(self) -> None:
+        selection = self.select(0)
+
+        async def prepare(live, *, request_id, deadline, on_wait):
+            if request_id == "cancelled-first":
+                await asyncio.Event().wait()
+
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            prepare=prepare,
+            context_source=self.assistant,
+            events=self.events,
+            activities=Activities(),
+        )
+
+        async def exercise() -> None:
+            first, status = await turns.post(
+                SESSION_ID,
+                {
+                    **self.body(selection.revision, client_turn_id="cancelled-first"),
+                    "input": [{"type": "text", "text": "第一条：不要执行"}],
+                    "wait": False,
+                },
+                side=False,
+            )
+            self.assertEqual(status, 202, first)
+            self.assertTrue(await self.live.cancel_resource_wait())
+            self.assertEqual(self.adapter.inputs, [])
+            history = EventService({SESSION_ID: self.live}, self.events, self.live._logger)
+            cancelled = history.decorate_history(SESSION_ID, self.live.history())
+            self.assertEqual(cancelled[0]["text"], "第一条：不要执行")
+            self.assertEqual(cancelled[0]["status"], "cancelled")
+            self.assertIn("第一条：不要执行", self.events.portable_history(SESSION_ID)[0].text)
+
+            second, status = await turns.post(
+                SESSION_ID,
+                {
+                    **self.body(
+                        self.assistant.selection(SESSION_ID).revision,
+                        client_turn_id="second-turn",
+                    ),
+                    "input": [{"type": "text", "text": "我上一条消息是什么？"}],
+                },
+                side=False,
+            )
+            self.assertEqual(status, 202, second)
+            self.assertEqual(len(self.adapter.inputs), 1)
+            model_items = self.adapter.inputs[0].items
+            self.assertIn("第一条：不要执行", model_items[0]["text"])
+            self.assertIn("cancelled before execution", model_items[0]["text"])
+            self.assertEqual(model_items[-1]["text"], "我上一条消息是什么？")
+            visible = history.decorate_history(SESSION_ID, self.live.history())
+            self.assertEqual(
+                [row["text"] for row in visible if row["kind"] == "user"],
+                ["第一条：不要执行", "我上一条消息是什么？"],
+            )
+
+        asyncio.run(exercise())
+
+    def test_cancelled_portable_history_is_not_a_second_visible_user_message(self) -> None:
+        self._exercise_cancelled_message_history()
+        history = EventService({SESSION_ID: self.live}, self.events, self.live._logger)
+        expected = history.decorate_history(SESSION_ID, self.live.history())
+        seeded = [
+            {
+                "kind": "user",
+                "role": "user",
+                "text": self.events.portable_history(SESSION_ID)[0].text,
+                "turn_id": "injected-turn",
+                "item_id": "injected-user",
+            },
+            *self.live.history(),
+        ]
+        restored = history.decorate_history(SESSION_ID, seeded)
+        self.assertEqual(
+            [row["text"] for row in restored if row["kind"] == "user"],
+            [row["text"] for row in expected if row["kind"] == "user"],
+        )
+        self.assertEqual(restored[0]["status"], "cancelled")
+        self.assertEqual(history.decorate_history(SESSION_ID, restored), restored)
 
     def test_explicit_failed_retry_gets_a_new_resource_deadline(self) -> None:
         selection = self.select(0)
@@ -1615,12 +3235,14 @@ class AssistantTurnContract(unittest.TestCase):
                 self.live._logger,
                 prepare=prepare,
                 context_source=self.assistant,
+                activities=Activities(),
             )
             body = self.body(selection.revision, client_turn_id="renew-resource")
             result, _status = await turns.post(SESSION_ID, body, side=False)
             self.assertFalse(result["ok"])
             duplicate, _status = await turns.post(SESSION_ID, {**body, "wait": False}, side=False)
-            self.assertTrue(duplicate["queued"])
+            self.assertTrue(duplicate["accepted"])
+            self.assertEqual(duplicate["disposition"], "direct")
             self.assertEqual(
                 self.catalog.queued_message(SESSION_ID, "renew-resource").state,
                 QueuedMessageState.FAILED,
@@ -1660,6 +3282,7 @@ class AssistantTurnContract(unittest.TestCase):
         sessions = SessionService(
             self.live.runtime_workdir,
             {SESSION_ID: self.live},
+            activities=Activities(),
             access=self.catalog,
             events=self.events,
             logger=self.live._logger,
@@ -1689,7 +3312,7 @@ class AssistantTurnContract(unittest.TestCase):
                         self.assertFalse(stopping.done())
                         self.catalog.begin_queued_submission(SESSION_ID, request_id)
                         self.catalog.mark_queue_running(SESSION_ID, request_id, native_turn_id)
-                        self.live.ledger.activate_turn(native_turn_id)
+                        await self.live.ledger.activate_turn(native_turn_id)
                         self.live.current_task = pending
                         self.live.resource_task = None
                         self.live.waiting_request_id = ""
@@ -1698,6 +3321,7 @@ class AssistantTurnContract(unittest.TestCase):
                     self.assertFalse(response["idle"])
                     self.assertNotIn("cancelled_waiting", response)
                     interrupt.assert_awaited_once()
+                    self.assertTrue(interrupt.await_args.args[0].cleanup_background_processes)
                     self.assertEqual(
                         self.catalog.queued_message(SESSION_ID, request_id).state,
                         QueuedMessageState.RUNNING,
@@ -1729,6 +3353,7 @@ class AssistantTurnContract(unittest.TestCase):
                 self.live._logger,
                 prepare=prepare,
                 context_source=self.assistant,
+                activities=Activities(),
             )
             await turns.post(
                 SESSION_ID,
@@ -1755,6 +3380,52 @@ class AssistantTurnContract(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_sandbox_startup_failure_retains_safe_code_without_native_submission(self) -> None:
+        selection = self.select(0)
+        for index, code in enumerate(
+            (
+                "windows_sandbox_tool_access_failed",
+                "windows_sandbox_setup_failed",
+                "windows_sandbox_policy_rejected",
+                "windows_sandbox_setup_cancelled",
+                "private upstream detail",
+            )
+        ):
+            with self.subTest(code=code):
+
+                async def prepare(live, **kwargs):
+                    error = RuntimeError("private upstream message")
+                    error.safe_error = code
+                    raise error
+
+                turns = TurnService(
+                    {SESSION_ID: self.live},
+                    self.live._logger,
+                    prepare=prepare,
+                    context_source=self.assistant,
+                    activities=Activities(),
+                )
+                request_id = f"startup-failure-{index}"
+                _, status = asyncio.run(
+                    turns.post(
+                        SESSION_ID,
+                        self.body(selection.revision, client_turn_id=request_id),
+                        side=False,
+                    )
+                )
+                self.assertEqual(status, 202)
+                expected = code if index < 4 else "session_model_switch_failed"
+                record = self.catalog.queued_message(SESSION_ID, request_id)
+                self.assertEqual(record.state, QueuedMessageState.FAILED)
+                self.assertEqual(record.safe_error, expected)
+                self.assertFalse(record.native_turn_id)
+                self.assertEqual(self.adapter.inputs, [])
+                events = [
+                    row for row in self.events.replay(SESSION_ID) if row.kind == "send_now_rejected"
+                ]
+                self.assertEqual(events[-1].payload["safe_error"], expected)
+                asyncio.run(turns.delete_queued(SESSION_ID, request_id))
+
     def test_resource_timeout_retains_failed_request_without_native_work(self) -> None:
         selection = self.select(0)
 
@@ -1767,6 +3438,7 @@ class AssistantTurnContract(unittest.TestCase):
             self.live._logger,
             prepare=prepare,
             context_source=self.assistant,
+            activities=Activities(),
         )
         result, status = asyncio.run(
             turns.post(
@@ -1789,10 +3461,16 @@ class AssistantTurnContract(unittest.TestCase):
             project_for_session=lambda _session_id: "project-contract",
             providers={ContextRefKind.FILE: ReadyProvider()},
         )
-        turns = TurnService({SESSION_ID: self.live}, self.live._logger, context_source=assistant)
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=assistant,
+            activities=Activities(),
+        )
         sessions = SessionService(
             self.live.runtime_workdir,
             {SESSION_ID: self.live},
+            activities=Activities(),
             access=self.catalog,
             events=self.events,
             logger=self.live._logger,
@@ -1849,7 +3527,7 @@ class AssistantTurnContract(unittest.TestCase):
                     async def submit(_request):
                         if failure == "native_transport_exception":
                             self.catalog.mark_queue_running(SESSION_ID, request_id, confirmation_id)
-                            self.live.ledger.activate_turn(confirmation_id)
+                            await self.live.ledger.activate_turn(confirmation_id)
                         if failure == "terminate_cancel":
                             self.live.terminating = True
                             raise asyncio.CancelledError
@@ -1930,7 +3608,7 @@ class AssistantTurnContract(unittest.TestCase):
         self.catalog.enqueue_message(SESSION_ID, "client-correlation", {"text": "once"})
         self.catalog.begin_queued_submission(SESSION_ID, "client-correlation")
         self.catalog.mark_queue_running(SESSION_ID, "client-correlation", "native-correlation")
-        self.live.ledger.activate_turn("native-correlation")
+        asyncio.run(self.live.ledger.activate_turn("native-correlation"))
         self.catalog.record_hil(
             product_request_id="hil-unknown-turn",
             session_id=SESSION_ID,
@@ -1998,12 +3676,17 @@ class AssistantTurnContract(unittest.TestCase):
                     cancelled.set()
 
             turns = TurnService(
-                live_sessions, self.live._logger, prepare=prepare, context_source=assistant
+                live_sessions,
+                self.live._logger,
+                prepare=prepare,
+                context_source=assistant,
+                activities=Activities(),
             )
             runtime = SimpleNamespace(cancel_activation=AsyncMock(return_value=False))
             sessions = SessionService(
                 self.live.runtime_workdir,
                 live_sessions,
+                activities=Activities(),
                 access=self.catalog,
                 events=self.events,
                 logger=self.live._logger,
@@ -2129,7 +3812,9 @@ class AssistantTurnContract(unittest.TestCase):
             capabilities=CapabilitySet(),
         )
         live_sessions = {SESSION_ID: self.live}
-        turns = TurnService(live_sessions, self.live._logger, context_source=self.assistant)
+        turns = TurnService(
+            live_sessions, self.live._logger, context_source=self.assistant, activities=Activities()
+        )
 
         async def exercise() -> None:
             waiting = asyncio.Event()
@@ -2150,6 +3835,7 @@ class AssistantTurnContract(unittest.TestCase):
             sessions = SessionService(
                 self.live.runtime_workdir,
                 live_sessions,
+                activities=Activities(),
                 access=self.catalog,
                 events=self.events,
                 logger=self.live._logger,
@@ -2224,10 +3910,12 @@ class AssistantTurnContract(unittest.TestCase):
             self.live._trace,
             self.live._logger,
             self.live._projection_lock,
+            self.live._persistence,
         )
         sessions = SessionService(
             self.live.runtime_workdir,
             {SESSION_ID: self.live},
+            activities=Activities(),
             access=self.catalog,
             events=self.events,
             logger=self.live._logger,
@@ -2280,6 +3968,7 @@ class AssistantTurnContract(unittest.TestCase):
         sessions = SessionService(
             self.live.runtime_workdir,
             {SESSION_ID: self.live},
+            activities=Activities(),
             access=self.catalog,
             events=self.events,
             logger=self.live._logger,
@@ -2376,7 +4065,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             task = self.live.current_task
             assert task is not None
             self.adapter.release.set()
@@ -2420,7 +4110,8 @@ class AssistantTurnContract(unittest.TestCase):
                     side=False,
                 )
                 self.assertEqual(status, 202)
-                self.assertTrue(queued["queued"])
+                self.assertTrue(queued["accepted"])
+                self.assertEqual(queued["disposition"], "queued")
             await self.live.interrupt()
             active_task = self.live.current_task
             assert active_task is not None

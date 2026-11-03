@@ -15,6 +15,7 @@ from service.assistant.persistence.invocations import (
     AssistantInvocationStore,
 )
 from service.assistant.service.actions import CompiledAssistantAction
+from service.chat.service.models import SessionModelUnavailableError
 from service.literature.api.analysis import register_analysis_routes
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.analysis import (
@@ -23,6 +24,7 @@ from service.literature.service.analysis import (
     AnalysisRequest,
     PreparedAnalysis,
 )
+from service.platform.activity import Activities
 from service.platform.inference import ModelInvocationStatus
 
 
@@ -58,7 +60,12 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                 patch("service.literature.api.analysis.request_user_id", return_value="owner"),
             ):
                 register_analysis_routes(
-                    app, actions=Mock(), tasks=tasks, models=models, pdf=Mock()
+                    app,
+                    activities=Activities(),
+                    actions=Mock(),
+                    tasks=tasks,
+                    models=models,
+                    pdf=Mock(),
                 )
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -75,6 +82,15 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         response.json()["detail"]["code"],
                         AnalysisErrorCode.LITERATURE_MISSING.value,
+                    )
+                    models.inference_connection.side_effect = SessionModelUnavailableError(
+                        "selected model is unavailable"
+                    )
+                    response = await client.post("/api/literature/ai/preflight", json=payload)
+                    self.assertEqual(response.status_code, 422)
+                    self.assertEqual(
+                        response.json()["detail"],
+                        {"code": AnalysisErrorCode.MODEL_UNAVAILABLE.value, "diagnostic": ""},
                     )
                     # Identical Chinese text from an untyped external failure must stay a diagnostic.
                     diagnostic = "文献不存在，请重新打开文献。"
@@ -191,7 +207,12 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                     patch("service.literature.api.analysis.prepare", return_value=prepared),
                 ):
                     register_analysis_routes(
-                        app, actions=actions, tasks=tasks, models=models, pdf=Mock()
+                        app,
+                        activities=Activities(),
+                        actions=actions,
+                        tasks=tasks,
+                        models=models,
+                        pdf=Mock(),
                     )
                     async with httpx.AsyncClient(
                         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -229,7 +250,12 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                     )
                     restored_app = FastAPI()
                     register_analysis_routes(
-                        restored_app, actions=actions, tasks=reopened, models=models, pdf=Mock()
+                        restored_app,
+                        activities=Activities(),
+                        actions=actions,
+                        tasks=reopened,
+                        models=models,
+                        pdf=Mock(),
                     )
                     async with httpx.AsyncClient(
                         transport=httpx.ASGITransport(app=restored_app), base_url="http://test"

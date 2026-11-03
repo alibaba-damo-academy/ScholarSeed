@@ -4,6 +4,9 @@ import { resolve } from 'node:path'
 
 import { DesktopSession, apiBase } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 interface DropFile {
   bytes: string

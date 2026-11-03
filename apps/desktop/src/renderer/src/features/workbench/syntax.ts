@@ -14,6 +14,7 @@ import { conf as yamlConfiguration, language as yamlLanguage } from 'monaco-edit
 import { createTokenizationSupport } from 'monaco-editor/languages/features/json/tokenization.js'
 
 import { LANGUAGE_BY_SUFFIX, TOML_CONFIGURATION, TOML_LANGUAGE } from './language'
+import { LEAN_CONFIGURATION, LEAN_LANGUAGE, LEAN_LANGUAGE_ID } from './lean'
 
 const definitions: ReadonlyArray<{ id: string; configuration: languages.LanguageConfiguration; language: languages.IMonarchLanguage }> = [
   { id: 'c', configuration: cppConfiguration, language: cppLanguage },
@@ -29,6 +30,7 @@ const definitions: ReadonlyArray<{ id: string; configuration: languages.Language
   { id: 'typescript', configuration: typescriptConfiguration, language: typescriptLanguage },
   { id: 'xml', configuration: xmlConfiguration, language: xmlLanguage },
   { id: 'yaml', configuration: yamlConfiguration, language: yamlLanguage },
+  { id: LEAN_LANGUAGE_ID, configuration: LEAN_CONFIGURATION, language: LEAN_LANGUAGE },
   { id: 'toml', configuration: TOML_CONFIGURATION, language: TOML_LANGUAGE }
 ]
 

@@ -1,0 +1,245 @@
+{
+  "data": {
+    "schema_version": "1.0",
+    "run_id": "sample-search",
+    "round": 1,
+    "criteria": [
+      "样例：长上下文方法对比"
+    ],
+    "status": "success",
+    "sources": [],
+    "candidates": 6,
+    "deduplicated": 6,
+    "retained": 6,
+    "papers": [
+      {
+        "id": "sample-0",
+        "title": "样例 1：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "doi": null,
+        "url": "https://example.org/paper/0",
+        "abstract": null,
+        "reasons": [],
+        "tier": null,
+        "citation_count": null,
+        "access": "unknown",
+        "sources": [],
+        "decision": "candidate",
+        "decision_reason": "预览样例",
+        "fulltext": "unknown"
+      },
+      {
+        "id": "sample-1",
+        "title": "样例 2：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "doi": null,
+        "url": "https://example.org/paper/1",
+        "abstract": null,
+        "reasons": [],
+        "tier": null,
+        "citation_count": null,
+        "access": "unknown",
+        "sources": [],
+        "decision": "candidate",
+        "decision_reason": "预览样例",
+        "fulltext": "unknown"
+      },
+      {
+        "id": "sample-2",
+        "title": "样例 3：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "doi": null,
+        "url": "https://example.org/paper/2",
+        "abstract": null,
+        "reasons": [],
+        "tier": null,
+        "citation_count": null,
+        "access": "unknown",
+        "sources": [],
+        "decision": "candidate",
+        "decision_reason": "预览样例",
+        "fulltext": "unknown"
+      },
+      {
+        "id": "sample-3",
+        "title": "样例 4：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "doi": null,
+        "url": "https://example.org/paper/3",
+        "abstract": null,
+        "reasons": [],
+        "tier": null,
+        "citation_count": null,
+        "access": "unknown",
+        "sources": [],
+        "decision": "candidate",
+        "decision_reason": "预览样例",
+        "fulltext": "unknown"
+      },
+      {
+        "id": "sample-4",
+        "title": "样例 5：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "doi": null,
+        "url": "https://example.org/paper/4",
+        "abstract": null,
+        "reasons": [],
+        "tier": null,
+        "citation_count": null,
+        "access": "unknown",
+        "sources": [],
+        "decision": "candidate",
+        "decision_reason": "预览样例",
+        "fulltext": "unknown"
+      },
+      {
+        "id": "sample-5",
+        "title": "样例 6：长上下文方法对比",
+        "authors": [
+          "Example Author"
+        ],
+        "year": 2024,
+        "venue": "Example Venue",
+        "doi": null,
+        "url": "https://example.org/paper/5",
+        "abstract": null,
+        "reasons": [],
+        "tier": null,
+        "citation_count": null,
+        "access": "unknown",
+        "sources": [],
+        "decision": "candidate",
+        "decision_reason": "预览样例",
+        "fulltext": "unknown"
+      }
+    ],
+    "warnings": [],
+    "session_id": "plugin-preview",
+    "report": {},
+    "metadata": {},
+    "origin": "agentic-search",
+    "selection": {},
+    "fulltext": {},
+    "context": {
+      "projectId": "sample-project",
+      "projectName": "样例项目"
+    }
+  },
+  "state": {
+    "collections": [
+      {
+        "id": "sample-collection",
+        "name": "样例分类",
+        "project_id": "sample-project"
+      }
+    ]
+  },
+  "responses": {
+    "open-source": {
+      "state": "resolved",
+      "data": {
+        "result": null,
+        "view": {
+          "title": "样例原文",
+          "body": "样例文献：长上下文信息利用\n\n摘要\n本样例比较检索增强与直接长上下文阅读两种方法，用于演示文献查看交互。\n\n方法\n将同一条证据分别放在文本开头、中间和结尾，记录回答是否引用了正确证据。\n\n示例观察\n结果按证据位置分组展示；返回列表后可以继续选择其他文献。\n\n以上内容为虚构预览样例，不代表真实论文或研究结论。",
+          "identifier": {
+            "$input": "refId",
+            "$default": ""
+          }
+        }
+      }
+    },
+    "add-reference": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "id": "sample-imported"
+        }
+      }
+    },
+    "collections": {
+      "state": "resolved",
+      "data": {
+        "result": {
+          "$state": "collections"
+        }
+      }
+    },
+    "create-collection": {
+      "state": "resolved",
+      "append": {
+        "collections": {
+          "id": {
+            "$input": "name"
+          },
+          "name": {
+            "$input": "name"
+          },
+          "parent_id": {
+            "$input": "parentId",
+            "$default": null
+          },
+          "project_id": "sample-project"
+        }
+      },
+      "data": {
+        "result": {
+          "id": {
+            "$input": "name"
+          },
+          "name": {
+            "$input": "name"
+          },
+          "parent_id": {
+            "$input": "parentId",
+            "$default": null
+          },
+          "project_id": "sample-project"
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "label": "加入失败后重试",
+      "responses": {
+        "add-reference": {
+          "state": "resolved",
+          "data": {
+            "result": {
+              "id": "sample-imported"
+            }
+          },
+          "steps": [
+            {
+              "state": "failed",
+              "data": {
+                "error": "preview_add_failed"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

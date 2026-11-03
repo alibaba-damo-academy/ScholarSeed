@@ -11,7 +11,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,11 +29,13 @@ from service.invocation.service.runtime import (
     TrustedInvocationWorkspace,
 )
 from service.paths import (
+    LITERATURE_SEARCH_DELETE_FLAG_FILENAME,
     LITERATURE_SEARCH_DIR,
     LITERATURE_SEARCH_QUERY_FILENAME,
     LITERATURE_SEARCH_STATE_FILENAME,
     LITERATURE_SEARCH_TASK_PREFIX,
 )
+from service.platform.activity import Activities, ActivityDomain
 
 SEARCH_SKILL_ID = "builtin:fast-search"
 SEARCH_PROMPT_TEMPLATE = """
@@ -66,6 +68,10 @@ The content wrapped between `<<<` and `>>>` will be **displayed to the user**. Y
 """
 
 SEARCH_RESULT_FILENAME = "metadata.json"
+SEARCH_FAILURE_FILENAME = "search_failure.json"
+SEARCH_FAILURE_MAX_BYTES = 4096
+SEARCH_FAILURE_CODES = frozenset({"fast_search_target_unresolved", "fast_search_target_not_found"})
+SEARCH_RESULT_FAILURE_STATUSES = frozenset({"missing", "invalid", "ambiguous"})
 SEARCH_SCHEMA_VERSION = 1
 SEARCH_RESULT_MAX_BYTES = 8 * 1024 * 1024
 SEARCH_RESULT_MAX_PAPERS = 1_000
@@ -94,6 +100,8 @@ SEARCH_RUNTIME_LOST = "literature_search_runtime_lost"
 SEARCH_REPLAY_EVENT_LIMIT = 512
 SEARCH_STATE_WRITE_ATTEMPTS = 4
 SEARCH_STATE_WRITE_BACKOFF_SECONDS = 0.05
+# 删除标记是普通空文件; 0600 与其它任务产物一致, 不给同机其它用户读写。
+SEARCH_DELETE_FLAG_MODE = 0o600
 # content.delta 同时承载推理与用户可见两条通道, 适配器用 data.role 区分
 # (packages/adapters/codex/scholarseed_codex/events.py)。推理文本里会出现字面 <<< >>>,
 # 混进 output 会污染前端按定界符裁出的用户可见进度, 所以只累加非推理通道。
@@ -140,56 +148,65 @@ class LiteratureSearchService:
         self,
         invocations: InvocationService,
         *,
+        activities: Activities,
         root: Path = LITERATURE_SEARCH_DIR,
     ) -> None:
+        self._activities = activities
         self._invocations = invocations
         self._root = root.expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._live: dict[str, LiveSearch] = {}
+        self._sweep_deleted()
 
     async def create(self, query: str, *, owner_id: str, user_id: str) -> dict[str, Any]:
-        cleaned = query.strip()
-        if not cleaned:
-            raise LiteratureSearchError("literature_search_query_required")
-        task_id, workspace = self._create_workspace()
-        self._atomic_text(workspace / LITERATURE_SEARCH_QUERY_FILENAME, cleaned + "\n")
-        command = InvocationCommand(
-            prompt=SEARCH_PROMPT_TEMPLATE.format(query=cleaned),
-            skill=InvocationSkill(id=SEARCH_SKILL_ID),
-            developer_prompt=False,
-            execution=DEFAULT_INVOCATION_EXECUTION,
-        )
-        try:
-            prepared = await self._invocations.prepare(
-                command,
-                owner_id=owner_id,
-                user_id=user_id,
-                trusted_workspace=TrustedInvocationWorkspace(root=self._root, path=workspace),
+        with self._activities.enter(ActivityDomain.LITERATURE, root=True):
+            cleaned = query.strip()
+            if not cleaned:
+                raise LiteratureSearchError("literature_search_query_required")
+            task_id, workspace = self._create_workspace()
+            self._atomic_text(workspace / LITERATURE_SEARCH_QUERY_FILENAME, cleaned + "\n")
+            command = InvocationCommand(
+                prompt=SEARCH_PROMPT_TEMPLATE.format(query=cleaned),
+                skill=InvocationSkill(id=SEARCH_SKILL_ID),
+                developer_prompt=False,
+                execution=DEFAULT_INVOCATION_EXECUTION,
             )
-        except Exception:
-            shutil.rmtree(workspace)
-            raise
-        # 创建即落盘一次已经确定的信息: 进程被杀后 query / owner / invocation_id 仍可恢复,
-        # invocation_id 也是回到 trace 账本继续归因的唯一线索。运行期不再逐事件写盘。
-        state = self._initial_state(task_id, cleaned, owner_id)
-        state["invocation_id"] = prepared.record.invocation_id
-        try:
-            await self._publish_state(workspace, state)
-        except Exception:
-            # 连创建记录都写不下去时不要留下无主目录; 上层按运行时不可用回 503。
-            shutil.rmtree(workspace, ignore_errors=True)
-            raise
-        live = LiveSearch(state=state)
-        self._live[task_id] = live
-        live.task = asyncio.create_task(
-            self._consume(task_id, workspace, prepared), name=f"literature-search-{task_id}"
-        )
-        return self._public(state)
+            try:
+                prepared = await self._invocations.prepare(
+                    command,
+                    owner_id=owner_id,
+                    user_id=user_id,
+                    trusted_workspace=TrustedInvocationWorkspace(root=self._root, path=workspace),
+                )
+            except Exception:
+                self._remove(workspace)
+                raise
+            # 创建即落盘一次已经确定的信息: 进程被杀后 query / owner / invocation_id 仍可恢复,
+            # invocation_id 也是回到 trace 账本继续归因的唯一线索。运行期不再逐事件写盘。
+            state = self._initial_state(task_id, cleaned, owner_id)
+            state["invocation_id"] = prepared.record.invocation_id
+            try:
+                await self._publish_state(workspace, state)
+            except Exception:
+                # 连创建记录都写不下去时不要留下无主目录; 上层按运行时不可用回 503。
+                self._remove(workspace)
+                raise
+            live = LiveSearch(state=state)
+            self._live[task_id] = live
+            live.task = self._activities.spawn(
+                ActivityDomain.LITERATURE,
+                lambda: self._consume(task_id, workspace, prepared),
+                name=f"literature-search-{task_id}",
+            )
+            return self._public(state)
 
     def list(self, *, owner_id: str) -> builtins.list[dict[str, Any]]:
         """只读投影: 本进程在跑的任务给内存态, 其余给磁盘快照, 绝不回写。"""
         items: builtins.list[dict[str, Any]] = []
         for workspace in self._workspaces():
+            if self._flagged(workspace):
+                # 已标记删除: 对用户等价于已经不存在, 真正的删除交给下次启动清扫。
+                continue
             live = self._live.get(workspace.name)
             if live is not None and live.state.get("owner_id") == owner_id:
                 items.append(self._public(live.state))
@@ -202,7 +219,7 @@ class LiteratureSearchService:
 
     async def events(
         self, task_id: str, *, owner_id: str, after_seq: int
-    ) -> AsyncIterator[dict[str, Any] | None]:
+    ) -> AsyncGenerator[dict[str, Any] | None, None]:
         live = self._live.get(task_id)
         if live is None or live.state.get("owner_id") != owner_id:
             # 已落盘的历史任务没有可订阅的实时流; 校验归属后直接结束, 前端按终态快照渲染。
@@ -223,17 +240,19 @@ class LiteratureSearchService:
                 return
             while True:
                 try:
-                    event = await asyncio.wait_for(subscriber.get(), timeout=SSE_HEARTBEAT_SECONDS)
+                    live_event = await asyncio.wait_for(
+                        subscriber.get(), timeout=SSE_HEARTBEAT_SECONDS
+                    )
                 except TimeoutError:
                     yield None
                     continue
-                if event is None:
+                if live_event is None:
                     return
-                sequence = int(event["seq"])
+                sequence = int(live_event["seq"])
                 if sequence <= next_seq:
                     continue
                 next_seq = sequence
-                yield event
+                yield live_event
                 if live.settled:
                     return
         finally:
@@ -263,7 +282,7 @@ class LiteratureSearchService:
             live.broadcast(None)
         self._live.pop(task_id, None)
         checked, _state = self._owned(task_id, owner_id)
-        shutil.rmtree(checked)
+        self._remove(checked)
 
     async def _consume(self, task_id: str, workspace: Path, prepared: PreparedInvocation) -> None:
         live = self._live.get(task_id)
@@ -274,8 +293,6 @@ class LiteratureSearchService:
             async for event in self._invocations.stream(prepared):
                 if event is None:
                     continue
-                live.record(event)
-                live.broadcast(event)
                 state["last_seq"] = int(event["seq"])
                 event_type = str(event["type"])
                 data = event.get("data", {})
@@ -290,8 +307,18 @@ class LiteratureSearchService:
                     state["error"] = str(data.get("error", ""))
                     if event_type == SEARCH_COMPLETED_EVENT:
                         self._resolve_result(workspace, state)
-                        # 只有成功终态需要跨重启可见, 因此也只在这里落盘一次。
+                        # 保存业务结果判定，模型 completed 不等于检索产物成功。
                         await self._publish_state(workspace, state)
+                        if state["status"] == SEARCH_STATUS_FAILED:
+                            # Publish the literature result, not a misleading
+                            # model-completed event before artifact validation.
+                            event = {
+                                **event,
+                                "type": "invocation.failed",
+                                "data": {**data, "error": state["error"]},
+                            }
+                live.record(event)
+                live.broadcast(event)
         except asyncio.CancelledError:
             state["status"] = SEARCH_STATUS_INTERRUPTED
             state["completed_at"] = int(time.time() * 1000)
@@ -314,9 +341,11 @@ class LiteratureSearchService:
         finally:
             live.broadcast(None)
 
-    def _resolve_result(self, workspace: Path, state: dict[str, Any]) -> None:
+    @staticmethod
+    def _result_candidates(workspace: Path, filename: str) -> builtins.list[Path]:
+        workspace = workspace.resolve()
         candidates: list[Path] = []
-        for candidate in workspace.rglob(SEARCH_RESULT_FILENAME):
+        for candidate in workspace.rglob(filename):
             if candidate.is_symlink() or not candidate.is_file():
                 continue
             resolved = candidate.resolve()
@@ -325,10 +354,34 @@ class LiteratureSearchService:
             except ValueError:
                 continue
             candidates.append(resolved)
+        return candidates
+
+    def _failure_code(self, workspace: Path) -> str:
+        failures = self._result_candidates(workspace, SEARCH_FAILURE_FILENAME)
+        if len(failures) == 1:
+            try:
+                if failures[0].stat().st_size <= SEARCH_FAILURE_MAX_BYTES:
+                    payload = json.loads(failures[0].read_text(encoding="utf-8"))
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("schema") == "fast_search.failure.v1"
+                    ):
+                        code = payload.get("error")
+                        if isinstance(code, str) and code in SEARCH_FAILURE_CODES:
+                            return code
+            except (OSError, UnicodeError, ValueError):
+                pass
+        return "literature_search_result_missing"
+
+    def _resolve_result(self, workspace: Path, state: dict[str, Any]) -> None:
+        candidates = self._result_candidates(workspace, SEARCH_RESULT_FILENAME)
         if not candidates:
-            state["result_status"] = "empty"
+            state["status"] = SEARCH_STATUS_FAILED
+            state["result_status"] = "missing"
+            state["error"] = self._failure_code(workspace)
             return
         if len(candidates) != 1:
+            state["status"] = SEARCH_STATUS_FAILED
             state["result_status"] = "ambiguous"
             state["error"] = "literature_search_result_ambiguous"
             return
@@ -349,6 +402,7 @@ class LiteratureSearchService:
             ):
                 raise ValueError("invalid")
         except (OSError, UnicodeError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            state["status"] = SEARCH_STATUS_FAILED
             state["result_status"] = "invalid"
             state["error"] = "literature_search_result_invalid"
             return
@@ -403,11 +457,86 @@ class LiteratureSearchService:
 
         return sorted(rows, key=task_sequence)
 
+    @staticmethod
+    def _delete_flag(workspace: Path) -> Path:
+        return workspace / LITERATURE_SEARCH_DELETE_FLAG_FILENAME
+
+    def _flagged(self, workspace: Path) -> bool:
+        flag = self._delete_flag(workspace)
+        # 只认普通文件: 目录或符号链接/junction 都不是合法的删除标记。
+        return flag.is_file() and not flag.is_symlink()
+
+    def _mark_deleted(self, workspace: Path) -> None:
+        """把删除意图写进目录本身。
+
+        标记必须能在"部分删除"之后重新落下: ``rmtree`` 自底向上删, 失败时可能已经吃掉了
+        上一轮写的 deleted.flag, 所以每次失败都无条件重写, 而不是只在首次删除时写一次。
+        """
+        flag = self._delete_flag(workspace)
+        try:
+            # 任务目录是 skill 的可写 cwd, 同名条目可能是指向别处的符号链接/junction。
+            # 先摘掉链接本身, 再用 O_EXCL 建普通空文件: 窗口期里被塞进链接就直接失败,
+            # 绝不顺着它写到工作区之外。O_NOFOLLOW 是 POSIX 专有, 不能用作 Windows 实现。
+            flag.unlink(missing_ok=True)
+            os.close(os.open(flag, os.O_CREAT | os.O_EXCL | os.O_WRONLY, SEARCH_DELETE_FLAG_MODE))
+        except FileNotFoundError:
+            # 目录已在并发中消失: 与删除成功等价。
+            return
+        except OSError as error:
+            logger.error(
+                "literature_search_delete_flag_failed task=%s failure_type=%s errno=%s winerror=%s",
+                workspace.name,
+                type(error).__name__,
+                getattr(error, "errno", None),
+                getattr(error, "winerror", None),
+            )
+
+    def _remove(self, workspace: Path) -> bool:
+        """删除任务目录; 删不掉就留下 deleted.flag, 由下次启动清扫重试。
+
+        macOS/Linux 即使有进程把该目录当 cwd 也删得掉; Windows 会以共享冲突拒绝(子进程还在
+        退出, 或实时扫描仍持有句柄)。这类失败不该冒泡成用户可见错误: 任务立刻从列表消失,
+        磁盘回收延后到下次启动。
+        """
+        try:
+            shutil.rmtree(workspace)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as error:
+            logger.warning(
+                "literature_search_delete_deferred task=%s failure_type=%s errno=%s winerror=%s",
+                workspace.name,
+                type(error).__name__,
+                getattr(error, "errno", None),
+                getattr(error, "winerror", None),
+            )
+            self._mark_deleted(workspace)
+            return False
+
+    def _sweep_deleted(self) -> None:
+        """启动清扫: 重试上次没删掉的任务目录, 再失败就把标记补回去。"""
+        try:
+            pending = [row for row in self._workspaces() if self._flagged(row)]
+        except OSError as error:
+            logger.error(
+                "literature_search_sweep_failed failure_type=%s errno=%s winerror=%s",
+                type(error).__name__,
+                getattr(error, "errno", None),
+                getattr(error, "winerror", None),
+            )
+            return
+        for workspace in pending:
+            self._remove(workspace)
+
     def _owned(self, task_id: str, owner_id: str) -> tuple[Path, dict[str, Any]]:
         if SEARCH_TASK_PATTERN.fullmatch(task_id) is None:
             raise LiteratureSearchError("literature_search_not_found")
         workspace = (self._root / task_id).resolve()
         if workspace.parent != self._root or workspace.is_symlink():
+            raise LiteratureSearchError("literature_search_not_found")
+        if self._flagged(workspace):
+            # 已标记删除的任务对外一律是"不存在", 不能再被读取、订阅或重复删除。
             raise LiteratureSearchError("literature_search_not_found")
         state = self._read_state(workspace)
         if state is None or state.get("task_id") != task_id or state.get("owner_id") != owner_id:
@@ -449,6 +578,21 @@ class LiteratureSearchService:
         状态统一投影为 search_interrupted, 内部错误码不外泄。
         """
         if str(state.get("status", "")) == SEARCH_STATUS_COMPLETED:
+            # Older snapshots recorded absent/invalid artifacts as completed.
+            if state.get("result") is None and state.get("result_status") in {
+                "empty",
+                *SEARCH_RESULT_FAILURE_STATUSES,
+            }:
+                return {
+                    **state,
+                    "status": SEARCH_STATUS_FAILED,
+                    "error": state.get("error") or "literature_search_result_missing",
+                }
+            return state
+        if (
+            state.get("status") == SEARCH_STATUS_FAILED
+            and state.get("result_status") in SEARCH_RESULT_FAILURE_STATUSES
+        ):
             return state
         restored = dict(state)
         restored["status"] = SEARCH_STATUS_UNRECOVERED

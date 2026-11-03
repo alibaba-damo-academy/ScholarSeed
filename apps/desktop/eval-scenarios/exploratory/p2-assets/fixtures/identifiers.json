@@ -1,0 +1,22 @@
+{
+  "verifiedAt": "2026-10-25",
+  "coverage": "public metadata only; identifiers are separate branches, not synthetic bibliography IDs",
+  "records": [
+    {
+      "branch": "doi",
+      "input": "10.48550/arXiv.2303.08774",
+      "title": "GPT-4 Technical Report",
+      "author": "OpenAI",
+      "year": 2023,
+      "reference": "https://arxiv.org/abs/2303.08774"
+    },
+    {
+      "branch": "arxiv",
+      "input": "1706.03762",
+      "title": "Attention Is All You Need",
+      "firstAuthor": "Ashish Vaswani",
+      "year": 2017,
+      "reference": "https://arxiv.org/abs/1706.03762"
+    }
+  ]
+}

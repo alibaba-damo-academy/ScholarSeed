@@ -2,19 +2,13 @@
   "_comment": [
     "PaperHub downloads use GET /paperhub/paperdownload?id=ES_ID with SCHOLARSEED_API_KEY from the environment.",
     "PAPERHUB_URL overrides the PaperHub base or endpoint; PAPER_HUB_URL remains a legacy download override.",
-    "Text/image credentials and endpoints remain independently configured.",
-    "Paper-card upload is a separate legacy service; changing downloads does not authorize or redirect uploads."
+    "Text/image credentials and endpoints remain independently configured."
   ],
   "services": {
     "paper_hub": {
       "default": "https://scholarseed.damo.alibaba.com/paperhub",
       "env": "PAPERHUB_URL",
       "description": "PaperHub binary source download service"
-    },
-    "upload_base": {
-      "default": "",
-      "env": "UPLOAD_BASE_URL",
-      "description": "Paper-card upload target; set UPLOAD_BASE_URL explicitly before uploading"
     }
   }
 }

@@ -19,6 +19,7 @@ interface CalcSelection {
 interface CalcSelectionPolicy {
   MAXIMUM_INLINE_CELLS: number
   REFERENCE_MODE: string
+  autoscrollKind: (filename: string) => 'writer' | 'calc' | undefined
   writerFormat: (filename: string) => 'doc' | 'docx' | undefined
   captureImpress: (selection: {
     getCount: () => number
@@ -50,7 +51,12 @@ interface CalcSelectionPolicy {
     selection: CalcSelection,
     sheet: {
       getName: () => string
-      getCellRangeByPosition: (startColumn: number, startRow: number, endColumn: number, endRow: number) => CalcSelection
+      getCellRangeByPosition: (
+        startColumn: number,
+        startRow: number,
+        endColumn: number,
+        endRow: number
+      ) => CalcSelection
     },
     range: CalcRange,
     contentFlags: number
@@ -61,10 +67,12 @@ interface WriterSelectionProcessor {
   FORMAT: 'doc' | 'docx'
   MAXIMUM_CONTEXT_CHARS: number
   createInspector: (sameObject: (left: unknown, right: unknown) => boolean) => {
-    describe: (selection: unknown) => {
-      writerRange?: unknown
-      selection: Record<string, unknown>
-    } | undefined
+    describe: (selection: unknown) =>
+      | {
+          writerRange?: unknown
+          selection: Record<string, unknown>
+        }
+      | undefined
     prepare: (body: unknown) => void
     invalidate: () => void
   }
@@ -89,13 +97,17 @@ function writerBody(paragraphLengths: number[], calls: string[]) {
     paragraphs.push({
       getEnd: () => ({ offset: end }),
       getStart: () => ({ offset: start }),
-      getString: () => 'x'.repeat(length)
+      getString: () => 'x'.repeat(length),
     })
     offset = end + 1
   }
   return {
-    compareRegionEnds: (left: WriterParagraph, right: WriterPoint) => Math.sign(right.offset - left.getEnd().offset),
-    compareRegionStarts: (left: WriterParagraph | WriterPoint, right: WriterParagraph | WriterPoint) => {
+    compareRegionEnds: (left: WriterParagraph, right: WriterPoint) =>
+      Math.sign(right.offset - left.getEnd().offset),
+    compareRegionStarts: (
+      left: WriterParagraph | WriterPoint,
+      right: WriterParagraph | WriterPoint
+    ) => {
       const leftOffset = 'getStart' in left ? left.getStart().offset : left.offset
       const rightOffset = 'getStart' in right ? right.getStart().offset : right.offset
       return Math.sign(rightOffset - leftOffset)
@@ -105,29 +117,36 @@ function writerBody(paragraphLengths: number[], calls: string[]) {
       let index = 0
       return {
         hasMoreElements: () => index < paragraphs.length,
-        nextElement: () => paragraphs[index++]
+        nextElement: () => paragraphs[index++],
       }
     },
     createTextCursorByRange: (start: WriterPoint) => {
       let end = start.offset
       return {
         getString: () => 'x'.repeat(Math.max(0, end - start.offset)),
-        gotoRange: (point: WriterPoint) => { end = point.offset }
+        gotoRange: (point: WriterPoint) => {
+          end = point.offset
+        },
       }
     },
     getString: () => {
       calls.push('getString')
       throw new Error('whole Writer body must not be copied for menu presentation')
-    }
+    },
   }
 }
 
-function writerRange(body: ReturnType<typeof writerBody>, start: number, end: number, text: string) {
+function writerRange(
+  body: ReturnType<typeof writerBody>,
+  start: number,
+  end: number,
+  text: string
+) {
   return {
     getEnd: () => ({ offset: end }),
     getStart: () => ({ offset: start }),
     getString: () => text,
-    getText: () => body
+    getText: () => body,
   }
 }
 
@@ -140,12 +159,19 @@ function policy(): CalcSelectionPolicy {
 function writerPolicy(format: 'doc' | 'docx'): WriterSelectionProcessor {
   const context: Record<string, unknown> = {}
   runInNewContext(readFileSync(new URL(`./${format}.js`, import.meta.url), 'utf8'), context)
-  return context[format === 'doc' ? 'ScholarSeedOfficeDocSelection' : 'ScholarSeedOfficeDocxSelection'] as WriterSelectionProcessor
+  return context[
+    format === 'doc' ? 'ScholarSeedOfficeDocSelection' : 'ScholarSeedOfficeDocxSelection'
+  ] as WriterSelectionProcessor
 }
 
 const CONTENT_CELL_FLAGS = 1 | 2 | 4 | 16
 
-function selection(rows: number, columns: number, calls: string[], contentRanges: CalcRange[]): CalcSelection {
+function selection(
+  rows: number,
+  columns: number,
+  calls: string[],
+  contentRanges: CalcRange[]
+): CalcSelection {
   return {
     getDataArray: () => {
       calls.push('getDataArray')
@@ -165,7 +191,12 @@ function selection(rows: number, columns: number, calls: string[], contentRanges
 function sheet(name: string, calls: string[], contentRanges: CalcRange[]) {
   return {
     getName: () => name,
-    getCellRangeByPosition: (startColumn: number, startRow: number, endColumn: number, endRow: number) => {
+    getCellRangeByPosition: (
+      startColumn: number,
+      startRow: number,
+      endColumn: number,
+      endRow: number
+    ) => {
       calls.push(`getCellRangeByPosition:${startColumn}:${startRow}:${endColumn}:${endRow}`)
       return selection(endRow - startRow + 1, endColumn - startColumn + 1, calls, contentRanges)
     },
@@ -196,7 +227,7 @@ test('Calc selection above 150 cells becomes a reference without reading any cel
   for (const range of [
     { StartColumn: 0, StartRow: 0, EndColumn: 0, EndRow: 150 },
     { StartColumn: 0, StartRow: 0, EndColumn: 16_383, EndRow: 0 },
-    { StartColumn: 0, StartRow: 0, EndColumn: 0, EndRow: 1_048_575 }
+    { StartColumn: 0, StartRow: 0, EndColumn: 0, EndRow: 1_048_575 },
   ]) {
     const calls: string[] = []
     const result = subject.describe(
@@ -209,7 +240,7 @@ test('Calc selection above 150 cells becomes a reference without reading any cel
       kind: 'calc',
       sheet: 'Evidence',
       range,
-      content_mode: subject.REFERENCE_MODE
+      content_mode: subject.REFERENCE_MODE,
     })
     assert.deepEqual(calls, [`queryContentCells:${CONTENT_CELL_FLAGS}`])
   }
@@ -225,8 +256,8 @@ test('Impress selection reports the exact native text range and current slide', 
     {
       getDrawPages: () => ({
         getCount: () => 2,
-        getByIndex: (index) => index === 0 ? firstPage : currentPage
-      })
+        getByIndex: (index) => (index === 0 ? firstPage : currentPage),
+      }),
     },
     {
       getCurrentPage: () => currentPage,
@@ -235,8 +266,8 @@ test('Impress selection reports the exact native text range and current slide', 
     {
       getTransferable: () => ({
         getTransferDataFlavors: () => [{ MimeType: 'text/plain;charset=utf-16' }],
-        getTransferData: () => selectedText
-      })
+        getTransferData: () => selectedText,
+      }),
     }
   )
 
@@ -247,7 +278,7 @@ test('Impress selection reports the exact native text range and current slide', 
     start: 7,
     end: 18,
     text: selectedText,
-    context_text: fullText
+    context_text: fullText,
   })
 })
 
@@ -256,14 +287,14 @@ test('Impress selection fails closed when selected text is ambiguous within the 
   const page = {}
   const result = subject.describeImpress(
     {
-      getDrawPages: () => ({ getCount: () => 1, getByIndex: () => page })
+      getDrawPages: () => ({ getCount: () => 1, getByIndex: () => page }),
     },
     {
       getCurrentPage: () => page,
       getTransferable: () => ({
         getTransferDataFlavors: () => [{ MimeType: 'text/plain;charset=utf-16' }],
-        getTransferData: () => 'repeat'
-      })
+        getTransferData: () => 'repeat',
+      }),
     },
     { name: 'RepeatedShape', text: 'repeat then repeat' }
   )
@@ -282,8 +313,8 @@ test('Impress selection resolves a legacy PPT text-edit selection from the curre
       getCurrentPage: () => page,
       getTransferable: () => ({
         getTransferDataFlavors: () => [{ MimeType: 'text/plain;charset=utf-16' }],
-        getTransferData: () => selectedText
-      })
+        getTransferData: () => selectedText,
+      }),
     },
     undefined
   )
@@ -295,7 +326,7 @@ test('Impress selection resolves a legacy PPT text-edit selection from the curre
     start: 10,
     end: 14,
     text: selectedText,
-    context_text: 'This is a test title'
+    context_text: 'This is a test title',
   })
 })
 
@@ -316,7 +347,7 @@ test('Calc whole-column selection stops at its last content cell before applying
   assert.equal(String(result.text).split('\n').length, 11)
   assert.deepEqual(calls.slice(0, 2), [
     `queryContentCells:${CONTENT_CELL_FLAGS}`,
-    'getCellRangeByPosition:2:0:2:10'
+    'getCellRangeByPosition:2:0:2:10',
   ])
   assert.equal(calls.filter((call) => call.startsWith('getCellByPosition:')).length, 11)
 })
@@ -356,7 +387,7 @@ test('Writer selection reuses its prepared paragraph index without copying the w
     start: 2,
     end: 1,
     text: 'rst\nsecond\nth',
-    context_text: 'rst\nsecond\nth'
+    context_text: 'rst\nsecond\nth',
   })
   assert.equal(second?.selection.paragraph, 'paragraph-2')
   assert.deepEqual(calls, ['createEnumeration'])
@@ -372,7 +403,7 @@ test('Writer selection normalizes legacy multi-range order before building its l
 
   const result = inspector.describe({
     getByIndex: (index: number) => [later, earlier][index],
-    getCount: () => 2
+    getCount: () => 2,
   })
 
   assert.equal(result?.selection.text, 'rst\nth')
@@ -394,7 +425,7 @@ test('legacy DOC prefers its cross-page range collection over the truncated dire
   const result = inspector.describe({
     ...direct,
     getByIndex: (index: number) => [later, earlier][index],
-    getCount: () => 2
+    getCount: () => 2,
   })
 
   assert.equal(result?.selection.text, 'rst\nth')
@@ -410,11 +441,9 @@ test('DOCX retains its direct Writer range when a collection is also exposed', (
   const direct = writerRange(body, 2, 5, 'rst')
   const hybrid = {
     ...direct,
-    getByIndex: (index: number) => [
-      writerRange(body, 12, 14, 'th'),
-      writerRange(body, 2, 5, 'rst')
-    ][index],
-    getCount: () => 2
+    getByIndex: (index: number) =>
+      [writerRange(body, 12, 14, 'th'), writerRange(body, 2, 5, 'rst')][index],
+    getCount: () => 2,
   }
 
   const result = inspector.describe(hybrid)
@@ -437,7 +466,10 @@ test('Writer paragraph indexes invalidate after document edits', () => {
 
 test('Writer selection locates paragraph endpoints logarithmically', () => {
   const calls: string[] = []
-  const body = writerBody(Array.from({ length: 1_024 }, () => 5), calls)
+  const body = writerBody(
+    Array.from({ length: 1_024 }, () => 5),
+    calls
+  )
   const compareStarts = body.compareRegionStarts
   const compareEnds = body.compareRegionEnds
   let comparisons = 0
@@ -477,4 +509,50 @@ test('Office selection autoscroll recognizes Writer and Calc formats', () => {
   assert.equal(subject.autoscrollKind('legacy.XLS'), 'calc')
   assert.equal(subject.autoscrollKind('table.xlsx'), 'calc')
   assert.equal(subject.autoscrollKind('slides.pptx'), undefined)
+})
+
+test('explicit Writer selection commit reports immediately instead of restarting debounce', async () => {
+  const source = readFileSync(new URL('./office-thread.js', import.meta.url), 'utf8')
+  const messages: Array<{ cmd: string; selection?: { text: string } }> = []
+  const timers = new Map<number, () => void>()
+  let nextTimer = 0
+  const port: {
+    onmessage: null | ((event: { data: { cmd: string } }) => void)
+    postMessage: (message: { cmd: string; selection?: { text: string } }) => void
+  } = {
+    onmessage: null,
+    postMessage: (message) => messages.push(message),
+  }
+  const module = {
+    zetajs: Promise.resolve({
+      mainPort: port,
+      getUnoComponentContext: () => ({}),
+      uno: { com: { sun: { star: { frame: { Desktop: { create: () => ({}) } } } } } },
+    }),
+  }
+  const model = { getCurrentController: () => ({ getSelection: () => ({}) }) }
+  const inspector = {
+    describe: () => ({ selection: { kind: 'writer', format: 'docx', text: 'selected' } }),
+  }
+  runInNewContext(
+    `${source}\nxModel = model; documentKind = 'writer'; writerSelection = inspector; scheduleSelectionReport()`,
+    {
+      Module: module,
+      model,
+      inspector,
+      console,
+      performance: { now: () => 0 },
+      setTimeout: (callback: () => void) => {
+        timers.set(++nextTimer, callback)
+        return nextTimer
+      },
+      clearTimeout: (timer: number) => {
+        timers.delete(timer)
+      },
+    }
+  )
+  await module.zetajs
+  port.onmessage!({ data: { cmd: 'selection_commit' } })
+  assert.equal(timers.size, 0)
+  assert.equal(messages.at(-1)?.selection?.text, 'selected')
 })

@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from uuid import uuid4
 
-from service.persistence.project import transaction
+from service.persistence.project import database_files, reader, transaction
 from service.platform.content import ArtifactScope
 
 SNAPSHOT_CLAIMS_TABLE = "content_snapshot_claims"
@@ -40,16 +40,27 @@ def _initialize(connection) -> None:
 
 
 def get(database: str | Path, scope: ArtifactScope, digest: str) -> SnapshotClaim | None:
-    with transaction(database) as connection:
-        _initialize(connection)
-        row = connection.execute(
-            f"""
-            SELECT marker, size, status
-            FROM {SNAPSHOT_CLAIMS_TABLE}
-            WHERE scope_kind = ? AND scope_id = ? AND digest = ?
-            """,
-            (scope.kind.value, scope.id, digest),
-        ).fetchone()
+    with database_files(Path(database)) as present:
+        if not present:
+            return None
+        with reader(database) as connection:
+            connection.execute("BEGIN")
+            declaration = connection.execute(
+                "SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE",
+                (SNAPSHOT_CLAIMS_TABLE,),
+            ).fetchone()
+            if declaration is None:
+                return None
+            if declaration["type"] != "table":
+                raise ValueError("unsupported snapshot claim object")
+            row = connection.execute(
+                f"""
+                SELECT marker, size, status
+                FROM {SNAPSHOT_CLAIMS_TABLE}
+                WHERE scope_kind = ? AND scope_id = ? AND digest = ?
+                """,
+                (scope.kind.value, scope.id, digest),
+            ).fetchone()
     if row is None:
         return None
     return SnapshotClaim(str(row["marker"]), int(row["size"]), SnapshotClaimStatus(row["status"]))
@@ -108,10 +119,20 @@ def complete(database: str | Path, scope: ArtifactScope, digest: str, marker: st
             raise ValueError("snapshot claim unavailable")
 
 
+def remove(database: str | Path, scope: ArtifactScope, digest: str, marker: str) -> None:
+    with transaction(database) as connection:
+        connection.execute(
+            f"DELETE FROM {SNAPSHOT_CLAIMS_TABLE} "
+            "WHERE scope_kind = ? AND scope_id = ? AND digest = ? AND marker = ?",
+            (scope.kind.value, scope.id, digest, marker),
+        )
+
+
 __all__ = [
     "SnapshotClaim",
     "SnapshotClaimStatus",
     "complete",
     "get",
     "prepare",
+    "remove",
 ]

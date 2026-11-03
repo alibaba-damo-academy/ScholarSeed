@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 import damoatrace.recording.records as _rec
 
 EXIT_OK = 0
+EXIT_ERROR = 1
 EXIT_USAGE = 2
 EXIT_FAILIF = 3  # --fail-if 阈值违反
 EXIT_NOTFOUND = 4

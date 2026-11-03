@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import asdict
 from enum import Enum
 from typing import Any, Protocol
@@ -43,7 +43,7 @@ class StreamingActionService(Protocol):
 
 async def action_stream(
     service: StreamingActionService, command: ActionCommand
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=STREAM_QUEUE_SIZE)
     invocation_id = ""
 

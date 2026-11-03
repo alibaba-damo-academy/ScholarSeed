@@ -16,9 +16,10 @@ import {
   IconButton,
   Input,
   Tooltip,
-  useToast
+  useToast,
 } from '../../components/ui'
 import { useApp } from '../../store'
+import { showUnsavedIndicator } from './utils'
 import { writeClipboard } from '../../components/primitive/clipboard'
 import {
   currentShortcutPlatform,
@@ -28,18 +29,14 @@ import {
   type ShortcutBinding,
   type ShortcutCommandId,
   type ShortcutModifier,
-  type ShortcutOverrides
+  type ShortcutOverrides,
 } from '../../shortcuts'
 
-import {
-  useSelectionActionContribution,
-  type SelectionReplacement
-} from './actions'
+import { useSelectionActionContribution, type SelectionReplacement } from './actions'
 import { bindAdaptiveFindSpace } from './find'
 import { formatTextOnSave } from './format'
 import { languageFor } from './language'
 import { encodeTextForSave, textForMonaco } from './text'
-import './editor.css'
 import { countEditorLines, editorPerformanceFor } from './limits'
 import { restoreView, saveView } from './monaco'
 import { MonacoFrame } from './monaco/host'
@@ -51,7 +48,7 @@ import {
   useDocumentWorkspace,
   useWorkspaceController,
   type DocumentViewKind,
-  type SelectionViewport
+  type SelectionViewport,
 } from './workspace'
 
 function editorSelectionViewport(
@@ -68,12 +65,13 @@ function editorSelectionViewport(
   const left = frameBounds.left + bounds.left + Math.min(start.left, end.left)
   const top = frameBounds.top + bounds.top + Math.min(start.top, end.top)
   const right = frameBounds.left + bounds.left + Math.max(start.left, end.left) + 1
-  const bottom = frameBounds.top + bounds.top + Math.max(start.top + start.height, end.top + end.height)
+  const bottom =
+    frameBounds.top + bounds.top + Math.max(start.top + start.height, end.top + end.height)
   return selectionViewport(
     { left, top, right, bottom, width: right - left, height: bottom - top },
     {
       x: frameBounds.left + bounds.left + end.left + 1,
-      y: frameBounds.top + bounds.top + end.top + end.height
+      y: frameBounds.top + bounds.top + end.top + end.height,
     }
   )
 }
@@ -99,10 +97,28 @@ const CLOSE_FIND_WIDGET_COMMAND = 'closeFindWidget'
 const FIND_WIDGET_BLUR_SOURCE = 'find-widget-blur'
 const USER_SELECTION_SOURCES = new Set(['keyboard', 'mouse'])
 type MonacoKeyCodeName =
-  | 'Backquote' | 'Backslash' | 'BracketLeft' | 'BracketRight' | 'Comma'
-  | 'DownArrow' | 'End' | 'Enter' | 'Equal' | 'Home' | 'LeftArrow' | 'Minus'
-  | 'PageDown' | 'PageUp' | 'Period' | 'Quote' | 'RightArrow' | 'Semicolon'
-  | 'Slash' | 'Space' | 'Tab' | 'UpArrow'
+  | 'Backquote'
+  | 'Backslash'
+  | 'BracketLeft'
+  | 'BracketRight'
+  | 'Comma'
+  | 'DownArrow'
+  | 'End'
+  | 'Enter'
+  | 'Equal'
+  | 'Home'
+  | 'LeftArrow'
+  | 'Minus'
+  | 'PageDown'
+  | 'PageUp'
+  | 'Period'
+  | 'Quote'
+  | 'RightArrow'
+  | 'Semicolon'
+  | 'Slash'
+  | 'Space'
+  | 'Tab'
+  | 'UpArrow'
 
 const MONACO_SHORTCUT_KEYS: Readonly<Record<string, MonacoKeyCodeName>> = {
   '/': 'Slash',
@@ -126,22 +142,25 @@ const MONACO_SHORTCUT_KEYS: Readonly<Record<string, MonacoKeyCodeName>> = {
   PageDown: 'PageDown',
   PageUp: 'PageUp',
   Space: 'Space',
-  Tab: 'Tab'
+  Tab: 'Tab',
 }
 
-function monacoShortcutModifiers(monaco: MonacoRuntime['monaco']): Record<ShortcutModifier, number> {
+function monacoShortcutModifiers(
+  monaco: MonacoRuntime['monaco']
+): Record<ShortcutModifier, number> {
   return {
     alt: monaco.KeyMod.Alt,
     primary: monaco.KeyMod.CtrlCmd,
-    shift: monaco.KeyMod.Shift
+    shift: monaco.KeyMod.Shift,
   }
 }
 
 function monacoKeyCode(monaco: MonacoRuntime['monaco'], key: string): Monaco.KeyCode | undefined {
-  if (/^[a-z]$/i.test(key)) return monaco.KeyCode.KeyA + key.toLowerCase().charCodeAt(0) - 'a'.charCodeAt(0)
+  if (/^[a-z]$/i.test(key))
+    return monaco.KeyCode.KeyA + key.toLowerCase().charCodeAt(0) - 'a'.charCodeAt(0)
   if (/^[0-9]$/.test(key)) return monaco.KeyCode.Digit0 + Number(key)
   const keyName = MONACO_SHORTCUT_KEYS[key]
-  return keyName ? monaco.KeyCode[keyName] as Monaco.KeyCode : undefined
+  return keyName ? (monaco.KeyCode[keyName] as Monaco.KeyCode) : undefined
 }
 
 function monacoBinding(monaco: MonacoRuntime['monaco'], binding: ShortcutBinding): number {
@@ -151,7 +170,11 @@ function monacoBinding(monaco: MonacoRuntime['monaco'], binding: ShortcutBinding
   return binding.modifiers.reduce((value, modifier) => value | modifiers[modifier], key)
 }
 
-function monacoShortcut(monaco: MonacoRuntime['monaco'], id: ShortcutCommandId, overrides: ShortcutOverrides): number | undefined {
+function monacoShortcut(
+  monaco: MonacoRuntime['monaco'],
+  id: ShortcutCommandId,
+  overrides: ShortcutOverrides
+): number | undefined {
   const binding = effectiveShortcutBindings(id, overrides)[0]
   return binding ? monacoBinding(monaco, binding) : undefined
 }
@@ -162,12 +185,12 @@ const CODE_ACTIONS: Readonly<Partial<Record<ShortcutCommandId, string>>> = {
   'code.goToLine': GO_TO_LINE_ACTION,
   'code.lineComment': LINE_COMMENT_ACTION,
   'code.indent': INDENT_ACTION,
-  'code.outdent': OUTDENT_ACTION
+  'code.outdent': OUTDENT_ACTION,
 }
 const CODE_EDIT_ACTION_COMMANDS = [
   'code.lineComment',
   'code.indent',
-  'code.outdent'
+  'code.outdent',
 ] as const satisfies readonly ShortcutCommandId[]
 
 const CODE_COMMANDS = [
@@ -175,17 +198,21 @@ const CODE_COMMANDS = [
   'code.saveAll',
   'code.undo',
   'code.redo',
-  ...Object.keys(CODE_ACTIONS)
+  ...Object.keys(CODE_ACTIONS),
 ] as readonly ShortcutCommandId[]
 
-const CODE_NATIVE_BINDINGS: Readonly<Partial<Record<ShortcutCommandId, readonly ShortcutBinding[]>>> = {
-  'code.redo': [...shortcutBindings('code.redo'), { key: 'y', modifiers: ['primary'] }]
+const CODE_NATIVE_BINDINGS: Readonly<
+  Partial<Record<ShortcutCommandId, readonly ShortcutBinding[]>>
+> = {
+  'code.redo': [...shortcutBindings('code.redo'), { key: 'y', modifiers: ['primary'] }],
 }
 
 function sameBinding(left: ShortcutBinding, right: ShortcutBinding): boolean {
-  return left.key.toLowerCase() === right.key.toLowerCase()
-    && left.modifiers.length === right.modifiers.length
-    && left.modifiers.every(modifier => right.modifiers.includes(modifier))
+  return (
+    left.key.toLowerCase() === right.key.toLowerCase() &&
+    left.modifiers.length === right.modifiers.length &&
+    left.modifiers.every((modifier) => right.modifiers.includes(modifier))
+  )
 }
 
 function wordWrapFor(enabled: boolean): 'on' | 'off' {
@@ -193,13 +220,15 @@ function wordWrapFor(enabled: boolean): 'on' | 'off' {
 }
 
 export function MonacoDocument({
+  active = true,
   sessionId,
   tabId,
   toolbarHost,
   toolbarActions,
   formatOnSave,
-  viewKind
+  viewKind,
 }: {
+  active?: boolean
   sessionId: string
   tabId: string
   toolbarHost?: HTMLElement | null
@@ -228,46 +257,59 @@ export function MonacoDocument({
   const [goToLineOpen, setGoToLineOpen] = useState(false)
   const [goToLineValue, setGoToLineValue] = useState('')
 
-  const replaceSelection = useCallback<SelectionReplacement>(async (request) => {
-    const editor = editorRef.current
-    const current = controller.getSnapshot().sessions[sessionId]
-    const currentSelection = editor?.getSelection()
-    const model = editor?.getModel()
-    if (
-      !editor
-      || !model
-      || !current
-      || !currentSelection
-      || current.changeVersion !== request.expectedChangeVersion
-      || !current.selection
-      || selectionFingerprint(current.selection) !== request.expectedFingerprint
-      || model.getValueInRange(currentSelection) !== request.selection.text
-    ) return { ok: false, error: 'selection_changed' }
-    editor.pushUndoStop()
-    const applied = editor.executeEdits('ai-selection-replacement', [{
-      range: currentSelection,
-      text: request.replacement,
-      forceMoveMarkers: true
-    }])
-    editor.pushUndoStop()
-    return applied ? { ok: true } : { ok: false, error: 'replacement_failed' }
-  }, [controller, sessionId])
-  const replacementContribution = useMemo(() => ({
-    actions: null,
-    expanded: false,
-    id: 'markdown-source-replacement',
-    order: 300,
-    replaceSelection
-  }), [replaceSelection])
+  const replaceSelection = useCallback<SelectionReplacement>(
+    async (request) => {
+      const editor = editorRef.current
+      const current = controller.getSnapshot().sessions[sessionId]
+      const currentSelection = editor?.getSelection()
+      const model = editor?.getModel()
+      if (
+        !editor ||
+        !model ||
+        !current ||
+        !currentSelection ||
+        current.changeVersion !== request.expectedChangeVersion ||
+        !current.selection ||
+        selectionFingerprint(current.selection) !== request.expectedFingerprint ||
+        model.getValueInRange(currentSelection) !== request.selection.text
+      )
+        return { ok: false, error: 'selection_changed' }
+      editor.pushUndoStop()
+      const applied = editor.executeEdits('ai-selection-replacement', [
+        {
+          range: currentSelection,
+          text: request.replacement,
+          forceMoveMarkers: true,
+        },
+      ])
+      editor.pushUndoStop()
+      return applied ? { ok: true } : { ok: false, error: 'replacement_failed' }
+    },
+    [controller, sessionId]
+  )
+  const replacementContribution = useMemo(
+    () => ({
+      actions: null,
+      expanded: false,
+      id: 'markdown-source-replacement',
+      order: 300,
+      replaceSelection: active ? replaceSelection : undefined,
+    }),
+    [active, replaceSelection]
+  )
   useSelectionActionContribution(tabId, replacementContribution)
 
   useEffect(() => {
     const host = frame?.host
-    if (!host || !session || session.text === null || session.loadState !== 'ready') return
+    if (!active || !host || !session || session.text === null || session.loadState !== 'ready')
+      return
     const monaco = frame.runtime.monaco
-    const isMarkdownSource = session.viewer === 'markdown' && viewKind === 'preview'
+    const isMarkdownSource = session.viewer === 'markdown' && viewKind === 'source'
     const lightweight = session.lightweightText
-    const performance = editorPerformanceFor(session.bytes.byteLength, countEditorLines(session.text))
+    const performance = editorPerformanceFor(
+      session.bytes.byteLength,
+      countEditorLines(session.text)
+    )
     const editor = frame.runtime.editorFor(host, sessionId, session.source.path, session.text, {
       readOnly: (!isMarkdownSource && viewKind === 'preview') || !session.capabilities.can_edit,
       editContext: false,
@@ -284,7 +326,7 @@ export function MonacoDocument({
       // 编辑器内容不足以滚动时放行滚轮，让外层 split panel 的横向/纵向滚动生效。
       scrollbar: { alwaysConsumeMouseWheel: false },
       renderWhitespace: 'selection',
-      wordWrap: wordWrapFor(wrapEnabledRef.current)
+      wordWrap: wordWrapFor(wrapEnabledRef.current),
     })
     const model = editor.getModel()
     if (!model) {
@@ -292,7 +334,11 @@ export function MonacoDocument({
       return
     }
     editorRef.current = editor
-    const adaptiveFindSpace = bindAdaptiveFindSpace(editor, host, monaco.editor.EditorOption.padding)
+    const adaptiveFindSpace = bindAdaptiveFindSpace(
+      editor,
+      host,
+      monaco.editor.EditorOption.padding
+    )
     savedVersionRef.current ??= model.getAlternativeVersionId()
     const prior = restoreView(tabId)
     if (prior) editor.restoreViewState(prior)
@@ -308,11 +354,7 @@ export function MonacoDocument({
       }
     })
     const selectionListener = editor.onDidChangeCursorSelection(({ selection, source }) => {
-      if (
-        applyingRevealRef.current
-        || selection.isEmpty()
-        || !USER_SELECTION_SOURCES.has(source)
-      ) {
+      if (applyingRevealRef.current || selection.isEmpty() || !USER_SELECTION_SOURCES.has(source)) {
         controller.setSelection(tabId, null)
         return
       }
@@ -322,20 +364,24 @@ export function MonacoDocument({
         controller.setSelection(tabId, null)
         return
       }
-      controller.setSelection(tabId, {
-        document_id: current.documentId,
-        document_session_id: current.id,
-        revision: current.revision,
-        status: 'exact',
-        text: model.getValueInRange(selection),
-        locator: {
-          kind: 'text',
-          start_line: selection.startLineNumber - 1,
-          start_column: selection.startColumn - 1,
-          end_line: selection.endLineNumber - 1,
-          end_column: selection.endColumn - 1
-        }
-      }, viewport)
+      controller.setSelection(
+        tabId,
+        {
+          document_id: current.documentId,
+          document_session_id: current.id,
+          revision: current.revision,
+          status: 'exact',
+          text: model.getValueInRange(selection),
+          locator: {
+            kind: 'text',
+            start_line: selection.startLineNumber - 1,
+            start_column: selection.startColumn - 1,
+            end_line: selection.endLineNumber - 1,
+            end_column: selection.endColumn - 1,
+          },
+        },
+        viewport
+      )
     })
     let pendingFindBlurFrame: number | null = null
     const handleFindWidgetFocusOut = (event: FocusEvent): void => {
@@ -356,7 +402,12 @@ export function MonacoDocument({
     const handleEditActionShortcut = (event: KeyboardEvent): void => {
       if (editor.getOption(monaco.editor.EditorOption.readOnly)) return
       for (const commandId of CODE_EDIT_ACTION_COMMANDS) {
-        if (!effectiveShortcutBindings(commandId, appState.shortcutOverrides).some(binding => matchesBinding(event, binding))) continue
+        if (
+          !effectiveShortcutBindings(commandId, appState.shortcutOverrides).some((binding) =>
+            matchesBinding(event, binding)
+          )
+        )
+          continue
         event.preventDefault()
         event.stopImmediatePropagation()
         editor.trigger(SHORTCUT_ACTION_SOURCE, CODE_ACTIONS[commandId]!, null)
@@ -366,9 +417,9 @@ export function MonacoDocument({
     host.addEventListener('keydown', handleEditActionShortcut, true)
     const selectedText = (): string | null => {
       if (!editor.hasTextFocus()) return null
-      const selections = editor.getSelections()?.filter(selection => !selection.isEmpty()) ?? []
+      const selections = editor.getSelections()?.filter((selection) => !selection.isEmpty()) ?? []
       if (!selections.length) return null
-      return selections.map(selection => model.getValueInRange(selection)).join(model.getEOL())
+      return selections.map((selection) => model.getValueInRange(selection)).join(model.getEOL())
     }
     const handleCopy = (event: ClipboardEvent): void => {
       const text = selectedText()
@@ -383,7 +434,9 @@ export function MonacoDocument({
         editor.trigger(SHORTCUT_ACTION_SOURCE, COPY_ACTION, null)
         return
       }
-      void writeClipboard(text).catch(() => toast({ title: t('markdown.codeCopyFailed'), tone: 'error' }))
+      void writeClipboard(text).catch(() =>
+        toast({ title: t('markdown.codeCopyFailed'), tone: 'error' })
+      )
     }
     host.addEventListener('copy', handleCopy, true)
     const copyKeybindings = [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC]
@@ -395,20 +448,22 @@ export function MonacoDocument({
       label: uiText('copy.idle'),
       keybindings: copyKeybindings,
       precondition: EDITOR_TEXT_FOCUS,
-      run: copyCommand
+      run: copyCommand,
     })
     const pasteAction = editor.addAction({
       id: CLIPBOARD_PASTE_ACTION,
       label: t('code.paste'),
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV],
       precondition: EDITOR_WRITABLE_FOCUS,
-      run: async () => { await window.scholarseed.pasteClipboard() }
+      run: async () => {
+        await window.scholarseed.pasteClipboard()
+      },
     })
     for (const commandId of CODE_COMMANDS) {
       const effective = effectiveShortcutBindings(commandId, appState.shortcutOverrides)
       const nativeBindings = CODE_NATIVE_BINDINGS[commandId] ?? shortcutBindings(commandId)
       for (const nativeBinding of nativeBindings) {
-        if (!effective.some(candidate => sameBinding(candidate, nativeBinding))) {
+        if (!effective.some((candidate) => sameBinding(candidate, nativeBinding))) {
           editor.addCommand(monacoBinding(monaco, nativeBinding), () => undefined)
         }
       }
@@ -421,8 +476,7 @@ export function MonacoDocument({
         else if (commandId === 'code.goToLine') {
           setGoToLineValue(String(editor.getPosition()?.lineNumber ?? 1))
           setGoToLineOpen(true)
-        }
-        else if (commandId === 'code.undo') {
+        } else if (commandId === 'code.undo') {
           if (lightweight) editor.trigger(HISTORY_ACTION_SOURCE, UNDO_COMMAND, null)
           else controller.undo(sessionId)
         } else if (commandId === 'code.redo') {
@@ -447,7 +501,7 @@ export function MonacoDocument({
               path: current.source.path,
               text: source,
               savedBytes: current.savedBytes,
-              cursorOffset: model.getOffsetAt(position)
+              cursorOffset: model.getOffsetAt(position),
             })
             if (result.status === 'failed') {
               toast({ title: t('formatOnSaveFailed'), tone: 'warning' })
@@ -455,11 +509,13 @@ export function MonacoDocument({
             }
             if (result.status !== 'formatted' || model.getValue() !== source) return
             editor.pushUndoStop()
-            const applied = editor.executeEdits('format-on-save', [{
-              range: model.getFullModelRange(),
-              text: result.text,
-              forceMoveMarkers: true
-            }])
+            const applied = editor.executeEdits('format-on-save', [
+              {
+                range: model.getFullModelRange(),
+                text: result.text,
+                forceMoveMarkers: true,
+              },
+            ])
             editor.pushUndoStop()
             if (applied && result.cursorOffset !== null) {
               editor.setPosition(model.getPositionAt(result.cursorOffset))
@@ -471,7 +527,7 @@ export function MonacoDocument({
             const bytes = encodeTextForSave(model.getValue(), current.savedBytes)
             serializedVersionRef.current = model.getAlternativeVersionId()
             return bytes
-          }
+          },
         })
       : () => {}
     return () => {
@@ -489,7 +545,21 @@ export function MonacoDocument({
       editor.dispose()
       editorRef.current = null
     }
-  }, [appState.shortcutOverrides, controller, formatOnSave, frame, sessionId, set, tabId, t, toast, toolbarHost, viewKind, session?.loadState])
+  }, [
+    active,
+    appState.shortcutOverrides,
+    controller,
+    formatOnSave,
+    frame,
+    sessionId,
+    set,
+    tabId,
+    t,
+    toast,
+    toolbarHost,
+    viewKind,
+    session?.loadState,
+  ])
 
   useEffect(() => {
     const editor = editorRef.current
@@ -506,11 +576,12 @@ export function MonacoDocument({
   useEffect(() => {
     const model = editorRef.current?.getModel()
     if (
-      !model
-      || session?.text === null
-      || session?.text === undefined
-      || (session.lightweightText && session.dirty)
-    ) return
+      !model ||
+      session?.text === null ||
+      session?.text === undefined ||
+      (session.lightweightText && session.dirty)
+    )
+      return
     const editorText = textForMonaco(session.text)
     if (model.getValue() === editorText) return
     const viewState = editorRef.current?.saveViewState()
@@ -522,24 +593,16 @@ export function MonacoDocument({
       applyingExternalRef.current = false
     }
     if (viewState) editorRef.current?.restoreViewState(viewState)
-  }, [session?.revision, session?.text])
+  }, [active, session?.revision, session?.text])
 
   useEffect(() => {
     const editor = editorRef.current
     const model = editor?.getModel()
-    if (!editor || !model || !reveal || session?.loadState !== 'ready') return
+    if (!active || !editor || !model || !reveal || session?.loadState !== 'ready') return
     const requestKey = `${tabId}:${reveal.sequence}`
     if (handledRevealRef.current === requestKey) return
     handledRevealRef.current = requestKey
-    const match = model.findMatches(
-      reveal.query,
-      false,
-      false,
-      false,
-      null,
-      false,
-      1
-    )[0]
+    const match = model.findMatches(reveal.query, false, false, false, null, false, 1)[0]
     if (!match) return
     applyingRevealRef.current = true
     try {
@@ -549,7 +612,7 @@ export function MonacoDocument({
     } finally {
       applyingRevealRef.current = false
     }
-  }, [reveal, session?.loadState, session?.revision, tabId])
+  }, [active, reveal, session?.loadState, session?.revision, tabId])
 
   if (!session || session.loadState === 'loading') {
     return <div className="vds-viewer-empty">{t('code.loading')}</div>
@@ -560,7 +623,8 @@ export function MonacoDocument({
   const readOnly = !session.capabilities.can_edit
   const requestedLine = Number(goToLineValue)
   const lineCount = editorRef.current?.getModel()?.getLineCount() ?? 0
-  const canGoToLine = Number.isInteger(requestedLine) && requestedLine >= 1 && requestedLine <= lineCount
+  const canGoToLine =
+    Number.isInteger(requestedLine) && requestedLine >= 1 && requestedLine <= lineCount
   const goToLine = (): void => {
     const targetEditor = editorRef.current
     if (!targetEditor || !canGoToLine) return
@@ -574,7 +638,9 @@ export function MonacoDocument({
       <DialogContent data-testid="code-go-to-line-dialog">
         <DialogHeader>
           <DialogTitle>{t('code.goToLine.title')}</DialogTitle>
-          <DialogDescription>{t('code.goToLine.description', { count: lineCount })}</DialogDescription>
+          <DialogDescription>
+            {t('code.goToLine.description', { count: lineCount })}
+          </DialogDescription>
         </DialogHeader>
         <Input
           autoFocus
@@ -590,8 +656,12 @@ export function MonacoDocument({
           }}
         />
         <DialogFooter>
-          <Button variant="outline" onClick={() => setGoToLineOpen(false)}>{uiText('cancel')}</Button>
-          <Button disabled={!canGoToLine} onClick={goToLine}>{t('code.goToLine.confirm')}</Button>
+          <Button variant="outline" onClick={() => setGoToLineOpen(false)}>
+            {uiText('cancel')}
+          </Button>
+          <Button disabled={!canGoToLine} onClick={goToLine}>
+            {t('code.goToLine.confirm')}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -615,13 +685,66 @@ export function MonacoDocument({
   }
   const wrapEnabled = appState.editorWordWrap
   const sourceActions = (
-    <div className="vds-code-actions flex min-w-0 flex-nowrap items-center overflow-x-auto !gap-[var(--vds-toolbar-icon-gap)] !border-b-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="toolbar" aria-label={t('code.toolbar')}>
-      <Tooltip portalled content={t('code.undo')}><IconButton data-testid="markdown-undo" variant="ghostIcon" size="sm" title={undefined} label={t('code.undo')} icon={<Undo2 />} disabled={readOnly} onClick={() => runHistoryAction(UNDO_COMMAND)} /></Tooltip>
-      <Tooltip portalled content={t('code.redo')}><IconButton data-testid="markdown-redo" variant="ghostIcon" size="sm" title={undefined} label={t('code.redo')} icon={<Redo2 />} disabled={readOnly} onClick={() => runHistoryAction(REDO_COMMAND)} /></Tooltip>
-      <span className="mx-[var(--vds-space-1)] h-5 w-px bg-[var(--vds-divider-default)]" role="separator" />
-      <Tooltip portalled content={t('code.find')}><IconButton data-testid="markdown-find" variant="ghostIcon" size="sm" title={undefined} label={t('code.find')} icon={<Search />} onClick={() => runAction(FIND_ACTION)} /></Tooltip>
-      <Tooltip portalled content={t('code.replace')}><IconButton data-testid="markdown-replace" variant="ghostIcon" size="sm" title={undefined} label={t('code.replace')} icon={<Replace />} disabled={readOnly} onClick={() => runAction(REPLACE_ACTION)} /></Tooltip>
-      <span className="mx-[var(--vds-space-1)] h-5 w-px bg-[var(--vds-divider-default)]" role="separator" />
+    <div
+      className="vds-code-actions flex px-[var(--vds-space-2)] py-[var(--vds-space-1)] min-w-0 flex-nowrap items-center overflow-x-auto !gap-[var(--vds-toolbar-icon-gap)] !border-b-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      role="toolbar"
+      aria-label={t('code.toolbar')}
+    >
+      <Tooltip portalled content={t('code.undo')}>
+        <IconButton
+          data-testid="markdown-undo"
+          variant="ghostIcon"
+          size="sm"
+          title={undefined}
+          label={t('code.undo')}
+          icon={<Undo2 />}
+          disabled={readOnly}
+          onClick={() => runHistoryAction(UNDO_COMMAND)}
+        />
+      </Tooltip>
+      <Tooltip portalled content={t('code.redo')}>
+        <IconButton
+          data-testid="markdown-redo"
+          variant="ghostIcon"
+          size="sm"
+          title={undefined}
+          label={t('code.redo')}
+          icon={<Redo2 />}
+          disabled={readOnly}
+          onClick={() => runHistoryAction(REDO_COMMAND)}
+        />
+      </Tooltip>
+      <span
+        className="mx-[var(--vds-space-1)] h-[var(--vds-space-5)] w-[var(--vds-border-width-1)] bg-[var(--vds-divider-default)]"
+        role="separator"
+      />
+      <Tooltip portalled content={t('code.find')}>
+        <IconButton
+          data-testid="markdown-find"
+          variant="ghostIcon"
+          size="sm"
+          title={undefined}
+          label={t('code.find')}
+          icon={<Search />}
+          onClick={() => runAction(FIND_ACTION)}
+        />
+      </Tooltip>
+      <Tooltip portalled content={t('code.replace')}>
+        <IconButton
+          data-testid="markdown-replace"
+          variant="ghostIcon"
+          size="sm"
+          title={undefined}
+          label={t('code.replace')}
+          icon={<Replace />}
+          disabled={readOnly}
+          onClick={() => runAction(REPLACE_ACTION)}
+        />
+      </Tooltip>
+      <span
+        className="mx-[var(--vds-space-1)] h-[var(--vds-space-5)] w-[var(--vds-border-width-1)] bg-[var(--vds-divider-default)]"
+        role="separator"
+      />
       <Tooltip portalled content={t('code.wrap')}>
         <IconButton
           aria-pressed={wrapEnabled}
@@ -637,7 +760,12 @@ export function MonacoDocument({
     </div>
   )
   const editor = (
-    <div className="vds-code-document is-actions-external" data-shortcut-scope="code" data-testid="document-editor" data-language={languageFor(session.source.path)}>
+    <div
+      className="vds-code-document is-actions-external grid grid-rows-[minmax(0,1fr)] h-full min-w-0 min-h-0 overflow-hidden"
+      data-shortcut-scope="code"
+      data-testid="document-editor"
+      data-language={languageFor(session.source.path)}
+    >
       <MonacoFrame
         language={appState.lang}
         onReady={setFrame}
@@ -649,43 +777,52 @@ export function MonacoDocument({
   if (!toolbarHost) {
     return (
       <>
-      <section className="grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--vds-bg-page)]">
-        <div
-          className="flex min-h-12 min-w-0 flex-nowrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-page)] px-[var(--vds-space-2)] py-[var(--vds-space-1)]"
-          data-save-state={session.saveState}
-          data-testid="source-document-toolbar"
-        >
-          <div className="flex min-w-0 flex-1 items-center overflow-hidden">{sourceActions}</div>
-          <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-2)]">
-            {toolbarActions}
-            <Tooltip portalled content={uiText('save')}>
-              <span className="relative inline-flex">
-                <IconButton
-                  variant="ghostIcon"
-                  size="sm"
-                  title={undefined}
-                  label={uiText('save')}
-                  icon={<Save />}
-                  data-testid="source-document-save"
-                  disabled={!session.dirty || !session.capabilities.can_save || session.saveState === 'saving'}
-                  onClick={() => void controller.save(sessionId)}
-                />
-                {session.dirty && <BadgeDot className="pointer-events-none absolute right-0 top-0" data-testid="source-document-save-dirty" />}
-              </span>
-            </Tooltip>
+        <section className="grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--vds-bg-page)]">
+          <div
+            className="flex min-h-[var(--vds-workbench-header-height)] min-w-0 flex-nowrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-page)] px-[var(--vds-space-2)] py-[var(--vds-space-1)]"
+            data-save-state={session.saveState}
+            data-testid="source-document-toolbar"
+          >
+            <div className="flex min-w-0 flex-1 items-center overflow-hidden">{sourceActions}</div>
+            <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-2)]">
+              {toolbarActions}
+              <Tooltip portalled content={uiText('save')}>
+                <span className="relative inline-flex">
+                  <IconButton
+                    variant="ghostIcon"
+                    size="sm"
+                    title={undefined}
+                    label={uiText('save')}
+                    icon={<Save />}
+                    data-testid="source-document-save"
+                    disabled={
+                      !session.dirty ||
+                      !session.capabilities.can_save ||
+                      session.saveState === 'saving'
+                    }
+                    onClick={() => void controller.save(sessionId)}
+                  />
+                  {showUnsavedIndicator(session.dirty, appState.autoSave) && (
+                    <BadgeDot
+                      className="pointer-events-none absolute right-0 top-0"
+                      data-testid="source-document-save-dirty"
+                    />
+                  )}
+                </span>
+              </Tooltip>
+            </div>
           </div>
-        </div>
-        {editor}
-      </section>
-      {goToLineDialog}
+          {editor}
+        </section>
+        {goToLineDialog}
       </>
     )
   }
   return (
     <>
-      {createPortal(sourceActions, toolbarHost)}
+      {active && createPortal(sourceActions, toolbarHost)}
       {editor}
-      {goToLineDialog}
+      {active && goToLineDialog}
     </>
   )
 }

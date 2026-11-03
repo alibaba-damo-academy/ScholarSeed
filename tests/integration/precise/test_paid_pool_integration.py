@@ -16,6 +16,9 @@ from unittest import mock
 
 from browser_pool import BrowserPool, Lease, group_members, stop_process
 from browser_pool_support import cleanup_pool, pool_environment
+from io_utils import atomic_write_json, utc_now
+from run_state import increment_search_round, initialize_run, update_status
+from stage_guard import authorize_download
 from validate_json import validate_data
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -47,35 +50,105 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         cleanup_pool(self.root)
         self.temp.cleanup()
 
-    def launch(self, index, delay="2"):
-        run = self.root / f"run-{index}"
-        run.mkdir()
-        (run / "metadata.json").write_text(
-            json.dumps(
-                {
-                    "papers": [
-                        {
-                            "id": f"paper-{index}",
-                            "title": f"Paper {index}",
-                            "doi": f"10.0000/paper-{index}",
-                            "open_access": "no",
-                        }
-                    ]
-                }
-            )
+    def prepare_run(self, paper_ids, *, auto_delegated=False):
+        run = initialize_run(self.root, "Find papers")
+        workflow = json.loads((run / "workflow.json").read_text())
+        workflow["auto_delegated"] = auto_delegated
+        atomic_write_json(run / "workflow.json", workflow)
+        update_status(run, "INTENT_CONFIRMED", "Test intent confirmed")
+        increment_search_round(run)
+        metadata_relative = "search/round-001/metadata.json"
+        metadata_path = run / metadata_relative
+        papers = [
+            {
+                "id": paper_id,
+                "title": paper_id,
+                "authors": ["Test author"],
+                "year": 2025,
+                "abstract": "Test abstract",
+                "doi": f"10.0000/{paper_id}",
+                "venue": "Test venue",
+                "open_access": "no",
+                "source": "test",
+                "relevance": {"reasons": ["Test match"]},
+                "is_placeholder": False,
+            }
+            for paper_id in paper_ids
+        ]
+        atomic_write_json(
+            metadata_path,
+            {
+                "schema_version": "1.0",
+                "run_id": run.name,
+                "round": 1,
+                "query_summary": "Find papers",
+                "generated_at": utc_now(),
+                "status": "success",
+                "is_placeholder": False,
+                "papers": papers,
+                "warnings": [],
+            },
         )
-        (run / "selection.json").write_text(
-            json.dumps(
-                {
-                    "run_id": run.name,
-                    "metadata_path": "metadata.json",
-                    "selected_paper_ids": [f"paper-{index}"],
-                    "download_paid": True,
-                    "confirmed_by_user": True,
-                }
-            )
+        update_status(
+            run, "REVIEW_PENDING", "Test results ready", {"latest_metadata": metadata_relative}
         )
+        selection_path = run / "selection.json"
+        atomic_write_json(
+            selection_path,
+            {
+                "schema_version": "1.1",
+                "run_id": run.name,
+                "metadata_path": metadata_relative,
+                "selected_paper_ids": paper_ids,
+                "download_open": True,
+                "download_paid": True,
+                "read_after_download": False,
+                "confirmed_by_user": True,
+                "paid_download_confirmation": "included_in_selection",
+            },
+        )
+        authorize_download(
+            run, selection_path, "auto_delegated" if auto_delegated else "user_explicit"
+        )
+        manifest = {
+            "schema_version": "1.0",
+            "run_id": run.name,
+            "generated_at": utc_now(),
+            "is_placeholder": False,
+            "adapter": {"name": "product-bridge"},
+            "papers": [
+                {
+                    "paper_id": paper_id,
+                    "title": paper_id,
+                    "access_type": "unknown",
+                    "download_route": "open-download",
+                    "status": "failed",
+                    "file_path": None,
+                    "verified_exists": False,
+                    "message": "Product acquisition failed in test",
+                }
+                for paper_id in paper_ids
+            ],
+            "summary": {
+                "selected": len(paper_ids),
+                "downloaded": 0,
+                "action_required": 0,
+                "failed": len(paper_ids),
+                "skipped": 0,
+            },
+            "warnings": [],
+        }
+        validate_data("download-manifest", manifest)
+        atomic_write_json(run / "downloads/manifest.json", manifest)
+        update_status(
+            run, "DOWNLOADING_PAID", "Test paid download started", {"selection": "selection.json"}
+        )
+        return run
+
+    def launch(self, index, delay="2", mode="interactive", paper_ids=None):
+        run = self.prepare_run(paper_ids or [f"paper-{index}"], auto_delegated=mode == "autodev")
         env = self.environment.copy()
+        env["PAPER_DL_MODE"] = mode
         env["PAPER_DL_TEST_DOWNLOADER_DELAY"] = delay
         p = subprocess.Popen(
             [
@@ -107,16 +180,16 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         self.fail(f"Expected {count} active downloads")
 
     def test_four_adapters_isolate_output_and_fourth_waits(self):
-        first = [self.launch(i) for i in range(3)]
+        modes = ["interactive", "autodev", "interactive", "autodev"]
+        first = [self.launch(i, mode=modes[i]) for i in range(3)]
         states = self.wait_for_downloads(3)
         expected_endpoint = {s["run_dir"]: s["endpoint"] for s in states}
         self.assertEqual(len(set(expected_endpoint.values())), 3)
-        fourth = self.launch(3, delay="0")
-        for run, p in [*first, fourth]:
+        fourth = self.launch(3, delay="0", mode=modes[3])
+        for index, (run, p) in enumerate([*first, fourth]):
             out, err = p.communicate(timeout=15)
             self.assertEqual(p.returncode, 0, out + err)
             manifest = json.loads((run / "downloads/manifest.json").read_text())
-            index = int(run.name.split("-")[1])
             self.assertEqual(manifest["papers"][0]["paper_id"], f"paper-{index}")
             pdf = run / manifest["papers"][0]["file_path"]
             self.assertTrue(pdf.is_relative_to(run))
@@ -124,6 +197,9 @@ class PaidPoolIntegrationTests(unittest.TestCase):
             report = json.loads((run / manifest["external_report"]).read_text())
             self.assertEqual(report["results"][0]["identifier"]["value"], f"10.0000/paper-{index}")
             self.assertTrue(manifest["completion_notice"]["browser_pool_released"])
+            self.assertEqual(manifest["adapter"]["mode"], modes[index])
+            self.assertTrue(manifest["adapter"]["cdp"])
+            self.assertIn("[FAKE CDP] attached to", out)
             if index < 3:
                 self.assertIn(expected_endpoint[str(run)], out)
             else:
@@ -131,7 +207,7 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         self.assertEqual(self.pool.status(), [None, None, None])
 
     def test_cancel_active_adapter_cleans_only_its_own_processes(self):
-        run0, p0 = self.launch(0, delay="60")
+        run0, p0 = self.launch(0, delay="60", mode="autodev")
         run1, p1 = self.launch(1, delay="60")
         states = self.wait_for_downloads(2)
         own = next(s for s in states if s["run_dir"] == str(run0))
@@ -145,29 +221,30 @@ class PaidPoolIntegrationTests(unittest.TestCase):
         self.assertTrue(group_members(other["download"]["pid"]))
         self.assertIsNone(p1.poll())
 
+    def test_autodev_skips_challenges_and_releases_browser(self):
+        run, process = self.launch(
+            0, delay="0", mode="autodev", paper_ids=["success", "manual", "login"]
+        )
+        out, err = process.communicate(timeout=15)
+        self.assertEqual(process.returncode, 0, out + err)
+        manifest = json.loads((run / "downloads/manifest.json").read_text())
+        validate_data("download-manifest", manifest)
+        self.assertEqual(manifest["summary"]["downloaded"], 1)
+        self.assertEqual(manifest["summary"]["skipped"], 2)
+        self.assertEqual(manifest["summary"]["action_required"], 0)
+        self.assertNotIn("action", manifest)
+        self.assertTrue(manifest["adapter"]["cdp"])
+        self.assertIn("[FAKE CDP] attached to", out)
+        self.assertNotIn("[ACTION REQUIRED]", out)
+        self.assertTrue(manifest["completion_notice"]["browser_pool_released"])
+        self.assertEqual(self.pool.status(), [None, None, None])
+
     def assert_intervention_failure_preserves_results(self, *, close_browser):
         spec = importlib.util.spec_from_file_location("paid_pool_recovery_test", ADAPTER)
         adapter = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(adapter)
-        run = self.root / "mixed-run"
-        run.mkdir()
-        papers = [
-            {"id": name, "title": name, "doi": f"10.0000/{name}", "open_access": "no"}
-            for name in ("success", "manual")
-        ]
-        (run / "metadata.json").write_text(json.dumps({"papers": papers}))
+        run = self.prepare_run(["success", "manual"])
         selection = run / "selection.json"
-        selection.write_text(
-            json.dumps(
-                {
-                    "run_id": run.name,
-                    "metadata_path": "metadata.json",
-                    "selected_paper_ids": ["success", "manual"],
-                    "download_paid": True,
-                    "confirmed_by_user": True,
-                }
-            )
-        )
         output = run / "downloads/manifest.json"
         args = Namespace(input=selection, output=output, resume=False)
         original_download = Lease.run_download

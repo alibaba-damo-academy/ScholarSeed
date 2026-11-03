@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from service.literature.schema import (
 )
 from service.literature.service.reference import LiteratureReferenceService
 from service.paths import PROJECT_DB_RELATIVE
+from service.platform.activity import Activities
 from service.platform.content import AssetKind, RootKind
 from service.platform.excerpts import ExcerptSourceKind
 from service.resources.api.routes import register_resource_routes
@@ -46,7 +48,7 @@ class ResourceExcerptContract(unittest.TestCase):
         root = Path(self.temporary.name)
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(root), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = self.content.create_project("Excerpt API")
         with pdf_fixture.open() as document:
             document.new_page().insert_text((50, 50), "Contract source")
@@ -170,7 +172,7 @@ class ResourceExcerptContract(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), body)
 
         database = Path(self.content.resolve(self.project.id, PROJECT_DB_RELATIVE))
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             count = connection.execute(
                 f"SELECT COUNT(*) FROM {EXCERPT_DOCUMENTS_TABLE}"
             ).fetchone()[0]

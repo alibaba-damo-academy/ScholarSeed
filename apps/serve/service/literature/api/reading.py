@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from pathlib import PurePath
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 
 from service.content.domain.model import ContentError
+from service.content.service.spreadsheet import (
+    CSV_SUFFIX,
+    SpreadsheetRangeError,
+    SpreadsheetRangeTooLarge,
+    read_spreadsheet_range,
+)
 from service.literature.api.importer import register_attachment_import
 from service.literature.domain.model import MAX_IMPORT_BYTES
 from service.literature.persistence.reading import (
@@ -28,7 +37,7 @@ from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
 from service.platform.ranges import parse_byte_range
 from service.platform.records import EMPTY_RECORDS, ProjectPdfRecordPort, RecordOwner, RecordTarget
 from service.platform.resources import ResourceManagedCopyPort
-from service.platform.workbench import DocumentFormatPort
+from service.platform.workbench import DocumentFormatPort, DocumentFormatProjection
 from service.workbench.service.regions import crop as crop_region
 from service.workbench.service.regions import manifest as region_manifest
 from service.workbench.service.regions import region as resolve_region
@@ -38,6 +47,13 @@ OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 NO_CONTENT_STATUS = 204
 PRECONDITION_REQUIRED_STATUS = 428
 ROUTE = "/api/v1/literatures/{literature_id}/attachments/{attachment_id}"
+SELECTION_SNAPSHOT_ROUTE = f"{ROUTE}/selection-snapshot"
+MAXIMUM_SELECTION_FIELD_CHARS = 256
+SELECTION_RANGE_INVALID_STATUS = 422
+SELECTION_RANGE_TOO_LARGE_STATUS = 413
+SELECTION_RANGE_INVALID = "selection_locator_invalid"
+SELECTION_RANGE_TOO_LARGE = "selection_too_large"
+REVISION_CONFLICT = "revision_conflict"
 IDEMPOTENCY_HEADER = "idempotency-key"
 PARTIAL_CONTENT_STATUS = 206
 RANGE_NOT_SATISFIABLE_STATUS = 416
@@ -67,12 +83,30 @@ CONTENT_ERROR_MESSAGE = {
     "file_not_found": "附件文件不存在",
     "prepared_content_unavailable": "附件内容尚不可用",
 }
+
+
 RETRYABLE_CONTENT_ERRORS = frozenset(
     {
         "literature_attachment_unreadable",
         "prepared_content_unavailable",
     }
 )
+
+
+def _attachment_projection(
+    formats: DocumentFormatPort, name: str, payload: bytes
+) -> DocumentFormatProjection:
+    """CSV editing belongs to project files; literature copies retain their readonly contract."""
+    projection = formats.project(name, payload)
+    if PurePath(name).suffix.lower() == CSV_SUFFIX:
+        return replace(projection, can_edit=False, can_save=False, can_edit_artifact=False)
+    return projection
+
+
+class SelectionSnapshotRequest(BaseModel):
+    source_revision: str = Field(min_length=1, max_length=MAXIMUM_SELECTION_FIELD_CHARS)
+    sheet: str = Field(min_length=1, max_length=MAXIMUM_SELECTION_FIELD_CHARS)
+    range: str = Field(min_length=1, max_length=MAXIMUM_SELECTION_FIELD_CHARS)
 
 
 def _target(literature_id: str, attachment_id: str) -> RecordTarget:
@@ -121,6 +155,26 @@ def register_reading_routes(
     catalog = AttachmentRecordCatalog(repository.database)
     register_attachment_import(app, attachments, catalog)
 
+    @app.post(SELECTION_SNAPSHOT_ROUTE)
+    def capture_selection_snapshot(
+        literature_id: str, attachment_id: str, body: SelectionSnapshotRequest
+    ) -> dict[str, str]:
+        try:
+            attachment = attachments.attachment(literature_id, attachment_id)
+            data, _media_type, revision = attachments.read_attachment(literature_id, attachment_id)
+            if revision != body.source_revision:
+                raise ContentError(REVISION_CONFLICT)
+            selected = read_spreadsheet_range(attachment.name, data, body.sheet, body.range)
+        except ContentError as error:
+            raise _content_error(error) from error
+        except SpreadsheetRangeTooLarge as error:
+            raise HTTPException(
+                SELECTION_RANGE_TOO_LARGE_STATUS, SELECTION_RANGE_TOO_LARGE
+            ) from error
+        except SpreadsheetRangeError as error:
+            raise HTTPException(SELECTION_RANGE_INVALID_STATUS, SELECTION_RANGE_INVALID) from error
+        return {"snapshot_text": selected.text, "source_revision": revision}
+
     @app.get(f"{ROUTE}/open")
     def open_attachment(literature_id: str, attachment_id: str) -> Response:
         try:
@@ -128,7 +182,7 @@ def register_reading_routes(
             data, media_type, revision = attachments.read_attachment(literature_id, attachment_id)
         except ContentError as error:
             raise _content_error(error) from error
-        projection = formats.project(attachment.name, data)
+        projection = _attachment_projection(formats, attachment.name, data)
         return Response(
             content=json.dumps(
                 {
@@ -255,12 +309,13 @@ def register_reading_routes(
         request: Request,
         revision: str = Query(...),
         page: int = Query(..., ge=1),
+        quad: list[float] | None = Query(default=None),
     ) -> Response:
         try:
             document = attachment_document(literature_id, attachment_id)
             if document.revision != revision:
                 raise HTTPException(409, "source_revision_conflict")
-            selected = resolve_region(_pdf_indexes(request), document, page, region_id)
+            selected = resolve_region(_pdf_indexes(request), document, page, region_id, quad)
             return Response(crop_region(document.payload, selected), media_type="image/png")
         except ContentError as error:
             raise _content_error(error) from error
@@ -291,8 +346,8 @@ def register_reading_routes(
             current, _media_type, _revision = attachments.read_attachment(
                 literature_id, attachment_id
             )
-            current_projection = formats.project(attachment.name, current)
-            replacement_projection = formats.project(attachment.name, bytes(body))
+            current_projection = _attachment_projection(formats, attachment.name, current)
+            replacement_projection = _attachment_projection(formats, attachment.name, bytes(body))
             if not current_projection.can_save:
                 raise ContentError("literature_attachment_read_only")
             if (

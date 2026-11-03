@@ -12,11 +12,15 @@ export interface PdfAiFailureRecovery {
 }
 
 export const PDF_AI_IMAGE_INPUT_UNSUPPORTED = 'pdf_ai_image_input_unsupported'
+export const PDF_AI_MODEL_UNAVAILABLE = 'pdf_ai_model_unavailable'
+export const PDF_AI_TASK_UNRESOLVED = 'pdf_ai_task_unresolved'
 
 const MODEL_CONFIGURATION_CODES = new Set([
   'pdf_ai_preparation_failed',
+  PDF_AI_MODEL_UNAVAILABLE,
   'pdf_ai_pdf_input_unsupported',
   PDF_AI_IMAGE_INPUT_UNSUPPORTED,
+  'pdf_ai_input_too_large',
 ])
 
 const SELECTION_CORRECTION_CODES = new Set([
@@ -30,6 +34,8 @@ const ERROR_KEYS = {
   pdf_ai_selection_too_large: 'reading.errors.selection_too_large',
   pdf_ai_literature_missing: 'reading.errors.literature_missing',
   pdf_ai_document_too_large: 'reading.errors.document_too_large',
+  pdf_ai_file_too_large: 'reading.errors.file_too_large',
+  pdf_ai_input_too_large: 'reading.errors.input_too_large',
   pdf_ai_source_changed: 'reading.errors.source_changed',
   pdf_ai_page_out_of_range: 'reading.errors.page_out_of_range',
   pdf_ai_region_required: 'reading.errors.region_required',
@@ -49,6 +55,7 @@ const ERROR_KEYS = {
   pdf_ai_translation_alignment_missing: 'reading.errors.translation_alignment_missing',
   pdf_ai_translation_sentence_incomplete: 'reading.errors.translation_sentence_incomplete',
   pdf_ai_task_missing: 'reading.errors.task_missing',
+  [PDF_AI_TASK_UNRESOLVED]: 'reading.errors.task_unresolved',
   pdf_ai_pdf_input_unsupported: 'reading.errors.pdf_input_unsupported',
   pdf_ai_image_input_unsupported: 'reading.errors.image_input_unsupported',
   pdf_ai_generation_failed: 'reading.errors.generation_failed',
@@ -56,6 +63,7 @@ const ERROR_KEYS = {
   pdf_ai_source_changed_during_generation: 'reading.errors.source_changed_during_generation',
   pdf_ai_execution_failed: 'reading.errors.execution_failed',
   pdf_ai_preparation_failed: 'reading.errors.preparation_failed',
+  [PDF_AI_MODEL_UNAVAILABLE]: 'reading.errors.model_unavailable',
   pdf_ai_operation_busy: 'reading.errors.operation_busy',
   pdf_ai_figure_stream_required: 'reading.errors.figure_stream_required',
 } as const
@@ -65,11 +73,20 @@ export function pdfAiFailure(value: unknown): PdfAiFailure | undefined {
   if (typeof value === 'string') return value ? { diagnostic: value } : undefined
   if (!value || typeof value !== 'object') return undefined
   const source = value as Record<string, unknown>
-  const code = typeof source.error_code === 'string' && source.error_code
-    ? source.error_code : typeof source.code === 'string' ? source.code : ''
-  const detail = typeof source.error_detail === 'string' ? source.error_detail
-    : typeof source.diagnostic === 'string' ? source.diagnostic
-    : typeof source.message === 'string' ? source.message : ''
+  const code =
+    typeof source.error_code === 'string' && source.error_code
+      ? source.error_code
+      : typeof source.code === 'string'
+        ? source.code
+        : ''
+  const detail =
+    typeof source.error_detail === 'string'
+      ? source.error_detail
+      : typeof source.diagnostic === 'string'
+        ? source.diagnostic
+        : typeof source.message === 'string'
+          ? source.message
+          : ''
   const legacy = typeof source.error === 'string' ? source.error : ''
   const diagnostic = detail || (legacy && legacy !== code ? legacy : '')
   return code || diagnostic ? { ...(code ? { code } : {}), diagnostic } : undefined
@@ -81,11 +98,11 @@ export function pdfAiCaughtFailure(cause: unknown): PdfAiFailure {
 }
 
 export function pdfAiFailureText(failure: PdfAiFailure, t: TFunction<'pdf'>): string {
-  const key = failure.code && Object.prototype.hasOwnProperty.call(ERROR_KEYS, failure.code)
-    ? ERROR_KEYS[failure.code as keyof typeof ERROR_KEYS] : undefined
-  const message = key ? t(key) : t('reading.failed')
-  const detail = [!key && failure.code !== failure.diagnostic ? failure.code : '', failure.diagnostic].filter(Boolean).join('\n')
-  return detail ? t('reading.errorDiagnostic', { message, detail }) : message
+  const key =
+    failure.code && Object.prototype.hasOwnProperty.call(ERROR_KEYS, failure.code)
+      ? ERROR_KEYS[failure.code as keyof typeof ERROR_KEYS]
+      : undefined
+  return key ? t(key) : t('reading.failed')
 }
 
 export function pdfAiFailureRecovery(failure?: PdfAiFailure): PdfAiFailureRecovery {
@@ -94,6 +111,6 @@ export function pdfAiFailureRecovery(failure?: PdfAiFailure): PdfAiFailureRecove
   return {
     configure: MODEL_CONFIGURATION_CODES.has(code),
     reselect,
-    retry: !reselect,
+    retry: !reselect && code !== PDF_AI_TASK_UNRESOLVED,
   }
 }

@@ -47,6 +47,7 @@ def compile_style(style_id: str, keep: bool = False) -> dict:
             r"\usepackage{url}",
             r"\usepackage[hidelinks]{hyperref}",
             rf"\usepackage[{spec['natbib_options']}]{{natbib}}",
+            spec.get('latex_preamble', ''),
             r"\begin{document}",
             r"Textual \citet{Smith2024Agentic}; parenthetical \citep{Smith2024Agentic}.",
             rf"\bibliographystyle{{{spec['bst']}}}",
@@ -54,11 +55,12 @@ def compile_style(style_id: str, keep: bool = False) -> dict:
             r"\end{document}",
         ])
         (tmp / "smoke.tex").write_text(tex + "\n", encoding="utf-8")
+        engine = "xelatex" if spec.get('latex_preamble') else "pdflatex"
         commands = [
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "smoke.tex"],
+            [engine, "-interaction=nonstopmode", "-halt-on-error", "smoke.tex"],
             ["bibtex", "smoke"],
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "smoke.tex"],
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "smoke.tex"],
+            [engine, "-interaction=nonstopmode", "-halt-on-error", "smoke.tex"],
+            [engine, "-interaction=nonstopmode", "-halt-on-error", "smoke.tex"],
         ]
         for command in commands:
             proc = subprocess.run(command, cwd=tmp, capture_output=True, text=True, timeout=120)

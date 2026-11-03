@@ -1,15 +1,24 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { WINDOW_CLOSE_ACTION, WINDOW_CLOSE_PLATFORM, type WindowCloseAction, type WindowCloseRequest } from '../../../window'
 import {
-  Button, Checkbox, Dialog, DialogContent, DialogDescription,
-  DialogFooter, DialogHeader, DialogPortal, DialogTitle
+  WINDOW_CLOSE_ACTION,
+  WINDOW_CLOSE_PLATFORM,
+  type WindowCloseAction,
+  type WindowCloseRequest,
+} from '../../../window'
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPortal,
+  DialogTitle,
 } from '../components/ui'
 
 export function WindowCloseDialog(): React.JSX.Element | null {
-  const { t } = useTranslation('native')
-  const titleId = useId()
-  const descriptionId = useId()
   const [request, setRequest] = useState<WindowCloseRequest>(null)
   const [remember, setRemember] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -30,12 +39,18 @@ export function WindowCloseDialog(): React.JSX.Element | null {
       received = true
       update(next)
     })
-    void bridge.getWindowCloseRequest?.().then((next) => {
-      if (active && !received) update(next)
-    }).catch(() => {
-      if (active) setFailed(true)
-    })
-    return () => { active = false; unsubscribe() }
+    void bridge
+      .getWindowCloseRequest?.()
+      .then((next) => {
+        if (active && !received) update(next)
+      })
+      .catch(() => {
+        if (active) setFailed(true)
+      })
+    return () => {
+      active = false
+      unsubscribe()
+    }
   }, [])
 
   const respond = async (action: WindowCloseAction): Promise<void> => {
@@ -44,8 +59,12 @@ export function WindowCloseDialog(): React.JSX.Element | null {
     setPending(true)
     setFailed(false)
     try {
-      const accepted = await window.scholarseed.respondWindowClose({ requestId: request, action, remember })
-      if (accepted) setRequest((current) => current === request ? null : current)
+      const accepted = await window.scholarseed.respondWindowClose({
+        requestId: request,
+        action,
+        remember,
+      })
+      if (accepted) setRequest((current) => (current === request ? null : current))
       else setFailed(true)
     } catch {
       setFailed(true)
@@ -57,7 +76,41 @@ export function WindowCloseDialog(): React.JSX.Element | null {
 
   if (request === null) return null
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) void respond(WINDOW_CLOSE_ACTION.cancel) }}>
+    <WindowCloseContent
+      remember={remember}
+      pending={pending}
+      failed={failed}
+      onRemember={setRemember}
+      onRespond={(action) => void respond(action)}
+    />
+  )
+}
+
+export interface WindowCloseContentProps {
+  remember: boolean
+  pending: boolean
+  failed: boolean
+  onRemember: (remember: boolean) => void
+  onRespond: (action: WindowCloseAction) => void
+}
+
+export function WindowCloseContent({
+  remember,
+  pending,
+  failed,
+  onRemember,
+  onRespond,
+}: WindowCloseContentProps): React.JSX.Element {
+  const { t } = useTranslation('native')
+  const titleId = useId()
+  const descriptionId = useId()
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onRespond(WINDOW_CLOSE_ACTION.cancel)
+      }}
+    >
       <DialogPortal>
         <DialogContent
           hideCloseButton
@@ -71,12 +124,39 @@ export function WindowCloseDialog(): React.JSX.Element | null {
             <DialogTitle id={titleId}>{t('tray.closeTitle')}</DialogTitle>
             <DialogDescription id={descriptionId}>{t('tray.closeDetail')}</DialogDescription>
           </DialogHeader>
-          <Checkbox checked={remember} onCheckedChange={setRemember} disabled={pending} label={t('tray.doNotAskAgain')} />
+          <Checkbox
+            checked={remember}
+            onCheckedChange={onRemember}
+            disabled={pending}
+            label={t('tray.doNotAskAgain')}
+          />
           {failed && <DialogDescription role="alert">{t('tray.closeFailed')}</DialogDescription>}
           <DialogFooter>
-            <Button variant="secondary" size="standard" disabled={pending} onClick={() => void respond(WINDOW_CLOSE_ACTION.cancel)}>{t('tray.cancel')}</Button>
-            <Button variant="danger" size="standard" disabled={pending} onClick={() => void respond(WINDOW_CLOSE_ACTION.quit)}>{t('tray.quit')}</Button>
-            <Button variant="primary" size="standard" autoFocus disabled={pending} onClick={() => void respond(WINDOW_CLOSE_ACTION.minimize)}>{t('tray.minimize')}</Button>
+            <Button
+              variant="secondary"
+              size="standard"
+              disabled={pending}
+              onClick={() => onRespond(WINDOW_CLOSE_ACTION.cancel)}
+            >
+              {t('tray.cancel')}
+            </Button>
+            <Button
+              variant="danger"
+              size="standard"
+              disabled={pending}
+              onClick={() => onRespond(WINDOW_CLOSE_ACTION.quit)}
+            >
+              {t('tray.quit')}
+            </Button>
+            <Button
+              variant="primary"
+              size="standard"
+              autoFocus
+              disabled={pending}
+              onClick={() => onRespond(WINDOW_CLOSE_ACTION.minimize)}
+            >
+              {t('tray.minimize')}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </DialogPortal>

@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next'
 import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from 'react'
 import { forwardRef } from 'react'
 
-import { IconFont } from '../primitive'
+import { IconFont } from '../primitive/Iconfont'
 import {
   alertActionClassName,
   alertAsideClassName,
@@ -11,6 +11,9 @@ import {
   alertContentClassName,
   alertDescriptionClassName,
   alertIconClassName,
+  alertStackedBodyClassName,
+  alertStackedClassName,
+  alertStackedHeaderClassName,
   alertStyleClassName,
   alertTitleClassName,
   type AlertTone
@@ -19,6 +22,7 @@ import { cx } from './utils'
 import type { LocalizationMetadata } from './metadata'
 
 export type { AlertTone }
+export type AlertLayout = 'inline' | 'stacked'
 
 const ALERT_ICON_BY_TONE: Record<AlertTone, string> = {
   error: 'fill-status-error',
@@ -32,42 +36,67 @@ export interface AlertProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title'
   closable?: boolean
   description?: ReactNode
   icon?: ReactNode
+  layout?: AlertLayout
   onClose?: ButtonHTMLAttributes<HTMLButtonElement>['onClick']
   title?: ReactNode
   tone?: AlertTone
 }
 
 export const Alert = forwardRef<HTMLDivElement, AlertProps>(
-  ({ action, children, className, closable = false, description, icon, onClose, title, tone = 'info', ...props }, ref) => {
+  ({ action, children, className, closable = false, description, icon, layout = 'inline', onClose, title, tone = 'info', ...props }, ref) => {
     const { t } = useTranslation('ui')
     const titleSource = import.meta.env.DEV ? props['data-i18n-title'] : undefined
     const descriptionSource = import.meta.env.DEV ? props['data-i18n-description'] : undefined
+    const resolvedIcon = icon === false ? null : icon ?? <IconFont type={ALERT_ICON_BY_TONE[tone]} />
+    const titleNode = title ? <div className={alertTitleClassName} {...(titleSource ? { 'data-i18n-text': titleSource } : {})}>{title}</div> : null
+    const descriptionNode = description ? <div className={alertDescriptionClassName} {...(descriptionSource ? { 'data-i18n-text': descriptionSource } : {})}>{description}</div> : null
+    const asideNode = action || closable ? (
+      <div className={alertAsideClassName}>
+        {action ? <div className={alertActionClassName}>{action}</div> : null}
+        {closable ? (
+          <button aria-label={t('close')} className={alertCloseClassName} onClick={onClose} type="button">
+            <IconFont type="line-operation-close" />
+          </button>
+        ) : null}
+      </div>
+    ) : null
+    if (layout === 'stacked') {
+      return (
+        <div className={cx(alertClassName({ className, tone }), alertStyleClassName({ tone }), alertStackedClassName)} ref={ref} role={tone === 'error' ? 'alert' : 'status'} {...props}>
+          <div className={alertStackedHeaderClassName}>
+            {resolvedIcon ? <AlertIcon>{resolvedIcon}</AlertIcon> : null}
+            <div className={alertContentClassName}>{titleNode}</div>
+            {asideNode}
+          </div>
+          <div className={alertStackedBodyClassName}>{children ?? descriptionNode}</div>
+        </div>
+      )
+    }
     return (
     <div className={cx(alertClassName({ className, tone }), alertStyleClassName({ tone }))} ref={ref} role={tone === 'error' ? 'alert' : 'status'} {...props}>
-      <span className={alertIconClassName} aria-hidden="true">
-        {icon ?? <IconFont type={ALERT_ICON_BY_TONE[tone]} />}
-      </span>
+      {resolvedIcon ? <AlertIcon>{resolvedIcon}</AlertIcon> : null}
       <div className={alertContentClassName}>
         {children}
-        {!children && title ? <div className={alertTitleClassName} {...(titleSource ? { 'data-i18n-text': titleSource } : {})}>{title}</div> : null}
-        {!children && description ? <div className={alertDescriptionClassName} {...(descriptionSource ? { 'data-i18n-text': descriptionSource } : {})}>{description}</div> : null}
+        {!children ? titleNode : null}
+        {!children ? descriptionNode : null}
       </div>
-      {action || closable ? (
-        <div className={alertAsideClassName}>
-          {action ? <div className={alertActionClassName}>{action}</div> : null}
-          {closable ? (
-            <button aria-label={t('close')} className={alertCloseClassName} onClick={onClose} type="button">
-              <IconFont type="line-operation-close" />
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+      {asideNode}
     </div>
     )
   }
 )
 
 Alert.displayName = 'Alert'
+
+export type AlertIconProps = HTMLAttributes<HTMLSpanElement>
+
+export const AlertIcon = forwardRef<HTMLSpanElement, AlertIconProps>(
+  ({ className, ...props }, ref) => (
+    <span aria-hidden="true" className={cx(alertIconClassName, className)} ref={ref} {...props} />
+  )
+)
+
+AlertIcon.displayName = 'AlertIcon'
 
 export type AlertTitleProps = HTMLAttributes<HTMLHeadingElement>
 

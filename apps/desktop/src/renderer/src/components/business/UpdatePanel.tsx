@@ -3,23 +3,32 @@ import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import rocketGlyph from '../../assets/update-rocket.png'
-import type { UpdateSnapshot } from '../../../../updates'
+import { updateCandidateKey, type UpdateSnapshot } from '../../../../updates'
 import {
   hasMoreReleaseNotes,
   releaseNoteLines,
-  runUpdateAction,
   updateActionOf,
   updateFailureOf,
   updateFailureText,
   updateFailureTitle,
   updatePanelStageOf,
   useUpdateState,
-  visibleReleaseNotes
+  visibleReleaseNotes,
 } from '../../features/updates/state'
 import { IconFont } from '../primitive'
-import { Button, Divider, IconButton, ProgressBar, Tag } from '../ui'
+import {
+  Button,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Divider,
+  IconButton,
+  ProgressBar,
+  Tag,
+} from '../ui'
 import { cx } from '../ui/utils'
 import { UpdateMetadata } from './UpdateMetadata'
+import { UpdateAction } from './UpdateAction'
 
 // UpdatePanel.tsx — 版本更新浮窗的内容本体，工作台活动栏的火箭入口与 0.1 侧栏底部的
 // 药丸入口共用这一份。
@@ -50,14 +59,14 @@ const PANEL_HERO_ICON_TYPE = 'fill-status-warning'
 
 const PANEL_BASE_CLASS_NAME = [
   'relative overflow-hidden rounded-[var(--vds-radius-8)]',
-  '[background:var(--vds-bg-white-default)] shadow-[var(--vds-shadow-3-center)]'
+  '[background:var(--vds-bg-white-default)] shadow-[var(--vds-shadow-3-center)]',
 ].join(' ')
 const PANEL_SUMMARY_WIDTH_CLASS_NAME = 'w-[var(--vds-update-notes-width)]'
 const PANEL_NOTES_WIDTH_CLASS_NAME = 'w-[var(--vds-update-notes-expanded-width)]'
 const PANEL_BORDERED_CLASS_NAME =
   'border border-[var(--vds-divider-default)] [border-style:solid] [border-width:var(--vds-border-width-1)]'
 const PANEL_HEADER_CLASS_NAME =
-  'relative flex items-start gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[12px] pt-[var(--vds-space-5)]'
+  'relative flex items-start gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[var(--vds-space-3)] pt-[var(--vds-space-5)]'
 // 失败稿的头部四边等距 20（高 88），与 summary 稿的 20/20/16（高 84）不同。
 const PANEL_HEADER_FAILED_CLASS_NAME =
   'relative flex items-start gap-[var(--vds-space-3)] p-[var(--vds-space-5)]'
@@ -65,15 +74,15 @@ const PANEL_HEADER_FAILED_CLASS_NAME =
 const PANEL_HEADER_NOTES_CLASS_NAME =
   'relative flex items-center gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[var(--vds-space-3)] pt-[var(--vds-space-5)]'
 const PANEL_HERO_CLASS_NAME =
-  'grid size-[42px] flex-none place-items-center rounded-[var(--vds-update-notes-hero-radius)] [background:var(--vds-bg-white-active-transparent)]'
-const PANEL_HERO_GLYPH_CLASS_NAME = 'size-[20px] object-contain'
+  'grid size-[var(--vds-update-notes-hero-size)] flex-none place-items-center rounded-[var(--vds-update-notes-hero-radius)] [background:var(--vds-bg-white-active-transparent)]'
+const PANEL_HERO_GLYPH_CLASS_NAME = 'size-[var(--vds-icon-10)] object-contain'
 const PANEL_HERO_ICON_CLASS_NAME =
-  'grid size-[20px] place-items-center !text-[20px] !leading-none text-[var(--vds-error-bg-default)]'
+  'grid size-[var(--vds-icon-10)] place-items-center !text-[length:var(--vds-icon-10)] !leading-none text-[var(--vds-error-bg-default)]'
 const PANEL_HEADING_CLASS_NAME = 'relative grid min-w-0 flex-1 gap-0'
 const PANEL_TITLE_CLASS_NAME =
-  'm-0 truncate !text-[16px] !font-normal leading-[var(--vds-lh-title)] !text-[var(--vds-text-primary)]'
+  'm-0 truncate !text-[length:var(--vds-font-subhead)] !font-[var(--vds-fw-regular)] leading-[var(--vds-lh-title)] !text-[var(--vds-text-primary)]'
 const PANEL_VERSION_CLASS_NAME =
-  'truncate text-[length:var(--vds-font-body-lv1)] font-normal leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-placeholder)] tabular-nums'
+  'truncate text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-placeholder)] tabular-nums'
 const PANEL_VERSION_MUTED_CLASS_NAME =
   'truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-placeholder)] tabular-nums'
 const PANEL_CLOSE_CLASS_NAME = 'relative flex-none'
@@ -84,7 +93,7 @@ const PANEL_PROGRESS_CLASS_NAME = [
   'relative mx-[var(--vds-space-5)]',
   '[--vds-progress-height:var(--vds-update-notes-progress-height)]',
   '[--vds-progress-track:var(--vds-bg-white-active-transparent)]',
-  '[--vds-progress-value-color:var(--vds-brand-bg-default)]'
+  '[--vds-progress-value-color:var(--vds-brand-bg-default)]',
 ].join(' ')
 const PANEL_BODY_CLASS_NAME =
   'relative grid gap-[var(--vds-space-6)] px-[var(--vds-space-5)] pb-[var(--vds-space-5)] pt-[var(--vds-space-4)]'
@@ -114,7 +123,7 @@ const PANEL_MORE_CLASS_NAME = [
   'justify-self-start px-[var(--vds-space-4)]',
   '!text-[var(--vds-brand-bg-default)]',
   '!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)]',
-  '!no-underline hover:!underline'
+  '!no-underline hover:!underline',
 ].join(' ')
 // 更新内容稿的版本行：说明文字用 text-placeholder，右侧跟一枚品牌 tag。
 const PANEL_VERSION_ROW_CLASS_NAME = 'flex items-center gap-[var(--vds-space-2)]'
@@ -132,21 +141,41 @@ const PANEL_ERROR_CLASS_NAME = [
   'grid gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)]',
   'border border-[var(--vds-warning-light-border)] [border-style:solid] [border-width:var(--vds-border-width-1)]',
   '[background:var(--vds-warning-light-bg-hover)] [padding:var(--vds-update-notes-error-padding)]',
-  'text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-warning-bg-default)]'
+  'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-warning-bg-default)]',
 ].join(' ')
 const PANEL_ERROR_TEXT_CLASS_NAME = 'break-all'
-const PANEL_ACTIONS_CLASS_NAME = 'flex flex-row gap-[var(--vds-space-3)]'
+const PANEL_ACTIONS_CLASS_NAME = 'flex flex-row flex-wrap gap-[var(--vds-space-3)]'
 // summary / failed 两稿的按钮等分整行；更新内容稿靠右、按内容自适应宽度。
 const PANEL_ACTIONS_NOTES_CLASS_NAME =
-  'flex flex-row justify-end gap-[var(--vds-space-3)]'
+  'flex flex-row flex-wrap justify-end gap-[var(--vds-space-3)]'
 const PANEL_ACTION_CLASS_NAME = 'flex-1'
+const DIALOG_PANEL_CLASS_NAME =
+  'grid max-h-[var(--vds-update-dialog-max-height)] grid-rows-[auto_auto_minmax(0,1fr)_auto_auto]'
+const DIALOG_HEADER_CLASS_NAME =
+  '!flex flex-row items-center justify-between gap-[var(--vds-space-3)] px-[var(--vds-space-6)] py-[var(--vds-space-4)]'
+const DIALOG_BODY_CLASS_NAME =
+  'grid min-h-0 gap-[var(--vds-space-4)] overflow-y-auto px-[var(--vds-space-6)] py-[var(--vds-space-4)]'
+const DIALOG_FOOTER_CLASS_NAME =
+  '!justify-start gap-[var(--vds-space-3)] px-[var(--vds-space-6)] py-[var(--vds-space-4)]'
+const DIALOG_VERSION_CLASS_NAME =
+  'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-brand-text-primary)]'
+const DIALOG_DIVIDER_CLASS_NAME = '[--vds-divider-margin-horizontal:0]'
+const DIALOG_ITEM_CLASS_NAME =
+  '!text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)]'
+const DIALOG_MARKER_CLASS_NAME = '!h-[var(--vds-lh-body-lv1)]'
 
 export interface UpdatePanelProps {
   /** 收起浮窗。只收浮窗本身，不取消更新提示、下载任务或已完成的下载（PRD 第 2 条）。 */
   onDismiss: () => void
+  onAction?: () => void
+  presentation?: 'popover' | 'dialog'
 }
 
-export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element {
+export function UpdatePanel({
+  onDismiss,
+  onAction,
+  presentation = 'popover',
+}: UpdatePanelProps): React.JSX.Element {
   const { t: accountUpdateText } = useTranslation('account')
   const { t } = useTranslation('components')
   const { t: uiText } = useTranslation('ui')
@@ -181,13 +210,15 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
   const failure = updateFailureOf(state)
   const failed = failure !== null
   const notes = releaseNoteLines(candidate?.release_notes)
-  const showMore = hasMoreReleaseNotes(notes) && !expanded
+  const showAllNotes = presentation === 'dialog' || expanded
+  const showMore = hasMoreReleaseNotes(notes) && !showAllNotes
   // 失败态优先于展开态：失败信息不该被藏在更宽的说明版式后面。
-  const view: PanelView = failed ? 'failed' : expanded ? 'notes' : 'summary'
+  const view: PanelView = failed ? 'failed' : showAllNotes ? 'notes' : 'summary'
 
   let title: string = t('update.titleAvailable')
   if (view === 'notes') title = t('update.notesTitle')
   else if (failure) title = updateFailureTitle(failure, t)
+  else if (phase === 'preparing') title = t('update.preparingApp')
   else if (downloading) title = t('update.titleDownloading')
   else if (stage === 'ready') title = t('update.titleReady')
 
@@ -202,7 +233,11 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
   if (downloading) primaryLabel = t('update.updating')
   else if (action === 'install') primaryLabel = t('update.restartClient')
   else if (action === 'download')
-    primaryLabel = failed ? t('update.retryDownload') : t('update.now')
+    primaryLabel = failed
+      ? failure?.origin === 'preparation'
+        ? t('update.retryPreparation')
+        : t('update.retryDownload')
+      : t('update.now')
 
   // 下载/校验中按设计稿保留主按钮但禁用（文案「更新中」）；安装、重启、manual 这些没有
   // 可发起动作的相位直接不渲染主按钮，免得摆一个永远点不动的「重启客户端」。
@@ -210,28 +245,143 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
 
   // 设计稿没画的相位仍要如实说明处境：校验中、manual 的操作指引。
   let status: string | null = null
-  if (phase === 'verifying') status = t('update.verifying')
+  if (phase === 'preparing') status = t('update.backgroundPreparing')
+  else if (phase === 'verifying') status = t('update.verifying')
   else if (phase === 'manual') status = t('update.manualHint')
+  else if (presentation === 'dialog' && stage === 'ready' && !failed)
+    status = t('update.titleReady')
 
   const runPrimary = (): void => {
     // 下载留在浮窗里看进度（分割线换进度条）。安装期间全屏遮罩（z-loading 9000）盖住
     // 浮窗，所以不收起也没有视觉差别；而一旦安装失败，相位会带着 error 回到 ready，
     // 遮罩消失时浮窗还在原地，失败原因就地可见。发起动作前先收起浮窗，等于把唯一的
     // 结果表面在结果出来之前丢掉（bug 86968393）。
-    runUpdateAction(state)
+    onAction?.()
   }
 
-  const noteItems = (
-    visibleReleaseNotes(notes, expanded).map((note, index) => (
-      // 要点是服务端自由文本，可能整行重复，所以按位置而不是按文本做 key。
-      <span className={PANEL_ITEM_CLASS_NAME} key={index}>
-        <span aria-hidden className={PANEL_MARKER_CLASS_NAME}>
-          <span className={PANEL_DOT_CLASS_NAME} />
-        </span>
-        <span>{note}</span>
+  const noteItems = visibleReleaseNotes(notes, showAllNotes).map((note, index) => (
+    // 要点是服务端自由文本，可能整行重复，所以按位置而不是按文本做 key。
+    <span
+      className={cx(PANEL_ITEM_CLASS_NAME, presentation === 'dialog' && DIALOG_ITEM_CLASS_NAME)}
+      key={index}
+    >
+      <span
+        aria-hidden
+        className={cx(
+          PANEL_MARKER_CLASS_NAME,
+          presentation === 'dialog' && DIALOG_MARKER_CLASS_NAME
+        )}
+      >
+        <span className={PANEL_DOT_CLASS_NAME} />
       </span>
-    ))
+      <span>{note}</span>
+    </span>
+  ))
+
+  const actionClassName =
+    presentation === 'popover' && view !== 'notes' ? PANEL_ACTION_CLASS_NAME : undefined
+  const actions = (
+    <>
+      <Button
+        className={actionClassName}
+        data-testid="update-panel-dismiss"
+        disabled={!failed && downloading}
+        onClick={onDismiss}
+        variant="outline"
+      >
+        {secondaryLabel}
+      </Button>
+      {showPrimary && (
+        <UpdateAction
+          className={actionClassName}
+          data-testid="update-panel-action"
+          disabled={!failed && downloading}
+          state={state}
+          onAction={runPrimary}
+          variant={failed ? 'danger' : 'primary'}
+        >
+          {primaryLabel}
+        </UpdateAction>
+      )}
+    </>
   )
+  const failureDetails = failed && (
+    <span className={PANEL_ERROR_CLASS_NAME}>
+      <span className={PANEL_ERROR_TEXT_CLASS_NAME} data-testid="update-panel-error">
+        {updateFailureText(failure, t, accountUpdateText)}
+      </span>
+      {candidate && phase === 'failed' && failure?.origin === 'download' && (
+        <span data-testid="update-panel-resumable">
+          {state?.resumable === false ? t('update.failedDiscarded') : t('update.failedRetained')}
+        </span>
+      )}
+      {stage === 'ready' && (
+        <span data-testid="update-panel-retry-hint">{t('update.installRetryHint')}</span>
+      )}
+    </span>
+  )
+
+  if (presentation === 'dialog') {
+    return (
+      <div
+        className={DIALOG_PANEL_CLASS_NAME}
+        data-testid="update-panel"
+        data-presentation={presentation}
+        data-view={view}
+      >
+        <DialogHeader className={DIALOG_HEADER_CLASS_NAME}>
+          <DialogTitle
+            className={PANEL_TITLE_CLASS_NAME}
+            data-testid="update-panel-title"
+            id={titleId}
+          >
+            {t('update.notesTitle')}
+          </DialogTitle>
+          <IconButton
+            data-testid="update-panel-close"
+            icon={<X />}
+            label={uiText('close')}
+            onClick={onDismiss}
+            size="md"
+            variant="ghostIcon"
+          />
+        </DialogHeader>
+        <Divider className={DIALOG_DIVIDER_CLASS_NAME} />
+        <div className={DIALOG_BODY_CLASS_NAME}>
+          {candidate && (
+            <span className={DIALOG_VERSION_CLASS_NAME} data-testid="update-panel-version">
+              {t('update.notesVersion', { version: updateCandidateKey(candidate) ?? '' })}{' '}
+              {t('update.notesNewTag')}
+            </span>
+          )}
+          <div className={PANEL_LIST_CLASS_NAME} data-testid="update-panel-list">
+            {notes.length > 0 ? (
+              noteItems
+            ) : (
+              <span className={PANEL_EMPTY_CLASS_NAME}>{t('update.notesEmpty')}</span>
+            )}
+          </div>
+          {failureDetails}
+          {status && (
+            <span className={PANEL_STATUS_CLASS_NAME} data-testid="update-panel-hint">
+              {status}
+            </span>
+          )}
+        </div>
+        {downloading ? (
+          <ProgressBar
+            className={PANEL_PROGRESS_CLASS_NAME}
+            data-testid="update-panel-progress"
+            value={state?.percent ?? 0}
+            indeterminate={phase === 'preparing' || phase === 'verifying'}
+          />
+        ) : (
+          <Divider className={DIALOG_DIVIDER_CLASS_NAME} data-testid="update-panel-divider" />
+        )}
+        <DialogFooter className={DIALOG_FOOTER_CLASS_NAME}>{actions}</DialogFooter>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -242,10 +392,10 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
         view !== 'summary' && PANEL_BORDERED_CLASS_NAME
       )}
       data-testid="update-panel"
+      data-presentation={presentation}
       data-view={view}
       role="group"
     >
-
       <div
         className={
           view === 'notes'
@@ -299,6 +449,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
           className={PANEL_PROGRESS_CLASS_NAME}
           data-testid="update-panel-progress"
           value={state?.percent ?? 0}
+          indeterminate={phase === 'preparing' || phase === 'verifying'}
         />
       ) : (
         <Divider className={PANEL_DIVIDER_CLASS_NAME} data-testid="update-panel-divider" />
@@ -306,46 +457,8 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
 
       {view === 'failed' && (
         <div className={PANEL_BODY_FAILED_CLASS_NAME}>
-          <span className={PANEL_ERROR_CLASS_NAME}>
-            <span className={PANEL_ERROR_TEXT_CLASS_NAME} data-testid="update-panel-error">
-              {failure && updateFailureText(failure, t, accountUpdateText)}
-            </span>
-            {candidate && phase === 'failed' && (
-              <span data-testid="update-panel-resumable">
-                {state?.resumable === false
-                  ? t('update.failedDiscarded')
-                  : t('update.failedRetained')}
-              </span>
-            )}
-            {/* 安装失败但暂存包还在（相位停在 ready）：把「包还在、重试的是安装」补回来，
-                否则用户以为要重新下载几百 MB。 */}
-            {stage === 'ready' && (
-              <span data-testid="update-panel-retry-hint">
-                {t('update.installRetryHint')}
-              </span>
-            )}
-          </span>
-
-          <div className={PANEL_ACTIONS_CLASS_NAME}>
-            <Button
-              className={PANEL_ACTION_CLASS_NAME}
-              data-testid="update-panel-dismiss"
-              onClick={onDismiss}
-              variant="outline"
-            >
-              {secondaryLabel}
-            </Button>
-            {showPrimary && (
-              <Button
-                className={PANEL_ACTION_CLASS_NAME}
-                data-testid="update-panel-action"
-                onClick={runPrimary}
-                variant="danger"
-              >
-                {primaryLabel}
-              </Button>
-            )}
-          </div>
+          {failureDetails}
+          <div className={PANEL_ACTIONS_CLASS_NAME}>{actions}</div>
         </div>
       )}
 
@@ -379,26 +492,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
             </span>
           )}
 
-          <div className={PANEL_ACTIONS_NOTES_CLASS_NAME}>
-            <Button
-              data-testid="update-panel-dismiss"
-              disabled={downloading}
-              onClick={onDismiss}
-              variant="outline"
-            >
-              {secondaryLabel}
-            </Button>
-            {showPrimary && (
-              <Button
-                data-testid="update-panel-action"
-                disabled={downloading}
-                onClick={runPrimary}
-                variant="primary"
-              >
-                {primaryLabel}
-              </Button>
-            )}
-          </div>
+          <div className={PANEL_ACTIONS_NOTES_CLASS_NAME}>{actions}</div>
         </div>
       )}
 
@@ -431,28 +525,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
             )}
           </div>
 
-          <div className={PANEL_ACTIONS_CLASS_NAME}>
-            <Button
-              className={PANEL_ACTION_CLASS_NAME}
-              data-testid="update-panel-dismiss"
-              disabled={downloading}
-              onClick={onDismiss}
-              variant="outline"
-            >
-              {secondaryLabel}
-            </Button>
-            {showPrimary && (
-              <Button
-                className={PANEL_ACTION_CLASS_NAME}
-                data-testid="update-panel-action"
-                disabled={downloading}
-                onClick={runPrimary}
-                variant="primary"
-              >
-                {primaryLabel}
-              </Button>
-            )}
-          </div>
+          <div className={PANEL_ACTIONS_CLASS_NAME}>{actions}</div>
         </div>
       )}
     </div>

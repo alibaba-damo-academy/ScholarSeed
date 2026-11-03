@@ -18,14 +18,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   ScrollArea,
-  Spinner
+  Spinner,
 } from '../../components/ui'
 import { useApp } from '../../store'
 import { hasDraggedFiles, resolveDraggedFilePaths } from '../../drag'
 import {
   IMPORT_PICKER_TARGET,
   supportsImportPickerTarget,
-  type ImportPickerTarget
+  type ImportPickerTarget,
 } from '../../../../picker'
 import type { ResourceImportDecisionAction } from './api'
 import type { ImportMode } from './state'
@@ -52,7 +52,7 @@ const IMPORT_CHOICES: readonly ImportChoice[] = [
     detail: 'localImport.copyDetail',
     icon: Copy,
     dropEffect: 'copy',
-    dropAction: 'localImport.copyDrop'
+    dropAction: 'localImport.copyDrop',
   },
   {
     mode: 'link',
@@ -60,16 +60,16 @@ const IMPORT_CHOICES: readonly ImportChoice[] = [
     detail: 'localImport.linkDetail',
     icon: Link,
     dropEffect: 'link',
-    dropAction: 'localImport.linkDrop'
-  }
+    dropAction: 'localImport.linkDrop',
+  },
 ]
 
 const IMPORT_CARD_CLASS_NAME = [
   'h-full w-full min-w-0 flex-col justify-start overflow-hidden',
-  'rounded-[var(--vds-radius-8)] p-[var(--vds-space-6)] text-center !whitespace-normal !gap-[var(--vds-space-5)]'
+  'rounded-[var(--vds-radius-8)] [&&]:![border-width:var(--vds-border-width-1)] p-[var(--vds-space-6)] text-center !whitespace-normal !gap-0',
 ].join(' ')
 const IMPORT_ICON_CLASS_NAME =
-  'grid size-10 place-items-center rounded-[var(--vds-radius-4)] border border-[var(--vds-fill-6)] bg-[var(--vds-bg-white-default)] text-[var(--vds-brand-text-primary)]'
+  'grid size-[var(--vds-control-height-lg)] place-items-center rounded-[var(--vds-radius-4)] border border-[var(--vds-fill-6)] bg-[var(--vds-bg-white-default)] text-[var(--vds-brand-text-primary)]'
 type ImportBusyAction = ImportMode | ResourceImportDecisionAction
 
 /**
@@ -102,10 +102,7 @@ export function ImportDialog(): React.JSX.Element {
     }
   }
 
-  const pickAndImport = async (
-    mode: ImportMode,
-    target: ImportPickerTarget
-  ): Promise<void> => {
+  const pickAndImport = async (mode: ImportMode, target: ImportPickerTarget): Promise<void> => {
     if (busy !== null) return
     const pick = window.scholarseed?.pickImport
     if (!pick) {
@@ -118,7 +115,7 @@ export function ImportDialog(): React.JSX.Element {
 
   const clearDropMode = (mode: ImportMode): void => {
     dragDepthRef.current[mode] = 0
-    setDropMode((current) => current === mode ? null : current)
+    setDropMode((current) => (current === mode ? null : current))
   }
 
   const dropFiles = (mode: ImportMode, event: React.DragEvent<HTMLButtonElement>): void => {
@@ -159,11 +156,15 @@ export function ImportDialog(): React.JSX.Element {
   )
 
   return (
-    <Dialog open onOpenChange={(open) => {
-      if (!open) close()
-    }}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) close()
+      }}
+    >
       <DialogContent
         aria-label={resolving ? t('localImport.resolveLabel') : t('localImport.title')}
+        className={resolving ? undefined : 'w-[var(--vds-resource-dialog-width)]'}
         data-testid="resource-import-dialog"
         onDragOver={(event) => {
           if (!resolving && hasDraggedFiles(event.dataTransfer)) event.preventDefault()
@@ -176,21 +177,22 @@ export function ImportDialog(): React.JSX.Element {
           <>
             <DialogHeader>
               <DialogTitle>{t('localImport.conflictTitle')}</DialogTitle>
-              <DialogDescription>
-                {t('localImport.conflictDescription')}
-              </DialogDescription>
+              <DialogDescription>{t('localImport.conflictDescription')}</DialogDescription>
             </DialogHeader>
             <Alert className="mt-4" tone="warning">
-              <AlertTitle>{t('localImport.conflicts', { count: dialog.conflicts.length })}</AlertTitle>
-              <AlertDescription truncate={false}>
-                {t('localImport.replaceHint')}
-              </AlertDescription>
+              <AlertTitle>
+                {t('localImport.conflicts', { count: dialog.conflicts.length })}
+              </AlertTitle>
+              <AlertDescription truncate={false}>{t('localImport.replaceHint')}</AlertDescription>
             </Alert>
             <ScrollArea
               className="mt-4 max-h-[260px] rounded-[10px] border border-[var(--vds-border-default)]"
               viewportClassName="max-h-[260px]"
             >
-              <ul className="divide-y divide-[var(--vds-border-default)]" data-testid="resource-import-conflicts">
+              <ul
+                className="divide-y divide-[var(--vds-border-default)]"
+                data-testid="resource-import-conflicts"
+              >
                 {dialog.conflicts.map((conflict) => (
                   <li className="px-4 py-3" key={conflict.sourceIndex}>
                     <div className="text-[13px] font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
@@ -209,7 +211,9 @@ export function ImportDialog(): React.JSX.Element {
               </ul>
             </ScrollArea>
             <DialogFooter className="mt-5">
-              <Button disabled={busy !== null} variant="outline" onClick={close}>{uiText('cancel')}</Button>
+              <Button disabled={busy !== null} variant="outline" onClick={close}>
+                {uiText('cancel')}
+              </Button>
               <Button
                 data-testid="resource-import-rename"
                 disabled={busy !== null}
@@ -238,14 +242,17 @@ export function ImportDialog(): React.JSX.Element {
                 {t('localImport.description')}
               </DialogDescription>
             </DialogHeader>
-            <div className="grid grid-cols-1 gap-[var(--vds-space-5)] sm:grid-cols-2">
+            <div className="grid grid-cols-[minmax(0,240px)] justify-center gap-[var(--vds-space-5)] sm:grid-cols-[repeat(2,240px)]">
               {IMPORT_CHOICES.map((choice) => {
                 const dropActive = dropMode === choice.mode
                 const ChoiceIcon = choice.icon
                 const choiceButton = (
                   <Button
                     aria-busy={busy === choice.mode}
-                    aria-label={t('localImport.choiceLabel', { title: t(choice.titleKey), action: dropActive ? t(choice.dropAction) : t('localImport.pick') })}
+                    aria-label={t('localImport.choiceLabel', {
+                      title: t(choice.titleKey),
+                      action: dropActive ? t(choice.dropAction) : t('localImport.pick'),
+                    })}
                     className={IMPORT_CARD_CLASS_NAME}
                     data-drop-active={dropActive ? 'true' : 'false'}
                     data-import-mode={choice.mode}
@@ -253,9 +260,11 @@ export function ImportDialog(): React.JSX.Element {
                     disabled={busy !== null}
                     size="content"
                     variant="dropzone"
-                    onClick={usesUnifiedPicker
-                      ? () => void pickAndImport(choice.mode, IMPORT_PICKER_TARGET.RESOURCE)
-                      : undefined}
+                    onClick={
+                      usesUnifiedPicker
+                        ? () => void pickAndImport(choice.mode, IMPORT_PICKER_TARGET.RESOURCE)
+                        : undefined
+                    }
                     onDragEnd={() => clearDropMode(choice.mode)}
                     onDragEnter={(event) => {
                       if (!hasDraggedFiles(event.dataTransfer) || busy !== null) return
@@ -284,12 +293,18 @@ export function ImportDialog(): React.JSX.Element {
                     onDrop={(event) => dropFiles(choice.mode, event)}
                   >
                     <span className={IMPORT_ICON_CLASS_NAME}>
-                      {busy === choice.mode
-                        ? <Spinner size="sm" />
-                        : <ChoiceIcon className="size-4" strokeWidth={1.8} />}
+                      {busy === choice.mode ? (
+                        <Spinner size="sm" />
+                      ) : (
+                        <ChoiceIcon className="size-[var(--vds-space-4)]" strokeWidth={1.8} />
+                      )}
                     </span>
-                    <span className="w-full min-w-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">{t(choice.titleKey)}</span>
-                    <span className="w-full min-w-0 max-w-[360px] break-words text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-tertiary)]">{t(choice.detail)}</span>
+                    <span className="mt-[var(--vds-space-5)] w-full min-w-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
+                      {t(choice.titleKey)}
+                    </span>
+                    <span className="mt-[var(--vds-space-3)] w-full min-w-0 max-w-[360px] break-words text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-tertiary)]">
+                      {t(choice.detail)}
+                    </span>
                   </Button>
                 )
                 if (usesUnifiedPicker) {
@@ -297,13 +312,8 @@ export function ImportDialog(): React.JSX.Element {
                 }
                 return (
                   <DropdownMenu key={choice.mode}>
-                    <DropdownMenuTrigger asChild>
-                      {choiceButton}
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="center"
-                      className="!z-[calc(var(--vds-z-modal)+1)]"
-                    >
+                    <DropdownMenuTrigger asChild>{choiceButton}</DropdownMenuTrigger>
+                    <DropdownMenuContent align="center" className="!z-[calc(var(--vds-z-modal)+1)]">
                       <DropdownMenuItem
                         data-testid={`import-${choice.mode}-file`}
                         onSelect={() => void pickAndImport(choice.mode, IMPORT_PICKER_TARGET.FILE)}
@@ -313,7 +323,9 @@ export function ImportDialog(): React.JSX.Element {
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         data-testid={`import-${choice.mode}-directory`}
-                        onSelect={() => void pickAndImport(choice.mode, IMPORT_PICKER_TARGET.DIRECTORY)}
+                        onSelect={() =>
+                          void pickAndImport(choice.mode, IMPORT_PICKER_TARGET.DIRECTORY)
+                        }
                       >
                         <FolderUp />
                         {t('localImport.pickDirectory')}

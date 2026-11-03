@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "name": "pdf-evidence",
+  "source": {
+    "kind": "directory"
+  },
+  "dependencies": {},
+  "version": "0.1.0",
+  "source_document_sha256": "a1928c0681b69043f38bc6b1e48db3f07a74fac05998f8e4c9fb0f51f9cd5200",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "size": 3277,
+      "sha256": "a1928c0681b69043f38bc6b1e48db3f07a74fac05998f8e4c9fb0f51f9cd5200",
+      "mode": 420
+    },
+    {
+      "path": "VERSION",
+      "size": 6,
+      "sha256": "e9dd8507f4bf0c6f42458e41aea833ad0bd3f6127272335eee9bf4d58541ed67",
+      "mode": 420
+    },
+    {
+      "path": "agents/openai.yaml",
+      "size": 286,
+      "sha256": "9bcdf2ca42554e1867e5867ca7ebffb7e6909f132d6dba20f1afd1a009817905",
+      "mode": 420
+    }
+  ]
+}

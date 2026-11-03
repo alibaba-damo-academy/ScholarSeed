@@ -19,25 +19,43 @@ Supply one tested runtime during installation. The runtime reports PDFs through
 
 All skill copies share the user-level browser pool at `~/.paper-dl/browser-pool/`.
 Set `PAPER_DL_BROWSER_POOL_DIR` consistently to override it, outside every run.
-`PAPER_DL_CHROME_EXECUTABLE` selects Chrome. Unsupported `PAPER_DL_CDP_ENDPOINT`,
-`PAPER_DL_CDP_PROFILE` and disabled-auto-launch settings are rejected. Other
+`PAPER_DL_CHROME_EXECUTABLE` selects Chrome or Edge. Unsupported `PAPER_DL_CDP_ENDPOINT`,
+`PAPER_DL_CDP_PROFILE`, `PAPER_DL_PROFILE` and disabled-auto-launch settings are rejected. Other
 settings are `PAPER_DL_CONFIG`, `PAPER_DL_EMAIL`, `PAPER_DL_PAPER_TIMEOUT` and
-`PAPER_DL_BATCH_TIMEOUT`; `PAPER_DL_PROFILE` applies only to autodev. Credentials,
+`PAPER_DL_BATCH_TIMEOUT`; use `PAPER_DL_PROFILE_TEMPLATE` for an offline login
+template in either mode. Credentials,
 cookies and tokens must not enter tracked configuration or run artifacts.
 
-Interactive execution needs process inspection, private profile writes and
+On macOS and Windows, automatic discovery prefers Chrome, then Edge, then
+Chromium. An explicit `PAPER_DL_CHROME_EXECUTABLE` selects either browser.
+Invalid overrides and startup failures are errors, not fallback triggers.
+Edge uses `<pool>/slot-N/edge-profile`, separate from Chrome login data.
+The three slots remain shared. Paused runs retain their original browser,
+endpoint and profile even if configuration or installed browsers change.
+This applies to both interactive and `autodev` downloads.
+
+| Behavior | macOS | Windows |
+| --- | --- | --- |
+| Discovery | System/user Applications and PATH | LOCALAPPDATA, PROGRAMFILES, PROGRAMFILES(X86), then PATH within each browser family |
+| Explicit Edge | Microsoft Edge application executable | Microsoft/Edge/Application/msedge.exe |
+| Profiles/templates | Separate Edge profile and template per pool | Same isolation, with existing private Windows ACL handling |
+| Ownership | Registered process group and loopback CDP | Existing Job/process ownership and loopback CDP |
+
+Both execution modes need process inspection, private profile writes and
 loopback access. Use the host's normal filesystem/process permissions; no integration hook is needed.
 
 ## Owned browser lifecycle
 
 The three-slot pool allocates only for real pending papers. Each lease owns a
-Chrome process group, a persistent profile and an explicit nonzero loopback
+Chrome or Edge process group, a persistent profile and an explicit nonzero loopback
 port. Port 0 changes Chrome's automation semantics and is not used. The pool
 verifies the owned child's CDP stderr announcement against the endpoint;
 an external process winning the bind race is not accepted. Other stderr is
 discarded. The runtime connects with
 `--connect-cdp … --no-headless --keep-open --no-zotero` and disconnects without
-taking browser ownership. `autodev` runs outside this pool.
+taking browser ownership. Unattended mode adds `--autodev` to the same CDP
+connection; login/CAPTCHA/manual-solve items are skipped without pausing.
+It never launches the downloader's headless Chromium runtime.
 
 Run, allocation and slot-execution locks protect ownership. A lease ID and
 resolved run path reject stale resume/release attempts. Supervisors acknowledge
@@ -52,8 +70,8 @@ retaining login stores; unexpected restored pages are rejected. Paused resumes
 preserve pages. The default logical slots use `~/.paper-dl-cdp-profile`,
 `~/.paper-dl-cdp-profile-pool/slot-1` and `~/.paper-dl-cdp-profile-pool/slot-2`.
 A custom pool stores profiles at `<pool>/slot-N/profile`. Saved leases retain
-their recorded paths. Skip a profile held by unrelated Chrome; never attach to
-or close that Chrome.
+their recorded paths. Skip a profile held by an unrelated browser; never attach to
+or close that browser.
 
 The adapter saves per-paper successes and pending actions before intervention
 tab setup, and writes PDF identity bindings before relocation. Core retains
@@ -92,7 +110,7 @@ force reuse. Keep the original pool setting when resuming or abandoning a run.
 
 ## Optional authorized login template
 
-Fully quit the Chrome owning the source profile and keep it closed while
+Fully quit the Chrome or Edge owning the source profile and keep it closed while
 creating an authorized template:
 
 ```bash
@@ -102,10 +120,13 @@ scholarseed-skill-python "$SKILL_DIR/scripts/browser_pool.py" create-template \
 
 The private `<pool>/profile-template` imports `Default` and `Local State`.
 New slots copy it; existing profiles and paused browsers are never overwritten.
+For an Edge source, add `--browser edge`; its default output is
+`<pool>/edge-profile-template`. Explicit templates from the other browser are
+rejected. Never copy Chrome login data into an Edge slot or vice versa.
 No live login synchronization occurs. Creation rejects active/changing sources,
 links, special files, overlap and existing destinations. It retains login
 stores, clears page/download history and old download-directory preferences.
-Never launch Chrome on the template or log its contents. A copied login does
+Never launch a browser on the template or log its contents. A copied login does
 not guarantee access or avoid CAPTCHA.
 
 To refresh, create a distinct `--template-dir /new/template/path` and configure

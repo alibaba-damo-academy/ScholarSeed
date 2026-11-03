@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import re
+import json
+import logging
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, replace
@@ -11,26 +12,42 @@ from datetime import UTC, datetime
 from functools import wraps
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from scholarseed_codex.activity import NativeActivity
 from scholarseed_codex.capacity import HostRole
-from scholarseed_codex.catalog import model_catalog_argument
+from scholarseed_codex.diagnostic import THREAD_HISTORY_MISSING_ERROR
 from scholarseed_codex.directive import parse_declarations
 from scholarseed_codex.environment import (
+    CODEX_DISCOVERY_HOME_DIRNAME,
     configured_codex_executable,
-    prepare_codex_runtime_home,
-    source_model_provider,
 )
 from scholarseed_codex.events import RUNTIME_EVENT_SCHEMA_VERSION, translate_event
-from scholarseed_codex.isolation import managed_codex_launch
-from scholarseed_codex.permission import CODEX_PERMISSION_POLICIES, local_socket_permissions
+from scholarseed_codex.isolation import managed_codex_launch, managed_shell_environment
+from scholarseed_codex.launch import model_connection, validate_model_connection
+from scholarseed_codex.loop import ToolLoopGuard
+from scholarseed_codex.mailbox import ObservationMailbox
+from scholarseed_codex.permission import (
+    CODEX_PERMISSION_POLICIES,
+    PERMISSION_SCOPE_NEXT_TURN,
+    PERMISSION_SCOPE_SESSION,
+    PermissionUpdate,
+    local_socket_permissions,
+    reviewer_only_update,
+    thread_permission_config,
+)
 from scholarseed_codex.pool import CodexHostPool, PoolReservation
 from scholarseed_codex.profile import (
+    CODEX_MULTI_AGENT_V2_ENABLED_CONFIG,
     CODEX_PROTOCOL_SCHEMA_HASH,
     CODEX_PROTOCOL_VERSION,
+    CODEX_WEB_SEARCH_DISABLED_MODE,
+    CODEX_WEB_SEARCH_LIVE_MODE,
+    CODEX_WEB_SEARCH_MODE_KEY,
     SESSION_SCOPED_CAPABILITIES,
     capabilities,
+    native_web_search_supported,
+    optional_capabilities,
     required_capabilities,
     session_thread_config,
 )
@@ -44,19 +61,29 @@ from scholarseed_codex.protocol.mcp import (
     McpTrustRequest,
 )
 from scholarseed_codex.protocol.session import (
-    CodexRuntimeIdentity,
+    CODEX_MANAGED_IDENTITY,
+    CODEX_REASONING_SUMMARY_AUTO,
+    CODEX_REASONING_SUMMARY_CONFIG,
+    CodexDynamicTool,
     CodexSessionEvent,
     CodexSessionEventKind,
     CodexSessionOpenRequest,
     CodexToolResponse,
 )
-from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError, CodexActivationStage
+from scholarseed_codex.protocol.state import (
+    CODEX_DEFAULT_SANDBOX_MODE,
+    CODEX_RUNTIME_ID,
+    AppServerError,
+    CodexActivationStage,
+)
+from scholarseed_codex.sandbox import windows_sandbox_arguments
 from scholarseed_codex.skill import session_skill_config, session_skill_inventory
-from scholarseed_codex.thread import CodexThreadSession
+from scholarseed_codex.thread import CODEX_THREAD_RESTORE_FAILED, CodexThreadSession
 from scholarseed_codex.utils import json_value
 from scholarseed_runtime.contract import (
     AppliedState,
     ArchiveRequest,
+    CallbackKind,
     CapabilitySet,
     CommandReceipt,
     CommandState,
@@ -66,9 +93,9 @@ from scholarseed_runtime.contract import (
     InterruptRequest,
     InventoryKind,
     InventoryRequest,
-    ModelConnectionMode,
-    ModelCredential,
+    ModelCredentialPort,
     ModelIntent,
+    ModelToolProtocol,
     OpenSessionRequest,
     RuntimeBinding,
     RuntimeCallbackRequest,
@@ -85,40 +112,66 @@ from scholarseed_runtime.contract import (
     SteerRequest,
     TerminateSessionRequest,
     TurnRequest,
+    service_tool_profile,
 )
-from scholarseed_runtime.contract.input import CollaborationMode, InputItem, InputKind, TurnInput
+from scholarseed_runtime.contract.command import SubmissionRetryProof, ThreadReplacementProof
+from scholarseed_runtime.contract.incident import (
+    RUNTIME_TURN_NOT_SUBMITTED,
+    RuntimeIncident,
+    RuntimeIncidentKind,
+    RuntimeIncidentScope,
+    RuntimeIncidentState,
+    RuntimeRecoveryStrategy,
+    RuntimeRetryability,
+)
+from scholarseed_runtime.contract.input import (
+    TURN_ADMISSION_STALE,
+    CollaborationMode,
+    InputItem,
+    InputKind,
+    SubmissionRetry,
+    TurnAdmission,
+    TurnInput,
+)
 from scholarseed_runtime.contract.mcp import McpTrustDecision
+from scholarseed_runtime.contract.permission import PermissionIntent, PermissionUpdateScope
 from scholarseed_runtime.contract.resource import ResourceEvidence
 from scholarseed_runtime.contract.session import (
+    RUNTIME_ACTIVITY_CHANGED,
+    RUNTIME_CONFIRMATION_BUSY,
+    RUNTIME_CONFIRMATION_STALE,
+    RUNTIME_CONFIRMATION_UNPERSISTED,
+    RUNTIME_OBSERVATION_PENDING,
     RUNTIME_SUSPEND_BUSY,
     RUNTIME_SUSPEND_FAILED,
     RUNTIME_SUSPEND_STALE,
     RUNTIME_SUSPEND_UNPERSISTED,
     RUNTIME_SUSPEND_UNSUPPORTED,
+    RUNTIME_THREAD_REPLACEMENT_BUSY,
+    RUNTIME_THREAD_REPLACEMENT_STALE,
+    RUNTIME_THREAD_REPLACEMENT_UNPERSISTED,
     RuntimeActivitySnapshot,
     SuspendReceipt,
     SuspendState,
     SuspendTicket,
+    ThreadReplacementReceipt,
+    ThreadReplacementTarget,
+    ThreadReplacementTicket,
+    TurnConfirmationReceipt,
+    TurnConfirmationTarget,
+    TurnConfirmationTicket,
 )
 
-UNSUPPORTED_DYNAMIC_TOOL_ERROR = "runtime_dynamic_tool_unsupported"
-CODEX_EVENT_QUEUE_CAPACITY = 2048
-CODEX_REMOTE_PROVIDER_ID = "scholarseed"
-CODEX_REMOTE_PROVIDER_NAME = "ScholarSeed"
-CODEX_MODEL_API_KEY_ENV = "SCHOLARSEED_MODEL_API_KEY"
-CODEX_MODEL_HEADER_ENV_PREFIX = "SCHOLARSEED_MODEL_HEADER"
-HEADER_ENV_PATTERN = re.compile(r"[^A-Z0-9]+")
 DEFAULT_COLLABORATION_MODE = "explicitRequestOnly"
 CODEX_WEB_SEARCH_CAPABILITY_KEY = "webSearch"
 CODEX_WEB_SEARCH_CAPABILITY_ERROR = "runtime_web_search_capability_unavailable"
 CODEX_REASONING_EFFORT_CONFIG = "model_reasoning_effort"
 CODEX_SERVICE_TIER_CONFIG = "service_tier"
-TURN_SUBMISSION_FAILED_KIND = "turn_submission_failed"
 TURN_SUBMISSION_FAILED_ERROR = "runtime_turn_submission_failed"
 FAILED_STATE = "failed"
+UNKNOWN_STATE = "unknown"
 ACTIVITY_COMMAND_PENDING = "runtime_command_pending"
 ACTIVITY_OPERATION_PENDING = "runtime_operation_pending"
-ACTIVITY_CHANGED = "runtime_activity_changed"
 SUBAGENT_LIFECYCLE_KINDS = frozenset(
     {
         RuntimeEventKind.SUBAGENT_STARTED,
@@ -128,6 +181,10 @@ SUBAGENT_LIFECYCLE_KINDS = frozenset(
         RuntimeEventKind.SUBAGENT_INTERRUPTED,
     }
 )
+REPEATED_TOOL_LOOP_ERROR = "codex_repeated_tool_loop"
+REPEATED_TOOL_INTERRUPT_ERROR = "codex_repeated_tool_interrupt_failed"
+REPEATED_TOOL_INCIDENT_SUFFIX = "repeated-tool-loop"
+logger = logging.getLogger(__name__)
 
 
 def _admitted(method):
@@ -174,6 +231,36 @@ def _same_thread_preferences(current: ModelIntent, requested: ModelIntent) -> bo
         # Same reason for the non-effort thinking forms: the bridge registration is
         # built once per connection, so a changed toggle/budget must not look applied.
         and current.thinking == requested.thinking
+        and current.approval_model_ref == requested.approval_model_ref
+    )
+
+
+def _same_process_configuration(
+    current: CodexSessionOpenRequest, requested: CodexSessionOpenRequest
+) -> bool:
+    return (
+        current.executable == requested.executable
+        and current.identity == requested.identity
+        and current.cwd == requested.cwd
+        and current.launch_cwd == requested.launch_cwd
+        and current.execution_scope == requested.execution_scope
+        and current.process_sharing_scope == requested.process_sharing_scope
+        and current.process_environment == requested.process_environment
+        and current.remove_environment == requested.remove_environment
+        and current.launch_arguments == requested.launch_arguments
+        and current.model_provider == requested.model_provider
+        and current.sandbox == requested.sandbox
+        and current.permissions_profile == requested.permissions_profile
+        and current.approval_policy == requested.approval_policy
+        and current.approval_reviewer == requested.approval_reviewer
+        and current.multi_agent_mode == requested.multi_agent_mode
+        and current.base_instructions == requested.base_instructions
+        and current.developer_instructions == requested.developer_instructions
+        and current.dynamic_tools == requested.dynamic_tools
+        and current.skill_roots == requested.skill_roots
+        and current.skill_policy == requested.skill_policy
+        and current.writable_roots == requested.writable_roots
+        and current.network_access == requested.network_access
     )
 
 
@@ -228,23 +315,52 @@ class CodexRuntimeSession:
         request: OpenSessionRequest,
         resume_binding: RuntimeBinding | None = None,
         launch_environment: Mapping[str, str] | None = None,
+        tool_environment: Mapping[str, str] | None = None,
         host_pool: CodexHostPool | None = None,
     ) -> None:
         self._host_pool = host_pool or CodexHostPool()
+        self._owns_pool = host_pool is None
+        self._tool_environment = dict(tool_environment or {})
+        managed_shell_environment(
+            self._tool_environment, execution_environment=request.execution_environment
+        )
         self._model_prepared = False
         self._admission_lock = asyncio.Lock()
+        self._interrupt_lock = asyncio.Lock()
         self._active_operations = 0
         self._activity_revision = 0
         self._watermark = 0
         self._suspend_receipt: SuspendReceipt | None = None
+        self._confirmation_ticket: TurnConfirmationTicket | None = None
+        self._confirmation_receipt: TurnConfirmationReceipt | None = None
+        self._confirmation_host: object | None = None
+        self._confirmation_registration_epoch = 0
+        self._confirmation_admission_epoch = 0
+        self._replacement_ticket: ThreadReplacementTicket | None = None
+        self._replacement_receipt: ThreadReplacementReceipt | None = None
+        self._replacement_host: object | None = None
+        self._replacement_registration_epoch = 0
+        self._replacement_admission_epoch = 0
         self._suspend_task: asyncio.Task[None] | None = None
         self._suspend_generation: int | None = None
         self._released_evidence: ResourceEvidence | None = None
         self._request = replace(request, secret_port=None)
+        fork = request.fork_source
+        if fork is not None and (
+            resume_binding is not None
+            or fork.product_session_id != request.product_session_id
+            or fork.source.runtime_id != CODEX_RUNTIME_ID
+            or not fork.source.opaque_session_ref
+            or not fork.source_turn_id
+            or request.initial_history
+        ):
+            raise ValueError("invalid Codex fork source")
         self._required_capabilities = required_capabilities(request.required_capabilities)
-        self._events: asyncio.Queue[RuntimeEvent | RuntimeCallbackRequest] = asyncio.Queue(
-            maxsize=CODEX_EVENT_QUEUE_CAPACITY
+        self._optional_capabilities = optional_capabilities(
+            request.optional_capabilities, self._required_capabilities
         )
+        self._enabled_capabilities = self._required_capabilities
+        self._events = ObservationMailbox()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._sequence = 0
         self._evidence_sequence = 0
@@ -254,16 +370,19 @@ class CodexRuntimeSession:
         self._capability_resolution: dict[str, Any] | None = None
         self._active_command_id = ""
         self._committed_commands: set[str] = set()
+        self._loop_guard = ToolLoopGuard()
         executable = configured_codex_executable()
-        runtime_home = prepare_codex_runtime_home(
-            native_authentication=request.model.transport.mode is ModelConnectionMode.NATIVE
-        )
+        validate_model_connection(request.model)
+        runtime_home = self._host_pool.prepare_home()
         permission_policy = CODEX_PERMISSION_POLICIES[request.permission.mode]
-        permissions_profile, launch_arguments = local_socket_permissions(
+        permissions_profile, self._permission_config = thread_permission_config(
             permission_policy.sandbox,
             request.permission.local_sockets,
             network_access=request.permission.network_access,
+            network_domains=request.permission.network_domains,
+            deny_read_roots=request.permission.deny_read_roots,
         )
+        launch_arguments = windows_sandbox_arguments(CODEX_DEFAULT_SANDBOX_MODE)
         process_environment, launch_arguments = managed_codex_launch(
             runtime_home,
             dict(launch_environment or {}),
@@ -274,9 +393,14 @@ class CodexRuntimeSession:
                 request_id=request.product_session_id,
                 runtime_id=CODEX_RUNTIME_ID,
                 cwd=request.cwd,
+                launch_cwd=runtime_home / CODEX_DISCOVERY_HOME_DIRNAME,
+                execution_scope=request.execution_scope or request.product_session_id,
+                process_sharing_scope=request.process_sharing_scope,
                 resume_session_id=(
                     resume_binding.opaque_session_ref if resume_binding is not None else ""
                 ),
+                fork_session_id=fork.source.opaque_session_ref if fork is not None else "",
+                fork_turn_id=fork.source_turn_id if fork is not None else "",
                 model=request.model.model_ref,
                 process_environment=process_environment,
                 remove_environment=request.launch_secrets.remove_environment,
@@ -287,14 +411,21 @@ class CodexRuntimeSession:
                 approval_reviewer=permission_policy.approval_reviewer,
                 multi_agent_mode=DEFAULT_COLLABORATION_MODE,
                 executable=executable,
-                identity=CodexRuntimeIdentity(
-                    client_name="scholarseed_desktop",
-                    client_title="书深",
-                    service_name="scholarseed",
-                ),
+                identity=CODEX_MANAGED_IDENTITY,
                 developer_instructions=request.developer_instructions,
+                dynamic_tools=tuple(
+                    CodexDynamicTool(
+                        name=tool.name,
+                        description=tool.description,
+                        input_schema=(
+                            tool.input_schema if isinstance(tool.input_schema, Mapping) else {}
+                        ),
+                    )
+                    for tool in request.service_tools
+                ),
                 base_instructions=request.base_instructions,
                 ephemeral=request.ephemeral,
+                skill_policy=request.skill_policy,
                 skill_roots=request.skill_roots,
                 writable_roots=request.permission.writable_roots,
                 network_access=request.permission.network_access,
@@ -303,6 +434,7 @@ class CodexRuntimeSession:
             on_event=self._on_native_event,
             host_pool=self._host_pool,
         )
+        self._native_base_request = self._native.request
         self._binding: RuntimeBinding | None = None
         self._permission = request.permission
         self._model = request.model
@@ -325,7 +457,9 @@ class CodexRuntimeSession:
         return lease.evidence if lease is not None else self._released_evidence
 
     def _current_activity_revision(self) -> int:
-        return self._activity_revision + self._native.host.activity_revision
+        return self._activity_revision + self._native.host.thread_activity_revision(
+            self._native.session_id
+        )
 
     async def consume_resource(self, reservation: PoolReservation) -> None:
         self._native.adopt_lease(await self._host_pool.consume(reservation))
@@ -333,9 +467,14 @@ class CodexRuntimeSession:
     async def _publish_observation(
         self, observation: RuntimeEvent | RuntimeCallbackRequest
     ) -> None:
-        if isinstance(observation, RuntimeEvent):
-            self._watermark = observation.sequence
-        await self._events.put(observation)
+        async def accept() -> None:
+            await self._events.put(observation)
+            if isinstance(observation, RuntimeEvent):
+                self._watermark = observation.sequence
+
+        # Cancellation may arrive during a spill. Finish admission and its
+        # watermark together before propagating it to the producer.
+        await ObservationMailbox._finish(asyncio.create_task(accept()))
 
     async def activity(self) -> RuntimeActivitySnapshot:
         generation = f"{self._event_namespace}:{self._native.host.process_generation}"
@@ -344,14 +483,8 @@ class CodexRuntimeSession:
             blockers.append(ACTIVITY_COMMAND_PENDING)
         if self._active_operations:
             blockers.append(ACTIVITY_OPERATION_PENDING)
-        if blockers:
-            return RuntimeActivitySnapshot(
-                generation,
-                self._current_activity_revision(),
-                self._watermark,
-                False,
-                tuple(blockers),
-            )
+        if self._events.qsize():
+            blockers.append(RUNTIME_OBSERVATION_PENDING)
         revision = self._current_activity_revision()
         native = await NativeActivity(
             self._native.host,
@@ -362,16 +495,311 @@ class CodexRuntimeSession:
             self._native.host.retain_loaded_roots(native.loaded_thread_ids)
         blockers.extend(native.blockers)
         if revision != self._current_activity_revision():
-            blockers.append(ACTIVITY_CHANGED)
+            blockers.append(RUNTIME_ACTIVITY_CHANGED)
         if generation != f"{self._event_namespace}:{self._native.host.process_generation}":
-            blockers.append(ACTIVITY_CHANGED)
+            blockers.append(RUNTIME_ACTIVITY_CHANGED)
         return RuntimeActivitySnapshot(
             generation,
             self._current_activity_revision(),
             self._watermark,
             native.complete,
             tuple(blockers),
+            execution_tree_complete=native.complete and RUNTIME_ACTIVITY_CHANGED not in blockers,
+            execution_tree_blockers=native.execution_tree_blockers,
         )
+
+    def _confirmation_idle(self) -> bool:
+        return (
+            self._suspend_receipt is None
+            and not self._active_command_id
+            and not self._active_operations
+            and not any(not task.done() for task in self._tasks)
+        )
+
+    def _confirmation_current(self, ticket: TurnConfirmationTicket) -> bool:
+        host = self._native.host
+        target = ticket.target
+        return (
+            self._confirmation_idle()
+            and host is self._confirmation_host
+            and self._confirmation_ticket == ticket
+            and target.product_session_id == self.binding.product_session_id
+            and target.native_session_id == self._native.session_id
+            and ticket.generation == f"{self._event_namespace}:{host.process_generation}"
+            and ticket.revision == self._current_activity_revision()
+            and ticket.watermark == self._watermark
+            and self._confirmation_admission_epoch == host.admission.epoch
+            and host.turn_confirmation_current(
+                target.native_session_id,
+                target.client_submission_id,
+                target.incident_id,
+                target.process_generation,
+                host.process_generation,
+                self._confirmation_registration_epoch,
+                host.thread_activity_revision(target.native_session_id),
+            )
+        )
+
+    async def prepare_turn_confirmation(
+        self, target: TurnConfirmationTarget
+    ) -> TurnConfirmationTicket:
+        async with self._admission_lock:
+            receipt = self._confirmation_receipt
+            if receipt is not None and receipt.ticket.target == target:
+                return receipt.ticket
+            if not self._confirmation_idle():
+                raise AppServerError(
+                    RUNTIME_CONFIRMATION_BUSY, safe_error=RUNTIME_CONFIRMATION_BUSY
+                )
+            host = self._native.host
+            generation, registration_epoch, _revision = host.turn_confirmation_identity(
+                target.native_session_id
+            )
+            ticket = TurnConfirmationTicket(
+                uuid.uuid4().hex,
+                target,
+                f"{self._event_namespace}:{generation}",
+                self._current_activity_revision(),
+                self._watermark,
+            )
+            self._confirmation_ticket = ticket
+            self._confirmation_host = host
+            self._confirmation_registration_epoch = registration_epoch
+            self._confirmation_admission_epoch = host.admission.epoch
+            if not self._confirmation_current(ticket):
+                raise AppServerError(
+                    RUNTIME_CONFIRMATION_STALE, safe_error=RUNTIME_CONFIRMATION_STALE
+                )
+            native = await NativeActivity(
+                host, target.native_session_id, known_roots=host.known_roots
+            ).inspect()
+            if not native.complete or native.blockers or not self._confirmation_current(ticket):
+                raise AppServerError(
+                    RUNTIME_CONFIRMATION_BUSY, safe_error=RUNTIME_CONFIRMATION_BUSY
+                )
+            return ticket
+
+    async def commit_turn_confirmation(
+        self, ticket: TurnConfirmationTicket, persisted_watermark: int
+    ) -> TurnConfirmationReceipt:
+        async with self._admission_lock:
+            receipt = self._confirmation_receipt
+            if receipt is not None and receipt.ticket == ticket:
+                return receipt
+            if persisted_watermark < ticket.watermark:
+                return TurnConfirmationReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_CONFIRMATION_UNPERSISTED
+                )
+            if not self._confirmation_current(ticket):
+                return TurnConfirmationReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_CONFIRMATION_STALE
+                )
+            host = self._native.host
+            target = ticket.target
+            if not host.confirm_turn_submission(
+                target.native_session_id,
+                target.client_submission_id,
+                target.incident_id,
+                target.process_generation,
+                host.process_generation,
+                self._confirmation_registration_epoch,
+                host.thread_activity_revision(target.native_session_id),
+            ):
+                return TurnConfirmationReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_CONFIRMATION_STALE
+                )
+            receipt = TurnConfirmationReceipt(ticket, CommandState.APPLIED)
+            self._confirmation_receipt = receipt
+            return receipt
+
+    def _replacement_current(self, ticket: ThreadReplacementTicket) -> bool:
+        host = self._native.host
+        proof = ticket.proof
+        return (
+            self._confirmation_idle()
+            and host is self._replacement_host
+            and self._replacement_ticket == ticket
+            and proof.binding == self.binding
+            and proof.binding.opaque_session_ref == self._native.session_id
+            and ticket.generation == f"{self._event_namespace}:{host.process_generation}"
+            and ticket.revision == self._current_activity_revision()
+            and proof.watermark == ticket.watermark == self._watermark
+            and self._replacement_admission_epoch == host.admission.epoch
+            and host.thread_replacement_current(
+                self._native.session_id,
+                proof.command_id,
+                proof.incident_id,
+                proof.failed_generation,
+                proof.absence_generation,
+                self._replacement_registration_epoch,
+                host.thread_activity_revision(self._native.session_id),
+            )
+        )
+
+    async def prepare_thread_replacement(
+        self, target: ThreadReplacementTarget
+    ) -> ThreadReplacementTicket:
+        async with self._admission_lock:
+            receipt = self._replacement_receipt
+            if receipt is not None:
+                previous = receipt.ticket.proof
+                if target == ThreadReplacementTarget(
+                    previous.binding,
+                    previous.command_id,
+                    previous.incident_id,
+                    previous.failed_generation,
+                ):
+                    return receipt.ticket
+            if (
+                target.binding != self.binding
+                or not isinstance(target.command_id, str)
+                or not target.command_id.strip()
+                or not isinstance(target.incident_id, str)
+                or not target.incident_id.strip()
+            ):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_STALE, safe_error=RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            host = self._native.host
+            try:
+                async with asyncio.timeout(host.recovery_total_timeout):
+                    recovery = host.recovery_task
+                    if recovery is not None and not recovery.done():
+                        await host.start()
+                    if self._native.host is not host:
+                        raise AppServerError(
+                            RUNTIME_THREAD_REPLACEMENT_STALE,
+                            safe_error=RUNTIME_THREAD_REPLACEMENT_STALE,
+                        )
+                    if (
+                        self._suspend_receipt is not None
+                        or self._active_operations
+                        or self._active_command_id not in ("", target.command_id)
+                    ):
+                        raise AppServerError(
+                            RUNTIME_THREAD_REPLACEMENT_BUSY,
+                            safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY,
+                        )
+                    pending = tuple(task for task in self._tasks if not task.done())
+                    if pending:
+                        generation, registration_epoch, revision = host.turn_confirmation_identity(
+                            self._native.session_id
+                        )
+                        if not host.thread_replacement_current(
+                            self._native.session_id,
+                            target.command_id,
+                            target.incident_id,
+                            target.failed_generation,
+                            generation,
+                            registration_epoch,
+                            revision,
+                        ):
+                            raise AppServerError(
+                                RUNTIME_THREAD_REPLACEMENT_BUSY,
+                                safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY,
+                            )
+                        await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+                    if not self._confirmation_idle():
+                        raise AppServerError(
+                            RUNTIME_THREAD_REPLACEMENT_BUSY,
+                            safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY,
+                        )
+                    return await self._prepare_thread_replacement_ticket(target)
+            except TimeoutError as error:
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_BUSY, safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY
+                ) from error
+
+    async def _prepare_thread_replacement_ticket(
+        self, target: ThreadReplacementTarget
+    ) -> ThreadReplacementTicket:
+        host = self._native.host
+        generation, registration_epoch, _revision = host.turn_confirmation_identity(
+            self._native.session_id
+        )
+        self._replacement_host = host
+        self._replacement_registration_epoch = registration_epoch
+        self._replacement_admission_epoch = host.admission.epoch
+        for _attempt in range(host.max_recovery_attempts):
+            if (
+                self._native.host is not host
+                or host.process_generation != generation
+                or host.admission.epoch != self._replacement_admission_epoch
+            ):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_STALE, safe_error=RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            proof = ThreadReplacementProof(
+                uuid.uuid4().hex,
+                self.binding,
+                target.command_id,
+                target.incident_id,
+                target.failed_generation,
+                generation,
+                self._watermark,
+            )
+            ticket = ThreadReplacementTicket(
+                proof,
+                f"{self._event_namespace}:{generation}",
+                self._current_activity_revision(),
+                self._watermark,
+            )
+            self._replacement_ticket = ticket
+            if not self._replacement_current(ticket):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_STALE, safe_error=RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            native = await NativeActivity(
+                host, self._native.session_id, known_roots=host.known_roots
+            ).inspect_absence()
+            if (
+                not native.complete
+                or native.blockers
+                or native.execution_tree_blockers
+                or native.process_generation != generation
+                or self._native.session_id in native.loaded_thread_ids
+            ):
+                raise AppServerError(
+                    RUNTIME_THREAD_REPLACEMENT_BUSY, safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY
+                )
+            if self._replacement_current(ticket):
+                return ticket
+        raise AppServerError(
+            RUNTIME_THREAD_REPLACEMENT_BUSY, safe_error=RUNTIME_THREAD_REPLACEMENT_BUSY
+        )
+
+    async def commit_thread_replacement(
+        self, ticket: ThreadReplacementTicket, persisted_watermark: int
+    ) -> ThreadReplacementReceipt:
+        async with self._admission_lock:
+            receipt = self._replacement_receipt
+            if receipt is not None and receipt.ticket == ticket:
+                return receipt
+            if persisted_watermark < ticket.watermark:
+                return ThreadReplacementReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_THREAD_REPLACEMENT_UNPERSISTED
+                )
+            if not self._replacement_current(ticket):
+                return ThreadReplacementReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            host = self._native.host
+            proof = ticket.proof
+            if not host.seal_thread_replacement(
+                self._native.session_id,
+                proof.command_id,
+                proof.incident_id,
+                proof.failed_generation,
+                proof.absence_generation,
+                self._replacement_registration_epoch,
+                host.thread_activity_revision(self._native.session_id),
+            ):
+                return ThreadReplacementReceipt(
+                    ticket, CommandState.REJECTED, RUNTIME_THREAD_REPLACEMENT_STALE
+                )
+            receipt = ThreadReplacementReceipt(ticket, CommandState.APPLIED)
+            self._replacement_receipt = receipt
+            return receipt
 
     async def prepare_suspend(self, expected_revision: int) -> SuspendTicket:
         async with self._admission_lock:
@@ -413,7 +841,7 @@ class CodexRuntimeSession:
                 )
             if receipt.finished and receipt.safe_error:
                 generation = self._suspend_generation
-                if generation != self._native.host.process_generation:
+                if generation is None or generation != self._native.host.process_generation:
                     raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
                 self._suspend_receipt = SuspendReceipt(ticket, SuspendState.COMMITTING)
                 self._suspend_task = asyncio.create_task(
@@ -478,12 +906,24 @@ class CodexRuntimeSession:
             )
             with self._request.timing.measure(stage):
                 await self._native.open()
+            if self._request.fork_source is not None:
+                self._native.request = replace(
+                    self._native.request, fork_session_id="", fork_turn_id=""
+                )
+                self._native_base_request = replace(
+                    self._native_base_request, fork_session_id="", fork_turn_id=""
+                )
+                self._request = replace(self._request, fork_source=None)
             if self._request.initial_history:
                 await self._native.host.seed_history(
                     self._native.session_id, self._request.initial_history
                 )
         except BaseException:
-            await self._native.aclose()
+            try:
+                await self._native.aclose()
+            finally:
+                if self._owns_pool:
+                    await self._host_pool.aclose()
             raise
         readiness = self._native.host.readiness
         self._binding = RuntimeBinding(
@@ -494,94 +934,87 @@ class CodexRuntimeSession:
             protocol_version=CODEX_PROTOCOL_VERSION,
             protocol_schema_hash=CODEX_PROTOCOL_SCHEMA_HASH,
             opaque_session_ref=self._native.session_id,
+            skill_policy=self._request.skill_policy,
             capabilities=self.capabilities,
+            profile=service_tool_profile(self._request.service_tools),
+            optional_capabilities=self._request.optional_capabilities,
         )
 
     async def _verify_required_capabilities(self) -> None:
-        if RuntimeCapabilityName.WEB_SEARCH not in self._required_capabilities:
+        requested = self._required_capabilities | self._optional_capabilities
+        if RuntimeCapabilityName.WEB_SEARCH not in requested:
             return
-        capabilities = await self._native.model_provider_capabilities()
-        if capabilities.get(CODEX_WEB_SEARCH_CAPABILITY_KEY) is not True:
+        supported = native_web_search_supported(self._request.model)
+        if supported:
+            provider_capabilities = await self._native.model_provider_capabilities()
+            supported = provider_capabilities.get(CODEX_WEB_SEARCH_CAPABILITY_KEY) is True
+        if not supported and RuntimeCapabilityName.WEB_SEARCH in self._required_capabilities:
             raise AppServerError(
-                "Codex model provider does not support Web Search",
+                "The selected model provider cannot forward native Web Search",
                 safe_error=CODEX_WEB_SEARCH_CAPABILITY_ERROR,
             )
+        if RuntimeCapabilityName.WEB_SEARCH in self._optional_capabilities:
+            self._enabled_capabilities = self._required_capabilities | (
+                {RuntimeCapabilityName.WEB_SEARCH} if supported else set()
+            )
+            config = dict(self._native.request.thread_config)
+            config[CODEX_WEB_SEARCH_MODE_KEY] = (
+                CODEX_WEB_SEARCH_LIVE_MODE if supported else CODEX_WEB_SEARCH_DISABLED_MODE
+            )
+            self._native.request = replace(self._native.request, thread_config=config)
 
     async def _apply_model_connection(self) -> None:
-        await self._configure_model_connection()
-        request = self._native.request
-        with self._request.timing.measure(CodexActivationStage.MODEL_CATALOG):
-            catalog_argument = await model_catalog_argument(self._request.model, request)
-        self._native.request = replace(
-            request, launch_arguments=(*request.launch_arguments, catalog_argument)
+        self._native.request = await self._project_model_connection(
+            self._request.model, self._request.credential_port
         )
 
-    async def _configure_model_connection(self) -> None:
-        intent = self._request.model
-        request = self._native.request
-        config = session_thread_config(self._required_capabilities)
+    async def _project_model_connection(
+        self, intent: ModelIntent, credential_port: ModelCredentialPort | None
+    ) -> CodexSessionOpenRequest:
+        request = replace(
+            await self._configure_model_connection(
+                intent, self._native_base_request, credential_port
+            ),
+            model=intent.model_ref,
+        )
+        with self._request.timing.measure(CodexActivationStage.MODEL_CATALOG):
+            catalog_argument = await self._host_pool.model_catalog_argument(intent, request)
+        return replace(request, launch_arguments=(*request.launch_arguments, catalog_argument))
+
+    async def _configure_model_connection(
+        self,
+        intent: ModelIntent,
+        request: CodexSessionOpenRequest,
+        credential_port: ModelCredentialPort | None,
+    ) -> CodexSessionOpenRequest:
+        await self._host_pool.require_skill_policy(self._request.skill_policy, request.executable)
+        config = session_thread_config(
+            self._enabled_capabilities,
+            frozenset(tool.name for tool in self._request.service_tools),
+        )
+        if not native_web_search_supported(intent):
+            config[CODEX_WEB_SEARCH_MODE_KEY] = CODEX_WEB_SEARCH_DISABLED_MODE
+        if intent.capabilities.native_agent_messages is False:
+            config[CODEX_MULTI_AGENT_V2_ENABLED_CONFIG] = False
         config.update(session_skill_config(self._skill_configurations))
+        config.update(self._permission_config)
+        config.update(
+            managed_shell_environment(
+                self._tool_environment,
+                execution_environment=self._request.execution_environment,
+            )
+        )
         if intent.reasoning_effort:
             config[CODEX_REASONING_EFFORT_CONFIG] = intent.reasoning_effort
         if intent.service_tier:
             config[CODEX_SERVICE_TIER_CONFIG] = intent.service_tier
-        if intent.transport.mode is ModelConnectionMode.NATIVE:
-            provider_id, definition = source_model_provider()
-            if definition:
-                config["model_providers"] = {provider_id: definition}
-            self._native.request = replace(
-                request,
-                model_provider=provider_id,
-                thread_config=config,
-            )
-            return
-        transport = intent.transport
-        if not transport.endpoint:
-            raise ValueError("remote model endpoint is required")
-        provider: dict[str, Any] = {
-            "name": CODEX_REMOTE_PROVIDER_NAME,
-            "base_url": transport.endpoint.rstrip("/"),
-            "wire_api": transport.wire_protocol.value,
-            "requires_openai_auth": False,
-            "supports_websockets": transport.supports_websockets,
-        }
-        # 出站重试预算由产品按 endpoint 归属决定并经契约下行（``None`` 即交回 Codex 默认）。
-        # adapter 只应用预算值，不认网关地址、不解析 endpoint 归属——那是 Serve 的拓扑知识。
-        if transport.stream_max_retries is not None:
-            provider["stream_max_retries"] = transport.stream_max_retries
-        if transport.request_max_retries is not None:
-            provider["request_max_retries"] = transport.request_max_retries
-        environment = dict(request.process_environment)
-        material = ModelCredential()
-        if transport.credential_ref:
-            if self._request.credential_port is None:
-                raise ValueError("model credential port is required")
-            with self._request.timing.measure(CodexActivationStage.MODEL_CREDENTIALS):
-                material = await self._request.credential_port.resolve(transport.credential_ref)
-        if material.api_key:
-            provider["env_key"] = CODEX_MODEL_API_KEY_ENV
-            environment[CODEX_MODEL_API_KEY_ENV] = material.api_key
-        env_headers: dict[str, str] = {}
-        for index, (raw_name, raw_value) in enumerate(material.headers.items()):
-            name = str(raw_name).strip()
-            value = str(raw_value).strip()
-            if not name or not value:
-                continue
-            slug = HEADER_ENV_PATTERN.sub("_", name.upper()).strip("_") or str(index)
-            env_name = f"{CODEX_MODEL_HEADER_ENV_PREFIX}_{slug}_{index}"
-            env_headers[name] = env_name
-            environment[env_name] = value
-        if env_headers:
-            provider["env_http_headers"] = env_headers
-        config["model_providers"] = {CODEX_REMOTE_PROVIDER_ID: provider}
-        if intent.context_window is not None:
-            config["model_context_window"] = intent.context_window
-        self._native.request = replace(
-            request,
-            model_provider=CODEX_REMOTE_PROVIDER_ID,
-            authentication_required=False,
-            thread_config=config,
-            process_environment=environment,
+        if intent.capabilities.tool_protocol is ModelToolProtocol.PROVIDER_NATIVE:
+            config[CODEX_REASONING_SUMMARY_CONFIG] = CODEX_REASONING_SUMMARY_AUTO
+        return await model_connection(
+            intent,
+            replace(request, thread_config=config),
+            credential_port,
+            timing=self._request.timing,
         )
 
     @property
@@ -592,28 +1025,54 @@ class CodexRuntimeSession:
 
     @property
     def capabilities(self) -> CapabilitySet:
-        return capabilities(self._required_capabilities & SESSION_SCOPED_CAPABILITIES)
+        enabled = self._enabled_capabilities & SESSION_SCOPED_CAPABILITIES
+        if not native_web_search_supported(self._request.model):
+            enabled = enabled - {RuntimeCapabilityName.WEB_SEARCH}
+        return capabilities(enabled)
 
     async def _on_native_event(self, event: CodexSessionEvent) -> None:
         self._activity_revision += 1
         await self._observe_evidence(event)
-        if event.kind is CodexSessionEventKind.TURN_STARTED and self._active_command_id:
+        process_exit_unknown = (
+            event.kind is CodexSessionEventKind.TURN_UNKNOWN
+            and event.incident is not None
+            and event.incident.kind is RuntimeIncidentKind.PROCESS_EXIT
+        )
+        client_id = event.payload.get("client_user_message_id") or (
+            "" if process_exit_unknown else event.turn_id
+        )
+        owns_unknown_command = (
+            event.kind is CodexSessionEventKind.TURN_UNKNOWN
+            and self._binding is not None
+            and event.session_id == self._binding.opaque_session_ref
+            and bool(self._active_command_id)
+            and client_id == self._active_command_id
+        )
+        if (
+            event.kind is CodexSessionEventKind.TURN_STARTED or owns_unknown_command
+        ) and self._active_command_id:
             self._committed_commands.add(self._active_command_id)
         if event.kind is CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED:
-            request_id = str(event.payload.get("request_id") or "")
-            if request_id:
+            tool_name = str(event.payload.get("tool") or "")
+            declared_tools = {tool.name for tool in self._request.service_tools}
+            if tool_name not in declared_tools:
+                logger.warning(
+                    "codex_dynamic_tool_undeclared session_id=%s tool=%s namespace=%s declared=%s",
+                    event.session_id,
+                    tool_name,
+                    str(event.payload.get("namespace") or ""),
+                    sorted(declared_tools),
+                )
                 await self._native.resolve_tool(
-                    request_id,
+                    str(event.payload.get("request_id") or ""),
                     CodexToolResponse(
                         success=False,
                         content_items=(
-                            {
-                                "type": "inputText",
-                                "text": UNSUPPORTED_DYNAMIC_TOOL_ERROR,
-                            },
+                            {"type": "inputText", "text": "runtime_service_tool_unknown"},
                         ),
                     ),
                 )
+                return
         parsed = None
         if event.kind is CodexSessionEventKind.ASSISTANT_COMPLETED:
             parsed = parse_declarations(
@@ -655,6 +1114,11 @@ class CodexRuntimeSession:
         if isinstance(normalized, RuntimeEvent):
             normalized = replace(normalized, event_id=self._event_id(event.session_id))
         await self._publish_observation(normalized)
+        if self._loop_guard.observe(event):
+            await self._publish_loop_incident(event, REPEATED_TOOL_LOOP_ERROR)
+            task = asyncio.create_task(self._interrupt_loop(event))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         if parsed is not None and isinstance(normalized, RuntimeEvent):
             declarations = (
                 (RuntimeEventKind.ARTIFACT_DECLARED, asdict(item)) for item in parsed.declarations
@@ -684,9 +1148,61 @@ class CodexRuntimeSession:
             CodexSessionEventKind.TURN_COMPLETED,
             CodexSessionEventKind.TURN_FAILED,
             CodexSessionEventKind.TURN_INTERRUPTED,
-        }:
+        } or (
+            process_exit_unknown and owns_unknown_command and client_id == self._active_command_id
+        ):
             self._committed_commands.discard(self._active_command_id)
             self._active_command_id = ""
+
+    async def _publish_loop_incident(self, event: CodexSessionEvent, safe_error: str) -> None:
+        self._sequence += 1
+        failed = safe_error == REPEATED_TOOL_INTERRUPT_ERROR
+        await self._publish_observation(
+            RuntimeEvent(
+                schema_version=RUNTIME_EVENT_SCHEMA_VERSION,
+                event_id=self._event_id(event.session_id),
+                runtime_id=CODEX_RUNTIME_ID,
+                product_session_id=self._request.product_session_id,
+                native_session_id=event.session_id,
+                native_turn_id=event.turn_id,
+                process_generation=self._native.host.readiness.process_generation,
+                sequence=self._sequence,
+                kind=RuntimeEventKind.RUNTIME_INCIDENT,
+                delivery=DeliveryClass.MUST_PERSIST,
+                observed_at=datetime.now(UTC).isoformat(),
+                correlation_id=self._active_command_id,
+                payload={
+                    "incident": {
+                        "incident_id": (
+                            f"{event.session_id}:{event.turn_id}:{REPEATED_TOOL_INCIDENT_SUFFIX}"
+                        ),
+                        "scope": RuntimeIncidentScope.TURN.value,
+                        "state": (
+                            RuntimeIncidentState.FAILED.value
+                            if failed
+                            else RuntimeIncidentState.DETECTED.value
+                        ),
+                        "kind": RuntimeIncidentKind.REPEATED_TOOL_LOOP.value,
+                        "strategy": RuntimeRecoveryStrategy.MANUAL_RETRY.value,
+                        "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+                        "safe_error": safe_error,
+                        "process_generation": self._native.host.readiness.process_generation,
+                        "attempt": 0,
+                        "max_attempts": 0,
+                        "native_session_id": event.session_id,
+                        "native_turn_id": event.turn_id,
+                    }
+                },
+            )
+        )
+
+    async def _interrupt_loop(self, event: CodexSessionEvent) -> None:
+        try:
+            await self._native.host.attachment(self._native.session_id).turn.interrupt()
+        except Exception:
+            logger.exception("codex_repeated_tool_interrupt_failed turn_id=%s", event.turn_id)
+            if self._native.active_turn_id == event.turn_id:
+                await self._publish_loop_incident(event, REPEATED_TOOL_INTERRUPT_ERROR)
 
     async def _publish_capability_resolution(
         self, event: CodexSessionEvent, source: RuntimeEvent
@@ -781,14 +1297,67 @@ class CodexRuntimeSession:
         while True:
             yield await self._events.get()
 
-    @_admitted
     async def submit(self, request: TurnRequest) -> CommandReceipt:
+        async with self._admission_lock:
+            receipt = self._suspend_receipt
+            if receipt is not None and receipt.state is not SuspendState.ABORTED:
+                raise AppServerError(RUNTIME_SUSPEND_BUSY, safe_error=RUNTIME_SUSPEND_BUSY)
+            return self._submit_locked(request)
+
+    def _check_turn_admission(self, admission: TurnAdmission) -> None:
+        try:
+            authorized = admission.current()
+        except Exception as error:
+            raise AppServerError(TURN_ADMISSION_STALE, safe_error=TURN_ADMISSION_STALE) from error
+        if (
+            admission.generation
+            != f"{self._event_namespace}:{self._native.host.process_generation}"
+            or admission.revision != self._current_activity_revision()
+            or admission.watermark != self._watermark
+            or not authorized
+        ):
+            raise AppServerError(TURN_ADMISSION_STALE, safe_error=TURN_ADMISSION_STALE)
+
+    def _submit_locked(self, request: TurnRequest) -> CommandReceipt:
         if self._active_command_id:
             return CommandReceipt(
                 request.command_id,
                 CommandState.REJECTED,
                 safe_error="runtime_turn_already_active",
             )
+        admission = request.admission
+        if admission is not None:
+            self._check_turn_admission(admission)
+        self._activity_revision += 1
+        if admission is not None:
+            admission = replace(admission, revision=self._current_activity_revision())
+            fence = admission
+            host = self._native.host
+            epoch = host.admission.epoch
+            admission = replace(
+                admission,
+                current=lambda: (
+                    self._native.host is host
+                    and host.admission.epoch == epoch
+                    and host.admission.accepting
+                    and self._turn_admission_current(fence)
+                ),
+            )
+        call_id = uuid.uuid4().hex
+
+        async def observe_retry(submission: SubmissionRetry) -> Callable[[], bool]:
+            if request.retry_authorizer is not None:
+                return await request.retry_authorizer(
+                    SubmissionRetryProof(
+                        self.binding,
+                        request.command_id,
+                        call_id,
+                        self._watermark,
+                        submission,
+                    )
+                )
+            return lambda: True
+
         turn_input = TurnInput(
             tuple(_input_item(item) for item in request.items),
             client_user_message_id=request.command_id,
@@ -796,18 +1365,28 @@ class CodexRuntimeSession:
                 request.collaboration_mode or CollaborationMode.DEFAULT.value
             ),
             model=self._model.model_ref,
+            admission=admission,
+            submission_deadline=request.submission_deadline,
+            submission_attempts=request.submission_attempts,
+            retry_observer=observe_retry if request.retry_authorizer is not None else None,
         )
         self._active_command_id = request.command_id
         task = asyncio.create_task(self._native.run(turn_input))
         self._tasks.add(task)
         task.add_done_callback(
             lambda completed: asyncio.create_task(
-                self._finish_turn_task(completed, request.command_id)
+                self._finish_turn_task(completed, request.command_id, call_id)
             )
         )
-        return CommandReceipt(request.command_id, CommandState.ACCEPTED)
+        return CommandReceipt(request.command_id, CommandState.ACCEPTED, correlation_id=call_id)
 
-    async def _finish_turn_task(self, task: asyncio.Task[Any], command_id: str) -> None:
+    def _turn_admission_current(self, admission: TurnAdmission) -> bool:
+        self._check_turn_admission(admission)
+        return True
+
+    async def _finish_turn_task(
+        self, task: asyncio.Task[Any], command_id: str, call_id: str = ""
+    ) -> None:
         self._tasks.discard(task)
         if task.cancelled():
             return
@@ -823,6 +1402,91 @@ class CodexRuntimeSession:
         if command_id in self._committed_commands:
             return
         observed_at = datetime.now(UTC).isoformat()
+        if (
+            call_id
+            and isinstance(error, AppServerError)
+            and error.submission_not_applied
+            and error.safe_error == THREAD_HISTORY_MISSING_ERROR
+        ):
+            generations = self._native.host.seal_empty_replacement(self.binding.opaque_session_ref)
+            if generations is not None:
+                failed_generation, absence_generation = generations
+                self._sequence += 1
+                await self._publish_observation(
+                    RuntimeEvent(
+                        schema_version=RUNTIME_EVENT_SCHEMA_VERSION,
+                        event_id=self._event_id(self.binding.opaque_session_ref),
+                        runtime_id=CODEX_RUNTIME_ID,
+                        product_session_id=self._request.product_session_id,
+                        native_session_id=self.binding.opaque_session_ref,
+                        process_generation=absence_generation,
+                        sequence=self._sequence,
+                        kind=RuntimeEventKind.TURN_NOT_SUBMITTED,
+                        delivery=DeliveryClass.MUST_PERSIST,
+                        observed_at=observed_at,
+                        correlation_id=command_id,
+                        call_id=call_id,
+                        payload={
+                            "proof_id": uuid.uuid4().hex,
+                            "failed_generation": failed_generation,
+                            "absence_generation": absence_generation,
+                            "submission_deadline": self._native.submission_deadline,
+                            "submission_attempts": self._native.submission_attempts,
+                        },
+                    )
+                )
+                self._active_command_id = ""
+                return
+        retryability = (
+            error.retryability
+            if isinstance(error, AppServerError)
+            else RuntimeRetryability.USER_RETRYABLE
+        )
+        unknown = retryability is RuntimeRetryability.UNKNOWN_OUTCOME
+        safe_error = (
+            RUNTIME_TURN_NOT_SUBMITTED
+            if isinstance(error, AppServerError) and error.submission_not_applied
+            else TURN_SUBMISSION_FAILED_ERROR
+        )
+        generation = self._native.host.readiness.process_generation
+        if isinstance(error, AppServerError):
+            generation = error.generation or generation
+        incident = RuntimeIncident(
+            incident_id=uuid.uuid4().hex,
+            scope=RuntimeIncidentScope.TURN,
+            state=RuntimeIncidentState.FAILED,
+            kind=RuntimeIncidentKind.SUBMISSION_FAILED,
+            strategy=RuntimeRecoveryStrategy.MANUAL_RETRY,
+            retryability=retryability,
+            safe_error=safe_error,
+            process_generation=generation,
+            vendor_thread_id=self.binding.opaque_session_ref,
+            rpc_method=error.method if isinstance(error, AppServerError) else "",
+            rpc_code=error.rpc_code if isinstance(error, AppServerError) else None,
+            rpc_latency_ms=error.rpc_latency_ms if isinstance(error, AppServerError) else 0,
+            ambiguous_commit=unknown,
+        )
+        self._sequence += 1
+        translated = translate_event(
+            CodexSessionEvent(
+                runtime_id=CODEX_RUNTIME_ID,
+                session_id=self.binding.opaque_session_ref,
+                kind=CodexSessionEventKind.RUNTIME_INCIDENT,
+                created_at=observed_at,
+                incident=incident,
+            ),
+            product_session_id=self._request.product_session_id,
+            process_generation=generation,
+            sequence=self._sequence,
+        )
+        assert isinstance(translated, RuntimeEvent)
+        await self._publish_observation(
+            replace(
+                translated,
+                event_id=self._event_id(self.binding.opaque_session_ref),
+                correlation_id=command_id,
+            )
+        )
         self._sequence += 1
         await self._publish_observation(
             RuntimeEvent(
@@ -831,37 +1495,24 @@ class CodexRuntimeSession:
                 runtime_id=CODEX_RUNTIME_ID,
                 product_session_id=self._request.product_session_id,
                 native_session_id=self.binding.opaque_session_ref,
-                process_generation=self._native.host.readiness.process_generation,
+                process_generation=generation,
                 sequence=self._sequence,
-                kind=RuntimeEventKind.RUNTIME_INCIDENT,
+                kind=RuntimeEventKind.TURN_UNKNOWN if unknown else RuntimeEventKind.TURN_FAILED,
                 delivery=DeliveryClass.MUST_PERSIST,
                 observed_at=observed_at,
                 correlation_id=command_id,
                 payload={
-                    "kind": TURN_SUBMISSION_FAILED_KIND,
-                    "state": FAILED_STATE,
-                    "safe_error": TURN_SUBMISSION_FAILED_ERROR,
+                    "status": UNKNOWN_STATE if unknown else FAILED_STATE,
+                    "safe_error": safe_error,
+                    "error_code": safe_error,
+                    "retryability": retryability.value,
                 },
             )
         )
-        self._sequence += 1
-        await self._publish_observation(
-            RuntimeEvent(
-                schema_version=RUNTIME_EVENT_SCHEMA_VERSION,
-                event_id=self._event_id(self.binding.opaque_session_ref),
-                runtime_id=CODEX_RUNTIME_ID,
-                product_session_id=self._request.product_session_id,
-                native_session_id=self.binding.opaque_session_ref,
-                process_generation=self._native.host.readiness.process_generation,
-                sequence=self._sequence,
-                kind=RuntimeEventKind.TURN_FAILED,
-                delivery=DeliveryClass.MUST_PERSIST,
-                observed_at=observed_at,
-                correlation_id=command_id,
-                payload={"status": FAILED_STATE, "safe_error": TURN_SUBMISSION_FAILED_ERROR},
-            )
-        )
-        self._active_command_id = ""
+        if unknown:
+            self._committed_commands.add(command_id)
+        else:
+            self._active_command_id = ""
 
     @_admitted
     async def steer(self, request: SteerRequest) -> CommandReceipt:
@@ -887,7 +1538,14 @@ class CodexRuntimeSession:
 
     @_admitted
     async def interrupt(self, request: InterruptRequest) -> CommandReceipt:
-        await self._native.host.attachment(self._native.session_id).turn.interrupt()
+        async with self._interrupt_lock:
+            host = self._native.host
+            # Root completion wakes one-shot cleanup. Keep the attachment until
+            # its whole tree is interrupted, not merely until the root receipt.
+            await host.attachment(self._native.session_id).turn.interrupt()
+            await NativeActivity(
+                host, self._native.session_id, known_roots=host.known_roots
+            ).interrupt(cleanup_background_processes=request.cleanup_background_processes)
         return CommandReceipt(request.command_id, CommandState.ACCEPTED)
 
     @_admitted
@@ -915,26 +1573,139 @@ class CodexRuntimeSession:
     @_admitted
     async def respond(self, response: RuntimeCallbackResponse) -> CommandReceipt:
         values = response.values if isinstance(response.values, Mapping) else {}
+        if response.decision == CallbackKind.DYNAMIC_TOOL.value:
+            payload = json_value(values)
+            resolved = await self._native.resolve_tool(
+                response.request_id,
+                CodexToolResponse(
+                    success=bool(values.get("ok")),
+                    content_items=(
+                        {"type": "inputText", "text": json.dumps(payload, ensure_ascii=False)},
+                    ),
+                ),
+            )
+            return CommandReceipt(
+                response.idempotency_key,
+                CommandState.APPLIED if resolved else CommandState.REJECTED,
+            )
         resolved = await self._native.resolve_hil(response.request_id, values)
         return CommandReceipt(
             response.idempotency_key,
             CommandState.APPLIED if resolved else CommandState.REJECTED,
         )
 
+    async def _switch_model_in_place(self, model: ModelIntent) -> bool:
+        async with self._admission_lock:
+            if (
+                not self._model_prepared
+                or self._optional_capabilities
+                or self._native.lease is None
+                or self._native.request.ephemeral
+                or model.transport.credential_ref
+                or self._active_operations != 1
+                or self._active_command_id
+                or any(not task.done() for task in self._tasks)
+                or not (self._native.history or any(self._native.usage.values()))
+            ):
+                return False
+            candidate = await self._project_model_connection(model, None)
+            if not _same_process_configuration(self._native.request, candidate):
+                return False
+            host = self._native.host
+            activity_revision = host.thread_activity_revision(self._native.session_id)
+            if host.suspend_blockers(self._native.session_id):
+                return False
+            activity = await NativeActivity(
+                host,
+                self._native.session_id,
+                known_roots=host.known_roots,
+            ).inspect()
+            if (
+                not activity.complete
+                or activity.blockers
+                or activity_revision != host.thread_activity_revision(self._native.session_id)
+            ):
+                return False
+            try:
+                await self._native.reopen(
+                    replace(candidate, resume_session_id=self._native.session_id)
+                )
+            except AppServerError as error:
+                if error.safe_error == CODEX_THREAD_RESTORE_FAILED:
+                    raise
+                logger.warning(
+                    "codex_same_process_model_switch_failed safe_error=%s",
+                    error.safe_error,
+                )
+                return False
+            return True
+
+    def _permission_candidate(self, intent: PermissionIntent) -> CodexSessionOpenRequest | None:
+        if self._permission.deny_read_roots != intent.deny_read_roots:
+            return None
+        current_policy = CODEX_PERMISSION_POLICIES[self._permission.mode]
+        requested_policy = CODEX_PERMISSION_POLICIES[intent.mode]
+        current_profile, current_arguments = local_socket_permissions(
+            current_policy.sandbox,
+            self._permission.local_sockets,
+            network_access=self._permission.network_access,
+            network_domains=self._permission.network_domains,
+            deny_read_roots=self._permission.deny_read_roots,
+        )
+        requested_profile, requested_arguments = local_socket_permissions(
+            requested_policy.sandbox,
+            intent.local_sockets,
+            network_access=intent.network_access,
+            network_domains=intent.network_domains,
+            deny_read_roots=intent.deny_read_roots,
+        )
+        if current_profile != requested_profile or current_arguments != requested_arguments:
+            return None
+        return replace(
+            self._native.request,
+            sandbox=requested_policy.sandbox,
+            approval_policy=requested_policy.approval_policy,
+            approval_reviewer=requested_policy.approval_reviewer,
+            writable_roots=intent.writable_roots,
+            network_access=intent.network_access,
+        )
+
+    def permission_update_scope(self, intent: PermissionIntent) -> PermissionUpdateScope:
+        candidate = self._permission_candidate(intent)
+        if candidate is not None and reviewer_only_update(self._native.request, candidate):
+            return PermissionUpdateScope.TURN
+        return PermissionUpdateScope.NEXT_TURN
+
     @_admitted
     async def reconfigure(self, request: RuntimeConfigurationIntent) -> AppliedState:
         if request.permission is not None:
-            current_policy = CODEX_PERMISSION_POLICIES[self._permission.mode]
             requested_policy = CODEX_PERMISSION_POLICIES[request.permission.mode]
-            if (
-                current_policy == requested_policy
-                and self._permission.local_sockets == request.permission.local_sockets
-                and self._permission.network_access == request.permission.network_access
-            ):
+            candidate = self._permission_candidate(request.permission)
+            if candidate is not None:
+                roots_only = (
+                    replace(
+                        request.permission,
+                        revision=self._permission.revision,
+                        writable_roots=self._permission.writable_roots,
+                    )
+                    == self._permission
+                )
+                if roots_only:
+                    await self._native.set_writable_roots(request.permission.writable_roots)
+                    applied = PermissionUpdate(
+                        PERMISSION_SCOPE_NEXT_TURN
+                        if self._active_command_id or self._native.active_turn_id
+                        else PERMISSION_SCOPE_SESSION
+                    )
+                else:
+                    applied = await self._native.update_permissions(candidate)
+                scope = applied.scope
+                if self._active_command_id and not applied.turn_id:
+                    scope = PERMISSION_SCOPE_NEXT_TURN
                 self._permission = request.permission
                 self._request = replace(self._request, permission=request.permission)
-                self._native.request = replace(
-                    self._native.request,
+                self._native_base_request = replace(
+                    self._native_base_request,
                     sandbox=requested_policy.sandbox,
                     approval_policy=requested_policy.approval_policy,
                     approval_reviewer=requested_policy.approval_reviewer,
@@ -943,14 +1714,31 @@ class CodexRuntimeSession:
                 )
                 return AppliedState(
                     requested_revision=request.revision,
-                    applied_revision=request.revision,
-                    state=CommandState.APPLIED,
-                    scope="session",
+                    applied_revision=(
+                        "" if scope == PERMISSION_SCOPE_NEXT_TURN else request.revision
+                    ),
+                    state=(
+                        CommandState.ACCEPTED
+                        if scope == PERMISSION_SCOPE_NEXT_TURN
+                        else CommandState.APPLIED
+                    ),
+                    scope=scope,
+                    safe_error=applied.safe_error,
+                    values={"turn_id": applied.turn_id},
                 )
         if request.model is not None:
             if _same_model_connection(self._model, request.model) and _same_thread_preferences(
                 self._model, request.model
             ):
+                self._model = request.model
+                self._request = replace(self._request, model=request.model)
+                return AppliedState(
+                    requested_revision=request.revision,
+                    applied_revision=request.revision,
+                    state=CommandState.APPLIED,
+                    scope="session",
+                )
+            if await self._switch_model_in_place(request.model):
                 self._model = request.model
                 self._request = replace(self._request, model=request.model)
                 return AppliedState(
@@ -983,33 +1771,31 @@ class CodexRuntimeSession:
     async def inventory(self, request: InventoryRequest) -> RuntimeInventory:
         values: dict[str, RuntimeValue] = {}
         revisions: list[str] = []
-        for kind in request.kinds:
-            if kind is InventoryKind.MODELS:
-                model_control = self._native.model_control
-                if model_control is None:
-                    raise RuntimeError("runtime_model_inventory_unavailable")
-                models = await model_control.list_models()
-                values[kind.value] = json_value(models)
-            elif kind is InventoryKind.SKILLS:
-                skill_control = self._native.skill_control
-                if skill_control is None:
-                    raise RuntimeError("runtime_skill_inventory_unavailable")
-                skills = await skill_control.list_skills(
-                    cwd=self._request.cwd,
-                    force_reload=request.refresh,
-                )
-                skills = session_skill_inventory(skills, self._skill_configurations)
-                values[kind.value] = json_value(skills)
-                revisions.append(skills.revision)
-            elif kind is InventoryKind.MCP:
-                mcp_control = self._native.mcp_control
-                if mcp_control is None:
-                    raise RuntimeError("runtime_mcp_inventory_unavailable")
-                mcp = await mcp_control.snapshot()
-                values[kind.value] = json_value(mcp)
-                revisions.append(mcp.revision)
-        revision = ":".join(part for part in revisions if part)
-        return RuntimeInventory(revision=revision, values=values)
+        async with self._native.inventory_control() as control:
+            for kind in request.kinds:
+                if kind is InventoryKind.MODELS:
+                    values[kind.value] = json_value(await control.model_control.list_models())
+                elif kind is InventoryKind.SKILLS:
+                    if request.refresh:
+                        async with control.mutation():
+                            skills = await control.skill_control.list_skills(
+                                cwd=self._request.cwd,
+                                force_reload=True,
+                            )
+                    else:
+                        skills = await control.skill_control.list_skills(cwd=self._request.cwd)
+                    skills = session_skill_inventory(skills, self._skill_configurations)
+                    values[kind.value] = json_value(skills)
+                    revisions.append(skills.revision)
+                elif kind is InventoryKind.MCP:
+                    mcp = await control.mcp_inventory(thread_id=self._native.session_id)
+                    values[kind.value] = json_value(mcp)
+                    revisions.append(mcp.revision)
+            return RuntimeInventory(
+                revision=":".join(part for part in revisions if part),
+                values=values,
+                host_identity=control.identity,
+            )
 
     @_admitted
     async def control(self, request: RuntimeControlRequest) -> AppliedState:
@@ -1059,7 +1845,13 @@ class CodexRuntimeSession:
             reload_result = await control.reload(
                 McpReloadRequest(server=str(values.get("server") or ""))
             )
-            payload = json_value(reload_result)
+            return AppliedState(
+                request.command_id,
+                request.command_id,
+                CommandState.ACCEPTED,
+                scope="runtime",
+                values=json_value(reload_result),
+            )
         elif kind is RuntimeControlKind.MCP_CALL_TOOL:
             arguments = values.get("arguments")
             meta = values.get("meta")
@@ -1112,4 +1904,12 @@ class CodexRuntimeSession:
         )
 
     async def detach(self) -> None:
-        await self._native.aclose()
+        async with self._interrupt_lock:
+            try:
+                await self._native.aclose()
+            finally:
+                try:
+                    if self._owns_pool:
+                        await self._host_pool.aclose()
+                finally:
+                    await self._events.close()

@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
 from scholarseed_runtime.contract.capability import CapabilitySet
 from scholarseed_runtime.contract.event import RuntimeValue
+from scholarseed_runtime.contract.resource import ResourceLease
+from scholarseed_runtime.contract.sandbox import SandboxRecovery, SandboxResources
+from scholarseed_runtime.contract.storage import RuntimeConfigurationStorage
 
-RUNTIME_ABI_VERSION = "2"
+RUNTIME_ABI_VERSION = "6"
 
 
 @dataclass(frozen=True)
 class ProviderConfiguration:
     runtime_id: str
     values: RuntimeValue = None
+    resource_lease: Callable[[], ResourceLease] | None = None
+    configuration_storage: RuntimeConfigurationStorage | None = None
+    sandbox_resources: SandboxResources | None = None
+    sandbox_recovery: SandboxRecovery | None = None
 
 
 class RuntimeStatus(str, Enum):

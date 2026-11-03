@@ -1,3 +1,14 @@
+import { captureSourceBaseline, SOURCE_BASELINE_ENV } from './source.ts'
+import { applicationResources } from './resources.ts'
+import {
+  drainProcessFamily,
+  WINDOWS_BACKEND_BOOTSTRAP,
+  FAMILY_START_BYTE,
+  type ProcessFamily,
+  type FamilyNative,
+} from './family.ts'
+import { desktopDirectoryMaintenance, desktopDirectoryWriter } from './writer'
+import { BackendControl } from './backend-control.ts'
 // backend.ts — spawn + supervise the Python agent backend (`service.cli.serve`).
 //
 // Single-launch full-stack: the Electron main process owns the FastAPI/uvicorn
@@ -7,53 +18,334 @@
 // In a packaged .app the python env + repo live under Resources/backend; in dev
 // we use the repo's own .venv. Everything stays on 127.0.0.1 (never exposed).
 
-import { randomBytes } from 'crypto'
-import { spawn, ChildProcess } from 'child_process'
+import { createHash, randomBytes, randomUUID } from 'crypto'
+import type { ChildProcess } from 'child_process'
+import { spawn } from 'child_process'
 import { createServer } from 'net'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'fs'
-import { homedir } from 'os'
-import { dirname, join, resolve } from 'path'
-import { app } from 'electron'
-import { browserEnvironment } from '../../runtime/browser.cjs'
-import { inspectPython, verifyDevelopmentPython } from '../../../../scripts/python.cjs'
-
 import {
-  AuthMode,
-  DesktopProductConfig,
+  accessSync,
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+} from 'fs'
+import { tmpdir } from 'os'
+import { dirname, join, resolve, toNamespacedPath } from 'path'
+import { app } from 'electron'
+import {
+  TOOL_RESOURCES_ENV,
+  TOOL_RESOURCES_REQUIRED_ENV,
+  TOOL_PRINCIPAL_ENV,
+  bundledToolResources,
+} from './toolchain.ts'
+import { browserEnvironment } from '../../runtime/browser.cjs'
+import {
+  inspectPythonAsync,
+  verifyDevelopmentPythonAsync,
+} from '../../../../scripts/shared/python.cjs'
+
+import type { AuthMode, DesktopProductConfig } from './product'
+import {
   parseDesktopProductConfig,
+  BrowserFeatureReadinessError,
+  validateBrowserFeatureReadiness,
   PRODUCT_CONFIG_FILE,
   resolveAccountBaseUrl,
-  SECURE_PACKAGED_FALLBACK
+  SECURE_PACKAGED_FALLBACK,
 } from './product'
 import {
+  captureSeedSource,
+  captureEnvironment,
   mergeExecutablePaths,
-  standardExecutablePath
+  pythonExecutableDirectories,
+  standardExecutablePath,
 } from './environment'
 import { LineTimestamper, RotatingFileLog } from './logfile'
 import type { BackendFailure } from './failure'
+import { redactDiagnosticError } from './redaction.ts'
 import { projectCodexRuntimeEnvironment } from './runtime'
-import { bundledCodex, resolveVendoredCodex } from '../../runtime/codex.cjs'
+import { bundledCodex, CACHE_VALIDATION, resolveVendoredCodex } from '../../runtime/codex.cjs'
 import {
-  APP_COMPONENTS_FILENAME,
-  COMPONENTS_DIRNAME,
   PYLIBS_DIRNAME,
-  PYTHON_KIND,
-  parseAppComponents,
-  resolveRuntimeStoreRoot,
-  storeComponentDirectory
+  bundledWindowsRuntime,
+  readRuntimeManifest,
+  runtimeStoreRoot as computeRuntimeStoreRoot,
 } from '../../runtime/components.cjs'
-import { skillPythonLauncherPath, writeSkillPythonLauncher } from '../../runtime/python.cjs'
-import { bundledTexlive, resolveVendoredTexlive } from '../../runtime/texlive.cjs'
 import {
-  ensureComponents,
-  persistComponentLog,
-  sweepUnreferencedComponents
-} from './components'
-import type { ProvisionedComponents } from './components'
-import { isFirstRun, writeStartupMarker } from './startupmarker'
+  SCHOLARSEED_HOME_ENV,
+  SCHOLARSEED_DEFAULT_WORKSPACE_ENV,
+  desktopStorage,
+  desktopHome,
+} from './storage'
+import {
+  pythonExecutablePath,
+  skillPythonLauncherPath,
+  writeSkillPythonLauncher,
+} from '../../runtime/python.cjs'
+import {
+  bundledTexlive,
+  resolveVendoredTexlive,
+  vendoredTexliveLocation,
+  texliveStateRoot,
+  reviewedTexliveVersion,
+  reviewedTexliveArchive,
+  prepareTexliveEnvironment,
+  rebuildTexliveEnvironment,
+  texliveEnvironmentCurrent,
+  type TexliveEnvironmentOptions,
+  texliveExecutionResources,
+} from '../../runtime/texlive.cjs'
+import { isFirstRun, resolveStartupBudgetMs, writeStartupMarker } from './startupmarker'
 import { clientVersion } from './version'
+import { createAgentTransport, type AgentTransport } from './agenttransport'
+import type { StorageLaunchProjection } from './vaultstorage'
+import { stopChildProcess } from './subprocess'
+import type { StorageSelection } from './storage'
+import type { SeedSource } from './environment'
+import { observeStorageBindings } from './storagebinding'
+import type { StorageBinding, StorageBindingNative } from './storagebinding'
+
+const SKILL_PYTHON_PROBE_MODULE = 'service.platform.executables'
+// Includes cold admission of the probe interpreter plus Serve's 60s launcher
+// budget (service.platform.executables); cancellation still stops the family.
+const SKILL_PYTHON_PROBE_TIMEOUT_MS = 90_000
+const SKILL_PYTHON_DIAGNOSTIC_BYTES = 8_192
+const SKILL_PYTHON_DIAGNOSTIC_PREFIX = 'scholarseed-skill-probe-'
+const SKILL_PYTHON_DIAGNOSTIC_FILE = 'stderr.log'
+const SKILL_PYTHON_DIAGNOSTIC_MODE = 0o600
+const BACKEND_STARTUP_DIAGNOSTIC = '[backend-startup]'
+const BACKEND_STARTUP_PHASE = Object.freeze({
+  port: 'port',
+  paths: 'paths',
+  source: 'source',
+  pythonEntry: 'python-entry',
+  runtimeEntries: 'runtime-entries',
+  toolchain: 'toolchain-resources',
+  pythonIdentity: 'python-identity',
+  skillLauncher: 'skill-launcher',
+  workspace: 'workspace',
+  environment: 'environment',
+  log: 'backend-log',
+  agent: 'agent-transport',
+  browser: 'browser-environment',
+  texlive: 'texlive-environment',
+  control: 'control-listen',
+  spawn: 'spawn',
+  health: 'health',
+})
+
+function openProcessFamily(pid: number): ProcessFamily {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- Packaged native primitive.
+  return (require('./lease.node') as FamilyNative).openFamily(pid)
+}
+
+export function probeSkillPython(
+  python: string,
+  directory: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+  log: LogSink = () => {}
+): Promise<boolean> {
+  const started = Date.now()
+  const report = (event: string, detail: Record<string, unknown> = {}): void => {
+    log(`[shell] Skill Python probe ${JSON.stringify({ event, ...detail })}\n`)
+  }
+  const reportError = (event: string, error: unknown): void => {
+    const detail = error as (NodeJS.ErrnoException & { systemCode?: number }) | null
+    report(event, {
+      error: String(error).slice(-SKILL_PYTHON_DIAGNOSTIC_BYTES),
+      errorCode: detail?.code,
+      systemCode: detail?.systemCode,
+      errno: detail?.errno,
+      syscall: detail?.syscall,
+    })
+  }
+  if (signal.aborted) {
+    report('cancelled-before-spawn')
+    return Promise.resolve(false)
+  }
+  return new Promise((resolve, reject) => {
+    let diagnosticDirectory: string | undefined
+    let diagnosticDescriptor: number | undefined
+    const finishDiagnostics = (): void => {
+      if (diagnosticDescriptor !== undefined) {
+        try {
+          const size = fstatSync(diagnosticDescriptor).size
+          const buffer = Buffer.alloc(Math.min(size, SKILL_PYTHON_DIAGNOSTIC_BYTES))
+          const read = readSync(
+            diagnosticDescriptor,
+            buffer,
+            0,
+            buffer.length,
+            Math.max(0, size - buffer.length)
+          )
+          report('stderr', {
+            stderr: buffer.subarray(0, read).toString('utf8'),
+            stderrBytes: size,
+            stderrTruncated: size > buffer.length,
+          })
+        } catch (error) {
+          reportError('diagnostic-read-error', error)
+        } finally {
+          try {
+            closeSync(diagnosticDescriptor)
+          } catch (error) {
+            reportError('diagnostic-close-error', error)
+          }
+          diagnosticDescriptor = undefined
+        }
+      }
+      if (diagnosticDirectory !== undefined) {
+        try {
+          rmSync(diagnosticDirectory, { recursive: true, force: true })
+        } catch (error) {
+          reportError('diagnostic-cleanup-error', error)
+        }
+        diagnosticDirectory = undefined
+      }
+    }
+    try {
+      diagnosticDirectory = mkdtempSync(join(tmpdir(), SKILL_PYTHON_DIAGNOSTIC_PREFIX))
+      diagnosticDescriptor = openSync(
+        join(diagnosticDirectory, SKILL_PYTHON_DIAGNOSTIC_FILE),
+        'wx+',
+        SKILL_PYTHON_DIAGNOSTIC_MODE
+      )
+    } catch (error) {
+      reportError('diagnostic-capture-error', error)
+      finishDiagnostics()
+    }
+    const windows = process.platform === 'win32'
+    const args = windows
+      ? ['-c', WINDOWS_BACKEND_BOOTSTRAP, SKILL_PYTHON_PROBE_MODULE, directory]
+      : ['-m', SKILL_PYTHON_PROBE_MODULE, directory]
+    report('started', {
+      python: pythonExecutablePath(python),
+      directory,
+      cwd,
+      timeoutMs: SKILL_PYTHON_PROBE_TIMEOUT_MS,
+    })
+    let probe: ChildProcess
+    try {
+      probe = spawn(pythonExecutablePath(python), args, {
+        cwd,
+        env,
+        windowsHide: true,
+        detached: !windows,
+        stdio: ['pipe', 'ignore', diagnosticDescriptor ?? 'ignore'],
+      })
+    } catch (error) {
+      reportError('spawn-error', error)
+      finishDiagnostics()
+      reject(error)
+      return
+    }
+    report('spawn-returned', { pid: probe.pid })
+    probe.once('spawn', () => report('spawned', { pid: probe.pid }))
+    let family: ProcessFamily | null = null
+    let failed = false
+    let cleanupError: unknown = null
+    const stop = (): void => {
+      failed = true
+      try {
+        if (family) family.terminate()
+        else if (probe.pid !== undefined) {
+          if (windows) probe.kill('SIGKILL')
+          else process.kill(-probe.pid, 'SIGKILL')
+        }
+      } catch (error) {
+        reportError('termination-error', error)
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') cleanupError = error
+        probe.kill('SIGKILL')
+      }
+    }
+    const timer = setTimeout(() => {
+      report('timed-out', { elapsedMs: Date.now() - started })
+      stop()
+    }, SKILL_PYTHON_PROBE_TIMEOUT_MS)
+    const abort = (): void => {
+      report('cancelled', { elapsedMs: Date.now() - started })
+      stop()
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    probe.stdin!.on('error', (error) => {
+      reportError('stdin-error', error)
+      stop()
+    })
+    probe.once('error', (error) => {
+      reportError('spawn-error', error)
+      failed = true
+    })
+    probe.once('close', (code, exitSignal) => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      report('exited', { code, signal: exitSignal, elapsedMs: Date.now() - started })
+      const drained = family ? drainProcessFamily(family) : Promise.resolve(true)
+      void drained.then(
+        (clean) => {
+          finishDiagnostics()
+          const ready = !failed && code === 0 && clean
+          report('finished', {
+            ready,
+            code,
+            signal: exitSignal,
+            familyClean: clean,
+            elapsedMs: Date.now() - started,
+          })
+          if (cleanupError) reject(cleanupError)
+          else resolve(ready)
+        },
+        (error: unknown) => {
+          reportError('family-drain-error', error)
+          finishDiagnostics()
+          reject(error)
+        }
+      )
+    })
+    if (windows && probe.pid !== undefined) {
+      try {
+        family = openProcessFamily(probe.pid)
+        report('family-attached', { pid: probe.pid })
+        probe.stdin!.end(FAMILY_START_BYTE)
+      } catch (error) {
+        reportError('family-attach-error', error)
+        stop()
+        probe.stdin!.destroy()
+      }
+    } else probe.stdin!.end()
+  })
+}
+
+export interface BackendLaunch {
+  readonly storage: Readonly<StorageSelection>
+  readonly bindings: readonly StorageBinding[] | null
+  readonly cwd: string
+  readonly seed: Readonly<SeedSource>
+  readonly environment: Readonly<Record<string, string>>
+}
+
+// Environment can contain credentials. Keep it out of enumerable handles and diagnostics.
+const backendFamilies = new WeakMap<BackendHandle, ProcessFamily>()
+const backendLaunches = new WeakMap<ChildProcess, Readonly<BackendLaunch>>()
+const backendDiagnosticWriters = new WeakMap<BackendHandle, (line: string) => boolean>()
+let activeBackendLaunch: Readonly<BackendLaunch> | null = null
+/** Exact spawned child only; this observation grants no data or activation authority. */
+export function backendLaunch(handle: BackendHandle): Readonly<BackendLaunch> | null {
+  return handle.proc ? (backendLaunches.get(handle.proc) ?? null) : null
+}
+
+export function writeBackendDiagnostic(handle: BackendHandle | null, line: string): boolean {
+  return handle ? (backendDiagnosticWriters.get(handle)?.(line) ?? false) : false
+}
 
 export interface BackendHandle {
+  python: string | null
   port: number
   baseUrl: string
   proc: ChildProcess | null
@@ -61,13 +353,30 @@ export interface BackendHandle {
   exited: Promise<BackendExit>
   error: BackendFailure | null
   stopping: boolean
+  agentTransport: AgentTransport | null
+  storageLaunch: StorageLaunchProjection | null
 }
 
 export type LogSink = (line: string) => void
 
 export interface BackendStartOptions {
+  toolPrincipal?: string
+  accountBaseUrl?: string
   port?: number
   testHarness?: boolean
+  /**
+   * 启动诊断的持久化 sink（主进程注入 window.log）。pushLog 只进 stdout/渲染层 IPC，
+   * 打包版无控制台即全丢 —— 真机 healthTimeout 只剩一行失败记录的根因。
+   */
+  lifecycleLog?: LogSink
+  browserList?: () => unknown
+  browserListAuthority?: () => number | null
+  browserPrepareRead?: NonNullable<Parameters<typeof createAgentTransport>[1]>
+  browserReadActions?: NonNullable<Parameters<typeof createAgentTransport>[2]>
+  browserNavigateActions?: NonNullable<Parameters<typeof createAgentTransport>[4]>
+  browserActionActions?: NonNullable<Parameters<typeof createAgentTransport>[5]>
+  browserHistoryActions?: NonNullable<Parameters<typeof createAgentTransport>[6]>
+  browserSearchAction?: NonNullable<Parameters<typeof createAgentTransport>[7]>
 }
 
 function pickPort(): Promise<number> {
@@ -86,15 +395,10 @@ function pickPort(): Promise<number> {
 interface BackendPaths {
   python: string
   cwd: string
-  rendererDist: string | null
   hookBin: string | null
   skillBin: string
-  /**
-   * win32 组件化布局（proposal 108 §7）：包内没有松散 python/texlive 树，解释器与
-   * TeX 引擎在启动前由组件存储 provision 到 `<SCHOLARSEED_HOME>/runtime/`。此字段
-   * 非空时 python 指向组件仓库的期望路径，`startBackend` 必须先 ensureComponents。
-   */
-  componentProvision?: { backendDirectory: string; storeRoot: string }
+  toolResources?: string
+  windowsRuntime?: ReturnType<typeof bundledWindowsRuntime>
 }
 
 // Prototype fallback for the packaged app on the build machine: if no relocatable
@@ -107,44 +411,33 @@ const LOOPBACK_HOST = '127.0.0.1'
 const CONFIG_FILE = 'config.json'
 const CONFIG_RESOURCE_DIR = 'defaults'
 // Product state belongs to Serve; Runtime contracts do not resolve user paths.
-const SCHOLARSEED_HOME_DIRNAME = '.scholarseed'
-const SCHOLARSEED_HOME_ENV = 'SCHOLARSEED_HOME'
+// home 名/env/默认工作区名由 ./storage 单一持有（proposal 112），此处不再重复定义。
 // 统一家目录切换前, 打包版桌面端把状态落在 Electron userData/.veda; 迁移逻辑据此定位旧根。
-const LEGACY_VEDA_HOME_DIRNAME = '.veda'
 const SCHOLARSEED_PROJECT_DIRNAME = '.scholarseed'
 const SCHOLARSEED_PROJECT_DIRNAME_ENV = 'SCHOLARSEED_PROJECT_DIRNAME'
+const SANDBOX_RECOVERY_HELPER_ENV = 'SCHOLARSEED_SANDBOX_RECOVERY_HELPER'
+const SANDBOX_RECOVERY_HELPER_PARTS = ['handoff', 'handoff.exe']
 const SCHOLARSEED_CONFIG_SEED_ENV = 'SCHOLARSEED_CONFIG_SEED_PATH'
 const SCHOLARSEED_PRODUCT_MANIFEST_ENV = 'SCHOLARSEED_PRODUCT_MANIFEST'
-const SCHOLARSEED_DEFAULT_WORKSPACE_ENV = 'SCHOLARSEED_DEFAULT_WORKSPACE'
 const SCHOLARSEED_DESKTOP_ENV = 'SCHOLARSEED_DESKTOP'
 const SCHOLARSEED_APP_VERSION_ENV = 'SCHOLARSEED_APP_VERSION'
 const SCHOLARSEED_LOG_LEVEL_ENV = 'SCHOLARSEED_LOG_LEVEL'
 const DESKTOP_DEFAULT_LOG_LEVEL = 'debug'
-const PACKAGED_DEFAULT_WORKSPACE_NAME = 'ScholarSeed'
-// dev 启动 (electron-vite dev) 时后端 cwd 是仓库根, 若不注入默认工作区, serve 的
-// resolve_workspace_root 会兜底成 cwd —— 整个仓库被当成 project workspace (仓库根下
-// 生成 .scholarseed、内容库 seed 整棵仓库树)。dev 默认隔离到仓库内 tmp/ (scratch 约定,
-// 已 gitignore), 既不污染仓库本体也不碰打包版的真实用户数据。
-const DEV_DEFAULT_WORKSPACE_SUBPATH = ['tmp', 'desktop-workspace'] as const
-// Steady-state budget: the /api/healthz readiness contract (see HEALTH_PROBE_TIMEOUT_MS)
-// plus spawn latency, with margin.
-const HEALTH_TIMEOUT_MS = 45_000
-// First launch of a build (install or update): Windows Defender's on-access scan reads the
-// bundled Python environment file by file on first exec, so a *live* backend can need minutes
-// before it binds. A dead backend still fails fast — the health wait races process exit, and
-// the marker (see startupmarker.ts) keeps this budget off steady-state launches.
-const HEALTH_TIMEOUT_FIRST_RUN_MS = 300_000
 // /api/healthz includes the Codex version and login preflight. Each vendor command has a
 // 10-second budget and the two commands run sequentially, so a desktop probe must outlive
 // that readiness contract. A shorter HTTP timeout repeatedly cancels a healthy cold start.
 const HEALTH_PROBE_TIMEOUT_MS = 25_000
+const BACKEND_HEALTH_PATH = '/api/healthz/backend'
+const RUNTIME_HEALTH_PATH = '/api/healthz'
 // 后端在 spawn 后约 2 秒才开始监听, 所以第一次探活必然被 ECONNREFUSED 立即拒绝。
 // 固定长间隔会把这次必然失败变成一整段白等 —— 用短起点 + 退避封顶: 就绪瞬间就能被
 // 抓到, 长时间没起来时也不会一直高频重试。
 const HEALTH_PROBE_INITIAL_INTERVAL_MS = 150
 const HEALTH_PROBE_MAX_INTERVAL_MS = 1_000
 const HEALTH_PROBE_BACKOFF_FACTOR = 2
-const FORCE_KILL_DELAY_MS = 4_000
+const SHUTDOWN_SECONDS = 30
+const SHUTDOWN_FINALIZATION_MS = 5_000
+const SHUTDOWN_DEADLINE_MS = SHUTDOWN_SECONDS * 1_000 + SHUTDOWN_FINALIZATION_MS
 const BACKEND_STARTUP_DIAGNOSTIC_CHARS = 1200
 const BACKEND_LOG_FILE = 'backend.log'
 // 后端日志必须落在产品家目录的 logs/ 下, 而不是 Electron 的 app.getPath('logs')
@@ -174,7 +467,10 @@ const SCHOLARSEED_BRIDGE_DIR_ENV = 'SCHOLARSEED_BRIDGE_DIR'
  * 给渲染层——暴露了就等于任何拿到令牌的本机进程都能换到用户文件的真实路径。
  */
 const SCHOLARSEED_HOST_PROCESS_KEY_ENV = 'SCHOLARSEED_HOST_PROCESS_KEY'
+const SCHOLARSEED_AGENT_BROWSER_PORT_ENV = 'SCHOLARSEED_AGENT_BROWSER_PORT'
+const SCHOLARSEED_AGENT_BROWSER_KEY_ENV = 'SCHOLARSEED_AGENT_BROWSER_KEY'
 const WINDOWS_PYTHON = ['python', 'python.exe'] as const
+const WINDOWS_TEXLIVE_ENTRY = 'xelatex.exe'
 const POSIX_PYTHON = ['python', 'bin', 'python3'] as const
 const WINDOWS_VENV_PYTHON = ['.venv', 'Scripts', 'python.exe'] as const
 const POSIX_VENV_PYTHON = ['.venv', 'bin', 'python'] as const
@@ -190,6 +486,13 @@ export function backendHostProcessKey(): string {
 // 通过 { ...process.env } 继承, 这里只用来在启动报告里把它显式说出来 —— 缺了它的表现
 // 是「登录成功后立刻 401」, 不值得靠猜。
 const SCHOLARSEED_ACCOUNT_BASE_URL_ENV = 'SCHOLARSEED_ACCOUNT_BASE_URL'
+
+export function resolveStartupAccountBase(log: LogSink): string {
+  return resolveAccountBaseUrl(
+    process.env[SCHOLARSEED_ACCOUNT_BASE_URL_ENV] || '',
+    resolveProductConfig(log).accountBaseUrl
+  )
+}
 // 桌面产品线收敛（2026-09-09 定案）：未登录可用是产品默认，serve 恒以 off 拉起；
 // 登录是可选增强（有 account_base_url 即可浏览器回跳登录）。serve 的启动期 auth-mode
 // Runtime mode switching belongs to standalone deployments, not Desktop.
@@ -203,60 +506,58 @@ export interface BackendExit {
   signal: NodeJS.Signals | null
 }
 
-function resolveBackendPaths(): BackendPaths {
+async function resolveBackendPaths(): Promise<BackendPaths> {
   const bundledPython = process.platform === 'win32' ? WINDOWS_PYTHON : POSIX_PYTHON
   const venvPython = process.platform === 'win32' ? WINDOWS_VENV_PYTHON : POSIX_VENV_PYTHON
   if (app.isPackaged) {
     // Bundled relocatable Python lives under resources/backend/python.
     // The scholarseed package is pip-installed into it, so cwd can be the bundle dir.
-    const bundled = join(process.resourcesPath, BACKEND_DIR)
+    const bundled = join(applicationResources(app), BACKEND_DIR)
     const bundledPy = join(bundled, ...bundledPython)
     const hookBin = join(bundled, HOOK_BIN_DIR)
     const bundledNode = join(hookBin, NODE_SHIM)
-    // win32 组件化载荷：backend/components/app-components.json 存在即走组件仓库寻址；
-    // SCHOLARSEED_PYTHON 显式覆盖时保持原语义（不 provision，直接用它）。
-    const manifestPath = join(bundled, COMPONENTS_DIRNAME, APP_COMPONENTS_FILENAME)
-    if (process.platform === 'win32' && !process.env[SCHOLARSEED_PYTHON_ENV] && existsSync(manifestPath)) {
-      const manifest = parseAppComponents(readFileSync(manifestPath, 'utf8'))
-      if (manifest) {
-        const storeRoot = resolveRuntimeStoreRoot(process.env, desktopHome(), process.platform)
-        const pythonComponent = manifest.components.find((component) => component.kind === PYTHON_KIND)
-        if (pythonComponent) {
-          const componentRoot = storeComponentDirectory(
-            storeRoot, pythonComponent.kind, manifest.target, pythonComponent.contentId)
-          return {
-            python: join(componentRoot, ...pythonComponent.entry.split('/')),
-            cwd: process.env.SCHOLARSEED_REPO || bundled,
-            rendererDist: process.env.SCHOLARSEED_RENDERER_DIST || join(process.resourcesPath, 'renderer'),
-            hookBin: existsSync(bundledNode) ? hookBin : null,
-            skillBin: hookBin,
-            componentProvision: { backendDirectory: bundled, storeRoot }
-          }
-        }
+    if (process.platform === 'win32') {
+      const windowsRuntime = bundledWindowsRuntime(dirname(applicationResources(app)))
+      const python = process.env[SCHOLARSEED_PYTHON_ENV] || windowsRuntime.python
+      return {
+        python,
+        cwd: process.env.SCHOLARSEED_REPO || bundled,
+        hookBin: existsSync(bundledNode) ? hookBin : null,
+        skillBin: hookBin,
+        windowsRuntime,
+        toolResources:
+          !process.env[SCHOLARSEED_PYTHON_ENV] && !process.env.SCHOLARSEED_REPO
+            ? bundledToolResources(
+                process.platform,
+                hookBin,
+                python,
+                join(bundled, PYLIBS_DIRNAME),
+                windowsRuntime
+              )
+            : undefined,
       }
-      // 清单缺失/非法不在这里静默兜底：落到下方松散树检查（必然 miss）→ REPO_FALLBACK →
-      // 打包机上不存在 → inspectPython/existsSync 用明确错误暴露构建缺陷。
     }
     const hasBundled = existsSync(bundledPy)
     return {
-      python: process.env[SCHOLARSEED_PYTHON_ENV] || (hasBundled ? bundledPy : join(REPO_FALLBACK, ...venvPython)),
+      python:
+        process.env[SCHOLARSEED_PYTHON_ENV] ||
+        (hasBundled ? bundledPy : join(REPO_FALLBACK, ...venvPython)),
       cwd: process.env.SCHOLARSEED_REPO || (hasBundled ? bundled : REPO_FALLBACK),
-      rendererDist: process.env.SCHOLARSEED_RENDERER_DIST || join(process.resourcesPath, 'renderer'),
       hookBin: existsSync(bundledNode) ? hookBin : null,
-      skillBin: hookBin
+      skillBin: hookBin,
+      toolResources:
+        hasBundled && !process.env[SCHOLARSEED_PYTHON_ENV] && !process.env.SCHOLARSEED_REPO
+          ? bundledToolResources(process.platform, hookBin, bundledPy)
+          : undefined,
     }
   }
   // dev: app path is apps/desktop → repo root is two levels up
   const repoRoot = process.env.SCHOLARSEED_REPO || resolve(app.getAppPath(), '..', '..')
-  // when there is no Vite dev server (shoot / --say / `electron .`), have the
-  // backend serve the built renderer so it loads same-origin (live, CORS-free)
-  const built = join(app.getAppPath(), 'out', 'renderer')
   return {
     python: process.env[SCHOLARSEED_PYTHON_ENV] || join(repoRoot, ...venvPython),
     cwd: repoRoot,
-    rendererDist: process.env['ELECTRON_RENDERER_URL'] ? null : built,
     hookBin: null,
-    skillBin: join(repoRoot, ...DEV_SKILL_BIN_DIRECTORY)
+    skillBin: join(repoRoot, ...DEV_SKILL_BIN_DIRECTORY),
   }
 }
 
@@ -265,23 +566,43 @@ interface ResolvedProductConfig {
   source: string | null
 }
 
+let startupProductConfig: ResolvedProductConfig | null = null
+
 function readProductConfig(log: LogSink): ResolvedProductConfig {
+  if (!startupProductConfig) {
+    const resolved = loadProductConfig(log)
+    startupProductConfig = Object.freeze({
+      ...resolved,
+      config: Object.freeze({
+        ...resolved.config,
+        features: Object.freeze({ ...resolved.config.features }),
+      }),
+    })
+  }
+  return startupProductConfig
+}
+
+function loadProductConfig(log: LogSink): ResolvedProductConfig {
   const candidates = app.isPackaged
-    ? [join(process.resourcesPath, PRODUCT_CONFIG_FILE)]
+    ? [join(applicationResources(app), PRODUCT_CONFIG_FILE)]
     : [
         join(app.getAppPath(), 'resources', PRODUCT_CONFIG_FILE),
-        join(REPO_FALLBACK, 'apps', 'desktop', 'resources', PRODUCT_CONFIG_FILE)
+        join(REPO_FALLBACK, 'apps', 'desktop', 'resources', PRODUCT_CONFIG_FILE),
       ]
   const source = candidates.find((candidate) => existsSync(candidate))
   if (!source) {
-    log(`[shell] ERROR desktop product config missing: ${candidates.join(', ')}; authentication fails closed\n`)
+    log(
+      `[shell] ERROR desktop product config missing: ${candidates.join(', ')}; authentication fails closed\n`
+    )
     return { config: SECURE_PACKAGED_FALLBACK, source: null }
   }
   try {
     const raw = JSON.parse(readFileSync(source, 'utf-8')) as unknown
     return { config: parseDesktopProductConfig(raw), source }
   } catch (error) {
-    log(`[shell] ERROR invalid desktop product config: ${String(error)}; authentication fails closed\n`)
+    log(
+      `[shell] ERROR invalid desktop product config: ${String(error)}; authentication fails closed\n`
+    )
     return { config: SECURE_PACKAGED_FALLBACK, source }
   }
 }
@@ -294,97 +615,46 @@ function resolvePackagedConfigSeedPath(log: LogSink): string | null {
   // Development Serve loads its own settings/default.json. The frozen seed is
   // produced by packaging and is only used for installation's first-run setup.
   if (!app.isPackaged) return null
-  const candidates = [join(process.resourcesPath, CONFIG_RESOURCE_DIR, CONFIG_FILE)]
+  const candidates = [join(applicationResources(app), CONFIG_RESOURCE_DIR, CONFIG_FILE)]
   const source = candidates.find((candidate) => existsSync(candidate))
   if (source) return source
   log(`[shell] WARN desktop default config missing: ${candidates.join(', ')}\n`)
   return null
 }
 
-function mergeLegacyDirectory(source: string, target: string): number {
-  mkdirSync(target, { recursive: true })
-  let moved = 0
-  for (const entry of readdirSync(source, { withFileTypes: true })) {
-    const from = join(source, entry.name)
-    const to = join(target, entry.name)
-    if (entry.isDirectory() && existsSync(to) && lstatSync(to).isDirectory()) {
-      moved += mergeLegacyDirectory(from, to)
-      continue
-    }
-    if (existsSync(to)) rmSync(to, { recursive: true, force: true })
-    mkdirSync(dirname(to), { recursive: true })
-    renameSync(from, to)
-    moved += 1
-  }
-  return moved
-}
-
-function migrateLegacyDesktopHome(log: LogSink, activeHome: string): void {
-  // Packaged desktop versions before the unified-home cutover persisted under
-  // Electron userData/.veda. CLI and every current desktop launch now share
-  // ~/.scholarseed. On cutover, merge the whole old root and let legacy entries replace
-  // same-named canonical entries; the old root is removed only after the merge.
-  const legacyHome = join(app.getPath('userData'), LEGACY_VEDA_HOME_DIRNAME)
-  if (!existsSync(legacyHome) || resolve(legacyHome) === resolve(activeHome)) return
-  try {
-    if (!existsSync(activeHome)) {
-      mkdirSync(dirname(activeHome), { recursive: true })
-      renameSync(legacyHome, activeHome)
-      log(`[shell] migrated legacy desktop home ${legacyHome} → ${activeHome}\n`)
-      return
-    }
-    const moved = mergeLegacyDirectory(legacyHome, activeHome)
-    rmSync(legacyHome, { recursive: true, force: true })
-    log(`[shell] merged ${moved} legacy desktop entries into ${activeHome} and removed ${legacyHome}\n`)
-  } catch (error) {
-    log(`[shell] WARN legacy desktop-home migration skipped: ${String(error)}\n`)
-  }
-}
-
 function configureDesktopEnvironment(log: LogSink): void {
-  const hasExplicitHome = Boolean(process.env[SCHOLARSEED_HOME_ENV])
-  if (!process.env[SCHOLARSEED_DEFAULT_WORKSPACE_ENV]) {
-    if (app.isPackaged) {
-      const packagedDefault = join(app.getPath('documents'), PACKAGED_DEFAULT_WORKSPACE_NAME)
-      process.env[SCHOLARSEED_DEFAULT_WORKSPACE_ENV] = packagedDefault
-      mkdirSync(packagedDefault, { recursive: true })
-      log(`[shell] desktop workspace=${packagedDefault} (packaged first-launch default)\n`)
-    } else {
-      const repoRoot = process.env.SCHOLARSEED_REPO || REPO_FALLBACK
-      const devDefault = join(repoRoot, ...DEV_DEFAULT_WORKSPACE_SUBPATH)
-      process.env[SCHOLARSEED_DEFAULT_WORKSPACE_ENV] = devDefault
-      mkdirSync(devDefault, { recursive: true })
-      log(`[shell] desktop workspace=${devDefault} (dev default, not launch dir)\n`)
-    }
-  }
-  const activeHome = process.env[SCHOLARSEED_HOME_ENV] || join(homedir(), SCHOLARSEED_HOME_DIRNAME)
+  const storage = desktopStorage()
+  const activeHome = storage.home
   process.env[SCHOLARSEED_HOME_ENV] = activeHome
+  process.env[SCHOLARSEED_DEFAULT_WORKSPACE_ENV] = storage.workspace
+  if (storage.createWorkspace) {
+    const writer = desktopDirectoryWriter(storage.workspace)
+    writer.close()
+  }
+  log(`[shell] desktop workspace=${storage.workspace} (startup selection)\n`)
   // Per-project state belongs to Serve and remains a single directory name.
   if (!process.env[SCHOLARSEED_PROJECT_DIRNAME_ENV]) {
     process.env[SCHOLARSEED_PROJECT_DIRNAME_ENV] = SCHOLARSEED_PROJECT_DIRNAME
   }
-  if (!hasExplicitHome && app.isPackaged) migrateLegacyDesktopHome(log, activeHome)
-  log(`[shell] desktop home=${activeHome} project-state=${process.env[SCHOLARSEED_PROJECT_DIRNAME_ENV]}\n`)
+  log(
+    `[shell] desktop home=${activeHome} project-state=${process.env[SCHOLARSEED_PROJECT_DIRNAME_ENV]}\n`
+  )
 }
 
-/** 产品家目录 (~/.scholarseed, $SCHOLARSEED_HOME 覆盖) —— 桌面端一切落盘状态的唯一解析口。 */
-export function desktopHome(): string {
-  return process.env[SCHOLARSEED_HOME_ENV] || join(homedir(), SCHOLARSEED_HOME_DIRNAME)
+/** Runtime root shared by the storage overview and writable tool caches. */
+export function runtimeStoreRoot(): string {
+  return app.isPackaged && process.platform === 'win32'
+    ? join(dirname(dirname(applicationResources(app))), 'runtime')
+    : computeRuntimeStoreRoot(desktopHome())
 }
 
-/**
- * 组件 store 根（只读出口，供设置页展示）。env 覆盖形状非法时解析口会抛错——这里收成
- * null 让界面如实显示「不可用」，而不是把异常甩给渲染层。
- */
-export function runtimeStoreRoot(): string | null {
-  try {
-    return resolveRuntimeStoreRoot(process.env, desktopHome(), process.platform)
-  } catch {
-    return null
-  }
-}
-
-async function waitForHealth(baseUrl: string, timeoutMs: number, log: LogSink): Promise<boolean> {
+export async function waitForHealth(
+  baseUrl: string,
+  timeoutMs: number,
+  log: LogSink,
+  mode: 'managed' | 'attach' = 'managed'
+): Promise<boolean> {
+  const browserEnabled = resolveProductConfig(log).features.browser
   const deadline = Date.now() + timeoutMs
   let attempt = 0
   let interval = HEALTH_PROBE_INITIAL_INTERVAL_MS
@@ -393,16 +663,27 @@ async function waitForHealth(baseUrl: string, timeoutMs: number, log: LogSink): 
     try {
       const ctl = new AbortController()
       const t = setTimeout(() => ctl.abort(), HEALTH_PROBE_TIMEOUT_MS)
-      const r = await fetch(baseUrl + '/api/healthz', { signal: ctl.signal })
+      const r = await fetch(
+        baseUrl + (mode === 'managed' ? BACKEND_HEALTH_PATH : RUNTIME_HEALTH_PATH),
+        {
+          signal: ctl.signal,
+        }
+      )
       clearTimeout(t)
       if (r.ok) {
         const j = (await r.json()) as { ok?: boolean }
         if (j.ok) {
+          const remote = validateBrowserFeatureReadiness(j, browserEnabled, mode)
+          if (remote === null)
+            log(
+              '[shell] legacy attach browser projection missing; remote unknown, local browser disabled\n'
+            )
           log(`[shell] backend healthy after ${attempt} probe(s)\n`)
           return true
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof BrowserFeatureReadinessError) throw error
       /* not up yet */
     }
     await new Promise((res) => setTimeout(res, interval))
@@ -411,9 +692,75 @@ async function waitForHealth(baseUrl: string, timeoutMs: number, log: LogSink): 
   return false
 }
 
+const backendDrains = new WeakMap<BackendHandle, Promise<void>>()
+const backendControls = new WeakMap<BackendHandle, BackendControl>()
+const backendStopLogs = new WeakMap<BackendHandle, LogSink>()
+const backendPreparationStops = new WeakMap<BackendHandle, AbortController>()
+export enum BackendStopKind {
+  Clean = 'clean',
+  FailedExit = 'failed-exit',
+  NotStarted = 'not-started',
+}
+
+export interface BackendStopResult {
+  readonly kind: BackendStopKind
+  readonly code: number | null
+  readonly signal: NodeJS.Signals | null
+}
+
+const NO_BACKEND_STOP: BackendStopResult = Object.freeze({
+  kind: BackendStopKind.NotStarted,
+  code: null,
+  signal: null,
+})
+const backendStops = new WeakMap<BackendHandle, Promise<BackendStopResult>>()
+// A drained family has already closed its native handle. Retain its outcome if
+// another shutdown step fails so a retry cannot certify a forced drain as clean.
+const backendFamilyResults = new WeakMap<BackendHandle, boolean>()
+
+export function requireCleanBackendStop(result: BackendStopResult): void {
+  if (result.kind === BackendStopKind.FailedExit)
+    throw new Error(`backend shutdown incomplete: code=${result.code} signal=${result.signal}`)
+}
+
+export function backendUpdateControl(handle: BackendHandle | null): BackendControl {
+  const control = handle && backendControls.get(handle)
+  if (!handle || handle.stopping || !handle.proc || handle.proc.exitCode !== null || !control)
+    throw new Error('private backend update control unavailable')
+  return control
+}
+
 export function startBackend(log: LogSink, options: BackendStartOptions = {}): BackendHandle {
+  const persist: LogSink = (line) => {
+    log(line)
+    options.lifecycleLog?.(line)
+  }
+  let finishLog: () => Promise<void> = async () => {}
+  let resolveDrain!: () => void
+  let rejectDrain!: (error: unknown) => void
+  const drained = new Promise<void>((resolve, reject) => {
+    resolveDrain = resolve
+    rejectDrain = reject
+  })
+  void drained.catch(() => {})
+  let finishing: Promise<void> | null = null
+  const preparations: Promise<unknown>[] = []
+  let preparationFailure: unknown = null
+  const preparationStop = new AbortController()
+  const finish = (): Promise<void> => {
+    preparationStop.abort()
+    finishing ??= Promise.allSettled(preparations)
+      .then(finishLog)
+      .then(() => {
+        if (preparationFailure) throw preparationFailure
+      })
+      .then(resolveDrain)
+      .catch(rejectDrain)
+    return finishing
+  }
   let resolveExit: (exit: BackendExit) => void = () => undefined
   const handle: BackendHandle = {
+    python: null,
     port: 0,
     baseUrl: '',
     proc: null,
@@ -422,120 +769,213 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       resolveExit = resolve
     }),
     error: null,
-    stopping: false
+    stopping: false,
+    agentTransport: null,
+    storageLaunch: null,
   }
 
+  backendDrains.set(handle, drained)
+  backendPreparationStops.set(handle, preparationStop)
+  const attemptId = randomUUID()
+  const startedAt = performance.now()
+  let phase: string = BACKEND_STARTUP_PHASE.port
+  let phaseStartedAt = startedAt
+  let startupError: unknown
+  const diagnostic = (event: 'started' | 'failed' | 'ready'): void => {
+    // Diagnostics cannot replace the original startup result, including when a sink fails.
+    try {
+      const now = performance.now()
+      const line = `${BACKEND_STARTUP_DIAGNOSTIC} ${JSON.stringify({
+        schema: 1,
+        attemptId,
+        pid: process.pid,
+        platform: process.platform,
+        arch: process.arch,
+        version: app.getVersion(),
+        phase,
+        event,
+        elapsedMs: Math.round(now - startedAt),
+        phaseElapsedMs: Math.round(now - phaseStartedAt),
+        backendPid: handle.proc?.pid ?? null,
+        port: handle.port,
+        failure: handle.error?.kind ?? null,
+        ...(event === 'failed'
+          ? { error: redactDiagnosticError(startupError ?? handle.error) }
+          : {}),
+      })}\n`
+      // Call independently: unavailable stdout/renderer must not lose persistent evidence.
+      try {
+        log(line)
+      } catch {
+        /* best-effort diagnostic sink */
+      }
+      try {
+        options.lifecycleLog?.(line)
+      } catch {
+        /* best-effort diagnostic sink */
+      }
+    } catch {
+      /* diagnostics never affect startup */
+    }
+  }
+  const enterPhase = (next: string): void => {
+    phase = next
+    phaseStartedAt = performance.now()
+    diagnostic('started')
+  }
   handle.ready = (async () => {
-    const port = options.port ?? await pickPort()
+    diagnostic('started')
+    const port = options.port ?? (await pickPort())
     const baseUrl = `http://${LOOPBACK_HOST}:${port}`
     handle.port = port
     handle.baseUrl = baseUrl
 
-    const backendPaths = resolveBackendPaths()
-    const { python, cwd, rendererDist, hookBin, skillBin } = backendPaths
-    // 组件化布局：解释器/TeX 在组件仓库里，启动前 provision（命中即毫秒级返回；
-    // 首启展开以分钟计，事件落 logs/components.log）。失败 = 启动失败，fail-closed，
-    // 绝不回落宿主 Python（AGENTS.md 硬约束）。
-    let provisionedComponents: ProvisionedComponents | null = null
-    if (backendPaths.componentProvision) {
-      const { backendDirectory, storeRoot } = backendPaths.componentProvision
-      const componentLog = (line: string): void => {
-        log(`[shell] ${line}`)
-        persistComponentLog(join(desktopHome(), LOGS_DIRNAME), line)
-      }
-      try {
-        provisionedComponents = await ensureComponents({
-          backendDirectory,
-          storeRoot,
-          log: componentLog
-        })
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error)
-        handle.error = { kind: 'startupFailed', detail: `component provisioning failed: ${detail}` }
-        log(`[shell] ERROR component provisioning failed: ${detail}\n`)
-        return false
-      }
-      // GC 在关键路径之外：只回收未被本轮清单引用的组件，best-effort。
-      const referenced = provisionedComponents.manifest.components.map((component) => component.contentId)
-      setTimeout(() => {
-        try {
-          sweepUnreferencedComponents(storeRoot, referenced, componentLog)
-        } catch {
-          /* GC 失败只影响磁盘占用 */
-        }
-      }, 0)
-    }
+    enterPhase(BACKEND_STARTUP_PHASE.paths)
+    const backendPaths = await resolveBackendPaths()
+    const { cwd, hookBin, skillBin } = backendPaths
+    enterPhase(BACKEND_STARTUP_PHASE.source)
+    const sourceIdentity = await captureSourceBaseline(
+      cwd,
+      clientVersion(app.getVersion(), readProductConfig(log).config.buildNumber),
+      app.isPackaged
+    )
+    enterPhase(BACKEND_STARTUP_PHASE.pythonEntry)
+    const python = toNamespacedPath(backendPaths.python)
     if (!existsSync(python)) {
       handle.error = { kind: 'pythonMissing', path: python }
       log(`[shell] ERROR python not found: ${python}\n`)
       return false
     }
-    // Vendored runtime resolution ends in subprocess probes and is independent
-    // of the Python identity check, so both resolves start here and are awaited
-    // after the check: the probes overlap each other and the Python subprocess.
-    const vendoredRuntimes = app.isPackaged
+    enterPhase(BACKEND_STARTUP_PHASE.runtimeEntries)
+    if (backendPaths.windowsRuntime) {
+      accessSync(backendPaths.windowsRuntime.powershell, fsConstants.X_OK)
+      accessSync(join(backendPaths.windowsRuntime.texlive, WINDOWS_TEXLIVE_ENTRY), fsConstants.X_OK)
+    }
+    enterPhase(BACKEND_STARTUP_PHASE.toolchain)
+    const vendoredCodex = app.isPackaged
       ? null
-      : Promise.all([
-        resolveVendoredCodex(app.getAppPath(), process.platform, process.arch,
-          line => log(`[shell] ${line}\n`)),
-        resolveVendoredTexlive(app.getAppPath(), process.platform, process.arch,
-          line => log(`[shell] ${line}\n`))
-          .catch((error: Error) => {
-            log(`[shell] WARN bundled TeX Live unavailable: ${error.message}\n`)
-            return null
-          })
-      ])
+      : resolveVendoredCodex(
+          app.getAppPath(),
+          process.platform,
+          process.arch,
+          (line) => log(`[shell] ${line}\n`),
+          CACHE_VALIDATION.integrity
+        )
+    if (vendoredCodex) {
+      preparations.push(vendoredCodex)
+      void vendoredCodex.catch(() => undefined)
+    }
+    let texliveExecutableDirectory: string | null = null
+    let texliveVersion = reviewedTexliveVersion()
+    let texliveArchive = reviewedTexliveArchive()
+    const texliveStartedAt = performance.now()
+    persist('[shell] TeX preparation started\n')
+    const texlivePreparation = (async () => {
+      if (app.isPackaged) {
+        if (backendPaths.windowsRuntime) {
+          const component = readRuntimeManifest(dirname(applicationResources(app))).components.find(
+            (entry) => entry.kind === 'texlive'
+          )
+          if (!component) throw new Error('TeX runtime component version missing')
+          texliveVersion = component.version
+          texliveArchive = component.archiveSha256
+        }
+        texliveExecutableDirectory =
+          backendPaths.windowsRuntime?.texlive ?? bundledTexlive(applicationResources(app))
+      } else {
+        const location = vendoredTexliveLocation(app.getAppPath(), process.platform, process.arch)
+        texliveExecutableDirectory = location.binDirectory
+        const resolution = await resolveVendoredTexlive(
+          app.getAppPath(),
+          process.platform,
+          process.arch,
+          (line) => persist(`[shell] ${line}\n`),
+          preparationStop.signal
+        )
+        if (
+          resolution.binDirectory !== location.binDirectory ||
+          resolution.sha256 !== location.sha256
+        )
+          throw new Error('TeX preparation identity changed')
+      }
+      persist(
+        `[shell] TeX preparation finished elapsedMs=${Math.round(performance.now() - texliveStartedAt)}\n`
+      )
+      return true
+    })().catch((error: unknown) => {
+      if (preparationStop.signal.aborted) {
+        persist('[shell] TeX preparation cancelled\n')
+        return false
+      }
+      persist(
+        `[shell] ERROR TeX preparation failed elapsedMs=${Math.round(performance.now() - texliveStartedAt)}: ${String(error)}\n`
+      )
+      return false
+    })
+    preparations.push(texlivePreparation)
+    enterPhase(BACKEND_STARTUP_PHASE.pythonIdentity)
     let pythonIdentity
+    const pythonStartedAt = performance.now()
+    log('[shell] Python identity check started\n')
     try {
-      pythonIdentity = app.isPackaged
-        ? inspectPython(python)
-        : verifyDevelopmentPython(cwd, python)
-      log(`[shell] Python ${pythonIdentity.python}, SQLite ${pythonIdentity.sqlite}, base=${pythonIdentity.base_prefix}\n`)
+      pythonIdentity = await (app.isPackaged
+        ? inspectPythonAsync(python)
+        : verifyDevelopmentPythonAsync(cwd, python))
+      log(
+        `[shell] Python identity check finished elapsedMs=${Math.round(performance.now() - pythonStartedAt)}\n`
+      )
+      handle.python = python
+      log(
+        `[shell] Python ${pythonIdentity.python}, SQLite ${pythonIdentity.sqlite}, base=${pythonIdentity.base_prefix}\n`
+      )
     } catch (error) {
+      startupError = error
       const detail = error instanceof Error ? error.message : String(error)
       handle.error = { kind: 'pythonInvalid', detail }
       log(`[shell] ERROR ${detail}\n`)
       return false
     }
+    enterPhase(BACKEND_STARTUP_PHASE.skillLauncher)
     try {
       if (app.isPackaged && !existsSync(skillPythonLauncherPath(skillBin))) {
-        throw new Error(`packaged Skill Python launcher missing: ${skillPythonLauncherPath(skillBin)}`)
+        throw new Error(
+          `packaged Skill Python launcher missing: ${skillPythonLauncherPath(skillBin)}`
+        )
       }
       if (!app.isPackaged) writeSkillPythonLauncher(skillBin, python)
     } catch (error) {
+      startupError = error
       const detail = error instanceof Error ? error.message : String(error)
       handle.error = { kind: 'startupFailed', detail }
       log(`[shell] ERROR Skill Python launcher setup failed: ${detail}\n`)
       return false
     }
+    enterPhase(BACKEND_STARTUP_PHASE.workspace)
     configureDesktopEnvironment(log)
+    enterPhase(BACKEND_STARTUP_PHASE.environment)
     const inheritedExecutablePath = process.env[PATH_ENV] || ''
     const standardPath = app.isPackaged ? standardExecutablePath() : ''
-    // Bundled TeX Live: the literature-review skill compiles survey PDFs with
-    // xelatex/pdflatex/bibtex and finds them through PATH, so the shipped
-    // toolchain has to precede any host TeX installation. A packaged app treats
-    // a missing tree as a build defect and fails; a development launch only
-    // warns, because a cold vendor cache must not block unrelated work.
     const bundledCodexExecutable = app.isPackaged
-      ? bundledCodex(process.resourcesPath)
+      ? (backendPaths.windowsRuntime?.codex ?? bundledCodex(applicationResources(app)))
       : ''
     let codexExecutable = bundledCodexExecutable
-    let texliveExecutableDirectory: string | null = app.isPackaged
-      ? (provisionedComponents
-        ? provisionedComponents.texliveBinDirectory
-        : bundledTexlive(process.resourcesPath))
-      : null
-    if (vendoredRuntimes) {
-      const [codexResolution, texliveResolution] = await vendoredRuntimes
+    if (vendoredCodex) {
+      const codexResolution = await vendoredCodex
       codexExecutable = codexResolution.path
-      texliveExecutableDirectory = texliveResolution ? texliveResolution.binDirectory : null
     }
-    log(`[shell] Codex source=${app.isPackaged ? 'bundled' : 'vendored'} executable=${codexExecutable}\n`)
+    log(
+      `[shell] Codex source=${app.isPackaged ? 'bundled' : 'vendored'} executable=${codexExecutable}\n`
+    )
     const codexExecutableDirectory = codexExecutable ? dirname(codexExecutable) : null
-    const pythonExecutableDirectory = pythonIdentity.scripts
-    log(`[shell] TeX Live source=${app.isPackaged ? 'bundled' : 'vendored'} ` +
-      `directory=${texliveExecutableDirectory}\n`)
-    // skillBin and hookBin ahead of pythonExecutableDirectory: the packaged env keeps the
+    const pythonDirectories = pythonExecutableDirectories(
+      backendPaths.python,
+      pythonIdentity.scripts
+    )
+    log(
+      `[shell] TeX Live source=${app.isPackaged ? 'bundled' : 'vendored'} ` +
+        `directory=${texliveExecutableDirectory}\n`
+    )
+    // skillBin and hookBin ahead of Python directories: the packaged env keeps the
     // uv/pip-generated console-script trampolines under python/Scripts (Win)
     // or python/bin (POSIX) because dependencies.py inventory covers them,
     // but those trampolines embed the build-machine Python path and fail
@@ -545,15 +985,20 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     const executablePath = mergeExecutablePaths(
       skillBin,
       hookBin,
-      pythonExecutableDirectory,
+      ...pythonDirectories,
       codexExecutableDirectory,
       texliveExecutableDirectory,
+      backendPaths.windowsRuntime ? dirname(backendPaths.windowsRuntime.powershell) : null,
       inheritedExecutablePath,
       standardPath
     )
     const seedConfig = resolvePackagedConfigSeedPath(log)
     const resolvedProductConfig = readProductConfig(log)
     const productConfig = resolvedProductConfig.config
+    const applicationIdentity = Object.freeze({
+      version: app.getVersion(),
+      buildNumber: productConfig.buildNumber,
+    })
     const codexRuntime = projectCodexRuntimeEnvironment(
       process.env,
       productConfig.codexRuntime,
@@ -563,86 +1008,251 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     )
     if (codexRuntime.applied) {
       log(
-        `[shell] bundled Codex policy profile=${productConfig.codexRuntime.profile}`
-        + ` version=${productConfig.codexRuntime.reportedVersion}`
-        + ' upstream=official\n'
+        `[shell] bundled Codex policy profile=${productConfig.codexRuntime.profile}` +
+          ` version=${productConfig.codexRuntime.reportedVersion}` +
+          ' upstream=official\n'
       )
     }
 
     // 桌面产品线收敛（2026-09-09 定案）：未登录可用是产品默认，serve 恒以 off 拉起；
     // 登录是可选增强 —— 有 account_base_url 就能浏览器回跳登录，无需模式决议。
     const authMode = DESKTOP_BACKEND_AUTH_MODE
-    let accountBase = productConfig.accountBaseUrl
-    try {
-      accountBase = resolveAccountBaseUrl(
-        process.env[SCHOLARSEED_ACCOUNT_BASE_URL_ENV] || '',
-        productConfig.accountBaseUrl
-      )
-    } catch (error) {
-      accountBase = ''
-      log(`[shell] ERROR invalid ${SCHOLARSEED_ACCOUNT_BASE_URL_ENV}: ${String(error)}\n`)
-    }
+    const accountBase = options.accountBaseUrl ?? resolveStartupAccountBase(log)
     log(
       accountBase
         ? `[shell] auth-mode=${authMode} account-service=${accountBase}\n`
         : `[shell] auth-mode=${authMode} 无账号服务地址: 登录入口不显示\n`
     )
-    const logLevel = process.env[SCHOLARSEED_LOG_LEVEL_ENV] || (app.isPackaged ? DESKTOP_DEFAULT_LOG_LEVEL : 'info')
+    const logLevel =
+      process.env[SCHOLARSEED_LOG_LEVEL_ENV] ||
+      (app.isPackaged ? DESKTOP_DEFAULT_LOG_LEVEL : 'info')
 
     const args = [
-      '-m', 'service.cli.serve',
-      '--host', LOOPBACK_HOST,
-      '--port', String(port),
-      '--auth-mode', authMode,
-      '--ownership-axis', DESKTOP_OWNERSHIP_AXIS,
-      '--log-level', logLevel
+      '-m',
+      'service.cli.serve',
+      '--parent-stdin',
+      '--host',
+      LOOPBACK_HOST,
+      '--port',
+      String(port),
+      '--auth-mode',
+      authMode,
+      '--ownership-axis',
+      DESKTOP_OWNERSHIP_AXIS,
+      '--log-level',
+      logLevel,
     ]
-    if (rendererDist && existsSync(rendererDist)) {
-      args.push('--renderer-dist', rendererDist)
-    }
 
+    enterPhase(BACKEND_STARTUP_PHASE.log)
     let logFile: RotatingFileLog | null = null
     try {
-      logFile = new RotatingFileLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE))
+      logFile = new RotatingFileLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE), {
+        acquireWriter: () => desktopDirectoryWriter(join(desktopHome(), LOGS_DIRNAME)),
+        // Parent log writes qualify HOME ancestors. Startup must first finish
+        // the child's exclusive configuration/database initialization.
+        deferred: true,
+      })
     } catch {
       /* logging to file is best-effort */
     }
     const stamper = logFile ? new LineTimestamper((line) => logFile?.write(line)) : null
+    if (logFile) backendDiagnosticWriters.set(handle, (line) => logFile?.write(line) ?? false)
+    finishLog = async () => {
+      stamper?.flush()
+      // Called only after the owned output pipes close (or no child was spawned).
+      await logFile?.end()
+      backendDiagnosticWriters.delete(handle)
+    }
+    if (sourceIdentity) persist(`[source-baseline] ${sourceIdentity}\n`)
+    backendStopLogs.set(handle, persist)
 
-    log(`[shell] spawning backend: ${python} ${args.join(' ')}\n[shell] cwd=${cwd}\n`)
+    persist(`[shell] spawning backend: ${python} ${args.join(' ')}\n[shell] cwd=${cwd}\n`)
+    enterPhase(BACKEND_STARTUP_PHASE.agent)
+    const agentTransport = productConfig.features.browser
+      ? await createAgentTransport(
+          options.browserList ?? (() => []),
+          options.browserPrepareRead,
+          options.browserReadActions,
+          options.browserListAuthority,
+          options.browserNavigateActions,
+          options.browserActionActions,
+          options.browserHistoryActions,
+          options.browserSearchAction
+        )
+      : null
+    handle.agentTransport = agentTransport
+    enterPhase(BACKEND_STARTUP_PHASE.browser)
     const env: NodeJS.ProcessEnv = {
-      ...browserEnvironment(codexRuntime.environment, process.resourcesPath, python, app.isPackaged),
+      ...browserEnvironment(
+        codexRuntime.environment,
+        applicationResources(app),
+        python,
+        app.isPackaged
+      ),
       ...(app.isPackaged ? { [PYTHON_DONT_WRITE_BYTECODE_ENV]: '1' } : {}),
-      // 组件化布局：产品代码在 backend/pylibs（随应用版本走），解释器/第三方依赖在组件仓库
-      // （随锁文件走）。serve 及其子进程经 PYTHONPATH 解析产品模块。
-      ...(provisionedComponents ? { [PYTHONPATH_ENV]: join(cwd, PYLIBS_DIRNAME) } : {}),
+      // Windows product wheels remain separate from the frozen interpreter tree.
+      ...(backendPaths.windowsRuntime
+        ? { [PYTHONPATH_ENV]: toNamespacedPath(join(cwd, PYLIBS_DIRNAME)) }
+        : {}),
       [PATH_ENV]: executablePath,
       PYTHONUNBUFFERED: '1',
       [SCHOLARSEED_DESKTOP_ENV]: '1',
-      [SCHOLARSEED_APP_VERSION_ENV]: clientVersion(app.getVersion(), productConfig.buildNumber),
+      [SOURCE_BASELINE_ENV]: sourceIdentity || '',
+      [SCHOLARSEED_APP_VERSION_ENV]: clientVersion(
+        applicationIdentity.version,
+        applicationIdentity.buildNumber
+      ),
       [SCHOLARSEED_LOG_LEVEL_ENV]: logLevel,
       [SCHOLARSEED_ACCOUNT_BASE_URL_ENV]: accountBase,
       [SCHOLARSEED_CODEX_EXECUTABLE_ENV]: codexExecutable,
       [SCHOLARSEED_PYTHON_ENV]: python,
-      [SCHOLARSEED_HOST_PROCESS_KEY_ENV]: hostProcessKey
+      [SCHOLARSEED_BRIDGE_DIR_ENV]: skillBin ?? '',
+      [SCHOLARSEED_HOST_PROCESS_KEY_ENV]: hostProcessKey,
+      [TOOL_RESOURCES_ENV]: backendPaths.toolResources ?? '',
+      [TOOL_RESOURCES_REQUIRED_ENV]: app.isPackaged && process.platform === 'win32' ? '1' : '',
+      [TOOL_PRINCIPAL_ENV]: options.toolPrincipal ?? '',
+      [SANDBOX_RECOVERY_HELPER_ENV]:
+        app.isPackaged && process.platform === 'win32'
+          ? join(applicationResources(app), ...SANDBOX_RECOVERY_HELPER_PARTS)
+          : '',
+    }
+    enterPhase(BACKEND_STARTUP_PHASE.texlive)
+    let texliveEnvironmentReady = false
+    let texliveOptions: TexliveEnvironmentOptions | undefined
+    if (texliveExecutableDirectory) {
+      try {
+        const writableRoot = texliveStateRoot(runtimeStoreRoot(), texliveVersion)
+        texliveOptions = {
+          binDirectory: texliveExecutableDirectory,
+          version: texliveVersion,
+          archiveSha256: texliveArchive,
+          writableRoot,
+          environment: env,
+        }
+        const rebuild = process.platform === 'darwin' && !texliveEnvironmentCurrent(texliveOptions)
+        const writer = rebuild
+          ? desktopDirectoryMaintenance(writableRoot)
+          : desktopDirectoryWriter(writableRoot)
+        try {
+          // Recheck after qualification: another launch may have prepared it.
+          if (rebuild && !texliveEnvironmentCurrent(texliveOptions)) {
+            Object.assign(env, rebuildTexliveEnvironment(texliveOptions))
+            persist(
+              `[shell] TeX version cache rebuilt under exclusive maintenance cache=${writableRoot}\n`
+            )
+          } else {
+            Object.assign(env, prepareTexliveEnvironment(texliveOptions))
+          }
+        } finally {
+          // Serve acquires the long-lived ancestor domain. Verify the receipt
+          // again after that handoff and before admitting any tool execution.
+          writer.close()
+        }
+        texliveEnvironmentReady = true
+        persist(
+          `[shell] TeX environment prepared directory=${texliveExecutableDirectory} cache=${writableRoot}\n`
+        )
+      } catch (error) {
+        persist(`[shell] ERROR TeX environment preparation failed: ${String(error)}\n`)
+      }
+    }
+    delete env[SCHOLARSEED_AGENT_BROWSER_PORT_ENV]
+    delete env[SCHOLARSEED_AGENT_BROWSER_KEY_ENV]
+    if (agentTransport) {
+      env[SCHOLARSEED_AGENT_BROWSER_PORT_ENV] = String(agentTransport.port)
+      env[SCHOLARSEED_AGENT_BROWSER_KEY_ENV] = agentTransport.key
     }
     if (hookBin) {
       env[ELECTRON_EXECUTABLE_ENV] = process.execPath
-      env[SCHOLARSEED_BRIDGE_DIR_ENV] = hookBin
     }
+    const seed = captureSeedSource(env, seedConfig)
     if (seedConfig) env[SCHOLARSEED_CONFIG_SEED_ENV] = seedConfig
     if (resolvedProductConfig.source) {
       env[SCHOLARSEED_PRODUCT_MANIFEST_ENV] = resolvedProductConfig.source
     }
-    const proc = spawn(python, args, {
+    // Provisioning and runtime probes await external work. A quit during that work
+    // must not create a new backend after stopBackend has already returned.
+    if (handle.stopping) return false
+    let bindings: readonly StorageBinding[] | null = null
+    if (app.isPackaged && process.platform === 'win32') {
+      bindings = observeStorageBindings(
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- Native addon uses the packaged main directory.
+        require('./lease.node') as StorageBindingNative,
+        desktopStorage()
+      )
+    }
+    const control = new BackendControl((event) =>
+      persist(`[shell] backend_control ${JSON.stringify(event)}\n`)
+    )
+    backendControls.set(handle, control)
+    enterPhase(BACKEND_STARTUP_PHASE.control)
+    const bootstrap = await control.listen()
+    if (handle.stopping) {
+      bootstrap.fill(0)
+      control.close()
+      return false
+    }
+    args.push(
+      '--parent-control',
+      '--await-toolchain',
+      '--await-skill-python',
+      '--shutdown-timeout-seconds',
+      String(SHUTDOWN_SECONDS)
+    )
+    const storageHome = env[SCHOLARSEED_HOME_ENV]
+    handle.storageLaunch =
+      productConfig.features.browser === true && storageHome
+        ? Object.freeze({
+            python,
+            cwd,
+            env: Object.freeze({ ...env }),
+            profileId: createHash('sha256').update(resolve(storageHome)).digest('hex'),
+          })
+        : null
+    const childArgs =
+      process.platform === 'win32'
+        ? ['-B', '-c', WINDOWS_BACKEND_BOOTSTRAP, ...args.slice(1)]
+        : ['-B', ...args]
+    const spawnStarted = performance.now()
+    persist(`[startup] backend spawn requested parentPid=${process.pid} unixMs=${Date.now()}\n`)
+    enterPhase(BACKEND_STARTUP_PHASE.spawn)
+    const proc = spawn(pythonExecutablePath(python), childArgs, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
     handle.proc = proc
+    const checkpoint = (phase: string) => {
+      persist(
+        `[startup] backend checkpoint phase=${phase} parentPid=${process.pid} childPid=${proc.pid ?? 0}` +
+          ` elapsedMs=${(performance.now() - spawnStarted).toFixed(3)} unixMs=${Date.now()}\n`
+      )
+    }
+    checkpoint('spawn-returned')
+    const launch = Object.freeze({
+      storage: desktopStorage(),
+      bindings,
+      cwd,
+      seed,
+      environment: captureEnvironment(env),
+    })
+    proc.once('spawn', () => {
+      checkpoint('spawn-event')
+      backendLaunches.set(proc, launch)
+      activeBackendLaunch = launch
+    })
+    // Only this parent's inherited pipe can request ordinary graceful shutdown.
+    // Its failure does not certify exit; stopBackend still waits for the child.
+    proc.stdin.on('error', () => persist('[shell] backend control pipe unavailable\n'))
+    const spawnedAt = Date.now()
 
     let startupDiagnostic = ''
+    let firstOutput = true
     const onData = (buf: Buffer) => {
+      if (firstOutput) {
+        firstOutput = false
+        checkpoint('first-output-received')
+      }
       const s = buf.toString()
       startupDiagnostic = (startupDiagnostic + s).slice(-BACKEND_STARTUP_DIAGNOSTIC_CHARS)
       stamper?.push(s)
@@ -651,67 +1261,231 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     proc.stdout?.on('data', onData)
     proc.stderr?.on('data', onData)
     proc.once('error', (error) => {
+      control.close()
+      void agentTransport?.close()
       const detail = String(error)
       startupDiagnostic = (startupDiagnostic + detail).slice(-BACKEND_STARTUP_DIAGNOSTIC_CHARS)
-      log(`[shell] backend spawn error: ${detail}\n`)
+      persist(`[shell] backend spawn error: ${detail}\n`)
       resolveExit({ code: null, signal: null })
     })
     proc.once('exit', (code, signal) => {
-      log(`[shell] backend exited code=${code} signal=${signal}\n`)
-      stamper?.flush()
-      logFile?.end()
+      control.close()
+      if (activeBackendLaunch === launch) activeBackendLaunch = null
+      void agentTransport?.close()
+      persist(`[shell] backend exited code=${code} signal=${signal}\n`)
       resolveExit({ code, signal })
     })
+    // exit can precede the final stdout/stderr data. close is the owned-pipe
+    // barrier, and log end additionally joins buffered IO and compression.
+    proc.once('close', () => {
+      void finish()
+    })
 
-    const firstRun = isFirstRun(desktopHome(), app.getVersion())
-    const healthBudget = firstRun ? HEALTH_TIMEOUT_FIRST_RUN_MS : HEALTH_TIMEOUT_MS
-    log(`[shell] health budget=${healthBudget}ms (first-run=${firstRun})\n`)
+    if (process.platform === 'win32' && proc.pid !== undefined) {
+      try {
+        checkpoint('family-attach-started')
+        backendFamilies.set(handle, openProcessFamily(proc.pid))
+        checkpoint('family-attached')
+        proc.stdin.write(FAMILY_START_BYTE)
+        checkpoint('family-release-queued')
+      } catch (error) {
+        bootstrap.fill(0)
+        proc.stdin.destroy()
+        proc.kill('SIGKILL')
+        control.close()
+        throw error
+      }
+    }
+    proc.stdin.write(bootstrap, () => bootstrap.fill(0))
+
+    const skillPythonStarted = Date.now()
+    persist('[shell] Skill Python probe started alongside backend imports\n')
+    const skillPythonReceipt = probeSkillPython(
+      python,
+      skillBin,
+      cwd,
+      env,
+      preparationStop.signal,
+      persist
+    )
+      .catch((error: unknown) => {
+        preparationFailure = error
+        throw error
+      })
+      .then(async (ready) => {
+        persist(
+          `[shell] Skill Python probe ready=${ready} elapsed=${Date.now() - skillPythonStarted}ms\n`
+        )
+        if (handle.stopping || preparationStop.signal.aborted) return
+        await control.skillPython(ready)
+      })
+      .catch((error: unknown) => {
+        control.close()
+        if (!handle.stopping)
+          persist(`[shell] ERROR Skill Python preparation unavailable: ${String(error)}\n`)
+      })
+    preparations.push(skillPythonReceipt)
+
+    const toolchainReceipt = texlivePreparation
+      .then(async (ready) => {
+        if (handle.stopping || preparationStop.signal.aborted) return
+        if (process.platform === 'darwin' && texliveEnvironmentReady && texliveOptions) {
+          if (!(await handle.ready) || handle.stopping) return
+          texliveEnvironmentReady = texliveEnvironmentCurrent(texliveOptions)
+          if (!texliveEnvironmentReady)
+            persist(
+              '[shell] ERROR TeX cache changed during backend startup; execution remains disabled\n'
+            )
+        }
+        const resources =
+          ready && texliveEnvironmentReady && texliveExecutableDirectory !== null
+            ? texliveExecutionResources({
+                binDirectory: texliveExecutableDirectory,
+                version: texliveVersion,
+                archiveSha256: texliveArchive,
+                environment: env,
+              })
+            : null
+        await control.toolchain(resources !== null, resources)
+        persist(`[shell] TeX execution gate ready=${ready && texliveEnvironmentReady}\n`)
+      })
+      .catch((error: unknown) => {
+        control.close()
+        if (!handle.stopping)
+          persist(`[shell] ERROR TeX execution gate unavailable: ${String(error)}\n`)
+      })
+    preparations.push(toolchainReceipt)
+
+    enterPhase(BACKEND_STARTUP_PHASE.health)
+    const firstRun = isFirstRun(desktopHome(), applicationIdentity)
+    const healthBudget = resolveStartupBudgetMs(firstRun, false, SKILL_PYTHON_PROBE_TIMEOUT_MS)
+    persist(`[shell] health budget=${healthBudget}ms (first-run=${firstRun})\n`)
     const startup = await Promise.race([
       waitForHealth(baseUrl, healthBudget, log).then((ok) => ({ kind: 'health' as const, ok })),
-      handle.exited.then((exit) => ({ kind: 'exit' as const, exit }))
+      handle.exited.then((exit) => ({ kind: 'exit' as const, exit })),
     ])
     if (startup.kind === 'exit') {
       const detail = startupDiagnostic.trim()
-      handle.error = { kind: 'exited', code: startup.exit.code, signal: startup.exit.signal, detail }
+      handle.error = {
+        kind: 'exited',
+        code: startup.exit.code,
+        signal: startup.exit.signal,
+        detail,
+      }
       return false
     }
     if (!startup.ok) {
+      control.close('startup_timeout')
+      // 活着的静默进程 = 还在 import/扫描里慢速前进；diagnosticChars=0 即「零输出」的
+      // 直接证据（真机事故里打包版只有一行失败记录，无法区分卡死与慢）。
+      persist(
+        `[shell] backend health timeout pid=${proc.pid} budget=${healthBudget}ms` +
+          ` elapsed=${Date.now() - spawnedAt}ms diagnosticChars=${startupDiagnostic.length}\n`
+      )
       handle.error = { kind: 'healthTimeout' }
       return false
     }
+    // Health closes the startup phase; any still-missing peer now has the
+    // ordinary connection deadline. Authenticated requests keep their own deadline.
+    control.launched()
+    logFile?.resume()
     try {
-      writeStartupMarker(desktopHome(), app.getVersion())
+      const writer = desktopDirectoryWriter(desktopHome())
+      try {
+        writeStartupMarker(desktopHome(), applicationIdentity)
+      } finally {
+        writer.close()
+      }
     } catch (error) {
       log(`[shell] WARN startup marker not written: ${String(error)}\n`)
     }
+    diagnostic('ready')
     return true
-  })().catch((error: unknown) => {
-    const detail = String(error)
-    handle.error = { kind: 'startupFailed', detail }
-    log(`[shell] ERROR backend startup failed: ${detail}\n`)
-    return false
-  })
+  })()
+    .catch((error: unknown) => {
+      startupError = error
+      backendControls.get(handle)?.close()
+      const detail = String(error)
+      handle.error = { kind: 'startupFailed', detail }
+      log(`[shell] ERROR backend startup failed: ${detail}\n`)
+      return false
+    })
+    .finally(async () => {
+      if (handle.error) diagnostic('failed')
+      if (!handle.proc || handle.stopping) await handle.agentTransport?.close()
+      if (!handle.proc) await finish()
+    })
 
   return handle
 }
 
-export function stopBackend(handle: BackendHandle | null): void {
-  if (!handle) return
+export function stopBackend(handle: BackendHandle | null): Promise<BackendStopResult> {
+  if (!handle) return Promise.resolve(NO_BACKEND_STOP)
+  const pending = backendStops.get(handle)
+  if (pending) return pending
+  const stopping = finishBackendStop(handle).catch((error: unknown) => {
+    // Only completed stops are durable. A timeout is not an exit acknowledgement;
+    // the next request must recheck the process and finish the remaining drains.
+    backendStops.delete(handle)
+    throw error
+  })
+  backendStops.set(handle, stopping)
+  return stopping
+}
+
+async function finishBackendStop(handle: BackendHandle): Promise<BackendStopResult> {
   handle.stopping = true
-  if (!handle.proc || handle.proc.killed) return
+  backendPreparationStops.get(handle)?.abort()
+  const startedAt = Date.now()
+  const log = backendStopLogs.get(handle) ?? (() => {})
+  log(
+    `[shell] backend shutdown requested budgetMs=${SHUTDOWN_SECONDS * 1_000} deadlineMs=${SHUTDOWN_DEADLINE_MS}\n`
+  )
   try {
-    handle.proc.kill('SIGTERM')
     const proc = handle.proc
-    setTimeout(() => {
-      if (proc && !proc.killed) {
-        try {
-          proc.kill('SIGKILL')
-        } catch {
-          /* already gone */
-        }
-      }
-    }, FORCE_KILL_DELAY_MS)
-  } catch {
-    /* ignore */
+    let stopError: unknown
+    try {
+      if (proc)
+        await stopChildProcess(proc, SHUTDOWN_DEADLINE_MS, () => {
+          if (!proc.stdin) throw new Error('backend control pipe unavailable')
+          proc.stdin.end()
+        })
+    } catch (error) {
+      stopError = error
+    }
+    const family = backendFamilies.get(handle)
+    const familyClean = family
+      ? await drainProcessFamily(family)
+      : (backendFamilyResults.get(handle) ?? true)
+    if (family) {
+      backendFamilyResults.set(handle, familyClean)
+      backendFamilies.delete(handle)
+    }
+    if (stopError) throw stopError
+    // Also join provisioning that was in flight when stop was requested. Its
+    // stopping check forbids a late spawn, and its finally closes any early log.
+    await handle.ready
+    await backendDrains.get(handle)
+    await handle.agentTransport?.close()
+    if (!proc || proc.pid === undefined) return NO_BACKEND_STOP
+    if (proc.exitCode === null && proc.signalCode === null)
+      throw new Error('backend process exit was not observed')
+    const result: BackendStopResult = Object.freeze({
+      kind:
+        familyClean && proc.exitCode === 0 && proc.signalCode === null
+          ? BackendStopKind.Clean
+          : BackendStopKind.FailedExit,
+      code: proc.exitCode,
+      signal: proc.signalCode,
+    })
+    log(
+      `[shell] backend shutdown result=${result.kind} elapsedMs=${Date.now() - startedAt} code=${result.code} signal=${result.signal} logsDrained=true\n`
+    )
+    return result
+  } catch (error) {
+    log(
+      `[shell] backend shutdown failed elapsedMs=${Date.now() - startedAt} code=${handle.proc?.exitCode ?? null} signal=${handle.proc?.signalCode ?? null} errorType=${error instanceof Error ? error.name : 'unknown'}\n`
+    )
+    throw error
   }
 }

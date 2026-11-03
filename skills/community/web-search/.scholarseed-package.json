@@ -7,51 +7,75 @@
   "files": [
     {
       "mode": 420,
+      "path": "CONTRACT.md",
+      "sha256": "6bd9021cbafd1718e549795567a429a0e4bbfac67b29efd2bc2d6366288b77b3",
+      "size": 26080
+    },
+    {
+      "mode": 420,
       "path": "SKILL.md",
-      "sha256": "d699f9e7153821169cc4858207117811bffaa1e766177a6c3e956d45a4d22659",
-      "size": 4084
+      "sha256": "899a7414435382735b40c6aa9d5cc1f81f472ff929076110930a73603463e9d4",
+      "size": 13593
+    },
+    {
+      "mode": 420,
+      "path": "VERSION",
+      "sha256": "fecf23c4b3c2c29381d4c14cacb998939eb53f5791b99ab7e4e0bc7972c44524",
+      "size": 7
     },
     {
       "mode": 420,
       "path": "agents/openai.yaml",
-      "sha256": "24f571c319f40316945258e14f5327b65596a6947732e9f306ceb25f1ef84baf",
-      "size": 287
+      "sha256": "c930eaa0d827b80b706a79eba6d92a1a3ff6c225cd019dded9ac961a9b108d10",
+      "size": 335
     },
     {
       "mode": 420,
       "path": "scripts/browser.py",
-      "sha256": "e17cb06447a554d013f696bff09dac773643aa193f129f1287da1bde812f2da1",
-      "size": 20685
+      "sha256": "543d70d0998543d8b3218e0a8a02d97f1d7bf243daf2c8f7fba971427429a060",
+      "size": 31791
+    },
+    {
+      "mode": 420,
+      "path": "scripts/capture.py",
+      "sha256": "75f9ef0841d139fe9ba96ecd7c8f653230b667c25314d43b7d2000a2b1b4c5a7",
+      "size": 4656
     },
     {
       "mode": 420,
       "path": "scripts/invoke.py",
-      "sha256": "6bcc6d1500e44fde39fcd9fc9f404df08b4cfd567385fa29730fd71805deed1a",
-      "size": 4719
+      "sha256": "93c9bb63a949dbbacf8ae6ad1303b6a0035cd61a7ff95fb92231ec6841d9e776",
+      "size": 6111
     },
     {
       "mode": 420,
       "path": "scripts/official.py",
-      "sha256": "61acc5cd86f2058b40c2e45dd45d570b86b63307a1dcc39c9002d18b0d841c98",
-      "size": 12042
+      "sha256": "0d0da15a34daa13c8a06b79ac33835739cc294481d1e9a4d71b39c30bab92d2f",
+      "size": 14240
     },
     {
       "mode": 420,
       "path": "scripts/providers.py",
-      "sha256": "8e9d98d332ddbcacfa99ea12b85e723b89139b674185cc27f3cbda9252d7fabe",
-      "size": 10341
+      "sha256": "60542d3b2dda60f5222bd1caa7ee0987ac25f611d9513801769d9e148913d25a",
+      "size": 19902
     },
     {
       "mode": 420,
       "path": "scripts/smoke.py",
-      "sha256": "217ef16c74f0698c9513c7a943a8afcd6f4ca70448a46a280a4c2fd5bff0b8b4",
-      "size": 9434
+      "sha256": "63b7d2e8bdd22af6258526243423a6456f2a5dfc5ad95c08f4b6b8bed391da15",
+      "size": 9423
+    },
+    {
+      "mode": 420,
+      "path": "scripts/test_capture.py",
+      "sha256": "ab14d189bc28305178e2b63132cec7be79604cfe949074a8d84d5792ceef7fb2",
+      "size": 16472
     },
     {
       "mode": 420,
       "path": "scripts/test_search.py",
-      "sha256": "c2cc2d94ec0f7dc4747b6fe60f4d41cfd2818271e2d687f73ae15275f10b33d4",
-      "size": 24300
+      "sha256": "ec5f7daf7bef0abdce72374709b2ba24df12264e4aca62547ff2a871e1cccae4",
+      "size": 44835
     }
   ],
   "name": "web-search",
@@ -59,6 +83,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "2abf05b038408587eb709ee38cba62b0b0724d0a050031c03db398f620445398",
-  "version": "0.0.0"
+  "source_document_sha256": "899a7414435382735b40c6aa9d5cc1f81f472ff929076110930a73603463e9d4",
+  "version": "0.1.10"
 }

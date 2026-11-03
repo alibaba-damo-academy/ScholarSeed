@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -11,22 +12,32 @@ from typing import Any, Literal, Mapping, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from service.literature.persistence.files import read_scoped_file, scoped_relative
+from service.literature.persistence.files import (
+    read_scoped_file,
+    scoped_workspace,
+    scoped_workspace_path,
+)
 from service.literature.service.metadata import parse_bibtex
 from service.literature.service.result import (
     AUTHORIZATION_ARTIFACT_PREFIX,
     LITERATURE_REVIEW_ORIGIN,
+    SEARCH_AUTHORS,
     SEARCH_CARD_PAPERS,
     SEARCH_MAX_PAPERS,
     AuthorizationSource,
     SearchPaper,
+    SearchPaperDetail,
     SearchResult,
     SearchSource,
     authorization_source,
 )
 
+logger = logging.getLogger(__name__)
+
 REVIEW_CARD = "literature-review"
 REVIEW_VERSION: Literal["1.1"] = "1.1"
+REVIEW_RESULT_CHECKPOINT = "result"
+REVIEW_INCOMPLETE_STATUS = "incomplete"
 REVIEW_FILE_BYTES = 16 * 1024 * 1024
 REVIEW_SECTIONS = 8
 REVIEW_CHILDREN = 8
@@ -35,6 +46,14 @@ REVIEW_TITLE = 256
 REVIEW_CHECKS = 16
 REVIEW_ISSUES = 32
 REVIEW_CITATIONS = 100
+FULLTEXT_LIMITATION_REASONS = {
+    "not_in_paperhub": "全文来源暂未返回可下载文件，仅使用摘要证据",
+    "auth_failed": "全文服务认证失败",
+    "fetch_failed": "全文服务暂时不可用",
+    "extract_failed": "全文解析失败",
+    "too_large": "全文文件超过可处理大小限制",
+    "not_a_pdf": "全文格式无法解析",
+}
 YEAR_RANGE = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*[—–-]\s*((?:19|20)\d{2})(?!\d)")
 QUERY = "01_input/query.json"
 REQUIREMENTS = "01_input/requirements.json"
@@ -69,6 +88,12 @@ QUALITY = "05_generation/quality_report.json"
 CITATIONS = "05_generation/citations.bib"
 POSTCHECK = "07_verifier/postcheck/report.json"
 FAST_AUDIT = "07_verifier/fast_audit/output/aggregated_issues.json"
+INCOMPLETE_EVIDENCE_WARNINGS = {
+    (CORPUS,): "检索筛选产物缺失，无法统计最终纳入；请恢复检索与筛选流程。",
+    (FULLTEXT, SUMMARY): "全文与材料处理统计缺失，无法区分全文和摘要级证据。",
+    (GENERATION,): "生成报告缺失，当前正文不能作为已完成综述的证据。",
+    (POSTCHECK,): "核验报告缺失，引用与待核对统计尚不可确认。",
+}
 JSON_FILES = (
     QUERY,
     REQUIREMENTS,
@@ -119,6 +144,7 @@ DOCUMENT_FILES = {
 CHECK_LABELS = {
     "cite_sync": "引用与书目一致性",
     "citation_format": "引用格式完整性",
+    "citation_fidelity": "引用样式一致性",
     "page_render": "页面渲染检查",
     "number_fidelity": "输出数字一致性",
     "req_special": "特殊要求检查",
@@ -134,6 +160,11 @@ PUBLICATION_CITATION_CHECK_IDS = frozenset(
     ("unknown_citations", "bibliography_ownership", "bibliography_definitions")
 )
 PUBLICATION_STATUS_PRIORITY = {"SUCCESS": 0, "WARNING": 1, "FAILED": 2}
+PUBLICATION_PROJECTED_CHECKS = {
+    "citation_metadata": "citation_format",
+    "citation_fidelity": "citation_fidelity",
+}
+METADATA_MISSING_FIELDS = ("missing_required", "missing_recommended", "missing")
 PUBLICATION_CHECK_IDS = frozenset(
     (
         "unknown_citations",
@@ -146,7 +177,7 @@ PUBLICATION_CHECK_IDS = frozenset(
         "bibliography_definitions",
         "visual_inspection_scope",
     )
-)
+) | frozenset(PUBLICATION_PROJECTED_CHECKS)
 PUBLICATION_STRUCTURAL_CHECK_IDS = frozenset(
     ("unresolved_references", "planned_chapters", "planned_tables", "plan_advice")
 )
@@ -203,7 +234,7 @@ class ReviewEvidenceLimitation(ReviewRecord):
 
 class ReviewOutput(ReviewRecord):
     format: Literal["latex_pdf", "markdown"] | None = None
-    citation_style: Literal["numeric", "author_year", "ieee", "acm"] | None = None
+    citation_style: Literal["numeric", "author_year", "ieee", "acm", "gbt7714_2025"] | None = None
     decided_by: Literal["user", "default"] | None = None
 
 
@@ -228,6 +259,7 @@ class ReviewSnapshot(ReviewRecord):
     abstract_evidence: list[ReviewEvidenceLimitation] = Field(max_length=REVIEW_CITATIONS)
     checks: list[ReviewCheck] = Field(max_length=REVIEW_CHECKS)
     issues: list[ReviewIssue] = Field(max_length=REVIEW_ISSUES)
+    issue_count: int | None = Field(default=None, ge=0)
     warnings: list[str]
     source_hashes: dict[str, str]
     session_id: str = ""
@@ -268,12 +300,17 @@ def validate_review_card(value: Mapping[str, Any]) -> dict[str, Any]:
     return ReviewSnapshot.model_validate(value).model_dump(mode="json")
 
 
-def _text(value: object, limit: int = REVIEW_TEXT) -> str:
+def _text(value: object, limit: int | None = REVIEW_TEXT) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
 def _count(value: object) -> int | None:
     return value if type(value) is int and value >= 0 else None
+
+
+def _fulltext_limitation_reason(row: Mapping[str, Any]) -> str:
+    outcome = _text(row.get("outcome"))
+    return FULLTEXT_LIMITATION_REASONS.get(outcome, "未取得全文，只能支持题录或摘要层判断")
 
 
 def _strings(value: object, limit: int = REVIEW_CHILDREN) -> list[str]:
@@ -287,7 +324,7 @@ def _load(
     hashes: dict[str, str] = {}
     files: list[ReviewFile] = []
     for name in dict.fromkeys(names):
-        relative = scoped_relative(workspace, name)
+        relative = scoped_workspace_path(workspace, name)
         try:
             raw = read_scoped_file(workdir, relative, REVIEW_FILE_BYTES)
         except FileNotFoundError:
@@ -309,7 +346,7 @@ def _load(
     return values, hashes, files
 
 
-def _authors(value: object) -> list[str]:
+def _authors(value: object, *, complete: bool = False) -> list[str]:
     if not isinstance(value, list):
         return []
     result = []
@@ -317,18 +354,26 @@ def _authors(value: object) -> list[str]:
         if isinstance(author, str) and author.strip():
             result.append(author.strip())
         elif isinstance(author, dict):
-            name = _text(author.get("name") or author.get("display_name"))
+            name = _text(
+                author.get("name") or author.get("display_name"), None if complete else REVIEW_TEXT
+            )
             if not name:
                 name = " ".join(
-                    filter(None, (_text(author.get("first")), _text(author.get("last"))))
+                    filter(
+                        None,
+                        (
+                            _text(author.get("first"), None if complete else REVIEW_TEXT),
+                            _text(author.get("last"), None if complete else REVIEW_TEXT),
+                        ),
+                    )
                 )
             if name:
                 result.append(name)
-    return result[:20]
+    return result[: None if complete else SEARCH_AUTHORS]
 
 
-def _venue(value: object) -> str:
-    return _text(value.get("name")) if isinstance(value, dict) else _text(value)
+def _venue(value: object, limit: int | None = REVIEW_TEXT) -> str:
+    return _text(value.get("name"), limit) if isinstance(value, dict) else _text(value, limit)
 
 
 def _sections(outline: dict, corpus: dict | None) -> tuple[int, list[ReviewSection]]:
@@ -527,8 +572,12 @@ def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIs
             )
             for entry in check.get("incomplete_entries", []) or []:
                 if isinstance(entry, dict) and _text(entry.get("key")):
-                    missing = _strings(entry.get("missing_required")) + _strings(
-                        entry.get("missing_recommended")
+                    missing = list(
+                        dict.fromkeys(
+                            field
+                            for name in METADATA_MISSING_FIELDS
+                            for field in _strings(entry.get(name))
+                        )
                     )
                     issues.append(
                         ReviewIssue(
@@ -564,7 +613,7 @@ def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIs
                         affected_content=_text(row.get("affected_content") or row.get("location")),
                     )
                 )
-    return issues[:REVIEW_ISSUES]
+    return issues
 
 
 def _publication_reason(check: dict) -> str:
@@ -626,6 +675,17 @@ def _adapt_publication_postcheck(postcheck: dict, generation: dict) -> tuple[dic
                 "reason": _publication_reason(citations),
             }
         )
+    for identity, projected_identity in PUBLICATION_PROJECTED_CHECKS.items():
+        if identity in checks_by_id:
+            check = checks_by_id[identity]
+            checks.append(
+                {
+                    **check,
+                    "id": projected_identity,
+                    "verdict": PUBLICATION_VERDICTS[check["status"]],
+                    "reason": _publication_reason(check),
+                }
+            )
     if "visual_review_required" in postcheck:
         if not postcheck.get("visual_review_required"):
             render_verdict = "NOT_APPLICABLE"
@@ -690,7 +750,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     if checkpoint not in {"outline", "result"}:
         raise ValueError("review_checkpoint_invalid")
     normalized_checkpoint = cast(Literal["outline", "result"], checkpoint)
-    workspace = scoped_relative(workspace)
+    workspace = scoped_workspace(workspace)
     values, hashes, files = _load(workdir, workspace, (*JSON_FILES, *DOCUMENT_FILES))
     query = values.get(QUERY, {})
     requirements = values.get(REQUIREMENTS, {})
@@ -730,7 +790,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
             ReviewEvidenceLimitation(
                 paper_id=paper_id,
                 title=_text(paper.get("title")) if isinstance(paper, dict) else "",
-                reason=_text(row.get("detail")) or "未取得全文，只能支持题录或摘要层判断",
+                reason=_fulltext_limitation_reason(row),
             )
         )
     generation = values.get(GENERATION, {})
@@ -759,12 +819,24 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     if final is not None and final not in GENERATION_STATUSES:
         raise ValueError("review_generation_status_invalid")
     status = (
-        "outline" if checkpoint == "outline" else GENERATION_PRESENTATION.get(final, "incomplete")
+        "outline"
+        if checkpoint == "outline"
+        else (
+            GENERATION_PRESENTATION.get(final, REVIEW_INCOMPLETE_STATUS)
+            if final is not None
+            else REVIEW_INCOMPLETE_STATUS
+        )
     )
     facts = postcheck.get("facts", {})
     if not isinstance(facts, dict):
         raise ValueError("review_facts_invalid")
-    warnings = []
+    warnings: list[str] = []
+    if checkpoint == REVIEW_RESULT_CHECKPOINT and status == REVIEW_INCOMPLETE_STATUS:
+        warnings.extend(
+            message
+            for artifacts, message in INCOMPLETE_EVIDENCE_WARNINGS.items()
+            if not any(artifact in values for artifact in artifacts)
+        )
     for label, report in (("生成报告", generation), ("核验报告", postcheck)):
         reason = _text(report.get("status_reason") or report.get("reason"))
         if reason:
@@ -792,7 +864,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         intent=intent,
         title=_text(outline.get("survey_title"), REVIEW_TITLE) or "文献综述",
         status=cast(Literal["outline", "generated", "partial", "incomplete", "failed"], status),
-        generation_status=final,
+        generation_status=cast(Literal["SUCCESS", "PARTIAL_SUCCESS", "FAILED"] | None, final),
         scope=_scope(query, writing_request or requirements, corpus),
         output=ReviewOutput(
             format=output.get("format"),
@@ -813,14 +885,19 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         citations=citations,
         abstract_evidence=abstract_evidence[:REVIEW_CITATIONS],
         checks=checks,
-        issues=issues,
+        issues=issues[:REVIEW_ISSUES],
+        issue_count=len(issues),
         warnings=warnings,
         source_hashes=hashes,
     )
     return PreparedReview(card, tuple(files))
 
 
-def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> list[SearchPaper]:
+def _slr_papers(
+    metadata: dict, corpus: dict, report: dict, fulltext: dict, *, complete: bool = False
+) -> list[SearchPaper]:
+    paper_type = SearchPaperDetail if complete else SearchPaper
+    text_limit = None if complete else REVIEW_TEXT
     raw_papers = metadata.get("papers")
     if not isinstance(raw_papers, list) or len(raw_papers) > SEARCH_MAX_PAPERS:
         raise ValueError("review_metadata_invalid")
@@ -836,7 +913,7 @@ def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> l
         if not isinstance(raw, dict):
             raise ValueError("review_metadata_invalid")
         identity = _text(raw.get("paper_id") or raw.get("id"), REVIEW_TITLE)
-        title = _text(raw.get("title"))
+        title = _text(raw.get("title"), text_limit)
         if not identity or not title or identity in seen:
             raise ValueError("review_metadata_invalid")
         seen.add(identity)
@@ -846,9 +923,15 @@ def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> l
         )
         dropped_row = dropped.get(identity, {})
         selected_reason = (
-            _text((selected or {}).get("selection_reason")) if isinstance(selected, dict) else ""
+            _text((selected or {}).get("selection_reason"), text_limit)
+            if isinstance(selected, dict)
+            else ""
         )
-        reason = selected_reason or _text(raw.get("reason")) or _text(dropped_row.get("reason"))
+        reason = (
+            selected_reason
+            or _text(raw.get("reason"), text_limit)
+            or _text(dropped_row.get("reason"), text_limit)
+        )
         row = fulltext_rows.get(identity, {})
         has_text = (_count(row.get("chars")) or 0) > 0
         record = selected if isinstance(selected, dict) else raw
@@ -856,21 +939,24 @@ def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> l
             record.get("external_ids", {}) if isinstance(record.get("external_ids"), dict) else {}
         )
         papers.append(
-            SearchPaper(
+            paper_type(
                 id=identity,
                 title=title,
-                authors=_authors(record.get("authors")),
+                authors=_authors(record.get("authors"), complete=complete),
                 year=record.get("year") if type(record.get("year")) is int else None,
-                venue=_venue(record.get("venue")) or None,
-                doi=_text(record.get("doi") or external_ids.get("DOI"), REVIEW_TITLE) or None,
-                url=_text(record.get("url")) or None,
-                abstract=_text(record.get("abstract")) or None,
+                venue=_venue(record.get("venue"), text_limit) or None,
+                doi=_text(
+                    record.get("doi") or external_ids.get("DOI"), None if complete else REVIEW_TITLE
+                )
+                or None,
+                url=_text(record.get("url"), text_limit) or None,
+                abstract=_text(record.get("abstract"), text_limit) or None,
                 reasons=[reason] if reason else [],
                 tier=_count(record.get("tier")),
                 citation_count=_count(record.get("citation_count")),
                 access="unknown",
                 sources=(
-                    [_text(record.get("source"), REVIEW_TITLE)]
+                    [_text(record.get("source"), None if complete else REVIEW_TITLE)]
                     if _text(record.get("source"))
                     else []
                 ),
@@ -895,13 +981,17 @@ def validate_review_checkpoint(
 ) -> dict[str, str]:
     """Bind one retrieval checkpoint to its launcher, status and exact artifacts."""
 
-    workspace = scoped_relative(workspace)
-    raw = read_scoped_file(workdir, scoped_relative(workspace, manifest), CHECKPOINT_FILE_BYTES)
+    workspace = scoped_workspace(workspace)
+    raw = read_scoped_file(
+        workdir, scoped_workspace_path(workspace, manifest), CHECKPOINT_FILE_BYTES
+    )
     if sha256(raw).hexdigest() != manifest_sha256:
         raise ValueError("review_checkpoint_manifest_changed")
     value = json.loads(raw)
     binding = json.loads(
-        read_scoped_file(workdir, scoped_relative(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES)
+        read_scoped_file(
+            workdir, scoped_workspace_path(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES
+        )
     )
     if (
         not isinstance(value, dict)
@@ -918,7 +1008,9 @@ def validate_review_checkpoint(
     if stage_path != RETRIEVAL_STAGE_STATUS:
         raise ValueError("review_checkpoint_status_invalid")
     stage = json.loads(
-        read_scoped_file(workdir, scoped_relative(workspace, stage_path), CHECKPOINT_FILE_BYTES)
+        read_scoped_file(
+            workdir, scoped_workspace_path(workspace, stage_path), CHECKPOINT_FILE_BYTES
+        )
     )
     if (
         stage.get("stage") != RETRIEVAL_STAGE
@@ -941,12 +1033,12 @@ def validate_review_checkpoint(
         if item.get("path") != expected_path:
             raise ValueError("review_checkpoint_artifacts_invalid")
         artifact = read_scoped_file(
-            workdir, scoped_relative(workspace, expected_path), REVIEW_FILE_BYTES
+            workdir, scoped_workspace_path(workspace, expected_path), REVIEW_FILE_BYTES
         )
         digest = sha256(artifact).hexdigest()
         if digest != item.get("sha256"):
             raise ValueError("review_checkpoint_artifact_changed")
-        expected_hashes[scoped_relative(workspace, expected_path)] = digest
+        expected_hashes[scoped_workspace_path(workspace, expected_path)] = digest
     return expected_hashes
 
 
@@ -957,10 +1049,10 @@ def review_retrieval_run(workdir: Path, workspace: str) -> str:
     workspace itself is the identity, so a skill refresh cannot silently disable the gate.
     """
 
-    workspace = scoped_relative(workspace)
+    workspace = scoped_workspace(workspace)
     stage = json.loads(
         read_scoped_file(
-            workdir, scoped_relative(workspace, RETRIEVAL_STAGE_STATUS), CHECKPOINT_FILE_BYTES
+            workdir, scoped_workspace_path(workspace, RETRIEVAL_STAGE_STATUS), CHECKPOINT_FILE_BYTES
         )
     )
     if (
@@ -970,7 +1062,9 @@ def review_retrieval_run(workdir: Path, workspace: str) -> str:
     ):
         raise ValueError("review_checkpoint_status_invalid")
     binding = json.loads(
-        read_scoped_file(workdir, scoped_relative(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES)
+        read_scoped_file(
+            workdir, scoped_workspace_path(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES
+        )
     )
     if not isinstance(binding, dict):
         raise ValueError("review_checkpoint_identity_invalid")
@@ -983,7 +1077,7 @@ def review_retrieval_run(workdir: Path, workspace: str) -> str:
 
 def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> PreparedReviewSearch:
     """Project SLR retrieval artifacts into the existing saved-search card contract."""
-    workspace = scoped_relative(workspace)
+    workspace = scoped_workspace(workspace)
     names = (QUERY, REQUIREMENTS, METADATA, CORPUS, RETRIEVAL, FULLTEXT)
     values, hashes, files = _load(workdir, workspace, names)
     query = values.get(QUERY, {})
@@ -1009,6 +1103,13 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
     for paper in papers:
         for source in paper.sources:
             source_counts[source] = source_counts.get(source, 0) + 1
+    warnings = _strings(report.get("degradations"), REVIEW_CHECKS)
+    if warnings:
+        logger.warning(
+            "literature_retrieval_diagnostics run_id=%s diagnostics=%s",
+            run_id,
+            json.dumps(warnings, ensure_ascii=False),
+        )
     card = SearchResult(
         run_id=run_id,
         round=1,
@@ -1022,13 +1123,13 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
         deduplicated=_count(report.get("input_count")),
         retained=len(corpus),
         papers=papers[:SEARCH_CARD_PAPERS],
-        warnings=_strings(report.get("degradations"), REVIEW_CHECKS),
+        warnings=warnings,
         origin=LITERATURE_REVIEW_ORIGIN,
     )
     included = tuple(
         authorization_source(paper) for paper in papers if paper.decision == "included"
     )
-    corpus_path = scoped_relative(workspace, CORPUS)
+    corpus_path = scoped_workspace_path(workspace, CORPUS)
     return PreparedReviewSearch(card, tuple(files), included, hashes[corpus_path])
 
 
@@ -1036,5 +1137,5 @@ def project_review_search_artifacts(values: dict[str, bytes]) -> list[SearchPape
     """Rebuild the full SLR candidate list from immutable session artifacts."""
     parsed = {name: json.loads(raw) for name, raw in values.items()}
     return _slr_papers(
-        parsed[METADATA], parsed[CORPUS], parsed[RETRIEVAL], parsed.get(FULLTEXT, {})
+        parsed[METADATA], parsed[CORPUS], parsed[RETRIEVAL], parsed.get(FULLTEXT, {}), complete=True
     )

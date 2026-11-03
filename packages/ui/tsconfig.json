@@ -1,0 +1,16 @@
+{
+  "extends": "../../apps/desktop/tsconfig.web.json",
+  "compilerOptions": {
+    "composite": false,
+    "baseUrl": "../../apps/desktop",
+    "typeRoots": ["../../apps/desktop/node_modules/@types"],
+    "paths": {
+      "react": ["node_modules/@types/react/index.d.ts"],
+      "react/*": ["node_modules/@types/react/*"],
+      "react-dom": ["node_modules/@types/react-dom/index.d.ts"],
+      "react-dom/*": ["node_modules/@types/react-dom/*"],
+      "*": ["node_modules/*", "node_modules/@types/*"]
+    }
+  },
+  "include": ["*.ts", "*.tsx", "example/*.tsx", "../../apps/desktop/node_modules/vite/client.d.ts", "../../apps/desktop/src/renderer/src/global.d.ts", "../../apps/desktop/src/localization/types.d.ts"]
+}

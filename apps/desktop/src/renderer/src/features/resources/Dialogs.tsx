@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
+import { FolderOpen } from 'lucide-react'
 
 import {
   Alert,
@@ -21,19 +22,127 @@ import {
   DialogHeader,
   DialogTitle,
   EmptyState,
+  Input,
+  Label,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue
+  SelectValue,
 } from '../../components/ui'
 import { useApp } from '../../store'
+import { systemTrashKey } from '../../trash'
 import { hasDirtyProjectPath, useDocumentWorkspace } from '../workbench/workspace'
 import { validateResourceMove } from './lifecycle'
-import { ResourceNode } from './state'
+import { RESOURCE_CREATE_NAME_LIMIT, type ResourceNode } from './state'
 
 /** 绝对路径没有单词边界，必须允许在任意字符处折行，否则会顶穿弹窗宽度。 */
 const PATH_TEXT_CLASS_NAME = '[overflow-wrap:anywhere]'
+
+export function CreateDialog(): React.JSX.Element | null {
+  const { t } = useTranslation('resources')
+  const { t: uiText } = useTranslation('ui')
+  const { state, act } = useApp()
+  const draft = state.resource.nameDraft
+  const input = useRef<HTMLInputElement>(null)
+  const inputId = useId()
+  const creating = draft !== null && draft.mode !== 'rename'
+  useEffect(() => {
+    if (creating) input.current?.select()
+  }, [creating, draft?.mode, draft?.target])
+  useEffect(() => {
+    if (creating && draft?.error) input.current?.focus()
+  }, [creating, draft?.error])
+  if (!creating || !draft) return null
+  const folder = draft.mode === 'create_folder'
+  const label = folder ? t('creation.folderName') : t('creation.documentName')
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !draft.submitting) act.cancelResourceNameDraft()
+      }}
+    >
+      <DialogContent
+        data-testid="resource-create-dialog"
+        aria-label={folder ? t('panel.newFolder') : t('panel.newDocument')}
+        aria-describedby={undefined}
+      >
+        <DialogHeader>
+          <DialogTitle>{folder ? t('panel.newFolder') : t('panel.newDocument')}</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-[var(--vds-space-2)]">
+          <Label htmlFor={inputId}>
+            {label}
+            <span
+              aria-hidden="true"
+              className="ml-[var(--vds-space-1)] text-[var(--vds-error-text-primary)]"
+            >
+              *
+            </span>
+          </Label>
+          <div className="flex items-start gap-[var(--vds-space-2)]">
+            <div className="relative min-w-0 flex-1">
+              <Input
+                id={inputId}
+                ref={input}
+                required
+                size="standard"
+                maxLength={RESOURCE_CREATE_NAME_LIMIT}
+                className="pr-[var(--vds-space-12)]"
+                data-testid="resource-name-input"
+                value={draft.value}
+                placeholder={
+                  folder ? t('creation.folderPlaceholder') : t('creation.documentPlaceholder')
+                }
+                disabled={draft.submitting}
+                error={draft.error ? t(draft.error) : undefined}
+                onChange={(event) => act.setResourceNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                    event.preventDefault()
+                    act.commitResourceNameDraft()
+                  }
+                }}
+              />
+              <span
+                aria-hidden="true"
+                data-testid="resource-name-count"
+                className="pointer-events-none absolute right-[var(--vds-space-3)] top-0 flex h-[var(--vds-control-height-standard)] items-center text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]"
+              >
+                {draft.value.length}/{RESOURCE_CREATE_NAME_LIMIT}
+              </span>
+            </div>
+            {draft.suffix && (
+              <span
+                data-testid="resource-name-suffix"
+                className="flex h-[var(--vds-control-height-standard)] items-center text-[var(--vds-text-secondary)]"
+              >
+                {draft.suffix}
+              </span>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            disabled={draft.submitting}
+            onClick={act.cancelResourceNameDraft}
+          >
+            {uiText('cancel')}
+          </Button>
+          <Button
+            disabled={draft.submitting || !draft.value.trim()}
+            loading={draft.submitting}
+            onClick={() => act.commitResourceNameDraft()}
+          >
+            {uiText('create')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 /** 关联目录内新建会修改外部源目录，执行前必须取得用户明确确认。 */
 export function LinkedCreateConfirm(): React.JSX.Element | null {
@@ -57,12 +166,19 @@ export function LinkedCreateConfirm(): React.JSX.Element | null {
         <AlertDialogHeader>
           <AlertDialogTitle>{t('linkedCreate.title')}</AlertDialogTitle>
           <AlertDialogDescription>
-            <Trans ns="resources" i18nKey="linkedCreate.description" values={{ name: pending.directoryName }} components={{ name: <strong /> }} />
+            <Trans
+              ns="resources"
+              i18nKey="linkedCreate.description"
+              values={{ name: pending.directoryName }}
+              components={{ name: <strong /> }}
+            />
           </AlertDialogDescription>
         </AlertDialogHeader>
         <Alert tone="warning">
           <AlertDescription truncate={false}>
-            {pending.mode === 'create_folder' ? t('linkedCreate.folderWarning') : t('linkedCreate.documentWarning')}
+            {pending.mode === 'create_folder'
+              ? t('linkedCreate.folderWarning')
+              : t('linkedCreate.documentWarning')}
           </AlertDescription>
         </Alert>
         <AlertDialogFooter>
@@ -92,6 +208,7 @@ export function LinkedCreateConfirm(): React.JSX.Element | null {
 export function DeleteConfirm(): React.JSX.Element | null {
   const { t } = useTranslation('resources')
   const { t: uiText } = useTranslation('ui')
+  const trash = uiText(systemTrashKey())
   const { state, act } = useApp()
   const documents = useDocumentWorkspace()
   const target = state.resource.deleteConfirm
@@ -103,21 +220,40 @@ export function DeleteConfirm(): React.JSX.Element | null {
   )
 
   return (
-    <AlertDialog open onOpenChange={(open) => {
-      if (!open) act.cancelResourceDelete()
-    }}>
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.cancelResourceDelete()
+      }}
+    >
       <AlertDialogContent data-testid="resource-delete-confirm">
         <AlertDialogHeader>
           <AlertDialogTitle>
             {target.kind === 'dir' ? t('delete.folderTitle') : t('delete.fileTitle')}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {target.kind === 'dir' ? <Trans ns="resources" i18nKey="delete.folderDescription" values={{ name: target.name }} components={{ name: <strong /> }} /> : <Trans ns="resources" i18nKey="delete.fileDescription" values={{ name: target.name }} components={{ name: <strong /> }} />}
+            {target.kind === 'dir' ? (
+              <Trans
+                ns="resources"
+                i18nKey="delete.folderDescription"
+                values={{ name: target.name }}
+                components={{ name: <strong /> }}
+              />
+            ) : (
+              <Trans
+                ns="resources"
+                i18nKey="delete.fileDescription"
+                values={{ name: target.name }}
+                components={{ name: <strong /> }}
+              />
+            )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <Alert tone="warning">
           <AlertDescription truncate={false}>
-            {hasUnsavedChanges ? t('delete.unsavedWarning') : t('delete.warning')}
+            {hasUnsavedChanges
+              ? t('delete.unsavedWarning', { trash })
+              : t('delete.warning', { trash })}
           </AlertDescription>
         </Alert>
         <AlertDialogFooter>
@@ -132,7 +268,7 @@ export function DeleteConfirm(): React.JSX.Element | null {
             data-testid="resource-delete-go"
             onClick={() => void act.deleteResourceNode()}
           >
-            {t('delete.action')}
+            {t('delete.action', { trash })}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -149,9 +285,12 @@ export function UnlinkConfirm(): React.JSX.Element | null {
   if (!target) return null
 
   return (
-    <AlertDialog open onOpenChange={(open) => {
-      if (!open) act.cancelResourceUnlink()
-    }}>
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.cancelResourceUnlink()
+      }}
+    >
       <AlertDialogContent data-testid="resource-unlink-confirm">
         <AlertDialogHeader>
           <AlertDialogTitle>{t('unlink.title', { name: target.name })}</AlertDialogTitle>
@@ -175,7 +314,9 @@ export function UnlinkConfirm(): React.JSX.Element | null {
           </AlertDescription>
         </Alert>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={act.cancelResourceUnlink}>{uiText('cancel')}</AlertDialogCancel>
+          <AlertDialogCancel onClick={act.cancelResourceUnlink}>
+            {uiText('cancel')}
+          </AlertDialogCancel>
           <Button
             variant="danger"
             data-testid="resource-unlink-go"
@@ -204,32 +345,35 @@ export function LinkSupersedeConfirm(): React.JSX.Element | null {
   if (!pending) return null
 
   return (
-    <AlertDialog open onOpenChange={(open) => {
-      if (!open) act.cancelLinkSupersede()
-    }}>
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.cancelLinkSupersede()
+      }}
+    >
       <AlertDialogContent
         aria-label={t('linkSupersede.label')}
         data-testid="resource-link-supersede-confirm"
       >
         <AlertDialogHeader>
           <AlertDialogTitle>{t('linkSupersede.title')}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {t('linkSupersede.description')}
-          </AlertDialogDescription>
+          <AlertDialogDescription>{t('linkSupersede.description')}</AlertDialogDescription>
         </AlertDialogHeader>
         <div
-          className="mt-4 rounded-[10px] border border-[var(--vds-border-default)] p-4"
+          className="mt-[var(--vds-resource-dialog-content-margin-top)] rounded-[var(--vds-resource-dialog-content-radius)] border border-[var(--vds-border-default)] p-[var(--vds-resource-dialog-content-padding)]"
           data-testid="resource-link-supersede-covered-box"
         >
-          <div className="text-[13px] font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
+          <div className="text-[length:var(--vds-resource-dialog-title-font-size)] font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
             {t('linkSupersede.coveredLabel', { count: pending.covered.length })}
           </div>
           <ul
-            className="mt-1 list-disc pl-5 text-[11.5px] text-[var(--vds-text-secondary)]"
+            className="mt-[var(--vds-resource-dialog-list-margin-top)] list-disc pl-[var(--vds-resource-dialog-list-padding-inline-start)] text-[length:var(--vds-resource-dialog-list-font-size)] text-[var(--vds-text-secondary)]"
             data-testid="resource-link-supersede-covered"
           >
             {pending.covered.map((child) => (
-              <li className="break-all" key={child.rootId}>{child.name}</li>
+              <li className="break-all" key={child.rootId}>
+                {child.name}
+              </li>
             ))}
           </ul>
         </div>
@@ -290,9 +434,9 @@ export function MoveDialog(): React.JSX.Element | null {
 
   const options = useMemo(() => {
     if (!dialog) return []
-    return flattenDirs(state.resource.tree).filter((row) => (
-      validateResourceMove(state.resource.tree, dialog.path, row.path).ok
-    ))
+    return flattenDirs(state.resource.tree).filter(
+      (row) => validateResourceMove(state.resource.tree, dialog.path, row.path).ok
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog?.path, state.resource.tree])
 
@@ -309,9 +453,12 @@ export function MoveDialog(): React.JSX.Element | null {
   const rootAllowed = validateResourceMove(state.resource.tree, dialog.path, '').ok
 
   return (
-    <Dialog open onOpenChange={(open) => {
-      if (!open) act.closeResourceMoveDialog()
-    }}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.closeResourceMoveDialog()
+      }}
+    >
       <DialogContent data-testid="resource-move-dialog">
         <DialogHeader>
           <DialogTitle>{t('move.title', { name: dialog.name })}</DialogTitle>
@@ -343,6 +490,8 @@ export function MoveDialog(): React.JSX.Element | null {
               </>
             ) : (
               <EmptyState
+                variant="compact"
+                icon={<FolderOpen />}
                 data-testid="resource-move-target-empty"
                 title={t('move.empty')}
               />

@@ -1,71 +1,123 @@
 {
   "name": "scholarseed-desktop",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "书深 — 科研智能体桌面应用",
   "main": "out/main/index.js",
-  "author": "ScholarSeed",
+  "author": {
+    "name": "Alibaba Damo (Hangzhou) Technology Co., Ltd."
+  },
   "license": "Apache-2.0",
-  "packageManager": "npm@11.13.0",
   "engines": {
-    "node": "24.16.0",
-    "npm": "11.13.0"
+    "node": "24.16.0"
+  },
+  "toolchain": {
+    "defaultPackageManager": "pnpm@12.14.0"
   },
   "scripts": {
-    "preinstall": "node ../../scripts/toolchain.cjs check",
-    "pretest": "node ../../scripts/toolchain.cjs check && node --test ../../scripts/artifacts.test.cjs runtime/codex.test.cjs runtime/browser.test.cjs runtime/python.test.cjs runtime/texlive.test.cjs runtime/components.test.cjs scripts/browser.test.cjs scripts/closure.test.cjs scripts/python.test.cjs scripts/toolchain.test.cjs && npm run i18n:test",
-    "postinstall": "install-electron",
-    "predev": "node scripts/office-assets.cjs && npm run prepare:python && node ../../scripts/toolchain.cjs check && node scripts/identity.cjs",
-    "dev": "electron-vite dev",
-    "dev:web": "vite --config vite.web.config.ts",
-    "prebuild": "npm run prepare:python && node ../../scripts/toolchain.cjs check",
-    "build": "node scripts/office-assets.cjs && electron-vite build",
-    "build:web": "vite build --config vite.web.config.ts",
-    "preview:web": "vite preview --config vite.web.config.ts",
-    "test": "node --experimental-transform-types --test scripts/build.test.cjs scripts/reuse.test.mjs \"*.test.ts\" \"src/**/*.test.ts\"",
-    "test:coverage": "c8 --reporter=text --reporter=html --reporter=cobertura --all --include='src/**' node --experimental-transform-types --test scripts/build.test.cjs scripts/reuse.test.mjs \"*.test.ts\" \"src/**/*.test.ts\"",
-    "test:literature-search": "node --experimental-transform-types --test src/renderer/src/features/literature/search.test.ts",
-    "prepreview": "npm run prepare:python && node ../../scripts/toolchain.cjs check && node scripts/identity.cjs",
-    "preview": "electron-vite preview",
+    "preinstall": "node ../../scripts/pre/toolchain.cjs check",
+    "postinstall": "node scripts/pre/electron.cjs",
+    "prepare:python": "node ../../scripts/shared/python.cjs prepare-dev",
+    "ui:build": "node ../../packages/ui/build.cjs --archive ../serve/service/capabilities/ui.zip",
+    "predev": "node scripts/pre/office-assets.cjs && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && npm run ui:build && node scripts/pre/identity.cjs",
+    "dev": "node scripts/dev/runner.cjs desktop development",
+    "predev:web": "node ../../scripts/pre/toolchain.cjs frontend",
+    "dev:web": "node scripts/dev/runner.cjs modules vite --config vite.web.config.ts",
+    "predev:preview": "node ../../scripts/pre/toolchain.cjs frontend",
+    "dev:preview": "node scripts/dev/runner.cjs modules vite --config vite.preview.config.ts",
+    "predev:pdfe": "node ../../scripts/pre/toolchain.cjs frontend",
+    "dev:pdfe": "node --experimental-transform-types scripts/dev/pdfe.mjs",
+    "prepreview": "node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && node scripts/pre/identity.cjs",
+    "preview": "node scripts/dev/runner.cjs desktop electron-vite preview",
+    "prepreview:web": "node ../../scripts/pre/toolchain.cjs frontend",
+    "preview:web": "node scripts/dev/runner.cjs modules vite preview --config vite.web.config.ts",
+    "preshoot": "node ../../scripts/pre/toolchain.cjs check",
     "shoot": "electron-vite build && electron .",
-    "bundle:backend": "npm run prepare:python && node scripts/build.cjs --stage backend --type dev",
-    "package:dir": "npm run prepare:python && node scripts/build.cjs --stage dir --type dev",
-    "package:installer": "npm run package",
-    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "typecheck": "node scripts/ci/types.cjs",
+    "lint": "eslint src/ --max-warnings 305",
+    "lint:fix": "eslint src/ --fix",
+    "i18n:check": "node scripts/ci/localization.mjs",
+    "i18n:dom:gaps": "node scripts/ci/localization/gaps.mjs",
+    "i18n:generate": "node scripts/ci/localization.mjs --generate",
+    "check:preview:bundle": "node --experimental-transform-types preview/verify.ts",
+    "pretest": "node scripts/ci/pretest.cjs",
+    "test": "node scripts/ci/test.cjs",
+    "test:coverage": "node scripts/ci/test.cjs --coverage",
+    "test:native": "node --test native/security.test.cjs native/lease.test.cjs native/family.test.cjs native/fonts.test.cjs native/staging.test.cjs native/relaunch.test.cjs native/reclamation.test.cjs",
+    "native:contract": "node scripts/ci/native-contract.cjs",
+    "test:literature-search": "node --experimental-transform-types --test src/renderer/src/features/literature/search.test.ts",
+    "test:preview": "node --experimental-transform-types --test preview/*.test.ts preview/*.test.mjs",
+    "test:preview:ui": "node --experimental-transform-types node_modules/@playwright/test/cli.js test --config preview/native.config.ts --project pdfe",
+    "i18n:test": "node --test scripts/ci/localization/__tests__/*.test.mjs",
     "test:e2e": "playwright test",
-    "test:e2e:mr": "npm run build && playwright test --project=smoke",
-    "test:e2e:live": "npm run build && playwright test --project=live",
-    "test:e2e:update": "npm run build && playwright test --project=update",
-    "i18n:check": "node scripts/localization.mjs",
-    "i18n:dom:gaps": "node scripts/localization/gaps.mjs",
-    "i18n:generate": "node scripts/localization.mjs --generate",
-    "i18n:test": "node --test scripts/localization/*.test.mjs",
-    "preshoot": "node ../../scripts/toolchain.cjs check",
-    "predev:web": "node ../../scripts/toolchain.cjs frontend",
-    "prebuild:web": "node ../../scripts/toolchain.cjs frontend",
-    "prepreview:web": "node ../../scripts/toolchain.cjs frontend",
-    "prepare:python": "node ../../scripts/python.cjs prepare-dev",
-    "build:check": "npm run package:check",
-    "package": "npm run prepare:python && node scripts/package.cjs package",
-    "build:release": "npm run package:distribution",
-    "package:check": "npm run prepare:python && node scripts/package.cjs check",
-    "release": "npm run package:distribution",
-    "package:distribution": "npm run prepare:python && node scripts/package.cjs release",
-    "package:dist": "npm run package:distribution"
+    "test:e2e:mr": "node scripts/ci/e2e.cjs mr",
+    "test:e2e:live": "node scripts/ci/e2e.cjs live",
+    "test:e2e:update": "node scripts/ci/e2e.cjs update",
+    "prebuild": "node scripts/security.cjs --check && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && npm run ui:build",
+    "build": "node scripts/pre/office-assets.cjs && electron-vite build",
+    "prebuild:web": "node ../../scripts/pre/toolchain.cjs frontend",
+    "build:web": "vite build --config vite.web.config.ts",
+    "bundle:backend": "node ../../scripts/pre/toolchain.cjs run prepare:python && node scripts/cd/build.cjs --stage backend --type dev",
+    "package:dir": "node ../../scripts/pre/toolchain.cjs run prepare:python && node scripts/cd/build.cjs --stage dir --type dev",
+    "package": "node ../../scripts/pre/toolchain.cjs run prepare:python && node scripts/cd/package.cjs package",
+    "package:check": "node ../../scripts/pre/toolchain.cjs run prepare:python && node scripts/cd/package.cjs check",
+    "package:distribution": "node ../../scripts/pre/toolchain.cjs run prepare:python && node scripts/cd/package.cjs release",
+    "package:dist": "node ../../scripts/cd/distribution.cjs"
   },
   "devDependencies": {
+    "@aiden0z/pptx-renderer": "1.3.0",
     "@babel/core": "7.29.7",
     "@codemirror/view": "6.43.10",
     "@electron/asar": "3.4.1",
-    "semver": "6.3.1",
+    "@electron/osx-sign": "1.3.3",
+    "@eslint/js": "^10.0.1",
+    "@fontsource/ibm-plex-mono": "^5.0.18",
+    "@fontsource/newsreader": "^5.0.18",
+    "@fontsource/noto-serif-sc": "^5.3.0",
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
+    "@playwright/cli": "0.1.20",
+    "@playwright/test": "^1.59.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@tanstack/react-virtual": "^3.14.13",
+    "@types/hast": "3.0.5",
+    "@types/mdast": "4.0.4",
+    "@types/node": "^22.7.0",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@types/utif": "3.0.6",
+    "@types/ws": "8.18.1",
+    "@types/yauzl": "3.4.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "@xmldom/xmldom": "0.8.15",
+    "c8": "^10.0.0",
     "decode-named-character-reference": "1.3.0",
+    "docx-preview": "0.4.1",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.7",
+    "electron-vite": "4.0.1",
+    "esbuild": "0.25.12",
+    "emf-converter": "4.20.3",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "exceljs": "4.4.0",
     "fflate": "0.8.3",
+    "husky": "^9.1.7",
+    "i18next": "26.4.2",
     "katex": "0.18.1",
+    "lint-staged": "^17.5.1",
     "lucide-react": "^1.41.0",
+    "micromark-util-types": "2.0.2",
     "monaco-editor": "0.56.0",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "6.3.289",
+    "pe-library": "0.4.1",
+    "playwright": "1.59.1",
+    "postcss": "^8.5.6",
+    "prettier": "3.9.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-i18next": "17.0.13",
     "react-markdown": "10.1.0",
     "rehype-katex": "7.0.1",
     "rehype-sanitize": "6.0.0",
@@ -73,35 +125,30 @@
     "remark-cjk-friendly": "2.3.1",
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
-    "zetajs": "1.2.0",
-    "@fontsource/ibm-plex-mono": "^5.0.18",
-    "@fontsource/newsreader": "^5.0.18",
-    "@fontsource/noto-serif-sc": "^5.3.0",
-    "@playwright/cli": "0.1.20",
-    "@playwright/test": "^1.59.1",
-    "@tailwindcss/postcss": "^4.3.3",
-    "@types/hast": "3.0.5",
-    "@types/node": "^22.7.0",
-    "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.2",
-    "c8": "^10.0.0",
-    "electron": "44.3.0",
-    "electron-builder": "26.15.7",
-    "electron-vite": "4.0.1",
-    "postcss": "^8.5.6",
-    "prettier": "3.9.8",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "remark-parse": "11.0.0",
+    "resedit": "1.7.2",
+    "semver": "6.3.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.70.1",
+    "unified": "11.0.5",
+    "utif": "3.1.0",
+    "velopack": "1.2.161",
     "vite": "7.3.6",
-    "i18next": "26.4.2",
-    "react-i18next": "17.0.13"
+    "vfile": "6.0.3",
+    "ws": "8.21.3",
+    "yaml": "2.9.1",
+    "yauzl": "3.4.0",
+    "zetajs": "1.2.0"
   },
   "overrides": {
     "dompurify": "3.4.15",
     "ejs": "6.0.1"
+  },
+  "resolutions": {
+    "@types/node": "22.19.21",
+    "esbuild": "0.25.12",
+    "rollup": "4.62.0"
   },
   "build": {
     "appId": "com.scholarseed.desktop",
@@ -110,11 +157,12 @@
       "output": "release",
       "buildResources": "resources"
     },
-    "afterSign": "scripts/notarize.cjs",
-    "afterPack": "scripts/sign.cjs",
-    "afterAllArtifactBuild": "scripts/verify.cjs",
+    "afterSign": "scripts/cd/notarize.cjs",
+    "afterPack": "scripts/cd/sign.cjs",
+    "afterAllArtifactBuild": "scripts/cd/verify.cjs",
     "files": [
-      "out/**/*",
+      "out/main/**/*",
+      "out/preload/**/*",
       "!out/renderer/**/*",
       "LICENSE",
       "package.json"
@@ -144,6 +192,22 @@
         "to": "windows-tray.ico"
       },
       {
+        "from": "resources/tray.ico",
+        "to": "tray.ico"
+      },
+      {
+        "from": "resources/tray-white.ico",
+        "to": "tray-white.ico"
+      },
+      {
+        "from": "resources/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "resources/tray.png",
+        "to": "tray.png"
+      },
+      {
         "from": "resources/product.json",
         "to": "product.json"
       },
@@ -161,6 +225,10 @@
           "InfoPlist.strings"
         ]
       }
+    ],
+    "electronLanguages": [
+      "zh-CN",
+      "en"
     ],
     "mac": {
       "category": "public.app-category.productivity",
@@ -204,12 +272,6 @@
       "icon": "resources/windows.ico",
       "target": [
         {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
           "target": "dir",
           "arch": [
             "x64"
@@ -217,16 +279,8 @@
         }
       ]
     },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "书深",
-      "deleteAppDataOnUninstall": false
-    },
     "dmg": {
+      "format": "ULFO",
       "title": "ScholarSeed",
       "contents": [
         {
@@ -253,5 +307,14 @@
   "allowScripts": {
     "electron@44.3.0": true,
     "esbuild@0.21.5": true
+  },
+  "lint-staged": {
+    "src/**/*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "src/**/*.{css,json}": [
+      "prettier --write"
+    ]
   }
 }

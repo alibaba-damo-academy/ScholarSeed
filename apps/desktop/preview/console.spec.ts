@@ -1,0 +1,138 @@
+import { randomUUID } from 'node:crypto'
+import { openPreviewTools, expect, test, previewSurface } from './testing'
+import { capturePreview } from './capture'
+import zh from './locales/zh.json'
+import en from './locales/en.json'
+import { PREVIEW_ORIGIN } from './constants'
+import { WORKSPACE_WINDOW_MINIMUM } from '../src/window'
+
+test('F8 docks preview controls beside the real settings modal and preserves its project archive selection', async ({
+  page,
+}, testInfo) => {
+  const externalOrigins: string[] = []
+  const pageErrors: string[] = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (['http:', 'https:'].includes(url.protocol) && url.origin !== PREVIEW_ORIGIN)
+      externalOrigins.push(url.origin)
+  })
+  page.on('pageerror', (error) => pageErrors.push(error.stack ?? error.message))
+  await page.goto(
+    `/?previewInstance=${randomUUID()}&page=settings-archives&scene=settings-archives-states`
+  )
+  const archives = previewSurface(page).getByTestId('account-settings-archives')
+  await expect(archives).toBeVisible()
+  const rows = archives
+    .locator('[data-testid^="account-archived-"]')
+    .filter({ has: previewSurface(page).getByRole('checkbox') })
+    .filter({ has: previewSurface(page).getByRole('button', { name: '取消归档', exact: true }) })
+  await expect(rows).toHaveCount(2)
+  const selection = rows.first().getByRole('checkbox')
+  await selection.click()
+  await expect(selection).toBeChecked()
+  const originalArchives = await archives.elementHandle()
+  const console = page.getByRole('dialog', { name: zh.title, exact: true })
+  await expect(console).toBeVisible()
+  await expect(page.getByTestId('preview-console-trigger')).toHaveCount(0)
+  await console.getByRole('button', { name: zh.close, exact: true }).click()
+  await page.keyboard.press('Shift+F8')
+  await expect(console).not.toBeVisible()
+  await page.keyboard.press('F8')
+  await expect(console).toBeVisible()
+  await expect(console).not.toHaveAttribute('aria-modal', 'true')
+  const renderer = await page.locator('#scholarseed-preview-viewport').boundingBox()
+  const frame = await console.boundingBox()
+  expect(frame).not.toBeNull()
+  expect(frame!.y).toBeGreaterThanOrEqual(0)
+  expect(frame!.y + frame!.height).toBeLessThanOrEqual(page.viewportSize()!.height)
+  expect(frame!.x).toBeGreaterThanOrEqual(renderer!.x + renderer!.width)
+  expect(frame!.x + frame!.width).toBeCloseTo(page.viewportSize()!.width, 0)
+  const handle = page.getByTestId('preview-dock-resize')
+  await handle.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect.poll(async () => (await console.boundingBox())!.width).toBeGreaterThan(frame!.width)
+  await selection.click()
+  await expect(selection).not.toBeChecked()
+  await expect(console).toBeVisible()
+  await selection.click()
+  await expect(selection).toBeChecked()
+  await console.getByRole('button', { name: zh.guide, exact: true }).click()
+  const guide = page.getByRole('dialog', { name: zh.guide, exact: true })
+  await expect(guide.getByText(zh.consoleShortcut, { exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(guide).not.toBeVisible()
+  await expect(console.getByTestId('preview-archive-recover')).toHaveCount(0)
+  await page.keyboard.press('F8')
+  await expect(console).toHaveCount(1)
+  await capturePreview(page, testInfo.outputPath('console-over-settings.png'))
+  await page.setViewportSize(WORKSPACE_WINDOW_MINIMUM)
+  const narrowFrame = await console.boundingBox()
+  expect(narrowFrame).not.toBeNull()
+  expect(narrowFrame!.y).toBeGreaterThanOrEqual(0)
+  expect(narrowFrame!.y + narrowFrame!.height).toBeLessThanOrEqual(WORKSPACE_WINDOW_MINIMUM.height)
+  await openPreviewTools(page)
+  await console.locator('#preview-theme').click()
+  await page.getByRole('option', { name: zh.dark, exact: true }).click()
+  await expect(console.locator('#preview-theme')).toContainText(zh.dark)
+  await capturePreview(page, testInfo.outputPath('console-minimum-select.png'))
+  await console.getByRole('button', { name: zh.close, exact: true }).click()
+  await expect(console).not.toBeVisible()
+  await expect(archives).toBeVisible()
+  await expect(selection).toBeChecked()
+  expect(await archives.evaluate((node, original) => node === original, originalArchives)).toBe(
+    true
+  )
+  await capturePreview(page, testInfo.outputPath('console-returned-settings.png'))
+  await page.keyboard.press('F8')
+  await expect(console).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(console).not.toBeVisible()
+  await expect(archives).toBeVisible()
+  await expect(selection).toBeChecked()
+  expect(await archives.evaluate((node, original) => node === original, originalArchives)).toBe(
+    true
+  )
+  await originalArchives!.dispose()
+  expect(externalOrigins).toEqual([])
+  expect(pageErrors).toEqual([])
+})
+
+test('docked controls resize by pointer and keep the real composer draft across collapse', async ({ page }, testInfo) => {
+  await page.goto(`/?previewInstance=${randomUUID()}&page=page-conversation&scene=conversation-stream`)
+  const console = page.getByRole('dialog', { name: zh.title, exact: true })
+  const composer = previewSurface(page).getByTestId('composer-input')
+  await expect(console).toBeVisible()
+  await composer.fill('右侧面板试用草稿')
+  const originalComposer = await composer.elementHandle()
+  await capturePreview(page, testInfo.outputPath('dock-conversation-light.png'))
+  const frame = (await console.boundingBox())!
+  const handle = (await page.getByTestId('preview-dock-resize').boundingBox())!
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(handle.x - 80, handle.y + handle.height / 2)
+  await page.mouse.up()
+  await expect.poll(async () => (await console.boundingBox())!.width).toBeGreaterThan(frame.width)
+  const resizedWidth = (await console.boundingBox())!.width
+  await console.getByRole('button', { name: zh.close, exact: true }).click()
+  await expect(console).not.toBeVisible()
+  await expect(composer).toHaveValue('右侧面板试用草稿')
+  expect(await composer.evaluate((node, original) => node === original, originalComposer)).toBe(true)
+  await expect.poll(async () => (await page.locator('#scholarseed-preview-viewport').boundingBox())!.width).toBe(page.viewportSize()!.width)
+  await page.keyboard.press('F8')
+  await expect.poll(async () => (await console.boundingBox())!.width).toBe(resizedWidth)
+  await capturePreview(page, testInfo.outputPath('dock-conversation-resized.png'))
+  await page.setViewportSize(WORKSPACE_WINDOW_MINIMUM)
+  await openPreviewTools(page)
+  await console.locator('#preview-theme').click()
+  await page.getByRole('option', { name: zh.dark, exact: true }).click()
+  await openPreviewTools(page)
+  await console.locator('#preview-language').click()
+  await page.getByRole('option', { name: zh.english, exact: true }).click()
+  await console.getByRole('button', { name: zh.save, exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  const englishConsole = page.getByRole('dialog', { name: en.title, exact: true })
+  await expect(englishConsole).toBeVisible()
+  expect(await englishConsole.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await capturePreview(page, testInfo.outputPath('dock-conversation-dark-english-minimum.png'))
+  await originalComposer!.dispose()
+})

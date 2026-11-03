@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
@@ -12,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from importlib.util import find_spec
@@ -25,6 +27,15 @@ SKILL_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
 from download_access import download_access
+from filesystem import (  # noqa: E402
+    WINDOWS,
+    WINDOWS_PATH_BUDGET,
+    canonical_path,
+    filesystem_path,
+    ordinary_windows_path,
+    path_exists,
+    windows_worst_path_length,
+)
 from io_utils import (  # noqa: E402
     atomic_write_json,
     atomic_write_text,
@@ -33,8 +44,10 @@ from io_utils import (  # noqa: E402
     utc_now,
 )
 from platform_support import executable_command, venv_executable
-from process_control import ChildProcessCancelled, run_cancellable  # noqa: E402
+from post_open_gate import paid_pending, paper_arxiv_id  # noqa: E402
+from process_control import ChildProcessCancelled  # noqa: E402
 from progress import update_progress  # noqa: E402
+from stage_guard import require_download  # noqa: E402
 from browser_pool import (  # noqa: E402
     BrowserPool, abandon, cancellation_signals, run_lock, validate_config,
 )
@@ -63,6 +76,14 @@ INTERACTIVE_SKIPPED_REASONS = {
 MODES = {"interactive", "autodev"}
 ZOTERO_MODES = {"off", "fallback", "desktop-first"}
 BUNDLED_WHEEL_NAME = "paper_fulltext_dl-0.1.3-py3-none-any.whl"
+# The downloader writes its library with native Win32 paths (vendor
+# paper_dl/storage.py), so the cache lives at a short per-user root instead of
+# inside the unbounded-depth run directory, mirroring the browser pool's home
+# placement. Slugs are capped by the vendor (models.py: 100 readable chars +
+# "--" + a 16-hex digest; 120 for legacy unhashed folders).
+LIBRARY_HOME_PARTS = (".paper-dl", "library")
+PAPER_DL_MAX_SLUG = 120
+LONG_PATH_STATE = "long_path_blocked"
 # Env var the ScholarSeed host injects to pin the product interpreter; its
 # presence means this adapter already runs under that interpreter.
 PRODUCT_PYTHON_ENV = "SCHOLARSEED_PYTHON"
@@ -94,12 +115,53 @@ def resolve_under_run(run_dir: Path, value: str) -> Path:
 
 
 def require_under_run(run_dir: Path, path: Path, label: str) -> Path:
-    resolved = path.resolve()
+    """Containment-checked identity in ordinary form; I/O wraps at the boundary."""
+    resolved = canonical_path(path)
     try:
-        resolved.relative_to(run_dir.resolve())
+        resolved.relative_to(canonical_path(run_dir))
     except ValueError as exc:
         raise ValueError(f"{label} must stay inside the run directory: {resolved}") from exc
     return resolved
+
+
+def paper_dl_library_root() -> Path:
+    """Short by-construction root for the paper-dl library cache.
+
+    The downloader writes this tree with native Win32 calls, so it must never be
+    derived from the run directory, whose depth is unbounded. Mirrors the
+    browser pool's home placement.
+    """
+    return Path.home().joinpath(*LIBRARY_HOME_PARTS)
+
+
+def ensure_paper_dl_paths_fit_budget(storage_dir: Path, attempt_root: Path) -> None:
+    """Fail fast before any browser or downloader process starts.
+
+    The external downloader writes and reads its paths with native Win32 calls
+    and does not use extended-length prefixes, so every native path it can
+    require (including atomic-write temp forms) must fit the Windows budget.
+    POSIX has no such limit and the check is a no-op there.
+    """
+    if not WINDOWS:
+        return
+    slug = "i" * PAPER_DL_MAX_SLUG
+    checked = (
+        (storage_dir / slug, "metadata.json"),
+        (attempt_root, "input.txt"),
+        (attempt_root, "zotero-desktop-first.yaml"),
+        (attempt_root / "output", "report.json"),
+    )
+    longest = max(windows_worst_path_length(directory, name) for directory, name in checked)
+    if longest > WINDOWS_PATH_BUDGET:
+        raise ValueError(
+            f"{LONG_PATH_STATE}: a path the external downloader writes with native "
+            f"Windows calls needs up to {longest} characters, past the "
+            f"{WINDOWS_PATH_BUDGET}-character limit (LongPathsEnabled is off). Move "
+            "the project workspace to a shallower location such as C:\\work\\papers, "
+            "or ask an administrator to enable LongPathsEnabled, then resume this "
+            "run. download_recovery.py skip-and-read can also complete the run "
+            "without this download batch."
+        )
 
 
 def normalize_identifier(value: str) -> str:
@@ -107,37 +169,6 @@ def normalize_identifier(value: str) -> str:
     normalized = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", normalized)
     normalized = re.sub(r"^doi:\s*", "", normalized)
     return normalized.rstrip("/")
-
-
-def normalize_arxiv_id(value: Any) -> str | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.casefold().startswith("arxiv:"):
-        normalized = normalized.split(":", 1)[1].strip()
-    else:
-        parsed = urlparse(normalized)
-        if parsed.scheme in {"http", "https"} and parsed.hostname == "arxiv.org":
-            parts = parsed.path.strip("/").split("/")
-            if len(parts) >= 2 and parts[0].casefold() in {"abs", "pdf"}:
-                normalized = "/".join(parts[1:])
-    if normalized.casefold().endswith(".pdf"):
-        normalized = normalized[:-4]
-    if not normalized or len(normalized) > 120 or any(char.isspace() for char in normalized):
-        return None
-    return normalized
-
-
-def paper_arxiv_id(paper: dict[str, Any]) -> str | None:
-    value = paper.get("arxiv_id") or paper.get("arxivId")
-    if value:
-        return normalize_arxiv_id(value)
-    external = paper.get("external_ids") or paper.get("externalIds")
-    if isinstance(external, dict):
-        for key, candidate in external.items():
-            if str(key).casefold() in {"arxiv", "arxiv_id", "arxivid"}:
-                return normalize_arxiv_id(candidate)
-    return None
 
 
 def paper_needs_paid_download(paper: dict[str, Any]) -> bool:
@@ -172,7 +203,7 @@ def paper_identifier(paper: dict[str, Any]) -> str | None:
 
 
 def paper_action_url(paper: dict[str, Any]) -> str | None:
-    """Return a non-secret article URL the user can open in the CDP Chrome."""
+    """Return a non-secret article URL the user can open in the CDP browser."""
     doi = paper.get("doi")
     if isinstance(doi, str) and doi.strip():
         return f"https://doi.org/{normalize_identifier(doi)}"
@@ -303,10 +334,8 @@ def _optional_file_env(name: str) -> Path | None:
     if not value:
         return None
     path = Path(value).expanduser().resolve()
-    if not path.is_file() and name != "PAPER_DL_PROFILE":
+    if not path.is_file():
         raise ValueError(f"{name} does not name a file: {path}")
-    if name == "PAPER_DL_PROFILE" and not path.exists():
-        raise ValueError(f"{name} does not exist: {path}")
     return path
 
 
@@ -341,7 +370,7 @@ def open_action_papers_in_cdp(
     papers: list[dict[str, str]],
     timeout: float = 2.0,
 ) -> tuple[list[str], list[str]]:
-    """Open action-required article pages in the already verified CDP Chrome."""
+    """Open action-required article pages in the already verified CDP browser."""
     opener = build_opener(ProxyHandler({}))
     opened_ids: list[str] = []
     errors: list[str] = []
@@ -381,7 +410,7 @@ def cdp_setup_action(
     include_publisher_portals: bool = False,
 ) -> dict[str, Any]:
     instructions = [
-        "Use the Chrome window assigned to this run by the browser pool; do not start another Chrome or use your daily profile."
+        "Use the browser window assigned to this run by the browser pool; do not start another browser or use your daily profile."
     ]
     if zotero_mode != "off":
         instructions.extend([
@@ -389,8 +418,8 @@ def cdp_setup_action(
             "Start Zotero Desktop and enable Settings > Advanced > Allow other applications on this computer to communicate with Zotero.",
         ])
     instructions.extend([
-        "Complete institutional login/SSO in that Chrome if the selected publishers require it.",
-        "Keep the Chrome window open, then resume this run after the local CDP endpoint is ready.",
+        "Complete institutional login/SSO in that browser if the selected publishers require it.",
+        "Keep the browser window open, then resume this run after the local CDP endpoint is ready.",
         (
             "If a CAPTCHA or Zotero item selector appears during download, resolve it manually; paper-dl will continue automatically."
             if zotero_mode != "off"
@@ -400,7 +429,7 @@ def cdp_setup_action(
     action: dict[str, Any] = {
         "type": action_type,
         "title": (
-            "Authorized Chrome and Zotero Desktop access are required for paper-dl candidates"
+            "Authorized Chrome or Edge and Zotero Desktop access are required for paper-dl candidates"
             if zotero_mode != "off"
             else "Authorized browser access is required for paper-dl candidates"
         ),
@@ -446,17 +475,13 @@ def build_external_command(
             raise ValueError("desktop-first Zotero mode requires an adapter-generated config")
     else:
         raise ValueError(f"unsupported Zotero mode: {zotero_mode}")
+    if not endpoint:
+        raise ValueError("paper-dl/non-arXiv download requires a browser-pool CDP endpoint")
+    command.extend(["--connect-cdp", endpoint, "--no-headless", "--keep-open"])
     if mode == "autodev":
-        command.extend(["--autodev", "--headless"])
-    else:
-        if not endpoint:
-            raise ValueError("interactive paper-dl/non-arXiv download requires a CDP endpoint")
-        command.extend(["--connect-cdp", endpoint, "--no-headless", "--keep-open"])
+        command.append("--autodev")
     if config:
         command.extend(["--config", str(config)])
-    profile = _optional_file_env("PAPER_DL_PROFILE") if mode == "autodev" else None
-    if profile and mode == "autodev":
-        command.extend(["--profile", str(profile)])
     email = os.getenv("PAPER_DL_EMAIL")
     if email:
         command.extend(["--email", email])
@@ -488,14 +513,14 @@ def refresh_existing_access(existing: dict[str, dict[str, Any]],
 
 
 def pdf_sha256(path: Path) -> str:
-    with path.open("rb") as handle:
+    with filesystem_path(path).open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def paper_file_binding(paper: dict[str, Any], run_dir: Path) -> tuple[Path, dict, str, str]:
     """Load the run-local write-ahead identity ledger; never infer from titles."""
     path = require_under_run(run_dir, run_dir / "downloads/paper-dl-files.json", "paper-dl file index")
-    ledger = read_json(path) if path.exists() else {"schema_version": "1.0", "files": {}}
+    ledger = read_json(path) if path_exists(path) else {"schema_version": "1.0", "files": {}}
     if (not isinstance(ledger, dict) or ledger.get("schema_version") != "1.0"
             or not isinstance(ledger.get("files"), dict)
             or any(not isinstance(value, dict) for value in ledger["files"].values())):
@@ -548,7 +573,7 @@ def result_item(
                 ).as_posix()
                 safe_url = paper_action_url(paper)
                 message = (
-                    "The PDF opened successfully in the dedicated Chrome viewer, "
+                    "The PDF opened successfully in the dedicated browser viewer, "
                     "but automatic byte capture failed. Save the displayed PDF to "
                     f"{(run_dir / target).resolve()}, then run the existing manual "
                     "download verification step; it will require a %PDF- signature."
@@ -556,12 +581,12 @@ def result_item(
             elif action_reason == "needs_institutional_login":
                 message = (
                     "Institutional login is required. Complete SSO/login in the dedicated "
-                    "CDP Chrome, keep it open, then resume this run."
+                    "CDP browser, keep it open, then resume this run."
                 )
             else:
                 message = (
                     "A CAPTCHA or human-verification step still needs attention. Solve it "
-                    "in the dedicated CDP Chrome, keep it open, then resume this run."
+                    "in the dedicated CDP browser, keep it open, then resume this run."
                 )
             return {
                 "paper_id": paper_id, "title": title, **download_access(paper, "paid-download", external),
@@ -609,27 +634,33 @@ def result_item(
         }
 
     chosen: Path | None = None
+    run_root = canonical_path(run_dir)
     for key in ("original_path",):
         value = external.get(key)
         if not isinstance(value, str) or not value:
             continue
-        candidate = Path(value).expanduser()
-        if not candidate.is_absolute():
-            candidate = run_dir / candidate
-        candidate = candidate.resolve()
         try:
-            candidate.relative_to(run_dir.resolve())
-        except ValueError:
-            continue
-        if candidate.is_file():
-            try:
-                with candidate.open("rb") as handle:
-                    signature = handle.read(5)
-                if signature == b"%PDF-":
-                    chosen = candidate
-                    break
-            except OSError:
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                candidate = run_root / candidate
+            candidate = canonical_path(candidate)
+            # The external downloader may only feed this adapter from the run
+            # area or from the library root this adapter selected for it.
+            if not (
+                candidate.is_relative_to(run_root)
+                or candidate.is_relative_to(canonical_path(paper_dl_library_root()))
+            ):
                 continue
+            candidate_file = filesystem_path(candidate)
+            if not candidate_file.is_file():
+                continue
+            with candidate_file.open("rb") as handle:
+                signature = handle.read(5)
+            if signature == b"%PDF-":
+                chosen = candidate
+                break
+        except (OSError, ValueError):
+            continue
     if chosen is None:
         # Recover a moved file only with this paper's persisted identity/hash.
         try:
@@ -643,7 +674,7 @@ def result_item(
                     and Path(relative).suffix.casefold() == ".pdf"
                     and relative not in (claimed_paths or set())):
                 destination = require_under_run(run_dir, run_dir / relative, "bound paper-dl PDF")
-                with destination.open("rb") as handle:
+                with filesystem_path(destination).open("rb") as handle:
                     valid_pdf = handle.read(5) == b"%PDF-"
                 if valid_pdf and pdf_sha256(destination) == binding.get("sha256"):
                     return {
@@ -662,9 +693,11 @@ def result_item(
         }
     # Existing unbound files remain intact, including files from older rounds.
     occupied = set(occupied_paths or set()) | {
-        path.relative_to(run_dir).as_posix() for path in (run_dir / "downloads/papers").glob("*")
+        Path(ordinary_windows_path(entry)).relative_to(run_dir).as_posix()
+        for entry in filesystem_path(run_dir / "downloads/papers").glob("*")
     }
-    occupied.discard(chosen.relative_to(run_dir.resolve()).as_posix())
+    if chosen.is_relative_to(run_root):
+        occupied.discard(chosen.relative_to(run_root).as_posix())
     relative_path = title_pdf_relative_path(
         title,
         paper_id,
@@ -676,6 +709,8 @@ def result_item(
         run_dir / relative_path,
         "title-based paper PDF path",
     )
+    copied_source = False
+    cleanup_messages: list[str] = []
     try:
         index_path, ledger, key, identifier_hash = paper_file_binding(paper, run_dir)
         source_hash = pdf_sha256(chosen)
@@ -685,10 +720,32 @@ def result_item(
         }
         # Persist before os.replace so a crash after the move remains recoverable.
         atomic_write_json(index_path, ledger)
-        if chosen != destination:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(chosen, destination)
-        with destination.open("rb") as handle:
+        if canonical_path(chosen) != canonical_path(destination):
+            filesystem_path(destination.parent).mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(filesystem_path(chosen), filesystem_path(destination))
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                staging: Path | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        dir=filesystem_path(destination.parent),
+                        prefix=f".{destination.name}.staging-",
+                        delete=False,
+                    ) as staging_handle:
+                        staging = Path(staging_handle.name)
+                        with filesystem_path(chosen).open("rb") as source_handle:
+                            shutil.copyfileobj(source_handle, staging_handle)
+                    os.replace(filesystem_path(staging), filesystem_path(destination))
+                    copied_source = True
+                finally:
+                    if staging is not None:
+                        try:
+                            filesystem_path(staging).unlink(missing_ok=True)
+                        except OSError as cleanup_exc:
+                            cleanup_messages.append(f"Temporary PDF cleanup failed: {cleanup_exc}.")
+        with filesystem_path(destination).open("rb") as handle:
             if handle.read(5) != b"%PDF-":
                 raise OSError("moved paper-dl PDF failed verification")
         if pdf_sha256(destination) != source_hash:
@@ -698,16 +755,25 @@ def result_item(
             "paper_id": paper_id, "title": title, **download_access(paper, "paid-download", external),
             "status": "failed", "file_path": None, "content_type": None,
             "verified_exists": False,
-            "message": f"paper-dl PDF could not be moved into downloads/papers: {exc}",
+            "message": " ".join([
+                f"paper-dl PDF could not be moved into downloads/papers: {exc}",
+                *cleanup_messages,
+            ]),
         }
+    if copied_source:
+        try:
+            filesystem_path(chosen).unlink(missing_ok=True)
+        except OSError as exc:
+            cleanup_messages.append(f"Verified PDF delivered; source cache cleanup failed: {exc}.")
     relative = relative_path.as_posix()
     return {
         "paper_id": paper_id, "title": title, **download_access(paper, "paid-download", external),
         "status": "downloaded", "file_path": relative,
         "content_type": "application/pdf", "verified_exists": True,
-        "message": (
-            f"Downloaded by paper-dl in {mode} mode ({status}) and moved to the papers directory."
-        ),
+        "message": " ".join([
+            f"Downloaded by paper-dl in {mode} mode ({status}) and moved to the papers directory.",
+            *cleanup_messages,
+        ]),
     }
 
 
@@ -726,9 +792,9 @@ def verified_manifest_download(item: Any, run_dir: Path) -> bool:
             resolve_under_run(run_dir, file_value),
             "existing downloaded file",
         )
-        if not candidate.is_file():
+        if not filesystem_path(candidate).is_file():
             return False
-        with candidate.open("rb") as handle:
+        with filesystem_path(candidate).open("rb") as handle:
             return handle.read(5) == b"%PDF-"
     except (OSError, ValueError):
         return False
@@ -758,7 +824,7 @@ def make_manifest(
             "name": "paper-dl",
             "mode": mode,
             "autodev": mode == "autodev",
-            "cdp": mode == "interactive",
+            "cdp": True,
             "zotero_mode": zotero_mode,
         },
     }
@@ -771,13 +837,11 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
     lease = None
     paused = False
     try:
-        from stage_guard import require_download
         require_download(run_dir, args.input, "paid-download")
         mode = paid_download_mode()
         zotero_mode = paid_download_zotero_mode(mode)
         endpoint = None
-        if mode == "interactive":
-            validate_config()
+        validate_config()
         selection_path = require_under_run(run_dir, args.input, "selection input")
         output_path = require_under_run(run_dir, args.output, "paid output")
         selection = read_json(selection_path)
@@ -811,7 +875,8 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
         }
         existing: dict[str, dict[str, Any]] = {}
         existing_placeholder = False
-        if output_path.is_file() and output_path.stat().st_size:
+        output_file = filesystem_path(output_path)
+        if output_file.is_file() and output_file.stat().st_size:
             previous = read_json(output_path)
             existing_placeholder = bool(previous.get("is_placeholder"))
             existing = {
@@ -830,7 +895,9 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                     "content_type": None, "verified_exists": False,
                     "message": "Selected paper ID was not present in metadata.",
                 }
-            elif paper_needs_paid_download(paper):
+            elif paid_pending(existing.get(str(paper_id))):
+                # Only papers serve already reported as unsuccessful for a granted
+                # acquisition may reach paper-dl; a terminal skip is never a target.
                 candidates.append(paper)
 
         pending_candidates = [
@@ -841,9 +908,9 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
         preserved_downloads = len(candidates) - len(pending_candidates)
         papers_root = run_dir / "downloads" / "papers"
         occupied_pdf_paths = {
-            path.resolve().relative_to(run_dir).as_posix()
-            for path in papers_root.glob("*.pdf")
-            if path.is_file()
+            Path(ordinary_windows_path(entry)).relative_to(run_dir).as_posix()
+            for entry in filesystem_path(papers_root).glob("*.pdf")
+            if entry.is_file()
         }
         claimed_pdf_paths = {
             str(item.get("file_path"))
@@ -912,26 +979,35 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
             )
         external_report_relative: str | None = None
         if eligible:
-            if mode == "interactive":
-                last_wait_notice = [0.0]
-                def waiting_for_slot():
-                    if time.monotonic() - last_wait_notice[0] >= 10:
-                        update_progress(
-                            run_dir, stage="download", status="running",
-                            activity="Waiting for an available non-arXiv browser slot",
-                            needs_user_action=False,
-                            emit=lambda message: print(message, flush=True),
-                        )
-                        last_wait_notice[0] = time.monotonic()
-                lease = BrowserPool().acquire(run_dir, on_wait=waiting_for_slot)
-                startup_timeout = float(os.getenv("PAPER_DL_CDP_STARTUP_TIMEOUT", "15"))
-                if not math.isfinite(startup_timeout) or startup_timeout <= 0:
-                    raise ValueError("PAPER_DL_CDP_STARTUP_TIMEOUT must be a positive number")
-                lease.ensure_browser(timeout=startup_timeout)
-                endpoint = lease.endpoint
+            logs_root = run_dir / "downloads" / "paper-dl-logs"
+            storage_dir = paper_dl_library_root()
+            warnings.append(
+                "paper-dl library cache root: "
+                f"{storage_dir} (kept outside the run directory for native Windows path limits)"
+            )
+            attempt_root = logs_root / "paper-dl-attempts" / uuid.uuid4().hex[:12]
+            report_dir = attempt_root / "output"
+            identifiers_path = attempt_root / "input.txt"
+            ensure_paper_dl_paths_fit_budget(storage_dir, attempt_root)
+            last_wait_notice = [0.0]
+            def waiting_for_slot():
+                if time.monotonic() - last_wait_notice[0] >= 10:
+                    update_progress(
+                        run_dir, stage="download", status="running",
+                        activity="Waiting for an available non-arXiv browser slot",
+                        needs_user_action=False,
+                        emit=lambda message: print(message, flush=True),
+                    )
+                    last_wait_notice[0] = time.monotonic()
+            lease = BrowserPool().acquire(run_dir, on_wait=waiting_for_slot)
+            startup_timeout = float(os.getenv("PAPER_DL_CDP_STARTUP_TIMEOUT", "15"))
+            if not math.isfinite(startup_timeout) or startup_timeout <= 0:
+                raise ValueError("PAPER_DL_CDP_STARTUP_TIMEOUT must be a positive number")
+            lease.ensure_browser(timeout=startup_timeout)
+            endpoint = lease.endpoint
             if mode == "interactive":
                 warnings.append(
-                    "paper-dl used a user-controlled local CDP Chrome; login/CAPTCHA steps require manual authorized interaction and are never bypassed."
+                    "paper-dl used a user-controlled local CDP browser; login/CAPTCHA steps require manual authorized interaction and are never bypassed."
                 )
                 if zotero_mode != "off":
                     warnings.append(
@@ -939,7 +1015,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                     )
             else:
                 warnings.append(
-                    "paper-dl ran with --autodev and --headless; human-verification/login items were skipped, never bypassed."
+                    "paper-dl used the shared local CDP browser with --autodev; human-verification/login items were skipped, never bypassed."
                 )
             configured_paper_dl_config = _optional_file_env("PAPER_DL_CONFIG")
             if zotero_mode == "desktop-first" and configured_paper_dl_config is not None:
@@ -948,12 +1024,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                     "PAPER_DL_CONFIG because the adapter must supply its deterministic Zotero config"
                 )
             base_command, cwd, command_label = resolve_paper_dl()
-            logs_root = run_dir / "downloads" / "paper-dl-logs"
-            storage_dir = logs_root / "paper-dl-library"
-            attempt_root = logs_root / "paper-dl-attempts" / uuid.uuid4().hex[:12]
-            report_dir = attempt_root / "output"
-            identifiers_path = attempt_root / "input.txt"
-            attempt_root.mkdir(parents=True, exist_ok=False)
+            filesystem_path(attempt_root).mkdir(parents=True, exist_ok=False)
             paper_dl_config = configured_paper_dl_config
             if zotero_mode == "desktop-first":
                 paper_dl_config = attempt_root / "zotero-desktop-first.yaml"
@@ -999,7 +1070,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
             print(
                 f"paper-dl adapter: executable={command_label} items={len(eligible)} "
                 f"mode={mode} zotero={zotero_mode}",
-                flush=mode == "interactive",
+                flush=True,
             )
             print(
                 f"[DOWNLOAD STATUS] paper-dl/non-arXiv batch running: {len(eligible)} paper(s) queued.",
@@ -1014,27 +1085,20 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                 completed=0,
                 emit=lambda message: print(message, flush=True),
             )
+            print(f"[CDP READY] Connected workflow will use {endpoint}.", flush=True)
             if mode == "interactive":
-                print(f"[CDP READY] Connected workflow will use {endpoint}.", flush=True)
                 if zotero_mode != "off":
                     print(
                         f"[ZOTERO READY] Zotero Desktop mode is {zotero_mode}; keep Desktop and Connector available.",
                         flush=True,
                     )
-                print("[REMINDER] Keep the dedicated Chrome open. If CAPTCHA/login or a Zotero selector appears, resolve it manually; paper-dl will continue or report action_required.", flush=True)
+                print("[REMINDER] Keep the dedicated browser open. If CAPTCHA/login or a Zotero selector appears, resolve it manually; paper-dl will continue or report action_required.", flush=True)
+            else:
+                print("[AUTODEV] Login/CAPTCHA/manual-solve items will be skipped; no user intervention is requested.", flush=True)
             try:
-                if mode == "interactive":
-                    completed = lease.run_download(
-                        command, cwd=cwd, timeout=batch_timeout,
-                    )
-                else:
-                    completed = run_cancellable(
-                        command,
-                        cwd=str(cwd) if cwd else None,
-                        text=True,
-                        capture_output=True,
-                        timeout=batch_timeout,
-                    )
+                completed = lease.run_download(
+                    command, cwd=cwd, timeout=batch_timeout,
+                )
             except ChildProcessCancelled as exc:
                 update_progress(
                     run_dir,
@@ -1145,7 +1209,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                         (run_dir / str(item.get("target_file") or "")).resolve()
                     ),
                     "instructions": (
-                        "Use the open Chrome PDF viewer's Save/Download control, "
+                        "Use the open browser PDF viewer's Save/Download control, "
                         "save to target_path, then run download_recovery.py "
                         "verify-manual. Verification requires the file to remain "
                         "inside this run and begin with %PDF-."
@@ -1176,7 +1240,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                     "The authorized PDF is visible; save it to the run target"
                 )
                 action["instructions"] = [
-                    "Open the listed safe article URL in the dedicated Chrome if its PDF viewer is not already open.",
+                    "Open the listed safe article URL in the dedicated browser if its PDF viewer is not already open.",
                     "Use the viewer's Save/Download control and save each PDF to its exact target_path.",
                     "Run download_recovery.py verify-manual for this run; only an in-run file beginning with %PDF- is accepted.",
                     "This recovery does not indicate missing entitlement and does not require a login retry unless the publisher explicitly shows a login wall.",
@@ -1194,7 +1258,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                     "and verify its %PDF- signature with the existing recovery command."
                     if only_viewer_recovery
                     else f"One or more papers still require {intervention}. Resolve the listed "
-                    "papers in the dedicated CDP Chrome, keep the required apps open, then resume."
+                    "papers in the dedicated CDP browser, keep the required apps open, then resume."
                 ),
                 "resume_token": (
                     "paper-dl-viewer-manual-save"
@@ -1229,10 +1293,10 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
             action["all_action_pages_opened"] = len(opened_paper_ids) == len(intervention_papers)
             if open_errors:
                 manifest["warnings"].extend(
-                    f"Could not open an action page in dedicated CDP Chrome: {error}"
+                    f"Could not open an action page in the dedicated CDP browser: {error}"
                     for error in open_errors
                 )
-        elif mode == "interactive":
+        else:
             # Preserve verified results even if browser cleanup subsequently fails.
             # A successful cleanup notice is added only after verified release.
             atomic_write_json(output_path, manifest)
@@ -1258,12 +1322,12 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
             update_progress(
                 run_dir,
                 stage="download",
-                activity="Waiting for CAPTCHA/login in the dedicated Chrome",
+                activity="Waiting for CAPTCHA/login in the dedicated browser",
                 status="action_required",
                 total=len(candidates),
                 completed=manifest["summary"]["downloaded"],
                 needs_user_action=True,
-                action="Resolve the displayed prompt in the dedicated Chrome, then tell the host to continue.",
+                action="Resolve the displayed prompt in the dedicated browser, then tell the host to continue.",
                 emit=lambda message: print(message, flush=True),
             )
         else:
@@ -1299,7 +1363,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
     if mode == "interactive" and manifest["status"] == "action_required":
         if manifest.get("action_type") == "manual_pdf_recovery":
             print(
-                "[ACTION REQUIRED] The PDF is visible in Chrome but automatic capture failed; save it to the exact target path.",
+                "[ACTION REQUIRED] The PDF is visible in the browser but automatic capture failed; save it to the exact target path.",
                 flush=True,
             )
             print(
@@ -1307,13 +1371,13 @@ def _run_locked(args: argparse.Namespace, run_dir: Path) -> int:
                 flush=True,
             )
         else:
-            print("[ACTION REQUIRED] CAPTCHA/login still needs attention in the dedicated CDP Chrome. Keep it open, resolve the prompt, then --resume.", flush=True)
+            print("[ACTION REQUIRED] CAPTCHA/login still needs attention in the dedicated CDP browser. Keep it open, resolve the prompt, then --resume.", flush=True)
             print(
-                "[NEXT ACTION] Resolve the displayed CAPTCHA/login in the dedicated Chrome, then tell the host to continue. "
+                "[NEXT ACTION] Resolve the displayed CAPTCHA/login in the dedicated browser, then tell the host to continue. "
                 "An empty response does not mark the intervention resolved.",
                 flush=True,
             )
-    elif mode == "interactive":
+    else:
         print("[DOWNLOAD COMPLETE] paper-dl/non-arXiv batch has ended. The browser pool released this run's slot; no browser action is needed.", flush=True)
         print(
             "[NEXT ACTION] Review failed/skipped papers for an optional manual retry, or explicitly choose to continue to PDF reading.",
@@ -1332,7 +1396,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         run_dir = args.run_dir.resolve()
-        if not run_dir.is_dir():
+        if not filesystem_path(run_dir).is_dir():
             raise ValueError(f"run directory does not exist: {run_dir}")
         with cancellation_signals(), run_lock(run_dir):
             return _run_locked(args, run_dir)

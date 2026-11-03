@@ -11,6 +11,28 @@
 main直接编辑v2及其依赖文件，统一运行 `workflow publish`。JSON格式要求适用于
 任务包、大纲和delta，不适用于原生章节输出；这些检查不等于科学质量审查。
 
+全文获取优先使用 PaperHub 文档 ID，保留其既有超时、重试与代理策略；失败后仅在已有
+arXiv ID 时尝试 arXiv，连接限时 3 秒、单篇降级总预算 10 秒（含并发等待），否则使用
+已有摘要。本地 PDF 优先。表格布局发现仅作为解析报告中的提示，提取文本继续进入
+LLM paper card 生成；空文本、损坏文件等失败仍明确报告。提取结果保存在本地。
+
+PDF 在布局解析前先用轻量文本探测正文边界（最多探测200页）。独立参考文献标题需有
+文献条目佐证，补充材料封面需有明确标题；目录和普通正文提及不作为边界。确认边界时
+保留边界所在整页，允许少量引用随正文进入后续提取，避免丢失同页正文。候选正文不超过
+40页时全部解析，超过40页时仅解析前20页和后20页；未确认边界时对整份PDF使用同一预算，
+包括超过200页的文档。原文件不变，原始页码继续用于证据定位。选择页码、边界和探测异常
+只写本地解析诊断，不新增主agent确认、裁剪通知或降级提示。
+
+图、表和公式的布局边界告警不拒绝成功提取的文本；仅有这些布局告警且提取到非空文本时返回OK。损坏文件、
+不安全压缩包和无可提取文本仍保持失败。LaTeX数学分隔符按转义奇偶顺序扫描，未闭合
+公式不触发回溯搜索。
+
+LaTeX 章节使用现有模板的一份简短能力说明，涵盖已加载宏包、数学记号与字体。
+指标函数使用明确给出定义的双线大写符号。v1 在现有一次 refine 前进行最多 10 秒的
+单次预编译：成功时不增加 refine 上下文，源码错误作为修复输入，超时或工具不可用时
+使用同一份模板能力说明和修复要求。预编译输出位于 `_internal/compilation_precheck/`，
+不覆盖正文或交付物，也不替代 v2 的最终出版编译。
+
 ## 运行要求
 
 ### 框架runtime与独立运行
@@ -80,7 +102,12 @@ Windows 原生使用 Python 3.12，无需 Bash 或激活虚拟环境。在 Power
 .\scripts\slr.cmd init --workspace 'C:\Reviews\我的综述' --intent '实际研究请求'
 ```
 
-首次 doctor 可在依赖未安装时运行，报告实际系统、架构、Python、可用输出能力和修复命令。缺少运行环境时修复 ScholarSeed 产品安装；`SCHOLARSEED_PYTHON` 由产品入口指定。`setup.py` 只验证当前产品环境，不创建私有虚拟环境。
+首次 doctor 可在依赖未安装时运行，报告实际系统、架构、Python、可用输出能力和修复命令。它还用当前产品 Python 和继承的代理环境检查同步、异步 HTTP 传输能否初始化；缺少 SOCKS 依赖时应修复 ScholarSeed 产品安装，而不是在会话中临时安装。`SCHOLARSEED_PYTHON` 由产品入口指定。`setup.py` 只验证当前产品环境，不创建私有虚拟环境。
+
+| 平台 | 代理预检执行方式 |
+| --- | --- |
+| macOS | 使用绑定的产品 Python 子进程，继承当前代理变量；只初始化传输，不发起请求。 |
+| Windows | 使用绑定的产品 `python.exe` 子进程，继承当前代理变量；不依赖 POSIX Shell，也不发起请求。 |
 
 `init` 返回 `runtime.cli.argv` 及 PowerShell/CMD/POSIX 写法；后续主代理和子代理复用该命令，避免自行拼接路径。Windows 工作区另有 `slr.cmd` 快捷入口。仅需诊断已有绑定时，运行 `doctor --workspace <工作区> --no-network --json`。WSL 使用其 Linux Python 与 Linux 路径，不能复用 Windows 虚拟环境。
 
@@ -131,7 +158,7 @@ Web-only、摘要缺失、检索数量不足和追踪缺失会显式报告降级
 
 ## 五分钟离线冒烟测试
 
-PDF 回归测试使用 ReportLab 生成真实测试文件，先运行 `scholarseed-skill-python -m pip install -r requirements-test.txt`；运行时不需要 ReportLab。
+PDF 回归测试使用 ReportLab 生成真实测试文件，在独立测试环境中先运行 `python -m pip install -r requirements-test.txt`；运行时不需要 ReportLab。不要向产品 Python 安装测试依赖。
 
 这个测试不调用 PaperHub、模型或图片接口，用于确认压缩包、Python 环境、CLI、引用资产和 workspace 初始化正常：
 
@@ -144,8 +171,8 @@ scholarseed-skill-python scripts/test_model_config_env.py
 ./scripts/slr init \
   --workspace ../slr-smoke \
   --intent "综述 2021–2026 年检索增强生成在企业知识库问答中的方法、评测与可靠性进展，并保留更早的奠基工作。"
-scholarseed-skill-python -m json.tool ../slr-smoke/01_input/query.json
-scholarseed-skill-python -m json.tool ../slr-smoke/01_input/writing_request.json
+python -m json.tool ../slr-smoke/01_input/query.json
+python -m json.tool ../slr-smoke/01_input/writing_request.json
 ```
 
 如果机器有 TeX，再运行：
@@ -221,7 +248,7 @@ init 返回工作区专属 launcher。已有任务缺少 launcher 时使用
 ```bash
 ./my-survey/slr writing configure --request request.json
 ./my-survey/slr run retrieval_adapt
-scholarseed-bridge literature review --json '{"workspace":"my-survey","checkpoint":"retrieval"}'
+Call the `scholarseed_bridge` model tool with `{"capability":"literature","operation":"review","request":{"workspace":"my-survey","checkpoint":"retrieval"}}`.
 ./my-survey/slr workflow evidence --from fulltext
 ./my-survey/slr status --stage workflow
 ./my-survey/slr status --stage processing
@@ -335,6 +362,7 @@ PDF 降级 Markdown 共用同一文案；单独组件保持其请求范围。
   `model_config.fast.json`；
 - `config/model_config.fast.example.json` 保留为重置或迁移时的模板；
 - `PAPER_HUB_URL` 可覆盖 `config/endpoints.json` 的 PaperHub 地址；
+- PaperHub 全文下载默认继承代理，连接失败才回退直连；`NO_PROXY` 不会默认加入 PaperHub 域名。确需直连时使用 `PAPERHUB_PROXY_MODE=direct` 或 `SLR_NO_PROXY_EXTRA`，其他端点通过 `config/endpoints.json` 的 `proxy_bypass` 显式配置绕行；
 - 打包脚本只排除 `.venv`、缓存、日志和已有压缩包；模型凭据仅从接收者环境读取；
 - AS 必须作为独立压缩包分发，其最新版配置是唯一可信检索配置。
 
@@ -420,7 +448,12 @@ main直接修改v2及其实际依赖文件中的一切论文问题；无需同�
 
 ## 仓库集成与平台验证
 
-本次选择性合入上游 2026.09.22.2 的大纲五分钟确认与出版文案，产品版本为 2026.9.22+2。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用根目录 `npm run install:python` 与 prebundle。
+ScholarSeed 的大纲 checkpoint 会追加产品确认卡，询问是否按大纲及当前输出格式、
+引用样式开始写作，并允许直接输入修改意见。五分钟等待由产品拥有；主 Agent 将 bridge
+返回的 confirmation 原样交给 `writing review-complete --request FILE`，不再并行启动
+shell 轮询。修改不等于批准；取消不自动继续。独立宿主仍可使用原有显式等待命令。
+
+本次选择性合入上游 2026.09.22.2 的大纲五分钟确认与出版文案，产品版本为 2026.9.22+2。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用 `pnpm ops pre install python` 与 prebundle。
 
 | 行为 | macOS | Windows |
 |---|---|---|

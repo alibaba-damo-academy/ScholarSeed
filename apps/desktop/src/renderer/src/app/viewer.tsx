@@ -32,13 +32,24 @@ class ViewerBoundary extends React.Component<ViewerBoundaryProps, ViewerBoundary
     return { failed: true }
   }
 
+  componentDidUpdate(previous: ViewerBoundaryProps): void {
+    if (this.state.failed && previous.document.viewKind !== this.props.document.viewKind) {
+      this.setState({ failed: false })
+    }
+  }
+
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error('[viewer] Document view failed', {
-      kind: this.props.viewer.kind,
-      path: this.props.document.path,
-      documentSessionId: this.props.document.documentSessionId,
-      tabId: this.props.document.tabId
-    }, error, info.componentStack)
+    console.error(
+      '[viewer] Document view failed',
+      {
+        kind: this.props.viewer.kind,
+        path: this.props.document.path,
+        documentSessionId: this.props.document.documentSessionId,
+        tabId: this.props.document.tabId,
+      },
+      error,
+      info.componentStack
+    )
   }
 
   render(): ReactNode {
@@ -51,7 +62,13 @@ function ViewerLoading(): React.JSX.Element {
   return <div className="vds-viewer-empty">{t('dock.opening')}</div>
 }
 
-function ViewerContent({ viewer, document }: { viewer: ViewerPlugin; document: ViewerProps }): ReactNode {
+function ViewerContent({
+  viewer,
+  document,
+}: {
+  viewer: ViewerPlugin
+  document: ViewerProps
+}): ReactNode {
   return viewer.render(document)
 }
 
@@ -60,7 +77,12 @@ export function withViewerBoundary(viewer: ViewerPlugin): ViewerPlugin {
     ...viewer,
     render: (document) => (
       <ViewerBoundary
-        key={JSON.stringify([viewer.kind, document.documentSessionId, document.tabId, document.path, document.viewKind])}
+        key={JSON.stringify([
+          viewer.kind,
+          document.documentSessionId,
+          document.tabId,
+          document.path,
+        ])}
         viewer={viewer}
         document={document}
       >
@@ -68,6 +90,6 @@ export function withViewerBoundary(viewer: ViewerPlugin): ViewerPlugin {
           <ViewerContent viewer={viewer} document={document} />
         </Suspense>
       </ViewerBoundary>
-    )
+    ),
   }
 }

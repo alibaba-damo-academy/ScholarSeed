@@ -5,7 +5,7 @@
 // 而 PRD 对资料库的核心要求恰恰是「书深里的操作与本地真实文件保持一致」。
 //
 // 因此本 harness 在**真实渲染进程**里点**真实 DOM 元素**，走**真实 IPC/HTTP**，
-// 每一步之后再回读后端 `/api/resource/tree` 与 `/api/literature/items` 核对结果，
+// 每一步之后再回读后端 `/api/resource/tree` 与 `/api/v1/literatures` 核对结果，
 // 把「点击 → 落盘」这条链路整体钉死。
 //
 // 它不 mock 任何东西：没有假 provider、没有直调内部函数、不预置 state。
@@ -13,9 +13,10 @@
 // 这与 shoot.ts 既有的 clickSelector 同源，事件仍走 React 真实处理器。
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { basename, dirname, join, resolve, sep } from 'path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'path'
 
-import { BrowserWindow, clipboard } from 'electron'
+import type { BrowserWindow } from 'electron'
+import { clipboard } from 'electron'
 
 import { IMPORT_PICKER_TARGET, supportsImportPickerTarget } from '../picker'
 import { typeInputValue } from './drive'
@@ -41,6 +42,11 @@ const OFFICE_FIXTURE_NAME = 'UI验收Office.docx'
 const OFFICE_FIXTURE_ENV = 'SCHOLARSEED_WORKBENCH_OFFICE_FIXTURE'
 const OFFICE_SEARCH_QUERY_ENV = 'SCHOLARSEED_WORKBENCH_OFFICE_SEARCH_QUERY'
 const SEARCH_ONLY_ENV = 'SCHOLARSEED_WORKBENCH_SEARCH_ONLY'
+const SYSTEM_TRASH_NAMES = {
+  darwin: '废纸篓',
+  win32: '回收站',
+} as const
+const SYSTEM_TRASH_FALLBACK_NAME = '回收站'
 const ENABLED_ENV_VALUE = '1'
 const FILE_VERSION_MAX_SIZE_MB = 2048
 const KILOBYTES_PER_MEGABYTE = 1024
@@ -52,13 +58,12 @@ const EXPECTED_RECENT_FILE_ROWS = 5
 const RECENT_FILE_FIXTURE_NAMES = [
   '最近打开验收-1.md',
   '最近打开验收-2.md',
-  '最近打开验收-3.md'
+  '最近打开验收-3.md',
 ] as const
 const LITERATURE_FIXTURE_NAME = 'perovskite-fixture.bib'
 const LITERATURE_PDF_NAME = 'perovskite-attachment.pdf'
 const LITERATURE_MARKDOWN_NAME = 'perovskite-supplement.md'
 const LITERATURE_MARKDOWN_CONTENT = '# Supplement\n\nHumidity protocol and observations.\n'
-const LITERATURE_IMPORT_OPERATION = 'ui-acceptance-literature-import'
 const LITERATURE_FIXTURE = [
   '@article{acc1,',
   '  title={Perovskite degradation under humidity},',
@@ -73,7 +78,7 @@ const LITERATURE_FIXTURE = [
   '  journal={Joule},',
   '  year={2022},',
   '  doi={10.1/def}',
-  '}'
+  '}',
 ].join('\n')
 
 /** 固件项目：工作区根只是容器、本身不是项目（proposal 47 §4），所以验收得自己建一个。 */
@@ -104,7 +109,7 @@ const LINKED_UPDATED_CONTENT = '外部程序保存后的实时内容'
 // 切到可视化编辑视图，才能进入这个可选区的编辑器。
 const MARKDOWN_RENDER_TEST_ID = 'markdown-visual-editor'
 const MARKDOWN_EDIT_TEST_ID = 'markdown-open-editor'
-
+const MARKDOWN_MODE_TEST_ID = 'markdown-mode-select'
 
 const MARKDOWN_CODE_COPY_TEXT = 'console.log("clipboard");'
 
@@ -120,7 +125,7 @@ const MARKDOWN_BODY = [
   '',
   '```text',
   MARKDOWN_CODE_COPY_TEXT,
-  '```'
+  '```',
 ].join('\n')
 
 /** BOTH_CHANGED 验收中两侧故意不同的尾部内容。 */
@@ -149,8 +154,7 @@ interface StepResult {
 
 type StepRecorder = (name: string, ok: boolean, detail?: string) => void
 
-const settle = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
+const settle = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** 点一个选择器；元素不存在返回 false，不抛异常。 */
 async function click(win: BrowserWindow, selector: string): Promise<boolean> {
@@ -172,7 +176,8 @@ async function clickResourceSearchHit(
   name: string,
   query: string
 ): Promise<boolean> {
-  return Boolean(await win.webContents.executeJavaScript(`
+  return Boolean(
+    await win.webContents.executeJavaScript(`
     (() => {
       const row = Array.from(document.querySelectorAll('[data-testid^="search-hit-resource-"]'))
         .find((candidate) =>
@@ -184,7 +189,8 @@ async function clickResourceSearchHit(
       row.click()
       return true
     })()
-  `))
+  `)
+  )
 }
 /** 同一轮事件循环连续点击两次，用于验证保存入口会合并重复提交。 */
 async function clickTwice(win: BrowserWindow, selector: string): Promise<boolean> {
@@ -308,17 +314,22 @@ interface DocumentTabSnapshot {
 
 /** 顶部页签上的「未保存」红点数量；measure 层是 aria-hidden 副本，必须排除。 */
 async function tabDirtyMarkers(win: BrowserWindow, title: string): Promise<number> {
-  return Number(await win.webContents.executeJavaScript(`
+  return Number(
+    await win.webContents.executeJavaScript(`
     Array.from(document.querySelectorAll('.vds-navigation-tabs [role="tab"]'))
       .filter((tab) => !tab.closest('[aria-hidden="true"]')
         && tab.querySelector('span')?.textContent === ${JSON.stringify(title)}
         && tab.querySelector('[data-slot="navigation-tab-dirty"]'))
       .length
-  `))
+  `)
+  )
 }
 
-async function documentTabSnapshot(win: BrowserWindow, title: string): Promise<DocumentTabSnapshot> {
-  return await win.webContents.executeJavaScript(`
+async function documentTabSnapshot(
+  win: BrowserWindow,
+  title: string
+): Promise<DocumentTabSnapshot> {
+  return (await win.webContents.executeJavaScript(`
     (() => {
       const tabs = Array.from(document.querySelectorAll(${JSON.stringify(DOCUMENT_TAB_SELECTOR)}))
         .filter((tab) => tab.querySelector('span')?.textContent === ${JSON.stringify(title)})
@@ -327,11 +338,12 @@ async function documentTabSnapshot(win: BrowserWindow, title: string): Promise<D
         ids: tabs.map((tab) => tab.getAttribute('data-testid') || '')
       }
     })()
-  `) as DocumentTabSnapshot
+  `)) as DocumentTabSnapshot
 }
 
 async function closeDocumentTab(win: BrowserWindow, title: string): Promise<boolean> {
-  return Boolean(await win.webContents.executeJavaScript(`
+  return Boolean(
+    await win.webContents.executeJavaScript(`
     (() => {
       const tab = Array.from(document.querySelectorAll(${JSON.stringify(DOCUMENT_TAB_SELECTOR)}))
         .find((candidate) => candidate.querySelector('span')?.textContent === ${JSON.stringify(title)})
@@ -340,11 +352,17 @@ async function closeDocumentTab(win: BrowserWindow, title: string): Promise<bool
       close.click()
       return true
     })()
-  `))
+  `)
+  )
 }
 
-async function beginTabDrag(win: BrowserWindow, title: string, targetLeafIndex: number): Promise<boolean> {
-  return Boolean(await win.webContents.executeJavaScript(`
+async function beginTabDrag(
+  win: BrowserWindow,
+  title: string,
+  targetLeafIndex: number
+): Promise<boolean> {
+  return Boolean(
+    await win.webContents.executeJavaScript(`
     (() => {
       const source = Array.from(document.querySelectorAll(${JSON.stringify(DOCUMENT_TAB_SELECTOR)}))
         .find((tab) => tab.textContent?.includes(${JSON.stringify(title)}))
@@ -362,7 +380,8 @@ async function beginTabDrag(win: BrowserWindow, title: string, targetLeafIndex: 
       }))
       return true
     })()
-  `))
+  `)
+  )
 }
 
 async function finishTabDrag(win: BrowserWindow, title: string): Promise<void> {
@@ -381,7 +400,7 @@ async function dragResourceNode(
   sourcePath: string,
   targetPath: string
 ): Promise<{ dispatched: boolean; validTarget: boolean }> {
-  return await win.webContents.executeJavaScript(`
+  return (await win.webContents.executeJavaScript(`
     new Promise((resolve) => {
       const source = document.querySelector(${JSON.stringify(`[data-testid="tree-${sourcePath}"]`)})
       const target = document.querySelector(${JSON.stringify(`[data-testid="tree-${targetPath}"]`)})
@@ -416,12 +435,13 @@ async function dragResourceNode(
         }, 50)
       }, 50)
     })
-  `) as { dispatched: boolean; validTarget: boolean }
+  `)) as { dispatched: boolean; validTarget: boolean }
 }
 
 /** 在所见即所得编辑器末尾创建空段并输入一个真实按键字符。 */
 async function typeMarkdownSlash(win: BrowserWindow): Promise<boolean> {
-  const focused = Boolean(await win.webContents.executeJavaScript(`
+  const focused = Boolean(
+    await win.webContents.executeJavaScript(`
     (() => {
       const root = document.querySelector('[data-testid="markdown-visual-editor"] .ProseMirror')
       if (!(root instanceof HTMLElement)) return false
@@ -435,7 +455,8 @@ async function typeMarkdownSlash(win: BrowserWindow): Promise<boolean> {
       selection.addRange(range)
       return true
     })()
-  `))
+  `)
+  )
   if (!focused) return false
   win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
   win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
@@ -485,7 +506,8 @@ async function beginTabReorder(
   targetTitle: string,
   insertion: 'before' | 'after'
 ): Promise<boolean> {
-  return Boolean(await win.webContents.executeJavaScript(`
+  return Boolean(
+    await win.webContents.executeJavaScript(`
     (async () => {
       const tabs = Array.from(document.querySelectorAll(${JSON.stringify(DOCUMENT_TAB_SELECTOR)}))
       const source = tabs.find((tab) => tab.querySelector('span')?.textContent === ${JSON.stringify(sourceTitle)})
@@ -506,12 +528,14 @@ async function beginTabReorder(
       window.__scholarseedTabReorder = { source, target, data, insertion: ${JSON.stringify(insertion)} }
       return true
     })()
-  `))
+  `)
+  )
 }
 
 /** 完成 beginTabReorder 建立的真实拖放序列。 */
 async function finishTabReorder(win: BrowserWindow): Promise<boolean> {
-  return Boolean(await win.webContents.executeJavaScript(`
+  return Boolean(
+    await win.webContents.executeJavaScript(`
     (() => {
       const current = window.__scholarseedTabReorder
       if (!current) return false
@@ -528,7 +552,8 @@ async function finishTabReorder(win: BrowserWindow): Promise<boolean> {
       delete window.__scholarseedTabReorder
       return true
     })()
-  `))
+  `)
+  )
 }
 
 /** 等选择器出现。超时返回 false，由调用方记为失败而不是静默继续。 */
@@ -629,7 +654,8 @@ async function textOf(win: BrowserWindow, selector: string): Promise<string> {
 }
 
 async function clickVersionRestore(win: BrowserWindow, sequence: number): Promise<boolean> {
-  return Boolean(await win.webContents.executeJavaScript(`
+  return Boolean(
+    await win.webContents.executeJavaScript(`
     (() => {
       const row = Array.from(document.querySelectorAll('.vds-version-row')).find(
         (candidate) => candidate.querySelector('strong')?.textContent?.trim() === ${JSON.stringify(`v${sequence}`)}
@@ -641,7 +667,8 @@ async function clickVersionRestore(win: BrowserWindow, sequence: number): Promis
       action.click()
       return true
     })()
-  `))
+  `)
+  )
 }
 
 async function restoredEditorState(
@@ -651,7 +678,7 @@ async function restoredEditorState(
   const deadline = Date.now() + WAIT_TIMEOUT_MS
   let state = { text: '', newest: '', rows: 0 }
   while (Date.now() < deadline) {
-    state = await win.webContents.executeJavaScript(`
+    state = (await win.webContents.executeJavaScript(`
       (() => {
         const visible = Array.from(document.querySelectorAll('.vds-document-view-slot')).find(
           (candidate) => candidate instanceof HTMLElement && !candidate.hidden
@@ -665,7 +692,7 @@ async function restoredEditorState(
           rows: rows.length
         }
       })()
-    `) as { text: string; newest: string; rows: number }
+    `)) as { text: string; newest: string; rows: number }
     if (state.newest === `v${expectedSequence}`) return state
     await settle(WAIT_POLL_MS)
   }
@@ -677,7 +704,7 @@ async function commitFileVersionInput(
   selector: string,
   value: number
 ): Promise<boolean> {
-  if (!await waitForFileVersionInput(win, selector)) return false
+  if (!(await waitForFileVersionInput(win, selector))) return false
   const focused = await win.webContents.executeJavaScript(`
     (() => {
       const input = document.querySelector(${JSON.stringify(selector)})
@@ -702,19 +729,18 @@ async function commitFileVersionInput(
   )
 }
 
-async function waitForFileVersionInput(
-  win: BrowserWindow,
-  selector: string
-): Promise<boolean> {
+async function waitForFileVersionInput(win: BrowserWindow, selector: string): Promise<boolean> {
   const deadline = Date.now() + FILE_VERSION_INPUT_TIMEOUT_MS
   let editable = false
   while (Date.now() < deadline) {
-    editable = Boolean(await win.webContents.executeJavaScript(`
+    editable = Boolean(
+      await win.webContents.executeJavaScript(`
       (() => {
         const input = document.querySelector(${JSON.stringify(selector)})
         return input instanceof HTMLInputElement && !input.disabled
       })()
-    `))
+    `)
+    )
     if (editable) break
     await settle(WAIT_POLL_MS)
   }
@@ -722,7 +748,8 @@ async function waitForFileVersionInput(
 }
 
 async function fileVersionFormState(win: BrowserWindow): Promise<string> {
-  return String(await win.webContents.executeJavaScript(`
+  return String(
+    await win.webContents.executeJavaScript(`
     (() => JSON.stringify({
       limit: document.querySelector('[data-testid="file-version-limit"]')?.value ?? null,
       maxFileSize: document.querySelector('[data-testid="file-version-max-size"]')?.value ?? null,
@@ -730,7 +757,8 @@ async function fileVersionFormState(win: BrowserWindow): Promise<string> {
       notice: document.querySelector('.vds-toaster [role="status"]')?.textContent ?? '',
       error: document.querySelector('.vds-toaster [role="alert"]')?.textContent ?? ''
     }))()
-  `))
+  `)
+  )
 }
 
 async function beginFileVersionRequestCapture(win: BrowserWindow): Promise<void> {
@@ -754,7 +782,7 @@ async function beginFileVersionRequestCapture(win: BrowserWindow): Promise<void>
 }
 
 async function finishFileVersionRequestCapture(win: BrowserWindow): Promise<string[]> {
-  return await win.webContents.executeJavaScript(`
+  return (await win.webContents.executeJavaScript(`
     (() => {
       const scope = globalThis
       const requests = [...(scope.__scholarseedWorkbenchFileVersionRequests ?? [])]
@@ -765,7 +793,7 @@ async function finishFileVersionRequestCapture(win: BrowserWindow): Promise<stri
       delete scope.__scholarseedWorkbenchFileVersionRequests
       return requests
     })()
-  `) as string[]
+  `)) as string[]
 }
 
 async function waitForFileVersionSettings(
@@ -793,32 +821,13 @@ async function waitForFileVersionSettings(
       ignore_patterns?: string[]
     } | null
     if (
-      settings?.max_versions_per_file === expectedLimit
-      && settings?.max_file_size_kb === expectedMaxFileSizeKb
-    ) return settings
+      settings?.max_versions_per_file === expectedLimit &&
+      settings?.max_file_size_kb === expectedMaxFileSizeKb
+    )
+      return settings
     await settle(WAIT_POLL_MS)
   }
   return settings
-}
-
-/** 选中页面上某个元素的全部文本（用于验证划词类功能）。 */
-async function selectTextOf(win: BrowserWindow, selector: string): Promise<boolean> {
-  return Boolean(
-    await win.webContents.executeJavaScript(`
-      (() => {
-        const el = document.querySelector(${JSON.stringify(selector)})
-        if (!(el instanceof HTMLElement)) return false
-        const range = document.createRange()
-        range.selectNodeContents(el)
-        const sel = window.getSelection()
-        if (!sel) return false
-        sel.removeAllRanges()
-        sel.addRange(range)
-        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
-        return sel.toString().trim().length > 0
-      })()
-    `)
-  )
 }
 
 /** 读取输入框/文本区当前值。 */
@@ -886,11 +895,40 @@ async function apiPostFile(
   `)
 }
 
-async function apiPostVersion(
+/** 上传本机二进制文件：字节在主进程读，base64 过桥到 renderer 组成 FormData。
+ *
+ * v1 的 `imports/bibliography` / `imports/pdf` 收的是 multipart 字节，而不是旧
+ * `/api/literature/import` 那种服务端路径，所以固件文件必须先读进来再上传。
+ * 请求仍从 renderer 发出，用的是产品自己的 API 地址与凭据上下文。
+ */
+async function apiPostUpload(
   win: BrowserWindow,
   path: string,
-  body: unknown
+  field: string,
+  name: string,
+  base64: string,
+  mediaType: string
 ): Promise<unknown> {
+  return win.webContents.executeJavaScript(`
+    (() => {
+      const raw = atob(${JSON.stringify(base64)})
+      const bytes = new Uint8Array(raw.length)
+      for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index)
+      const body = new FormData()
+      body.append(
+        ${JSON.stringify(field)},
+        new File([bytes], ${JSON.stringify(name)}, { type: ${JSON.stringify(mediaType)} })
+      )
+      return fetch((window.scholarseed?.getApiBase?.() ?? '') + ${JSON.stringify(path)}, {
+        method: 'POST',
+        credentials: 'include',
+        body
+      }).then((r) => r.json()).catch(() => null)
+    })()
+  `)
+}
+
+async function apiPostVersion(win: BrowserWindow, path: string, body: unknown): Promise<unknown> {
   return win.webContents.executeJavaScript(`
     fetch((window.scholarseed?.getApiBase?.() ?? '') + ${JSON.stringify(path)}, {
       method: 'POST',
@@ -939,8 +977,17 @@ let literatureFixtureItemId = ''
 
 /** 给回读 URL 补上当前项目。 */
 function withProject(path: string): string {
+  return withProjectParam(path, 'project')
+}
+
+/** 同 withProject，但用 v1 文献库的项目参数名 `project_id`。 */
+function withProjectId(path: string): string {
+  return withProjectParam(path, 'project_id')
+}
+
+function withProjectParam(path: string, key: string): string {
   if (!fixtureProjectId) return path
-  return `${path}${path.includes('?') ? '&' : '?'}project=${encodeURIComponent(fixtureProjectId)}`
+  return `${path}${path.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(fixtureProjectId)}`
 }
 
 /** 本轮创建的项目登记 id 与磁盘目录，跑完原路移除。
@@ -959,27 +1006,6 @@ async function treePaths(win: BrowserWindow): Promise<string[]> {
   return flatten(payload?.nodes)
 }
 
-/** 在 select 上选中指定 value（受控 select 同样需要走 setter + change）。 */
-async function selectOption(
-  win: BrowserWindow,
-  selector: string,
-  value: string
-): Promise<boolean> {
-  return Boolean(
-    await win.webContents.executeJavaScript(`
-      (() => {
-        const el = document.querySelector(${JSON.stringify(selector)})
-        if (!(el instanceof HTMLSelectElement)) return false
-        Object.getOwnPropertyDescriptor(
-          window.HTMLSelectElement.prototype, 'value'
-        )?.set?.call(el, ${JSON.stringify(value)})
-        el.dispatchEvent(new Event('change', { bubbles: true }))
-        return true
-      })()
-    `)
-  )
-}
-
 /**
  * 读剪贴板内容（验证「复制路径」真的写进了剪贴板）。
  *
@@ -992,25 +1018,26 @@ async function clipboardText(): Promise<string> {
 }
 
 /** Populate and verify the empty-query recent list exclusively through real resource-tree clicks. */
-async function verifyRecentFileSearch(
-  win: BrowserWindow,
-  record: StepRecorder
-): Promise<boolean> {
+async function verifyRecentFileSearch(win: BrowserWindow, record: StepRecorder): Promise<boolean> {
   await click(win, '[data-testid="activity-resource"]')
   await waitFor(win, '[data-testid="resource-tree-root"]')
   const recentFixturePaths = [
     `${RESOURCES_DIR}/${RESTORE_FILE_NAME}`,
     `${RESOURCES_DIR}/实验数据.csv`,
-    ...RECENT_FILE_FIXTURE_NAMES.map((name) => `${RESOURCES_DIR}/${name}`)
+    ...RECENT_FILE_FIXTURE_NAMES.map((name) => `${RESOURCES_DIR}/${name}`),
   ]
   let recentFixtureOpened = 0
   for (const path of recentFixturePaths) {
     const selector = `[data-testid="tree-${path}"]`
-    const opened = await waitFor(win, selector) && await click(win, selector)
+    const opened = (await waitFor(win, selector)) && (await click(win, selector))
     await settle(SETTLE_MS)
-    const selected = opened && Boolean(await win.webContents.executeJavaScript(`
+    const selected =
+      opened &&
+      Boolean(
+        await win.webContents.executeJavaScript(`
       document.querySelector(${JSON.stringify(selector)})?.classList.contains('is-selected')
-    `))
+    `)
+      )
     if (selected) recentFixtureOpened += 1
   }
   record(
@@ -1026,20 +1053,18 @@ async function verifyRecentFileSearch(
   let queryPanelReady = searchPanel
   if (!searchPanel) return false
 
-  const recentRows = await win.webContents.executeJavaScript(`
+  const recentRows = (await win.webContents.executeJavaScript(`
     Array.from(document.querySelectorAll('[data-testid="search-recent-file"]')).map((row) => ({
       path: row.getAttribute('data-path') || '',
       projectId: row.getAttribute('data-project-id') || '',
       text: row.textContent?.trim() || ''
     }))
-  `) as { path: string; projectId: string; text: string }[]
-  const completeRecentRows = recentRows.filter(
-    (row) => row.path && row.projectId && row.text
-  )
+  `)) as { path: string; projectId: string; text: string }[]
+  const completeRecentRows = recentRows.filter((row) => row.path && row.projectId && row.text)
   record(
     '全局搜索空查询展示 5 个最近打开文件',
-    recentRows.length === EXPECTED_RECENT_FILE_ROWS
-      && completeRecentRows.length === EXPECTED_RECENT_FILE_ROWS,
+    recentRows.length === EXPECTED_RECENT_FILE_ROWS &&
+      completeRecentRows.length === EXPECTED_RECENT_FILE_ROWS,
     recentRows.map((row) => row.path).join(', ') || '未展示最近文件'
   )
   const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
@@ -1052,19 +1077,24 @@ async function verifyRecentFileSearch(
   const firstRecent = recentRows[0]
   if (firstRecent) {
     const recentClicked = await click(win, '[data-testid="search-recent-file"]')
-    const panelClosed = recentClicked
-      && await waitForMissing(win, '[data-testid="global-search"]')
-    const selectedRecent = panelClosed && Boolean(await win.webContents.executeJavaScript(`
+    const panelClosed =
+      recentClicked && (await waitForMissing(win, '[data-testid="global-search"]'))
+    const selectedRecent =
+      panelClosed &&
+      Boolean(
+        await win.webContents.executeJavaScript(`
       document.querySelector(${JSON.stringify(`[data-testid="tree-${firstRecent.path}"]`)})
         ?.classList.contains('is-selected')
-    `))
+    `)
+      )
     record(
       '最近文件可从全局搜索直接打开',
       selectedRecent,
       selectedRecent ? firstRecent.path : `未打开 ${firstRecent.path}`
     )
-    queryPanelReady = await click(win, '[data-testid="topbar-search"]')
-      && await waitFor(win, '[data-testid="global-search"]')
+    queryPanelReady =
+      (await click(win, '[data-testid="topbar-search"]')) &&
+      (await waitFor(win, '[data-testid="global-search"]'))
   }
   return queryPanelReady
 }
@@ -1129,6 +1159,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     steps.push({ name, ok, detail })
     log(`[workbench] ${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}\n`)
   }
+  let literaturePdfItemId = ''
 
   // ---- 固件：先有项目才有资料库 ----
   //
@@ -1192,9 +1223,9 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     await click(win, '[data-testid="project-create-submit"]')
     await settle(SETTLE_MS)
   }
-  const fixtureListing = (await apiJson(win, '/api/content/projects')) as
-    | { projects: { id: string; name: string; root: string; layout: string }[] }
-    | null
+  const fixtureListing = (await apiJson(win, '/api/content/projects')) as {
+    projects: { id: string; name: string; root: string; layout: string }[]
+  } | null
   const fixture = fixtureListing?.projects.find((item) => item.name === FIXTURE_PROJECT_NAME)
   record(
     '固件项目已建立（只填名字, 内置双库）',
@@ -1240,13 +1271,27 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       join(dirname(dirname(__dirname)), 'e2e', 'fixtures', 'preview_pdf_1MB.pdf'),
       literaturePdf
     )
-    const literatureImport = (await apiPost(win, '/api/literature/import', {
-      project: fixture.id,
-      source: 'local',
-      sources: [bibliography, literaturePdf],
-      operation_id: LITERATURE_IMPORT_OPERATION
-    })) as { item_ids?: string[] } | null
-    literatureFixtureItemId = literatureImport?.item_ids?.[0] ?? ''
+    // v1 把「题录」与「PDF」拆成两条受理通道，各自 multipart 上传。
+    const scoped = (route: string): string =>
+      `${route}?project_id=${encodeURIComponent(fixture.id)}`
+    const literatureImport = (await apiPostUpload(
+      win,
+      scoped('/api/v1/imports/bibliography'),
+      'files',
+      LITERATURE_FIXTURE_NAME,
+      readFileSync(bibliography).toString('base64'),
+      'application/x-bibtex'
+    )) as { items?: Array<{ id: string }> } | null
+    literatureFixtureItemId = literatureImport?.items?.[0]?.id ?? ''
+    const pdfImport = (await apiPostUpload(
+      win,
+      scoped('/api/v1/imports/pdf'),
+      'file',
+      LITERATURE_PDF_NAME,
+      readFileSync(literaturePdf).toString('base64'),
+      'application/pdf'
+    )) as { id?: string } | null
+    literaturePdfItemId = pdfImport?.id ?? ''
     if (literatureFixtureItemId) {
       await apiPostFile(
         win,
@@ -1303,7 +1348,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         MARKDOWN_SEARCH_QUERY
       )
       record('全局搜索可从 Markdown 正文命中资料', markdownHit)
-      const editorReady = markdownHit && await waitFor(win, '[data-testid="monaco-editor"]')
+      const editorReady = markdownHit && (await waitFor(win, '[data-testid="monaco-editor"]'))
       await settle(SETTLE_MS)
       await clipboard.writeText('')
       if (editorReady) win.webContents.copy()
@@ -1327,29 +1372,24 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       record('DOCX 定位前可重新打开全局搜索', officeSearchPanel)
       await fill(win, '[data-testid="global-search-input"]', officeSearchQuery)
       await settle(1_500)
-      const officeHit = officeSearchPanel && await clickResourceSearchHit(
-        win,
-        OFFICE_FIXTURE_NAME,
-        officeSearchQuery
-      )
+      const officeHit =
+        officeSearchPanel &&
+        (await clickResourceSearchHit(win, OFFICE_FIXTURE_NAME, officeSearchQuery))
       record(
         '全局搜索可从 DOCX 正文命中资料',
         Boolean(officeHit),
         officeHit ? OFFICE_FIXTURE_NAME : `未命中 ${officeSearchQuery}`
       )
-      const officeReady = officeHit && await waitFor(
-        win,
-        `iframe[data-testid="office-editor"][title="${OFFICE_FIXTURE_NAME}"][data-document-ready="true"]`,
-        OFFICE_REVEAL_TIMEOUT_MS
-      )
-      const selectionReady = officeReady && await waitFor(
-        win,
-        '[data-testid="selection-action-host"]'
-      )
-      record(
-        'DOCX 正文命中点击后由 Writer 定位并选中',
-        Boolean(officeReady && selectionReady)
-      )
+      const officeReady =
+        officeHit &&
+        (await waitFor(
+          win,
+          `iframe[data-testid="office-editor"][title="${OFFICE_FIXTURE_NAME}"][data-document-ready="true"]`,
+          OFFICE_REVEAL_TIMEOUT_MS
+        ))
+      const selectionReady =
+        officeReady && (await waitFor(win, '[data-testid="selection-action-host"]'))
+      record('DOCX 正文命中点击后由 Writer 定位并选中', Boolean(officeReady && selectionReady))
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
       mkdirSync(snapshotDir, { recursive: true })
       writeFileSync(
@@ -1369,9 +1409,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
   //
   // 必须写进**当前显示的那个项目**的资料库根: 界面上的树是当前项目的投影,
   // 往别的项目里丢文件当然不会出现 —— 那是断言写错了, 不是产品没刷新。
-  const currentProject = (await apiJson(win, withProject('/api/content/project'))) as
-    | { root?: string; layout?: string }
-    | null
+  const currentProject = (await apiJson(win, withProject('/api/content/project'))) as {
+    root?: string
+    layout?: string
+  } | null
   const currentRoot = String(currentProject?.root ?? '')
   if (currentRoot) {
     const resourcesRoot =
@@ -1408,11 +1449,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       restoreHeadVersionId = String(capability?.version_id ?? '')
       if (!restoreFileId && restoreInitialRevision && !restoreAdmissionAttempted) {
         restoreAdmissionAttempted = true
-        await apiPostVersion(
-          win,
-          withProject('/api/serve/resources/version-admission'),
-          { path: restorePath, expected_disk_revision: restoreInitialRevision }
-        )
+        await apiPostVersion(win, withProject('/api/serve/resources/version-admission'), {
+          path: restorePath,
+          expected_disk_revision: restoreInitialRevision,
+        })
       }
       if (!restoreFileId) await settle(500)
     }
@@ -1420,7 +1460,11 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     let restoreLatestRevision = restoreInitialRevision
     let restoreLatestVersionId = restoreHeadVersionId
     let restorePendingRevision: number | null = null
-    for (let attempt = 0; attempt < 16 && restoreLatestRevision === restoreInitialRevision; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 16 && restoreLatestRevision === restoreInitialRevision;
+      attempt += 1
+    ) {
       const capability = (await apiJson(
         win,
         withProject(`/api/resource/capability?path=${encodeURIComponent(restorePath)}`)
@@ -1428,36 +1472,39 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       restoreLatestRevision = String(capability?.disk_revision ?? '')
       restoreLatestVersionId = String(capability?.version_id ?? restoreHeadVersionId)
       restorePendingRevision = capability?.pending?.revision ?? null
-      if (!restoreLatestRevision || restoreLatestRevision === restoreInitialRevision) await settle(250)
+      if (!restoreLatestRevision || restoreLatestRevision === restoreInitialRevision)
+        await settle(250)
     }
-    const restoreV2 = restoreFileId && restoreLatestRevision
-      ? await apiPostVersion(
-          win,
-          withProject(`/api/resource/files/${encodeURIComponent(restoreFileId)}/versions`),
-          {
-            path: restorePath,
-            origin: 'user',
-            expected_disk_revision: restoreLatestRevision,
-            expected_version_id: restoreLatestVersionId,
-            expected_pending_revision: restorePendingRevision
-          }
-        )
-      : null
+    const restoreV2 =
+      restoreFileId && restoreLatestRevision
+        ? await apiPostVersion(
+            win,
+            withProject(`/api/resource/files/${encodeURIComponent(restoreFileId)}/versions`),
+            {
+              path: restorePath,
+              origin: 'user',
+              expected_disk_revision: restoreLatestRevision,
+              expected_version_id: restoreLatestVersionId,
+              expected_pending_revision: restorePendingRevision,
+            }
+          )
+        : null
     const restoreCapability = await apiJson(
       win,
       withProject(`/api/resource/capability?path=${encodeURIComponent(restorePath)}`)
     )
     await waitFor(win, `[data-testid="tree-${restorePath}"]`)
     const restoreTreeReady = await waitFor(win, `[data-testid="tree-${restorePath}"]`)
-    const restoreTreeOpened = restoreTreeReady
-      && await click(win, `[data-testid="tree-${restorePath}"]`)
-    const restoreHistoryReady = restoreTreeOpened
-      && await waitFor(win, '[data-testid="document-version-history"]')
+    const restoreTreeOpened =
+      restoreTreeReady && (await click(win, `[data-testid="tree-${restorePath}"]`))
+    const restoreHistoryReady =
+      restoreTreeOpened && (await waitFor(win, '[data-testid="document-version-history"]'))
     const restoreOpened = Boolean(restoreV2) && restoreHistoryReady
-    const restoreHistoryOpened = restoreOpened
-      && await click(win, '[data-testid="document-version-history"]')
-      && await waitFor(win, '.vds-version-history')
-      && await waitFor(win, '.vds-version-row')
+    const restoreHistoryOpened =
+      restoreOpened &&
+      (await click(win, '[data-testid="document-version-history"]')) &&
+      (await waitFor(win, '.vds-version-history')) &&
+      (await waitFor(win, '.vds-version-row'))
     record(
       '恢复验收可从真实文件打开版本历史侧栏',
       Boolean(restoreHistoryOpened),
@@ -1471,11 +1518,18 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         restoreTreeOpened,
         restoreHistoryReady,
         tabs: await documentTabSnapshot(win, RESTORE_FILE_NAME),
-        views: await describeDocumentViews(win)
+        views: await describeDocumentViews(win),
       })
     )
     if (restoreHistoryOpened) {
-      const historySnapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
+      const historySnapshotDir = resolve(
+        process.cwd(),
+        '..',
+        '..',
+        'tmp',
+        'test_snapshot',
+        'desktop'
+      )
       mkdirSync(historySnapshotDir, { recursive: true })
       writeFileSync(
         join(historySnapshotDir, 'version-history-management.png'),
@@ -1489,11 +1543,11 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       const afterInitialTab = await documentTabSnapshot(win, RESTORE_FILE_NAME)
       record(
         '单文件恢复立即同步已打开编辑器与版本历史',
-        restoredInitial
-          && initialState.text.includes('初始版本')
-          && !initialState.text.includes('当前版本')
-          && initialState.rows === 3
-          && beforeRestoreTab.ids[0] === afterInitialTab.ids[0],
+        restoredInitial &&
+          initialState.text.includes('初始版本') &&
+          !initialState.text.includes('当前版本') &&
+          initialState.rows === 3 &&
+          beforeRestoreTab.ids[0] === afterInitialTab.ids[0],
         JSON.stringify(initialState)
       )
       const restoredLatest = await clickVersionRestore(win, 2)
@@ -1505,7 +1559,14 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         restoredLatest && latestState.text.includes('当前版本') && latestState.rows === 4,
         JSON.stringify(latestState)
       )
-      const restoreSnapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
+      const restoreSnapshotDir = resolve(
+        process.cwd(),
+        '..',
+        '..',
+        'tmp',
+        'test_snapshot',
+        'desktop'
+      )
       mkdirSync(restoreSnapshotDir, { recursive: true })
       writeFileSync(
         join(restoreSnapshotDir, 'resource-version-restored.png'),
@@ -1553,10 +1614,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     record('新建文档真实落盘（自动补 .md）', docPath.endsWith('.md'), docPath || '未找到')
     const markdownTitle = `${NEW_DOC_NAME}.md`
     const initial = docPath
-      ? (await apiJson(
+      ? ((await apiJson(
           win,
           withProject(`/api/resource/read?path=${encodeURIComponent(docPath)}`)
-        )) as { content?: string } | null
+        )) as { content?: string } | null)
       : null
     record(
       '新建 Markdown 首行使用最终主文件名作为一级标题',
@@ -1582,10 +1643,12 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     }
     record('新文件被后台扫描纳管并创建 v1', Boolean(versionFileId && initialVersionCount === 1))
     const selected = docPath
-      ? Boolean(await win.webContents.executeJavaScript(`
+      ? Boolean(
+          await win.webContents.executeJavaScript(`
           document.querySelector(${JSON.stringify(`[data-testid="tree-${docPath}"]`)})
             ?.classList.contains('is-selected')
-        `))
+        `)
+        )
       : false
     record('新建后资料树定位并选中文档', selected, docPath || '未找到新文档')
     if (selected) {
@@ -1596,16 +1659,12 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         (await win.webContents.capturePage()).toPNG()
       )
     }
-    const clicked = docPath
-      ? await click(win, `[data-testid="tree-${docPath}"]`)
-      : false
-    const opened = clicked && await waitFor(win, '[data-testid="markdown-visual-editor"]')
+    const clicked = docPath ? await click(win, `[data-testid="tree-${docPath}"]`) : false
+    const opened = clicked && (await waitFor(win, '[data-testid="markdown-visual-editor"]'))
     record(
       '用户点击新文档后打开 Markdown 编辑模式',
       Boolean(opened),
-      opened
-        ? docPath
-        : `clicked=${clicked} views=${await describeDocumentViews(win)}`
+      opened ? docPath : `clicked=${clicked} views=${await describeDocumentViews(win)}`
     )
   }
 
@@ -1613,13 +1672,20 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
   if (docPath) {
     const markdownTitle = `${NEW_DOC_NAME}.md`
     const beforeSource = await documentTabSnapshot(win, markdownTitle)
+    await click(win, `[data-testid="${MARKDOWN_MODE_TEST_ID}"]`)
+    await waitFor(win, '[data-testid="markdown-open-source"]')
     const sourceAction = await click(win, '[data-testid="markdown-open-source"]')
     const source = await waitFor(win, '[data-testid="monaco-editor"]')
     const afterSource = await documentTabSnapshot(win, markdownTitle)
     record(
       'Markdown 在同一文件 Tab 内切换源码模式',
-      Boolean(sourceAction && source && beforeSource.count === 1 && afterSource.count === 1
-        && beforeSource.ids[0] === afterSource.ids[0]),
+      Boolean(
+        sourceAction &&
+        source &&
+        beforeSource.count === 1 &&
+        afterSource.count === 1 &&
+        beforeSource.ids[0] === afterSource.ids[0]
+      ),
       `before=${JSON.stringify(beforeSource)} after=${JSON.stringify(afterSource)}`
     )
     if (source) {
@@ -1636,7 +1702,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           (await win.webContents.capturePage()).toPNG()
         )
       }
-      const saved = typed && await clickTwice(win, '[data-testid="markdown-save"]')
+      const saved = typed && (await clickTwice(win, '[data-testid="markdown-save"]'))
       await settle(SETTLE_MS)
       const clearedMarkers = await tabDirtyMarkers(win, markdownTitle)
       record(
@@ -1671,12 +1737,16 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         )) as { versions?: { origin?: string; sequence?: number }[] } | null
         record(
           '用户主动保存直接创建一个文件版本',
-          afterOrdinarySave?.versions?.length === initialVersionCount + 1
-            && afterOrdinarySave.versions[0]?.origin === 'user',
+          afterOrdinarySave?.versions?.length === initialVersionCount + 1 &&
+            afterOrdinarySave.versions[0]?.origin === 'user',
           `版本数 ${initialVersionCount} → ${afterOrdinarySave?.versions?.length ?? 0}`
         )
         if (fixture) {
-          writeFileSync(join(fixture.root, docPath), `${MARKDOWN_BODY}\n\n外部编辑器确认版本。\n`, 'utf-8')
+          writeFileSync(
+            join(fixture.root, docPath),
+            `${MARKDOWN_BODY}\n\n外部编辑器确认版本。\n`,
+            'utf-8'
+          )
         }
         const driftVisible = await waitFor(
           win,
@@ -1686,7 +1756,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           const saveState = document.querySelector('[data-save-state]')
           const save = document.querySelector('[data-testid="markdown-save"]')
           const histories = [...document.querySelectorAll('[data-testid="document-version-history"]')]
-          const editorSwitch = document.querySelector('[data-testid="markdown-open-editor"]')
+          const editorSwitch = document.querySelector('[data-testid="${MARKDOWN_MODE_TEST_ID}"]')
           return {
             historyCount: histories.length,
             historyFollowsEditorSwitch: Boolean(
@@ -1702,13 +1772,13 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         record(
           '外部修改收敛到唯一历史入口与带红点的保存操作',
           Boolean(
-            driftVisible
-            && externalVersionActions.historyCount === 1
-            && externalVersionActions.historyFollowsEditorSwitch
-            && externalVersionActions.saveState !== 'dirty'
-            && externalVersionActions.saveDisabled === false
-            && externalVersionActions.saveLabel === '保存'
-            && externalVersionActions.saveHasDirtyDot
+            driftVisible &&
+            externalVersionActions.historyCount === 1 &&
+            externalVersionActions.historyFollowsEditorSwitch &&
+            externalVersionActions.saveState !== 'dirty' &&
+            externalVersionActions.saveDisabled === false &&
+            externalVersionActions.saveLabel === '保存' &&
+            externalVersionActions.saveHasDirtyDot
           ),
           JSON.stringify(externalVersionActions)
         )
@@ -1720,11 +1790,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
             (await win.webContents.capturePage()).toPNG()
           )
         }
-        const sealed = driftVisible && await click(win, '[data-testid="markdown-save"]')
-        const sealSettled = sealed && await waitForMissing(
-          win,
-          '[data-testid="markdown-save"][data-external-change="true"]'
-        )
+        const sealed = driftVisible && (await click(win, '[data-testid="markdown-save"]'))
+        const sealSettled =
+          sealed &&
+          (await waitForMissing(win, '[data-testid="markdown-save"][data-external-change="true"]'))
         const afterExplicitSave = (await apiJson(
           win,
           withProject(`/api/resource/files/${encodeURIComponent(fileId)}/versions`)
@@ -1739,17 +1808,17 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           JSON.stringify(afterExplicitSave?.versions?.[0] ?? {})
         )
         const historyOpened = await click(win, '[data-testid="document-version-history"]')
-        const historyVisible = historyOpened && await waitFor(win, '.vds-version-history')
+        const historyVisible = historyOpened && (await waitFor(win, '.vds-version-history'))
         record('版本历史侧栏可从文件工具栏打开', Boolean(historyVisible))
         if (historyVisible) {
           await waitFor(win, '.vds-version-row')
           const historyText = await textOf(win, '.vds-version-history')
           record(
             '版本历史显示紧凑筛选与版本来源',
-            historyText.includes('外部修改')
-              && historyText.includes('全部来源')
-              && historyText.includes('最新优先')
-              && !historyText.includes('历史 Agent 交付'),
+            historyText.includes('外部修改') &&
+              historyText.includes('全部来源') &&
+              historyText.includes('最新优先') &&
+              !historyText.includes('历史 Agent 交付'),
             historyText.slice(0, 160)
           )
           await click(win, '.vds-sheet__close')
@@ -1764,24 +1833,22 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
             intendedMemoryContent
           )
           writeFileSync(join(fixture.root, docPath), diskContent, 'utf-8')
-          const conflictVisible = memoryChanged && await waitFor(
-            win,
-            '[data-testid="document-save-conflict"]'
-          )
-          const copied = conflictVisible && await click(
-            win,
-            '[data-testid="document-conflict-copy"]'
-          )
+          const conflictVisible =
+            memoryChanged && (await waitFor(win, '[data-testid="document-save-conflict"]'))
+          const copied =
+            conflictVisible && (await click(win, '[data-testid="document-conflict-copy"]'))
           let copiedPath = ''
           let copiedFileId = ''
           for (let attempt = 0; attempt < 16 && !copiedFileId; attempt += 1) {
             await settle(500)
             const paths = await treePaths(win)
-            copiedPath = paths.find((path) => (
-              path !== docPath
-              && path.endsWith('.md')
-              && basename(path).startsWith(NEW_DOC_NAME)
-            )) ?? ''
+            copiedPath =
+              paths.find(
+                (path) =>
+                  path !== docPath &&
+                  path.endsWith('.md') &&
+                  basename(path).startsWith(NEW_DOC_NAME)
+              ) ?? ''
             if (copiedPath) {
               const capability = (await apiJson(
                 win,
@@ -1795,35 +1862,35 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
             withProject(`/api/resource/read?path=${encodeURIComponent(docPath)}`)
           )) as { content?: unknown } | null
           const copyAfterConflict = copiedPath
-            ? (await apiJson(
+            ? ((await apiJson(
                 win,
                 withProject(`/api/resource/read?path=${encodeURIComponent(copiedPath)}`)
-              )) as { content?: unknown } | null
+              )) as { content?: unknown } | null)
             : null
           const copiedHistory = copiedFileId
-            ? (await apiJson(
+            ? ((await apiJson(
                 win,
                 withProject(`/api/resource/files/${encodeURIComponent(copiedFileId)}/versions`)
-              )) as { versions?: { sequence?: number }[] } | null
+              )) as { versions?: { sequence?: number }[] } | null)
             : null
           record(
             '内存与磁盘同时修改时另存为受管文件并保留双方完整内容',
             Boolean(
-              copied
-              && copiedPath
-              && originalAfterConflict?.content === diskContent
-              && typeof copyAfterConflict?.content === 'string'
-              && copyAfterConflict.content.includes(CONFLICT_MEMORY_SUFFIX)
-              && !copyAfterConflict.content.includes(CONFLICT_DISK_SUFFIX)
-              && copiedHistory?.versions?.length === 1
-              && copiedHistory.versions[0]?.sequence === 1
+              copied &&
+              copiedPath &&
+              originalAfterConflict?.content === diskContent &&
+              typeof copyAfterConflict?.content === 'string' &&
+              copyAfterConflict.content.includes(CONFLICT_MEMORY_SUFFIX) &&
+              !copyAfterConflict.content.includes(CONFLICT_DISK_SUFFIX) &&
+              copiedHistory?.versions?.length === 1 &&
+              copiedHistory.versions[0]?.sequence === 1
             ),
             JSON.stringify({
               copied,
               copiedPath,
               original: originalAfterConflict?.content,
               copy: copyAfterConflict?.content,
-              history: copiedHistory?.versions
+              history: copiedHistory?.versions,
             })
           )
         }
@@ -1831,12 +1898,19 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     }
 
     // ---- 同一 Tab 切编辑模式：共享内容并产出可直接编辑的结构化 DOM ----
+    await click(win, `[data-testid="${MARKDOWN_MODE_TEST_ID}"]`)
+    await waitFor(win, '[data-testid="markdown-open-editor"]')
     const editorAction = await click(win, '[data-testid="markdown-open-editor"]')
     const rendered = await waitFor(win, '[data-testid="markdown-visual-editor"] .ProseMirror')
     const afterEditor = await documentTabSnapshot(win, markdownTitle)
     record(
       'Markdown 源码与编辑模式不增加文件 Tab',
-      Boolean(editorAction && rendered && afterEditor.count === 1 && afterEditor.ids[0] === beforeSource.ids[0]),
+      Boolean(
+        editorAction &&
+        rendered &&
+        afterEditor.count === 1 &&
+        afterEditor.ids[0] === beforeSource.ids[0]
+      ),
       JSON.stringify(afterEditor)
     )
     if (rendered) {
@@ -1885,11 +1959,14 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       }
 
       const slashTyped = await typeMarkdownSlash(win)
-      const slashMenu = slashTyped && await waitFor(win, '.milkdown-slash-menu[data-show="true"]')
+      const slashMenu = slashTyped && (await waitFor(win, '.milkdown-slash-menu[data-show="true"]'))
       const slashText = slashMenu ? await textOf(win, '.milkdown-slash-menu[data-show="true"]') : ''
       record(
         '输入 / 可唤起完整 Markdown 基础命令菜单',
-        slashMenu && slashText.includes('一级标题 H1') && slashText.includes('公式') && slashText.includes('代码块'),
+        slashMenu &&
+          slashText.includes('一级标题 H1') &&
+          slashText.includes('公式') &&
+          slashText.includes('代码块'),
         slashMenu ? slashText.slice(0, 160) : '斜杠菜单未出现'
       )
       if (slashMenu) {
@@ -1903,7 +1980,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     // ---- 动态分栏：右键 Tab → 菜单不透明 → 拆分并移动 ----
     const activeTab = '.vds-navigation-tabs [role="tab"][aria-selected="true"]'
     const contextOpened = await openContextMenu(win, activeTab)
-    const tabMenu = contextOpened && await waitFor(win, '[data-testid="document-tab-menu"]')
+    const tabMenu = contextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
     record('Tab 右键菜单可打开', Boolean(tabMenu))
     if (tabMenu) {
       const background = await win.webContents.executeJavaScript(`
@@ -1911,7 +1988,9 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       `)
       record(
         'Tab 右键菜单有不透明底色',
-        typeof background === 'string' && background !== 'rgba(0, 0, 0, 0)' && background !== 'transparent',
+        typeof background === 'string' &&
+          background !== 'rgba(0, 0, 0, 0)' &&
+          background !== 'transparent',
         String(background)
       )
       await click(win, '[data-testid="tab-split-right"]')
@@ -1967,10 +2046,13 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
 
     // ---- 同栏排序：拖到目标标签前，先检查插入指示，再检查 DOM 顺序 ----
     const reorderTargetTitle = `${NEW_DOC_NAME}.md`
-    const reorderStarted = movedToRight
-      && await beginTabReorder(win, `${SPLIT_DOC_NAME}.md`, reorderTargetTitle, 'before')
+    const reorderStarted =
+      movedToRight &&
+      (await beginTabReorder(win, `${SPLIT_DOC_NAME}.md`, reorderTargetTitle, 'before'))
     await settle(WAIT_POLL_MS)
-    const insertionVisible = reorderStarted && await win.webContents.executeJavaScript(`
+    const insertionVisible =
+      reorderStarted &&
+      (await win.webContents.executeJavaScript(`
       (() => {
         const target = Array.from(document.querySelectorAll(${JSON.stringify(DOCUMENT_TAB_SELECTOR)}))
           .find((tab) => tab.querySelector('span')?.textContent === ${JSON.stringify(reorderTargetTitle)}
@@ -1979,16 +2061,21 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         const marker = getComputedStyle(target, '::before')
         return marker.content !== 'none' && Number.parseFloat(marker.width) > 0
       })()
-    `)
+    `))
     record('同栏标签拖拽显示插入位置指示', Boolean(insertionVisible))
     if (insertionVisible) {
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
       mkdirSync(snapshotDir, { recursive: true })
-      writeFileSync(join(snapshotDir, 'document-tab-reorder.png'), (await win.webContents.capturePage()).toPNG())
+      writeFileSync(
+        join(snapshotDir, 'document-tab-reorder.png'),
+        (await win.webContents.capturePage()).toPNG()
+      )
     }
-    const reorderFinished = reorderStarted && await finishTabReorder(win)
+    const reorderFinished = reorderStarted && (await finishTabReorder(win))
     await settle(SETTLE_MS)
-    const reordered = reorderFinished && await win.webContents.executeJavaScript(`
+    const reordered =
+      reorderFinished &&
+      (await win.webContents.executeJavaScript(`
       (() => {
         const tabs = Array.from(document.querySelectorAll(${JSON.stringify(DOCUMENT_TAB_SELECTOR)}))
         const source = tabs.find((tab) => tab.querySelector('span')?.textContent === ${JSON.stringify(`${SPLIT_DOC_NAME}.md`)})
@@ -1999,25 +2086,30 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         return titles.indexOf(${JSON.stringify(`${SPLIT_DOC_NAME}.md`)})
           < titles.indexOf(${JSON.stringify(reorderTargetTitle)})
       })()
-    `)
+    `))
     record('上方文件 Tab 可拖到同栏另一标签前完成排序', Boolean(reordered))
 
     // ---- 标签右键菜单：新增动作可见，复制动作回读真实系统剪贴板 ----
     const tabContextOpened = await openTabContextMenu(win, `${SPLIT_DOC_NAME}.md`)
-    const tabContextReady = tabContextOpened && await waitFor(win, '[data-testid="document-tab-menu"]')
-    const tabActionsVisible = tabContextReady && await win.webContents.executeJavaScript(`
+    const tabContextReady =
+      tabContextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+    const tabActionsVisible =
+      tabContextReady &&
+      (await win.webContents.executeJavaScript(`
       ['tab-add-to-conversation', 'tab-copy-name', 'tab-copy-absolute-path', 'tab-reveal-in-finder']
         .every((id) => Boolean(document.querySelector('[data-testid="' + id + '"]')))
-    `)
+    `))
     record('文件 Tab 右键菜单包含加入对话、复制和访达动作', Boolean(tabActionsVisible))
-    const layoutActions = tabContextReady && await win.webContents.executeJavaScript(`
+    const layoutActions =
+      tabContextReady &&
+      ((await win.webContents.executeJavaScript(`
       Array.from(document.querySelectorAll('[data-testid="document-tab-menu"] [data-testid^="tab-split-"], [data-testid="document-tab-menu"] [data-testid^="tab-move-"]'))
         .map((item) => item.getAttribute('data-testid'))
-    `) as string[] | false
+    `)) as string[] | false)
     record(
       '右栏菜单先列拆分、再列唯一相邻移动目标',
-      Array.isArray(layoutActions)
-        && JSON.stringify(layoutActions) === JSON.stringify(['tab-split-down', 'tab-move-left']),
+      Array.isArray(layoutActions) &&
+        JSON.stringify(layoutActions) === JSON.stringify(['tab-split-down', 'tab-move-left']),
       JSON.stringify(layoutActions)
     )
     if (tabContextReady) {
@@ -2028,7 +2120,8 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       record('文件 Tab 可复制文件名', copiedName === `${SPLIT_DOC_NAME}.md`, copiedName)
     }
     const pathContextOpened = await openTabContextMenu(win, `${SPLIT_DOC_NAME}.md`)
-    const pathContextReady = pathContextOpened && await waitFor(win, '[data-testid="document-tab-menu"]')
+    const pathContextReady =
+      pathContextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
     if (pathContextReady) {
       await clipboard.writeText('')
       await click(win, '[data-testid="tab-copy-absolute-path"]')
@@ -2041,20 +2134,24 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       )
     }
     const conversationContextOpened = await openTabContextMenu(win, `${SPLIT_DOC_NAME}.md`)
-    const conversationContextReady = conversationContextOpened
-      && await waitFor(win, '[data-testid="document-tab-menu"]')
-    const conversationAdded = conversationContextReady
-      && await click(win, '[data-testid="tab-add-to-conversation"]')
-    const aiPanelOpened = conversationAdded && await waitFor(win, '[data-testid="ai-panel"]')
-    const contextAttached = aiPanelOpened && await win.webContents.executeJavaScript(`
+    const conversationContextReady =
+      conversationContextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+    const conversationAdded =
+      conversationContextReady && (await click(win, '[data-testid="tab-add-to-conversation"]'))
+    const aiPanelOpened = conversationAdded && (await waitFor(win, '[data-testid="ai-panel"]'))
+    const contextAttached =
+      aiPanelOpened &&
+      (await win.webContents.executeJavaScript(`
       Array.from(document.querySelectorAll('.vds-ai-chip'))
         .some((chip) => chip.textContent?.includes(${JSON.stringify(`${SPLIT_DOC_NAME}.md`)}))
-    `)
+    `))
     record('文件 Tab 可加入当前对话', Boolean(contextAttached))
 
     const finderContextOpened = await openTabContextMenu(win, `${SPLIT_DOC_NAME}.md`)
-    const finderContextReady = finderContextOpened && await waitFor(win, '[data-testid="document-tab-menu"]')
-    const finderInvoked = finderContextReady && await click(win, '[data-testid="tab-reveal-in-finder"]')
+    const finderContextReady =
+      finderContextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+    const finderInvoked =
+      finderContextReady && (await click(win, '[data-testid="tab-reveal-in-finder"]'))
     await settle(SETTLE_MS)
     const revealNotice = await textOf(win, '[data-testid="resource-notice"]')
     record(
@@ -2065,33 +2162,37 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
 
     // ---- 三栏 T 形：完整左栏必须明确列出右上、右下两个真实目标 ----
     const splitContextOpened = await openTabContextMenu(win, `${SPLIT_DOC_NAME}.md`)
-    const splitContextReady = splitContextOpened && await waitFor(win, '[data-testid="document-tab-menu"]')
-    const splitDown = splitContextReady && await click(win, '[data-testid="tab-split-down"]')
+    const splitContextReady =
+      splitContextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+    const splitDown = splitContextReady && (await click(win, '[data-testid="tab-split-down"]'))
     await settle(SETTLE_MS)
     const threeLeaves = await win.webContents.executeJavaScript(
       `document.querySelectorAll('.vds-dock-leaf').length`
     )
-    const leftContextOpened = splitDown && Number(threeLeaves) === 3
-      && await openTabContextMenu(win, markdownTitle)
-    const leftContextReady = leftContextOpened && await waitFor(win, '[data-testid="document-tab-menu"]')
-    const tLayoutActions = leftContextReady && await win.webContents.executeJavaScript(`
+    const leftContextOpened =
+      splitDown && Number(threeLeaves) === 3 && (await openTabContextMenu(win, markdownTitle))
+    const leftContextReady =
+      leftContextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+    const tLayoutActions =
+      leftContextReady &&
+      ((await win.webContents.executeJavaScript(`
       Array.from(document.querySelectorAll('[data-testid="document-tab-menu"] [data-testid^="tab-split-"], [data-testid="document-tab-menu"] [data-testid^="tab-move-"]'))
         .map((item) => item.getAttribute('data-testid'))
-    `) as string[] | false
+    `)) as string[] | false)
     record(
       'T 形左栏菜单先列拆分，再明确列出右上和右下',
-      Array.isArray(tLayoutActions)
-        && JSON.stringify(tLayoutActions) === JSON.stringify([
-          'tab-split-down',
-          'tab-move-right-top',
-          'tab-move-right-bottom'
-        ]),
+      Array.isArray(tLayoutActions) &&
+        JSON.stringify(tLayoutActions) ===
+          JSON.stringify(['tab-split-down', 'tab-move-right-top', 'tab-move-right-bottom']),
       JSON.stringify(tLayoutActions)
     )
     if (leftContextReady) {
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
       mkdirSync(snapshotDir, { recursive: true })
-      writeFileSync(join(snapshotDir, 'document-tab-t-menu.png'), (await win.webContents.capturePage()).toPNG())
+      writeFileSync(
+        join(snapshotDir, 'document-tab-t-menu.png'),
+        (await win.webContents.capturePage()).toPNG()
+      )
     }
     if (leftContextReady) await click(win, '.vds-menu-veil')
     const collapsedThreePane = await win.webContents.executeJavaScript(`
@@ -2107,8 +2208,12 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     await settle(SETTLE_MS)
     record(
       'T 形菜单验收后可关闭新增投影并恢复双栏',
-      Boolean(collapsedThreePane)
-        && Number(await win.webContents.executeJavaScript(`document.querySelectorAll('.vds-dock-leaf').length`)) === 2
+      Boolean(collapsedThreePane) &&
+        Number(
+          await win.webContents.executeJavaScript(
+            `document.querySelectorAll('.vds-dock-leaf').length`
+          )
+        ) === 2
     )
   }
 
@@ -2122,7 +2227,9 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       Boolean(document.querySelector('[data-testid="document-preview"], [data-testid="document-edit"]'))
     `)
     record('真实 Office 文档不显示工作台模式切换', officeFrame && !shellModeSwitcher)
-    const officeStatus = officeFrame && await win.webContents.executeJavaScript(`
+    const officeStatus =
+      officeFrame &&
+      ((await win.webContents.executeJavaScript(`
       (() => Array.from(document.querySelectorAll('iframe[data-testid="office-editor"]')).map((frame) => ({
         slot: frame.dataset.runtimeSlot,
         runtimeReady: frame.dataset.runtimeReady,
@@ -2130,18 +2237,22 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         visibility: getComputedStyle(frame).visibility,
         status: frame.contentDocument?.querySelector('#status')?.textContent || ''
       })))()
-    `) as { documentReady: string; visibility: string; status: string }[] | false
-    const officeEnteredRuntime = Boolean(officeStatus && officeStatus.some((item) => (
-      item.documentReady === 'true'
-      || (item.visibility === 'visible' && item.status === OFFICE_FONT_PERMISSION_STATUS)
-    )))
+    `)) as { documentReady: string; visibility: string; status: string }[] | false)
+    const officeEnteredRuntime = Boolean(
+      officeStatus &&
+      officeStatus.some(
+        (item) =>
+          item.documentReady === 'true' ||
+          (item.visibility === 'visible' && item.status === OFFICE_FONT_PERMISSION_STATUS)
+      )
+    )
     record(
       '真实 Office 文件进入运行时（无授权环境停在原生字体授权）',
       officeEnteredRuntime,
       `${officePath} ${JSON.stringify(officeStatus)}`
     )
     if (officeEnteredRuntime) {
-      const officeBoundary = await win.webContents.executeJavaScript(`
+      const officeBoundary = (await win.webContents.executeJavaScript(`
         (() => {
           const frame = Array.from(document.querySelectorAll('iframe[data-testid="office-editor"]'))
             .find((node) => node instanceof HTMLElement && getComputedStyle(node).visibility === 'visible')
@@ -2162,7 +2273,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
             inPane: contained(paneRect, frameRect)
           }
         })()
-      `) as { inAnchor: boolean; inPane: boolean } | null
+      `)) as { inAnchor: boolean; inPane: boolean } | null
       record(
         'Office iframe 只占所属工作栏内容区域',
         Boolean(officeBoundary?.inAnchor && officeBoundary.inPane),
@@ -2181,49 +2292,59 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       record('Office 打开时活动栏、左侧栏和 Tab 栏保持在 iframe 上方', Boolean(chromeTopmost))
 
       const officeTreeMenuPath = findNode(await treePaths(win), NEW_FOLDER_NAME)
-      const treeMenuOpened = Boolean(officeTreeMenuPath)
-        && await click(win, `[data-testid="tree-more-${officeTreeMenuPath}"]`)
-      const treeMenuVisible = treeMenuOpened && await waitFor(win, '[data-testid="resource-node-menu"]')
-      const treeMenuTopmost = treeMenuVisible && await win.webContents.executeJavaScript(`
+      const treeMenuOpened =
+        Boolean(officeTreeMenuPath) &&
+        (await click(win, `[data-testid="tree-more-${officeTreeMenuPath}"]`))
+      const treeMenuVisible =
+        treeMenuOpened && (await waitFor(win, '[data-testid="resource-node-menu"]'))
+      const treeMenuTopmost =
+        treeMenuVisible &&
+        (await win.webContents.executeJavaScript(`
         (() => {
           const menu = document.querySelector('[data-testid="resource-node-menu"]')
           if (!(menu instanceof HTMLElement)) return false
           const rect = menu.getBoundingClientRect()
           return document.elementFromPoint(rect.left + 12, rect.top + 12)?.closest('[data-testid="resource-node-menu"]') === menu
         })()
-      `)
+      `))
       record('Office 打开时资料树菜单显示在 iframe 上方', Boolean(treeMenuTopmost))
       if (treeMenuVisible) await click(win, '.vds-menu-veil')
 
       await click(win, '[data-testid="resource-import"]')
       const modalVisible = await waitFor(win, '[data-testid="resource-import-dialog"] .vds-modal')
-      const modalOverlay = modalVisible && await win.webContents.executeJavaScript(`
+      const modalOverlay =
+        modalVisible &&
+        (await win.webContents.executeJavaScript(`
         (() => {
           const modal = document.querySelector('[data-testid="resource-import-dialog"] .vds-modal')
           if (!(modal instanceof HTMLElement)) return false
           const rect = modal.getBoundingClientRect()
           return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('.vds-modal') === modal
         })()
-      `)
+      `))
       record('Office 上方的弹窗不被 iframe 遮挡', Boolean(modalOverlay))
       if (modalVisible) await click(win, '[data-testid="resource-import-dialog"] .vds-modal-close')
 
       const contextOpened = await openTabContextMenu(win, OFFICE_FIXTURE_NAME)
-      const menuVisible = contextOpened && await waitFor(win, '[data-testid="document-tab-menu"]')
-      const overlay = menuVisible && await win.webContents.executeJavaScript(`
+      const menuVisible = contextOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+      const overlay =
+        menuVisible &&
+        (await win.webContents.executeJavaScript(`
         (() => {
           const menu = document.querySelector('[data-testid="document-tab-menu"]')
           if (!(menu instanceof HTMLElement)) return false
           const rect = menu.getBoundingClientRect()
           return document.elementFromPoint(rect.left + 12, rect.top + 12)?.closest('[data-testid="document-tab-menu"]') === menu
         })()
-      `)
+      `))
       record('Office 上方的 Tab 菜单不被 iframe 遮挡', Boolean(overlay))
-      const officeLayoutActions = menuVisible && await win.webContents.executeJavaScript(`
+      const officeLayoutActions =
+        menuVisible &&
+        ((await win.webContents.executeJavaScript(`
         Array.from(document.querySelectorAll(
           '[data-testid="document-tab-menu"] [data-testid^="tab-split-"], [data-testid="document-tab-menu"] [data-testid^="tab-move-"]'
         )).map((node) => node.getAttribute('data-testid'))
-      `) as string[] | false
+      `)) as string[] | false)
       record(
         'Office Tab 菜单不提供拆分或移动操作',
         Array.isArray(officeLayoutActions) && officeLayoutActions.length === 0,
@@ -2231,7 +2352,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       )
       if (menuVisible) await click(win, '.vds-menu-veil')
       await settle(SETTLE_MS)
-      const geometry = await win.webContents.executeJavaScript(`
+      const geometry = (await win.webContents.executeJavaScript(`
         (() => {
           const anchors = Array.from(document.querySelectorAll('.vds-office-anchor'))
             .filter((node) => node instanceof HTMLElement && node.offsetParent !== null)
@@ -2248,20 +2369,25 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           })
           return { anchors: anchors.length, frames: frames.length, sizes }
         })()
-      `) as { anchors: number; frames: number; sizes: { height: number; match: boolean }[] }
+      `)) as { anchors: number; frames: number; sizes: { height: number; match: boolean }[] }
       record(
         'Office 始终只占用一个工作栏和一个 Runtime iframe',
-        geometry.anchors === 1 && geometry.frames === 1
-          && geometry.sizes.every((size) => size.height >= 160 && size.match),
+        geometry.anchors === 1 &&
+          geometry.frames === 1 &&
+          geometry.sizes.every((size) => size.height >= 160 && size.match),
         JSON.stringify(geometry)
       )
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
       mkdirSync(snapshotDir, { recursive: true })
-      writeFileSync(join(snapshotDir, 'office-single-runtime.png'), (await win.webContents.capturePage()).toPNG())
+      writeFileSync(
+        join(snapshotDir, 'office-single-runtime.png'),
+        (await win.webContents.capturePage()).toPNG()
+      )
 
       const dragStarted = await beginTabDrag(win, SPLIT_DOC_NAME, 0)
-      const dragPreview = dragStarted && await waitFor(win, '.vds-dock-drop-preview')
-      const dragLayer = dragPreview ? await win.webContents.executeJavaScript(`
+      const dragPreview = dragStarted && (await waitFor(win, '.vds-dock-drop-preview'))
+      const dragLayer = dragPreview
+        ? ((await win.webContents.executeJavaScript(`
         (() => {
           const preview = document.querySelector('.vds-dock-drop-preview')
           const runtime = document.querySelector('.vds-office-runtime-layer')
@@ -2273,7 +2399,8 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
             runtimeZ: Number(getComputedStyle(runtime).zIndex)
           }
         })()
-      `) as { visible: boolean; previewZ: number; runtimeZ: number } | null : null
+      `)) as { visible: boolean; previewZ: number; runtimeZ: number } | null)
+        : null
       record(
         'Office 打开时拖拽预览显示在 iframe 上方',
         Boolean(dragLayer?.visible && dragLayer.previewZ > dragLayer.runtimeZ),
@@ -2288,8 +2415,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         await settle(SETTLE_MS)
       }
       const closeRequested = await closeDocumentTab(win, markdownTitle)
-      const closeDialogVisible = closeRequested && await waitFor(win, '[data-testid="document-close-dialog"]')
-      const closeDialog = closeDialogVisible ? await win.webContents.executeJavaScript(`
+      const closeDialogVisible =
+        closeRequested && (await waitFor(win, '[data-testid="document-close-dialog"]'))
+      const closeDialog = closeDialogVisible
+        ? ((await win.webContents.executeJavaScript(`
         (() => {
           const dialog = document.querySelector('[data-testid="document-close-dialog"]')
           if (!(dialog instanceof HTMLElement)) return null
@@ -2305,13 +2434,17 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
               .every((testId) => Boolean(dialog.querySelector('[data-testid="' + testId + '"]')))
           }
         })()
-      `) as { alpha: number; color: string; topmost: boolean; actions: boolean } | null : null
+      `)) as { alpha: number; color: string; topmost: boolean; actions: boolean } | null)
+        : null
       record(
         '关闭未保存确认框为不透明设计系统面板且位于 Office 上方',
         Boolean(closeDialog?.alpha === 1 && closeDialog.topmost && closeDialog.actions),
         JSON.stringify(closeDialog)
       )
-      writeFileSync(join(snapshotDir, 'office-all-overlays.png'), (await win.webContents.capturePage()).toPNG())
+      writeFileSync(
+        join(snapshotDir, 'office-all-overlays.png'),
+        (await win.webContents.capturePage()).toPNG()
+      )
       if (closeDialogVisible) {
         await click(win, '[data-testid="document-close-save"]')
         await settle(SETTLE_MS)
@@ -2373,8 +2506,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     (await click(
       win,
       `[data-testid="tree-more-${findNode(await treePaths(win), RENAMED_FOLDER_NAME)}"]`
-    )) &&
-    (await waitFor(win, '[data-testid="resource-node-menu"]'))
+    )) && (await waitFor(win, '[data-testid="resource-node-menu"]'))
   if (copyMenu) {
     await click(win, '[data-testid="menu-copy"]')
     await settle(SETTLE_MS)
@@ -2388,14 +2520,13 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
   } else {
     record('创建副本真实落盘且原件保留', false, '右键菜单未打开')
   }
-  
+
   // ---- 复制路径（PRD「复制路径」）：断言真实绝对路径进了剪贴板 ----
   const pathMenu =
     (await click(
       win,
       `[data-testid="tree-more-${findNode(await treePaths(win), RENAMED_FOLDER_NAME)}"]`
-    )) &&
-    (await waitFor(win, '[data-testid="resource-node-menu"]'))
+    )) && (await waitFor(win, '[data-testid="resource-node-menu"]'))
   if (pathMenu) {
     // 先清剪贴板，避免拿到上一次残留值当成本次结果。
     await clipboard.writeText('')
@@ -2411,11 +2542,11 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
   } else {
     record('复制路径写入真实绝对路径', false, '右键菜单未打开')
   }
-  
+
   // ---- 拖拽移动资料：把新建的 md 放进真实子目录，再经菜单移到上一级 ----
   if (docPath) {
     const docRowSelector = `[data-testid="tree-${docPath}"]`
-    if (!await waitFor(win, docRowSelector, SETTLE_MS)) {
+    if (!(await waitFor(win, docRowSelector, SETTLE_MS))) {
       const parentPath = docPath.slice(0, docPath.lastIndexOf('/'))
       await click(win, `[data-testid="tree-${parentPath}"]`)
       await waitFor(win, docRowSelector)
@@ -2433,8 +2564,8 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     docPath = paths.includes(moved) ? moved : docPath
 
     const movedMenu =
-      (await click(win, `[data-testid="tree-more-${docPath}"]`))
-      && (await waitFor(win, '[data-testid="resource-node-menu"]'))
+      (await click(win, `[data-testid="tree-more-${docPath}"]`)) &&
+      (await waitFor(win, '[data-testid="resource-node-menu"]'))
     if (movedMenu) {
       const upEnabled = await win.webContents.executeJavaScript(`
         !document.querySelector('[data-testid="menu-move-up"]')?.hasAttribute('disabled')
@@ -2453,7 +2584,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       record('右键“移到上一级目录”真实生效', false, '右键菜单未打开')
     }
   }
-  
+
   // ---- 导入弹窗（PRD「资料导入」）：复制/关联均由整卡触发 ----
   //
   // 只验弹窗形态与双模式入口，导入本身留给发版前人工点一次。这条边界是实测出来的：
@@ -2502,7 +2633,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     // 因为 webUtils 只会为操作系统真实拖入的 File 返回路径，合成 File 没有本地身份。
     for (const target of [
       { label: '复制', selector: '[data-testid="import-copy"]' },
-      { label: '关联', selector: '[data-testid="import-link"]' }
+      { label: '关联', selector: '[data-testid="import-link"]' },
     ]) {
       const accepted = await win.webContents.executeJavaScript(`
         (() => {
@@ -2518,14 +2649,8 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         })()
       `)
       await settle(SETTLE_MS)
-      const active = await waitFor(
-        win,
-        `${target.selector}[data-drop-active="true"]`
-      )
-      record(
-        `拖入${target.label}卡片会激活对应区域`,
-        Boolean(accepted && active)
-      )
+      const active = await waitFor(win, `${target.selector}[data-drop-active="true"]`)
+      record(`拖入${target.label}卡片会激活对应区域`, Boolean(accepted && active))
       await win.webContents.executeJavaScript(`
         (() => {
           const card = document.querySelector(${JSON.stringify(target.selector)})
@@ -2539,24 +2664,33 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     await click(win, '[data-testid="resource-import-dialog"] .vds-modal-close')
     await settle(SETTLE_MS)
   }
-  
+
   // ---- 删除确认：断言 PRD 要求的两条提示文案，然后取消（不真删）----
   const delMenu =
     (await click(
       win,
       `[data-testid="tree-more-${findNode(await treePaths(win), RENAMED_FOLDER_NAME)}"]`
-    )) &&
-    (await waitFor(win, '[data-testid="resource-node-menu"]'))
+    )) && (await waitFor(win, '[data-testid="resource-node-menu"]'))
   if (delMenu) {
     await click(win, '[data-testid="menu-delete"]')
     const dialog = await waitFor(win, '[data-testid="resource-delete-confirm"]')
     record('删除弹出确认框', dialog)
     if (dialog) {
       const copy = await textOf(win, '[data-testid="resource-delete-confirm"]')
+      const action = await textOf(win, '[data-testid="resource-delete-go"]')
+      const trashName =
+        SYSTEM_TRASH_NAMES[process.platform as keyof typeof SYSTEM_TRASH_NAMES] ??
+        SYSTEM_TRASH_FALLBACK_NAME
       record(
-        '删除文案含「同步影响本地文件」与「废纸篓可恢复」',
-        copy.includes('同步影响') && copy.includes('废纸篓'),
+        '删除文案含「同步影响本地文件」与对应系统的回收位置',
+        copy.includes('同步影响') && copy.includes(trashName) && action.includes(trashName),
         copy.replace(/\n/g, ' ')
+      )
+      const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
+      mkdirSync(snapshotDir, { recursive: true })
+      writeFileSync(
+        join(snapshotDir, 'resource-delete-platform.png'),
+        (await win.webContents.capturePage()).toPNG()
       )
       await click(win, '[data-testid="resource-delete-cancel"]')
       await settle(SETTLE_MS)
@@ -2569,9 +2703,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
   const litReady = await waitFor(win, '[data-testid="literature-overview"]')
   record('文献库列表渲染', litReady)
   if (litReady) {
-    const lit = (await apiJson(win, withProject('/api/literature/items'))) as
-      | { items?: unknown[]; total?: number }
-      | null
+    const lit = (await apiJson(win, withProjectId('/api/v1/literatures'))) as {
+      items?: unknown[]
+      total?: number
+    } | null
     const total = typeof lit?.total === 'number' ? lit.total : 0
     record('文献库读到真实条目', total > 0, `共 ${total} 条`)
 
@@ -2611,14 +2746,11 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     )
 
     const retainedLiteratureSearch = 'Perovskite'
-    const searchPrepared = await fill(
-      win,
-      'input[aria-label="搜索文献"]',
-      retainedLiteratureSearch
-    )
+    const searchPrepared = await fill(win, 'input[aria-label="搜索文献"]', retainedLiteratureSearch)
     await settle(SETTLE_MS)
 
-    const markdownRowExpanded = Boolean(await win.webContents.executeJavaScript(`
+    const markdownRowExpanded = Boolean(
+      await win.webContents.executeJavaScript(`
       (() => {
         const row = Array.from(document.querySelectorAll('.lit-row'))
           .find((candidate) => (candidate.textContent || '').includes('Perovskite degradation under humidity'))
@@ -2627,10 +2759,13 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         expand.click()
         return true
       })()
-    `))
+    `)
+    )
     await settle(SETTLE_MS)
-    const markdownAttachmentOpened = markdownRowExpanded
-      && Boolean(await win.webContents.executeJavaScript(`
+    const markdownAttachmentOpened =
+      markdownRowExpanded &&
+      Boolean(
+        await win.webContents.executeJavaScript(`
       (() => {
         const attachment = Array.from(
           document.querySelectorAll('[data-testid^="literature-attachment-"]')
@@ -2639,10 +2774,13 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         attachment.click()
         return true
       })()
-    `))
+    `)
+      )
     await settle(SETTLE_MS)
-    const markdownOpenRequested = markdownAttachmentOpened
-      && Boolean(await win.webContents.executeJavaScript(`
+    const markdownOpenRequested =
+      markdownAttachmentOpened &&
+      Boolean(
+        await win.webContents.executeJavaScript(`
         (() => {
           const button = Array.from(document.querySelectorAll('.lit-detail-body button'))
             .find((candidate) => (candidate.textContent || '').includes('打开附件'))
@@ -2650,10 +2788,11 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           button.click()
           return true
         })()
-      `))
+      `)
+      )
     await settle(SETTLE_MS)
-    const markdownViewer = markdownOpenRequested
-      && await waitFor(win, '[data-testid="markdown-filename-title"]')
+    const markdownViewer =
+      markdownOpenRequested && (await waitFor(win, '[data-testid="markdown-filename-title"]'))
     if (markdownViewer) {
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
       mkdirSync(snapshotDir, { recursive: true })
@@ -2671,21 +2810,21 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
             literatureFixtureItemId,
             markdownRowExpanded,
             markdownAttachmentOpened,
-            markdownOpenRequested
+            markdownOpenRequested,
           })
     )
-    const literatureClosed = markdownViewer
-      && await closeDocumentTab(win, LITERATURE_MARKDOWN_NAME)
+    const literatureClosed =
+      markdownViewer && (await closeDocumentTab(win, LITERATURE_MARKDOWN_NAME))
     await settle(SETTLE_MS)
-    const literatureListRestored = literatureClosed
-      && await waitFor(win, '[data-testid="literature-overview"]')
+    const literatureListRestored =
+      literatureClosed && (await waitFor(win, '[data-testid="literature-overview"]'))
     const closeState = literatureListRestored
-      ? await win.webContents.executeJavaScript(`
+      ? ((await win.webContents.executeJavaScript(`
           (() => ({
             search: document.querySelector('input[aria-label="搜索文献"]')?.value ?? '',
             resourceViewerVisible: Boolean(document.querySelector('[data-testid="markdown-filename-title"]'))
           }))()
-        `) as { search: string; resourceViewerVisible: boolean }
+        `)) as { search: string; resourceViewerVisible: boolean })
       : null
     if (literatureListRestored) {
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
@@ -2697,10 +2836,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     }
     record(
       '关闭唯一文献文件返回文献列表并保留搜索状态',
-      searchPrepared
-        && literatureListRestored
-        && closeState?.search === retainedLiteratureSearch
-        && closeState.resourceViewerVisible === false,
+      searchPrepared &&
+        literatureListRestored &&
+        closeState?.search === retainedLiteratureSearch &&
+        closeState.resourceViewerVisible === false,
       JSON.stringify(closeState)
     )
     await fill(win, 'input[aria-label="搜索文献"]', '')
@@ -2719,7 +2858,8 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     const batchBar = await waitFor(win, '[data-testid="literature-batch"]')
     record('勾选后出现批量操作条', Boolean(firstCheck) && batchBar)
 
-    const pdfRowOpened = Boolean(await win.webContents.executeJavaScript(`
+    const pdfRowOpened = Boolean(
+      await win.webContents.executeJavaScript(`
       (() => {
         const row = Array.from(document.querySelectorAll('.lit-row'))
           .find((candidate) => (candidate.textContent || '').includes(${JSON.stringify(LITERATURE_PDF_NAME.replace('.pdf', ''))}))
@@ -2729,23 +2869,29 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         if (expand instanceof HTMLElement) expand.click()
         return true
       })()
-    `))
+    `)
+    )
     await settle(SETTLE_MS)
-    const attachmentOpened = pdfRowOpened && Boolean(await win.webContents.executeJavaScript(`
+    const attachmentOpened =
+      pdfRowOpened &&
+      Boolean(
+        await win.webContents.executeJavaScript(`
       (() => {
         const row = document.querySelector('[data-testid^="literature-attachment-"]')
         if (!(row instanceof HTMLElement)) return false
         row.click()
         return true
       })()
-    `))
+    `)
+      )
     await settle(SETTLE_MS)
-    const literatureMenuOpened = attachmentOpened
-      && await openTabContextMenu(win, LITERATURE_PDF_NAME)
-    const literatureMenuReady = literatureMenuOpened
-      && await waitFor(win, '[data-testid="document-tab-menu"]')
-    const literatureFileActionsEnabled = literatureMenuReady
-      && await win.webContents.executeJavaScript(`
+    const literatureMenuOpened =
+      attachmentOpened && (await openTabContextMenu(win, LITERATURE_PDF_NAME))
+    const literatureMenuReady =
+      literatureMenuOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+    const literatureFileActionsEnabled =
+      literatureMenuReady &&
+      (await win.webContents.executeJavaScript(`
         ['tab-add-to-conversation', 'tab-copy-absolute-path', 'tab-reveal-in-finder']
           .every((id) => {
             const action = document.querySelector('[data-testid="' + id + '"]')
@@ -2753,25 +2899,35 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
               && !action.hasAttribute('data-disabled')
               && action.getAttribute('aria-disabled') !== 'true'
           })
-    `)
+    `))
     record('文献附件 Tab 的文件路径动作均可用', Boolean(literatureFileActionsEnabled))
     if (literatureFileActionsEnabled) {
       await clipboard.writeText('')
       await click(win, '[data-testid="tab-copy-absolute-path"]')
       await settle(SETTLE_MS)
       const copiedPath = await clipboardText()
-      record('文献附件 Tab 可复制绝对路径', copiedPath === literaturePdf, copiedPath)
+      // 附件随文献走 (proposal 91): Tab 复制的是该文献**独占**的托管副本
+      // `{literature_id}-{md5}-{uuid}.pdf`, 不是项目里那份固件文件。
+      record(
+        '文献附件 Tab 复制的是该文献独占的托管副本绝对路径',
+        isAbsolute(copiedPath) &&
+          existsSync(copiedPath) &&
+          basename(copiedPath).startsWith(`${literaturePdfItemId}-`),
+        `${copiedPath} (item=${literaturePdfItemId})`
+      )
 
       const conversationMenuOpened = await openTabContextMenu(win, LITERATURE_PDF_NAME)
-      const conversationMenuReady = conversationMenuOpened
-        && await waitFor(win, '[data-testid="document-tab-menu"]')
-      const conversationAdded = conversationMenuReady
-        && await click(win, '[data-testid="tab-add-to-conversation"]')
-      const aiPanelOpened = conversationAdded && await waitFor(win, '[data-testid="ai-panel"]')
-      const contextAttached = aiPanelOpened && await win.webContents.executeJavaScript(`
+      const conversationMenuReady =
+        conversationMenuOpened && (await waitFor(win, '[data-testid="document-tab-menu"]'))
+      const conversationAdded =
+        conversationMenuReady && (await click(win, '[data-testid="tab-add-to-conversation"]'))
+      const aiPanelOpened = conversationAdded && (await waitFor(win, '[data-testid="ai-panel"]'))
+      const contextAttached =
+        aiPanelOpened &&
+        (await win.webContents.executeJavaScript(`
         Array.from(document.querySelectorAll('[data-testid="ai-context-ref"]'))
           .some((chip) => chip.textContent?.includes(${JSON.stringify(LITERATURE_PDF_NAME)}))
-      `)
+      `))
       record('文献附件以文件路径加入当前对话', Boolean(contextAttached))
       if (contextAttached) {
         const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
@@ -2782,9 +2938,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         )
       }
     }
-    const copyAction = attachmentOpened && await waitFor(win, '[data-testid="literature-copy-to-project"]')
+    const copyAction =
+      attachmentOpened && (await waitFor(win, '[data-testid="literature-copy-to-project"]'))
     if (copyAction) await click(win, '[data-testid="literature-copy-to-project"]')
-    const copyChoice = copyAction && await waitFor(win, '[data-testid="literature-copy-records"]')
+    const copyChoice = copyAction && (await waitFor(win, '[data-testid="literature-copy-records"]'))
     record('附件详情明确提供存入资料库及批注复制选择', copyAction && copyChoice)
     if (copyAction && copyChoice) {
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
@@ -2827,7 +2984,9 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     const webSelected = await textOf(win, '[data-testid="ai-search-scope"]')
     record(
       '新建默认会话可切换检索源',
-      draftScopeEnabled === true && academicSelected.includes('学术') && webSelected.includes('全网'),
+      draftScopeEnabled === true &&
+        academicSelected.includes('学术') &&
+        webSelected.includes('全网'),
       `enabled=${draftScopeEnabled} 学术=${academicSelected} 全网=${webSelected}`
     )
 
@@ -2871,10 +3030,12 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     // 划词发 AI 依赖 Milkdown 所见即所得编辑器的选区能力，
     // 只在 Markdown 自有的可视化编辑视图中存在。
     if (docPath) {
+      await click(win, `[data-testid="${MARKDOWN_MODE_TEST_ID}"]`)
+      await waitFor(win, `[data-testid="${MARKDOWN_EDIT_TEST_ID}"]`)
       const editOpened = await click(win, `[data-testid="${MARKDOWN_EDIT_TEST_ID}"]`)
-      const picked = editOpened
-        && await waitForDocumentText(win, docPath, MARKDOWN_RENDER_TEST_ID)
-      const action = picked && await waitFor(win, '[data-testid="document-stash-clip"]')
+      const picked =
+        editOpened && (await waitForDocumentText(win, docPath, MARKDOWN_RENDER_TEST_ID))
+      const action = picked && (await waitFor(win, '[data-testid="document-stash-clip"]'))
       if (action) await click(win, '[data-testid="document-stash-clip"]')
       await settle(SETTLE_MS)
       const clips = await waitFor(win, '[data-testid="ai-clips"]')
@@ -2971,18 +3132,19 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
   // ---- 项目创建与关联入口（proposal 47）：走当前可达的顶栏 / 资料库入口 ----
   await click(win, '[data-testid="topbar-project"]')
   const createEntry = await waitFor(win, '[data-testid="project-menu-create"]')
-  const projectDialog = createEntry
-    && await click(win, '[data-testid="project-menu-create"]')
-    && await waitFor(win, '[data-testid="project-new-modal"]')
+  const projectDialog =
+    createEntry &&
+    (await click(win, '[data-testid="project-menu-create"]')) &&
+    (await waitFor(win, '[data-testid="project-new-modal"]'))
   record('顶栏项目菜单可打开新建项目弹窗', Boolean(projectDialog))
   if (projectDialog) {
     await fill(win, '#project-name-control', NEW_PROJECT_NAME)
     await click(win, '[data-testid="project-create"]')
     await settle(SETTLE_MS)
   }
-  const listing = (await apiJson(win, '/api/content/projects')) as
-    | { projects: { id: string; name: string; root: string; layout: string }[] }
-    | null
+  const listing = (await apiJson(win, '/api/content/projects')) as {
+    projects: { id: string; name: string; root: string; layout: string }[]
+  } | null
   const created = listing?.projects.find((item) => item.name === NEW_PROJECT_NAME)
   record(
     '新建项目只填名字即落库（布局为内置双库）',
@@ -3011,60 +3173,60 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     await click(win, '[data-testid="activity-resource"]')
     await settle(SETTLE_MS)
     const importOpened = await click(win, '[data-testid="resource-import"]')
-    const linkChoice = importOpened && await waitFor(win, '[data-testid="import-link"]')
+    const linkChoice = importOpened && (await waitFor(win, '[data-testid="import-link"]'))
     record('资料库导入弹窗提供关联原文件入口', Boolean(linkChoice))
     if (linkChoice) await click(win, '[data-testid="resource-import-dialog"] .vds-modal-close')
 
-      // ---- 关联根的安全取消关联：UI 只能撤销挂载，不能删除外部原文件 ----
-      const linkedRoot = join(dirname(created.root), `UI验收关联-${Date.now()}`)
-      const insideLinked = join(linkedRoot, '关联文件.md')
-      const secondLinked = join(linkedRoot, '关联文件2.md')
-      mkdirSync(linkedRoot, { recursive: true })
-      residueDirectories.push(linkedRoot)
-      writeFileSync(insideLinked, LINKED_INITIAL_CONTENT, 'utf-8')
-      writeFileSync(secondLinked, '外部原文2', 'utf-8')
-      const authorized = (await apiPost(win, '/api/content/roots', {
-        project: created.id,
-        source: linkedRoot,
-        mount: '外部资料'
-      })) as { root_id?: string; mount_path?: string; detail?: string } | null
+    // ---- 关联根的安全取消关联：UI 只能撤销挂载，不能删除外部原文件 ----
+    const linkedRoot = join(dirname(created.root), `UI验收关联-${Date.now()}`)
+    const insideLinked = join(linkedRoot, '关联文件.md')
+    const secondLinked = join(linkedRoot, '关联文件2.md')
+    mkdirSync(linkedRoot, { recursive: true })
+    residueDirectories.push(linkedRoot)
+    writeFileSync(insideLinked, LINKED_INITIAL_CONTENT, 'utf-8')
+    writeFileSync(secondLinked, '外部原文2', 'utf-8')
+    const authorized = (await apiPost(win, '/api/content/roots', {
+      project: created.id,
+      source: linkedRoot,
+      mount: '外部资料',
+    })) as { root_id?: string; mount_path?: string; detail?: string } | null
+    record(
+      '授权项目外目录成为项目内挂载点',
+      Boolean(authorized?.root_id && authorized.mount_path),
+      JSON.stringify(authorized ?? {})
+    )
+    const mountPath = String(authorized?.mount_path ?? '')
+    if (mountPath) {
+      const linkedTree = (await apiJson(
+        win,
+        `/api/resource/tree?project=${encodeURIComponent(created.id)}`
+      )) as { nodes?: { path: string; origin?: string; children?: { path: string }[] }[] } | null
+      const mountNode = linkedTree?.nodes?.find((node) => node.path === mountPath)
       record(
-        '授权项目外目录成为项目内挂载点',
-        Boolean(authorized?.root_id && authorized.mount_path),
-        JSON.stringify(authorized ?? {})
+        '关联目录出现在资料树里并标为 link',
+        Boolean(mountNode && mountNode.origin === 'link'),
+        JSON.stringify(mountNode ?? {}).slice(0, 160)
       )
-      const mountPath = String(authorized?.mount_path ?? '')
-      if (mountPath) {
-        const linkedTree = (await apiJson(
-          win,
-          `/api/resource/tree?project=${encodeURIComponent(created.id)}`
-        )) as { nodes?: { path: string; origin?: string; children?: { path: string }[] }[] } | null
-        const mountNode = linkedTree?.nodes?.find((node) => node.path === mountPath)
-        record(
-          '关联目录出现在资料树里并标为 link',
-          Boolean(mountNode && mountNode.origin === 'link'),
-          JSON.stringify(mountNode ?? {}).slice(0, 160)
-        )
-        // 后端 origin 绿着、渲染层断掉时，用户看到的就是「关联目录和普通目录一模一样」
-        // （AssetOrigin 契约要求 UI 能区分），所以这条必须落到真实 DOM 上。
-        //
-        // 资料树画的是**当前选中项目**，而授权对象是上面新建的那个 —— 不先切过去，
-        // 断言看的就是另一个项目的树。切换走产品自己的顶栏切换器。
-        await win.webContents.executeJavaScript(
-          `window.dispatchEvent(new CustomEvent('scholarseed:refresh-session-list'))`
-        )
-        const linkedOption = `[data-testid="project-menu-option-${NEW_PROJECT_NAME}"]`
-        let switched = false
-        for (let attempt = 0; attempt < 12 && !switched; attempt += 1) {
-          await settle(500)
-          await click(win, '[data-testid="topbar-project"]')
-          if (await waitFor(win, linkedOption)) switched = await click(win, linkedOption)
-        }
-        await settle(SETTLE_MS)
-        await click(win, '[data-testid="activity-resource"]')
-        const iconSelector = `[data-testid="tree-icon-${mountPath}"]`
-        const iconShape = (await waitFor(win, iconSelector))
-          ? await win.webContents.executeJavaScript(`
+      // 后端 origin 绿着、渲染层断掉时，用户看到的就是「关联目录和普通目录一模一样」
+      // （AssetOrigin 契约要求 UI 能区分），所以这条必须落到真实 DOM 上。
+      //
+      // 资料树画的是**当前选中项目**，而授权对象是上面新建的那个 —— 不先切过去，
+      // 断言看的就是另一个项目的树。切换走产品自己的顶栏切换器。
+      await win.webContents.executeJavaScript(
+        `window.dispatchEvent(new CustomEvent('scholarseed:refresh-session-list'))`
+      )
+      const linkedOption = `[data-testid="project-menu-option-${NEW_PROJECT_NAME}"]`
+      let switched = false
+      for (let attempt = 0; attempt < 12 && !switched; attempt += 1) {
+        await settle(500)
+        await click(win, '[data-testid="topbar-project"]')
+        if (await waitFor(win, linkedOption)) switched = await click(win, linkedOption)
+      }
+      await settle(SETTLE_MS)
+      await click(win, '[data-testid="activity-resource"]')
+      const iconSelector = `[data-testid="tree-icon-${mountPath}"]`
+      const iconShape = (await waitFor(win, iconSelector))
+        ? await win.webContents.executeJavaScript(`
             (() => {
               const icon = document.querySelector(${JSON.stringify(iconSelector)})
               if (!icon) return null
@@ -3075,183 +3237,178 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
               }
             })()
           `)
-          : null
-        const linkedRow = iconShape as { icon?: string; linked?: boolean } | null
-        record(
-          '关联目录在资料树上用 link 图标且整行标为关联',
-          linkedRow?.icon === 'link' && linkedRow.linked === true,
-          `切到该项目=${String(switched)} ${JSON.stringify(linkedRow ?? {})}`
-        )
-        await click(win, `[data-testid="tree-${mountPath}"]`)
-        const linkedFilePath = `${mountPath}/关联文件.md`
-        const linkedFileVisible = await waitFor(win, `[data-testid="tree-${linkedFilePath}"]`)
-        const linkedPreviewOpened = linkedFileVisible
-          && await click(win, `[data-testid="tree-${linkedFilePath}"]`)
-        const initialLinkedPreview = linkedPreviewOpened
-          && await waitForText(win, LINKED_INITIAL_CONTENT)
-        writeFileSync(insideLinked, LINKED_UPDATED_CONTENT, 'utf-8')
-        const updatedLinkedPreview = initialLinkedPreview
-          && await waitForText(win, LINKED_UPDATED_CONTENT)
-        record(
-          '关联原文件保存后实时刷新已打开的标签页预览',
-          Boolean(linkedPreviewOpened && initialLinkedPreview && updatedLinkedPreview),
-          await describeDocumentViews(win)
-        )
-        if (updatedLinkedPreview) {
-          const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
-          mkdirSync(snapshotDir, { recursive: true })
-          writeFileSync(
-            join(snapshotDir, 'linked-file-live-preview.png'),
-            (await win.webContents.capturePage()).toPNG()
-          )
-        }
-        const token = (await apiPost(win, '/api/content/trash-token', {
-          project: created.id,
-          path: linkedFilePath
-        })) as { token?: string; detail?: string } | null
-        record(
-          '关联根内任意文件都不能签发物理删除令牌',
-          !token?.token
-            && token?.detail === 'cannot_trash_linked'
-            && readFileSync(insideLinked, 'utf-8') === LINKED_UPDATED_CONTENT,
-          `${JSON.stringify(token)} 原文件存在=${String(existsSync(insideLinked))}`
-        )
-        const unlinkMenu =
-          (await click(win, `[data-testid="tree-more-${mountPath}"]`))
-          && (await waitFor(win, '[data-testid="resource-node-menu"]'))
-        const unlinkMenuText = unlinkMenu
-          ? await textOf(win, '[data-testid="resource-node-menu"]')
-          : ''
-        if (unlinkMenu) await click(win, '[data-testid="menu-unlink"]')
-        const unlinkDialog = await waitFor(win, '[data-testid="resource-unlink-confirm"]')
-        const unlinkCopy = unlinkDialog
-          ? await textOf(win, '[data-testid="resource-unlink-confirm"]')
-          : ''
-        record(
-          '关联根菜单只提供取消关联，确认框明确原文件保留',
-          unlinkMenuText.includes('取消关联')
-            && !unlinkMenuText.includes('删除')
-            && unlinkCopy.includes('原文件会完整保留'),
-          `${unlinkMenuText.replace(/\n/g, ' / ')} | ${unlinkCopy.replace(/\n/g, ' / ')}`
-        )
-        if (unlinkDialog) await click(win, '[data-testid="resource-unlink-go"]')
-        await settle(SETTLE_MS)
-        const rootsAfterUnlink = (await apiJson(
-          win,
-          `/api/content/roots?project=${encodeURIComponent(created.id)}`
-        )) as { roots?: { root_id?: string }[] } | null
-        record(
-          'UI 取消关联撤销挂载且两个外部原文件逐字保留',
-          !rootsAfterUnlink?.roots?.some((root) => root.root_id === authorized?.root_id)
-            && readFileSync(insideLinked, 'utf-8') === '外部原文'
-            && readFileSync(secondLinked, 'utf-8') === '外部原文2',
-          JSON.stringify(rootsAfterUnlink ?? {})
-        )
-      }
-
-      // 单文件关联走同一个公共授权端点，但授权边界必须停在文件本身，树上也必须
-      // 是 file 叶子。原生选择器在无头环境无法应答，因此这里从选择器之后的真实
-      // HTTP 链路开始验证；上面的弹窗形态断言负责钉住用户入口。
-      const linkedFile = join(dirname(created.root), `UI验收关联单文件-${Date.now()}.md`)
-      writeFileSync(linkedFile, '单文件原文', 'utf-8')
-      residueDirectories.push(linkedFile)
-      const authorizedFile = (await apiPost(win, '/api/content/roots', {
-        project: created.id,
-        source: linkedFile,
-        mount: basename(linkedFile)
-      })) as {
-        root_id?: string
-        mount_path?: string
-        kind?: string
-        detail?: string
-      } | null
+        : null
+      const linkedRow = iconShape as { icon?: string; linked?: boolean } | null
       record(
-        '关联单文件通过公共授权端点登记为 file 挂载',
-        Boolean(
-          authorizedFile?.root_id &&
-          authorizedFile.mount_path &&
-          authorizedFile.kind === 'file'
-        ),
-        JSON.stringify(authorizedFile ?? {})
+        '关联目录在资料树上用 link 图标且整行标为关联',
+        linkedRow?.icon === 'link' && linkedRow.linked === true,
+        `切到该项目=${String(switched)} ${JSON.stringify(linkedRow ?? {})}`
       )
-      const fileMountPath = String(authorizedFile?.mount_path ?? '')
-      if (fileMountPath) {
-        const linkedFileTree = (await apiJson(
-          win,
-          `/api/resource/tree?project=${encodeURIComponent(created.id)}`
-        )) as {
-          nodes?: { path: string; kind?: string; origin?: string; children?: unknown[] }[]
-        } | null
-        const fileNode = linkedFileTree?.nodes?.find((node) => node.path === fileMountPath)
-        record(
-          '关联单文件作为 LINK 叶子出现在真实资料树',
-          Boolean(
-            fileNode &&
-            fileNode.kind === 'file' &&
-            fileNode.origin === 'link' &&
-            !('children' in fileNode)
-          ),
-          JSON.stringify(fileNode ?? {})
-        )
-        const written = (await apiPost(win, '/api/resource/write', {
-          project: created.id,
-          path: fileMountPath,
-          content: '书深修改单文件'
-        })) as { saved?: boolean; detail?: string } | null
-        record(
-          '通过挂载路径写入只修改关联的原文件',
-          Boolean(written?.saved) && readFileSync(linkedFile, 'utf-8') === '书深修改单文件',
-          JSON.stringify(written ?? {})
-        )
-        await click(win, '[data-testid="resource-refresh"]')
-        await settle(SETTLE_MS)
-        const unlinkFileMenu =
-          (await click(win, `[data-testid="tree-more-${fileMountPath}"]`))
-          && (await waitFor(win, '[data-testid="resource-node-menu"]'))
-        if (unlinkFileMenu) await click(win, '[data-testid="menu-unlink"]')
-        const unlinkFileDialog = await waitFor(win, '[data-testid="resource-unlink-confirm"]')
-        if (unlinkFileDialog) await click(win, '[data-testid="resource-unlink-go"]')
-        await settle(SETTLE_MS)
-        const rootsAfterFileUnlink = (await apiJson(
-          win,
-          `/api/content/roots?project=${encodeURIComponent(created.id)}`
-        )) as { roots?: { root_id?: string }[] } | null
-        record(
-          '关联单文件也只经 UI 取消关联且原文件保留',
-          Boolean(unlinkFileMenu && unlinkFileDialog)
-            && !rootsAfterFileUnlink?.roots?.some(
-              (root) => root.root_id === authorizedFile?.root_id
-            )
-            && readFileSync(linkedFile, 'utf-8') === '书深修改单文件',
-          JSON.stringify(rootsAfterFileUnlink ?? {})
+      await click(win, `[data-testid="tree-${mountPath}"]`)
+      const linkedFilePath = `${mountPath}/关联文件.md`
+      const linkedFileVisible = await waitFor(win, `[data-testid="tree-${linkedFilePath}"]`)
+      const linkedPreviewOpened =
+        linkedFileVisible && (await click(win, `[data-testid="tree-${linkedFilePath}"]`))
+      const initialLinkedPreview =
+        linkedPreviewOpened && (await waitForText(win, LINKED_INITIAL_CONTENT))
+      writeFileSync(insideLinked, LINKED_UPDATED_CONTENT, 'utf-8')
+      const updatedLinkedPreview =
+        initialLinkedPreview && (await waitForText(win, LINKED_UPDATED_CONTENT))
+      record(
+        '关联原文件保存后实时刷新已打开的标签页预览',
+        Boolean(linkedPreviewOpened && initialLinkedPreview && updatedLinkedPreview),
+        await describeDocumentViews(win)
+      )
+      if (updatedLinkedPreview) {
+        const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
+        mkdirSync(snapshotDir, { recursive: true })
+        writeFileSync(
+          join(snapshotDir, 'linked-file-live-preview.png'),
+          (await win.webContents.capturePage()).toPNG()
         )
       }
+      const token = (await apiPost(win, '/api/content/trash-token', {
+        project: created.id,
+        path: linkedFilePath,
+      })) as { token?: string; detail?: string } | null
+      record(
+        '关联根内任意文件都不能签发物理删除令牌',
+        !token?.token &&
+          token?.detail === 'cannot_trash_linked' &&
+          readFileSync(insideLinked, 'utf-8') === LINKED_UPDATED_CONTENT,
+        `${JSON.stringify(token)} 原文件存在=${String(existsSync(insideLinked))}`
+      )
+      const unlinkMenu =
+        (await click(win, `[data-testid="tree-more-${mountPath}"]`)) &&
+        (await waitFor(win, '[data-testid="resource-node-menu"]'))
+      const unlinkMenuText = unlinkMenu
+        ? await textOf(win, '[data-testid="resource-node-menu"]')
+        : ''
+      if (unlinkMenu) await click(win, '[data-testid="menu-unlink"]')
+      const unlinkDialog = await waitFor(win, '[data-testid="resource-unlink-confirm"]')
+      const unlinkCopy = unlinkDialog
+        ? await textOf(win, '[data-testid="resource-unlink-confirm"]')
+        : ''
+      record(
+        '关联根菜单只提供取消关联，确认框明确原文件保留',
+        unlinkMenuText.includes('取消关联') &&
+          !unlinkMenuText.includes('删除') &&
+          unlinkCopy.includes('原文件会完整保留'),
+        `${unlinkMenuText.replace(/\n/g, ' / ')} | ${unlinkCopy.replace(/\n/g, ' / ')}`
+      )
+      if (unlinkDialog) await click(win, '[data-testid="resource-unlink-go"]')
+      await settle(SETTLE_MS)
+      const rootsAfterUnlink = (await apiJson(
+        win,
+        `/api/content/roots?project=${encodeURIComponent(created.id)}`
+      )) as { roots?: { root_id?: string }[] } | null
+      record(
+        'UI 取消关联撤销挂载且两个外部原文件逐字保留',
+        !rootsAfterUnlink?.roots?.some((root) => root.root_id === authorized?.root_id) &&
+          readFileSync(insideLinked, 'utf-8') === '外部原文' &&
+          readFileSync(secondLinked, 'utf-8') === '外部原文2',
+        JSON.stringify(rootsAfterUnlink ?? {})
+      )
+    }
 
+    // 单文件关联走同一个公共授权端点，但授权边界必须停在文件本身，树上也必须
+    // 是 file 叶子。原生选择器在无头环境无法应答，因此这里从选择器之后的真实
+    // HTTP 链路开始验证；上面的弹窗形态断言负责钉住用户入口。
+    const linkedFile = join(dirname(created.root), `UI验收关联单文件-${Date.now()}.md`)
+    writeFileSync(linkedFile, '单文件原文', 'utf-8')
+    residueDirectories.push(linkedFile)
+    const authorizedFile = (await apiPost(win, '/api/content/roots', {
+      project: created.id,
+      source: linkedFile,
+      mount: basename(linkedFile),
+    })) as {
+      root_id?: string
+      mount_path?: string
+      kind?: string
+      detail?: string
+    } | null
+    record(
+      '关联单文件通过公共授权端点登记为 file 挂载',
+      Boolean(
+        authorizedFile?.root_id && authorizedFile.mount_path && authorizedFile.kind === 'file'
+      ),
+      JSON.stringify(authorizedFile ?? {})
+    )
+    const fileMountPath = String(authorizedFile?.mount_path ?? '')
+    if (fileMountPath) {
+      const linkedFileTree = (await apiJson(
+        win,
+        `/api/resource/tree?project=${encodeURIComponent(created.id)}`
+      )) as {
+        nodes?: { path: string; kind?: string; origin?: string; children?: unknown[] }[]
+      } | null
+      const fileNode = linkedFileTree?.nodes?.find((node) => node.path === fileMountPath)
+      record(
+        '关联单文件作为 LINK 叶子出现在真实资料树',
+        Boolean(
+          fileNode &&
+          fileNode.kind === 'file' &&
+          fileNode.origin === 'link' &&
+          !('children' in fileNode)
+        ),
+        JSON.stringify(fileNode ?? {})
+      )
+      const written = (await apiPost(win, '/api/resource/write', {
+        project: created.id,
+        path: fileMountPath,
+        content: '书深修改单文件',
+      })) as { saved?: boolean; detail?: string } | null
+      record(
+        '通过挂载路径写入只修改关联的原文件',
+        Boolean(written?.saved) && readFileSync(linkedFile, 'utf-8') === '书深修改单文件',
+        JSON.stringify(written ?? {})
+      )
+      await click(win, '[data-testid="resource-refresh"]')
+      await settle(SETTLE_MS)
+      const unlinkFileMenu =
+        (await click(win, `[data-testid="tree-more-${fileMountPath}"]`)) &&
+        (await waitFor(win, '[data-testid="resource-node-menu"]'))
+      if (unlinkFileMenu) await click(win, '[data-testid="menu-unlink"]')
+      const unlinkFileDialog = await waitFor(win, '[data-testid="resource-unlink-confirm"]')
+      if (unlinkFileDialog) await click(win, '[data-testid="resource-unlink-go"]')
+      await settle(SETTLE_MS)
+      const rootsAfterFileUnlink = (await apiJson(
+        win,
+        `/api/content/roots?project=${encodeURIComponent(created.id)}`
+      )) as { roots?: { root_id?: string }[] } | null
+      record(
+        '关联单文件也只经 UI 取消关联且原文件保留',
+        Boolean(unlinkFileMenu && unlinkFileDialog) &&
+          !rootsAfterFileUnlink?.roots?.some((root) => root.root_id === authorizedFile?.root_id) &&
+          readFileSync(linkedFile, 'utf-8') === '书深修改单文件',
+        JSON.stringify(rootsAfterFileUnlink ?? {})
+      )
+    }
   }
 
   const accountOpened = await click(win, '[data-testid="activity-account"]')
-  const settingsOpened = accountOpened && await click(win, '[data-testid="account-menu-settings"]')
-  const settingsVisible = settingsOpened && await waitFor(win, '[data-testid="account-settings-shell"]')
-  const filesOpened = settingsVisible && await click(win, '[data-testid="account-settings-nav-files"]')
-  const filesVisible = filesOpened && await waitFor(win, '[data-testid="account-settings-files"]')
+  const settingsOpened =
+    accountOpened && (await click(win, '[data-testid="account-menu-settings"]'))
+  const settingsVisible =
+    settingsOpened && (await waitFor(win, '[data-testid="account-settings-shell"]'))
+  const filesOpened =
+    settingsVisible && (await click(win, '[data-testid="account-settings-nav-files"]'))
+  const filesVisible = filesOpened && (await waitFor(win, '[data-testid="account-settings-files"]'))
   record('资料库文件设置页可从真实应用一级入口打开', Boolean(filesVisible))
   if (filesVisible) {
     await waitFor(win, '[data-testid="file-version-limit"]')
     const pageText = await textOf(win, '[data-testid="account-settings-files"]')
     record(
       '一级设置展示自动保存、保存时自动格式化、版本数量与最大文件大小',
-      pageText.includes('文件自动保存')
-        && pageText.includes('保存时自动格式化')
-        && pageText.includes('版本数量')
-        && pageText.includes('最大文件大小')
-        && !pageText.includes('高级配置')
-        && !pageText.includes('保存设置')
-        && !pageText.includes('按文件类型保存')
+      pageText.includes('文件自动保存') &&
+        pageText.includes('保存时自动格式化') &&
+        pageText.includes('版本数量') &&
+        pageText.includes('最大文件大小') &&
+        !pageText.includes('高级配置') &&
+        !pageText.includes('保存设置') &&
+        !pageText.includes('按文件类型保存')
     )
-    const defaultSettings = (await apiJson(
-      win,
-      '/api/serve/settings/file-versions'
-    )) as {
+    const defaultSettings = (await apiJson(win, '/api/serve/settings/file-versions')) as {
       max_versions_per_file?: number
       max_file_size_kb?: number
       include_patterns?: string[]
@@ -3259,10 +3416,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     } | null
     record(
       '新用户默认保留 50 个版本、最大 50 MB（API 51200 KB）且纳入全部常见类型',
-      defaultSettings?.max_versions_per_file === 50
-        && defaultSettings?.max_file_size_kb === 50 * 1024
-        && JSON.stringify(defaultSettings.include_patterns)
-          === JSON.stringify(defaultSettings.common_patterns),
+      defaultSettings?.max_versions_per_file === 50 &&
+        defaultSettings?.max_file_size_kb === 50 * 1024 &&
+        JSON.stringify(defaultSettings.include_patterns) ===
+          JSON.stringify(defaultSettings.common_patterns),
       JSON.stringify(defaultSettings ?? {})
     )
     await waitForFileVersionInput(win, '[data-testid="file-version-limit"]')
@@ -3276,12 +3433,19 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     const defaultForm = await fileVersionFormState(win)
     record(
       '设置页以 MB 展示默认版本数与文件大小',
-      JSON.parse(defaultForm).limit === '50'
-        && JSON.parse(defaultForm).maxFileSize === '50'
-        && (await textOf(win, '[data-testid="file-version-size-row"]')).includes('MB'),
+      JSON.parse(defaultForm).limit === '50' &&
+        JSON.parse(defaultForm).maxFileSize === '50' &&
+        (await textOf(win, '[data-testid="file-version-size-row"]')).includes('MB'),
       defaultForm
     )
-    const settingsSnapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
+    const settingsSnapshotDir = resolve(
+      process.cwd(),
+      '..',
+      '..',
+      'tmp',
+      'test_snapshot',
+      'desktop'
+    )
     mkdirSync(settingsSnapshotDir, { recursive: true })
     writeFileSync(
       join(settingsSnapshotDir, 'file-version-settings-default.png'),
@@ -3292,20 +3456,19 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       '[data-testid="file-version-max-size"]',
       FILE_VERSION_MAX_SIZE_MB
     )
-    const sizeDialog = sizeCommitted && await waitFor(win, '[role="alertdialog"]', 300)
-    const savedToast = sizeCommitted
-      && await waitFor(win, '.vds-toaster [role="status"][data-tone="success"]')
+    const sizeDialog = sizeCommitted && (await waitFor(win, '[role="alertdialog"]', 300))
+    const savedToast =
+      sizeCommitted && (await waitFor(win, '.vds-toaster [role="status"][data-tone="success"]'))
     const savedToastText = savedToast
       ? await textOf(win, '.vds-toaster [role="status"][data-tone="success"]')
       : ''
     record(
       '设置保存成功使用全局 Toast 提示',
-      savedToastText === '文件版本设置已保存'
-        || savedToastText === 'File version settings saved',
+      savedToastText === '文件版本设置已保存' || savedToastText === 'File version settings saved',
       savedToastText
     )
     await settle(WAIT_POLL_MS * 5)
-    const savedToastLayout = await win.webContents.executeJavaScript(`
+    const savedToastLayout = (await win.webContents.executeJavaScript(`
       (() => {
         const toast = document.querySelector('.vds-toaster [role="status"][data-tone="success"]')
         if (!(toast instanceof HTMLElement)) return null
@@ -3327,7 +3490,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           zIndex: style.zIndex
         }
       })()
-    `) as {
+    `)) as {
       display: string
       height: number
       left: number
@@ -3342,15 +3505,15 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     record(
       '保存成功 Toast 在当前窗口可见区域完成布局',
       Boolean(
-        savedToastLayout
-          && savedToastLayout.display !== 'none'
-          && savedToastLayout.visibility === 'visible'
-          && Number(savedToastLayout.opacity) > 0
-          && savedToastLayout.width > 0
-          && savedToastLayout.height > 0
-          && savedToastLayout.left >= 0
-          && savedToastLayout.top >= 0
-          && Number(savedToastLayout.toasterZIndex) > Number(savedToastLayout.modalZIndex)
+        savedToastLayout &&
+        savedToastLayout.display !== 'none' &&
+        savedToastLayout.visibility === 'visible' &&
+        Number(savedToastLayout.opacity) > 0 &&
+        savedToastLayout.width > 0 &&
+        savedToastLayout.height > 0 &&
+        savedToastLayout.left >= 0 &&
+        savedToastLayout.top >= 0 &&
+        Number(savedToastLayout.toasterZIndex) > Number(savedToastLayout.modalZIndex)
       ),
       JSON.stringify(savedToastLayout)
     )
@@ -3361,12 +3524,14 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     if (savedToastLayout) {
       writeFileSync(
         join(settingsSnapshotDir, 'file-version-settings-toast.png'),
-        (await win.webContents.capturePage({
-          height: Math.ceil(savedToastLayout.height),
-          width: Math.ceil(savedToastLayout.width),
-          x: Math.floor(savedToastLayout.left),
-          y: Math.floor(savedToastLayout.top)
-        })).toPNG()
+        (
+          await win.webContents.capturePage({
+            height: Math.ceil(savedToastLayout.height),
+            width: Math.ceil(savedToastLayout.width),
+            x: Math.floor(savedToastLayout.left),
+            y: Math.floor(savedToastLayout.top),
+          })
+        ).toPNG()
       )
     }
     const resizedSettings = await waitForFileVersionSettings(win, 50, FILE_VERSION_MAX_SIZE_KB)
@@ -3379,16 +3544,12 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     )
     record(
       '设置保存只发送一次配置请求且不请求影响预览',
-      sizeMutationRequests.length === 1
-        && sizeMutationRequests[0] === 'POST /api/serve/settings/file-versions',
+      sizeMutationRequests.length === 1 &&
+        sizeMutationRequests[0] === 'POST /api/serve/settings/file-versions',
       JSON.stringify(sizeRequests)
     )
     const increased = await commitFileVersionInput(win, '[data-testid="file-version-limit"]', 120)
-    const increasedSettings = await waitForFileVersionSettings(
-      win,
-      120,
-      FILE_VERSION_MAX_SIZE_KB
-    )
+    const increasedSettings = await waitForFileVersionSettings(win, 120, FILE_VERSION_MAX_SIZE_KB)
     const increaseDialog = await waitFor(win, '[role="alertdialog"]', 300)
     record(
       '调高版本上限完成编辑后自动保存且不触发清理确认',
@@ -3396,17 +3557,13 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       `${JSON.stringify(increasedSettings ?? {})} form=${await fileVersionFormState(win)}`
     )
     const decreased = await commitFileVersionInput(win, '[data-testid="file-version-limit"]', 20)
-    const retentionDialog = decreased && await waitFor(win, '[role="alertdialog"]', 300)
+    const retentionDialog = decreased && (await waitFor(win, '[role="alertdialog"]', 300))
     record(
       '调低版本上限完成编辑后直接保存且不显示确认或统计',
       Boolean(!retentionDialog),
       retentionDialog ? await textOf(win, '[role="alertdialog"]') : ''
     )
-    const decreasedSettings = await waitForFileVersionSettings(
-      win,
-      20,
-      FILE_VERSION_MAX_SIZE_KB
-    )
+    const decreasedSettings = await waitForFileVersionSettings(win, 20, FILE_VERSION_MAX_SIZE_KB)
     record(
       '自动保存只更新调低后的版本上限配置',
       decreasedSettings?.max_versions_per_file === 20,
@@ -3418,7 +3575,12 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
   const failed = steps.length - passed
   log(`[workbench] result passed=${passed} failed=${failed}\n`)
   if (failed > 0) {
-    log(`[workbench] failures: ${steps.filter((s) => !s.ok).map((s) => s.name).join(' | ')}\n`)
+    log(
+      `[workbench] failures: ${steps
+        .filter((s) => !s.ok)
+        .map((s) => s.name)
+        .join(' | ')}\n`
+    )
   }
   // 清理要走真实 serve 接口，必须赶在主进程退出之前。
   await cleanupResidue(win, log)

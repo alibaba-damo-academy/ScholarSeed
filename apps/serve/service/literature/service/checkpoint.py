@@ -13,7 +13,14 @@ from service.assistant.service.authorization import (
     PRECISE_SEARCH_FULLTEXT,
     RESEARCH_IDEA_FULLTEXT,
 )
-from service.literature.persistence.files import read_scoped_file, scoped_parent, scoped_relative
+from service.literature.persistence.files import (
+    read_scoped_file,
+    scoped_files,
+    scoped_modified,
+    scoped_parent,
+    scoped_relative,
+    scoped_workspace_path,
+)
 from service.literature.service.agentic import prepare_agentic_search
 from service.literature.service.result import (
     SEARCH_FILE_BYTES,
@@ -89,6 +96,7 @@ class CheckpointContent:
     artifacts: tuple[CheckpointArtifact, ...]
     sources: tuple[AuthorizationSource, ...]
     refs: tuple[str, ...]
+    workspace: str = ""
 
 
 CheckpointReader = Callable[[Path, str], CheckpointContent | None]
@@ -144,6 +152,7 @@ def _precise_selection(workdir: Path, trigger: str) -> CheckpointContent | None:
         ),
         prepared.authorization_sources,
         prepared.authorization_refs,
+        scoped_parent(trigger),
     )
 
 
@@ -170,43 +179,38 @@ def _review_selection(workdir: Path, trigger: str) -> CheckpointContent | None:
         ),
         prepared.authorization_sources,
         prepared.authorization_refs,
+        workspace,
     )
 
 
-def _touched_since(root: Path, markers: tuple[str, ...], modified_ns: int) -> bool:
+def _touched_since(
+    workdir: Path, workspace: str, markers: tuple[str, ...], modified_ns: int
+) -> bool:
     for marker in markers:
-        path = root / marker
-        try:
-            if not path.is_symlink() and path.stat().st_mtime_ns >= modified_ns:
-                return True
-        except OSError:
-            continue
+        modified = scoped_modified(workdir, scoped_workspace_path(workspace, marker))
+        if modified is not None and modified >= modified_ns:
+            return True
     return False
 
 
 def _precise_download_started(workdir: Path, trigger: str, trigger_modified_ns: int) -> bool:
-    run = workdir.expanduser().resolve() / scoped_parent(trigger)
-    if _touched_since(run, PRECISE_DOWNLOAD_MARKERS, trigger_modified_ns):
+    run = scoped_parent(trigger)
+    if _touched_since(workdir, run, PRECISE_DOWNLOAD_MARKERS, trigger_modified_ns):
         return True
     try:
-        state_path = run / PRECISE_STATE_FILE
-        if state_path.is_symlink() or state_path.stat().st_mtime_ns < trigger_modified_ns:
+        state_path = scoped_relative(run, PRECISE_STATE_FILE)
+        modified = scoped_modified(workdir, state_path, regular=True)
+        if modified is None or modified < trigger_modified_ns:
             return False
-        state = json.loads(
-            read_scoped_file(
-                workdir,
-                scoped_relative(scoped_parent(trigger), PRECISE_STATE_FILE),
-                SEARCH_FILE_BYTES,
-            )
-        )
+        state = json.loads(read_scoped_file(workdir, state_path, SEARCH_FILE_BYTES))
     except (OSError, ValueError):
         return False
     return isinstance(state, dict) and state.get("status") in PRECISE_DOWNLOAD_STATUSES
 
 
 def _review_fulltext_started(workdir: Path, trigger: str, trigger_modified_ns: int) -> bool:
-    workspace = workdir.expanduser().resolve() / scoped_parent(scoped_parent(trigger))
-    return _touched_since(workspace, REVIEW_FULLTEXT_MARKERS, trigger_modified_ns)
+    workspace = scoped_parent(scoped_parent(trigger))
+    return _touched_since(workdir, workspace, REVIEW_FULLTEXT_MARKERS, trigger_modified_ns)
 
 
 def _idea_fulltext_never_observed(_workdir: Path, _trigger: str, _modified_ns: int) -> bool:
@@ -214,7 +218,7 @@ def _idea_fulltext_never_observed(_workdir: Path, _trigger: str, _modified_ns: i
     return False
 
 
-def _agentic_metadata(workdir: Path, trigger: str) -> CheckpointContent | None:
+def agentic_checkpoint(workdir: Path, trigger: str) -> CheckpointContent:
     prepared = prepare_agentic_search(workdir, trigger)
     artifacts = [
         CheckpointArtifact(prepared.metadata_path, prepared.metadata_sha256, CARD_FIELD_METADATA)
@@ -255,7 +259,7 @@ CHECKPOINT_POLICIES = (
         ProductTaskType.RESEARCH_IDEA,
         RESEARCH_IDEA_FULLTEXT,
         AGENTIC_METADATA_TRIGGERS,
-        _agentic_metadata,
+        agentic_checkpoint,
         continue_on_reject=True,
         requires_task_type=True,
         consumption_started=_idea_fulltext_never_observed,
@@ -285,24 +289,11 @@ def discover_triggers(
 ) -> tuple[tuple[CheckpointPolicy, str, int], ...]:
     """List existing regular trigger files; content is validated separately by the policy."""
 
-    root = workdir.expanduser().resolve()
-    found: list[tuple[CheckpointPolicy, str, int]] = []
-    for policy in active_policies(task_type):
-        seen: set[str] = set()
-        for pattern in policy.triggers:
-            for path in root.glob(pattern):
-                try:
-                    if path.is_symlink() or not path.is_file():
-                        continue
-                    relative = scoped_relative(str(path.relative_to(root)))
-                    modified = path.stat().st_mtime_ns
-                except (OSError, ValueError):
-                    continue
-                if relative in seen:
-                    continue
-                seen.add(relative)
-                found.append((policy, relative, modified))
-    return tuple(found)
+    return tuple(
+        (policy, relative, modified)
+        for policy in active_policies(task_type)
+        for relative, modified in scoped_files(workdir, policy.triggers)
+    )
 
 
 def read_checkpoint(

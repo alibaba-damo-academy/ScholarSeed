@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next'
 import type { AuthUser } from './api.ts'
-import { ensureSkillCredential, getAuthMe } from './api.ts'
+import { ensureSkillCredential } from './api.ts'
+import { confirmLocalSession } from './confirmation.ts'
 
 // account.ts — 托管账号服务 (veda-account) 客户端。
 //
@@ -20,7 +21,7 @@ export const CODE_PURPOSES = {
   login: PURPOSE_LOGIN,
   register: PURPOSE_REGISTER,
   reset: PURPOSE_RESET,
-  change: PURPOSE_CHANGE
+  change: PURPOSE_CHANGE,
 } as const
 export type CodePurpose = (typeof CODE_PURPOSES)[keyof typeof CODE_PURPOSES]
 
@@ -65,7 +66,8 @@ const ERROR_TEXT: Record<string, string> = {
   invalid_api_key: 'API 密钥无效或已吊销',
   invalid_api_key_name: '密钥名称过长',
   api_key_limit: '活跃密钥数已达上限，请先吊销一个',
-  api_key_managed: '这把密钥由书深自动管理，所有设备共用；只能轮换，不能吊销。轮换后所有设备下次开会话获取新密钥'
+  api_key_managed:
+    '这把密钥由书深自动管理，所有设备共用；只能轮换，不能吊销。轮换后所有设备下次开会话获取新密钥',
 }
 
 const NETWORK_ERROR_TEXT = '无法连接账号服务'
@@ -79,22 +81,38 @@ const PHONE_MASK = '****'
 const DEFAULT_ACCOUNT_NAME = '书深用户'
 
 const ACCOUNT_FAILURE_KEYS = {
-  invalid_phone: 'failure.invalid_phone', invalid_purpose: 'failure.invalid_purpose',
-  rate_cooldown: 'failure.rate_cooldown', rate_daily_phone: 'failure.rate_daily_phone',
-  rate_daily_ip: 'failure.rate_daily_ip', sms_not_configured: 'failure.sms_not_configured',
-  sms_send_failed: 'failure.sms_send_failed', not_registered: 'failure.not_registered',
-  account_disabled: 'failure.account_disabled', invalid_code: 'failure.invalid_code',
-  code_expired: 'failure.code_expired', code_exhausted: 'failure.code_exhausted',
-  invalid_password: 'failure.invalid_password', invalid_nickname: 'failure.invalid_nickname',
-  password_too_short: 'failure.password_too_short', phone_taken: 'failure.phone_taken',
-  invite_required: 'failure.invite_required', invite_invalid: 'failure.invite_invalid',
-  unauthorized: 'failure.unauthorized', invalid_refresh: 'failure.invalid_refresh',
-  forbidden: 'failure.forbidden', not_found: 'failure.not_found',
-  invalid_api_key: 'failure.invalid_api_key', invalid_api_key_name: 'failure.invalid_api_key_name',
-  api_key_limit: 'failure.api_key_limit', api_key_managed: 'failure.api_key_managed',
-  network: 'failure.network', no_base_url: 'failure.no_base_url',
-  invalid_response: 'failure.invalid_response', local_logout_failed: 'failure.local_logout_failed',
-  logout_revocation_failed: 'failure.logout_revocation_failed', http_failure: 'failure.http_failure'
+  invalid_phone: 'failure.invalid_phone',
+  invalid_purpose: 'failure.invalid_purpose',
+  rate_cooldown: 'failure.rate_cooldown',
+  rate_daily_phone: 'failure.rate_daily_phone',
+  rate_daily_ip: 'failure.rate_daily_ip',
+  sms_not_configured: 'failure.sms_not_configured',
+  sms_send_failed: 'failure.sms_send_failed',
+  not_registered: 'failure.not_registered',
+  account_disabled: 'failure.account_disabled',
+  invalid_code: 'failure.invalid_code',
+  code_expired: 'failure.code_expired',
+  code_exhausted: 'failure.code_exhausted',
+  invalid_password: 'failure.invalid_password',
+  invalid_nickname: 'failure.invalid_nickname',
+  password_too_short: 'failure.password_too_short',
+  phone_taken: 'failure.phone_taken',
+  invite_required: 'failure.invite_required',
+  invite_invalid: 'failure.invite_invalid',
+  unauthorized: 'failure.unauthorized',
+  invalid_refresh: 'failure.invalid_refresh',
+  forbidden: 'failure.forbidden',
+  not_found: 'failure.not_found',
+  invalid_api_key: 'failure.invalid_api_key',
+  invalid_api_key_name: 'failure.invalid_api_key_name',
+  api_key_limit: 'failure.api_key_limit',
+  api_key_managed: 'failure.api_key_managed',
+  network: 'failure.network',
+  no_base_url: 'failure.no_base_url',
+  invalid_response: 'failure.invalid_response',
+  local_logout_failed: 'failure.local_logout_failed',
+  logout_revocation_failed: 'failure.logout_revocation_failed',
+  http_failure: 'failure.http_failure',
 } as const
 
 export interface AccountSession {
@@ -127,7 +145,10 @@ export interface ApiKeyCreated extends ApiKeySummary {
 }
 
 /** Only the explicit managed provenance identifies the product-owned credential name. */
-export function apiKeyDisplayName(key: Pick<ApiKeySummary, 'name' | 'managed'>, t: TFunction<'account'>): string {
+export function apiKeyDisplayName(
+  key: Pick<ApiKeySummary, 'name' | 'managed'>,
+  t: TFunction<'account'>
+): string {
   return key.managed ? t('accountExtra.managedName') : key.name || t('accountExtra.unnamed')
 }
 export interface AccountFailure {
@@ -142,18 +163,26 @@ export type AccountLogoutResult = AccountResult<{ local_cleared: true }>
 /** Translate only product-generated explanations; raw diagnostics never imply an error identity. */
 export function accountFailureText(failure: AccountFailure, t: TFunction<'account'>): string {
   const descriptor = failure.applicationFailure
-  if (!descriptor || !Object.prototype.hasOwnProperty.call(ACCOUNT_FAILURE_KEYS, descriptor.code)) return failure.error
-  const message = t(ACCOUNT_FAILURE_KEYS[descriptor.code as keyof typeof ACCOUNT_FAILURE_KEYS], {
-    count: PASSWORD_MIN_LENGTH, status: descriptor.status ?? 0
+  if (!descriptor || !Object.prototype.hasOwnProperty.call(ACCOUNT_FAILURE_KEYS, descriptor.code))
+    return t('failure.unknown')
+  return t(ACCOUNT_FAILURE_KEYS[descriptor.code as keyof typeof ACCOUNT_FAILURE_KEYS], {
+    count: PASSWORD_MIN_LENGTH,
+    status: descriptor.status ?? 0,
   })
-  return descriptor.diagnostic ? t('failure.diagnostic', { message, detail: descriptor.diagnostic }) : message
 }
 
-export function parseAccountProfile(payload: Record<string, unknown>): AccountResult<AccountProfile> {
+export function parseAccountProfile(
+  payload: Record<string, unknown>
+): AccountResult<AccountProfile> {
   const userId = String(payload.user_id || '').trim()
   const nickname = String(payload.nickname || '').trim()
   if (!userId || !nickname) {
-    return { ok: false, code: 'invalid_response', error: INVALID_RESPONSE_TEXT, applicationFailure: { code: 'invalid_response' } }
+    return {
+      ok: false,
+      code: 'invalid_response',
+      error: INVALID_RESPONSE_TEXT,
+      applicationFailure: { code: 'invalid_response' },
+    }
   }
   const phone = String(payload.phone || '').trim()
   return { ok: true, data: { user_id: userId, nickname, ...(phone ? { phone } : {}) } }
@@ -179,16 +208,16 @@ export function accountDisplayText(
   return accountNameCandidate(user, profile) ?? t('identity.defaultName')
 }
 
-function accountNameCandidate(user: AuthUser | null, profile: AccountProfile | null): string | null {
-  const candidates = [
-    profile?.nickname,
-    user?.nickname,
-    user?.display_name,
-    user?.email
-  ]
-  return candidates
-    .map((value) => String(value || '').trim())
-    .find((value) => Boolean(value) && !/^u-[0-9a-f]{16,}$/i.test(value)) ?? null
+function accountNameCandidate(
+  user: AuthUser | null,
+  profile: AccountProfile | null
+): string | null {
+  const candidates = [profile?.nickname, user?.nickname, user?.display_name, user?.email]
+  return (
+    candidates
+      .map((value) => String(value || '').trim())
+      .find((value) => Boolean(value) && !/^u-[0-9a-f]{16,}$/i.test(value)) ?? null
+  )
 }
 
 /**
@@ -209,7 +238,6 @@ export function maskPhone(phone: string): string {
 }
 
 let baseUrl = ''
-let deviceCache: { device_id: string; device_label: string } | null = null
 
 /** 由登录页在拿到 /api/auth/status 后调用（account_base_url）。 */
 export function setAccountBase(url: string): void {
@@ -220,10 +248,22 @@ export function accountBase(): string {
   return baseUrl
 }
 
-function failure(code: string, fallback: string, fallbackFailure?: AccountFailure['applicationFailure'], diagnostic?: string): AccountFailure {
+function failure(
+  code: string,
+  fallback: string,
+  fallbackFailure?: AccountFailure['applicationFailure'],
+  diagnostic?: string
+): AccountFailure {
   const known = Object.prototype.hasOwnProperty.call(ERROR_TEXT, code)
-  const applicationFailure = known ? { code, ...(diagnostic ? { diagnostic } : {}) } : fallbackFailure
-  return { ok: false, code, error: known ? ERROR_TEXT[code] : fallback, ...(applicationFailure ? { applicationFailure } : {}) }
+  const applicationFailure = known
+    ? { code, ...(diagnostic ? { diagnostic } : {}) }
+    : fallbackFailure
+  return {
+    ok: false,
+    code,
+    error: known ? ERROR_TEXT[code] : fallback,
+    ...(applicationFailure ? { applicationFailure } : {}),
+  }
 }
 
 async function request<T>(
@@ -232,7 +272,13 @@ async function request<T>(
   body: unknown,
   withAuth: boolean
 ): Promise<AccountResult<T>> {
-  if (!baseUrl) return { ok: false, code: '', error: NO_BASE_URL_TEXT, applicationFailure: { code: 'no_base_url' } }
+  if (!baseUrl)
+    return {
+      ok: false,
+      code: '',
+      error: NO_BASE_URL_TEXT,
+      applicationFailure: { code: 'no_base_url' },
+    }
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['content-type'] = 'application/json'
   if (withAuth) {
@@ -247,7 +293,7 @@ async function request<T>(
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: ctl.signal
+      signal: ctl.signal,
     })
     const payload = (await r.json().catch(() => ({}))) as Record<string, unknown>
     if (!r.ok) {
@@ -256,30 +302,35 @@ async function request<T>(
         window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
       }
       const diagnostic = String(payload.message || '')
-      return failure(code, diagnostic || `请求失败（${r.status}）`, diagnostic ? undefined : { code: 'http_failure', status: r.status }, diagnostic)
+      return failure(
+        code,
+        diagnostic || `请求失败（${r.status}）`,
+        diagnostic ? undefined : { code: 'http_failure', status: r.status },
+        diagnostic
+      )
     }
     return { ok: true, data: payload as T }
   } catch (error) {
-    return { ok: false, code: '', error: NETWORK_ERROR_TEXT, applicationFailure: {
-      code: 'network', ...(error == null ? {} : { diagnostic: error instanceof Error ? error.message : String(error) })
-    } }
+    return {
+      ok: false,
+      code: '',
+      error: NETWORK_ERROR_TEXT,
+      applicationFailure: {
+        code: 'network',
+        ...(error == null
+          ? {}
+          : { diagnostic: error instanceof Error ? error.message : String(error) }),
+      },
+    }
   } finally {
     window.clearTimeout(timer)
   }
 }
 
-/** 设备身份来自主进程（跳重启稳定），登录/注册随请求上报，后台设备列表与远程登出靠它。 */
-async function deviceFields(): Promise<{ device_id: string; device_label: string }> {
-  if (deviceCache) return deviceCache
-  try {
-    deviceCache = await window.scholarseed.getDeviceInfo()
-  } catch {
-    deviceCache = { device_id: '', device_label: '' }
-  }
-  return deviceCache
-}
-
-export async function sendCode(phone: string, purpose: CodePurpose): Promise<AccountResult<{ sent: boolean }>> {
+export async function sendCode(
+  phone: string,
+  purpose: CodePurpose
+): Promise<AccountResult<{ sent: boolean }>> {
   return request('POST', '/api/phone/code', { phone, purpose }, false)
 }
 
@@ -292,7 +343,12 @@ export async function resetPassword(
   code: string,
   newPassword: string
 ): Promise<AccountResult<{ reset: boolean }>> {
-  return request('POST', '/api/phone/reset-password', { phone, code, new_password: newPassword }, false)
+  return request(
+    'POST',
+    '/api/phone/reset-password',
+    { phone, code, new_password: newPassword },
+    false
+  )
 }
 
 export async function accountMe(): Promise<AccountResult<AccountProfile>> {
@@ -324,7 +380,7 @@ export interface CreditsState {
 
 export const INITIAL_CREDITS_STATE: CreditsState = {
   phase: 'idle',
-  summary: null
+  summary: null,
 }
 
 export function creditsAreExhausted(summary: CreditsSummary | null): boolean {
@@ -353,8 +409,8 @@ export function markCreditsExhausted(state: CreditsState): CreditsState {
       used_credits: state.summary?.used_credits ?? null,
       unlimited: false,
       enforcing: true,
-      earliest_expiry_at: state.summary?.earliest_expiry_at ?? null
-    }
+      earliest_expiry_at: state.summary?.earliest_expiry_at ?? null,
+    },
   }
 }
 
@@ -381,7 +437,7 @@ export function parseCreditsSummary(payload: Record<string, unknown>): CreditsSu
     used_credits: toFiniteNumber(payload.used_credits),
     unlimited: payload.unlimited === true,
     enforcing: payload.enforcing === true,
-    earliest_expiry_at: toTimestamp(payload.earliest_expiry_at)
+    earliest_expiry_at: toTimestamp(payload.earliest_expiry_at),
   }
 }
 
@@ -404,7 +460,12 @@ export function creditsWarningBucket(balance: number): CreditsWarningBucket {
  * 503 / 502, 走 ok:false, 界面显示占位而不是编一个 0。
  */
 export async function accountCredits(): Promise<AccountResult<CreditsSummary>> {
-  const result = await request<Record<string, unknown>>('GET', '/api/account/credits', undefined, true)
+  const result = await request<Record<string, unknown>>(
+    'GET',
+    '/api/account/credits',
+    undefined,
+    true
+  )
   if (!result.ok) return result
   return { ok: true, data: parseCreditsSummary(result.data) }
 }
@@ -413,7 +474,7 @@ export async function accountCredits(): Promise<AccountResult<CreditsSummary>> {
 // 桌面端登录走「浏览器官网登录 + scholarseed:// 一次性 code 回跳」（main/handoff.ts）。
 const CLOUD_PAGES = {
   profile: '/web/account.html',
-  credits: '/web/credits.html'
+  credits: '/web/credits.html',
 } as const
 export type CloudPage = keyof typeof CLOUD_PAGES
 
@@ -423,7 +484,7 @@ export type CloudPage = keyof typeof CLOUD_PAGES
  * 不在本地复刻那个区域。
  */
 export const CLOUD_PAGE_ANCHORS = {
-  creditsMore: 'credit-more'
+  creditsMore: 'credit-more',
 } as const
 export type CloudPageAnchor = (typeof CLOUD_PAGE_ANCHORS)[keyof typeof CLOUD_PAGE_ANCHORS]
 
@@ -434,11 +495,16 @@ export function cloudPageUrl(page: CloudPage, anchor?: CloudPageAnchor): string 
   return anchor ? `${url}#${anchor}` : url
 }
 
-export async function updateNickname(nickname: string): Promise<AccountResult<{ nickname: string }>> {
+export async function updateNickname(
+  nickname: string
+): Promise<AccountResult<{ nickname: string }>> {
   return request('PATCH', '/api/account/profile', { nickname }, true)
 }
 
-export async function changePhone(newPhone: string, code: string): Promise<AccountResult<{ phone: string }>> {
+export async function changePhone(
+  newPhone: string,
+  code: string
+): Promise<AccountResult<{ phone: string }>> {
   return request('POST', '/api/account/phone/change', { new_phone: newPhone, code }, true)
 }
 
@@ -486,9 +552,8 @@ export async function adoptSession(token: string, refreshToken: string): Promise
  * 应用内登录（AccountAuth）与深链交接（Landing）共用它 —— 两条登录线不允许在「凭据
  * 是否真可用」上各自漂移：拿到 token 只证明账号服务认了凭据，不证明宿主验得通。
  */
-export async function confirmAdoptedSession(): Promise<boolean> {
-  const me = await getAuthMe()
-  if (me?.auth !== true) return false
+export async function confirmAdoptedSession(signal: AbortSignal): Promise<boolean> {
+  if (!(await confirmLocalSession(signal))) return false
   void ensureSkillCredential()
   return true
 }
@@ -498,6 +563,10 @@ export async function dropSession(): Promise<AccountLogoutResult> {
   const result = await window.scholarseed.setAuthToken('')
   return result.ok
     ? { ok: true, data: { local_cleared: true } }
-    : { ok: false, code: 'local_logout_failed', error: result.error || LOCAL_LOGOUT_ERROR_TEXT,
-      ...(!result.error ? { applicationFailure: { code: 'local_logout_failed' } } : {}) }
+    : {
+        ok: false,
+        code: 'local_logout_failed',
+        error: result.error || LOCAL_LOGOUT_ERROR_TEXT,
+        ...(!result.error ? { applicationFailure: { code: 'local_logout_failed' } } : {}),
+      }
 }

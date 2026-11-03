@@ -8,6 +8,7 @@ import {
   MAX_TRACKED_RECENT_SESSIONS,
   MAX_MODEL_KEY_LENGTH,
   defaultRendererPreferences,
+  rendererPreferencesEqual,
   sanitizeRecentFiles,
   sanitizeRecentLiterature,
   sanitizeRecentSessions,
@@ -17,30 +18,130 @@ import {
   recentSessionsEqual,
   touchRecentFile,
   touchRecentLiterature,
-  touchRecentSession
+  touchRecentSession,
 } from './preferences.ts'
 
+test('cleared task message versions survive preference round trips and participate in equality', () => {
+  const key = JSON.stringify(['imports', 'completed-task'])
+  const preferences = sanitizeRendererPreferences({ taskMessageDismissals: { [key]: 7 } })
+  assert.deepEqual(preferences.taskMessageDismissals, { [key]: 7 })
+  assert.deepEqual(
+    sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences))).taskMessageDismissals,
+    { [key]: 7 }
+  )
+  assert.equal(rendererPreferencesEqual(preferences, sanitizeRendererPreferences({})), false)
+  assert.deepEqual(
+    sanitizeRendererPreferences({
+      taskMessageDismissals: { valid: 0, negative: -1, text: '2', fraction: 1.5 },
+    }).taskMessageDismissals,
+    { valid: 0 }
+  )
+})
+
+test('external browser automation defaults on and preserves explicit saved choices', () => {
+  assert.equal(defaultRendererPreferences().browserAutomationEnabled, true)
+  assert.equal(sanitizeRendererPreferences({ theme: 'dark' }).browserAutomationEnabled, true)
+  for (const invalid of [null, 'true', 1])
+    assert.equal(
+      sanitizeRendererPreferences({ browserAutomationEnabled: invalid }).browserAutomationEnabled,
+      false
+    )
+  for (const enabled of [false, true]) {
+    const preferences = sanitizeRendererPreferences({ browserAutomationEnabled: enabled })
+    assert.equal(preferences.browserAutomationEnabled, enabled)
+    assert.equal(
+      sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences))).browserAutomationEnabled,
+      enabled
+    )
+    assert.equal(
+      rendererPreferencesEqual(
+        preferences,
+        sanitizeRendererPreferences({ browserAutomationEnabled: !enabled })
+      ),
+      false
+    )
+  }
+})
+
+test('last page survives preference round trip without transient UI state', () => {
+  const lastLocation = {
+    view: 'resource',
+    projectId: 'project-a',
+    sessionId: 'session-a',
+    sessionProjectId: 'project-a',
+    settingsPage: 'skills',
+    aiPanelOpen: true,
+    aiPanelCover: false,
+    target: {
+      kind: 'document',
+      viewKind: 'edit',
+      title: 'note.md',
+      source: { kind: 'project', project: 'project-a', path: 'resources/note.md' },
+    },
+  }
+  const preferences = sanitizeRendererPreferences({ lastLocation, loginOpen: true })
+  const migratedLocation = { ...lastLocation, browserSettingsSection: null }
+  assert.deepEqual(preferences.lastLocation, migratedLocation)
+  assert.deepEqual(
+    sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences))).lastLocation,
+    migratedLocation
+  )
+  assert.equal('loginOpen' in preferences, false)
+  assert.equal(rendererPreferencesEqual(preferences, sanitizeRendererPreferences({})), false)
+})
+
+test('old and invalid preferences have no saved location', () => {
+  assert.equal(sanitizeRendererPreferences({}).lastLocation, null)
+  assert.equal(
+    sanitizeRendererPreferences({ lastLocation: { view: 'removed-page' } }).lastLocation,
+    null
+  )
+})
+
 test('literature AI model preferences keep only known actions and valid model keys', () => {
-  assert.deepEqual(sanitizeLiteratureAiModels({
-    document_translation: 'qwen3.8-max',
-    interpretation: 'personal-profile:gpt-5.6-sol',
-    figure_explanation: 'qwen-vl-max',
-    selection_translation: 'qwen3.8-max',
-    unknown: 'ignored'
-  }), {
-    document_translation: 'qwen3.8-max',
-    selection_translation: 'qwen3.8-max',
-    interpretation: 'personal-profile:gpt-5.6-sol',
-    figure_explanation: 'qwen-vl-max'
+  assert.deepEqual(
+    sanitizeLiteratureAiModels({
+      document_translation: 'qwen3.8-max',
+      interpretation: 'personal-profile:gpt-5.6-sol',
+      figure_explanation: 'qwen-vl-max',
+      selection_translation: 'qwen3.8-max',
+      selection_explanation: 'personal-profile:explain-model',
+      unknown: 'ignored',
+    }),
+    {
+      document_translation: 'qwen3.8-max',
+      selection_translation: 'qwen3.8-max',
+      selection_explanation: 'personal-profile:explain-model',
+      interpretation: 'personal-profile:gpt-5.6-sol',
+      figure_explanation: 'qwen-vl-max',
+    }
+  )
+  assert.deepEqual(
+    sanitizeLiteratureAiModels({
+      document_translation: '',
+      interpretation: 'x'.repeat(MAX_MODEL_KEY_LENGTH + 1),
+      figure_explanation: 42,
+    }),
+    {}
+  )
+  assert.deepEqual(
+    sanitizeRendererPreferences({
+      literatureAiModels: { interpretation: 'gpt-5.6-sol' },
+    }).literatureAiModels,
+    { interpretation: 'gpt-5.6-sol' }
+  )
+})
+
+test('selection explanation model survives preference serialization independently of translation', () => {
+  const preferences = sanitizeRendererPreferences({
+    literatureAiModels: {
+      selection_explanation: 'personal:explain',
+      selection_translation: 'builtin:translate',
+    },
   })
-  assert.deepEqual(sanitizeLiteratureAiModels({
-    document_translation: '',
-    interpretation: 'x'.repeat(MAX_MODEL_KEY_LENGTH + 1),
-    figure_explanation: 42
-  }), {})
-  assert.deepEqual(sanitizeRendererPreferences({
-    literatureAiModels: { interpretation: 'gpt-5.6-sol' }
-  }).literatureAiModels, { interpretation: 'gpt-5.6-sol' })
+  const restored = sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences)))
+  assert.equal(restored.literatureAiModels.selection_explanation, 'personal:explain')
+  assert.equal(restored.literatureAiModels.selection_translation, 'builtin:translate')
 })
 
 test('notification preferences persist while privacy mode remains fail-closed', () => {
@@ -50,7 +151,7 @@ test('notification preferences persist while privacy mode remains fail-closed', 
     sessionActivitySeen: { session: 12 },
     desktopNotifications: false,
     soundAlerts: false,
-    dataSharingMode: 'improve'
+    dataSharingMode: 'improve',
   })
   assert.equal(parsed.desktopNotifications, false)
   assert.equal(parsed.soundAlerts, false)
@@ -96,12 +197,12 @@ test('shortcut overrides preserve valid bindings and explicit cleared commands',
       invalidKey: { key: '', modifiers: ['primary'] },
       invalidModifier: { key: 'x', modifiers: ['meta'] },
       invalidBareText: { key: 'a', modifiers: [] },
-      invalidShiftText: { key: 'A', modifiers: ['shift'] }
-    }
+      invalidShiftText: { key: 'A', modifiers: ['shift'] },
+    },
   })
   assert.deepEqual(parsed.shortcutOverrides, {
     'markdown.bold': { key: 'm', modifiers: ['primary', 'shift'] },
-    'pdf.nextPage': { key: 'PageDown', modifiers: [] }
+    'pdf.nextPage': { key: 'PageDown', modifiers: [] },
   })
   assert.deepEqual(sanitizeRendererPreferences({}).shortcutOverrides, {})
 })
@@ -141,36 +242,41 @@ test('recent files are validated, de-duplicated by project and path, sorted, and
     ...Array.from({ length: MAX_TRACKED_RECENT_FILES + 5 }, (_, index) => ({
       projectId: 'project-a',
       path: `resources/file-${index}.md`,
-      openedAt: index + 2
+      openedAt: index + 2,
     })),
     { projectId: '', path: 'resources/missing-project.md', openedAt: 200 },
     { projectId: 'project-a', path: '', openedAt: 200 },
-    { projectId: 'project-a', path: 'resources/not-a-time.md', openedAt: 'now' }
+    { projectId: 'project-a', path: 'resources/not-a-time.md', openedAt: 'now' },
   ])
 
   assert.equal(parsed.length, MAX_TRACKED_RECENT_FILES)
   assert.deepEqual(parsed[0], {
     projectId: 'project-a',
     path: 'resources/duplicate.md',
-    openedAt: 99
+    openedAt: 99,
   })
   assert.equal(parsed.filter((entry) => entry.path === 'resources/duplicate.md').length, 2)
-  assert.ok(parsed.every((entry, index) => index === 0 || parsed[index - 1].openedAt >= entry.openedAt))
+  assert.ok(
+    parsed.every((entry, index) => index === 0 || parsed[index - 1].openedAt >= entry.openedAt)
+  )
 })
 
 test('touching an existing recent file moves it to the front without duplicating it', () => {
-  const touched = touchRecentFile([
-    { projectId: 'project-a', path: 'resources/newer.md', openedAt: 20 },
-    { projectId: 'project-a', path: 'resources/older.md', openedAt: 10 }
-  ], {
-    projectId: 'project-a',
-    path: 'resources/older.md',
-    openedAt: 30
-  })
+  const touched = touchRecentFile(
+    [
+      { projectId: 'project-a', path: 'resources/newer.md', openedAt: 20 },
+      { projectId: 'project-a', path: 'resources/older.md', openedAt: 10 },
+    ],
+    {
+      projectId: 'project-a',
+      path: 'resources/older.md',
+      openedAt: 30,
+    }
+  )
 
   assert.deepEqual(touched, [
     { projectId: 'project-a', path: 'resources/older.md', openedAt: 30 },
-    { projectId: 'project-a', path: 'resources/newer.md', openedAt: 20 }
+    { projectId: 'project-a', path: 'resources/newer.md', openedAt: 20 },
   ])
 })
 
@@ -180,37 +286,48 @@ test('recent literature is validated, de-duplicated by id, sorted, and bounded',
     { id: 'lit-a', openedAt: 99 },
     ...Array.from({ length: MAX_TRACKED_RECENT_LITERATURE + 5 }, (_, index) => ({
       id: `lit-${index}`,
-      openedAt: index + 2
+      openedAt: index + 2,
     })),
     { id: '', openedAt: 200 },
     { id: 'lit-b', openedAt: 'now' },
-    { id: 'lit-c' }
+    { id: 'lit-c' },
   ])
 
   assert.equal(parsed.length, MAX_TRACKED_RECENT_LITERATURE)
   assert.deepEqual(parsed[0], { id: 'lit-a', openedAt: 99 })
   assert.equal(parsed.filter((entry) => entry.id === 'lit-a').length, 1)
-  assert.ok(parsed.every((entry, index) => index === 0 || parsed[index - 1].openedAt >= entry.openedAt))
+  assert.ok(
+    parsed.every((entry, index) => index === 0 || parsed[index - 1].openedAt >= entry.openedAt)
+  )
   assert.deepEqual(sanitizeRecentLiterature('not a list'), [])
 })
 
 test('touching an existing recent literature moves it to the front without duplicating it', () => {
-  const touched = touchRecentLiterature([
-    { id: 'lit-newer', openedAt: 20 },
-    { id: 'lit-older', openedAt: 10 }
-  ], { id: 'lit-older', openedAt: 30 })
+  const touched = touchRecentLiterature(
+    [
+      { id: 'lit-newer', openedAt: 20 },
+      { id: 'lit-older', openedAt: 10 },
+    ],
+    { id: 'lit-older', openedAt: 30 }
+  )
 
   assert.deepEqual(touched, [
     { id: 'lit-older', openedAt: 30 },
-    { id: 'lit-newer', openedAt: 20 }
+    { id: 'lit-newer', openedAt: 20 },
   ])
   assert.ok(recentLiteratureEqual(touched, touched))
-  assert.equal(recentLiteratureEqual(touched, [{ id: 'lit-newer', openedAt: 20 }, { id: 'lit-older', openedAt: 30 }]), false)
+  assert.equal(
+    recentLiteratureEqual(touched, [
+      { id: 'lit-newer', openedAt: 20 },
+      { id: 'lit-older', openedAt: 30 },
+    ]),
+    false
+  )
 })
 
 test('renderer preferences sanitize and compare the recent literature list', () => {
   const parsed = sanitizeRendererPreferences({
-    recentLiterature: [{ id: 'lit-a', openedAt: 7 }]
+    recentLiterature: [{ id: 'lit-a', openedAt: 7 }],
   })
   assert.deepEqual(parsed.recentLiterature, [{ id: 'lit-a', openedAt: 7 }])
   assert.equal(
@@ -225,10 +342,10 @@ test('recent sessions are validated, de-duplicated, sorted, bounded, and persist
     { id: 'session-a', openedAt: 99 },
     ...Array.from({ length: MAX_TRACKED_RECENT_SESSIONS + 5 }, (_, index) => ({
       id: `session-${index}`,
-      openedAt: index + 2
+      openedAt: index + 2,
     })),
     { id: '', openedAt: 200 },
-    { id: 'session-b', openedAt: 'now' }
+    { id: 'session-b', openedAt: 'now' },
   ])
   assert.equal(parsed.length, MAX_TRACKED_RECENT_SESSIONS)
   assert.deepEqual(parsed[0], { id: 'session-a', openedAt: 99 })
@@ -239,4 +356,28 @@ test('recent sessions are validated, de-duplicated, sorted, bounded, and persist
 
   const preferences = sanitizeRendererPreferences({ recentSessions: touched })
   assert.deepEqual(preferences.recentSessions, touched)
+})
+
+test('recent project survives restarts independently of the current global page', () => {
+  const stored = sanitizeRendererPreferences({ recentProjectId: 'project', lastLocation: null })
+  assert.equal(stored.recentProjectId, 'project')
+  assert.equal(
+    sanitizeRendererPreferences(JSON.parse(JSON.stringify(stored))).recentProjectId,
+    'project'
+  )
+  assert.equal(rendererPreferencesEqual(stored, { ...stored, recentProjectId: 'other' }), false)
+  assert.equal(sanitizeRendererPreferences({ recentProjectId: 7 }).recentProjectId, null)
+})
+
+test('automatic update download defaults on and persists an explicit opt out', () => {
+  const defaults = defaultRendererPreferences()
+  assert.equal(defaults.autoDownloadUpdates, true)
+  const disabled = sanitizeRendererPreferences({ ...defaults, autoDownloadUpdates: false })
+  assert.equal(disabled.autoDownloadUpdates, false)
+  assert.equal(rendererPreferencesEqual(defaults, disabled), false)
+  assert.deepEqual(sanitizeRendererPreferences(JSON.parse(JSON.stringify(disabled))), disabled)
+  assert.equal(
+    sanitizeRendererPreferences({ autoDownloadUpdates: 'false' }).autoDownloadUpdates,
+    true
+  )
 })

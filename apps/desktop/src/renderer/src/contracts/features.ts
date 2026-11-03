@@ -1,4 +1,6 @@
 import type { ForegroundMessage } from './feedback'
+import type { PublicComponentContribution } from './components'
+import type { PluginReference } from '../../../plugins'
 /**
  * Feature 统一贡献协议（开发 7 拥有，开发 1～6 实现）。
  *
@@ -35,6 +37,7 @@ export interface TaskSourceContribution {
     }
   ) => () => void
   subscribe?: (listener: (task: ProductTask) => void) => () => void
+  onTerminal?: (task: ProductTask) => void
 }
 
 /** Resolve error presentation through the same owner registration used for task operations. */
@@ -69,7 +72,15 @@ export function taskErrorText(
 }
 
 /** 主视图导航键。与后端无关，纯前端导航概念。 */
-export type RouteKey = 'home' | 'conversation' | 'projects' | 'resource' | 'literature' | 'writing'
+export type RouteKey =
+  | 'home'
+  | 'conversation'
+  | 'projects'
+  | 'resource'
+  | 'literature'
+  | 'writing'
+  | 'browser'
+  | 'skills'
 
 /**
  * 活动栏条目（最左侧竖条）。
@@ -116,8 +127,9 @@ export interface ViewerPlugin {
     page?: number
     documentSessionId?: string
     tabId?: string
-    viewKind?: 'preview' | 'edit'
+    viewKind?: 'preview' | 'edit' | 'source'
     toolbarActions?: ReactNode
+    modeControlHost?: HTMLElement | null
     documentPanels?: {
       activePanelId: string | null
       context: DocumentPanelContext
@@ -133,7 +145,7 @@ export interface PanelContribution {
   key: string
   title: (i18n: i18n) => string
   /** 挂载位置。module = 二级侧栏，dock = 右侧停靠区。 */
-  slot: 'module' | 'dock'
+  slot: 'module' | 'dock' | 'navigation' | 'page'
   render: () => ReactNode
 }
 
@@ -197,6 +209,19 @@ export interface AssistantSourceQuery {
   cursor?: string
 }
 
+export interface AssistantBrowseNode {
+  id: string
+  label: string
+  parentId: string | null
+}
+
+export interface AssistantSourceBrowse {
+  heading: ForegroundMessage
+  ungrouped: { id: string; label: ForegroundMessage }
+  nodes: (projectId: string | null) => Promise<AssistantBrowseNode[] | null>
+  items: (projectId: string | null, nodeId: string) => Promise<AssistantContextCandidate[] | null>
+}
+
 /** 业务 Feature 向 AI Picker 贡献候选查询，不暴露自己的可变 Store。 */
 export interface AssistantSourceContribution {
   id: string
@@ -206,6 +231,7 @@ export interface AssistantSourceContribution {
   kinds: readonly ContextRefKind[]
   /** This source only has meaning inside a project-bound conversation. */
   requiresProject?: boolean
+  browse?: AssistantSourceBrowse
   search: (query: AssistantSourceQuery) => Promise<{
     items: AssistantContextCandidate[]
     next_cursor?: string | null
@@ -216,6 +242,8 @@ export type DisplayCardSupersessionPosition = 'first' | 'latest'
 
 export interface DisplayCardContribution {
   type: string
+  /** Suggestions for a new turn appear only after completion and file delivery. */
+  placement?: 'after-artifacts'
   /** Newer cards with the same key replace older snapshots in the visible transcript. */
   supersessionKey?: (content: Record<string, unknown>) => string | null
   /** Keep the first display anchor when updating a card; defaults to the latest position. */
@@ -225,6 +253,9 @@ export interface DisplayCardContribution {
   render: (props: {
     cardId: string
     content: Record<string, unknown>
+    component?: PluginReference
+    presentationSource?: 'live' | 'history'
+    turnId?: string
   }) => ReactNode
 }
 
@@ -233,6 +264,8 @@ export interface InteractionQuestion {
   header?: string
   question: string
   options: Array<{ label: string; description?: string }>
+  multiSelect?: boolean
+  papers?: Array<{ id: string; label: string; description?: string }>
 }
 
 export type InteractionDirectPresentation = 'options' | 'primary-secondary'
@@ -243,14 +276,34 @@ export interface InteractionPolicyContribution {
   title: string
   matches: (questions: readonly InteractionQuestion[]) => boolean
   /** Optional immediate decision mode. When present, option clicks respond or cancel without a second confirmation. */
-  directDecision?: (question: InteractionQuestion, option: InteractionQuestion['options'][number]) => 'respond' | 'cancel'
+  directDecision?: (
+    question: InteractionQuestion,
+    option: InteractionQuestion['options'][number]
+  ) => 'respond' | 'cancel'
   /** Optional visual hierarchy for immediate decisions. The default remains the ordinary option list. */
   directPresentation?: InteractionDirectPresentation
+  directSelectionRequired?: (option: InteractionQuestion['options'][number]) => boolean
   /** Optional canonical label for immediate decisions whose native protocol adds presentation suffixes. */
   optionLabel?: (option: InteractionQuestion['options'][number]) => string
+  replyTitle?: (
+    question: InteractionQuestion,
+    answer: string,
+    localization: i18n
+  ) => string | undefined
+  replyText?: (
+    question: InteractionQuestion,
+    answer: string,
+    localization: i18n
+  ) => string | undefined
+  presentQuestion?: (question: InteractionQuestion, localization: i18n) => InteractionQuestion
+  presentAnswer?: (question: InteractionQuestion, answer: string, localization: i18n) => string
   /** Optional terminal copy after a feature-owned immediate cancellation succeeds. */
   cancelledLabel?: (question: InteractionQuestion) => string
-  complete?: (questions: readonly InteractionQuestion[], answers: Readonly<Record<number, readonly string[]>>, texts: Readonly<Record<number, string>>) => boolean
+  complete?: (
+    questions: readonly InteractionQuestion[],
+    answers: Readonly<Record<number, readonly string[]>>,
+    texts: Readonly<Record<number, string>>
+  ) => boolean
   defaults?: (questions: readonly InteractionQuestion[]) => Record<string, string>
   defaultLabel?: string
 }
@@ -277,6 +330,7 @@ export interface FeatureModule {
   documentPanels?: DocumentPanelContribution[]
   assistantSources?: AssistantSourceContribution[]
   displayCards?: DisplayCardContribution[]
+  publicComponents?: PublicComponentContribution[]
   interactionPolicies?: InteractionPolicyContribution[]
   taskSources?: TaskSourceContribution[]
   globalSurfaces?: GlobalSurfaceContribution[]
@@ -292,6 +346,7 @@ export interface FeatureRegistry {
   documentPanels: DocumentPanelContribution[]
   assistantSources: AssistantSourceContribution[]
   displayCards: Map<string, DisplayCardContribution>
+  publicComponents: Map<string, PublicComponentContribution>
   interactionPolicies: InteractionPolicyContribution[]
   taskSources: TaskSourceContribution[]
   globalSurfaces: GlobalSurfaceContribution[]
@@ -316,6 +371,7 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
   const assistantSources: AssistantSourceContribution[] = []
   const assistantSourceIds = new Set<string>()
   const displayCards = new Map<string, DisplayCardContribution>()
+  const publicComponents = new Map<string, PublicComponentContribution>()
   const interactionPolicies: InteractionPolicyContribution[] = []
   const interactionPolicyIds = new Set<string>()
   const taskSources: TaskSourceContribution[] = []
@@ -362,6 +418,10 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
       assistantSourceIds.add(source.id)
       assistantSources.push(source)
     }
+    for (const component of module.publicComponents ?? []) {
+      if (publicComponents.has(component.slot)) throw new Error(`Duplicate public component: ${component.slot}`)
+      publicComponents.set(component.slot, component)
+    }
     for (const card of module.displayCards ?? []) {
       if (displayCards.has(card.type)) {
         console.warn(`[features] 对话卡片 ${card.type} 重复注册，忽略 ${module.id} 的贡献`)
@@ -407,9 +467,10 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
     documentPanels,
     assistantSources,
     displayCards,
+    publicComponents,
     interactionPolicies,
     taskSources,
-    globalSurfaces
+    globalSurfaces,
   }
 }
 

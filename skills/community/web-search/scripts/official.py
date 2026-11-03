@@ -8,10 +8,13 @@ import http.client
 import json
 import logging
 import os
+import ssl
+import urllib.request
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Any, Callable, Mapping, Sequence
 
+import httpx
 from providers import candidate_from_result
 
 SCHEMA = "scholarseed.web_search.v1"
@@ -23,6 +26,7 @@ API_PATH = "/paperhub/generalsearch/"
 API_URL = f"{API_SCHEME}://{API_HOST}{API_PATH}"
 API_TIMEOUT_SECONDS = 30
 MAXIMUM_RESPONSE_BYTES = 2_000_000
+RESPONSE_CHUNK_BYTES = 64_000
 DEFAULT_LIMIT = 20
 MINIMUM_LIMIT = 1
 MAXIMUM_LIMIT = 20
@@ -48,6 +52,63 @@ DIAGNOSTIC_PHASE_CREDENTIAL = "credential"
 DIAGNOSTIC_PHASE_REQUEST = "request"
 DIAGNOSTIC_PHASE_RESPONSE = "response"
 DIAGNOSTIC_PHASE_DECODING = "decoding"
+
+
+class ProxyAwareResponse:
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+        self.status = response.status_code
+        self.reason = response.reason_phrase
+
+    def read(self, amount: int) -> bytes:
+        if amount <= 0:
+            return b""
+        body = bytearray()
+        for chunk in self._response.iter_bytes(chunk_size=min(amount, RESPONSE_CHUNK_BYTES)):
+            body.extend(chunk)
+            if len(body) >= amount:
+                break
+        return bytes(body[:amount])
+
+    def getheaders(self) -> list[tuple[str, str]]:
+        return list(self._response.headers.multi_items())
+
+
+class ProxyAwareConnection:
+    def __init__(self, host: str, *, timeout: int) -> None:
+        self._host = host
+        proxies = urllib.request.getproxies()
+        proxy = (
+            None
+            if urllib.request.proxy_bypass(host)
+            else proxies.get("https") or proxies.get("all")
+        )
+        self._client = httpx.Client(
+            timeout=timeout,
+            proxy=proxy,
+            trust_env=False,
+            verify=ssl.create_default_context(),
+            follow_redirects=False,
+        )
+        self._response: httpx.Response | None = None
+
+    def request(self, method: str, path: str, *, body: bytes, headers: Mapping[str, str]) -> None:
+        request = self._client.build_request(
+            method, f"{API_SCHEME}://{self._host}{path}", content=body, headers=headers
+        )
+        self._response = self._client.send(request, stream=True)
+
+    def getresponse(self) -> ProxyAwareResponse:
+        if self._response is None:
+            raise http.client.ResponseNotReady()
+        return ProxyAwareResponse(self._response)
+
+    def close(self) -> None:
+        try:
+            if self._response is not None:
+                self._response.close()
+        finally:
+            self._client.close()
 
 
 def bounded_integer(value: str) -> int:
@@ -149,7 +210,7 @@ def search(
     args: argparse.Namespace,
     *,
     environment: Mapping[str, str] = os.environ,
-    connection_factory: Callable[..., http.client.HTTPConnection] = http.client.HTTPSConnection,
+    connection_factory: Callable[..., Any] = ProxyAwareConnection,
 ) -> tuple[dict[str, Any], int]:
     started_at = _utc_timestamp()
     started_tick = monotonic()
@@ -200,8 +261,9 @@ def search(
         timeout_seconds=API_TIMEOUT_SECONDS,
         request_bytes=len(body),
     )
-    connection = connection_factory(API_HOST, timeout=API_TIMEOUT_SECONDS)
+    connection = None
     try:
+        connection = connection_factory(API_HOST, timeout=API_TIMEOUT_SECONDS)
         connection.request(
             "POST",
             API_PATH,
@@ -220,7 +282,14 @@ def search(
             response_bytes=len(raw),
             response_oversized=len(raw) > MAXIMUM_RESPONSE_BYTES,
         )
-    except (OSError, TimeoutError, http.client.HTTPException) as exc:
+    except (
+        OSError,
+        TimeoutError,
+        http.client.HTTPException,
+        httpx.HTTPError,
+        ImportError,
+        ValueError,
+    ) as exc:
         _log(
             "official_search_request_failed",
             level=logging.WARNING,
@@ -242,7 +311,8 @@ def search(
             1,
         )
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     if response.status in HTTP_UNAUTHORIZED:
         return _result(
             _payload(

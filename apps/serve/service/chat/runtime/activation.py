@@ -15,34 +15,55 @@ from scholarseed_runtime.contract import (
     RuntimeBinding,
     RuntimeProvider,
 )
+from scholarseed_runtime.contract.command import EmptyThreadReplacementProof, ThreadReplacementProof
 from scholarseed_runtime.contract.evidence import RuntimeTimingPort
 from scholarseed_runtime.contract.resource import (
     RESOURCE_CANCELLED,
+    RESOURCE_HOST_CONFIGURATION_CONFLICT,
     RESOURCE_QUEUE_FULL,
     RESOURCE_RESERVATION_INVALID,
+    RESOURCE_THREAD_CAPACITY,
     RESOURCE_WAIT_TIMEOUT,
     ResourcePurpose,
     ResourceReceipt,
     ResourceRequest,
     ResourceState,
 )
+from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
 from service.chat.provenance import ModelRun
-from service.chat.runtime.live import LiveSession
+from service.chat.runtime.live import PENDING_HIL_BLOCKER, LiveSession
 from service.chat.runtime.timing import ActivationStage
+from service.platform.activity import (
+    Activities,
+    ActivityDomain,
+    ActivityPhase,
+    MaintenanceActive,
+    MaintenanceStale,
+)
 
 SESSION_OPEN_UNKNOWN = "runtime_session_open_unknown"
 SESSION_ACTIVATION_CLOSED = "runtime_session_activation_closed"
+RESOURCE_WAIT_BLOCKED = "runtime_resource_wait_blocked"
+RESOURCE_WAIT_PENDING_HIL = "runtime_resource_wait_pending_hil"
+RESOURCE_WAIT_ACTIVITY_UNAVAILABLE = "runtime_resource_wait_activity_unavailable"
 ACTIVATION_SAFE_ERRORS = frozenset(
     {
         RESOURCE_CANCELLED,
+        RESOURCE_HOST_CONFIGURATION_CONFLICT,
         RESOURCE_QUEUE_FULL,
         RESOURCE_RESERVATION_INVALID,
+        RESOURCE_THREAD_CAPACITY,
         RESOURCE_WAIT_TIMEOUT,
+        RESOURCE_WAIT_BLOCKED,
+        RESOURCE_WAIT_PENDING_HIL,
+        RESOURCE_WAIT_ACTIVITY_UNAVAILABLE,
         SESSION_OPEN_UNKNOWN,
         SESSION_ACTIVATION_CLOSED,
+        *SANDBOX_STARTUP_ERRORS,
     }
 )
 RESOURCE_SWEEP_INTERVAL_SECONDS = 1.0
+TURN_ATTACHMENT_REFRESH = "turn_attachment_refresh"
 
 ResourceWaitObserver = Callable[[ResourceReceipt, float], Awaitable[None]]
 
@@ -64,6 +85,8 @@ class ActivationPlan:
     revision: tuple[object, ...]
     model_run: ModelRun | None = None
     replaces: RuntimeBinding | None = None
+    replacement_proof: EmptyThreadReplacementProof | ThreadReplacementProof | None = None
+    replacement_manual: bool = False
 
 
 class SessionActivation:
@@ -72,6 +95,7 @@ class SessionActivation:
     def __init__(
         self,
         *,
+        activities: Activities,
         build: Callable[[LiveSession], ActivationPlan],
         revision: Callable[[LiveSession], tuple[object, ...]],
         attach: Callable[[LiveSession, ActivationPlan, str], Awaitable[None]],
@@ -80,6 +104,7 @@ class SessionActivation:
         discard: Callable[[LiveSession], None],
         logger: Any,
     ) -> None:
+        self._activities = activities
         self._build = build
         self._revision = revision
         self._attach = attach
@@ -121,6 +146,14 @@ class SessionActivation:
             self._pending[live.id] = task
             expires = deadline
             try:
+                if (
+                    purpose is ResourcePurpose.TURN
+                    and live.runtime_session is not None
+                    and not live.running
+                    and self._provider(live.runtime_id).resource_policy.refresh_before_turn
+                ):
+                    live.trace_resource(TURN_ATTACHMENT_REFRESH)
+                    await self.wait_until_suspended(live, deadline=expires)
                 while True:
                     async with AsyncExitStack() as lifecycle_scope:
                         with timing.measure(ActivationStage.LIFECYCLE_LOCK_WAIT):
@@ -217,6 +250,13 @@ class SessionActivation:
                 raise SessionActivationError(SESSION_ACTIVATION_CLOSED)
             if await live.suspend_runtime():
                 return
+            if getattr(live, "suspend_blockers", ()):
+                error = (
+                    RESOURCE_WAIT_PENDING_HIL
+                    if PENDING_HIL_BLOCKER in live.suspend_blockers
+                    else RESOURCE_WAIT_BLOCKED
+                )
+                raise SessionActivationError(error)
             remaining = expires - time.time()
             if remaining <= 0:
                 raise SessionActivationError(RESOURCE_WAIT_TIMEOUT)
@@ -237,6 +277,15 @@ class SessionActivation:
         granted = False
         try:
             receipt = await provider.reserve(request)
+            if (
+                receipt.state is ResourceState.REJECTED
+                and receipt.safe_error == RESOURCE_THREAD_CAPACITY
+            ):
+                await provider.cancel_resource(receipt.reservation_id)
+                await self._reclaim(provider.descriptor.runtime_id, pressure=True)
+                receipt = await provider.reserve(
+                    replace(request, request_id=f"{request.request_id}:{uuid.uuid4().hex}")
+                )
             if receipt.state is ResourceState.WAITING:
                 if on_wait is not None:
                     await on_wait(receipt, receipt.deadline or request.deadline)
@@ -263,6 +312,63 @@ class SessionActivation:
         return True
 
     async def _reclaim(self, runtime_id: str, *, pressure: bool) -> None:
+        await self._activities.finish(
+            ActivityDomain.RUNTIME, lambda: self._reclaim_batch(runtime_id, pressure=pressure)
+        )
+
+    async def drain_attachments(self, generation: str) -> tuple[str, ...]:
+        """Suspend owned idle attachments; this is not permission to stop Serve.
+
+        Unknown opens and other execution owners remain in the shared registry.
+        A caller must also verify those owners before attempting a final seal.
+        """
+
+        def check_generation() -> None:
+            snapshot = self._activities.snapshot()
+            if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
+                raise MaintenanceStale("update_maintenance_stale")
+
+        check_generation()
+        blocked: list[str] = []
+        for live in tuple(self._sessions.values()):
+            check_generation()
+            parent = live.attachment_activity
+            if parent is None and live.runtime_session is None:
+                continue
+            if (
+                parent is None
+                or live.activation_lock.locked()
+                or live.lifecycle_lock.locked()
+                or live.running
+                or live.waiting_resources
+            ):
+                blocked.append(live.id)
+                continue
+            try:
+                with self._activities.continue_from(parent, ActivityDomain.RUNTIME):
+
+                    async def suspend(live: LiveSession = live) -> bool:
+                        session = live.runtime_session
+                        if session is not None:
+                            activity = await session.activity()
+                            check_generation()
+                            if not activity.idle or not activity.execution_tree_idle:
+                                return False
+                        return await live.suspend_runtime()
+
+                    released = await self._activities.finish(ActivityDomain.RUNTIME, suspend)
+                if not released or live.attachment_activity is not None:
+                    blocked.append(live.id)
+            except MaintenanceStale:
+                raise
+            except Exception:
+                blocked.append(live.id)
+                self._logger.exception("session_runtime_drain_failed session_id=%s", live.id)
+            check_generation()
+        check_generation()
+        return tuple(blocked)
+
+    async def _reclaim_batch(self, runtime_id: str, *, pressure: bool) -> None:
         now = time.monotonic()
         for live in tuple(self._sessions.values()):
             if (
@@ -277,11 +383,14 @@ class SessionActivation:
                 continue
             try:
                 if live.runtime_driver is not None and live.runtime_driver.suspending:
-                    if await live.suspend_runtime():
+                    if await live.suspend_runtime(require_unsubscribed=True):
                         self._idle_since.pop(live.id, None)
                     continue
+                if live.subscribers:
+                    self._idle_since.pop(live.id, None)
+                    continue
                 activity = await live.runtime_session.activity()
-                if not activity.idle:
+                if not activity.idle or not activity.execution_tree_idle:
                     self._idle_since.pop(live.id, None)
                     continue
                 since = self._idle_since.setdefault(live.id, now)
@@ -289,7 +398,7 @@ class SessionActivation:
                     policy = self._provider(runtime_id).resource_policy
                     if now - since < policy.idle_seconds:
                         continue
-                if await live.suspend_runtime():
+                if await live.suspend_runtime(require_unsubscribed=True):
                     self._idle_since.pop(live.id, None)
             except Exception:
                 # Inspection failure is never positive evidence of quiescence.
@@ -299,9 +408,14 @@ class SessionActivation:
     async def _maintain(self) -> None:
         while True:
             await asyncio.sleep(RESOURCE_SWEEP_INTERVAL_SECONDS)
-            runtime_ids = {live.runtime_id for live in self._sessions.values()}
-            for runtime_id in runtime_ids:
-                await self._reclaim(runtime_id, pressure=False)
+            try:
+                lease = self._activities.enter(ActivityDomain.RUNTIME, root=True)
+            except MaintenanceActive:
+                continue
+            with lease:
+                runtime_ids = {live.runtime_id for live in self._sessions.values()}
+                for runtime_id in runtime_ids:
+                    await self._reclaim(runtime_id, pressure=False)
 
     async def aclose(self) -> None:
         self._closed = True

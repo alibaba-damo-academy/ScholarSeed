@@ -99,15 +99,6 @@ CODEX_READINESS_CACHE_TTL_SECONDS = 10.0
 CODEX_IDLE_HOST_TTL_SECONDS = 300.0
 
 
-CODEX_MAX_PROCESS_HOSTS = 16
-
-
-AGENT_RUNTIME_CAPACITY_ERROR = "agent_runtime_capacity_reached"
-
-
-CODEX_MAX_THREADS_PER_HOST = 128
-
-
 CODEX_MAX_DIAGNOSTIC_LINES = 200
 
 
@@ -152,11 +143,22 @@ RPC_INVALID_PARAMS = -32602
 
 CODEX_UNAVAILABLE_ERROR = "codex_executable_unavailable"
 
+CODEX_APP_SERVER_ERROR = "codex_app_server_error"
+
+CODEX_SUBMISSION_RETRY_STALE = "codex_submission_retry_stale"
+CODEX_SUBMISSION_RETRY_EXPIRED = "codex_submission_retry_expired"
+CODEX_SUBMISSION_CANCELLED = "codex_submission_cancelled"
+CODEX_TRANSIENT_SUBMISSION_ERRORS = frozenset(
+    {
+        "runtime_transport_lost",
+        "agent_runtime_exit",
+        "codex_generation_changed",
+        "codex_turn_not_submitted",
+    }
+)
+
 
 CODEX_VERSION_ERROR = "codex_version_check_failed"
-
-
-CODEX_LOGIN_ERROR = "codex_login_required"
 
 
 CODEX_PREFLIGHT_TIMEOUT_ERROR = "codex_preflight_timeout"
@@ -211,6 +213,11 @@ CODEX_AUTO_APPROVAL_NOTIFICATION_KINDS = {
     "item/autoApprovalReview/started": CodexSessionEventKind.NATIVE_ACTIVITY_STARTED,
     "item/autoApprovalReview/completed": CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED,
 }
+
+
+# 上游第三个自动审批通知（StrictReviewRequiredNotification: threadId/turnId/startedAtMs）。
+# 它没有 started/completed 配对，也不带 reviewId，所以单独登记而不是塞进上面的映射。
+CODEX_STRICT_REVIEW_NOTIFICATION = "autoApprovalReview/strictReviewRequired"
 
 
 CODEX_DEDICATED_ITEM_TYPES = frozenset(
@@ -282,7 +289,6 @@ CODEX_BENIGN_NOTIFICATION_METHODS = {
     "thread/unarchived",
     "turn/moderationMetadata",
     "windows/worldWritableWarning",
-    "windowsSandbox/setupCompleted",
 }
 
 
@@ -330,12 +336,13 @@ class AppServerError(RuntimeError):
         self,
         message: str,
         *,
-        safe_error: str = "codex_app_server_error",
+        safe_error: str = CODEX_APP_SERVER_ERROR,
         method: str = "",
         generation: int = 0,
         rpc_code: int | None = None,
         rpc_latency_ms: int = 0,
         retryability: RuntimeRetryability = RuntimeRetryability.USER_RETRYABLE,
+        submission_not_applied: bool = False,
     ) -> None:
         super().__init__(message)
         self.safe_error = safe_error
@@ -344,6 +351,7 @@ class AppServerError(RuntimeError):
         self.rpc_code = rpc_code
         self.rpc_latency_ms = rpc_latency_ms
         self.retryability = retryability
+        self.submission_not_applied = submission_not_applied
 
 
 def _message_phase(value: object) -> MessagePhase | None:

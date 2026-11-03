@@ -9,10 +9,15 @@ import {
   MessageCirclePlus,
   Trash2,
   Unlink,
-  type LucideIcon
+  type LucideIcon,
 } from 'lucide-react'
 
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../../components/ui'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '../../components/ui'
 import { useApp } from '../../store'
 import { revealLabelKey } from '../../fileOpen'
 import { findResourceNode } from './state'
@@ -25,7 +30,7 @@ import { findResourceNode } from './state'
  */
 export function NodeMenu(): React.JSX.Element | null {
   const { state, act } = useApp()
-  const { t } = useTranslation('resources')
+  const { t } = useTranslation(['resources'])
   const menu = state.resource.nodeMenu
   if (!menu) return null
 
@@ -33,12 +38,18 @@ export function NodeMenu(): React.JSX.Element | null {
   const isLinkRoot = linkRoot?.mountPath === menu.path
 
   const node = findResourceNode(state.resource.tree, menu.path)
-  const versionState = node?.version
-  const admissionPending = state.resource.admissionPending?.[`${state.homeSelectedProjectId}:${menu.path}`] ?? false
-  const canAdmit = menu.kind === 'file' && !versionState?.manualAdmitted
-    && (versionState?.managementState === 'unsupported' || versionState?.managementState === 'ignored' || versionState?.managementState === 'migration_required')
-  const canShowVersionHistory = menu.kind === 'file'
-    && Boolean(versionState?.snapshotState || versionState?.managementState === 'managed')
+  const versionState = menu.version ?? node?.version
+  const admissionPending =
+    state.resource.admissionPending?.[`${state.homeSelectedProjectId}:${menu.path}`] ?? false
+  const canAdmit =
+    menu.kind === 'file' &&
+    !versionState?.manualAdmitted &&
+    (versionState?.managementState === 'unsupported' ||
+      versionState?.managementState === 'ignored' ||
+      versionState?.managementState === 'migration_required')
+  const canShowVersionHistory =
+    menu.kind === 'file' &&
+    Boolean(versionState?.snapshotState || versionState?.managementState === 'managed')
 
   const items: {
     key: string
@@ -56,72 +67,108 @@ export function NodeMenu(): React.JSX.Element | null {
       separatorAfter: true,
       label: t('menu.addToConversation'),
       Icon: MessageCirclePlus,
-      run: () => void act.addAiContextRef({
-        kind: menu.kind,
-        sourceId: menu.path,
-        label: menu.name
-      })
+      run: () =>
+        void act.addAiContextRef({
+          kind: menu.kind,
+          sourceId: menu.path,
+          projectId: state.homeSelectedProjectId,
+          label: menu.name,
+        }),
     },
-    ...(canAdmit ? [{ key: 'version-admission', label: t(admissionPending ? 'menu.admittingVersion' : 'menu.admitVersion'), Icon: History, disabled: admissionPending, run: () => void act.admitResourceVersion(menu.path) }] : []),
-    ...(!isLinkRoot ? [{
-      key: 'rename',
-      label: t('menu.rename'),
-      Icon: Pencil,
-      run: () => act.startResourceDraft(menu.path, 'rename')
-    }] : []),
+    ...(canAdmit
+      ? [
+          {
+            key: 'version-admission',
+            label: t(admissionPending ? 'menu.admittingVersion' : 'menu.admitVersion'),
+            Icon: History,
+            disabled: admissionPending,
+            run: () => void act.admitResourceVersion(menu.path),
+          },
+        ]
+      : []),
+    ...(!isLinkRoot
+      ? [
+          {
+            key: 'rename',
+            label: t('menu.rename'),
+            Icon: Pencil,
+            run: () => act.startResourceDraft(menu.path, 'rename', menu.kind),
+          },
+        ]
+      : []),
     {
       key: 'reveal',
       label: t(revealLabelKey()),
       Icon: ExternalLink,
-      run: () => void act.revealResourceNode(menu.path)
+      run: () => void act.revealResourceNode(menu.path),
     },
-    ...(!isLinkRoot ? [{
-      key: 'copy',
-      label: t('menu.duplicate'),
-      Icon: CopyPlus,
-      run: () => void act.copyResourceNode(menu.path)
-    }] : []),
+    ...(!isLinkRoot
+      ? [
+          {
+            key: 'copy',
+            label: t('menu.duplicate'),
+            Icon: CopyPlus,
+            run: () => void act.copyResourceNode(menu.path),
+          },
+        ]
+      : []),
     {
       key: 'copy-path',
       separatorAfter: !canShowVersionHistory,
       label: t('menu.copyPath'),
       Icon: Link,
-      run: () => void act.copyResourcePath(menu.path)
+      run: () => void act.copyResourcePath(menu.path),
     },
-    ...(canShowVersionHistory ? [{
-      key: 'version-history',
-      separatorAfter: true,
-      label: t('menu.versionHistory'),
-      Icon: History,
-      run: () => void act.openResourceHistory(menu.path)
-    }] : []),
-    ...(linkRoot ? [{
-      key: 'unlink',
-      label: t('menu.unlink'),
-      Icon: Unlink,
-      danger: true,
-      run: () => act.confirmResourceUnlink({
-        ...linkRoot,
-        name: linkRoot.mountPath.split('/').pop() ?? menu.name
-      })
-    }] : [{
-      key: 'delete',
-      label: t('menu.delete'),
-      Icon: Trash2,
-      danger: true,
-      run: () => act.confirmResourceDelete(menu)
-    }])
+    ...(canShowVersionHistory
+      ? [
+          {
+            key: 'version-history',
+            separatorAfter: true,
+            label: t('menu.versionHistory'),
+            Icon: History,
+            run: () => void act.openResourceHistory(menu.path),
+          },
+        ]
+      : []),
+    ...(linkRoot
+      ? [
+          {
+            key: 'unlink',
+            label: t('menu.unlink'),
+            Icon: Unlink,
+            danger: true,
+            run: () =>
+              act.confirmResourceUnlink({
+                ...linkRoot,
+                name: linkRoot.mountPath.split('/').pop() ?? menu.name,
+              }),
+          },
+        ]
+      : [
+          {
+            key: 'delete',
+            label: t('menu.delete'),
+            Icon: Trash2,
+            danger: true,
+            run: () => act.confirmResourceDelete(menu),
+          },
+        ]),
   ]
 
   return (
-    <DropdownMenu open={true} onOpenChange={(open) => {
-      if (!open) {
-        act.closeResourceMenu()
-      }
-    }}>
+    <DropdownMenu
+      open={true}
+      onOpenChange={(open) => {
+        if (!open) {
+          act.closeResourceMenu()
+        }
+      }}
+    >
       <DropdownMenuContent
-        className="vds-node-menu max-h-[calc(100vh-16px)] overflow-y-auto"
-        position={menu.anchor ? { kind: 'anchor', ...menu.anchor } : { kind: 'point', x: menu.x, y: menu.y }}
+        className="vds-node-menu fixed z-[var(--vds-z-context-menu)] w-[var(--vds-resource-node-menu-width)] max-h-[var(--vds-resource-node-menu-max-height)] overflow-y-auto [&_button:not(.vds-menu__item--destructive)_svg]:h-[var(--vds-icon-8)] [&_button:not(.vds-menu__item--destructive)_svg]:w-[var(--vds-icon-8)] [&_button:not(.vds-menu__item--destructive)_svg]:flex-[0_0_auto] [&_button.vds-menu__item--destructive_svg]:h-[var(--vds-icon-8)] [&_button.vds-menu__item--destructive_svg]:w-[var(--vds-icon-8)] [&_button.vds-menu__item--destructive_svg]:flex-[0_0_auto] [&_button.vds-menu__item--destructive_svg]:text-current [&_button_span]:min-w-0 [&_button_span]:overflow-hidden [&_button_span]:text-ellipsis [&_button_span]:whitespace-nowrap"
+        position={
+          menu.anchor ? { kind: 'anchor', ...menu.anchor } : { kind: 'point', x: menu.x, y: menu.y }
+        }
         data-testid="resource-node-menu"
       >
         {items.map((item) => {

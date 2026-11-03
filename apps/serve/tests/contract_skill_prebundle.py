@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +41,11 @@ from service.capabilities.service.skills import (
     load_skill_state,
     save_skill_state,
     workspace_recovery_key,
+)
+from service.capabilities.service.source import (
+    compile_source_skills,
+    source_lock,
+    verify_source_pack,
 )
 
 from .contract_skill_distribution import locked_fixture
@@ -87,8 +94,12 @@ def _locked_source_compiles_exactly() -> None:
         check("exact locked skill collection", frozenset(result.skills) == EXPECTED_SKILLS)
         check("standard skill pack", validate_bundled_skills(target, expected=EXPECTED_SKILLS).ok)
         check(
-            "executable mode restored",
-            (target / "example/scripts/run").stat().st_mode & 0o777 == 0o755,
+            "installed permissions restored for the host platform",
+            (
+                bool((target / "example/scripts/run").stat().st_mode & stat.S_IWRITE)
+                if os.name == "nt"
+                else (target / "example/scripts/run").stat().st_mode & 0o777 == 0o755
+            ),
         )
         metadata = json.loads((target / "example/.scholarseed.json").read_bytes())
         check(
@@ -141,6 +152,66 @@ def _official_skills_remain_agent_visible() -> None:
         hidden == [],
         str(hidden),
     )
+
+
+def _plugin_create_identity() -> None:
+    name = "plugin-create"
+    source = COMMUNITY_SKILLS_ROOT / name
+    check("plugin-create source exists", source.is_dir())
+    check(
+        "old bundled plugin-authoring alias is absent",
+        not (COMMUNITY_SKILLS_ROOT / "plugin-authoring").exists(),
+    )
+    registry = json.loads((REPO_ROOT / "skills/registry.json").read_bytes())
+    check(
+        "plugin-create dependency identity is registered",
+        name in registry["dependencies"] and "plugin-authoring" not in registry["dependencies"],
+    )
+    if not source.is_dir():
+        return
+    frontmatter = yaml.safe_load(
+        (source / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1]
+    )
+    package = json.loads((source / ".scholarseed-package.json").read_bytes())
+    version = (source / "VERSION").read_text(encoding="utf-8").strip()
+    check(
+        "creation package identity and version agree",
+        frontmatter["name"] == package["name"] == name
+        and frontmatter["version"] == package["version"] == version,
+    )
+    stored = json.loads((REPO_ROOT / "skills/skills.lock.json").read_bytes())
+    generated = source_lock()
+    check(
+        "old identity is absent from frozen inventory",
+        all(row["slug"] != "plugin-authoring" for row in stored["skills"]),
+    )
+    check(
+        "creation payload matches frozen source inventory",
+        [row for row in stored["skills"] if row["slug"] == name]
+        == [row for row in generated["skills"] if row["slug"] == name],
+    )
+    with tempfile.TemporaryDirectory(prefix="plugin-create-contract-") as temporary:
+        target = Path(temporary) / "skills"
+        compile_source_skills(target)
+        check(
+            "compiled pack contains only new creation identity",
+            (target / name / "SKILL.md").is_file() and not (target / "plugin-authoring").exists(),
+        )
+        valid, issues = verify_source_pack(target)
+        check("renamed pack verifies against source", valid, str(issues))
+        catalog = SkillCatalog(bundled_root=target, user_root=Path(temporary) / "user")
+        inventory = SkillInventory(
+            cwd=REPO_ROOT,
+            revision="rename-contract",
+            skills=(_view(name, target / name / "SKILL.md"),),
+        )
+        for surface in ("conversation", "settings"):
+            rows = catalog.payloads(inventory, SkillProductState(), surface=surface)
+            check(
+                f"{surface} exposes enabled plugin-create",
+                len(rows) == 1 and rows[0]["name"] == name and rows[0]["active"],
+                str(rows),
+            )
 
 
 def _write_manifest(root: Path, name: str) -> Path:
@@ -550,9 +621,9 @@ def _source_verification_checks_payloads() -> None:
         leaked = verify_bundled_skill_sources(lock, zip_cache, target)
         check("逐文件校验拦截多余资产", not leaked.ok, str(leaked.errors))
         unexpected.unlink()
-        config_path.chmod(0o644)
+        config_path.chmod(0o444 if os.name == "nt" else 0o644)
         changed_mode = verify_bundled_skill_sources(lock, zip_cache, target)
-        check("missing executable permission rejected", not changed_mode.ok)
+        check("changed host permissions rejected", not changed_mode.ok)
         config_path.chmod(0o755)
         cache = target / "example" / "__pycache__"
         cache.mkdir()
@@ -570,6 +641,7 @@ def _source_verification_checks_payloads() -> None:
 
 
 def main() -> int:
+    _plugin_create_identity()
     _locked_source_compiles_exactly()
     _official_skills_remain_agent_visible()
     _catalog_exposes_only_product_roots()

@@ -13,6 +13,7 @@ from unittest.mock import patch
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
+from service.platform.activity import Activities
 from service.platform.resources import ResourceVersionReadError, VersionOrigin
 from service.resources.persistence.objects import (
     CHUNK_PREFERRED_MIN_BYTES,
@@ -58,7 +59,7 @@ class VersionPairContracts(unittest.TestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("Pair contracts")
         self.settings = Settings()
         self.retention = ResourceRetentionService(self.content, self.settings)

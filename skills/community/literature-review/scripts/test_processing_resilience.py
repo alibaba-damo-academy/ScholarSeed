@@ -17,6 +17,9 @@ sys.path.insert(0, str(ROOT / "lib"))
 sys.path.insert(0, str(PROCESSING))
 
 import llm_call  # noqa: E402
+import run_pipeline
+import pdf_fixture
+from paper_source_parser import parse_source
 from llm import _LightLLM  # noqa: E402
 from progress import (  # noqa: E402
     LLMCallError,
@@ -50,6 +53,28 @@ class FlakyLLM:
 
 
 class ProcessingResilienceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_table_warning_text_reaches_card_model(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            source = pathlib.Path(folder) / 'paper.pdf'
+            document = pdf_fixture.open()
+            page = document.new_page()
+            page.insert_text((50, 100), 'Table 1. Borderless comparison.')
+            page.insert_text((50, 150), 'The estimator is calibrated on independent data.')
+            document.save(source)
+            document.close()
+            parsed = parse_source(source)
+        self.assertEqual(parsed['status'], 'ok')
+        with patch.object(run_pipeline, '_warmup_cache', new=AsyncMock()), patch.object(
+            run_pipeline, '_extract_card_combined', new=AsyncMock(side_effect=RuntimeError('card model reached'))
+        ) as extract:
+            with self.assertRaisesRegex(RuntimeError, 'card model reached'):
+                await run_pipeline._process_single_paper(
+                    types.SimpleNamespace(), 'paper', {'title': 'Evidence', 'abstract': 'A summary.'},
+                    {'info_type': parsed['info_type'], 'sentences': parsed['sentences'], 'parse_report': parsed},
+                    'full', 'method',
+                )
+        self.assertIn('calibrated on independent data', str(extract.call_args))
+
     async def test_metadata_without_text_never_generates_a_card(self) -> None:
         import run_pipeline
         llm = types.SimpleNamespace(chat=AsyncMock())

@@ -1,10 +1,31 @@
 {
+  "csv": {
+    "controls": "CSV table controls",
+    "editCell": "Edit cell {{cell}}",
+    "failed": "The CSV operation did not complete. Unsaved changes still need attention.",
+    "undo": "Undo",
+    "redo": "Redo"
+  },
+  "officePreview": {
+    "controls": "Document preview controls",
+    "loading": "Loading preview…",
+    "failed": "This file could not be previewed.",
+    "retry": "Retry",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "resetZoom": "Reset zoom",
+    "sheets": "Worksheets",
+    "resizeColumn": "Resize column {{column}}",
+    "resizeRow": "Resize row {{row}}",
+    "emptySheet": "This worksheet is empty."
+  },
   "formatOnSaveFailed": "Automatic formatting failed. The original text will still be saved.",
   "review": {
     "toolbar": "Review actions",
     "progress": "Decided {{decided}}/{{total}} · {{remaining}} remaining",
-    "outcomeProgress": "Reviewed {{reviewed}} · Pending {{pending}} · Failed {{failed}}",
+    "outcomeProgress": "Decided {{reviewed}} · Undecided {{pending}} · Failed {{failed}}",
     "undoAll": "Undo all",
+    "undo": "Undo",
     "acceptAll": "Accept all",
     "rejectAll": "Reject all",
     "submit": "Submit",
@@ -80,7 +101,7 @@
   },
   "welcome": {
     "brand": "ScholarSeed",
-    "description": "Keep literature, resources, and conversations together in one project.",
+    "description": "Keep literature, resources, and tasks together in one project.",
     "create": "Create project",
     "open": "Open project"
   },
@@ -104,6 +125,7 @@
     "spreadsheet": "Spreadsheet viewing and editing",
     "versionDiff": "Version comparison",
     "unsupported": "File preview",
+    "previewUnavailable": "Preview is not available for this file",
     "oversized": "{{path}} is too large for the built-in preview. Open it with the default system application.",
     "binary": "{{path}} is a binary file and cannot be previewed here. Open it with the default system application.",
     "noPreview": "No built-in preview is available for {{path}}. Open it with the default system application.",
@@ -137,6 +159,7 @@
     "loadFailed": "Cannot open {{title}}.",
     "loadFailureDetail": "{{message}} ({{code}})",
     "loadFailureUnknown": "The document could not be loaded. Try again.",
+    "artifactTooLarge": "This file exceeds the built-in preview limit. Open it with a system app or download it from the task artifact card.",
     "missingTitle": "{{title}} no longer exists or was moved.",
     "missingDescription": "The file may have been deleted or renamed outside ScholarSeed.",
     "conflictTitle": "The file on disk has changed externally",
@@ -162,6 +185,8 @@
     "desktopUnavailable": "System opening is unavailable because the desktop connection is not ready."
   },
   "history": {
+    "pendingReview": "Pending review",
+    "reviewBackup": "Pre-review backup",
     "origin": {
       "initial": "Initial version",
       "user": "User save",
@@ -345,6 +370,7 @@
     "slow": "Initialization is taking longer on this device. Office is still preparing in the background.",
     "recoveringTitle": "Recovering Office prewarm",
     "recovering": "Runtime resource loading was interrupted. Automatic retry {{attempt}} is in progress.",
+    "retryCountdown": "Automatic retry {{attempt}} starts in {{seconds}} seconds.",
     "errorTitle": "Office prewarm did not complete",
     "failures": {
       "fontPermission": "System font access was denied. Check system settings and retry.",
@@ -352,9 +378,10 @@
       "fontRead": "System fonts could not be fully read. Retry the operation.",
       "runtimeAssets": "Office runtime resources did not load completely. Retry the operation.",
       "runtimeInitialization": "The Office engine could not initialize. Retry the operation.",
-      "runtimeExecution": "The Office runtime encountered an error. Retry the operation."
+      "runtimeExecution": "The Office runtime encountered an error. Retry the operation.",
+      "warmupTimeout": "Office background prewarm did not complete within 10 minutes. Retry the operation."
     },
-    "retry": "Retry"
+    "retry": "Retry now"
   },
   "markdown": {
     "saved": "Saved",
@@ -369,15 +396,17 @@
     "h5": "Heading 5 (H5)",
     "h6": "Heading 6 (H6)",
     "hint": "Type / for actions · Select text to use AI",
-    "large": "Large files use source editing to keep the window responsive.",
+    "large": "Large files only support source mode to keep the window responsive.",
     "view": "Markdown view",
     "pageWidth": "Page width",
     "pageWidthRegular": "Regular",
     "pageWidthWide": "Wide",
     "pageWidthFull": "Full width",
     "source": "Source",
-    "largeHint": "Use source editing for large files",
-    "edit": "Edit",
+    "largeHint": "Use source mode for large files",
+    "edit": "Edit mode",
+    "preview": "Read-only mode",
+    "readonly": "This file is read-only. Edit mode is unavailable; use source or read-only mode.",
     "save": "Save",
     "findTitle": "Find in Markdown",
     "findPlaceholder": "Enter text to find",
@@ -393,6 +422,13 @@
     "inlineMath": "Inline math",
     "link": "Link",
     "linkAddress": "Link URL",
+    "linkOpenExternal": "{{url}} — Click to open in your default browser",
+    "linkOpenInternal": "{{url}} — Click to go to the referenced location",
+    "linkUnavailable": "{{url}} — Navigation is not supported for this link",
+    "linkFailed": "Could not open {{url}}. The target is unavailable or opening failed.",
+    "citationRecordMissing": "No usable citation record was retained, so the original passage cannot be located. You can still view this document.",
+    "citationSourceUnavailable": "The PDF for this citation is no longer accessible. You can still view this document.",
+    "citationSourceChanged": "The PDF version for this citation has changed, so the original passage cannot be located accurately. Please check the current PDF.",
     "imageFailed": "Could not save the image. Try again.",
     "placeholder": "Type / for actions",
     "format": "Format",
@@ -412,7 +448,6 @@
     "heading": "Headings",
     "opening": "Opening Markdown…",
     "unreadable": "Could not read this Markdown document.",
-    "languagePending": "The editor language will update when you close and reopen the document. Current edits and undo history are preserved.",
     "literalLatex": "LaTeX (code)",
     "uploadImage": "Upload",
     "pasteImageLink": "or paste link",
@@ -458,7 +493,7 @@
     "explain": "AI explanation",
     "polish": "AI polish",
     "translate": "AI translation",
-    "add": "Add to conversation"
+    "add": "Add to task"
   },
   "imageError": {
     "stageUnsupported": "This document does not support staging images",
@@ -505,8 +540,14 @@
     "diagnostic": "{{message}} {{detail}}"
   },
   "tabs": {
+    "newTab": "New tab",
+    "projectFiles": "Project files",
+    "projectExplorer": "Project explorer",
     "projects": "Projects",
     "review": "Review changes · {{count}}",
     "versionDiff": "Compare versions · v{{sequence}} · {{name}}"
+  },
+  "monaco": {
+    "frameTitle": "Code editor"
   }
 }

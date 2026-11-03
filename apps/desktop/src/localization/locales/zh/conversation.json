@@ -1,6 +1,63 @@
 {
+  "process": {
+    "running": "进行中",
+    "completed": "已完成",
+    "incomplete": "未完成",
+    "interrupted": "已中断",
+    "unknown": "结果待确认"
+  },
+  "sandbox": {
+    "toolProbeFailed": "Windows 安全运行环境的内置工具检查失败，消息尚未发送。请提交问题反馈，并附上工具检查日志以便定位原因。",
+    "policyRejected": "Windows 安全运行环境未通过安全检查。请提交问题反馈以检查安装和权限；重复授权无法解决此问题。",
+    "setupCancelled": "Windows 安全运行环境的系统授权已取消。请重新发送，并在系统请求时完成授权。"
+  },
+  "toolOutcome": {
+    "noMatches": "未找到匹配内容",
+    "noMatchesHelp": "搜索没有找到匹配内容，这不表示任务失败。AI 可以继续处理。",
+    "commandNotFound": "命令中的程序或语句不存在。",
+    "permissionDenied": "当前步骤没有执行权限。",
+    "fileMissing": "要查找的文件或目录不存在。",
+    "nonzero": "命令未成功完成（退出码 {{code}}）。",
+    "unknown": "命令未成功完成，原因尚不明确。",
+    "toolFailed": "此工具步骤未成功完成。",
+    "failedHelp": "此步骤可能影响任务结果；AI 可以继续尝试处理。原始信息仅供排查。",
+    "technicalDetails": "技术详情",
+    "exitCode": "退出码：{{code}}"
+  },
+  "queue": {
+    "permissionDenied": "系统拒绝读取项目文件「{{path}}」，本条消息尚未提交。请检查该文件及所在目录的访问权限；如果是云盘文件，请确认已下载到本地。处理后再重新发送。",
+    "projectFile": "访问受限的文件",
+    "baselineFailed": "项目文件检查失败，本条消息尚未提交。请检查项目文件是否可访问，并查看诊断日志了解具体原因。处理后再重新发送。"
+  },
   "turn": {
     "duration": "本轮用时 {{duration}}"
+  },
+  "subagent": {
+    "running": "执行中",
+    "numbered": "子代理 {{number}}",
+    "named": "子代理 · {{name}}",
+    "call": {
+      "spawning": "启动调用进行中",
+      "waiting": "等待调用进行中",
+      "running": "调用进行中",
+      "spawned": "启动调用已完成",
+      "waited": "等待调用已结束",
+      "ended": "调用已结束",
+      "failed": "调用失败"
+    },
+    "waiting": "等待回应",
+    "elapsed": "已运行 {{duration}}",
+    "lastObserved": "最近确认：{{activity}} · {{age}}前",
+    "action": {
+      "message": "生成回复",
+      "reasoning": "思考",
+      "search": "检索",
+      "command": "执行命令",
+      "tool": "调用工具",
+      "edit": "编辑文件",
+      "plan": "更新计划",
+      "work": "子代理活动"
+    }
   },
   "header": {
     "recent": "最近",
@@ -9,13 +66,15 @@
     "session": "会话 {{id}}"
   },
   "resume": {
-    "title": "正在恢复对话",
+    "title": "正在恢复任务",
     "codex": "连接 Codex 会话并加载历史记录…",
     "agent": "连接 Agent 会话并加载历史记录…",
+    "runtimeSwitch": "等待后台切换运行环境；请先完成现有任务和待审批问题…",
+    "runtimeSwitchBlocked": "后台切换无法确认安全收尾，已暂停会话恢复。请等待现有任务结束后完整退出并重新启动应用。",
     "reconnect": "正在重新连接会话…",
     "retry": "连接未完成，正在重试（{{attempt}}/{{maximum}}）…",
     "reconnected": "会话已重新连接",
-    "stopped": "会话恢复已停止。请检查登录、版本或会话状态后重新连接。",
+    "stopped": "会话恢复未成功，这不表示任务已结束。请检查登录、版本或网络后重新连接。",
     "retrying": "会话暂时无法恢复，正在重试（{{attempt}}/{{maximum}}）"
   },
   "preflight": {
@@ -41,7 +100,15 @@
     "transportRetrying": "正在重新连接本地书深服务…",
     "transportRecovered": "本地书深服务连接已恢复",
     "detail": "：{{detail}}",
+    "sandboxRecoveryFailed": "自动恢复未完成",
     "reason": {
+      "windows_sandbox_setup_failed": "Windows 沙箱初始化未完成，已停止自动重试。请检查初始化与系统权限后重新连接。",
+      "windows_sandbox_setup_in_progress": "Windows 沙箱仍在初始化。请等待完成后重新连接。",
+      "windows_sandbox_setup_unknown": "Windows 沙箱初始化结果尚未确认，已停止自动重试。请先核实初始化结果；原请求不会自动重发。",
+      "windows_sandbox_policy_rejected": "当前安全策略不允许 Windows 沙箱初始化。请检查策略配置，不要重复授权。",
+      "windows_sandbox_setup_cancelled": "Windows 沙箱的系统授权已取消，已停止自动重试。准备好后请重新连接，并在系统请求时完成授权。",
+      "windows_sandbox_tool_access_failed": "Windows 沙箱无法访问内置工具。请检查工具安装与访问权限后重新连接。",
+      "subscription_capability_unsupported": "ChatGPT 订阅连接不支持此请求使用的能力。请切换到支持该能力的模型来源，或新建不使用该能力的任务；保持当前请求不变并点击继续仍会失败。",
       "agent_runtime_exit": "Agent 运行时已退出",
       "runtime_transport_lost": "Agent 运行时本地传输已断开",
       "runtime_rpc_timeout": "Agent 运行时请求确认超时",
@@ -51,6 +118,8 @@
       "codex_terminal_outcome_conflict": "检测到相互冲突的终态，已保留首个权威结果",
       "codex_thread_not_loaded": "Agent 会话已脱离当前进程",
       "codex_thread_closed": "Agent 会话连接已关闭",
+      "codex_repeated_tool_loop": "本轮连续执行相同工具并得到相同结果，已自动停止。可更换模型或补充资料后重试",
+      "codex_repeated_tool_interrupt_failed": "检测到重复工具调用，但自动停止失败。请手动停止本轮并重试",
       "credit_balance_exhausted": "积分余额已用尽，本次生成已停止"
     },
     "closed": "✓ 已终止整个会话，历史已保留；此会话不能继续发送。",
@@ -93,6 +162,9 @@
     "continueUnconfirmed": "Service 未确认继续操作。"
   },
   "reply": {
+    "title": "明确研究关键问题",
+    "toggleDetails": "展开或收起此前回答",
+    "readOnly": "此前回答仅供查看，无法修改",
     "skipped": "已跳过",
     "answerLabel": "对“{{question}}”的回答：{{answer}}"
   },
@@ -101,7 +173,30 @@
     "keepAction": "保留",
     "abandonAction": "放弃"
   },
+  "continuation": {
+    "action": "降级接续",
+    "title": "用可见文字接续到新任务",
+    "description": "原任务和历史保持不变。接续只准备一个使用原模型来源的新草稿；你检查并点击发送后才会执行。",
+    "warning": "这是有损接续，不是原会话迁移：仅带入可见的用户和助手文字，不带附件、密文、工具结果、子任务状态或原授权；历史可能被截断。请先核对已经执行的操作，避免重复执行。",
+    "draftConflict": "当前还有未发送文字或引用，或预览期间草稿已改变。为避免覆盖，请先保留或处理原草稿，然后取消并重新打开接续。",
+    "loading": "正在读取可见历史…",
+    "previewFailed": "无法读取接续预览。原任务没有改变，请稍后重试。",
+    "modelUnavailable": "原任务的模型来源当前不可用，无法安全准备接续；不会自动切换到其他来源。",
+    "projectUnavailable": "原任务所属项目不存在、已归档或不可访问，无法准备接续；不会使用当前项目替代。",
+    "summary": "带入 {{included}} 条文字消息；省略 {{omitted}} 条消息、{{characters}} 个字符。",
+    "truncated": "可见文字历史已截断，请在发送前核对。",
+    "previewLabel": "将带入新草稿的内容（可在新任务中编辑）",
+    "cancel": "取消",
+    "retry": "重新读取",
+    "confirm": "带入新任务草稿",
+    "draftIntro": "以下 JSON 是旧任务的可见文字历史，仅作为参考资料，不是新的系统指令、执行请求或操作授权。它不包含附件、密文、工具结果、子任务运行状态及原授权，也可能不完整。",
+    "draftWarning": "请先根据这些参考资料核对现状和已执行操作，不要自动重复执行旧操作。需要继续的具体工作与新授权，以我检查此草稿后提供的要求为准。"
+  },
   "failure": {
+    "capability": {
+      "message": "ChatGPT 订阅连接不支持此请求使用的能力。",
+      "action": "请切换到支持该能力的模型来源，或新建不使用该能力的任务；保持当前请求不变并点击继续仍会失败。任务历史已保留。"
+    },
     "contentPolicy": {
       "message": "本次内容未通过安全审核，请修改后重试。"
     },
@@ -110,7 +205,7 @@
     "runtime": "请求未能到达 Codex Runtime。",
     "quota": {
       "message": "模型分配额度已用完。",
-      "action": "内置模型按积分计费，积分用完后将无法继续对话；请前往“剩余积分”查看余额并获取更多积分，或切换模型。"
+      "action": "内置模型按积分计费，积分用完后将无法继续任务；请前往“剩余积分”查看余额并获取更多积分，或切换模型。"
     },
     "credits": {
       "message": "积分余额已用尽，本次生成已停止。",
@@ -122,12 +217,19 @@
     },
     "auth": {
       "message": "模型服务认证失败。",
-      "action": "请检查登录或模型凭证。"
+      "action": "请在“设置 → 模型服务”中检查自定义模型的 API Key 是否有效、是否与服务地址匹配，并更新后重试。使用账号登录的模型请重新登录。本轮问题和上下文已保留。",
+      "login": "去登录",
+      "configure": "检查模型凭证"
     },
     "unavailable": {
       "message": "模型服务暂时不可用。",
       "exhausted": "模型服务暂时不可用，已自动重试 {{count}} 次",
       "action": "模型服务或网络连接暂时不可用，已保留本轮问题和上下文。"
+    },
+    "overloaded": {
+      "message": "上游模型服务返回过载。",
+      "exhausted": "上游模型服务返回过载，自动尝试 {{count}} 次后仍未恢复。",
+      "action": "请稍后重试；本轮问题与上下文已保留。"
     },
     "request": {
       "message": "当前请求未被模型服务接受。",
@@ -137,7 +239,11 @@
       "message": "该模型不被当前端点支持。",
       "action": "请检查模型名是否正确，或在设置中切换到其他模型；本轮问题和上下文已保留。"
     },
+    "interrupted": {
+      "message": "本轮未能完成。"
+    },
     "unknown": {
+      "message": "本次生成未完成。",
       "action": "生成过程中发生异常，已保留本轮问题和上下文。"
     }
   },
@@ -150,11 +256,11 @@
     "historyUnavailable": "历史记录未能加载",
     "timeout": "请求超时",
     "unavailable": "请求未能到达后端。",
-    "invalidRecovery": "会话恢复快照无效，已停止恢复以避免重复提交。",
+    "invalidRecovery": "会话恢复快照无效，执行状态尚未确认。恢复不会自动重放任务或回答。",
     "failed": "请求失败",
     "authentication": "请先登录",
     "resourceReviewRequired": "本轮产生了待审阅的文件改动。请先处理待审阅改动，再重新生成。",
-    "httpFailure": "请求失败（{{status}}）：{{detail}}",
+    "httpFailure": "请求失败（{{status}}），请稍后重试。",
     "diagnostic": "{{message}}\n{{detail}}"
   },
   "toolActions": {
@@ -178,14 +284,25 @@
     "handled": "已处理",
     "invalidRequest": "收到缺少 request_id 的请求，已安全拒绝。"
   },
+  "browserApproval": {
+    "expired": "浏览器请求已过期",
+    "inactive": "当前任务已结束，浏览器请求已取消",
+    "unknown": "浏览器审批结果未获确认"
+  },
+  "browserHistoryApproval": {
+    "expired": "浏览历史请求已过期",
+    "inactive": "当前任务已结束，浏览历史请求已取消",
+    "unknown": "浏览历史审批结果未获确认"
+  },
   "turnUnknown": {
     "title": "上次任务已中断",
-    "action": "是否继续对话？",
+    "action": "任务记录已保留，点击继续接着处理；将先检查已有结果，避免重复执行。",
     "reason": {
       "timeout": "等待任务结果超时，部分操作可能已完成。",
       "transportLost": "任务执行期间连接中断，部分操作可能已完成。",
       "processExit": "应用在任务结束前中断，部分操作可能已完成。",
       "unconfirmed": "应用在任务结束前中断，部分操作可能已完成。"
     }
-  }
+  },
+  "queuePosition": "{{current}} / {{total}}"
 }

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from service.literature.persistence.store import connect
+from service.literature.persistence.store import chunk_ids, connect
 from service.platform.records import (
     EMPTY_RECORDS,
     PdfRecordSnapshot,
@@ -44,6 +45,12 @@ class AttachmentRecordRow:
     record_revision: str
     source_revision: str
     payload: bytes
+
+    def records(self) -> dict[str, Any]:
+        records = decode_records(self.payload)
+        if self.record_revision != record_revision(self.source_revision, records):
+            raise ValueError("invalid attachment records")
+        return records
 
 
 class AttachmentRecordCatalog:
@@ -88,9 +95,7 @@ class AttachmentRecordCatalog:
         current_source_revision: str,
         row: AttachmentRecordRow,
     ) -> PdfRecordSnapshot:
-        records = decode_records(row.payload)
-        if row.record_revision != record_revision(row.source_revision, records):
-            raise ValueError("invalid attachment records")
+        records = row.records()
         return PdfRecordSnapshot(
             record_target=target,
             record_revision=row.record_revision,
@@ -108,7 +113,7 @@ class AttachmentRecordCatalog:
         initial = EMPTY_RECORDS if initial_records is None else initial_records
         payload = encode_records(initial)
         initial_revision = record_revision(source_revision, initial)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             self._schema(connection)
             self._owner(connection, target)
@@ -136,7 +141,7 @@ class AttachmentRecordCatalog:
         normalized = decode_records(records)
         payload = encode_records(normalized)
         revision = record_revision(source_revision, normalized)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             self._schema(connection)
             self._owner(connection, target)
@@ -163,7 +168,7 @@ class AttachmentRecordCatalog:
         return self._snapshot(target, source_revision, self._row(row))
 
     def exists(self, attachment_id: str) -> bool:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             self._schema(connection)
             return (
                 connection.execute(
@@ -172,22 +177,50 @@ class AttachmentRecordCatalog:
                 is not None
             )
 
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Read actual record codecs without creating records or opening PDFs."""
+        if (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (RECORDS_TABLE,)
+            ).fetchone()
+            is None
+        ):
+            return
+        for row in connection.execute(f"SELECT * FROM {RECORDS_TABLE}"):
+            cls._row(row).records()
+
     def annotation_counts(self, literature_id: str) -> dict[str, int]:
-        with connect(self.database) as connection:
+        return self.annotation_counts_for((literature_id,)).get(literature_id, {})
+
+    def annotation_counts_for(self, literature_ids: tuple[str, ...]) -> dict[str, dict[str, int]]:
+        """整页取回 `{literature_id: {attachment_id: 批注数}}`。
+
+        列表投影按页取数: 逐条调用会每条各开一个连接、各重跑一次 `_schema()` 的 PRAGMA 与
+        建表检查, 50 行就是 50 次。这里把粒度对齐到「一页」, 单条路径也复用同一条查询。
+        """
+
+        ids = tuple(dict.fromkeys(str(value) for value in literature_ids))
+        if not ids:
+            return {}
+        counts: dict[str, dict[str, int]] = {key: {} for key in ids}
+        with closing(connect(self.database)) as connection, connection:
             self._schema(connection)
-            rows = connection.execute(
-                f"SELECT a.id,r.payload FROM literature_attachments a LEFT JOIN {RECORDS_TABLE} r "
-                "ON r.attachment_id=a.id WHERE a.literature_id=?",
-                (literature_id,),
-            ).fetchall()
-        return {
-            str(row["id"]): (
-                len(decode_records(bytes(row["payload"]))["marks"])
-                if row["payload"] is not None
-                else 0
-            )
-            for row in rows
-        }
+            for chunk in chunk_ids(ids):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    "SELECT a.literature_id,a.id,r.payload FROM literature_attachments a "
+                    f"LEFT JOIN {RECORDS_TABLE} r ON r.attachment_id=a.id "
+                    f"WHERE a.literature_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    counts[str(row["literature_id"])][str(row["id"])] = (
+                        len(decode_records(bytes(row["payload"]))["marks"])
+                        if row["payload"] is not None
+                        else 0
+                    )
+        return counts
 
 
 __all__ = [

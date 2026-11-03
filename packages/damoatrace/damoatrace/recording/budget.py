@@ -17,6 +17,8 @@ from damoatrace.recording.content import (
     CONTENT_MARKER,
     DISK_LIMIT,
     EXPIRED,
+    UnsupportedContentVersion,
+    validate_content_version,
 )
 from damoatrace.recording.storage import budget_lock, evidence_lock, make_private, rewrite_content
 
@@ -44,6 +46,7 @@ def _fingerprint(path: Path) -> Fingerprint:
 
 
 def _bodies(record: dict[str, Any]) -> Iterator[Body]:
+    validate_content_version(record)
     if CONTENT_MARKER not in record:
         return
     for field in CONTENT_FIELDS:
@@ -84,6 +87,8 @@ class ContentBudget:
                     record = json.loads(line)
                     if isinstance(record, dict):
                         bodies.extend(_bodies(record))
+                except UnsupportedContentVersion:
+                    raise
                 except (ValueError, KeyError, TypeError):
                     # Unrecognized historical lines remain untouched, never reconstructed.
                     continue
@@ -117,7 +122,7 @@ class ContentBudget:
                 total -= body.size
         for path, removed in selected.items():
 
-            def project(record: dict) -> dict:
+            def project(record: dict, removed: dict[BlockKey, str] = removed) -> dict:
                 result = copy.deepcopy(record)
                 for field in CONTENT_FIELDS:
                     for index, block in enumerate((result.get(field) or {}).get("blocks", [])):
@@ -141,28 +146,56 @@ class ContentBudget:
             return self._trim(self.limit)
 
     def append(self, path: Path, record: dict[str, Any]) -> None:
+        self.append_many(path, [record])
+
+    def append_many(self, path: Path, records: list[dict[str, Any]]) -> None:
+        """Amortize I/O without changing per-record retention decisions."""
+        if not records:
+            return
         path = path.expanduser().resolve()
         if path.parent != self.directory or not path.match(self.pattern):
             raise ValueError("evidence file is outside the configured budget scope")
         with budget_lock(self.directory):
             self._refresh()
-            incoming = list(_bodies(record))
-            size = sum(body.size for body in incoming)
-            if size > self.limit:
-                record = copy.deepcopy(record)
-                for field in CONTENT_FIELDS:
-                    for block in (record.get(field) or {}).get("blocks", []):
-                        if "data" in block:
-                            block.pop("data", None)
-                            block["missing_reason"] = BUDGET_EXHAUSTED
-                incoming, size = [], 0
-            if incoming:
-                self._trim(self.limit - size)
+            incoming = [body for record in records for body in _bodies(record)]
+            existing = [body for inventory in self._files.values() for body in inventory.bodies]
+            bodies = existing + incoming
+            if sum(body.size for body in bodies) > self.limit or any(
+                body.expires_at <= time.time() for body in bodies
+            ):
+                # Include each newly appended record in subsequent eviction decisions.
+                for record in records:
+                    self._append_locked(path, record)
+                return
             with evidence_lock(path), path.open("a", encoding="utf-8") as stream:
                 make_private(path)
-                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                stream.writelines(
+                    json.dumps(record, ensure_ascii=False) + "\n" for record in records
+                )
                 stream.flush()
             previous = self._files.get(path)
             self._files[path] = Inventory(
                 _fingerprint(path), [*(previous.bodies if previous else []), *incoming]
             )
+
+    def _append_locked(self, path: Path, record: dict[str, Any]) -> None:
+        incoming = list(_bodies(record))
+        size = sum(body.size for body in incoming)
+        if size > self.limit:
+            record = copy.deepcopy(record)
+            for field in CONTENT_FIELDS:
+                for block in (record.get(field) or {}).get("blocks", []):
+                    if "data" in block:
+                        block.pop("data", None)
+                        block["missing_reason"] = BUDGET_EXHAUSTED
+            incoming, size = [], 0
+        if incoming:
+            self._trim(self.limit - size)
+        with evidence_lock(path), path.open("a", encoding="utf-8") as stream:
+            make_private(path)
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+            stream.flush()
+        previous = self._files.get(path)
+        self._files[path] = Inventory(
+            _fingerprint(path), [*(previous.bodies if previous else []), *incoming]
+        )

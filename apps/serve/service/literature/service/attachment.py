@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import PurePath
+from typing import Any
 
 from service.content.domain.model import ContentError
 from service.literature.persistence.files import (
     LiteratureFileBatch,
     delete_attachments,
+    is_available_attachment,
     is_managed_attachment,
     managed_object,
     payload_revision,
@@ -20,7 +23,9 @@ from service.literature.schema import (
     BINARY_MEDIA_TYPE,
     PDF_MEDIA_TYPE,
     PNG_MEDIA_TYPE,
+    AttachmentRole,
     LiteratureAttachment,
+    LiteratureItem,
 )
 from service.paths import SERVICE_LITERATURE_FILES_DIR
 from service.platform.citations import PdfIndexForgetPort
@@ -33,6 +38,11 @@ ATTACHMENT_TYPE_MISMATCH = "literature_attachment_type_mismatch"
 ATTACHMENT_UNREADABLE = "literature_attachment_unreadable"
 PATH_NOT_AUTHORIZED = "path_not_authorized"
 REVISION_CONFLICT = "revision_conflict"
+#: 「已有可用主附件」的产品失败码。名字带 arXiv 是历史包袱 (它最早只由 arXiv 下载腿
+#: 抛出), 但值已经是前端 i18n 与渲染层错误映射的键 (locales/*/literature.json 的
+#: operationError.ARXIV_ALREADY_ATTACHED), 所以口径统一到这里之后仍原样保留。
+ARXIV_ALREADY_ATTACHED = "ARXIV_ALREADY_ATTACHED"
+PDF_SUFFIX = ".pdf"
 PDF_KIND = "pdf"
 IMAGE_KIND = "image"
 FILE_KIND = "file"
@@ -156,8 +166,7 @@ class LiteratureAttachmentContent:
         return attachment.path
 
     def absolute_location(self, literature_id: str, attachment_id: str) -> str:
-        location = self.location_attachment(self.attachment(literature_id, attachment_id))
-        return str(Path(location).resolve())
+        return self.location_attachment(self.attachment(literature_id, attachment_id))
 
     def read_absolute(self, location: str) -> tuple[bytes, str]:
         """Serve one owned file to Content's absolute-path citation reader.
@@ -166,11 +175,13 @@ class LiteratureAttachmentContent:
         附件行上, 否则等于把托管目录之外的任意路径也放开了。
         """
 
-        path = str(Path(location).expanduser().resolve())
-        if not is_managed_attachment(path) or not self._repository.has_attachment_path(path):
+        # Resolving first would authorize an unregistered alias of a registered file.
+        if not is_managed_attachment(location) or not self._repository.has_attachment_path(
+            location
+        ):
             raise ContentError(PATH_NOT_AUTHORIZED)
         try:
-            payload = read_attachment(path)
+            payload = read_attachment(location)
         except FileNotFoundError as error:
             raise ContentError(ATTACHMENT_MISSING) from error
         except (OSError, ValueError) as error:
@@ -268,17 +279,117 @@ def forget_removed_indexes(indexes: PdfIndexForgetPort | None, revisions: tuple[
     return indexes.forget_literature(unique) if unique else 0
 
 
+class AttachmentConflictError(ValueError):
+    """主附件不变式被违反: 已有可用主附件时不许再挂一份。"""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class AttachedFulltext:
+    """一次主附件挂载的结果: 落库后的条目与它新的附件行。"""
+
+    item: LiteratureItem
+    attachment: dict[str, Any]
+
+
+def has_usable_primary(item_id: str, repository: LiteratureRepository | None = None) -> bool:
+    """全域唯一判据: 主附件行存在, 且它指的字节还在。
+
+    行在而字节丢 (availability=missing) 不算「有全文」: 那是需要补救的状态, 不是需要
+    拒绝的状态。下载腿用它决定要不要提前 409 (别白下一次), ``attach_primary_pdf`` 用它
+    守不变式, 两处必须是同一个判据。
+    """
+
+    store = repository or LiteratureRepository()
+    existing = store.primary_attachment(item_id)
+    return existing is not None and is_available_attachment(existing.path)
+
+
+def attach_primary_pdf(
+    item: LiteratureItem,
+    name: str,
+    payload: bytes,
+    *,
+    declared_media_type: str = "",
+    pdf_indexes: PdfIndexForgetPort | None = None,
+    items: Sequence[LiteratureItem] = (),
+    repository: LiteratureRepository | None = None,
+) -> AttachedFulltext:
+    """把一份 PDF 挂成这条文献的主附件; 产品上传、下载腿与 bridge 共用这一个入口。
+
+    不变式: **已有可用主附件时任何入口都不能再挂一份**, 所以这里没有 ``replace`` 开关。
+    挂新主附件会把旧行降级成补充材料 (``store.add_attachment``), 等于把用户已有的全文
+    悄悄换掉 —— UI 也从不提供这个操作 (唯一的 primary 入口只在无全文卡里), 因此这条判据
+    无条件执行, 违反就抛 :class:`AttachmentConflictError`。
+
+    唯一允许覆盖的是旧主附件已经不可用 (行在、字节丢) 的情况: 此时在同一批次里**删掉**
+    旧行而不是降级, 否则附件列表会永久留一条 missing 的补充材料。删除必须连带独占字节
+    与派生全文索引 (``delete_attachments`` + ``forget_removed_indexes``), 因为索引只能靠
+    附件行存下的 revision 指认。
+
+    ``items`` 是同一批次里要一起落库的条目 (下载腿用它回写 arXiv/DOI), 留空则只写附件行。
+    ``repository`` 必须与调用方解析 ``item`` 用的是同一个 store: 条目在哪本账上读出来,
+    附件行就要写进哪本账, 否则挂载会落到另一个库里 (生产环境只有一个库, 差别只在测试)。
+    """
+
+    attachment_format = upload_format(name, payload, declared_media_type)
+    if attachment_format.media_type != PDF_MEDIA_TYPE:
+        # 主附件只允许 PDF: 这是全文记账的前提 (store 只在 PRIMARY + PDF 时置 READY)。
+        raise AttachmentFormatError(ATTACHMENT_TYPE_MISMATCH)
+    store = repository or LiteratureRepository()
+    existing = store.primary_attachment(item.id)
+    if existing is not None and is_available_attachment(existing.path):
+        raise AttachmentConflictError(ARXIV_ALREADY_ATTACHED)
+    published = managed_object(item.id, payload, PDF_SUFFIX)
+    with LiteratureFileBatch(SERVICE_LITERATURE_FILES_DIR) as batch:
+        location = batch.stage(published.name, payload)
+
+        def write() -> AttachedFulltext:
+            if existing is not None:
+                store.delete_attachment(item.id, existing.id)
+            saved = store.save_all(tuple(items)) if items else ()
+            attachment = store.add_attachment(
+                item.id,
+                name,
+                location,
+                attachment_format.kind,
+                revision=published.revision,
+                role=AttachmentRole.PRIMARY,
+                media_type=attachment_format.media_type,
+            )
+            return AttachedFulltext(item=saved[0] if saved else item, attachment=attachment)
+
+        # 附件行必须在批次提交内写: 落库失败时批次会回滚已搬过去的文件, 否则托管目录里
+        # 会留下没有任何行指向的孤儿 PDF。
+        attached = batch.commit_operation(write)
+    if existing is not None:
+        try:
+            delete_attachments((existing.path,))
+        except OSError:
+            LOGGER.warning("failed to remove superseded primary attachment")
+        forget_removed_indexes(pdf_indexes, (existing.revision,))
+    return attached
+
+
 __all__ = [
+    "ARXIV_ALREADY_ATTACHED",
     "ATTACHMENT_FORMATS",
     "ATTACHMENT_INVALID",
     "ATTACHMENT_MISSING",
     "ATTACHMENT_TYPE_MISMATCH",
     "ATTACHMENT_UNREADABLE",
     "REVISION_CONFLICT",
+    "AttachedFulltext",
+    "AttachmentConflictError",
     "AttachmentFormat",
     "AttachmentFormatError",
     "LiteratureAttachmentContent",
+    "attach_primary_pdf",
     "detected_format",
     "forget_removed_indexes",
+    "has_usable_primary",
     "upload_format",
 ]

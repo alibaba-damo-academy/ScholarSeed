@@ -2,11 +2,53 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from service.chat.constants import TURN_ERROR_PHASE, TURN_FAILED_CODE
+
+SESSION_LIST_CURSOR_MAX_CHARS = 2048
+SESSION_LIST_CURSOR_INVALID = "session_list_cursor_invalid"
+SESSION_LIST_CURSOR_FIELDS = 2
+SESSION_LIST_PINNED_CURSOR_FIELDS = 3
+
+
+def session_list_cursor(updated_at: float, session_id: str, pinned: bool | None = None) -> str:
+    values: list[float | str | bool] = [updated_at, session_id]
+    if pinned is not None:
+        values.append(pinned)
+    return base64.urlsafe_b64encode(json.dumps(values, separators=(",", ":")).encode()).decode()
+
+
+def parse_session_list_cursor(cursor: str) -> tuple[float, str, bool | None] | None:
+    if not cursor:
+        return None
+    try:
+        if len(cursor) > SESSION_LIST_CURSOR_MAX_CHARS:
+            raise ValueError(SESSION_LIST_CURSOR_INVALID)
+        values = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+        if (
+            not isinstance(values, list)
+            or len(values) not in (SESSION_LIST_CURSOR_FIELDS, SESSION_LIST_PINNED_CURSOR_FIELDS)
+            or type(values[0]) not in (int, float)
+            or not math.isfinite(values[0])
+            or values[0] < 0
+            or not isinstance(values[1], str)
+            or not values[1]
+            or (len(values) == SESSION_LIST_PINNED_CURSOR_FIELDS and type(values[2]) is not bool)
+        ):
+            raise ValueError(SESSION_LIST_CURSOR_INVALID)
+        return (
+            float(values[0]),
+            values[1],
+            values[2] if len(values) == SESSION_LIST_PINNED_CURSOR_FIELDS else None,
+        )
+    except (ValueError, TypeError, OverflowError) as error:
+        raise ValueError(SESSION_LIST_CURSOR_INVALID) from error
 
 
 def mapping(value: object) -> dict[str, Any]:

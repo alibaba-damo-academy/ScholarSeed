@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path, PurePath
@@ -13,6 +13,7 @@ from service.literature.domain.model import (
     IMPORT_COLLECTION_UNAVAILABLE,
     IMPORT_CONFLICT,
     LIBRARY_INVALID,
+    LIBRARY_UNAVAILABLE,
     LiteratureError,
 )
 from service.literature.persistence.files import (
@@ -25,7 +26,6 @@ from service.literature.persistence.store import (
     LiteratureRepository,
     connect,
     decode,
-    edit_library,
     encode,
     load_library,
 )
@@ -75,6 +75,26 @@ class LiteratureImports:
         if any(item.collection and item.collection not in available for item in items):
             raise LiteratureError(IMPORT_COLLECTION_UNAVAILABLE)
 
+    def validate_collection_target(self, project_id: str, collection_id: str) -> None:
+        if collection_id:
+            with closing(connect(self._database)) as connection:
+                self._validate_collection_target(connection, project_id, collection_id)
+
+    @staticmethod
+    def _validate_collection_target(
+        connection: sqlite3.Connection, project_id: str, collection_id: str
+    ) -> None:
+        if (
+            collection_id
+            and connection.execute(
+                "SELECT 1 FROM literature_collections WHERE id = ? "
+                "AND (project_id IS NULL OR project_id = ?)",
+                (collection_id, project_id),
+            ).fetchone()
+            is None
+        ):
+            raise LiteratureError(IMPORT_COLLECTION_UNAVAILABLE)
+
     @staticmethod
     def _schema(connection: sqlite3.Connection) -> None:
         columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({IMPORT_TABLE})")}
@@ -89,14 +109,19 @@ class LiteratureImports:
             "state",
             "result",
         }
-        if columns and columns != expected:
-            connection.execute(f"DROP TABLE {IMPORT_TABLE}")
+        if columns and not expected.issubset(columns):
+            raise LiteratureError(LIBRARY_INVALID)
         connection.execute(f"""CREATE TABLE IF NOT EXISTS {IMPORT_TABLE} (
             project_id TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
             prepared TEXT NOT NULL, candidates TEXT NOT NULL, attachments TEXT NOT NULL,
             skipped INTEGER NOT NULL,
-            state TEXT NOT NULL, result TEXT, PRIMARY KEY(project_id, operation_id)
+            state TEXT NOT NULL, result TEXT, collection_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(project_id, operation_id)
         )""")
+        if columns and "collection_id" not in columns:
+            connection.execute(
+                f"ALTER TABLE {IMPORT_TABLE} ADD COLUMN collection_id TEXT NOT NULL DEFAULT ''"
+            )
 
     @staticmethod
     def _row(
@@ -186,7 +211,7 @@ class LiteratureImports:
     ) -> ImportReceipt | None:
         if not self._database.is_file():
             return None
-        with connect(self._database) as connection:
+        with closing(connect(self._database)) as connection, connection:
             if (
                 connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (IMPORT_TABLE,)
@@ -210,15 +235,17 @@ class LiteratureImports:
         fingerprint: str,
         admitted: tuple[tuple[ImportSourceContent, tuple[LiteratureItem, ...]], ...],
         skipped: int,
+        collection_id: str = "",
     ) -> None:
         # Bad existing libraries must fail before preparing or publishing any files.
         view = load_library(project_id, self._database)
         self.validate_collections(view, tuple(item for _, items in admitted for item in items))
         root = self._content.root(project_id, RootKind.LITERATURE).path
         with ExitStack() as cleanup:
-            with connect(self._database) as connection:
+            with closing(connect(self._database)) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._schema(connection)
+                self._validate_collection_target(connection, project_id, collection_id)
                 if self._row(connection, project_id, operation_id, fingerprint) is not None:
                     return
                 reserved: list[str] = []
@@ -243,7 +270,9 @@ class LiteratureImports:
                         if item.fulltext is FulltextStatus.READY
                     )
                 connection.execute(
-                    f"INSERT INTO {IMPORT_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                    f"INSERT INTO {IMPORT_TABLE} "
+                    "(project_id, operation_id, fingerprint, prepared, candidates, attachments, "
+                    "skipped, state, result, collection_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
                     (
                         project_id,
                         operation_id,
@@ -253,12 +282,14 @@ class LiteratureImports:
                         json.dumps(attachments, ensure_ascii=False),
                         skipped,
                         ImportState.PREPARED.value,
+                        collection_id,
                     ),
                 )
             cleanup.pop_all()
 
     def finish(self, project_id: str, operation_id: str, fingerprint: str) -> ImportReceipt:
-        with connect(self._database) as connection:
+        with closing(connect(self._database)) as connection, connection:
+            self._schema(connection)
             row = self._row(connection, project_id, operation_id, fingerprint)
             if row is None:
                 raise LiteratureError(IMPORT_CONFLICT)
@@ -277,11 +308,14 @@ class LiteratureImports:
                 self._own_copy(batch, project_id, literature_id, published[prepared_path])
                 for literature_id, prepared_path in attachments
             )
-            return batch.commit_operation(
-                lambda: self._commit(
-                    project_id, operation_id, fingerprint, row, candidates, owned, assets
+            try:
+                return batch.commit_operation(
+                    lambda: self._commit(
+                        project_id, operation_id, fingerprint, row, candidates, owned, assets
+                    )
                 )
-            )
+            except (sqlite3.Error, OSError) as error:
+                raise LiteratureError(LIBRARY_UNAVAILABLE) from error
 
     def _own_copy(
         self,
@@ -321,20 +355,38 @@ class LiteratureImports:
     ) -> ImportReceipt:
         """Bind the already published copies to their items inside one library write."""
 
-        with edit_library(project_id, self._database) as edit:
-            current = self._row(edit.connection, project_id, operation_id, fingerprint)
+        with closing(connect(self._database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._row(connection, project_id, operation_id, fingerprint)
             if current is None:
                 raise LiteratureError(IMPORT_CONFLICT)
             if current["state"] == ImportState.COMPLETED.value:
                 return self._receipt(current)
             if any(
                 current[key] != row[key]
-                for key in ("prepared", "candidates", "attachments", "skipped", "state")
+                for key in (
+                    "prepared",
+                    "candidates",
+                    "attachments",
+                    "skipped",
+                    "state",
+                    "collection_id",
+                )
             ):
                 raise LiteratureError(IMPORT_CONFLICT)
-            self.validate_collections(edit.view, candidates)
-            edit.view, added = append_items(edit.view, candidates)
-            self._repository.replace_view(edit.view, project_id, edit.connection)
+            view = self._repository.view(project_id, connection)
+            self.validate_collections(view, candidates)
+            collection_id = current["collection_id"]
+            self._validate_collection_target(connection, project_id, collection_id)
+            view, added = append_items(view, candidates)
+            for item in candidates:
+                self._repository.save(item, project_id, connection)
+            if collection_id:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO literature_collection_items(collection_id,literature_id) "
+                    "VALUES (?, ?)",
+                    ((collection_id, item.id) for item in candidates),
+                )
             for attachment in owned:
                 self._repository.add_attachment(
                     attachment.literature_id,
@@ -344,7 +396,7 @@ class LiteratureImports:
                     revision=attachment.revision,
                     role=AttachmentRole.PRIMARY,
                     media_type=PDF_MEDIA_TYPE,
-                    connection=edit.connection,
+                    connection=connection,
                 )
             attached_ids = {attachment.literature_id for attachment in owned}
             committed = tuple(
@@ -356,11 +408,11 @@ class LiteratureImports:
                 "asset_ids": [asset.asset_id for asset in assets],
                 "added": added,
                 "skipped": row["skipped"],
-                "total": len(edit.view.items),
+                "total": len(view.items),
             }
             encoded_result = json.dumps(result, ensure_ascii=False)
             receipt = self._decode_receipt(operation_id, encoded_result)
-            edit.connection.execute(
+            connection.execute(
                 f"UPDATE {IMPORT_TABLE} SET state = ?, result = ? "
                 "WHERE project_id = ? AND operation_id = ?",
                 (ImportState.COMPLETED.value, encoded_result, project_id, operation_id),

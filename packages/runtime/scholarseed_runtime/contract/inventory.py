@@ -5,6 +5,11 @@ from enum import Enum
 from pathlib import Path
 
 
+class SkillPolicy(str, Enum):
+    INHERIT = "inherit"
+    DENY = "deny"
+
+
 @dataclass(frozen=True)
 class ReasoningEffort:
     value: str

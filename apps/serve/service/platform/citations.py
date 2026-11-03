@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Protocol
 
-from service.platform.context import ContextRef
+from service.platform.context import ContextRef, FulltextBindingScope, FulltextTaskContext
 from service.platform.records import RecordTarget
 
 CITATION_SCHEME = "scholarseed-cite:"
@@ -25,6 +24,29 @@ PDF_TEXT_EXCLUDE = "exclude"
 PDF_TEXT_RETAIN = "retain"
 
 CitationAnswerFilter = Callable[[str, str, str], str]
+
+
+class CitationSourceChanged(ValueError):
+    """The provider rejects bytes that no longer match the retained source version."""
+
+
+@dataclass(frozen=True)
+class WebEvidencePage:
+    url: str
+    final_url: str
+    text: str
+    revision: str
+    fetched_at: str
+    origin: str = "page"
+
+
+class WebEvidenceReader(Protocol):
+    async def fetch_page(self, url: str) -> WebEvidencePage: ...
+
+
+#: Bytes serve holds on the product's behalf (acquired full texts). Readable through
+#: the bridge only; never copied whole into an agent workspace.
+MANAGED_STORAGE_SCOPE = "managed"
 
 
 @dataclass(frozen=True)
@@ -139,12 +161,14 @@ class PdfIndexForgetPort(Protocol):
 
 
 class PdfPreviewPort(Protocol):
-    def render(self, document: CitationDocument, page: CitationPage, *, precise: bool) -> bytes: ...
+    def render(
+        self, document: CitationDocument, citation_page: CitationPage, *, precise: bool
+    ) -> bytes: ...
 
 
 class PdfMaterializerPort(Protocol):
     def prepare(self, document: CitationDocument) -> PdfMaterialization: ...
-    def publish(self, prepared: PdfMaterialization, root: Path, target: str) -> dict: ...
+    def publish(self, prepared: PdfMaterialization, session_id: str, target: str) -> dict: ...
 
 
 class PdfAttachmentPort(Protocol):
@@ -154,17 +178,42 @@ class PdfAttachmentPort(Protocol):
     ) -> CitationDocument: ...
 
 
+class ManagedFulltextPort(Protocol):
+    """Bytes acquired by the product on behalf of an authorized precise search."""
+
+    def managed_fulltext_document(
+        self,
+        project_id: str,
+        paper_id: str,
+        *,
+        task_context: FulltextTaskContext | FulltextBindingScope | None = None,
+    ) -> CitationDocument | None: ...
+
+
 class LiteratureEvidencePort(Protocol):
     def locate(self, document: CitationDocument, text: str) -> list[dict]: ...
     def discover(self, project_id: str, query: str, offset: int, limit: int) -> dict: ...
     def discover_metadata(self, project_id: str, query: str, offset: int, limit: int) -> dict: ...
     def catalog(self, project_id: str, offset: int, limit: int) -> dict: ...
     def metadata(self, project_id: str, source_id: str) -> dict: ...
+    def is_primary_attachment(
+        self, project_id: str, source_id: str, attachment_id: str
+    ) -> bool: ...
+    def read_attachment(
+        self, project_id: str, source_id: str, attachment_id: str, offset: int, limit: int
+    ) -> dict | None: ...
     def read_pages(
-        self, project_id: str, source_id: str, start_page: int, end_page: int
+        self,
+        project_id: str,
+        source_id: str,
+        start_page: int,
+        end_page: int,
+        attachment_id: str | None = None,
     ) -> LiteraturePageRead: ...
     def annotations(self, project_id: str, source_id: str, offset: int, limit: int) -> dict: ...
-    def document(self, project_id: str, source_id: str) -> CitationDocument: ...
+    def document(
+        self, project_id: str, source_id: str, attachment_id: str | None = None
+    ) -> CitationDocument: ...
     def preferred(
         self, document: CitationDocument, source_id: str = "", *, retry: bool = False
     ) -> dict: ...

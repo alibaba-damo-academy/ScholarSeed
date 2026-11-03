@@ -2,7 +2,7 @@
   "title": "项目",
   "archive": {
     "title": "归档「{{name}}」？",
-    "description": "归档后，项目将从首页和默认列表中隐藏，项目文件与对话会保留。你可以前往“设置 → 归档管理”查看或恢复已归档的项目。",
+    "description": "归档后，项目将从首页和默认列表中隐藏，项目文件与任务会保留。你可以前往“设置 → 归档管理”查看或恢复已归档的项目。",
     "cancel": "取消",
     "confirm": "归档"
   },
@@ -19,7 +19,7 @@
   "noLinks": "尚未关联外部文件或目录",
   "workspaceRoot": "新建项目的落地根",
   "trash": "最近删除",
-  "openTrash": "在废纸篓中查看",
+  "openTrash": "在{{trash}}中查看",
   "errors": {
     "mount_conflict": "资料库里已有同名条目，请改个挂载名",
     "mount_required": "挂载名不能为空",
@@ -42,15 +42,16 @@
     "too_many_entries": "项目根下条目过多，请先自行整理",
     "cannot_forget_current_project": "这是当前项目，请先切换到其他项目",
     "cannot_archive_current_project": "这是当前项目，请先切换到其他项目再归档",
-    "name_too_long": "项目名称最长 {{max}} 个字符"
+    "reveal_unavailable": "无法显示项目目录：{{path}}（目录可能不存在或无法访问）",
+    "name_too_long": "项目名称最长 {{max}} 个字符",
+    "project_creation_recovery_required": "项目创建需要恢复，请查看下方未完成记录。"
   },
   "notices": {
+    "archivesReadFailed": "无法读取已归档的项目，请重试。",
     "renamed": "已改名（本地目录名不变）",
     "archived": "已归档，项目从默认列表收起，可随时在归档区恢复",
     "unarchived": "已取消归档，项目回到默认列表",
-    "savedRestart": "已保存，重启书深后新建的项目落到新根",
-    "saved": "已保存",
-    "linked": "已关联，Agent 在下一轮对话获得写权限",
+    "linked": "已关联，Agent 在下一轮任务获得写权限",
     "planFailed": "读取迁移清单失败",
     "managed": "迁移完成，项目已使用内置双库",
     "migrated": "已迁移选中的条目；未迁移的条目仍在项目根下",
@@ -69,12 +70,9 @@
     "link": "关联本地目录",
     "revoke": "撤销",
     "interrupt": "撤销时立即中断正在运行的任务（否则该任务到下一轮才收回写权限）",
-    "root": "新建项目的落地根",
-    "fromStartup": "（来自启动参数，未显式设置）",
-    "openTrash": "在废纸篓中查看",
-    "trashHint": "删除走的是系统废纸篓，在那里「放回原处」即可恢复到下面列出的原位置。",
-    "migrationTitle": "迁移「{{name}}」到内置双库 · 共 {{size}}",
-    "effectiveRoot": "当前生效：{{path}}"
+    "openTrash": "在{{trash}}中查看",
+    "trashHint": "删除走的是系统{{trash}}，在那里选择「{{restoreAction}}」即可恢复到下面列出的原位置。",
+    "migrationTitle": "迁移「{{name}}」到内置双库 · 共 {{size}}"
   },
   "cards": {
     "title": "项目",
@@ -83,10 +81,10 @@
     "create": "新建项目",
     "createHint": "选本机已有文件夹，或新建一个研究目录",
     "noMatch": "没有匹配的项目",
-    "description": "项目中的对话、文件与研究产物会统一归档在所选本机目录。",
+    "description": "项目中的任务、文件与研究产物会统一归档在所选本机目录。",
     "enter": "进入 {{name}}",
     "edit": "编辑项目 {{name}}",
-    "chats": "{{total}} 对话",
+    "chats": "{{total}} 任务",
     "total": "{{total}} 个",
     "withinHour": "1 小时内",
     "hoursAgo": "{{total}} 小时前",
@@ -99,6 +97,23 @@
   },
   "overview": {
     "materials_other": "<label>资料</label> <value>{{count}}</value>",
-    "literature_other": "<label>文献</label> <value>{{count}}</value>"
+    "literature_other": "<label>文献</label> <value>{{count}}</value>",
+    "materialsUnknown": "<label>资料</label> <value>—</value>",
+    "literatureUnknown": "<label>文献</label> <value>—</value>"
+  },
+  "recovery": {
+    "title": "未完成的项目创建",
+    "description": "部分项目未能完成创建。原目录和文件已保留，请重试或选择保留文件并结束创建。",
+    "loading": "正在检查未完成的创建…",
+    "loadFailed": "暂时无法读取待恢复记录，请刷新重试。",
+    "refresh": "刷新",
+    "retry": "重试创建",
+    "preserve": "保留文件并结束创建",
+    "confirmTitle": "结束“{{name}}”的创建？",
+    "confirmDescription": "这会移除待恢复记录，不会登记为项目，也不会删除或修改下方目录中的文件。之后不能再重试这次创建。",
+    "cancel": "返回",
+    "preserved": "创建已结束，原目录和文件已保留。",
+    "needsRecovery": "仍无法确认目录归属。文件未改动，可保留文件并结束创建。",
+    "failed": "操作未完成。请刷新确认当前状态，再重试。"
   }
 }

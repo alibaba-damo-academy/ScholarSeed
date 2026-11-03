@@ -1,20 +1,77 @@
 /** Public renderer contract for the global literature catalogue. */
-import type { RecordTarget } from './workbench'
+import type { RecordTarget } from './records'
+
+export interface LiteratureDownloadPaper {
+  paper_id: string
+  literature_id: string
+  attachment_id: string
+  title: string
+  revision: string
+  operation_id?: string
+}
+export interface LiteratureDownloadCard {
+  schema_version: '1.0'
+  session_id: string
+  run: string
+  project_id: string
+  papers: LiteratureDownloadPaper[]
+  failures: Array<{ paper_id: string; code: string }>
+  omitted_papers?: number
+  omitted_failures?: number
+}
 
 /** `attachment` 不是文献字段，而是「有没有附件」的派生排序键（有=0，无=1）。 */
-export type LiteratureSort = 'attachment' | 'citation_key' | 'item_type' | 'bib_type' | 'title' | 'subtitle' | 'creator' | 'publication' | 'year' | 'published_date' | 'doi' | 'arxiv' | 'isbn' | 'url' | 'volume' | 'number' | 'pages' | 'publisher' | 'address' | 'created_at' | 'updated_at' | 'last_read_at'
+export type LiteratureSort =
+  | 'attachment'
+  | 'citation_key'
+  | 'item_type'
+  | 'bib_type'
+  | 'title'
+  | 'subtitle'
+  | 'creator'
+  | 'publication'
+  | 'year'
+  | 'published_date'
+  | 'doi'
+  | 'arxiv'
+  | 'isbn'
+  | 'url'
+  | 'volume'
+  | 'number'
+  | 'pages'
+  | 'publisher'
+  | 'address'
+  | 'created_at'
+  | 'updated_at'
+  | 'last_read_at'
 export type SortOrder = 'asc' | 'desc'
 export type AttachmentFilter = 'any' | 'with_pdf' | 'without_pdf'
-export interface LiteratureFacet { id: string; name: string; count: number; color?: string | null; parent_id?: string | null; project_id?: string | null }
+export interface LiteratureFacet {
+  id: string
+  name: string
+  count: number
+  color?: string | null
+  parent_id?: string | null
+  project_id?: string | null
+}
 /**
- * 标签 facet 带两个计数口径：count 按当前项目范围（文献全览时即全库），total 始终是全库。
+ * 标签 facet 带两个计数口径：count 按当前项目范围（文献中心时即全库），total 始终是全库。
  * 删除标签是全库操作，确认框必须用 total，否则在项目内会少报影响面。
  */
-export interface LiteratureTagFacet extends LiteratureFacet { total: number }
+export interface LiteratureTagFacet extends LiteratureFacet {
+  total: number
+}
 export type AttachmentAvailability = 'available' | 'missing'
 export interface LiteratureAttachmentSummary {
-  id: string; name: string; kind: string; availability: AttachmentAvailability; created_at?: string
-  role: 'primary' | 'supplementary'; media_type: string; size: number | null; annotation_count: number
+  id: string
+  name: string
+  kind: string
+  availability: AttachmentAvailability
+  created_at?: string
+  role: 'primary' | 'supplementary'
+  media_type: string
+  size: number | null
+  annotation_count: number
   record_target: RecordTarget
 }
 
@@ -27,17 +84,38 @@ export const isAttachmentAvailable = (
   attachment: { availability: string } | null | undefined
 ): boolean => attachment != null && attachment.availability !== ATTACHMENT_MISSING
 export interface LiteratureSummary {
-  id: string; item_type: string; bib_type: string; title: string; creators_display: string
-  citation_key?: string | null; subtitle?: string | null; abstract?: string | null
-  doi?: string | null; arxiv?: string | null; isbn?: string | null; url?: string | null
-  volume?: string | null; number?: string | null; pages?: string | null
-  publisher?: string | null; address?: string | null
-  publication_display: string; year: number | null; published_date: string | null
-  created_at: string; updated_at: string; last_read_at: string | null; read_progress: number
-  is_unread: boolean; primary_attachment: LiteratureAttachmentSummary | null
+  id: string
+  item_type: string
+  bib_type: string
+  title: string
+  creators_display: string
+  citation_key?: string | null
+  subtitle?: string | null
+  abstract?: string | null
+  doi?: string | null
+  arxiv?: string | null
+  isbn?: string | null
+  url?: string | null
+  volume?: string | null
+  number?: string | null
+  pages?: string | null
+  publisher?: string | null
+  address?: string | null
+  publication_display: string
+  year: number | null
+  published_date: string | null
+  created_at: string
+  updated_at: string
+  last_read_at: string | null
+  read_progress: number
+  is_unread: boolean
+  primary_attachment: LiteratureAttachmentSummary | null
   attachments: LiteratureAttachmentSummary[]
-  collections: LiteratureFacet[]; project_collections: LiteratureFacet[]; tags: LiteratureFacet[]
-  projects: LiteratureFacet[]; version: number
+  collections: LiteratureFacet[]
+  project_collections: LiteratureFacet[]
+  tags: LiteratureFacet[]
+  projects: LiteratureFacet[]
+  version: number
 }
 export interface LiteratureNote {
   id: string
@@ -49,9 +127,20 @@ export interface LiteratureNote {
   position: number
 }
 export interface LiteratureDetail extends LiteratureSummary {
-  citation_key?: string | null; subtitle?: string | null; abstract?: string | null; doi?: string | null; arxiv?: string | null; isbn?: string | null
-  issn?: string | null; url?: string | null; volume?: string | null; number?: string | null
-  pages?: string | null; publisher?: string | null; address?: string | null; attachment_count?: number
+  citation_key?: string | null
+  subtitle?: string | null
+  abstract?: string | null
+  doi?: string | null
+  arxiv?: string | null
+  isbn?: string | null
+  issn?: string | null
+  url?: string | null
+  volume?: string | null
+  number?: string | null
+  pages?: string | null
+  publisher?: string | null
+  address?: string | null
+  attachment_count?: number
   note_count?: number
   notes?: LiteratureNote[]
 }
@@ -64,46 +153,125 @@ export interface LiteratureUpdate {
   project_collection_ids?: string[]
 }
 export interface LiteratureQuery {
-  q?: string; collection_id?: string[]; without_collection?: boolean; recent?: boolean; tag_id?: string[]
-  project_id?: string; without_project?: boolean; item_type?: string[]; bib_type?: string[]
-  year_from?: number; year_to?: number; attachment?: AttachmentFilter; is_unread?: boolean
-  sort?: LiteratureSort; order?: SortOrder; page?: number; page_size?: number
+  download_session_id?: string
+  download_run?: string
+  exclude_paper_id?: string[]
+  q?: string
+  collection_id?: string[]
+  without_collection?: boolean
+  recent?: boolean
+  tag_id?: string[]
+  project_id?: string
+  without_project?: boolean
+  item_type?: string[]
+  bib_type?: string[]
+  year_from?: number
+  year_to?: number
+  attachment?: AttachmentFilter
+  is_unread?: boolean
+  sort?: LiteratureSort
+  order?: SortOrder
+  page?: number
+  page_size?: number
 }
-export interface LiteraturePage { items: LiteratureSummary[]; page: number; page_size: number; total: number; next_cursor: string | null }
-export interface LiteratureCounts { all: number; recent: number; without_collection: number; unread: number; without_fulltext: number }
+export interface LiteraturePage {
+  items: LiteratureSummary[]
+  page: number
+  page_size: number
+  total: number
+  next_cursor: string | null
+}
+export interface LiteratureCounts {
+  all: number
+  recent: number
+  without_collection: number
+  unread: number
+  without_fulltext: number
+}
+/**
+ * 有界 facet 维度。年份/类型/期刊这类聚合维度的取值可能上百个, serve 只回计数最大的
+ * 一批, 并用 total/truncated 如实说明「这是部分视图」。分类树与标签不套这一层:
+ * 少一行用户就点不到。
+ */
+export interface LiteratureFacetPage<T> {
+  total: number
+  entries: T[]
+  truncated: boolean
+}
 export interface LiteratureFacets {
-  collections: LiteratureFacet[]; tags: LiteratureTagFacet[]; item_types: LiteratureFacet[]
-  publications: LiteratureFacet[]; years: Array<{ value: number; count: number }>
+  collections: LiteratureFacet[]
+  tags: LiteratureTagFacet[]
+  item_types: LiteratureFacetPage<LiteratureFacet>
+  publications: LiteratureFacetPage<LiteratureFacet>
+  years: LiteratureFacetPage<{ value: number; count: number }>
 }
 /**
  * 侧栏标签云的作用域 facet。与 LiteratureFacets 分开, 因为那一份的 collections 同时
  * 喂着分类树, 不能按分类收窄; 这一份的标签计数按分类收敛并按计数降序。
  */
-export interface LiteratureTagFacets { tags: LiteratureTagFacet[] }
+export interface LiteratureTagFacets {
+  tags: LiteratureTagFacet[]
+}
 export interface LiteratureProject {
-  id: string; name: string; count: number; collections: LiteratureFacet[]
+  id: string
+  name: string
+  count: number
+  collections: LiteratureFacet[]
 }
 export interface LiteratureProjects {
-  projects: LiteratureProject[]; current: string
+  projects: LiteratureProject[]
+  current: string
 }
 export interface LiteratureTask {
-  id: string; kind: string; status: string; progress: number; completed_count: number
-  total_count: number; error?: string | null; error_code?: string | null; imported_ids?: string[]
+  id: string
+  kind: string
+  status: string
+  progress: number
+  completed_count: number
+  total_count: number
+  error?: string | null
+  error_code?: string | null
+  imported_ids?: string[]
 }
 /** search_interrupted: 重启后磁盘上只剩创建记录、无法恢复执行的检索（serve 读侧投影）。 */
-export type LiteratureSearchStatus = 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown' | 'empty' | 'search_interrupted'
+export type LiteratureSearchStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'unknown'
+  | 'empty'
+  | 'search_interrupted'
 export interface LiteratureSearchPaper {
   url?: string | null
-  paper_id: string; title: string; authors: string[]; year: number | null; venue: string
-  abstract: string; citation_count: number | null; doi: string; arxiv_id: string
-  tier: number | null; reason: string; subtopics_covered: string[]; access: string; source: string
-  decision?: 'included' | 'excluded' | 'candidate'; decision_reason?: string | null
+  paper_id: string
+  title: string
+  authors: string[]
+  year: number | null
+  venue: string
+  abstract: string
+  citation_count: number | null
+  doi: string
+  arxiv_id: string
+  tier: number | null
+  reason: string
+  subtopics_covered: string[]
+  access: string
+  source: string
+  decision?: 'included' | 'excluded' | 'candidate'
+  decision_reason?: string | null
   fulltext?: 'fulltext' | 'abstract' | 'unknown'
 }
 export interface LiteratureSearchResult {
   search_summary?: {
-    query?: string; total_rounds?: number; total_queries?: number; pool_size?: number
-    selected_count?: number; subtopics?: string[]; coverage_assessment?: string
+    query?: string
+    total_rounds?: number
+    total_queries?: number
+    pool_size?: number
+    selected_count?: number
+    subtopics?: string[]
+    coverage_assessment?: string
   }
   papers: LiteratureSearchPaper[]
 }
@@ -127,20 +295,51 @@ export interface LiteratureSearchEvent {
   created_at?: number
   data: Record<string, unknown>
 }
-export interface ApiFailure { status: number; code: string; message: string; fields?: Record<string, string>; request_id?: string }
-export interface LiteratureRef { id: string; title: string; pdfPath?: string | null }
+export interface ApiFailure {
+  status: number
+  code: string
+  message: string
+  fields?: Record<string, string>
+  request_id?: string
+}
+export interface LiteratureRef {
+  id: string
+  title: string
+  pdfPath?: string | null
+}
+export type ResultLibraryState = 'matched' | 'absent' | 'ambiguous' | 'unavailable'
 
 export interface ConversationSearchPaper {
-  id: string; title: string; authors: string[]; year: number | null; venue: string | null
-  doi: string | null; url: string | null; abstract: string | null; reasons: string[]; access: string; sources: string[]
-  tier?: number | null; citation_count?: number | null
-  decision?: 'included' | 'excluded' | 'candidate'; decision_reason?: string | null
+  id: string
+  title: string
+  authors: string[]
+  year: number | null
+  venue: string | null
+  doi: string | null
+  url: string | null
+  abstract: string | null
+  reasons: string[]
+  access: string
+  sources: string[]
+  tier?: number | null
+  citation_count?: number | null
+  decision?: 'included' | 'excluded' | 'candidate'
+  decision_reason?: string | null
   fulltext?: 'fulltext' | 'abstract' | 'unknown'
 }
 export interface ConversationSearchResult {
-  schema_version: string; session_id: string; run_id: string; round: number; status: string
-  criteria: string[]; sources: { name: string; status: string; queries: number | null; candidates: number | null }[]
-  candidates: number | null; deduplicated: number | null; retained: number; papers: ConversationSearchPaper[]; warnings: string[]
+  schema_version: string
+  session_id: string
+  run_id: string
+  round: number
+  status: string
+  criteria: string[]
+  sources: { name: string; status: string; queries: number | null; candidates: number | null }[]
+  candidates: number | null
+  deduplicated: number | null
+  retained: number
+  papers: ConversationSearchPaper[]
+  warnings: string[]
   metadata: { artifact_id: string }
   report: { artifact_id: string; path: string; name: string; media_type: string; size: number }
   origin?: 'precise-search' | 'literature-review' | 'slr-codex' | 'agentic-search'
@@ -148,26 +347,103 @@ export interface ConversationSearchResult {
   fulltext?: { artifact_id?: string }
 }
 export interface ReviewArtifact {
-  artifact_id: string; path: string; name: string; title: string
-  media_type?: string; size?: number; sha256: string
+  artifact_id: string
+  path: string
+  name: string
+  title: string
+  media_type?: string
+  size?: number
+  sha256: string
 }
 export interface ReviewSection {
-  id: string; title: string; description: string; papers: number; children: string[]; comparison_tables: string[]
+  id: string
+  title: string
+  description: string
+  papers: number
+  children: string[]
+  comparison_tables: string[]
 }
 export interface ReviewCheck {
-  title: string; verdict: 'PASS' | 'WARN' | 'FAIL' | 'NOT_CHECKED' | 'NOT_APPLICABLE'; reason: string
+  title: string
+  verdict: 'PASS' | 'WARN' | 'FAIL' | 'NOT_CHECKED' | 'NOT_APPLICABLE'
+  reason: string
 }
 export interface LiteratureReview {
-  schema_version: '1.1'; workspace: string; session_id: string
-  checkpoint: 'outline' | 'result'; intent: string; title: string
+  schema_version: '1.1'
+  workspace: string
+  session_id: string
+  checkpoint: 'outline' | 'result'
+  intent: string
+  title: string
   status: 'outline' | 'generated' | 'partial' | 'incomplete' | 'failed'
   generation_status?: 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED' | null
-  scope: { topic: string; time_range: string; focus: string[]; requested_materials: string[]; project_materials: number | null; external_materials: number | null }
-  output: { format: 'latex_pdf' | 'markdown' | null; citation_style: 'numeric' | 'author_year' | 'ieee' | 'acm' | null; decided_by: 'user' | 'default' | null }
-  included: number | null; fulltext: number | null; abstract_only: number | null; pending_checks: number | null; cited: number | null
-  section_count: number; sections: ReviewSection[]; checks: ReviewCheck[]
+  scope: {
+    topic: string
+    time_range: string
+    focus: string[]
+    requested_materials: string[]
+    project_materials: number | null
+    external_materials: number | null
+  }
+  output: {
+    format: 'latex_pdf' | 'markdown' | null
+    citation_style: 'numeric' | 'author_year' | 'ieee' | 'acm' | 'gbt7714_2025' | null
+    decided_by: 'user' | 'default' | null
+  }
+  included: number | null
+  fulltext: number | null
+  abstract_only: number | null
+  pending_checks: number | null
+  cited: number | null
+  section_count: number
+  sections: ReviewSection[]
+  checks: ReviewCheck[]
   citations: Array<{ title: string; authors: string; year: number | null; venue: string }>
   abstract_evidence: Array<{ paper_id: string; title: string; reason: string }>
   issues: Array<{ title: string; detail: string; paper_ids: string[]; affected_content: string }>
-  warnings: string[]; source_hashes: Record<string, string>; artifacts: ReviewArtifact[]
+  issue_count?: number | null
+  warnings: string[]
+  source_hashes: Record<string, string>
+  artifacts: ReviewArtifact[]
+}
+export interface LiteratureDeliveryPaper {
+  paper_id: string
+  title: string
+  revision: string
+  saved: 'pending' | 'saved' | 'failed' | 'skipped'
+  library: 'pending' | 'saved' | 'failed' | 'skipped'
+  resource_path: string
+  literature_id: string
+  error: string
+  library_error: string
+  save_reused?: boolean
+  library_reused?: boolean
+  versions?: string[]
+}
+
+export interface LiteratureDeliveryChoice {
+  target: 'project' | 'directory'
+  project_id?: string
+  parent: string
+  ticket: string
+  add_to_library: boolean
+  collection_id: string
+  directory?: string
+  versions?: Record<string, 'keep_both' | 'skip'>
+}
+
+export interface LiteratureDeliveryAttempt {
+  attempt_id: string
+  state: 'acquiring' | 'pending' | 'saving' | 'saved' | 'partial' | 'canceled'
+  choice: LiteratureDeliveryChoice | null
+  papers: LiteratureDeliveryPaper[]
+}
+
+export interface LiteratureDeliveryBatch extends LiteratureDeliveryAttempt {
+  id: string
+  session_id: string
+  project_id: string
+  prompted: boolean
+  history: LiteratureDeliveryAttempt[]
+  failures: Array<{ paper_id: string; code: string; reason: string }>
 }

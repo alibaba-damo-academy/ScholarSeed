@@ -49,8 +49,8 @@ class SessionContextProvider:
                 "title": source.title,
                 "message_count": len(source.entries),
                 "content_level": HISTORY_REFERENCE_LEVEL,
-                "instruction": "Use scholarseed-bridge history search/read to retrieve messages before answering. "
-                "This descriptor contains no message evidence. See scholarseed-bridge history --help.",
+                "instruction": "Use scholarseed_bridge history search/read to retrieve messages before answering. "
+                "This descriptor contains no message evidence. See scholarseed_bridge history --help.",
             },
             ensure_ascii=False,
         )

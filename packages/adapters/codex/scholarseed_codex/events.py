@@ -29,6 +29,7 @@ RUNTIME_EVENT_SCHEMA_VERSION = 1
 
 _DIRECT_EVENT_KINDS = {
     CodexSessionEventKind.ASSISTANT_COMPLETED: RuntimeEventKind.CONTENT_COMPLETED,
+    CodexSessionEventKind.REASONING_COMPLETED: RuntimeEventKind.CONTENT_COMPLETED,
     CodexSessionEventKind.OPENED: RuntimeEventKind.SESSION_OPENED,
     CodexSessionEventKind.RESUMED: RuntimeEventKind.SESSION_RESUMED,
     CodexSessionEventKind.CLOSED: RuntimeEventKind.SESSION_CLOSED,
@@ -47,6 +48,7 @@ _DIRECT_EVENT_KINDS = {
     CodexSessionEventKind.TURN_UNKNOWN: RuntimeEventKind.TURN_UNKNOWN,
     CodexSessionEventKind.RUNTIME_STATUS: RuntimeEventKind.RUNTIME_STATUS,
     CodexSessionEventKind.RUNTIME_INCIDENT: RuntimeEventKind.RUNTIME_INCIDENT,
+    CodexSessionEventKind.SKILLS_CHANGED: RuntimeEventKind.SKILLS_CHANGED,
 }
 
 _COALESCIBLE_KINDS = frozenset(
@@ -107,6 +109,10 @@ def _payload(event: CodexSessionEvent) -> dict[str, RuntimeValue]:
 
 
 def _event_kind(event: CodexSessionEvent) -> RuntimeEventKind:
+    if event.kind is CodexSessionEventKind.RUNTIME_WARNING and "rpc_method" not in event.payload:
+        return RuntimeEventKind.RUNTIME_WARNING
+    if event.kind is CodexSessionEventKind.SUBAGENT_ACTIVITY:
+        return RuntimeEventKind.SUBAGENT_STATUS_CHANGED
     if event.kind == CodexSessionEventKind.ASSISTANT_DELTA:
         return RuntimeEventKind.CONTENT_DELTA
     if event.kind == CodexSessionEventKind.REASONING_DELTA:
@@ -193,6 +199,23 @@ def translate_event(
             observed_at=observed_at,
         )
 
+    if event.kind == CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED:
+        return RuntimeCallbackRequest(
+            schema_version=RUNTIME_EVENT_SCHEMA_VERSION,
+            runtime_id=event.runtime_id,
+            product_session_id=product_session_id,
+            native_session_id=event.session_id,
+            native_turn_id=event.turn_id,
+            native_item_id=event.item_id,
+            request_id=str(payload.get("request_id") or ""),
+            audience=CallbackAudience.SERVICE,
+            kind=CallbackKind.DYNAMIC_TOOL,
+            blocking=True,
+            prompt=payload,
+            response_contract={"type": "dynamic_tool"},
+            observed_at=observed_at,
+        )
+
     kind = _event_kind(event)
     if (
         kind is RuntimeEventKind.SUBAGENT_STARTED
@@ -204,7 +227,10 @@ def translate_event(
         CodexSessionEventKind.ASSISTANT_COMPLETED,
     }:
         payload = {**payload, "role": "assistant"}
-    elif event.kind == CodexSessionEventKind.REASONING_DELTA:
+    elif event.kind in {
+        CodexSessionEventKind.REASONING_DELTA,
+        CodexSessionEventKind.REASONING_COMPLETED,
+    }:
         payload = {**payload, "role": "reasoning"}
     if kind is RuntimeEventKind.RUNTIME_EXTENSION:
         payload = {**payload, EXTENSION_KIND_KEY: event.kind.value}

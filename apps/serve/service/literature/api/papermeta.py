@@ -7,7 +7,7 @@
 
 三腿同形返回 ``{success, fields, bib_type?}``, ``fields`` 的键恒落在
 ``api/catalogue.py:EDITABLE_FIELDS`` 内且只带真的有值的键, 所以渲染层不必认识任何
-上游形状 (出网点登记见 wiki/architecture/network.md §2.5, env 覆盖通道见 §7)。
+上游形状 (网络与覆盖边界见 docs/architecture/network.md「单条题录查询与覆盖通道」)。
 
 标题腿原本代理 PaperHub: 上游只认 API key、不认用户 JWT, 于是凭据兑换必须发生在 serve
 这一跳, 端点也就绑上了登录状态。OpenAlex 是公开端点, 这条腿不再兑换凭据, 整个端点随之
@@ -54,15 +54,17 @@ from service.literature.service.openalex import (
     TITLE,
     search_by_title,
 )
+from service.literature.service.transport import PLAIN_TOTAL_TIMEOUT_SECONDS
 
 LOGGER = logging.getLogger(__name__)
 
 PREFIX = "/api/literature/papermeta"
 
-# 超时覆盖通道 (wiki/architecture/network.md §7): 匿名题录检索的两条腿共用一个值,
-# 所以名字跟着端点走, 不再挂已经删掉的 PaperHub。
+# 超时覆盖通道 (docs/architecture/network.md「单条题录查询与覆盖通道」): 匿名题录检索的两条腿共用一个值,
+# 所以名字跟着端点走, 不再挂已经删掉的 PaperHub。这里覆盖的是「总」预算; connect/read
+# 两个相位由 service/transport.py 的普通数据常量固定, 不接受环境覆盖。
 TIMEOUT_ENV = "PAPER_META_TIMEOUT"
-DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_TIMEOUT_SECONDS = PLAIN_TOTAL_TIMEOUT_SECONDS
 
 # doi 命中即不再看 arxiv / title; 顺序就是优先级, 不是可选组合。
 QUERY_PRECEDENCE = (DOI, ARXIV, TITLE)

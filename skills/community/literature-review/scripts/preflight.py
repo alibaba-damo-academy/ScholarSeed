@@ -27,11 +27,7 @@ else:
     raise RuntimeError("systematic-literature-review skill root not found above " + __file__)
 import slr_paths as _slr_paths
 import run_identity
-import no_proxy as _no_proxy
-# Same bypass the pipeline scripts get from slr_paths.bootstrap(). preflight
-# does not call bootstrap(), so it has to opt in explicitly -- otherwise doctor
-# would probe under different network rules than the run it is vouching for.
-_no_proxy.apply()
+_slr_paths.apply_proxy_policy()
 # --- end slr path bootstrap ---
 
 import argparse
@@ -48,6 +44,7 @@ from platform_runtime import runtime_info, command_spec, discover_python
 
 MIN_PYTHON = (3, 12)
 RECOMMENDED_PYTHON = (3, 12)
+PROXY_PROBE_TIMEOUT_SECONDS = 30
 
 # (import name, pip name, required?, what breaks without it)
 #
@@ -58,6 +55,7 @@ RECOMMENDED_PYTHON = (3, 12)
 PACKAGES = [
     ("openai", "openai", True, "every LLM stage; the gateway speaks the OpenAI protocol"),
     ("httpx", "httpx", True, "HTTP transport for the SDK"),
+    ("socksio", "socksio", True, "SOCKS proxy transport for the bound HTTP client"),
     ("pypdfium2", "pypdfium2", False,
      "PDF full-text extraction and page rendering. Without it PDF sources degrade "
      "to abstract-only and publication page verification remains incomplete"),
@@ -73,6 +71,22 @@ PACKAGES = [
     ("pysbd", "pysbd", True, "sentence segmentation in the current full-text parser"),
     ("filelock", "filelock", True, "cross-platform workspace operation locks"),
 ]
+
+PROXY_TRANSPORT_PROBE = """import asyncio
+import httpx
+
+async def check_async():
+    async with httpx.AsyncClient(trust_env=True):
+        pass
+
+try:
+    with httpx.Client(trust_env=True):
+        pass
+    asyncio.run(check_async())
+except Exception as error:
+    print(type(error).__name__)
+    raise SystemExit(1)
+"""
 
 # (binary, required?, what breaks without it)
 LATEX_BINARIES = [
@@ -130,6 +144,20 @@ def check_packages(rep: Report) -> None:
     code = "import sys; sys.path[:0] = " + repr([str(_slr_paths.HOME/'lib'),str(_slr_paths.HOME/'scripts'),str(_slr_paths.HOME/'scripts/generation')]) + "; import slr_paths; slr_paths.bootstrap(str(" + repr(str(_slr_paths.HOME/'scripts/slr.py')) + ")); import manuscript, scripted_generation, manuscript_publication, workflow"
     run = subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,timeout=30)
     rep.add('runtime','required pipeline imports',run.returncode==0,True,detail=run.stderr[-800:])
+
+
+def check_proxy_transport(rep: Report) -> None:
+    try:
+        run = subprocess.run([sys.executable, '-B', '-c', PROXY_TRANSPORT_PROBE],
+                             capture_output=True, text=True, timeout=PROXY_PROBE_TIMEOUT_SECONDS)
+        ok = run.returncode == 0
+        detail = '' if ok else run.stdout.strip() or run.stderr.strip()[-500:] or 'transport initialization failed'
+    except (OSError, subprocess.TimeoutExpired) as error:
+        ok = False
+        detail = type(error).__name__
+    rep.add('network', 'bound HTTP proxy transport', ok, True,
+            detail=detail,
+            hint='check the bound Python SOCKS support and inherited proxy environment')
 
 
 def check_binaries(rep: Report) -> None:
@@ -542,6 +570,7 @@ def main() -> int:
             rep.add('runtime','workspace binding',False,True,detail=str(exc))
     check_python(rep,workspace_python)
     check_packages(rep)
+    check_proxy_transport(rep)
     check_binaries(rep)
     check_templates(rep)
     check_layout(rep, profile)

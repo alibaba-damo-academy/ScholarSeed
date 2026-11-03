@@ -28,22 +28,14 @@ import {
   CardTitle,
   Collapsible,
   CollapsibleContent,
-  CollapsibleTrigger
+  CollapsibleTrigger,
 } from '../../components/ui'
-import { IconFont } from '../../components/primitive'
-import { useApp } from '../../store'
-import {
-  LiteratureApiError,
-  importBibliography,
-  listLiteratureCollections,
-  createLiteratureCollection,
-  type LibraryCollection
-} from './api'
-import { catalogue } from './catalog'
+import { IconFont } from '../../components/primitive/Iconfont'
+import type { LiteratureCardPorts, CardCollection as LibraryCollection } from './ports'
 import { DestinationRows, MENU_BOUNDS } from './DestinationTree'
-import { collectionNodes, type JoinDestination } from './join'
-import { searchPapersBibtex } from './result'
+import { collectionNodes, type JoinDestination } from './hierarchy'
 import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
+import { pluginErrorCode } from '../../../../plugins'
 
 const REFERENCES_PAGE_SIZE = 5
 const REFERENCES_FULL_PAGE_LIMIT = 4
@@ -107,9 +99,7 @@ function isReference(value: unknown): value is ReferenceItem {
   )
 }
 
-function referencesContent(
-  value: Record<string, unknown>
-): ReferencesContent | null {
+export function referencesContent(value: Record<string, unknown>): ReferencesContent | null {
   if (
     value.schema_version !== LITERATURE_SCHEMA_VERSION ||
     typeof value.project !== 'string' ||
@@ -130,36 +120,19 @@ function safeUrl(value: string | null): string | null {
   }
 }
 
-function referenceUrl(reference: ReferenceItem): string | null {
+export function referenceUrl(reference: ReferenceItem): string | null {
   return (
     safeUrl(reference.doi ? `https://doi.org/${reference.doi}` : null) ??
     safeUrl(reference.url) ??
-    safeUrl(
-      reference.arxiv_id ? `https://arxiv.org/abs/${reference.arxiv_id}` : null
-    )
+    safeUrl(reference.arxiv_id ? `https://arxiv.org/abs/${reference.arxiv_id}` : null)
   )
 }
 
-function openReference(url: string): void {
-  if (window.scholarseed?.openExternal) {
-    void window.scholarseed.openExternal(url)
-    return
-  }
-  window.open(url, '_blank', 'noreferrer')
-}
-
-const BIBLIOGRAPHY_FILENAME = 'references.bib'
-const BIBLIOGRAPHY_MIME = 'application/x-bibtex'
-
-function bibliographyFile(references: ReferenceItem[]): File {
-  return new File([searchPapersBibtex(references)], BIBLIOGRAPHY_FILENAME, {
-    type: BIBLIOGRAPHY_MIME
-  })
-}
-
 export function LiteratureReferences({
-  content
+  content,
+  ports,
 }: {
+  ports: LiteratureCardPorts
   content: Record<string, unknown>
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
@@ -173,38 +146,31 @@ export function LiteratureReferences({
         </CardHeader>
       </Card>
     )
-  return <ReferencesList payload={payload} />
+  return <ReferencesList payload={payload} ports={ports} />
 }
 
 function ReferencesList({
-  payload
+  payload,
+  ports,
 }: {
+  ports: LiteratureCardPorts
   payload: ReferencesContent
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
-  const { state } = useApp()
-  // 「加入文献库」必须落在用户当前所在的作用域: 少了项目这一维, 文献会进全局分类
-  // 却不关联当前项目, 于是它在自己项目的文献库里根本看不见。分类列表同理, 只列
-  // 该作用域下的分类, 否则挑到的是别的作用域里同名的另一个分类。
-  const projectId = state.homeSelectedProjectId ?? undefined
+  const projectId = ports.projectId
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   const [open, setOpen] = useState(true)
   const [saved, setSaved] = useState<Record<string, string>>({})
   const [pending, setPending] = useState<Set<string>>(new Set())
-  const [errors, setErrors] = useState<
-    Record<string, LiteratureErrorMessage | null>
-  >({})
+  const [errors, setErrors] = useState<Record<string, LiteratureErrorMessage | null>>({})
   const [collections, setCollections] = useState<LibraryCollection[]>([])
   const [collectionsLoading, setCollectionsLoading] = useState(false)
-  const [collectionsError, setCollectionsError] =
-    useState<LiteratureErrorMessage | null>(null)
+  const [collectionsError, setCollectionsError] = useState<LiteratureErrorMessage | null>(null)
   const [creatingFor, setCreatingFor] = useState<ReferenceItem | null>(null)
   const [createParent, setCreateParent] = useState<JoinDestination | null>(null)
   const [collectionName, setCollectionName] = useState('')
-  const [createError, setCreateError] = useState<LiteratureErrorMessage | null>(
-    null
-  )
+  const [createError, setCreateError] = useState<LiteratureErrorMessage | null>(null)
   const [creating, setCreating] = useState(false)
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
   const inFlight = useRef(new Set<string>())
@@ -216,17 +182,11 @@ function ReferencesList({
       ),
     [payload.references, search]
   )
-  const pageCount = Math.max(
-    1,
-    Math.ceil(filtered.length / REFERENCES_PAGE_SIZE)
-  )
+  const pageCount = Math.max(1, Math.ceil(filtered.length / REFERENCES_PAGE_SIZE))
   const currentPage = Math.min(page, pageCount)
   const visible = useMemo(
     () =>
-      filtered.slice(
-        (currentPage - 1) * REFERENCES_PAGE_SIZE,
-        currentPage * REFERENCES_PAGE_SIZE
-      ),
+      filtered.slice((currentPage - 1) * REFERENCES_PAGE_SIZE, currentPage * REFERENCES_PAGE_SIZE),
     [filtered, currentPage]
   )
   // 与文献库「加入文献库」一致的层级目录树: 由扁平分类列表按 parent_id 还原成树, 供 DestinationRows 递归渲染。
@@ -236,10 +196,7 @@ function ReferencesList({
   )
   const rootDestination: JoinDestination = { projectId, path: [] }
 
-  const add = async (
-    reference: ReferenceItem,
-    collectionId = ''
-  ): Promise<void> => {
+  const add = async (reference: ReferenceItem, collectionId = ''): Promise<void> => {
     if (inFlight.current.has(reference.ref_id)) return
     inFlight.current.add(reference.ref_id)
     setPending(new Set(inFlight.current))
@@ -247,28 +204,24 @@ function ReferencesList({
     try {
       // 文献库不判重（proposal 91）：每次「加入」都新增一条，`saved` 只记录本次
       // 会话里我刚加过哪些条目，用来给出即时反馈，不代表"库里已存在"。
-      const result = await importBibliography([bibliographyFile([reference])], {
-        collectionId,
-        projectId
-      })
-      const id = result.items[0]?.id
+      const result = await ports.addReference(reference.ref_id, collectionId)
+      const id = result.id
       if (!id) {
         setErrors((current) => ({
           ...current,
-          [reference.ref_id]: { key: 'references.noImportResult' }
+          [reference.ref_id]: { key: 'references.noImportResult' },
         }))
         return
       }
       setSaved((current) => ({ ...current, [reference.ref_id]: id }))
-      catalogue.reload()
     } catch (error) {
       setErrors((current) => ({
         ...current,
         [reference.ref_id]: literatureErrorMessage(
-          error instanceof LiteratureApiError ? error.failure.code : undefined,
+          pluginErrorCode(error),
           error instanceof Error ? error.message : undefined,
           'references.addFailed'
-        )
+        ),
       }))
     } finally {
       inFlight.current.delete(reference.ref_id)
@@ -280,11 +233,11 @@ function ReferencesList({
     setCollectionsLoading(true)
     setCollectionsError(null)
     try {
-      setCollections(await listLiteratureCollections(projectId))
+      setCollections(await ports.collections())
     } catch (error) {
       setCollectionsError(
         literatureErrorMessage(
-          error instanceof LiteratureApiError ? error.failure.code : undefined,
+          pluginErrorCode(error),
           error instanceof Error ? error.message : undefined,
           'references.collectionsFailed'
         )
@@ -301,21 +254,16 @@ function ReferencesList({
       const name = collectionName.trim()
       const parentId = createParent?.collectionId
       const existing = collections.find(
-        (collection) =>
-          collection.name === name &&
-          (collection.parent_id || undefined) === parentId
+        (collection) => collection.name === name && (collection.parent_id || undefined) === parentId
       )
-      const collection =
-        existing ??
-        (await createLiteratureCollection(name, projectId, parentId))
-      catalogue.reload()
+      const collection = existing ?? (await ports.createCollection(name, parentId))
       setCreatingFor(null)
       setCreateParent(null)
       await add(creatingFor, collection.id)
     } catch (error) {
       setCreateError(
         literatureErrorMessage(
-          error instanceof LiteratureApiError ? error.failure.code : undefined,
+          pluginErrorCode(error),
           error instanceof Error ? error.message : undefined,
           'references.createFailed'
         )
@@ -324,10 +272,7 @@ function ReferencesList({
       setCreating(false)
     }
   }
-  const openCreate = (
-    reference: ReferenceItem,
-    parent: JoinDestination
-  ): void => {
+  const openCreate = (reference: ReferenceItem, parent: JoinDestination): void => {
     setMenuOpenFor(null)
     setCreatingFor(reference)
     setCreateParent(parent)
@@ -339,7 +284,7 @@ function ReferencesList({
     <>
       <Card
         padding="none"
-        className="overflow-y-hidden"
+        className="min-w-0 overflow-y-hidden [--vds-card-radius:var(--vds-radius-6)]"
         data-testid="literature-references-card"
       >
         <Collapsible className="!gap-0" open={open} onOpenChange={setOpen}>
@@ -347,7 +292,7 @@ function ReferencesList({
             <Button
               variant="ghost"
               size="content"
-              className="w-full justify-start !rounded-none !bg-transparent !px-[var(--vds-space-4)] !py-[12px] hover:!bg-transparent"
+              className="w-full justify-start !rounded-none !bg-transparent !px-[var(--vds-space-4)] !py-[var(--vds-space-3)] hover:!bg-transparent"
               aria-label={t('references.toggle')}
               icon={
                 <IconFont
@@ -356,16 +301,12 @@ function ReferencesList({
                 />
               }
             >
-              <span className="font-semibold text-[var(--vds-text-primary)]">
+              <span className="font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
                 {t('references.heading', { count: payload.references.length })}
               </span>
               <span className="flex-1" />
               <IconFont
-                type={
-                  open
-                    ? 'a-line-switch-arrow-down-s'
-                    : 'a-line-switch-arrow-right-s'
-                }
+                type={open ? 'a-line-switch-arrow-down-s' : 'a-line-switch-arrow-right-s'}
               />
             </Button>
           </CollapsibleTrigger>
@@ -406,13 +347,13 @@ function ReferencesList({
                             {url ? (
                               <Button
                                 unstyled
-                                className="m-0 block max-w-full break-words text-left text-sm font-semibold leading-relaxed text-[var(--vds-text-primary)] hover:text-[var(--vds-link-hover)] hover:underline focus-visible:text-[var(--vds-link-hover)] focus-visible:underline active:text-[var(--vds-link-active)]"
-                                onClick={() => openReference(url)}
+                                className="m-0 block max-w-full break-words text-left text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-semibold)] leading-relaxed text-[var(--vds-text-primary)] hover:text-[var(--vds-link-hover)] hover:underline focus-visible:text-[var(--vds-link-hover)] focus-visible:underline active:text-[var(--vds-link-active)]"
+                                onClick={() => void ports.openSource(reference.ref_id)}
                               >
                                 {reference.title}
                               </Button>
                             ) : (
-                              <p className="m-0 break-words text-sm font-semibold leading-relaxed text-[var(--vds-text-primary)]">
+                              <p className="m-0 break-words text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-semibold)] leading-relaxed text-[var(--vds-text-primary)]">
                                 {reference.title}
                               </p>
                             )}
@@ -442,10 +383,10 @@ function ReferencesList({
                                 aria-label={
                                   saved[reference.ref_id]
                                     ? t('references.chooseCollection', {
-                                        title: reference.title
+                                        title: reference.title,
                                       })
                                     : t('references.add', {
-                                        title: reference.title
+                                        title: reference.title,
                                       })
                                 }
                                 icon={<IconFont type="line-operation-add" />}
@@ -453,10 +394,7 @@ function ReferencesList({
                                 disabled={pending.has(reference.ref_id)}
                               />
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent
-                              align="end"
-                              className={MENU_BOUNDS}
-                            >
+                            <DropdownMenuContent align="end" className={MENU_BOUNDS}>
                               <DropdownMenuItem
                                 disabled={Boolean(saved[reference.ref_id])}
                                 onSelect={() => void add(reference)}
@@ -467,25 +405,17 @@ function ReferencesList({
                                 {/* 已添加的文献与「直接加入」同步置灰, 避免重复加入。 */}
                                 <DropdownMenuSubTrigger
                                   openOnHover
-                                  disabled={
-                                    collectionsLoading ||
-                                    Boolean(saved[reference.ref_id])
-                                  }
+                                  disabled={collectionsLoading || Boolean(saved[reference.ref_id])}
                                 >
                                   {t('join.collection')}
                                 </DropdownMenuSubTrigger>
-                                <DropdownMenuSubContent
-                                  className={MENU_BOUNDS}
-                                  autoFocus={false}
-                                >
+                                <DropdownMenuSubContent className={MENU_BOUNDS} autoFocus={false}>
                                   {collectionsLoading ? (
                                     <DropdownMenuItem disabled>
                                       {t('references.loadingCollections')}
                                     </DropdownMenuItem>
                                   ) : collectionsError ? (
-                                    <DropdownMenuItem
-                                      onSelect={() => void loadCollections()}
-                                    >
+                                    <DropdownMenuItem onSelect={() => void loadCollections()}>
                                       {t(collectionsError.key)}
                                       {collectionsError.detail && (
                                         <span> {collectionsError.detail}</span>
@@ -497,14 +427,9 @@ function ReferencesList({
                                       parent={rootDestination}
                                       choose={(node) => {
                                         setMenuOpenFor(null)
-                                        void add(
-                                          reference,
-                                          node.collectionId ?? ''
-                                        )
+                                        void add(reference, node.collectionId ?? '')
                                       }}
-                                      create={(parent) =>
-                                        openCreate(reference, parent)
-                                      }
+                                      create={(parent) => openCreate(reference, parent)}
                                     />
                                   )}
                                 </DropdownMenuSubContent>
@@ -523,7 +448,7 @@ function ReferencesList({
                               size="sm"
                               unstyled
                               className="max-w-full break-all text-left font-mono text-xs text-[var(--vds-link)] hover:text-[var(--vds-link-hover)] hover:underline focus-visible:text-[var(--vds-link-hover)] active:text-[var(--vds-link-active)]"
-                              onClick={() => openReference(url)}
+                              onClick={() => void ports.openSource(reference.ref_id)}
                             >
                               {reference.doi || t('references.openSource')}
                             </Button>
@@ -545,28 +470,26 @@ function ReferencesList({
                 </ol>
               ) : (
                 <p className="m-0 p-[var(--vds-space-3)] text-[var(--vds-text-secondary)]">
-                  {search
-                    ? t('references.noMatch')
-                    : t('references.noReferences')}
+                  {search ? t('references.noMatch') : t('references.noReferences')}
                 </p>
               )}
               <div className="flex flex-wrap items-center justify-between gap-[var(--vds-space-2)] border-t border-[var(--vds-divider-default)] px-[var(--vds-space-2)] py-[var(--vds-space-3)]">
                 <p
-                  className="m-0 text-[12px] text-[var(--vds-text-secondary)]"
+                  className="m-0 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
                   role="status"
                 >
                   {search
                     ? t('references.filtered', {
                         matched: filtered.length,
-                        total: payload.references.length
+                        total: payload.references.length,
                       })
                     : t('references.total', {
-                        count: payload.references.length
+                        count: payload.references.length,
                       })}
                   {filtered.length
                     ? t('references.page', {
                         current: currentPage,
-                        total: pageCount
+                        total: pageCount,
                       })
                     : ''}
                 </p>
@@ -596,9 +519,7 @@ function ReferencesList({
           <DialogContent>
             <DialogHeader>
               <DialogTitle>{t('references.newCollection')}</DialogTitle>
-              <DialogDescription>
-                {t('references.createDescription')}
-              </DialogDescription>
+              <DialogDescription>{t('references.createDescription')}</DialogDescription>
             </DialogHeader>
             <Input
               aria-label={t('references.collectionName')}

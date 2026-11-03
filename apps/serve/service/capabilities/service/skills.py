@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -16,13 +17,20 @@ from scholarseed_runtime.contract.inventory import (
     SkillInventory,
     SkillView,
 )
+from service.capabilities.domain import SKILL_MANIFEST_NAME
+from service.capabilities.service.attribution import read_attribution
+from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.delivery import InstallationCandidates
+from service.capabilities.service.descriptor import HOST_COMPONENT_PLUGIN, PLUGIN_DESCRIPTOR
 from service.capabilities.service.install import (
     ORIGIN_FILE_NAME,
-    SKILL_MANIFEST_NAME,
     SkillPackageError,
     parse_skill_frontmatter,
 )
+from service.capabilities.service.installed import installed_inventory
+from service.capabilities.service.plugins import PLUGIN_ORIGIN_KIND, identity_snapshot
 from service.paths import SERVICE_SKILL_STATE_FILE
+from service.platform.storage import filesystem_path
 
 SKILL_PRODUCT_METADATA_FILE = ".scholarseed.json"
 SKILL_INVOCATION_METADATA_KEY = "invocation"
@@ -46,6 +54,20 @@ SKILL_DEPENDENCY_ERROR = "error"
 SKILL_LOCAL_VERSION_PREFIX = "local"
 SKILL_STATE_DISABLED = "disabled"
 SKILL_STATE_DELETED = "deleted"
+SKILL_STATE_INSTALLATIONS = "installationSources"
+SKILL_INSTALLATION_UPLOAD = "upload"
+SKILL_INSTALLATION_MARKETPLACE = "marketplace"
+SKILL_INSTALLATION_CREATED = "created"
+SKILL_INSTALLATION_GITHUB = "github"
+SKILL_INSTALLATION_UNKNOWN = "unknown"
+SKILL_INSTALLATION_SOURCES = frozenset(
+    {
+        SKILL_INSTALLATION_UPLOAD,
+        SKILL_INSTALLATION_MARKETPLACE,
+        SKILL_INSTALLATION_CREATED,
+        SKILL_INSTALLATION_GITHUB,
+    }
+)
 SKILL_STATE_RUNTIME_RECOVERY = "runtimeRecovery"
 SKILL_STATE_RUNTIME_RECOVERY_VERSION = "version"
 SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES = "workspaces"
@@ -59,6 +81,8 @@ SKILL_PRESENTATION_FILE = Path(__file__).resolve().parents[1] / "catalog.json"
 SKILL_PRESENTATION_SCHEMA = 3
 SKILL_PRESENTATION_REQUIRED_KEY = "required"
 SKILL_PRESENTATION_LOGIN_KEY = "requires_login"
+SKILL_PRESENTATION_DISPLAY_NAMES_KEY = "display_names"
+SKILL_DISPLAY_LOCALES = frozenset({"zh", "en"})
 SKILL_LOGIN_REQUIRED_REASON = "login_required"
 SKILL_SURFACE_CONVERSATION = "conversation"
 SKILL_SURFACE_SETTINGS = "settings"
@@ -68,6 +92,7 @@ SKILL_PRESENTATION_SURFACE_FIELDS = frozenset(
     {SKILL_PRESENTATION_NAMES_KEY, SKILL_PRESENTATION_SOURCES_KEY}
 )
 SKILL_PRESENTATION_ALLOWED_SOURCES = frozenset({SKILL_SOURCE_BUILTIN, SKILL_SOURCE_USER})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -76,6 +101,7 @@ class SkillProductState:
     deleted_skills: frozenset[str] = frozenset()
     runtime_recovery_version: int = 0
     recovered_workspaces: frozenset[str] = frozenset()
+    installation_sources: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -103,10 +129,11 @@ class SkillPresentation:
     surfaces: Mapping[str, SkillSurfacePresentation]
     required: frozenset[str]
     requires_login: frozenset[str] = frozenset()
+    display_names: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 def load_skill_presentation(path: Path = SKILL_PRESENTATION_FILE) -> SkillPresentation:
-    """Load product-owned surface visibility; localized copy travels with each skill."""
+    """Load product-owned surface visibility and builtin display titles."""
 
     value = json.loads(path.read_text(encoding="utf-8"))
     if value.get("schema") != SKILL_PRESENTATION_SCHEMA:
@@ -123,7 +150,13 @@ def load_skill_presentation(path: Path = SKILL_PRESENTATION_FILE) -> SkillPresen
         or not all(isinstance(name, str) and name for name in raw_login)
         or len(raw_login) != len(set(raw_login))
         or set(value)
-        - {"schema", "surfaces", SKILL_PRESENTATION_REQUIRED_KEY, SKILL_PRESENTATION_LOGIN_KEY}
+        - {
+            "schema",
+            "surfaces",
+            SKILL_PRESENTATION_REQUIRED_KEY,
+            SKILL_PRESENTATION_LOGIN_KEY,
+            SKILL_PRESENTATION_DISPLAY_NAMES_KEY,
+        }
     ):
         raise ValueError("invalid skill presentation policy")
     surfaces: dict[str, SkillSurfacePresentation] = {}
@@ -153,8 +186,21 @@ def load_skill_presentation(path: Path = SKILL_PRESENTATION_FILE) -> SkillPresen
             skills=frozenset(names),
             sources=frozenset(sources),
         )
+    display_names = value.get(SKILL_PRESENTATION_DISPLAY_NAMES_KEY, {})
+    if not isinstance(display_names, Mapping) or any(
+        not isinstance(name, str)
+        or not name
+        or not isinstance(titles, Mapping)
+        or set(titles) != SKILL_DISPLAY_LOCALES
+        or any(not isinstance(title, str) or not title.strip() for title in titles.values())
+        for name, titles in display_names.items()
+    ):
+        raise ValueError("invalid skill display names")
     return SkillPresentation(
-        surfaces=surfaces, required=frozenset(raw_required), requires_login=frozenset(raw_login)
+        surfaces=surfaces,
+        required=frozenset(raw_required),
+        requires_login=frozenset(raw_login),
+        display_names=display_names,
     )
 
 
@@ -178,11 +224,21 @@ def load_skill_state(path: Path = SERVICE_SKILL_STATE_FILE) -> SkillProductState
     recovered_workspaces = recovery.get(SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES)
     if recovery_version != SKILL_RECOVERY_VERSION or not isinstance(recovered_workspaces, list):
         recovered_workspaces = []
+    installations = value.get(SKILL_STATE_INSTALLATIONS)
+    if not isinstance(installations, Mapping):
+        installations = {}
     return SkillProductState(
         disabled_skills=frozenset(str(row) for row in value.get(SKILL_STATE_DISABLED) or ()),
         deleted_skills=frozenset(str(row) for row in value.get(SKILL_STATE_DELETED) or ()),
         runtime_recovery_version=recovery_version,
         recovered_workspaces=frozenset(str(row) for row in recovered_workspaces),
+        installation_sources={
+            name: source
+            for name, source in installations.items()
+            if isinstance(name, str)
+            and isinstance(source, str)
+            and source in SKILL_INSTALLATION_SOURCES
+        },
     )
 
 
@@ -194,19 +250,46 @@ def save_skill_state(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    payload = {
-        SKILL_STATE_DISABLED: sorted(state.disabled_skills),
-        SKILL_STATE_DELETED: sorted(state.deleted_skills),
-        SKILL_STATE_RUNTIME_RECOVERY: {
-            SKILL_STATE_RUNTIME_RECOVERY_VERSION: state.runtime_recovery_version,
-            SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES: sorted(state.recovered_workspaces),
-        },
-    }
+    payload = skill_state_record(state)
     temporary.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def skill_state_record(state: SkillProductState) -> dict[str, Any]:
+    return {
+        SKILL_STATE_DISABLED: sorted(state.disabled_skills),
+        SKILL_STATE_DELETED: sorted(state.deleted_skills),
+        SKILL_STATE_INSTALLATIONS: dict(state.installation_sources),
+        SKILL_STATE_RUNTIME_RECOVERY: {
+            SKILL_STATE_RUNTIME_RECOVERY_VERSION: state.runtime_recovery_version,
+            SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES: sorted(state.recovered_workspaces),
+        },
+    }
+
+
+def restore_skill_state(record: dict[str, Any]) -> None:
+    disabled = record.get(SKILL_STATE_DISABLED)
+    deleted = record.get(SKILL_STATE_DELETED)
+    recovery = record.get(SKILL_STATE_RUNTIME_RECOVERY)
+    if not isinstance(recovery, dict) or any(
+        not isinstance(items, list) or any(not isinstance(item, str) for item in items)
+        for items in (disabled, deleted)
+    ):
+        raise ValueError("plugin_recovery_state_invalid")
+    version = recovery.get(SKILL_STATE_RUNTIME_RECOVERY_VERSION)
+    workspaces = recovery.get(SKILL_STATE_RUNTIME_RECOVERY_WORKSPACES)
+    if (
+        type(version) is not int
+        or not isinstance(workspaces, list)
+        or any(not isinstance(item, str) for item in workspaces)
+    ):
+        raise ValueError("plugin_recovery_state_invalid")
+    save_skill_state(
+        SkillProductState(frozenset(disabled), frozenset(deleted), version, frozenset(workspaces))
+    )
 
 
 def replace_skill_state(
@@ -216,10 +299,14 @@ def replace_skill_state(
     deleted_skills: frozenset[str] | None = None,
     runtime_recovery_version: int | None = None,
     recovered_workspaces: frozenset[str] | None = None,
+    installation_sources: Mapping[str, str] | None = None,
 ) -> SkillProductState:
     return SkillProductState(
         disabled_skills=(state.disabled_skills if disabled_skills is None else disabled_skills),
         deleted_skills=state.deleted_skills if deleted_skills is None else deleted_skills,
+        installation_sources=(
+            state.installation_sources if installation_sources is None else installation_sources
+        ),
         runtime_recovery_version=(
             state.runtime_recovery_version
             if runtime_recovery_version is None
@@ -239,7 +326,7 @@ def workspace_recovery_key(cwd: Path) -> str:
 
 
 class SkillCatalog:
-    """Enrich only skills that the real Codex runtime reports for one cwd."""
+    """Project owned packages for browsing and native inventories for execution."""
 
     def __init__(
         self,
@@ -247,22 +334,93 @@ class SkillCatalog:
         bundled_root: Path,
         user_root: Path,
         presentation: SkillPresentation | None = None,
+        components: ComponentRegistry | None = None,
     ) -> None:
         self._bundled_root = bundled_root.expanduser().resolve()
         self._user_root = user_root.expanduser().resolve()
         self._presentation = presentation or load_skill_presentation()
         self._authenticated: Callable[[str], bool] = lambda _user_id: False
+        self.components = components
+        self.candidates: InstallationCandidates | None = None
+        if components is not None:
+            components.authorize = self.component_authorized
         # 目录指纹按内容签名复用: 全量重算要逐文件读字节, 而它每次列表请求都会跑一遍。
         self._fingerprints: dict[Path, tuple[tuple[tuple[str, int, int], ...], str]] = {}
 
     def bind_authentication(self, authenticated: Callable[[str], bool]) -> None:
         self._authenticated = authenticated
 
-    def requires_login(self, skill: SkillView) -> bool:
+    def installed_inventory(self, cwd: Path) -> SkillInventory:
+        return installed_inventory(self._bundled_root, self._user_root, cwd)
+
+    def installation_report(self, workspace: Path, path: str, sha256: str) -> dict[str, Any]:
+        if self.candidates is None:
+            raise ValueError("plugin_installation_unavailable")
+        report = self.candidates.delivery(workspace, path, sha256)
+        name = (report.get("descriptor") or {}).get("id", "")
+        if name and (self._bundled_root / name).exists():
+            if report.get("candidate"):
+                self.candidates.discard(report["candidate"])
+            raise ValueError("immutable_skill")
+        return {**report, "update": bool(name and (self._user_root / name).exists())}
+
+    def installation_receipt(self, report: Mapping[str, Any]) -> dict[str, Any] | None:
+        if self.candidates is None:
+            raise ValueError("plugin_installation_unavailable")
+        return self.candidates.receipt(report["candidate"], report["sha256"])
+
+    def component_authorized(self, name: str, user_id: str) -> bool:
         return (
-            self.source(skill.path) == SKILL_SOURCE_BUILTIN
-            and skill.name in self._presentation.requires_login
+            name == HOST_COMPONENT_PLUGIN
+            or name not in self._presentation.requires_login
+            or self._authenticated(user_id)
         )
+
+    def component_snapshots(
+        self,
+        inventory: SkillInventory,
+        state: SkillProductState,
+        *,
+        unavailable: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        snapshots = []
+        retained = {
+            item["descriptor"]["id"]: item
+            for item in (self.components.enabled_snapshots() if self.components is not None else [])
+        }
+        for skill in self.product_skills(inventory):
+            if (
+                skill.name in state.disabled_skills
+                or skill.name in state.deleted_skills
+                or not self._plugin_declared(skill)
+            ):
+                continue
+            try:
+                snapshot = identity_snapshot(
+                    {
+                        "path": str(self.manifest(skill.path)),
+                        "source": self.source(skill.path),
+                        "active": True,
+                    }
+                )
+                if self.components is not None:
+                    snapshot = self.components.dependencies(snapshot)
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                logger.warning(
+                    "plugin_component_unavailable plugin=%r failure_type=%s",
+                    skill.name,
+                    type(error).__name__,
+                )
+                if unavailable is not None:
+                    unavailable.add(skill.name)
+                if skill.name in retained:
+                    snapshots.append(retained[skill.name])
+                continue
+            snapshots.append(snapshot)
+        return snapshots
+
+    def requires_login(self, skill: SkillView) -> bool:
+        return skill.name in self._presentation.requires_login
 
     def availability_revision(self, user_id: str) -> tuple[object, ...]:
         state = load_skill_state()
@@ -270,25 +428,33 @@ class SkillCatalog:
             self._authenticated(user_id),
             tuple(sorted(state.disabled_skills)),
             tuple(sorted(state.deleted_skills)),
+            tuple(sorted(state.installation_sources.items())),
         )
 
     def session_enablement(
         self, inventory: SkillInventory, state: SkillProductState, *, user_id: str
     ) -> tuple[tuple[Path, bool], ...]:
         authenticated = self._authenticated(user_id)
+        selected = {
+            self.manifest(skill.path).resolve(): skill for skill in self.product_skills(inventory)
+        }
         return tuple(
             sorted(
                 (
                     (
                         self.manifest(skill.path).expanduser().resolve(),
-                        (self.required(skill.name) or skill.name not in state.disabled_skills)
+                        self.manifest(skill.path).resolve() in selected
+                        and not self._plugin_error(skill)
+                        and (self.required(skill.name) or skill.name not in state.disabled_skills)
                         and (
                             self.source(skill.path) != SKILL_SOURCE_USER
                             or skill.name not in state.deleted_skills
                         )
                         and (not self.requires_login(skill) or authenticated),
                     )
-                    for skill in self.product_skills(inventory)
+                    for reported in inventory.skills
+                    for skill in (self._owned_skill(reported),)
+                    if self.source(skill.path) in {SKILL_SOURCE_BUILTIN, SKILL_SOURCE_USER}
                 ),
                 key=lambda row: str(row[0]),
             )
@@ -302,6 +468,7 @@ class SkillCatalog:
         available_mcp_tools: Iterable[str] = (),
         surface: str | None = None,
         user_id: str = "",
+        locale: str | None = None,
     ) -> list[dict[str, Any]]:
         mcp_tools = frozenset(str(value) for value in available_mcp_tools)
         errors = {
@@ -320,6 +487,7 @@ class SkillCatalog:
                     inventory_errors=errors,
                     runtime_revision=inventory.revision,
                     authenticated=self._authenticated(user_id),
+                    locale=locale,
                 )
             )
         return sorted(rows, key=lambda row: (str(row["category"]), str(row["name"])))
@@ -352,14 +520,20 @@ class SkillCatalog:
         """Project product state only onto paths owned by this product."""
 
         rows: list[tuple[Path, bool]] = []
-        for skill in inventory.skills:
+        selected = {self.manifest(skill.path).resolve() for skill in self.product_skills(inventory)}
+        for reported in inventory.skills:
+            skill = self._owned_skill(reported)
             source = self.source(skill.path)
             manifest = self._manifest(skill.path).expanduser().resolve()
             if source == SKILL_SOURCE_PROJECT:
                 continue
             if source == SKILL_SOURCE_USER and skill.name in state.deleted_skills:
                 continue
-            enabled = self.required(skill.name) or skill.name not in state.disabled_skills
+            enabled = (
+                manifest in selected
+                and not self._plugin_error(skill)
+                and (self.required(skill.name) or skill.name not in state.disabled_skills)
+            )
             rows.append((manifest, enabled))
         return tuple(rows)
 
@@ -395,20 +569,59 @@ class SkillCatalog:
         return SkillEnablementPlan(tuple(configurations.items()), recovered_state)
 
     def product_skills(self, inventory: SkillInventory) -> tuple[SkillView, ...]:
-        """Choose one product-owned skill per name, preferring bundled sources."""
+        """Select installed plugin identities without silently falling back on corruption."""
 
         selected: dict[str, SkillView] = {}
-        for skill in inventory.skills:
+        for reported in inventory.skills:
+            skill = self._owned_skill(reported)
             identity = skill.name.strip().casefold()
             source = self.source(skill.path)
             if not identity or source not in {SKILL_SOURCE_BUILTIN, SKILL_SOURCE_USER}:
                 continue
             current = selected.get(identity)
-            if current is None or (
-                source == SKILL_SOURCE_BUILTIN and self.source(current.path) == SKILL_SOURCE_USER
+            candidate_plugin = source == SKILL_SOURCE_USER and self._plugin_declared(skill)
+            current_plugin = (
+                current is not None
+                and self.source(current.path) == SKILL_SOURCE_USER
+                and self._plugin_declared(current)
+            )
+            if (
+                current is None
+                or (candidate_plugin and not current_plugin)
+                or (
+                    not current_plugin
+                    and source == SKILL_SOURCE_BUILTIN
+                    and self.source(current.path) == SKILL_SOURCE_USER
+                )
             ):
                 selected[identity] = skill
         return tuple(selected.values())
+
+    def _plugin_declared(self, skill: SkillView) -> bool:
+        directory = self.manifest(skill.path).parent
+        return (
+            (directory / PLUGIN_DESCRIPTOR).exists()
+            or self._json_file(directory / ORIGIN_FILE_NAME).get("kind") == PLUGIN_ORIGIN_KIND
+            or (self.components is not None and self.components.has_claim(skill.name))
+        )
+
+    def _plugin_error(self, skill: SkillView) -> str:
+        manifest = self.manifest(skill.path)
+        if not self._plugin_declared(skill):
+            return ""
+        try:
+            identity_snapshot(
+                {"path": str(manifest), "source": self.source(skill.path), "active": True}
+            )
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            return f"plugin_invalid: {error}"
+        return ""
+
+    def _owned_skill(self, skill: SkillView) -> SkillView:
+        if self.source(skill.path) == SKILL_SOURCE_PROJECT:
+            return skill
+        name = self._manifest(skill.path).parent.name
+        return skill if skill.name == name else replace(skill, name=name)
 
     def find(
         self,
@@ -459,12 +672,14 @@ class SkillCatalog:
         inventory_errors: Mapping[str, str],
         runtime_revision: str,
         authenticated: bool,
+        locale: str | None = None,
     ) -> dict[str, Any]:
         manifest = self._manifest(skill.path)
         directory = manifest.parent
         source = self.source(manifest)
         metadata = self._json_file(directory / SKILL_PRODUCT_METADATA_FILE)
         hub_record = self._json_file(directory / ORIGIN_FILE_NAME)
+        attribution = read_attribution(directory, skill.name)
         fingerprint = self._fingerprint(directory)
         dependencies = [
             self._dependency_payload(
@@ -474,9 +689,14 @@ class SkillCatalog:
             for dependency in skill.dependencies
         ]
         dependency_state = self._aggregate_dependency_state(dependencies)
-        runtime_error = inventory_errors.get(str(manifest.expanduser().resolve()), "")
+        plugin_error = self._plugin_error(skill)
+        runtime_error = plugin_error or inventory_errors.get(
+            str(manifest.expanduser().resolve()), ""
+        )
         product_enabled = self.required(skill.name) or skill.name not in state.disabled_skills
-        runtime_enabled = skill.enabled and skill.availability == SkillAvailability.AVAILABLE
+        runtime_enabled = (
+            not plugin_error and skill.enabled and skill.availability == SkillAvailability.AVAILABLE
+        )
         requires_login = self.requires_login(skill)
         login_available = not requires_login or authenticated
         active = (
@@ -494,6 +714,8 @@ class SkillCatalog:
         if product_enabled and not login_available:
             unavailable_reason = SKILL_LOGIN_REQUIRED_REASON
         version = str(metadata.get("version") or hub_record.get("version") or "").strip()
+        if not plugin_error and self._plugin_declared(skill):
+            version = str(self._json_file(directory / PLUGIN_DESCRIPTOR).get("version") or "")
         if not version and fingerprint:
             version = f"{SKILL_LOCAL_VERSION_PREFIX}-{fingerprint[:12]}"
         category = str(metadata.get("category") or "").strip()
@@ -503,8 +725,14 @@ class SkillCatalog:
                 if source == SKILL_SOURCE_BUILTIN
                 else SKILL_CATEGORY_USER
             )
-        description = skill.description
+        description = str(hub_record.get("description") or skill.description)
         descriptions = self._localized_descriptions(manifest)
+        display_name = hub_record.get("display_name") or skill.display_name
+        if source == SKILL_SOURCE_BUILTIN and locale:
+            language = locale.strip().replace("_", "-").lower().split("-")[0]
+            display_name = (
+                self._presentation.display_names.get(skill.name, {}).get(language) or display_name
+            )
         icon = str(metadata.get("icon") or SKILL_ICON_FALLBACK).strip().lower()
         if not SKILL_ICON_PATTERN.fullmatch(icon):
             icon = SKILL_ICON_FALLBACK
@@ -535,6 +763,10 @@ class SkillCatalog:
             "blurb": str(metadata.get("blurb") or skill.short_description or description),
             "icon": icon,
             "hub": hub_record or None,
+            "installationSource": state.installation_sources.get(
+                skill.name, SKILL_INSTALLATION_UNKNOWN
+            ),
+            **attribution,
             "updated_at": self._mtime(manifest),
             "active": active,
             "enabled": product_enabled,
@@ -549,7 +781,7 @@ class SkillCatalog:
             "runtime_enabled": runtime_enabled,
             "runtime_availability": skill.availability.value,
             "runtime_revision": runtime_revision,
-            "display_name": skill.display_name,
+            "display_name": display_name,
             SKILL_INVOCATION_METADATA_KEY: trusted_invocation,
         }
 
@@ -609,18 +841,23 @@ class SkillCatalog:
     @staticmethod
     def _manifest(path: Path) -> Path:
         expanded = path.expanduser()
-        return expanded / SKILL_MANIFEST_NAME if expanded.is_dir() else expanded
+        return expanded / SKILL_MANIFEST_NAME if filesystem_path(expanded).is_dir() else expanded
 
     @staticmethod
     def _is_under(path: Path, root: Path) -> bool:
         try:
-            path.expanduser().resolve().relative_to(root.expanduser().resolve())
+            # Python imports may retain \\?\ while native inventory returns DOS paths.
+            # Keep extended paths for IO and compare both sides in the same namespace.
+            filesystem_path(path.expanduser()).resolve().relative_to(
+                filesystem_path(root.expanduser()).resolve()
+            )
             return True
         except ValueError:
             return False
 
     @staticmethod
     def _json_file(path: Path) -> dict[str, Any]:
+        path = filesystem_path(path)
         if not path.is_file():
             return {}
         try:
@@ -638,6 +875,7 @@ class SkillCatalog:
         matches.
         """
 
+        manifest = filesystem_path(manifest)
         if not manifest.is_file():
             return {}
         try:
@@ -659,7 +897,7 @@ class SkillCatalog:
     def _fingerprint(self, directory: Path) -> str:
         """Hash the skill directory, reusing the previous digest while nothing changed."""
 
-        resolved = directory.expanduser().resolve()
+        resolved = filesystem_path(directory.expanduser()).resolve()
         signature = self._signature(resolved)
         if signature is None:
             self._fingerprints.pop(resolved, None)
@@ -706,7 +944,7 @@ class SkillCatalog:
     @staticmethod
     def _mtime(path: Path) -> float | None:
         try:
-            return path.stat().st_mtime
+            return filesystem_path(path).stat().st_mtime
         except OSError:
             return None
 
@@ -715,6 +953,11 @@ __all__ = [
     "SKILL_DEPENDENCY_ERROR",
     "SKILL_DEPENDENCY_MISSING",
     "SKILL_DEPENDENCY_READY",
+    "SKILL_INSTALLATION_CREATED",
+    "SKILL_INSTALLATION_GITHUB",
+    "SKILL_INSTALLATION_MARKETPLACE",
+    "SKILL_INSTALLATION_UNKNOWN",
+    "SKILL_INSTALLATION_UPLOAD",
     "SKILL_PRODUCT_METADATA_FILE",
     "SKILL_INVOCATION_METADATA_KEY",
     "SKILL_INVOCATION_PERMISSION_DEFAULT",

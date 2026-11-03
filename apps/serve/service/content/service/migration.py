@@ -112,12 +112,12 @@ class MigrationService:
         """dry-run: 列出会搬什么、多大、有没有冲突。不动文件。"""
 
         root = Path(project.root)
-        if project.layout is ProjectLayout.MANAGED:
-            return MigrationPlan(project.id, project.name, str(root), (), blocked="already_managed")
-        if not root.is_dir():
+        if not project.available or not root.is_dir():
             return MigrationPlan(
                 project.id, project.name, str(root), (), blocked="root_unavailable"
             )
+        if project.layout is ProjectLayout.MANAGED:
+            return MigrationPlan(project.id, project.name, str(root), (), blocked="already_managed")
 
         resources_root = root / MANAGED_RESOURCES_ROOT_RELATIVE
         literature_root = root / MANAGED_LITERATURE_ROOT_RELATIVE
@@ -141,7 +141,7 @@ class MigrationService:
             entries.append(
                 MigrationEntry(
                     source=item.name,
-                    target=str(target.relative_to(root)),
+                    target=target.relative_to(root).as_posix(),
                     size=_entry_size(item),
                     conflict=target.exists(),
                 )

@@ -31,6 +31,7 @@ from service.resources.domain.model import (
     agent_output_location,
 )
 from service.resources.persistence.imports import ResourceImportCatalog, ResourceImportConflict
+from service.resources.persistence.listing import ResourceListingCatalog, ResourceSource
 
 INVALID_RESOURCE_PARENT = "invalid_resource_parent"
 RESOURCE_PARENT_NOT_FOUND = "parent_not_found"
@@ -52,6 +53,7 @@ class ResourceWriter:
     def __init__(self, content: ContentPort) -> None:
         self._content = content
         self._imports = ResourceImportCatalog(content)
+        self._listing = ResourceListingCatalog(content)
 
     def plan_import(
         self,
@@ -94,6 +96,7 @@ class ResourceWriter:
         try:
             existing = self._imports.resume(project_id, plan.operation_id, plan.fingerprint)
             if existing is not None:
+                self._listing.record(project_id, (existing,), ResourceSource.IMPORTED)
                 return existing
             # Directory ownership emits resource-version notifications against the
             # shared project database, so resolve it before reserve takes its write lock.
@@ -110,7 +113,9 @@ class ResourceWriter:
                     reserved,
                 ),
             )
-            return self._imports.finish(project_id, operation)
+            asset = self._imports.finish(project_id, operation)
+            self._listing.record(project_id, (asset,), ResourceSource.IMPORTED)
+            return asset
         except (ContentError, ResourceImportConflict) as error:
             raise ResourceWriterError(str(error)) from error
 
@@ -119,7 +124,10 @@ class ResourceWriter:
     ) -> FileAssetRef | None:
         """Resolve a durable import intent; never prepare a second target on recovery."""
         try:
-            return self._imports.resume(project_id, operation_id, fingerprint)
+            asset = self._imports.resume(project_id, operation_id, fingerprint)
+            if asset is not None:
+                self._listing.record(project_id, (asset,), ResourceSource.IMPORTED)
+            return asset
         except (ContentError, ResourceImportConflict) as error:
             raise ResourceWriterError(str(error)) from error
 
@@ -322,7 +330,9 @@ class ResourceWriter:
 
         try:
             parent = self._ensure_parent(project_id, location.parent)
-            return create(parent, location.name)
+            asset = create(parent, location.name)
+            self._listing.record(project_id, (asset,), ResourceSource.IMPORTED)
+            return asset
         except ContentError as error:
             raise ResourceWriterError(error.code) from error
 

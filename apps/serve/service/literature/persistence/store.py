@@ -8,9 +8,11 @@ import math
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, fields, replace
 from enum import Enum
+from functools import partial
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -26,6 +28,10 @@ from service.literature.domain.model import (
     NOTE_NOT_FOUND,
     NOTE_TITLE_REQUIRED,
     NOTE_VERSION_CONFLICT,
+    TAXONOMY_CONFLICT,
+    TAXONOMY_ITEM_UNAVAILABLE,
+    TAXONOMY_NOT_FOUND,
+    TAXONOMY_REVISION_CONFLICT,
     LiteratureError,
 )
 from service.literature.schema import (
@@ -43,26 +49,47 @@ from service.literature.schema import (
     PublicationType,
 )
 from service.paths import SERVICE_LITERATURE_DATABASE
+from service.persistence.project import (
+    DatabaseBindingError,
+    database_files,
+    open_database,
+    reader,
+    rebuild_table,
+    reject_schema_residue,
+    schema_transaction,
+    sql_tokens,
+    table_clauses,
+)
 
 LITERATURE_DB = SERVICE_LITERATURE_DATABASE
-LIBRARY_RELATIVE_PATH = str(LITERATURE_DB)
 # 一行 = 一份文献独占的文件: path 恒为托管目录里的副本, revision 是这批字节的
 # 内容修订号 (全文索引缓存的键)。没有 asset_id / project_id —— 附件不指向项目
 # 里的文件, 因此文献删除就一定连文件一起删, 不存在"文件还挂在别处"的状态。
 ATTACHMENT_COLUMNS = "(id TEXT PRIMARY KEY,literature_id TEXT NOT NULL REFERENCES literature_items(id) ON DELETE CASCADE,name TEXT NOT NULL,path TEXT NOT NULL,revision TEXT NOT NULL DEFAULT '',kind TEXT NOT NULL DEFAULT 'file',role TEXT NOT NULL,media_type TEXT NOT NULL,created_at REAL NOT NULL)"
 ATTACHMENT_DDL = f"CREATE TABLE IF NOT EXISTS literature_attachments{ATTACHMENT_COLUMNS};"
 PRIMARY_ATTACHMENT_INDEX = "literature_primary_attachment"
+LEGACY_COLLECTION_INDEXES = {
+    "literature_global_collection_names": "CREATE UNIQUE INDEX literature_global_collection_names ON literature_collections(name COLLATE NOCASE) WHERE project_id IS NULL",
+    "literature_project_collection_names": "CREATE UNIQUE INDEX literature_project_collection_names ON literature_collections(project_id,name COLLATE NOCASE) WHERE project_id IS NOT NULL",
+}
+LEGACY_TABLE_DECLARATIONS = {
+    "literature_collections": (
+        "CREATE TABLE literature_collections(id TEXT PRIMARY KEY,"
+        "name TEXT NOT NULL COLLATE NOCASE UNIQUE,"
+        "parent_id TEXT REFERENCES literature_collections(id) ON DELETE RESTRICT,"
+        "created_at REAL NOT NULL,project_id TEXT)",
+    ),
+}
 DDL = (
-    """CREATE TABLE IF NOT EXISTS literature_items(id TEXT PRIMARY KEY,citation_key TEXT NOT NULL DEFAULT '',item_type TEXT NOT NULL,bib_type TEXT NOT NULL,title TEXT NOT NULL,subtitle TEXT NOT NULL DEFAULT '',authors TEXT NOT NULL DEFAULT '',publication TEXT NOT NULL DEFAULT '',year INTEGER,published_date TEXT NOT NULL DEFAULT '',abstract TEXT NOT NULL DEFAULT '',doi TEXT NOT NULL DEFAULT '',arxiv TEXT NOT NULL DEFAULT '',isbn TEXT NOT NULL DEFAULT '',url TEXT NOT NULL DEFAULT '',volume TEXT NOT NULL DEFAULT '',number TEXT NOT NULL DEFAULT '',pages TEXT NOT NULL DEFAULT '',publisher TEXT NOT NULL DEFAULT '',address TEXT NOT NULL DEFAULT '',fulltext TEXT NOT NULL DEFAULT 'none',created_at REAL NOT NULL,updated_at REAL NOT NULL,version INTEGER NOT NULL DEFAULT 1);
-CREATE TABLE IF NOT EXISTS literature_collections(id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE,project_id TEXT,parent_id TEXT REFERENCES literature_collections(id) ON DELETE RESTRICT,created_at REAL NOT NULL);
-CREATE UNIQUE INDEX IF NOT EXISTS literature_collection_sibling_names ON literature_collections(COALESCE(project_id,''),COALESCE(parent_id,''),name COLLATE NOCASE);
-CREATE TABLE IF NOT EXISTS literature_collection_items(collection_id TEXT REFERENCES literature_collections(id) ON DELETE CASCADE,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,PRIMARY KEY(collection_id,literature_id));
-CREATE TABLE IF NOT EXISTS literature_tags(id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,color TEXT NOT NULL DEFAULT '',created_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS literature_item_tags(literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,tag_id TEXT REFERENCES literature_tags(id) ON DELETE CASCADE,PRIMARY KEY(literature_id,tag_id));
-CREATE TABLE IF NOT EXISTS literature_projects(project_id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,created_at REAL NOT NULL,PRIMARY KEY(project_id,literature_id));
-CREATE TABLE IF NOT EXISTS literature_notes(id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,text TEXT NOT NULL,created_at REAL NOT NULL,title TEXT NOT NULL DEFAULT '',updated_at REAL NOT NULL DEFAULT 0,version INTEGER NOT NULL DEFAULT 1,position INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(literature_id,id));
-"""
-    + ATTACHMENT_DDL
+    "CREATE TABLE IF NOT EXISTS literature_items(id TEXT PRIMARY KEY,citation_key TEXT NOT NULL DEFAULT '',item_type TEXT NOT NULL,bib_type TEXT NOT NULL,title TEXT NOT NULL,subtitle TEXT NOT NULL DEFAULT '',authors TEXT NOT NULL DEFAULT '',publication TEXT NOT NULL DEFAULT '',year INTEGER,published_date TEXT NOT NULL DEFAULT '',abstract TEXT NOT NULL DEFAULT '',doi TEXT NOT NULL DEFAULT '',arxiv TEXT NOT NULL DEFAULT '',isbn TEXT NOT NULL DEFAULT '',url TEXT NOT NULL DEFAULT '',volume TEXT NOT NULL DEFAULT '',number TEXT NOT NULL DEFAULT '',pages TEXT NOT NULL DEFAULT '',publisher TEXT NOT NULL DEFAULT '',address TEXT NOT NULL DEFAULT '',fulltext TEXT NOT NULL DEFAULT 'none',created_at REAL NOT NULL,updated_at REAL NOT NULL,version INTEGER NOT NULL DEFAULT 1)",
+    "CREATE TABLE IF NOT EXISTS literature_collections(id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE,project_id TEXT,parent_id TEXT REFERENCES literature_collections(id) ON DELETE RESTRICT,created_at REAL NOT NULL)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS literature_collection_sibling_names ON literature_collections(COALESCE(project_id,''),COALESCE(parent_id,''),name COLLATE NOCASE)",
+    "CREATE TABLE IF NOT EXISTS literature_collection_items(collection_id TEXT REFERENCES literature_collections(id) ON DELETE CASCADE,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,PRIMARY KEY(collection_id,literature_id))",
+    "CREATE TABLE IF NOT EXISTS literature_tags(id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,color TEXT NOT NULL DEFAULT '',created_at REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS literature_item_tags(literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,tag_id TEXT REFERENCES literature_tags(id) ON DELETE CASCADE,PRIMARY KEY(literature_id,tag_id))",
+    "CREATE TABLE IF NOT EXISTS literature_projects(project_id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,created_at REAL NOT NULL,PRIMARY KEY(project_id,literature_id))",
+    "CREATE TABLE IF NOT EXISTS literature_notes(id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,text TEXT NOT NULL,created_at REAL NOT NULL,title TEXT NOT NULL DEFAULT '',updated_at REAL NOT NULL DEFAULT 0,version INTEGER NOT NULL DEFAULT 1,position INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(literature_id,id))",
+    ATTACHMENT_DDL,
 )
 
 ITEMS_KEY = "items"
@@ -90,6 +117,24 @@ DEFAULT_SORT_DIRECTION = SORT_DESCENDING
 ROW_TIEBREAK = f"i.id {SORT_ASCENDING}"
 #: 「最近」窗口的长度。列表、计数与标签 facet 共用同一份定义。
 RECENT_WINDOW_SECONDS = 7 * 86400
+#: 一条 IN 查询最多带多少个 id。SQLite 的绑定参数上限按编译期版本不同 (旧版 999),
+#: 分块让 page_size 之后放宽也不会撞上限制。
+BATCH_QUERY_CHUNK = 200
+TAXONOMY_COLLECTION = "collection"
+TAXONOMY_TAG = "tag"
+TAXONOMY_ADD = "add"
+TAXONOMY_REMOVE = "remove"
+#: facet 维度 → (聚合表达式, 同计数时的值排序方向)。新增一个维度就是加一行数据。
+#: 计数一律降序: 维度会截断到 FACET_ENTRIES_LIMIT, 留下的必须是占比最大的那些。
+FACET_DIMENSIONS: dict[str, tuple[str, str]] = {
+    "years": ("i.year", SORT_DESCENDING),
+    "item_types": ("i.item_type", SORT_ASCENDING),
+    "publications": ("NULLIF(i.publication,'')", SORT_ASCENDING),
+}
+TAXONOMY_TABLES = {
+    TAXONOMY_COLLECTION: ("literature_collections", "literature_collection_items", "collection_id"),
+    TAXONOMY_TAG: ("literature_tags", "literature_item_tags", "tag_id"),
+}
 #: 曲别针列的排序键。
 ATTACHMENT_SORT_KEY = "attachment"
 ATTACHMENT_PRESENT = 0
@@ -241,6 +286,38 @@ def _recent_window(sql: str, args: builtins.list[Any]) -> str:
     return sql
 
 
+def chunk_ids(values: tuple[str, ...], size: int = BATCH_QUERY_CHUNK) -> Iterator[tuple[str, ...]]:
+    """把 id 序列切成不超过绑定参数上限的块。"""
+
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
+
+
+@dataclass(frozen=True)
+class PageProjection:
+    """一页文献的关联维度读模型: 每个维度整页查一次, 而不是每行查一次。
+
+    列表投影过去对每行分别重取 tags / collections / attachments / projects / 项目内分类,
+    每次还各开一个连接 —— 而 `connect()` 每次都重跑整套 schema 引导 (WAL PRAGMA、
+    `executescript(DDL)`、笔记迁移检查、索引 DROP/CREATE), 50 行就是约 350 次引导, 其中
+    还夹着写事务; Windows 的文件锁与实时扫描把单次成本再放大一个量级, 于是列表要秒级。
+    这里把「一页」固定成取数单位: 新增一个维度就加一个字段与一条批量查询, 不回到逐行取数。
+    """
+
+    #: 全库标签, 按名称索引 (facet 行原样保留, 计数口径与 `tags()` 一致)。
+    tags: dict[str, dict[str, Any]]
+    #: 全库分类, 按名称索引 (计数口径与 `collections()` 一致)。
+    collections: dict[str, dict[str, Any]]
+    #: 每行的附件, 顺序与单条 `attachments()` 一致 (主附件优先)。
+    attachments: dict[str, builtins.list[dict[str, Any]]]
+    #: 每行关联的项目 id, 升序。
+    projects: dict[str, tuple[str, ...]]
+    #: 每行在请求项目范围内的分类。
+    project_collections: dict[str, tuple[dict[str, Any], ...]]
+    #: 每行在全库范围 (project_id IS NULL) 的分类名。
+    global_collections: dict[str, tuple[str, ...]]
+
+
 def encode(view: LiteratureView) -> str:
     payload = {
         ITEMS_KEY: [_json_value(item) for item in view.items],
@@ -272,29 +349,220 @@ def decode(source: str) -> LiteratureView:
         raise LiteratureError(LIBRARY_INVALID) from error
 
 
-def connect(database: Path | str = LITERATURE_DB) -> sqlite3.Connection:
-    target = Path(database)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target, timeout=5)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.executescript(DDL)
-    _migrate_notes(conn)
-    _require_final_schema(conn)
-    conn.execute("DROP INDEX IF EXISTS literature_global_collection_names")
-    conn.execute("DROP INDEX IF EXISTS literature_project_collection_names")
-    conn.execute(
+@dataclass(frozen=True)
+class LiteratureSchema:
+    create_tables: tuple[str, ...]
+    add_note_columns: tuple[str, ...]
+    create_indexes: tuple[str, ...]
+    remove_indexes: tuple[str, ...]
+    repair_tables: tuple[str, ...] = ()
+
+    @property
+    def needs_write(self) -> bool:
+        return bool(
+            self.create_tables
+            or self.add_note_columns
+            or self.create_indexes
+            or self.remove_indexes
+            or self.repair_tables
+        )
+
+
+def _create_indexes(connection: sqlite3.Connection) -> None:
+    connection.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS literature_collection_sibling_names "
         "ON literature_collections(COALESCE(project_id,''),COALESCE(parent_id,''),"
         "name COLLATE NOCASE)"
     )
-    conn.execute(
+    connection.execute(
         f"CREATE UNIQUE INDEX IF NOT EXISTS {PRIMARY_ATTACHMENT_INDEX} "
         "ON literature_attachments(literature_id) WHERE role='primary'"
     )
+
+
+def inspect_schema(database: Path | str = LITERATURE_DB) -> LiteratureSchema:
+    """Read one WAL snapshot; callers still own directory qualification.
+
+    Missing files are inspected without creating paths. SQLite mode=ro may touch
+    SHM; this neither grants maintenance nor validates all persisted row values.
+    PDF ownership cutover must finish before ordinary literature initialization.
+    """
+    return _inspect_path(Path(database), stable_sidecars=True)
+
+
+def _inspect_path(
+    database: Path, *, stable_sidecars: bool, retry_creation: bool = True
+) -> LiteratureSchema:
+    present = True
+    try:
+        with database_files(database, stable_sidecars=stable_sidecars) as present:
+            if not present:
+                with closing(sqlite3.connect(":memory:")) as connection:
+                    connection.row_factory = sqlite3.Row
+                    return classify_schema(connection)
+            with reader(database) as connection:
+                connection.execute("BEGIN")
+                return classify_schema(connection)
+    except DatabaseBindingError:
+        if present or stable_sidecars or not retry_creation:
+            raise
+        # Another runtime initializer may publish a formerly absent database.
+        # Re-read its actual schema and binding once; never accept the empty
+        # in-memory classification as evidence about that newly published file.
+        return _inspect_path(database, stable_sidecars=False, retry_creation=False)
+
+
+def classify_schema(connection: sqlite3.Connection) -> LiteratureSchema:
+    """Classify an owner snapshot on a caller-owned Row connection; do not mutate it."""
+    _require_final_schema(connection)
+    _require_known_legacy_indexes(connection)
+    objects = {
+        row["name"]: row
+        for row in connection.execute("SELECT name,type,tbl_name,sql FROM sqlite_master")
+    }
+    missing_tables, missing_indexes, missing_notes, repair_tables = [], [], [], []
+    with closing(sqlite3.connect(":memory:")) as reference:
+        for statement in DDL:
+            reference.execute(statement)
+        _create_indexes(reference)
+        tables = reference.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        reject_schema_residue(connection, (name for name, _ in tables))
+        for name, definition in tables:
+            if name not in objects:
+                missing_tables.append(name)
+                continue
+            current = objects[name]
+            if current["type"] != "table":
+                raise LiteratureError(LIBRARY_INVALID)
+            columns = connection.execute(f"PRAGMA table_xinfo({name})").fetchall()
+            if any(row["hidden"] for row in columns):
+                raise LiteratureError(LIBRARY_INVALID)
+            expected = table_clauses(definition, name)
+            if name == "literature_notes":
+                names = {row["name"] for row in columns}
+                missing_notes = [column for column in NOTE_MIGRATION_COLUMNS if column not in names]
+                expected = tuple(clause for clause in expected if clause[0] not in missing_notes)
+            try:
+                actual = table_clauses(current["sql"], name)
+            except ValueError as error:
+                raise LiteratureError(LIBRARY_INVALID) from error
+            expected_columns = [
+                row[1]
+                for row in reference.execute(f"PRAGMA table_xinfo({name})")
+                if not (name == "literature_notes" and row[1] in missing_notes)
+            ]
+            matching = len(actual) == len(expected) and set(actual) == set(expected)
+            legacy = any(
+                len(actual) == len(clauses) and set(actual) == set(clauses)
+                for clauses in (
+                    table_clauses(declaration, name)
+                    for declaration in LEGACY_TABLE_DECLARATIONS.get(name, ())
+                )
+            )
+            if not matching and not legacy:
+                raise LiteratureError(LIBRARY_INVALID)
+            if legacy or (
+                name != "literature_notes" and [row["name"] for row in columns] != expected_columns
+            ):
+                repair_tables.append(name)
+        for name, table, definition in reference.execute(
+            "SELECT name,tbl_name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+        ):
+            if name not in objects:
+                missing_indexes.append(name)
+            elif (
+                objects[name]["type"] != "index"
+                or objects[name]["tbl_name"] != table
+                or sql_tokens(objects[name]["sql"] or "") != sql_tokens(definition)
+            ):
+                raise LiteratureError(LIBRARY_INVALID)
+    return LiteratureSchema(
+        tuple(missing_tables),
+        tuple(missing_notes),
+        tuple(missing_indexes),
+        tuple(name for name in LEGACY_COLLECTION_INDEXES if name in objects),
+        tuple(repair_tables),
+    )
+
+
+def initialize_schema(connection: sqlite3.Connection) -> None:
+    """Apply actual owner migrations in the caller's schema transaction.
+
+    Legacy PDF ownership cutovers span other stores and must already be done;
+    this entry point never grants permission to migrate those external files.
+    """
+    schema = classify_schema(connection)
+    if schema.needs_write:
+        for statement in DDL:
+            connection.execute(statement)
+        _migrate_notes(connection)
+        _repair_tables(connection, schema.repair_tables)
+        for name in schema.remove_indexes:
+            connection.execute(f"DROP INDEX {name}")
+        _create_indexes(connection)
+    if classify_schema(connection).needs_write:
+        raise LiteratureError(LIBRARY_INVALID)
+
+
+def _create_repaired_table(
+    connection: sqlite3.Connection, name: str, *, original: str, definition: str
+) -> None:
+    connection.execute(definition.replace(f"CREATE TABLE {original}", f"CREATE TABLE {name}", 1))
+
+
+def _repair_tables(connection: sqlite3.Connection, tables: tuple[str, ...]) -> None:
+    if not tables:
+        return
+    with closing(sqlite3.connect(":memory:")) as reference:
+        for statement in DDL:
+            reference.execute(statement)
+        for table in tables:
+            definition = reference.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()[0]
+            rebuild_table(
+                connection,
+                table,
+                partial(_create_repaired_table, original=table, definition=definition),
+            )
+
+
+def connect(database: Path | str = LITERATURE_DB) -> sqlite3.Connection:
+    target = Path(database)
+    # Other admitted SQLite connections may retire and recreate WAL/SHM while
+    # our read connection closes. Public startup/update inspection stays strict.
+    _inspect_path(target, stable_sidecars=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    conn = open_database(target, timeout=5)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        if classify_schema(conn).needs_write:
+            with schema_transaction(conn):
+                initialize_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
+
+
+def _require_known_legacy_indexes(conn: sqlite3.Connection) -> None:
+    """Only historical owner definitions authorize removal of these names."""
+    for name, declaration in LEGACY_COLLECTION_INDEXES.items():
+        row = conn.execute(
+            "SELECT type,tbl_name,sql FROM sqlite_master WHERE name=?", (name,)
+        ).fetchone()
+        if row is not None and (
+            row[0] != "index"
+            or row[1] != "literature_collections"
+            or row[2] is None
+            or sql_tokens(row[2]) != sql_tokens(declaration)
+        ):
+            raise LiteratureError(LIBRARY_INVALID)
 
 
 def _migrate_notes(conn: sqlite3.Connection) -> None:
@@ -358,6 +626,264 @@ class LiteratureRepository:
     def __init__(self, database: Path | str = LITERATURE_DB):
         self.database = Path(database)
 
+    def taxonomy_list(
+        self, kind: str, project_id: str, limit: int, offset: int
+    ) -> builtins.list[dict[str, Any]]:
+        table, memberships, foreign_key = TAXONOMY_TABLES[kind]
+        condition = "WHERE t.project_id=?" if kind == TAXONOMY_COLLECTION else ""
+        parameters = (project_id, limit, offset) if condition else (limit, offset)
+        with closing(connect(self.database)) as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    f"SELECT t.*,count(x.literature_id) count FROM {table} t "
+                    f"LEFT JOIN {memberships} x ON x.{foreign_key}=t.id {condition} "
+                    "GROUP BY t.id ORDER BY t.name COLLATE NOCASE,t.id LIMIT ? OFFSET ?",
+                    parameters,
+                )
+            ]
+
+    def taxonomy_create(
+        self, kind: str, project_id: str, name: str, parent_id: str | None = None
+    ) -> tuple[dict[str, Any], bool]:
+        table, _, _ = TAXONOMY_TABLES[kind]
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if kind == TAXONOMY_COLLECTION:
+                if parent_id is not None:
+                    self._taxonomy_row(connection, kind, parent_id, project_id)
+                existing = connection.execute(
+                    f"SELECT * FROM {table} WHERE project_id=? AND parent_id IS ? AND name=?",
+                    (project_id, parent_id, name),
+                ).fetchone()
+            else:
+                existing = connection.execute(
+                    f"SELECT * FROM {table} WHERE name=?", (name,)
+                ).fetchone()
+            if existing is not None:
+                return dict(existing), True
+            identifier = str(uuid.uuid4())
+            if kind == TAXONOMY_COLLECTION:
+                connection.execute(
+                    f"INSERT INTO {table}(id,name,project_id,parent_id,created_at) VALUES(?,?,?,?,?)",
+                    (identifier, name, project_id, parent_id, time.time()),
+                )
+            else:
+                connection.execute(
+                    f"INSERT INTO {table}(id,name,color,created_at) VALUES(?,?,?,?)",
+                    (identifier, name, "", time.time()),
+                )
+            return dict(self._taxonomy_row(connection, kind, identifier, project_id)), False
+
+    @staticmethod
+    def _taxonomy_row(
+        connection: sqlite3.Connection, kind: str, identifier: str, project_id: str
+    ) -> sqlite3.Row:
+        table, _, _ = TAXONOMY_TABLES[kind]
+        condition = " AND project_id=?" if kind == TAXONOMY_COLLECTION else ""
+        parameters = (identifier, project_id) if condition else (identifier,)
+        row = connection.execute(
+            f"SELECT * FROM {table} WHERE id=?{condition}", parameters
+        ).fetchone()
+        if row is None:
+            raise LiteratureError(TAXONOMY_NOT_FOUND)
+        return row
+
+    def taxonomy_update(
+        self, kind: str, project_id: str, identifier: str, changes: dict[str, Any]
+    ) -> dict[str, Any]:
+        table, _, _ = TAXONOMY_TABLES[kind]
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._taxonomy_row(connection, kind, identifier, project_id)
+            name = changes.get("name", row["name"])
+            try:
+                if kind == TAXONOMY_COLLECTION:
+                    parent_id = changes.get("parent_id", row["parent_id"])
+                    if parent_id is not None:
+                        self._taxonomy_row(connection, kind, parent_id, project_id)
+                        cycle = connection.execute(
+                            "WITH RECURSIVE subtree(id) AS (SELECT id FROM literature_collections WHERE id=? UNION SELECT child.id FROM literature_collections child JOIN subtree ON child.parent_id=subtree.id) SELECT id FROM subtree WHERE id=?",
+                            (identifier, parent_id),
+                        ).fetchone()
+                        if cycle is not None:
+                            raise LiteratureError(COLLECTION_CYCLE)
+                    connection.execute(
+                        f"UPDATE {table} SET name=?,parent_id=? WHERE id=?",
+                        (name, parent_id, identifier),
+                    )
+                else:
+                    connection.execute(f"UPDATE {table} SET name=? WHERE id=?", (name, identifier))
+            except sqlite3.IntegrityError as error:
+                raise LiteratureError(TAXONOMY_CONFLICT) from error
+            return dict(self._taxonomy_row(connection, kind, identifier, project_id))
+
+    def taxonomy_delete(
+        self, kind: str, project_id: str, identifier: str, expected_revision: str | None
+    ) -> dict[str, Any]:
+        table, memberships, foreign_key = TAXONOMY_TABLES[kind]
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._taxonomy_row(connection, kind, identifier, project_id)
+            if kind == TAXONOMY_COLLECTION:
+                rows = connection.execute(
+                    "WITH RECURSIVE subtree(id,depth) AS (SELECT id,0 FROM literature_collections WHERE id=? UNION ALL SELECT child.id,subtree.depth+1 FROM literature_collections child JOIN subtree ON child.parent_id=subtree.id) SELECT t.*,subtree.depth FROM literature_collections t JOIN subtree ON t.id=subtree.id ORDER BY subtree.depth DESC,t.id",
+                    (identifier,),
+                ).fetchall()
+            else:
+                rows = [row]
+            identifiers = tuple(str(entry["id"]) for entry in rows)
+            links = [
+                dict(entry)
+                for key in identifiers
+                for entry in connection.execute(
+                    f"SELECT * FROM {memberships} WHERE {foreign_key}=? ORDER BY literature_id",
+                    (key,),
+                )
+            ]
+            literature_ids = sorted({entry["literature_id"] for entry in links})
+            projects = [
+                dict(entry)
+                for key in literature_ids
+                for entry in connection.execute(
+                    "SELECT project_id,literature_id FROM literature_projects WHERE literature_id=? ORDER BY project_id",
+                    (key,),
+                )
+            ]
+            revision = sha256(
+                json.dumps(
+                    {"rows": [dict(entry) for entry in rows], "links": links, "projects": projects},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            impact = {
+                "definitions": len(rows),
+                "memberships": len(links),
+                "literature": len(literature_ids),
+                "projects": (
+                    len({entry["project_id"] for entry in projects})
+                    if kind == TAXONOMY_TAG
+                    else int(bool(links))
+                ),
+            }
+            if expected_revision is not None and expected_revision != revision:
+                raise LiteratureError(TAXONOMY_REVISION_CONFLICT)
+            if expected_revision is not None:
+                connection.executemany(
+                    f"DELETE FROM {table} WHERE id=?", ((key,) for key in identifiers)
+                )
+            return {
+                "preview": expected_revision is None,
+                "revision": revision,
+                "impact": impact,
+                "items": [dict(row)],
+                "affected": len(rows) if expected_revision is not None else 0,
+            }
+
+    def organize(
+        self,
+        project_id: str,
+        literature_ids: tuple[str, ...],
+        collection_ids: tuple[str, ...],
+        tag_ids: tuple[str, ...],
+        action: str,
+    ) -> int:
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for identifier in literature_ids:
+                if (
+                    connection.execute(
+                        "SELECT literature_id FROM literature_projects WHERE project_id=? AND literature_id=?",
+                        (project_id, identifier),
+                    ).fetchone()
+                    is None
+                ):
+                    raise LiteratureError(TAXONOMY_ITEM_UNAVAILABLE)
+            for identifier in collection_ids:
+                self._taxonomy_row(connection, TAXONOMY_COLLECTION, identifier, project_id)
+            for identifier in tag_ids:
+                self._taxonomy_row(connection, TAXONOMY_TAG, identifier, project_id)
+            before = connection.total_changes
+            for kind, identifiers in (
+                (TAXONOMY_COLLECTION, collection_ids),
+                (TAXONOMY_TAG, tag_ids),
+            ):
+                _, table, foreign_key = TAXONOMY_TABLES[kind]
+                values = (
+                    (identifier, literature_id)
+                    for identifier in identifiers
+                    for literature_id in literature_ids
+                )
+                sql = (
+                    f"INSERT OR IGNORE INTO {table}({foreign_key},literature_id) VALUES(?,?)"
+                    if action == TAXONOMY_ADD
+                    else f"DELETE FROM {table} WHERE {foreign_key}=? AND literature_id=?"
+                )
+                connection.executemany(sql, values)
+            return connection.total_changes - before
+
+    def organize_tags(
+        self,
+        literature_ids: tuple[str, ...],
+        names: tuple[str, ...],
+        action: str = TAXONOMY_ADD,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """按标签名批量增删成员关系, 返回 (库里命中的文献 id, 查不到的 id)。
+
+        只写 ``literature_item_tags``, 不重写题录行: 打标签不该动 ``updated_at``,
+        更不该把条目在其它作用域下的分类成员关系连带回写 —— 逐条 ``save()`` 两者
+        都会做。``action`` 复用 ``organize()`` 的口径; add 时标签名不存在就建标签,
+        remove 时不存在就等于没有成员可删。
+        """
+
+        ordered = tuple(dict.fromkeys(literature_ids))
+        if not ordered:
+            return (), ()
+        wanted = tuple(dict.fromkeys(name for name in names if name.strip()))
+        _, table, foreign_key = TAXONOMY_TABLES[TAXONOMY_TAG]
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing: set[str] = set()
+            for chunk in chunk_ids(ordered):
+                placeholders = ",".join("?" for _ in chunk)
+                existing.update(
+                    str(row[0])
+                    for row in connection.execute(
+                        f"SELECT id FROM literature_items WHERE id IN ({placeholders})", chunk
+                    )
+                )
+            hit = tuple(identifier for identifier in ordered if identifier in existing)
+            missing = tuple(identifier for identifier in ordered if identifier not in existing)
+            if not wanted or not hit:
+                return hit, missing
+            tag_ids: builtins.list[str] = []
+            for name in wanted:
+                if action == TAXONOMY_ADD:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO literature_tags VALUES(?,?,?,?)",
+                        (str(uuid.uuid4()), name, "", time.time()),
+                    )
+                row = connection.execute(
+                    "SELECT id FROM literature_tags WHERE name=?", (name,)
+                ).fetchone()
+                if row is not None:
+                    tag_ids.append(str(row[0]))
+            for chunk in chunk_ids(hit):
+                if action == TAXONOMY_ADD:
+                    connection.executemany(
+                        f"INSERT OR IGNORE INTO {table}({foreign_key},literature_id) VALUES(?,?)",
+                        ((tag_id, identifier) for identifier in chunk for tag_id in tag_ids),
+                    )
+                elif tag_ids:
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE literature_id IN "
+                        f"({','.join('?' for _ in chunk)}) "
+                        f"AND {foreign_key} IN ({','.join('?' for _ in tag_ids)})",
+                        (*chunk, *tag_ids),
+                    )
+            return hit, missing
+
     def list(
         self,
         q: str = "",
@@ -371,6 +897,7 @@ class LiteratureRepository:
         limit: int = 200,
         offset: int = 0,
         recent_only: bool = False,
+        ids: tuple[str, ...] | None = None,
     ) -> tuple[LiteratureItem, ...]:
         sql, args = self._selection(
             q=q,
@@ -379,12 +906,13 @@ class LiteratureRepository:
             tag_ids=tag_ids,
             without_collection=without_collection,
             without_project=without_project,
+            ids=ids,
         )
         if recent_only:
             sql = _recent_window(sql, args)
         sql = f"SELECT DISTINCT i.* {sql} ORDER BY {_order_by(sort, order)} LIMIT ? OFFSET ?"
         args.extend((limit, offset))
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             return tuple(self._item(c, r, project_id) for r in c.execute(sql, args))
 
     def filtered_total(
@@ -396,6 +924,7 @@ class LiteratureRepository:
         without_collection: bool = False,
         without_project: bool = False,
         recent_only: bool = False,
+        ids: tuple[str, ...] | None = None,
     ) -> int:
         sql, args = self._selection(
             q=q,
@@ -404,10 +933,11 @@ class LiteratureRepository:
             tag_ids=tag_ids,
             without_collection=without_collection,
             without_project=without_project,
+            ids=ids,
         )
         if recent_only:
             sql = _recent_window(sql, args)
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             return int(c.execute(f"SELECT count(DISTINCT i.id) {sql}", args).fetchone()[0])
 
     @staticmethod
@@ -418,10 +948,14 @@ class LiteratureRepository:
         tag_ids: tuple[str, ...],
         without_collection: bool,
         without_project: bool = False,
+        ids: tuple[str, ...] | None = None,
     ) -> tuple[str, builtins.list[Any]]:
         sql = "FROM literature_items i"
         args: builtins.list[Any] = []
         where: builtins.list[str] = []
+        if ids is not None:
+            where.append(f"i.id IN ({','.join('?' for _ in ids)})" if ids else "1=0")
+            args.extend(ids)
         if project_id:
             sql += " JOIN literature_projects p ON p.literature_id=i.id"
             where.append("p.project_id=?")
@@ -486,12 +1020,102 @@ class LiteratureRepository:
         return sql, args
 
     def get(self, key: str) -> LiteratureItem | None:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             row = c.execute("SELECT * FROM literature_items WHERE id=?", (key,)).fetchone()
             return self._item(c, row, "") if row else None
 
+    def by_ids(
+        self, identifiers: tuple[str, ...], project_id: str = ""
+    ) -> tuple[LiteratureItem, ...]:
+        """按 id 取条目: 保持调用方给的顺序, 去重, 查不到的 id 丢弃。
+
+        导出与任何「我手上有一批 id」的读取都走这里。``list()`` 带 LIMIT (一页),
+        拿它当按 id 取数会静默丢条目 —— 选中的恰好都是老条目时甚至一条都取不到。
+        """
+
+        ordered = tuple(dict.fromkeys(identifiers))
+        if not ordered:
+            return ()
+        with closing(connect(self.database)) as c, c:
+            found: dict[str, LiteratureItem] = {}
+            for chunk in chunk_ids(ordered):
+                placeholders = ",".join("?" for _ in chunk)
+                for row in c.execute(
+                    f"SELECT * FROM literature_items WHERE id IN ({placeholders})", chunk
+                ):
+                    found[str(row["id"])] = self._item(c, row, project_id)
+        return tuple(found[identifier] for identifier in ordered if identifier in found)
+
+    def page_projection(
+        self, literature_ids: tuple[str, ...], project_id: str = ""
+    ) -> PageProjection:
+        """一次取回整页条目的全部关联维度。
+
+        `tags()` / `collections()` 是带 GROUP BY 的聚合全扫, 成本随全库规模增长, 过去每行
+        都重跑一次; 这里整页只跑一次。每行的附件 / 项目关联 / 项目内分类 / 全库分类名各用
+        一条 IN 查询批量取回, 且全部跑在同一个连接上。
+        """
+
+        ids = tuple(dict.fromkeys(literature_ids))
+        #: 全库分类作用域恒为 NULL, 与请求的项目范围无关: 条目徽章显示的是全库归类,
+        #: 项目内归类走 `project_collections`。
+        global_scope = _collection_scope("")
+        attachments: dict[str, builtins.list[dict[str, Any]]] = {key: [] for key in ids}
+        linked_projects: dict[str, builtins.list[str]] = {key: [] for key in ids}
+        scoped_collections: dict[str, builtins.list[dict[str, Any]]] = {key: [] for key in ids}
+        global_names: dict[str, builtins.list[str]] = {key: [] for key in ids}
+        if ids:
+            scope = _collection_scope(project_id)
+            scoped_condition = "c.project_id=?" if project_id else "c.project_id IS NOT NULL"
+            connection = connect(self.database)
+            try:
+                for chunk in chunk_ids(ids):
+                    placeholders = ",".join("?" for _ in chunk)
+                    for row in connection.execute(
+                        "SELECT * FROM literature_attachments WHERE literature_id IN "
+                        f"({placeholders}) "
+                        "ORDER BY literature_id,role='primary' DESC,created_at,id",
+                        chunk,
+                    ):
+                        attachments[str(row["literature_id"])].append(dict(row))
+                    for row in connection.execute(
+                        "SELECT literature_id,project_id FROM literature_projects "
+                        f"WHERE literature_id IN ({placeholders}) "
+                        "ORDER BY literature_id,project_id",
+                        chunk,
+                    ):
+                        linked_projects[str(row["literature_id"])].append(str(row["project_id"]))
+                    for row in connection.execute(
+                        "SELECT i.literature_id,c.*,0 count FROM literature_collections c "
+                        "JOIN literature_collection_items i ON i.collection_id=c.id "
+                        f"WHERE i.literature_id IN ({placeholders}) AND {scoped_condition} "
+                        "ORDER BY i.literature_id,c.created_at,c.name",
+                        chunk + ((scope,) if project_id else ()),
+                    ):
+                        payload = dict(row)
+                        scoped_collections[str(payload.pop("literature_id"))].append(payload)
+                    # 全库分类名的顺序沿用单条 `_item()` 的取数顺序 (关系表 rowid)。
+                    for row in connection.execute(
+                        "SELECT x.literature_id,q.name FROM literature_collection_items x "
+                        "JOIN literature_collections q ON q.id=x.collection_id "
+                        f"WHERE x.literature_id IN ({placeholders}) AND q.project_id IS ? "
+                        "ORDER BY x.literature_id,x.rowid",
+                        chunk + (global_scope,),
+                    ):
+                        global_names[str(row["literature_id"])].append(str(row["name"]))
+            finally:
+                connection.close()
+        return PageProjection(
+            tags={row["name"]: row for row in self.tags()},
+            collections={row["name"]: row for row in self.collections()},
+            attachments=attachments,
+            projects={key: tuple(value) for key, value in linked_projects.items()},
+            project_collections={key: tuple(value) for key, value in scoped_collections.items()},
+            global_collections={key: tuple(value) for key, value in global_names.items()},
+        )
+
     def notes(self, literature_id: str) -> tuple[LiteratureNote, ...] | None:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             if (
                 connection.execute(
                     "SELECT 1 FROM literature_items WHERE id=?", (literature_id,)
@@ -505,7 +1129,7 @@ class LiteratureRepository:
         body = text.strip()
         if not body:
             raise LiteratureError(NOTE_BODY_REQUIRED)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 connection.execute(
@@ -578,7 +1202,7 @@ class LiteratureRepository:
             raise LiteratureError(NOTE_TITLE_REQUIRED)
         if not body:
             raise LiteratureError(NOTE_BODY_REQUIRED)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM literature_notes WHERE literature_id=? AND id=?",
@@ -610,7 +1234,7 @@ class LiteratureRepository:
             )
 
     def delete_note(self, literature_id: str, note_id: str) -> bool:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             removed = connection.execute(
                 "DELETE FROM literature_notes WHERE literature_id=? AND id=?",
@@ -657,7 +1281,7 @@ class LiteratureRepository:
         }
         if set(fields) - columns:
             raise LiteratureError(LIBRARY_INVALID)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 connection.execute("SELECT 1 FROM literature_items WHERE id=?", (key,)).fetchone()
@@ -733,11 +1357,11 @@ class LiteratureRepository:
         )
 
     def total(self) -> int:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             return int(c.execute("SELECT count(*) FROM literature_items").fetchone()[0])
 
     def attachments(self, literature_id: str) -> builtins.list[dict[str, Any]]:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             return [
                 dict(row)
                 for row in connection.execute(
@@ -748,13 +1372,17 @@ class LiteratureRepository:
             ]
 
     def attachment(self, literature_id: str, attachment_id: str) -> LiteratureAttachment | None:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             row = connection.execute(
                 "SELECT * FROM literature_attachments WHERE id=? AND literature_id=?",
                 (attachment_id, literature_id),
             ).fetchone()
         if row is None:
             return None
+        return self._attachment_row(row)
+
+    @staticmethod
+    def _attachment_row(row: sqlite3.Row) -> LiteratureAttachment:
         return LiteratureAttachment(
             id=str(row["id"]),
             literature_id=str(row["literature_id"]),
@@ -783,7 +1411,7 @@ class LiteratureRepository:
         会让删除时忘掉的是别人那份索引。
         """
 
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "UPDATE literature_attachments SET path=?,revision=?,media_type=?,kind=? "
@@ -793,13 +1421,26 @@ class LiteratureRepository:
             return cursor.rowcount == 1
 
     def primary_attachment(self, literature_id: str) -> LiteratureAttachment | None:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             row = connection.execute(
                 "SELECT id FROM literature_attachments "
                 "WHERE literature_id=? AND role=? ORDER BY created_at DESC,id LIMIT 1",
                 (literature_id, AttachmentRole.PRIMARY.value),
             ).fetchone()
         return self.attachment(literature_id, str(row["id"])) if row else None
+
+    def project_attachment_revision(
+        self, project_id: str, revision: str
+    ) -> LiteratureAttachment | None:
+        with closing(connect(self.database)) as connection:
+            row = connection.execute(
+                "SELECT a.* FROM literature_attachments a "
+                "JOIN literature_projects p ON p.literature_id=a.literature_id "
+                "WHERE p.project_id=? AND a.revision=? AND a.role=? "
+                "ORDER BY a.created_at DESC,a.id LIMIT 1",
+                (project_id, revision, AttachmentRole.PRIMARY.value),
+            ).fetchone()
+        return self._attachment_row(row) if row else None
 
     def attachment_files(self, literature_id: str) -> tuple[tuple[str, str], ...]:
         """Return ``(path, revision)`` of every file this item owns.
@@ -808,7 +1449,7 @@ class LiteratureRepository:
         的全文索引缓存 —— 行一删, 库里就再没有第二处记着这份字节的修订号。
         """
 
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             return tuple(
                 (str(row[0]), str(row[1]))
                 for row in connection.execute(
@@ -819,7 +1460,7 @@ class LiteratureRepository:
             )
 
     def has_attachment_path(self, path: str) -> bool:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             return (
                 connection.execute(
                     "SELECT 1 FROM literature_attachments WHERE path=? LIMIT 1",
@@ -839,7 +1480,7 @@ class LiteratureRepository:
         of it. The physical file and any full-text index derived from it are owned
         outside this transaction and are reported back through the return value.
         """
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT path,revision,role FROM literature_attachments "
@@ -922,7 +1563,7 @@ class LiteratureRepository:
                 )
 
         if connection is None:
-            with connect(self.database) as current:
+            with closing(connect(self.database)) as current, current:
                 current.execute("BEGIN IMMEDIATE")
                 insert(current)
         else:
@@ -948,7 +1589,7 @@ class LiteratureRepository:
         if connection is not None:
             self._save(connection, item, project_id)
             return self._item_by_id(connection, item.id, project_id)
-        with connect(self.database) as current:
+        with closing(connect(self.database)) as current, current:
             self._save(current, item, project_id)
             return self._item_by_id(current, item.id, project_id)
 
@@ -965,7 +1606,7 @@ class LiteratureRepository:
         这里只负责追加，不存在"命中既存条目就跳过/合并"的分支。
         """
 
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 collection_id
@@ -1019,7 +1660,7 @@ class LiteratureRepository:
 
         namespace = f"{project_id}:" if project_id else ""
         external_ids = {key: f"zotero:{namespace}{key}" for key, _name, _parent in collections}
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 target_collection_id
@@ -1202,7 +1843,7 @@ class LiteratureRepository:
             )
 
     def delete(self, key: str, confirm: bool = False) -> tuple[bool, tuple[str, ...]]:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             projects = tuple(
                 r[0]
                 for r in c.execute(
@@ -1215,7 +1856,7 @@ class LiteratureRepository:
             )
 
     def collections(self, project_id: str = "") -> builtins.list[dict[str, Any]]:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             return [
                 dict(r)
                 for r in c.execute(
@@ -1234,20 +1875,28 @@ class LiteratureRepository:
         文献条目本身不删 —— 清的是项目关联, 不是用户的文献。
         """
 
-        with connect(self.database) as connection:
-            collection_items = connection.execute(
-                "DELETE FROM literature_collection_items WHERE collection_id IN "
-                "(SELECT id FROM literature_collections WHERE project_id=?)",
-                (project_id,),
-            ).rowcount
-            collections = connection.execute(
-                "DELETE FROM literature_collections WHERE project_id=?",
-                (project_id,),
-            ).rowcount
-            links = connection.execute(
-                "DELETE FROM literature_projects WHERE project_id=?",
-                (project_id,),
-            ).rowcount
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self.drop_project_link_rows(connection, project_id)
+
+    @staticmethod
+    def drop_project_link_rows(connection: sqlite3.Connection, project_id: str) -> int:
+        """Apply live unlink semantics to a caller-owned transaction or projection."""
+        if not connection.in_transaction:
+            raise ValueError("project link removal requires a transaction")
+        collection_items = connection.execute(
+            "DELETE FROM literature_collection_items WHERE collection_id IN "
+            "(SELECT id FROM literature_collections WHERE project_id=?)",
+            (project_id,),
+        ).rowcount
+        collections = connection.execute(
+            "DELETE FROM literature_collections WHERE project_id=?",
+            (project_id,),
+        ).rowcount
+        links = connection.execute(
+            "DELETE FROM literature_projects WHERE project_id=?",
+            (project_id,),
+        ).rowcount
         return collection_items + collections + links
 
     def project_navigation(self, project_ids: tuple[str, ...]) -> dict[str, dict[str, Any]]:
@@ -1259,7 +1908,7 @@ class LiteratureRepository:
         navigation: dict[str, dict[str, Any]] = {
             project_id: {"count": 0, "collections": []} for project_id in project_ids
         }
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             for row in c.execute(
                 "SELECT project_id,count(DISTINCT literature_id) count "
                 f"FROM literature_projects WHERE project_id IN ({placeholders}) "
@@ -1286,7 +1935,7 @@ class LiteratureRepository:
         }
         if collection_ids:
             collection_placeholders = ",".join("?" for _ in collection_ids)
-            with connect(self.database) as c:
+            with closing(connect(self.database)) as c, c:
                 for relation in c.execute(
                     "SELECT collection_id,literature_id FROM literature_collection_items "
                     f"WHERE collection_id IN ({collection_placeholders})",
@@ -1336,7 +1985,7 @@ class LiteratureRepository:
             "LEFT JOIN literature_item_tags x ON x.tag_id=t.id"
         )
         group_by = " GROUP BY t.id ORDER BY t.created_at DESC"
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             library_rows = [dict(row) for row in c.execute(f"{select}{group_by}")]
             for row in library_rows:
                 row["total"] = row["count"]
@@ -1388,7 +2037,7 @@ class LiteratureRepository:
         )
         if recent_only:
             sql = _recent_window(sql, args)
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             scoped = {
                 str(row["tag_id"]): int(row["count"])
                 for row in c.execute(
@@ -1407,12 +2056,41 @@ class LiteratureRepository:
         rows.sort(key=lambda row: row["count"], reverse=True)
         return rows
 
+    def facet_counts(self, project_id: str = "") -> dict[str, tuple[tuple[Any, int], ...]]:
+        """按 FACET_DIMENSIONS 聚合的维度计数, 覆盖作用域内的全部条目。
+
+        刻意不复用 ``list()``: 那边带 LIMIT, 用它做聚合等于把 facet 悄悄限制在最新的
+        一页里, 老条目的年份/类型/期刊根本不会出现。这里只复用 ``_selection`` 的作用域
+        定义, 不接 LIMIT, 因此 facet 与列表条数始终同一口径。
+        """
+
+        sql, args = self._selection(
+            q="",
+            project_id=project_id,
+            collection_ids=(),
+            tag_ids=(),
+            without_collection=False,
+        )
+        counts: dict[str, tuple[tuple[Any, int], ...]] = {}
+        with closing(connect(self.database)) as c, c:
+            for dimension, (expression, tiebreak) in FACET_DIMENSIONS.items():
+                # 与 _recent_window 同一个套路: _selection 不一定带 WHERE。
+                scoped = sql + (" AND " if " WHERE " in sql else " WHERE ")
+                rows = c.execute(
+                    f"SELECT {expression} value, count(DISTINCT i.id) count {scoped} "
+                    f"{expression} IS NOT NULL GROUP BY value "
+                    f"ORDER BY count {SORT_DESCENDING}, value {tiebreak}",
+                    args,
+                ).fetchall()
+                counts[dimension] = tuple((row["value"], int(row["count"])) for row in rows)
+        return counts
+
     def create_collection(
         self, name: str, parent_id: str | None = None, project_id: str = ""
     ) -> dict[str, Any]:
         key = str(uuid.uuid4())
         scope = _collection_scope(project_id)
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             if parent_id is not None:
                 parent = c.execute(
                     "SELECT id FROM literature_collections "
@@ -1441,12 +2119,11 @@ class LiteratureRepository:
     def update_collection(
         self, key: str, changes: dict[str, Any], project_id: str = ""
     ) -> dict[str, Any]:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             c.execute("BEGIN IMMEDIATE")
             scope = _collection_scope(project_id)
             row = c.execute(
-                "SELECT * FROM literature_collections "
-                "WHERE (id=? OR name=?) AND project_id IS ?",
+                "SELECT * FROM literature_collections WHERE (id=? OR name=?) AND project_id IS ?",
                 (key, key, scope),
             ).fetchone()
             if row is None:
@@ -1489,7 +2166,7 @@ class LiteratureRepository:
 
     def create_tag(self, name: str, color: str = "") -> dict[str, Any]:
         key = str(uuid.uuid4())
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             c.execute(
                 "INSERT OR IGNORE INTO literature_tags VALUES(?,?,?,?)",
                 (key, name, color, time.time()),
@@ -1505,11 +2182,10 @@ class LiteratureRepository:
         return dict(row)
 
     def delete_collection(self, key: str, project_id: str = "") -> dict[str, int]:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             scope = _collection_scope(project_id)
             row = c.execute(
-                "SELECT id FROM literature_collections "
-                "WHERE (id=? OR name=?) AND project_id IS ?",
+                "SELECT id FROM literature_collections WHERE (id=? OR name=?) AND project_id IS ?",
                 (key, key, scope),
             ).fetchone()
             if row is None:
@@ -1540,7 +2216,7 @@ class LiteratureRepository:
             return {"collections": len(identifiers), "memberships": memberships}
 
     def delete_tag(self, key: str) -> dict[str, int]:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             row = c.execute(
                 "SELECT id FROM literature_tags WHERE id=? OR name=?", (key, key)
             ).fetchone()
@@ -1556,7 +2232,7 @@ class LiteratureRepository:
             return {"tags": 1, "memberships": memberships}
 
     def projects(self, key: str) -> tuple[str, ...]:
-        with connect(self.database) as c:
+        with closing(connect(self.database)) as c, c:
             return tuple(
                 row[0]
                 for row in c.execute(
@@ -1568,7 +2244,7 @@ class LiteratureRepository:
     def project_collections(
         self, literature_id: str, project_id: str = ""
     ) -> tuple[dict[str, Any], ...]:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             scope = _collection_scope(project_id)
             return tuple(
                 dict(row)
@@ -1587,7 +2263,7 @@ class LiteratureRepository:
         self, literature_id: str, project_id: str, collection_ids: tuple[str, ...]
     ) -> None:
         unique_ids = tuple(dict.fromkeys(collection_ids))
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             valid_ids: set[str] = set()
             if unique_ids:
@@ -1618,7 +2294,7 @@ class LiteratureRepository:
         """Replace one item's project memberships without persisting project metadata."""
 
         unique_ids = tuple(dict.fromkeys(project_ids))
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if (
                 connection.execute(
@@ -1647,7 +2323,7 @@ class LiteratureRepository:
     ) -> tuple[str, ...]:
         """Add existing relationships without replacing an item's other memberships."""
 
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = (
                 {
@@ -1723,7 +2399,7 @@ class LiteratureRepository:
             return (), ()
         unique_collections = tuple(dict.fromkeys(collection_ids))
         placeholders = ",".join("?" for _ in ordered)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = {
                 str(row[0])
@@ -1769,7 +2445,7 @@ class LiteratureRepository:
         if not ordered:
             return ()
         placeholders = ",".join("?" for _ in ordered)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             linked = tuple(
                 str(row[0])
                 for row in connection.execute(
@@ -1800,7 +2476,7 @@ class LiteratureRepository:
         self, project_id: str = "", connection: sqlite3.Connection | None = None
     ) -> LiteratureView:
         if connection is None:
-            with connect(self.database) as current:
+            with closing(connect(self.database)) as current, current:
                 return self.view(project_id, current)
         sql, args = self._selection(
             project_id=project_id, q="", collection_ids=(), tag_ids=(), without_collection=False
@@ -1810,13 +2486,7 @@ class LiteratureRepository:
             for row in connection.execute(f"SELECT DISTINCT i.* {sql} ORDER BY i.created_at", args)
         )
         collections = tuple(
-            LiteratureCollection(
-                id=row["id"],
-                name=row["name"],
-                parent=row["parent_name"] or "",
-                count=row["count"],
-                project_id=row["project_id"],
-            )
+            self._collection_row(row)
             for row in connection.execute(
                 "SELECT c.*,parent.name parent_name,count(x.literature_id) count "
                 "FROM literature_collections c "
@@ -1850,7 +2520,7 @@ class LiteratureRepository:
             self._save(connection, item, "")
 
     def replace(self, view: LiteratureView, project_id: str = "") -> None:
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             self.replace_view(view, project_id, connection)
 
@@ -1975,21 +2645,62 @@ class LiteratureRepository:
     @staticmethod
     def _notes(c: sqlite3.Connection, literature_id: str) -> tuple[LiteratureNote, ...]:
         return tuple(
-            LiteratureNote(
-                id=str(row["id"]),
-                text=str(row["text"]),
-                created_at=float(row["created_at"]),
-                title=str(row["title"]),
-                updated_at=float(row["updated_at"]),
-                version=int(row["version"]),
-                position=int(row["position"]),
-            )
+            LiteratureRepository._note_row(row)
             for row in c.execute(
                 "SELECT * FROM literature_notes WHERE literature_id=? "
                 "ORDER BY position,created_at,id",
                 (literature_id,),
             )
         )
+
+    @staticmethod
+    def _note_row(row: sqlite3.Row) -> LiteratureNote:
+        return LiteratureNote(
+            id=str(row["id"]),
+            text=str(row["text"]),
+            created_at=float(row["created_at"]),
+            title=str(row["title"]),
+            updated_at=float(row["updated_at"]),
+            version=int(row["version"]),
+            position=int(row["position"]),
+        )
+
+    @staticmethod
+    def _collection_row(row: sqlite3.Row) -> LiteratureCollection:
+        return LiteratureCollection(
+            id=row["id"],
+            name=row["name"],
+            parent=row["parent_name"] or "",
+            count=row["count"],
+            project_id=row["project_id"],
+        )
+
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Read library records without opening attachments or changing membership."""
+        for row in connection.execute("SELECT * FROM literature_items"):
+            cls._item(connection, row, "")
+        for row in connection.execute("SELECT * FROM literature_notes"):
+            cls._note_row(row)
+        for row in connection.execute("SELECT * FROM literature_attachments"):
+            cls._attachment_row(row)
+        for row in connection.execute(
+            "SELECT c.*,parent.name parent_name,count(x.literature_id) count "
+            "FROM literature_collections c "
+            "LEFT JOIN literature_collections parent ON parent.id=c.parent_id "
+            "LEFT JOIN literature_collection_items x ON x.collection_id=c.id GROUP BY c.id"
+        ):
+            cls._collection_row(row)
+        # These membership and tag APIs expose SQLite values directly. Decode
+        # every row, including members absent from an item's scoped join.
+        for table in (
+            "literature_tags",
+            "literature_item_tags",
+            "literature_projects",
+            "literature_collection_items",
+        ):
+            for row in connection.execute(f"SELECT * FROM {table}"):
+                dict(row)
 
 
 def load_library(project_id: str = "", database: Path | str | None = None) -> LiteratureView:

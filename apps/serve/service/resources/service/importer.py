@@ -48,7 +48,9 @@ from service.resources.persistence.imports import (
 from service.resources.persistence.imports import (
     ResourceImportConflict as ResourceImportCatalogConflict,
 )
+from service.resources.persistence.listing import ResourceListingCatalog, ResourceSource
 from service.resources.service.history import ResourceVersionService
+from service.resources.service.listing import ResourceListing
 from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.writer import ResourceWriter, ResourceWriterError
 
@@ -140,6 +142,7 @@ class ResourceImportService:
         self._versions = versions
         self._supervisor = supervisor
         self._payloads = ResourceImportCatalog(content)
+        self._listing = ResourceListingCatalog(content)
 
     @staticmethod
     def _canonical(value: object) -> bytes:
@@ -160,6 +163,7 @@ class ResourceImportService:
 
     def _payload_receipt(self, project_id: str, asset: FileAssetRef) -> ContentWriteReceipt:
         snapshot = self._content.stable_snapshot(project_id, asset.path, VERSION_MAX_BYTES)
+        self._listing.record(project_id, (asset,), ResourceSource.IMPORTED)
         return ContentWriteReceipt(
             project_id=project_id,
             path=asset.path,
@@ -473,7 +477,7 @@ class ResourceImportService:
                 raise ResourceImportError("idempotency_key_required")
             replayed = self._replayed(project_id, len(sources), plan_token, mapped, idempotency_key)
             if replayed is not None:
-                return ResourceImportOutcome(ResourceImportStatus.COMPLETED, mode, replayed)
+                return self._completed(project_id, mode, replayed)
 
         plan = self._plan(project_id, sources, target_dir)
         if plan_token is None:
@@ -494,7 +498,7 @@ class ResourceImportService:
                 target_names=tuple(PurePosixPath(entry.target_path).name for entry in plan.entries),
                 collision_policy=ImportCollisionPolicy.EXACT,
             )
-            return ResourceImportOutcome(ResourceImportStatus.COMPLETED, mode, imported)
+            return self._completed(project_id, mode, imported)
 
         if not hmac.compare_digest(plan.token, plan_token):
             raise ResourceImportError(IMPORT_PLAN_STALE)
@@ -507,8 +511,8 @@ class ResourceImportService:
                 and not conflict_by_index[source_index].can_replace_with_version
             ):
                 raise ResourceImportError(IMPORT_REPLACE_NOT_SUPPORTED)
-        return ResourceImportOutcome(
-            ResourceImportStatus.COMPLETED,
+        return self._completed(
+            project_id,
             mode,
             self._execute(
                 project_id,
@@ -518,6 +522,12 @@ class ResourceImportService:
                 idempotency_key or "",
             ),
         )
+
+    def _completed(
+        self, project_id: str, mode: ImportMode, imported: tuple[FileAssetRef, ...]
+    ) -> ResourceImportOutcome:
+        ResourceListing(self._content).record_import(project_id, imported)
+        return ResourceImportOutcome(ResourceImportStatus.COMPLETED, mode, imported)
 
     def _execute(
         self,

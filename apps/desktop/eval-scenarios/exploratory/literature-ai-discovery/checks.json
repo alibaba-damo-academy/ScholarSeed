@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "directionId": "DISC-01",
+  "checks": [
+    {
+      "id": "DISC-ENTRY",
+      "pointIds": ["DISC-NEW-PAPER-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "DISC-NEW",
+      "pointIds": ["DISC-NEW-PAPER-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "DISC-SOURCE",
+      "pointIds": ["DISC-NEW-PAPER-01"],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "DISC-BOUNDARY",
+      "pointIds": ["DISC-NEW-PAPER-01"],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

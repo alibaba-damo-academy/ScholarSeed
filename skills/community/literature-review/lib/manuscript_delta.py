@@ -14,8 +14,12 @@ Abstract, synthesis/summary and conclusion chapters were drafted concurrently
 with the body from the plan and supplied evidence, not from the completed body.
 Check their claims individually against what the body actually establishes and
 revise unsupported or overstated claims; rewrite the abstract's findings to state
-only what the body establishes, replacing its entire text when needed through
-one exact-match delta edit.
+only what the body establishes. Keep the abstract as one compact paragraph.
+Merge provenance or evidence limitations into its existing limitation statement,
+remove repeated or chapter-by-chapter summary language, and replace the entire
+abstract text through one exact-match delta edit when it needs repair. Unless the
+user explicitly asked for a more detailed abstract, improve it without increasing
+its length.
 The publisher owns the reference list. Resolve bibliography_warnings by removing
 chapter-authored duplicate headings/lists, retaining the single publisher
 bibliography entry point and existing inline citations. Repair prose references

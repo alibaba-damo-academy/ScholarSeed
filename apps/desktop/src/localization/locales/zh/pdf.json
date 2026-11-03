@@ -16,7 +16,7 @@
   "reading": {
     "actions": {
       "document_translation": "全文翻译",
-      "interpretation": "AI 解读",
+      "interpretation": "AI 解释",
       "selection_translation": "翻译",
       "selection_explanation": "AI 解释",
       "figure_explanation": "图表解释"
@@ -67,7 +67,7 @@
     "introDescription": "提炼研究贡献、关键结论及其依据",
     "previousPage": "上一页",
     "nextPage": "下一页",
-    "chat": "与书深对话",
+    "chat": "向书深发起任务",
     "source": "原文",
     "previousResult": "上次成功结果（新结果完成后替换）",
     "explanation": "解释结果",
@@ -103,7 +103,9 @@
       "selection_unlocated": "未能在原文定位选区，请重新选择词句。",
       "selection_too_large": "选区及所在段落过长，请缩小选区后重试。",
       "literature_missing": "文献不存在，请重新打开文献。",
-      "document_too_large": "PDF 文件超过 30 MiB，或当前模型无法容纳最小解读分段。请使用更小的文献或切换长上下文模型。",
+      "document_too_large": "文献处理超过限制，请重新尝试以获取具体原因。",
+      "file_too_large": "此文档级操作仅支持不超过 30 MiB 的 PDF。请使用更小的文献；图表解释不受此文件大小限制。",
+      "input_too_large": "本次分析的输入内容超过处理预算。请缩小选区或输入内容；全文解读可尝试切换长上下文模型。",
       "source_changed": "源 PDF 已变化，请重新打开文献后重试。",
       "page_out_of_range": "页码超出文献范围。",
       "region_required": "请在当前页框选图或表。",
@@ -123,6 +125,7 @@
       "translation_alignment_missing": "译文缺少逐句对照，请重试。",
       "translation_sentence_incomplete": "逐句译文不完整，请重试。",
       "task_missing": "任务不存在",
+      "task_unresolved": "暂时无法确认翻译任务状态。为避免重复生成，已暂停自动重试；请等待服务恢复后再检查结果。",
       "pdf_input_unsupported": "当前模型未声明支持 PDF 文件输入，请在设置 → 模型服务确认能力或切换模型。",
       "image_input_unsupported": "当前模型未声明支持图片输入，请切换支持图片的模型。",
       "generation_failed": "生成失败，请检查模型连接并重试。",
@@ -130,6 +133,7 @@
       "source_changed_during_generation": "生成期间源 PDF 已变化，旧结果保留，请重新打开文献。",
       "execution_failed": "生成失败，旧结果已保留，请重试。",
       "preparation_failed": "无法准备阅读任务，请检查文献和模型设置后重试。",
+      "model_unavailable": "当前模型不可用。请登录，或在设置 → 模型服务中配置并选择可用模型。",
       "operation_busy": "当前操作已有生成任务；其他 AI 操作仍可使用。",
       "figure_stream_required": "图表解释需要使用流式接口，请更新客户端后重试。",
       "source_invalid": "请选择有效的项目 PDF 文件进行图表解释。"

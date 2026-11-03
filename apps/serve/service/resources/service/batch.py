@@ -111,6 +111,11 @@ class ResourceReviewBatchService:
             raise ResourceReviewBatchError("invalid_review_batch_request")
         if len({decision.file_id for decision in decisions}) != len(decisions):
             raise ResourceReviewBatchError("review_batch_members_mismatch")
+        if any(
+            decision.revised_content is not None and decision.action is not ReviewAction.REVISE
+            for decision in decisions
+        ):
+            raise ResourceReviewBatchError("invalid_review_batch_request")
         store = self._store(project_id)
         current_batch = self.batch(project_id, batch_id)
         if {decision.file_id for decision in decisions} != {
@@ -125,21 +130,41 @@ class ResourceReviewBatchService:
             raise ResourceReviewBatchError(exc.code) from exc
         if receipt is not None:
             return _receipt(current_batch, receipt)
+        if all(member.state is ReviewMemberState.COMPLETED for member in current_batch.members):
+            completed = {member.file_id: member for member in current_batch.members}
+            if any(
+                completed[decision.file_id].action is not decision.action for decision in decisions
+            ):
+                raise ResourceReviewBatchError("review_batch_decision_conflict")
+            result = ReviewBatchDecisionResult(current_batch, _results(current_batch))
+            try:
+                store.complete_request(
+                    idempotency_key, request_digest, _receipt_payload(result), _now_ms()
+                )
+            except ReviewBatchStoreConflict as exc:
+                raise ResourceReviewBatchError(exc.code) from exc
+            return result
         candidate_revisions = {
             member.file_id: member.candidate_revision for member in current_batch.members
         }
+        edited_by_user = {member.file_id: member.edited_by_user for member in current_batch.members}
         if all(
             decision.action is ReviewAction.ACCEPT
             and decision.expected_disk_revision == candidate_revisions[decision.file_id]
+            and not edited_by_user[decision.file_id]
             for decision in decisions
         ):
             result = self._accept(project_id, batch_id, decisions)
         else:
+            prepared_decisions = tuple(
+                self._resume_draft_decision(project_id, current_batch, decision)
+                for decision in decisions
+            )
             try:
-                batch = store.prepare(batch_id, decisions, _now_ms())
+                batch = store.prepare(batch_id, prepared_decisions, _now_ms())
             except ReviewBatchStoreConflict as exc:
                 raise ResourceReviewBatchError(exc.code) from exc
-            indexed = {decision.file_id: decision for decision in decisions}
+            indexed = {decision.file_id: decision for decision in prepared_decisions}
             for member in batch.members:
                 if member.file_id not in indexed or member.state is ReviewMemberState.COMPLETED:
                     continue
@@ -189,6 +214,28 @@ class ResourceReviewBatchService:
             except ReviewBatchStoreConflict as exc:
                 raise ResourceReviewBatchError(exc.code) from exc
         return result
+
+    def _resume_draft_decision(
+        self,
+        project_id: str,
+        batch: ReviewBatch,
+        decision: ReviewBatchDecision,
+    ) -> ReviewBatchDecision:
+        member = next(item for item in batch.members if item.file_id == decision.file_id)
+        if decision.revised_content is None or member.pending_revision == decision.pending_revision:
+            return decision
+        target_revision = "sha256:" + sha256(decision.revised_content).hexdigest()
+        current = self._content.stable_snapshot(project_id, member.path, VERSION_MAX_BYTES)
+        if current.revision != target_revision or not member.edited_by_user:
+            return decision
+        return ReviewBatchDecision(
+            decision.file_id,
+            decision.review_id,
+            member.pending_revision,
+            decision.action,
+            decision.expected_disk_revision,
+            decision.revised_content,
+        )
 
     def _accept(
         self,
@@ -248,29 +295,80 @@ class ResourceReviewBatchService:
         operation_key = _operation_key(batch_id, decision)
         effective = decision
         accepted_current = False
-        if decision.expected_disk_revision != candidate_revision and not edited_by_user:
+        if decision.revised_content is not None:
+            if decision.expected_disk_revision is None:
+                raise ResourceReviewBatchError("review_disk_revision_conflict")
+            target_revision = "sha256:" + sha256(decision.revised_content).hexdigest()
+            observed = self._content.stable_snapshot(project_id, path, VERSION_MAX_BYTES)
+            pending_before = self._versions.pending(project_id, decision.file_id)
+            already_applied = (
+                observed.revision == target_revision
+                and pending_before is not None
+                and pending_before.review is not None
+                and pending_before.review.id == decision.review_id
+                and pending_before.review.edited_by_user
+            )
+            if not already_applied:
+                self._recovery.backup_review_current(
+                    project_id,
+                    decision.file_id,
+                    decision.review_id,
+                    decision.pending_revision,
+                    path,
+                    decision.expected_disk_revision,
+                )
+                self._versions.commit_working(
+                    project_id,
+                    path,
+                    decision.revised_content,
+                    decision.expected_disk_revision,
+                    f"{operation_key}:draft",
+                )
+            updated = self._versions.pending(project_id, decision.file_id)
+            if updated is None or updated.review is None:
+                raise ResourceReviewBatchError("review_not_found")
+            effective = ReviewBatchDecision(
+                decision.file_id,
+                updated.review.id,
+                updated.revision,
+                decision.action,
+                target_revision,
+            )
+        restore_candidate = decision.action is ReviewAction.ACCEPT and (
+            decision.expected_disk_revision != candidate_revision or edited_by_user
+        )
+        keep_current = (
+            decision.action is ReviewAction.REVISE
+            and decision.expected_disk_revision != candidate_revision
+            and not edited_by_user
+            and decision.revised_content is None
+        )
+        if restore_candidate or keep_current:
             preview = self._recovery.preview_review_conflict(project_id, decision.file_id)
             if preview.disk.object_id != decision.expected_disk_revision:
                 raise ResourceReviewBatchError("review_disk_revision_conflict")
-            if decision.action is not ReviewAction.REJECT:
-                self._recovery.reconcile_review(
-                    project_id,
-                    decision.file_id,
-                    "keep_current",
-                    preview.token,
-                    f"{operation_key}:reconcile",
-                )
-                accepted_current = True
-                pending = self._versions.pending(project_id, decision.file_id)
-                if pending is None or pending.review is None:
-                    raise ResourceReviewBatchError("review_not_found")
-                effective = ReviewBatchDecision(
-                    decision.file_id,
-                    pending.review.id,
-                    pending.revision,
-                    decision.action,
-                    decision.expected_disk_revision,
-                )
+            self._recovery.reconcile_review(
+                project_id,
+                decision.file_id,
+                "restore_candidate" if restore_candidate else "keep_current",
+                preview.token,
+                f"{operation_key}:reconcile",
+            )
+            accepted_current = keep_current
+            pending = self._versions.pending(project_id, decision.file_id)
+            if pending is None or pending.review is None:
+                raise ResourceReviewBatchError("review_not_found")
+            effective = ReviewBatchDecision(
+                decision.file_id,
+                pending.review.id,
+                pending.revision,
+                decision.action,
+                (
+                    pending.review.candidate_revision
+                    if restore_candidate
+                    else decision.expected_disk_revision
+                ),
+            )
         outcome = {
             ReviewAction.ACCEPT: ReviewOutcome.ACCEPTED,
             ReviewAction.REJECT: ReviewOutcome.REJECTED,
@@ -335,6 +433,11 @@ def _operation_key(batch_id: str, decision: ReviewBatchDecision) -> str:
             decision.review_id,
             str(decision.pending_revision),
             decision.action.value,
+            (
+                sha256(decision.revised_content).hexdigest()
+                if decision.revised_content is not None
+                else ""
+            ),
         )
     )
     return "review-batch:" + sha256(value.encode("utf-8")).hexdigest()
@@ -348,6 +451,11 @@ def _request_digest(decisions: tuple[ReviewBatchDecision, ...]) -> str:
             "pending_revision": item.pending_revision,
             "action": item.action.value,
             "expected_disk_revision": item.expected_disk_revision,
+            "revised_content_digest": (
+                sha256(item.revised_content).hexdigest()
+                if item.revised_content is not None
+                else None
+            ),
         }
         for item in sorted(decisions, key=lambda decision: decision.file_id)
     ]

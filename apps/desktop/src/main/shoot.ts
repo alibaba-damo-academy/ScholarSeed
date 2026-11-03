@@ -1,6 +1,8 @@
-import { app, BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
+import { app } from 'electron'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
+import { waitForWorkspaceReady, workspaceReady } from './workspace-ready'
 
 type LogSink = (line: string) => void
 
@@ -319,40 +321,27 @@ async function fetchLatestMode(win: BrowserWindow): Promise<{
   return JSON.parse(raw) as { mode: string; pre: string | null }
 }
 
-/**
- * 等到渲染层报告工作台已就绪。
- *
- * 判据依据是真实 DOM：loading 遮罩层消失、且已渲染出工作区或对话面。
- * 0.2 默认落在四区工作台 (`.vds-workbench`)，0.1 双栏是
- * `.vds-workspace-body`，两者任一出现即算就绪 —— 只看 0.1 那个选择器会在
- * 0.2 默认视图下永远等到超时，把每次截图都拖慢 60s。
- * 超时不报错，让后继截图照旧进行 —— 拍到 loading 卡片本身也是一种需要被
- * 看见的失败证据，不应静默吞掉。
- */
-async function waitForWorkspaceReady(win: BrowserWindow, log: LogSink): Promise<void> {
-  const deadline = Date.now() + WORKSPACE_READY_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    const ready = await win.webContents.executeJavaScript(`
-      Boolean(
-        document.querySelector('.vds-workbench')
-        || document.querySelector('.vds-workspace-body')
-      )
-      && !document.querySelector('[data-testid="progress-screen"]')
-    `).catch(() => false)
-    if (ready === true) return
-    await settle(WORKSPACE_READY_POLL_MS)
-  }
-  log('[shoot] workspace not ready before timeout; capturing current state\n')
-}
-
-export async function runShoot(win: BrowserWindow, log: LogSink): Promise<void> {
+export async function runShoot(win: BrowserWindow, log: LogSink): Promise<number> {
+  // A hidden Windows surface can retain its loading frame after DOM hydration.
+  // Exercise a real rendered window without taking focus from the user.
+  win.showInactive()
   const dir = shotDir()
   const requested = String(process.env[SHOOT_SCENES_ENV] || '')
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
   const scenes = requested.length ? requested : DEFAULT_SCENES
-  await waitForWorkspaceReady(win, log)
+  const ready = async (): Promise<boolean> =>
+    waitForWorkspaceReady(
+      () => workspaceReady(win.webContents),
+      WORKSPACE_READY_TIMEOUT_MS,
+      WORKSPACE_READY_POLL_MS
+    )
+  if (!(await ready())) {
+    await capture(win, dir, 'workspace-not-ready', log)
+    log('[shoot] FAIL workspace not ready before timeout\n')
+    return 1
+  }
   await settle(1_500)
   for (const scene of scenes) {
     win.webContents.send('scholarseed:shoot-scene', scene)
@@ -364,10 +353,15 @@ export async function runShoot(win: BrowserWindow, log: LogSink): Promise<void> 
       else await waitForSelector(win, sceneClick.ready, SCENE_CLICK_READY_TIMEOUT_MS)
       await settle(SCENE_CLICK_SETTLE_MS)
     }
+    if (!(await ready())) {
+      await capture(win, dir, 'workspace-not-ready', log)
+      log(`[shoot] FAIL workspace not ready for scene ${scene}\n`)
+      return 1
+    }
     await capture(win, dir, scene, log)
   }
   log('[shoot] done\n')
-  app.quit()
+  return 0
 }
 
 export async function runModeCheck(win: BrowserWindow, log: LogSink): Promise<void> {

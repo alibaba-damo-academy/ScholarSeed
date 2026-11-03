@@ -21,13 +21,14 @@ import mimetypes
 import os
 import shutil
 import stat
-import tempfile
 import threading
 import time
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from contextvars import ContextVar
+from dataclasses import asdict
 from errno import ENOSPC
 from pathlib import Path
-from typing import Any, AsyncIterator, BinaryIO, Callable
+from typing import Any, AsyncIterator, BinaryIO, Callable, Iterator
 from uuid import uuid4
 
 from service.content.domain import naming
@@ -36,9 +37,11 @@ from service.content.domain.model import (
     MANAGED_RESOURCES_ROOT_RELATIVE,
     OWNED_ROOT_KINDS,
     PATH_OUTSIDE_ROOT_ERROR,
+    PROJECT_RECOVERY_PENDING,
     PROJECT_STATE_DIRNAME,
     ROOT_UNAVAILABLE_ERROR,
     ContentError,
+    ContentReadPermissionError,
     resolve_root,
     visible,
 )
@@ -48,7 +51,9 @@ from service.content.persistence.catalog import (
     SEED_CHAT_REGISTRY,
     SEED_WORKSPACE,
     ContentCatalog,
+    ExternalRootRow,
     ProjectRow,
+    RootReceipt,
 )
 from service.content.service import (
     assets,
@@ -69,8 +74,9 @@ from service.content.service.native import (
     publish_descriptor,
     sync_published_descriptor,
 )
-from service.content.service.utils import directory, filesystem_error, read_regular
+from service.content.service.utils import directory, filesystem_error, read_regular, writable
 from service.paths import PROJECT_ARTIFACT_OBJECTS_RELATIVE, PROJECT_DB_RELATIVE
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.content import (
     DISK_FULL_ERROR,
     IMPORT_CANCELLED_ERROR,
@@ -249,9 +255,72 @@ class ProjectRegistry:
     #: 「当前项目」的稳定别名。前端与既有调用方传它或传 None 都取默认项目。
     CURRENT = "current"
 
-    def __init__(self, workspace: str | None, catalog: ContentCatalog) -> None:
+    def __init__(
+        self,
+        workspace: str | None,
+        catalog: ContentCatalog,
+        *,
+        unavailable_roots: frozenset[str] = frozenset(),
+    ) -> None:
         self._workspace = str(workspace) if workspace else ""
         self._catalog = catalog
+        self._unavailable_roots = frozenset(unavailable_roots)
+        self._blocked_projects: dict[str, str] = {}
+        self._blocked_lock = threading.RLock()
+        self._recovery_states: dict[str, str] = {}
+        self._recovery_scope: ContextVar[frozenset[str]] = ContextVar(
+            "content_project_recovery", default=frozenset()
+        )
+
+    def block(self, project_id: str, reason: str) -> None:
+        """Retain registration while denying this instance further project IO."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("project block requires a diagnostic reason")
+        row = self._catalog.project(project_id)
+        with self._blocked_lock:
+            if row is None and project_id not in self._recovery_states:
+                raise ContentError("unknown_project")
+            self._blocked_projects[project_id] = reason
+
+    def set_recovery_state(self, project_id: str, reason: str | None) -> None:
+        """Keep a per-project admission gate, including planned unregistered IDs."""
+        if not isinstance(project_id, str) or not project_id or project_id == self.CURRENT:
+            raise ValueError("recovery requires an explicit project identity")
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            raise ValueError("recovery state requires a diagnostic reason")
+        with self._blocked_lock:
+            if reason is None:
+                self._recovery_states.pop(project_id, None)
+            else:
+                self._recovery_states[project_id] = reason
+
+    @contextmanager
+    def recovery(self, project_id: str) -> Iterator[None]:
+        """Let only this recovery context pass its project's pending gate.
+
+        Explicit failures, unavailable locators and another project's pending
+        state remain denied. The scope grants no filesystem qualification.
+        """
+        if not isinstance(project_id, str) or not project_id or project_id == self.CURRENT:
+            raise ValueError("recovery requires an explicit project identity")
+        token = self._recovery_scope.set(self._recovery_scope.get() | {project_id})
+        try:
+            yield
+        finally:
+            self._recovery_scope.reset(token)
+
+    def _reference(self, row: ProjectRow) -> ProjectRef:
+        with self._blocked_lock:
+            reason = self._blocked_projects.get(row.project_id)
+            recovery = self._recovery_states.get(row.project_id)
+        if recovery == PROJECT_RECOVERY_PENDING and row.project_id in self._recovery_scope.get():
+            recovery = None
+        reason = reason or recovery
+        return _project_ref(
+            row,
+            unavailable=reason is not None or row.dir_root in self._unavailable_roots,
+            unavailable_reason=reason,
+        )
 
     # ---- 种入 ----
 
@@ -272,26 +341,75 @@ class ProjectRegistry:
         seeded = [self._seed(path, name, SEED_CHAT_REGISTRY) for path, name in entries]
         return tuple(ref for ref in seeded if ref is not None)
 
-    def _seed(self, path: Path, name: str, source: str) -> ProjectRef | None:
-        resolved = str(path.expanduser().resolve())
+    @classmethod
+    def legacy_plans(
+        cls, entries: tuple[tuple[Path, str], ...], *, now: float, attempt: str
+    ) -> tuple[ProjectRow, ...]:
+        """Plan only caller-inspected missing registrations, preserving entry order."""
+        plans = {}
+        for path, name in entries:
+            resolved = cls.seed_root(path)
+            if resolved not in plans:
+                plans[resolved] = cls.seed_plan(
+                    resolved,
+                    name,
+                    SEED_CHAT_REGISTRY,
+                    project_id=naming.planned_project_id(now, attempt, resolved),
+                    created_at=now,
+                )
+        return tuple(plans.values())
+
+    @staticmethod
+    def seed_root(path: Path) -> str:
+        """Resolve a seed using the same identity lookup as registration."""
+        return str(path.expanduser().resolve())
+
+    @classmethod
+    def pending_legacy_seeds(
+        cls, entries: tuple[tuple[Path, str], ...], registered_roots: tuple[Path, ...]
+    ) -> tuple[tuple[Path, str], ...]:
+        """Inspect under caller-held project qualifications, without catalog writes."""
+        registered = {str(root) for root in registered_roots}
+        return tuple(entry for entry in entries if cls.seed_root(entry[0]) not in registered)
+
+    def _seed(
+        self, path: Path, name: str, source: str, *, operation_id: str | None = None
+    ) -> ProjectRef | None:
+        resolved = self.seed_root(path)
         existing = self._catalog.project_by_root(resolved)
         if existing is not None:
-            return _project_ref(existing)
+            result = self._reference(existing)
+            if operation_id is not None:
+                self._catalog.record_operation_effect(operation_id, asdict(result))
+            return result
+        return self.commit_creation(
+            self.seed_plan(
+                resolved, name, source, project_id=naming.new_project_id(), created_at=time.time()
+            ),
+            operation_id=operation_id,
+        )
+
+    @staticmethod
+    def seed_plan(
+        resolved: str, name: str, source: str, *, project_id: str, created_at: float
+    ) -> ProjectRow:
+        """Build registration from explicit identity inputs, without catalog or file IO.
+
+        The caller resolves and qualifies the root first. Identity and clock are
+        plan inputs so a startup projection need not generate a second identity.
+        """
         # 这里的 name 来自已存在的目录名或 chat 注册表, 不是本次用户输入:
         # 登记既有文件夹不该因为名字过长而失败, 所以夹取而不是像 create/rename 那样报错。
         raw = naming.normalize_display_name(name) or Path(resolved).name
         display = raw[: naming.DISPLAY_NAME_MAX]
-        row = self._catalog.insert_project(
-            ProjectRow(
-                project_id=naming.new_project_id(),
-                display_name=display,
-                dir_root=resolved,
-                layout=ProjectLayout.LEGACY.value,
-                created_at=time.time(),
-                seeded_from=source,
-            )
+        return ProjectRow(
+            project_id=project_id,
+            display_name=display,
+            dir_root=resolved,
+            layout=ProjectLayout.LEGACY.value,
+            created_at=created_at,
+            seeded_from=source,
         )
-        return _project_ref(row)
 
     # ---- 查询 ----
 
@@ -304,7 +422,7 @@ class ProjectRegistry:
         row = self._catalog.project_by_root(resolved)
         if row is None:
             raise ContentError("no_project_selected")
-        return _project_ref(row)
+        return self._reference(row)
 
     def resolve(self, project_id: str | None) -> ProjectRef:
         """project_id → 项目引用。None 或 CURRENT 取默认项目。"""
@@ -316,10 +434,10 @@ class ProjectRegistry:
             # 未登记的 id 明确拒绝而不是静默回落到当前工作区 —— 静默回落会让
             # 调用方以为自己操作的是另一个项目。
             raise ContentError("unknown_project")
-        return _project_ref(row)
+        return self._reference(row)
 
     def projects(self) -> tuple[ProjectRef, ...]:
-        return tuple(_project_ref(row) for row in self._catalog.projects())
+        return tuple(self._reference(row) for row in self._catalog.projects())
 
     def for_path(self, absolute: str) -> ProjectRef | None:
         """绝对路径 → 所属项目。取最长匹配的 `dir_root`, 支持项目嵌套。"""
@@ -335,13 +453,12 @@ class ProjectRegistry:
                 continue
             if best is None or len(row.dir_root) > len(best.dir_root):
                 best = row
-        return _project_ref(best) if best is not None else None
+        return self._reference(best) if best is not None else None
 
     # ---- 变更 ----
 
-    def create(self, name: str) -> ProjectRef:
-        """新建 MANAGED 项目。用户只提交显示名, 身份与目录名由这里生成。"""
-
+    def plan_creation(self, name: str) -> ProjectRow:
+        """Freeze identity and location without creating files or catalog rows."""
         display = naming.normalize_display_name(name)
         if not display:
             raise ContentError("name_required")
@@ -349,12 +466,51 @@ class ProjectRegistry:
             raise ContentError("name_too_long")
         if not self._workspace:
             raise ContentError("no_workspace_root")
-        workspace = Path(self._workspace).expanduser().resolve()
         project_id = naming.new_project_id()
         created_at = time.time()
-        directory = workspace / naming.directory_name(project_id, display, created_at)
+        directory = self.creation_directory(display)
+        return ProjectRow(
+            project_id=project_id,
+            display_name=directory.name,
+            dir_root=str(directory),
+            layout=ProjectLayout.MANAGED.value,
+            created_at=created_at,
+        )
+
+    def creation_directory(self, name: str) -> Path:
+        if not self._workspace:
+            raise ContentError("no_workspace_root")
+        workspace = Path(self._workspace).expanduser().resolve()
+        stem = naming.creation_stem(name)
+        directory = workspace / stem
+        suffix = naming.PROJECT_DIRECTORY_FIRST_SUFFIX
+        while (
+            directory.exists()
+            or directory.is_symlink()
+            or self._catalog.project_by_root(str(directory)) is not None
+        ):
+            directory = workspace / f"{stem}-{suffix}"
+            suffix += 1
+        return directory
+
+    @staticmethod
+    def creation_result(plan: ProjectRow) -> ProjectRef:
+        """Build the actual result while the caller retains the project directory."""
+        return _project_ref(plan)
+
+    def commit_creation(self, plan: ProjectRow, *, operation_id: str | None = None) -> ProjectRef:
+        """Register an owner-prepared project and its result in one catalog transaction."""
+        result = self.creation_result(plan)
+        self._catalog.insert_project(
+            plan, effect=(operation_id, asdict(result)) if operation_id is not None else None
+        )
+        return result
+
+    def create(self, name: str) -> ProjectRef:
+        """Create within the caller's already qualified workspace."""
+        plan = self.plan_creation(name)
+        directory = Path(plan.dir_root)
         if directory.exists():
-            # 目录名带 40bit 随机段, 撞名意味着磁盘上已有异常残留, 不静默复用。
             raise ContentError("project_directory_exists")
         try:
             for relative in (
@@ -365,18 +521,9 @@ class ProjectRegistry:
                 (directory / relative).mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise ContentError("project_create_failed") from exc
-        row = self._catalog.insert_project(
-            ProjectRow(
-                project_id=project_id,
-                display_name=display,
-                dir_root=str(directory),
-                layout=ProjectLayout.MANAGED.value,
-                created_at=created_at,
-            )
-        )
-        return _project_ref(row)
+        return self.commit_creation(plan)
 
-    def adopt(self, path: Path, name: str = "") -> ProjectRef:
+    def adopt(self, path: Path, name: str = "", *, operation_id: str | None = None) -> ProjectRef:
         """把一个已存在的本地目录登记成 LEGACY 项目。
 
         与 `create` 的区别是「目录已经在那儿」: 用户手上就有资料的文件夹, 布局
@@ -389,15 +536,19 @@ class ProjectRegistry:
         if not target.is_dir():
             raise ContentError("project_directory_not_found")
         resolved = target.resolve()
-        existing = self._catalog.project_by_root(str(resolved))
-        if existing is not None:
-            return _project_ref(existing)
-        seeded = self._seed(resolved, name, SEED_ADOPTED)
+        seeded = self._seed(resolved, name, SEED_ADOPTED, operation_id=operation_id)
         if seeded is None:  # pragma: no cover - _seed 只在无工作区时回 None
             raise ContentError("project_create_failed")
         return seeded
 
-    def rename(self, project_id: str, name: str) -> ProjectRef:
+    def rename(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        description: str | None = None,
+        pinned: bool | None = None,
+    ) -> ProjectRef:
         """只改显示名。目录、已开会话 cwd、关联登记全部不动 (§5.2)。"""
 
         display = naming.normalize_display_name(name)
@@ -405,7 +556,9 @@ class ProjectRegistry:
             raise ContentError("name_required")
         if len(display) > naming.DISPLAY_NAME_MAX:
             raise ContentError("name_too_long")
-        if not self._catalog.rename_project(project_id, display):
+        if not self._catalog.rename_project(
+            project_id, display, description=description, pinned=pinned
+        ):
             raise ContentError("unknown_project")
         return self.resolve(project_id)
 
@@ -427,22 +580,34 @@ class ProjectRegistry:
             raise ContentError("unknown_project")
         return self.resolve(project_id)
 
-    def forget(self, project_id: str) -> None:
-        """把项目从书深移除。只摘登记, 不删磁盘。
-
-        当前默认项目 (工作区根) 不能移除: 移掉之后 `project()` 无解, 界面会进入
-        「没有项目」而用户并没有要求这件事。
-        """
-
+    def plan_forget(self, project_id: str) -> ProjectRef:
+        """Validate removal before composition retires any legacy seed."""
         project = self.resolve(project_id)
-        if self._workspace and project.root == str(Path(self._workspace).expanduser().resolve()):
+        self.validate_forget_root(project.root, self._workspace)
+        return project
+
+    @staticmethod
+    def validate_forget_root(root: str, workspace: str | Path | None) -> None:
+        if workspace and root == str(Path(workspace).expanduser().resolve()):
             raise ContentError("cannot_forget_current_project")
-        if not self._catalog.delete_project(project.id):
+
+    def forget(
+        self,
+        project_id: str,
+        *,
+        effect: tuple[str, dict[str, object]] | None = None,
+        now: float | None = None,
+    ) -> None:
+        """Remove registration, preserving all project files."""
+        project = self.plan_forget(project_id)
+        if not self._catalog.delete_project(project.id, effect=effect, now=now):
             raise ContentError("unknown_project")
 
 
-def _project_ref(row: ProjectRow) -> ProjectRef:
-    """库行 → 跨域引用。`available` 是实测的, 不是存下来的状态。"""
+def _project_ref(
+    row: ProjectRow, *, unavailable: bool = False, unavailable_reason: str | None = None
+) -> ProjectRef:
+    """库行 → 跨域引用。`available` 遵守本轮资格；不可用登记不会因目录重现而复活。"""
 
     root = Path(row.dir_root)
     try:
@@ -455,16 +620,22 @@ def _project_ref(row: ProjectRow) -> ProjectRef:
         name=row.display_name,
         root=str(root),
         layout=layout,
-        available=root.is_dir(),
+        available=not unavailable and root.is_dir(),
+        unavailable_reason=unavailable_reason,
         created_at=row.created_at,
         archived_at=row.archived_at,
+        description=row.description,
+        pinned=row.pinned,
     )
 
 
 class ContentService:
     """`ContentPort` 的实现 (结构性满足该 Protocol)。"""
 
-    def __init__(self, registry: ProjectRegistry, catalog: ContentCatalog) -> None:
+    def __init__(
+        self, registry: ProjectRegistry, catalog: ContentCatalog, *, activities: Activities
+    ) -> None:
+        self._activities = activities
         self._registry = registry
         self._catalog = catalog
         self._artifact_resolvers: dict[
@@ -474,9 +645,10 @@ class ContentService:
         }
         self._roots = roots.ExternalRootService(catalog)
         self._tokens = token.TrashTokenVault()
-        self._events = events.FileEventHub(catalog, self._rooted_space)
+        self._events = events.FileEventHub(catalog, self._rooted_space, activities=activities)
         self._migration = migration.MigrationService(catalog)
         self._resource_changes: ResourceChangeSink | None = None
+        self._relocation_sink: Callable[[str, str, str], object] | None = None
         self._project_forget_sink: Callable[[str], None] | None = None
 
     def bind_resource_changes(self, sink: ResourceChangeSink) -> None:
@@ -489,6 +661,11 @@ class ContentService:
 
         self._project_forget_sink = sink
 
+    def bind_relocation_sink(self, sink: Callable[[str, str, str], object]) -> None:
+        """Bind metadata relocation independently of version eligibility and HTTP entry points."""
+
+        self._relocation_sink = sink
+
     # ---- 存量迁移 ----
 
     def migration_plan(self, project_id: str) -> migration.MigrationPlan:
@@ -499,10 +676,11 @@ class ContentService:
         project_id: str,
         skip: tuple[str, ...] = (),
     ) -> migration.MigrationOutcome:
-        outcome = self._migration.migrate(self._registry.resolve(project_id), skip)
-        for move in outcome.moves:
-            self._moved(outcome.project_id, move.source, move.target)
-        return outcome
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            outcome = self._migration.migrate(self._registry.resolve(project_id), skip)
+            for move in outcome.moves:
+                self._moved(outcome.project_id, move.source, move.target)
+            return outcome
 
     # ---- 文件事件 ----
 
@@ -533,13 +711,18 @@ class ContentService:
             if path:
                 self._events.suppress(project_id, path)
         if self._resource_changes is not None:
-            self._resource_changes.record_changes(project_id, tuple(path for path in paths if path))
+            scope = self._resource_space(project_id)
+            selected = enumeration.resource_scopes(scope, tuple(path for path in paths if path))
+            if selected:
+                self._resource_changes.record_changes(project_id, selected)
 
     def _moved(self, project_id: str, source: str, target: str) -> None:
         """Publish the structural identity change after suppressing watcher echoes."""
 
         for path in (source, target):
             self._events.suppress(project_id, path)
+        if self._relocation_sink is not None:
+            self._relocation_sink(project_id, source, target)
         if self._resource_changes is not None:
             self._resource_changes.record_move(project_id, source, target)
 
@@ -556,6 +739,17 @@ class ContentService:
         project = self._registry.resolve(project_id)
         if not project.available:
             raise ContentError(ROOT_UNAVAILABLE_ERROR)
+        return self.project_space(project, self._catalog.external_roots(project.id))
+
+    @staticmethod
+    def project_space(
+        project: ProjectRef, external: tuple[ExternalRootRow, ...]
+    ) -> space.ProjectSpace:
+        """Build the live mount resolver from actual qualified owner records."""
+        if not project.available:
+            raise ContentError(ROOT_UNAVAILABLE_ERROR)
+        if any(row.project_id != project.id or row.revoked_at is not None for row in external):
+            raise ContentError("invalid_project_mount_inventory")
         mounts = tuple(
             space.Mount(
                 mount_path=row.mount_path,
@@ -563,7 +757,7 @@ class ContentService:
                 kind=row.kind,
                 root_id=row.root_id,
             )
-            for row in self._catalog.external_roots(project.id)
+            for row in external
         )
         return space.ProjectSpace(project, mounts)
 
@@ -645,7 +839,14 @@ class ContentService:
 
     def is_directory(self, project_id: str, path: str) -> bool:
         try:
-            return self._space(project_id).absolute(path).is_dir()
+            return self.directory_in_space(self._space(project_id), path)
+        except ContentError:
+            return False
+
+    @staticmethod
+    def directory_in_space(scope: space.ProjectSpace, path: str) -> bool:
+        try:
+            return scope.absolute(path).is_dir()
         except ContentError:
             return False
 
@@ -673,22 +874,23 @@ class ContentService:
         都落在新名字上。同名避让只适用于「用户新建」, 不适用于确定路径写入。
         """
 
-        scope = self._space(project_id)
-        target = scope.absolute(path)
-        payload = content.encode("utf-8")
-        if self._resource_changes is not None:
-            kind = ProductMutationKind.WRITE if target.exists() else ProductMutationKind.CREATE
-            receipt = self._resource_changes.commit_product_bytes(
-                scope.project.id,
-                path,
-                payload,
-                kind,
-                f"{PRODUCT_MUTATION_KEY_PREFIX}:{uuid4().hex}",
-            )
-            if receipt is not None:
-                return assets.node_for(scope, target)
-        self._replace_bytes(project_id, path, payload, None, b"")
-        return assets.node_for(scope, scope.absolute(path))
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            target = scope.absolute(path)
+            payload = content.encode("utf-8")
+            if self._resource_changes is not None:
+                kind = ProductMutationKind.WRITE if target.exists() else ProductMutationKind.CREATE
+                receipt = self._resource_changes.commit_product_bytes(
+                    scope.project.id,
+                    path,
+                    payload,
+                    kind,
+                    f"{PRODUCT_MUTATION_KEY_PREFIX}:{uuid4().hex}",
+                )
+                if receipt is not None:
+                    return assets.node_for(scope, target)
+            self._replace_bytes(project_id, path, payload, None, b"")
+            return assets.node_for(scope, scope.absolute(path))
 
     def read_bytes(
         self, project_id: str, path: str, max_bytes: int = MAX_BYTES
@@ -729,48 +931,53 @@ class ContentService:
     def read_asset_bytes(
         self, project_id: str, asset_id: str, max_bytes: int = MAX_BYTES
     ) -> tuple[bytes, str]:
-        try:
-            payload, asset = identity.read(
-                self._space(project_id),
-                self.resolve(project_id, PROJECT_DB_RELATIVE),
-                asset_id,
-                max_bytes,
-            )
-        except OSError as error:
-            raise ContentError("read_failed") from error
-        media, _ = mimetypes.guess_type(asset.name)
-        return payload, media or DEFAULT_MEDIA_TYPE
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            try:
+                payload, asset = identity.read(
+                    self._space(project_id),
+                    self.resolve(project_id, PROJECT_DB_RELATIVE),
+                    asset_id,
+                    max_bytes,
+                )
+            except OSError as error:
+                raise ContentError("read_failed") from error
+            media, _ = mimetypes.guess_type(asset.name)
+            return payload, media or DEFAULT_MEDIA_TYPE
 
     def identify(self, project_id: str, path: str) -> AssetBinding:
-        return identity.identify(
-            self._space(project_id), self.resolve(project_id, PROJECT_DB_RELATIVE), path
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return identity.identify(
+                self._space(project_id), self.resolve(project_id, PROJECT_DB_RELATIVE), path
+            )
 
     def asset_status(self, project_id: str, asset_id: str) -> AssetBinding:
-        resolved_project_id = self._registry.resolve(project_id).id
-        active_root_ids = frozenset(
-            row.root_id for row in self._catalog.external_roots(resolved_project_id)
-        )
-        return identity.status(
-            self._identity_space(resolved_project_id),
-            self.resolve(resolved_project_id, PROJECT_DB_RELATIVE),
-            asset_id,
-            active_root_ids,
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            resolved_project_id = self._registry.resolve(project_id).id
+            active_root_ids = frozenset(
+                row.root_id for row in self._catalog.external_roots(resolved_project_id)
+            )
+            return identity.status(
+                self._identity_space(resolved_project_id),
+                self.resolve(resolved_project_id, PROJECT_DB_RELATIVE),
+                asset_id,
+                active_root_ids,
+            )
 
     def rebind_asset(self, project_id: str, source: str, destination: str) -> AssetBinding | None:
-        return identity.rebind(
-            self._space(project_id),
-            self.resolve(project_id, PROJECT_DB_RELATIVE),
-            source,
-            destination,
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return identity.rebind(
+                self._space(project_id),
+                self.resolve(project_id, PROJECT_DB_RELATIVE),
+                source,
+                destination,
+            )
 
     def create_bytes(self, project_id: str, parent: str, name: str, content: bytes) -> FileAssetRef:
-        scope = self._space(project_id)
-        created = assets.create_bytes_document(scope, parent, name, content)
-        self._wrote(scope.project.id, created.path)
-        return created
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            created = assets.create_bytes_document(scope, parent, name, content)
+            self._wrote(scope.project.id, created.path)
+            return created
 
     def read_import_source(self, project_id: str, source: str) -> ImportSourceContent:
         self.project(project_id)
@@ -848,16 +1055,18 @@ class ContentService:
         content: bytes,
         reserved_paths: tuple[str, ...] = (),
     ) -> PreparedContent:
-        if len(content) > MAX_BYTES:
-            raise ContentError("file_too_large")
-        return assets.prepare_bytes_document(
-            self._space(project_id), parent, name, content, reserved_paths
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            if len(content) > MAX_BYTES:
+                raise ContentError("file_too_large")
+            return assets.prepare_bytes_document(
+                self._space(project_id), parent, name, content, reserved_paths
+            )
 
     def publish_prepared(self, prepared: PreparedContent) -> FileAssetRef:
         """Publish staged bytes; materialize notifies mutation sinks after commit."""
 
-        return assets.publish_prepared(self._space(prepared.project_id), prepared)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return assets.publish_prepared(self._space(prepared.project_id), prepared)
 
     def prepared_asset(self, prepared: PreparedContent) -> FileAssetRef:
         return assets.prepared_asset(self._space(prepared.project_id), prepared)
@@ -866,35 +1075,38 @@ class ContentService:
         assets.validate_prepared(prepared)
 
     def materialize(self, prepared: PreparedContent) -> FileAssetRef:
-        self.validate_prepared(prepared)
-        created = identity.materialize(
-            self._space(prepared.project_id),
-            self.resolve(prepared.project_id, PROJECT_DB_RELATIVE),
-            prepared,
-            self.publish_prepared,
-            self.release_prepared,
-        )
-        # identity.materialize holds the shared project database write lock while
-        # publishing. Resource-version notification opens that same database, so
-        # it must run after the identity transaction commits. Notify on replays as
-        # well so a prior post-commit notification failure remains recoverable.
-        self._wrote(prepared.project_id, created.path)
-        return created
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            self.validate_prepared(prepared)
+            created = identity.materialize(
+                self._space(prepared.project_id),
+                self.resolve(prepared.project_id, PROJECT_DB_RELATIVE),
+                prepared,
+                self.publish_prepared,
+                self.release_prepared,
+            )
+            # identity.materialize holds the shared project database write lock while
+            # publishing. Resource-version notification opens that same database, so
+            # it must run after the identity transaction commits. Notify on replays as
+            # well so a prior post-commit notification failure remains recoverable.
+            self._wrote(prepared.project_id, created.path)
+            return created
 
     def asset(
         self, project_id: str, asset_id: str, *, creation: PreparedContent | None = None
     ) -> FileAssetRef:
-        if creation is not None:
-            self.validate_prepared(creation)
-        return identity.lookup(
-            self._space(project_id),
-            self.resolve(project_id, PROJECT_DB_RELATIVE),
-            asset_id,
-            creation=creation,
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            if creation is not None:
+                self.validate_prepared(creation)
+            return identity.lookup(
+                self._space(project_id),
+                self.resolve(project_id, PROJECT_DB_RELATIVE),
+                asset_id,
+                creation=creation,
+            )
 
     def release_prepared(self, prepared: PreparedContent) -> None:
-        assets.release_prepared(self._space(prepared.project_id), prepared)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            assets.release_prepared(self._space(prepared.project_id), prepared)
 
     def read_optional_bytes(self, project_id: str, path: str, default: bytes) -> bytes:
         target = self._space(project_id).absolute(path)
@@ -914,8 +1126,8 @@ class ContentService:
 
         scope = self._space(project_id)
         found: list[FileAssetRef] = []
-        for directory, names, filenames in os.walk(scope.root, followlinks=False):
-            base = Path(directory)
+        for walked_directory, names, filenames in os.walk(scope.root, followlinks=False):
+            base = Path(walked_directory)
             names[:] = [name for name in names if visible(name) and not (base / name).is_symlink()]
             for name in filenames:
                 target = base / name
@@ -930,6 +1142,11 @@ class ContentService:
         target = self._file(project_id, path)
         try:
             size = target.stat().st_size
+            parent, name = self._space(project_id).open_parent(path)
+            try:
+                can_write = writable(parent, name)
+            finally:
+                parent.close()
         except OSError as exc:
             raise ContentError("read_failed") from exc
         media = guess_media_type(target.name)
@@ -939,6 +1156,7 @@ class ContentService:
             media_type=media or DEFAULT_MEDIA_TYPE,
             size=size,
             revision=_revision(target),
+            writable=can_write,
         )
 
     def stable_snapshot(self, project_id: str, path: str, max_bytes: int) -> StableContentSnapshot:
@@ -983,12 +1201,33 @@ class ContentService:
         target: BinaryIO,
     ) -> StableContentCapture:
         """Copy one bounded generation through a pinned no-follow file descriptor."""
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self.capture_from_space(
+                self._space(project_id), project_id, path, max_bytes, target
+            )
 
-        scope = self._space(project_id)
+    @staticmethod
+    def capture_from_space(
+        scope: space.ProjectSpace,
+        project_id: str,
+        path: str,
+        max_bytes: int,
+        target: BinaryIO,
+        *,
+        check: Callable[[], None] | None = None,
+    ) -> StableContentCapture:
+        """Use the live capture owner with a qualified private catalog view.
+
+        The caller retains native qualifications for the project and every mount.
+        The target is caller-owned private storage, never an implicit source spool.
+        No catalog, directory, metadata or user-file mutation is performed here.
+        """
         parent: DirectoryHandle | None = None
         try:
             parent, name = scope.open_parent(path)
             for _attempt in range(STABLE_READ_ATTEMPTS):
+                if check is not None:
+                    check()
                 target.seek(0)
                 target.truncate(0)
                 descriptor = parent.open(name, os.O_RDONLY | NOFOLLOW | NONBLOCK)
@@ -1001,6 +1240,8 @@ class ContentService:
                     digest = hashlib.sha256()
                     copied = 0
                     for chunk in iter(lambda: stream.read(DIGEST_CHUNK_BYTES), b""):
+                        if check is not None:
+                            check()
                         copied += len(chunk)
                         if copied > max_bytes:
                             raise ContentError("file_too_large")
@@ -1022,11 +1263,16 @@ class ContentService:
                         mode_bits=stat.S_IMODE(after.st_mode),
                     )
             raise ContentError("file_not_stable")
+        except TimeoutError:
+            # Caller deadlines must remain distinguishable from filesystem failures.
+            raise
         except FileNotFoundError as exc:
             raise ContentError("file_not_found") from exc
         except OSError as exc:
             if exc.errno == ENOSPC:
                 raise ContentError(DISK_FULL_ERROR) from exc
+            if isinstance(exc, PermissionError):
+                raise ContentReadPermissionError(path) from exc
             raise filesystem_error(exc, "read_failed") from exc
         finally:
             if parent is not None:
@@ -1054,17 +1300,33 @@ class ContentService:
             raise ContentError(snapshot.PATH_INVALID)
         return resolver(scope.id)
 
+    def publish_working_bytes(self, scope: ArtifactScope, path: str, content: bytes) -> bool:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            location = self.artifact_storage(scope)
+            root = Path(location.source_root)
+            reused = assets.publish_working_bytes(root, path, content)
+            target = root / path
+            project = self._registry.for_path(str(target))
+            if project is not None:
+                self._wrote(project.id, target.relative_to(Path(project.root)).as_posix())
+            return reused
+
     def capture_artifact(
         self, scope: ArtifactScope, path: str, expected_sha256: str = ""
     ) -> VerifiedArtifactContent:
-        location = self.artifact_storage(scope)
-        if not path.strip() or Path(path).is_absolute():
-            raise ContentError(snapshot.PATH_INVALID)
-        target = (Path(location.source_root) / path).resolve()
-        return snapshot.capture(location, scope, target, expected_sha256=expected_sha256)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            location = self.artifact_storage(scope)
+            if not path.strip() or Path(path).is_absolute():
+                raise ContentError(snapshot.PATH_INVALID)
+            target = (Path(location.source_root) / path).resolve()
+            return snapshot.capture(location, scope, target, expected_sha256=expected_sha256)
 
     def read_artifact(self, content: VerifiedArtifactContent) -> bytes:
         return snapshot.read(self.artifact_storage(content.scope), content)
+
+    def remove_artifact(self, content: VerifiedArtifactContent) -> None:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            snapshot.remove(self.artifact_storage(content.scope), content)
 
     def read_range(self, project_id: str, path: str, start: int, end: int) -> bytes:
         target = self._file(project_id, path)
@@ -1084,7 +1346,8 @@ class ContentService:
         content: bytes,
         expected_revision: str,
     ) -> ContentWriteReceipt:
-        return self._replace_bytes(project_id, path, content, expected_revision, None)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._replace_bytes(project_id, path, content, expected_revision, None)
 
     def commit_optional_bytes(
         self,
@@ -1096,7 +1359,8 @@ class ContentService:
     ) -> ContentWriteReceipt:
         """CAS 新建或替换产品辅助文件，不把缺失误判成无版本。"""
 
-        return self._replace_bytes(project_id, path, content, expected_revision, default)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._replace_bytes(project_id, path, content, expected_revision, default)
 
     def _replace_bytes(
         self,
@@ -1144,10 +1408,6 @@ class ContentService:
             raise ContentError("file_too_large")
         scope = self._space(project_id)
         target = scope.absolute(path)
-        if target.is_dir():
-            raise ContentError("not_a_file")
-        if default is None and not target.is_file():
-            raise ContentError("file_not_found")
         lock = _file_lock(target)
         temporary: str | None = None
         directory: DirectoryHandle | None = None
@@ -1155,6 +1415,10 @@ class ContentService:
         stage_identity: os.stat_result | None = None
         with lock:
             try:
+                if target.is_dir():
+                    raise ContentError("not_a_file")
+                if default is None and not target.is_file():
+                    raise ContentError("file_not_found")
                 directory, target_name = scope.open_parent(path, create=default is not None)
                 parent_descriptor = directory
 
@@ -1180,6 +1444,8 @@ class ContentService:
                 current_revision, original = observed()
                 if expected_revision is not None and current_revision != expected_revision:
                     raise ContentError("revision_conflict")
+                if original is not None and not writable(parent_descriptor, target_name):
+                    raise ContentError(assets.WRITE_FAILED)
                 original_mode = (
                     mode_bits
                     if mode_bits is not None
@@ -1219,6 +1485,8 @@ class ContentService:
                     observed_revision, before = observed()
                     if expected_revision is not None and observed_revision != expected_revision:
                         raise ContentError("revision_conflict")
+                    if before is not None and not writable(parent_descriptor, target_name):
+                        raise ContentError(assets.WRITE_FAILED)
                     if before is None:
                         if stage_descriptor is None:
                             raise ContentError("prepared_content_conflict")
@@ -1282,7 +1550,7 @@ class ContentService:
                             cleanup_identity.st_dev,
                             cleanup_identity.st_ino,
                         ):
-                            parent_descriptor.unlink(staged_name)
+                            parent_descriptor.unlink(staged_name, expected=cleanup_identity)
                 temporary = None
             except ContentError:
                 raise
@@ -1301,7 +1569,7 @@ class ContentService:
                                 stage_identity.st_dev,
                                 stage_identity.st_ino,
                             ):
-                                directory.unlink(temporary)
+                                directory.unlink(temporary, expected=stage_identity)
                         except FileNotFoundError:
                             pass
                 finally:
@@ -1323,17 +1591,18 @@ class ContentService:
     def delete_bytes(self, project_id: str, path: str, expected_revision: str) -> None:
         """CAS 删除供领域级回滚使用；用户主动删除仍走系统废纸篓。"""
 
-        scope = self._space(project_id)
-        target = self._file(project_id, path)
-        lock = _file_lock(target)
-        with lock:
-            if _revision(target) != expected_revision:
-                raise ContentError("revision_conflict")
-            try:
-                target.unlink()
-            except OSError as exc:
-                raise ContentError("delete_failed") from exc
-        self._wrote(scope.project.id, path)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            target = self._file(project_id, path)
+            lock = _file_lock(target)
+            with lock:
+                if _revision(target) != expected_revision:
+                    raise ContentError("revision_conflict")
+                try:
+                    target.unlink()
+                except OSError as exc:
+                    raise ContentError("delete_failed") from exc
+            self._wrote(scope.project.id, path)
 
     def apply_bytes(
         self,
@@ -1348,23 +1617,24 @@ class ContentService:
     ) -> ContentWriteReceipt:
         """Create or replace exact bytes after an explicit conflict decision."""
 
-        scope = self._space(project_id)
-        target = scope.absolute(path)
-        if target.is_dir():
-            raise ContentError("not_a_file")
-        exists = target.is_file()
-        observed = _revision(target) if exists else None
-        if not force and observed != expected_revision:
-            raise ContentError("revision_conflict")
-        return self._replace_bytes(
-            scope.project.id,
-            path,
-            content,
-            None if force else expected_revision,
-            None if exists else b"",
-            mode_bits=mode_bits,
-            notify=notify,
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            target = scope.absolute(path)
+            if target.is_dir():
+                raise ContentError("not_a_file")
+            exists = target.is_file()
+            observed = _revision(target) if exists else None
+            if not force and observed != expected_revision:
+                raise ContentError("revision_conflict")
+            return self._replace_bytes(
+                scope.project.id,
+                path,
+                content,
+                None if force else expected_revision,
+                None if exists else b"",
+                mode_bits=mode_bits,
+                notify=notify,
+            )
 
     def apply_stream(
         self,
@@ -1381,25 +1651,26 @@ class ContentService:
     ) -> ContentWriteReceipt:
         """Create or replace exact streamed bytes after an explicit conflict decision."""
 
-        scope = self._space(project_id)
-        target = scope.absolute(path)
-        if target.is_dir():
-            raise ContentError("not_a_file")
-        exists = target.is_file()
-        observed = _revision(target) if exists else None
-        if not force and observed != expected_revision:
-            raise ContentError("revision_conflict")
-        return self._replace_stream(
-            scope.project.id,
-            path,
-            content,
-            size,
-            revision,
-            None if force else expected_revision,
-            None if exists else b"",
-            mode_bits=mode_bits,
-            notify=notify,
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            target = scope.absolute(path)
+            if target.is_dir():
+                raise ContentError("not_a_file")
+            exists = target.is_file()
+            observed = _revision(target) if exists else None
+            if not force and observed != expected_revision:
+                raise ContentError("revision_conflict")
+            return self._replace_stream(
+                scope.project.id,
+                path,
+                content,
+                size,
+                revision,
+                None if force else expected_revision,
+                None if exists else b"",
+                mode_bits=mode_bits,
+                notify=notify,
+            )
 
     def remove_bytes(
         self,
@@ -1412,23 +1683,24 @@ class ContentService:
     ) -> None:
         """Remove an exact file after an explicit recovery conflict decision."""
 
-        scope = self._space(project_id)
-        target = scope.absolute(path)
-        if target.exists() and not target.is_file():
-            raise ContentError("not_a_file")
-        lock = _file_lock(target)
-        with lock:
-            observed = _revision(target) if target.exists() else None
-            if not force and observed != expected_revision:
-                raise ContentError("revision_conflict")
-            try:
-                target.unlink(missing_ok=True)
-            except OSError as exc:
-                raise ContentError("write_failed") from exc
-        if notify:
-            self._wrote(scope.project.id, path)
-        else:
-            self._events.suppress(scope.project.id, path)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            target = scope.absolute(path)
+            if target.exists() and not target.is_file():
+                raise ContentError("not_a_file")
+            lock = _file_lock(target)
+            with lock:
+                observed = _revision(target) if target.exists() else None
+                if not force and observed != expected_revision:
+                    raise ContentError("revision_conflict")
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise ContentError("write_failed") from exc
+            if notify:
+                self._wrote(scope.project.id, path)
+            else:
+                self._events.suppress(scope.project.id, path)
 
     # ---- 目录投影与搜索 ----
 
@@ -1482,6 +1754,12 @@ class ContentService:
                 raise ContentError(roots.OWNED_ROOT_CONFLICT)
         return tree.build_tree(scope, scope.absolute(path), max_depth=depth, offset=offset)
 
+    def project_tree(self, project_id: str, path: str = "", offset: int = 0) -> AssetPage:
+        scope = self._rooted_space(project_id)
+        return tree.build_tree(
+            scope, scope.absolute(path), max_depth=tree.PROJECT_TREE_DEPTH, offset=offset
+        )
+
     def repository_roots(self, project_id: str, paths: tuple[str, ...]) -> dict[str, str | None]:
         return repository.repository_roots(self._resource_space(project_id), paths)
 
@@ -1496,10 +1774,12 @@ class ContentService:
         self,
         project_id: str,
         observer: ResourceScanObserver | None = None,
+        *,
+        paths: tuple[str, ...] | None = None,
     ) -> tuple[ResourceEntry, ...]:
         """Scan all resources once while exposing factual discovery events."""
 
-        return enumeration.scan_files(self._resource_space(project_id), observer)
+        return enumeration.scan_files(self._resource_space(project_id), observer, paths=paths)
 
     def resource_entries(
         self, project_id: str, paths: tuple[str, ...]
@@ -1507,6 +1787,13 @@ class ContentService:
         """Inspect selected resource files without recursively scanning the roots."""
 
         return enumeration.entries_for_paths(self._resource_space(project_id), paths)
+
+    def root_relative(self, project_id: str, root: RootKind) -> str:
+        return resolve_root(self._space(project_id).project, root).relative
+
+    def root_path(self, project_id: str, root: RootKind) -> str:
+        """Resolve a logical root for classification without preparing directories."""
+        return resolve_root(self._space(project_id).project, root).relative
 
     def root(self, project_id: str, root: RootKind) -> FileAssetRef:
         """按种类取根节点, 并保证该目录存在。
@@ -1516,53 +1803,58 @@ class ContentService:
         `mkdir` 正是本提案要消掉的第二处文件操作。
         """
 
-        project = self._space(project_id).project
-        location = resolve_root(project, root)
-        if root in OWNED_ROOT_KINDS:
-            scope = self._space(project.id)
-            if scope.mount_for(location.relative) is not None:
-                raise ContentError(roots.OWNED_ROOT_CONFLICT)
-            roots.ensure_owned_root(self.resolve(project.id, PROJECT_DB_RELATIVE), location)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project = self._space(project_id).project
+            location = resolve_root(project, root)
+            if root in OWNED_ROOT_KINDS:
+                scope = self._space(project.id)
+                if scope.mount_for(location.relative) is not None:
+                    raise ContentError(roots.OWNED_ROOT_CONFLICT)
+                roots.ensure_owned_root(self.resolve(project.id, PROJECT_DB_RELATIVE), location)
+                return FileAssetRef(
+                    project_id=project.id,
+                    path=location.relative,
+                    name=location.absolute.name,
+                    kind=AssetKind.DIR,
+                )
+            try:
+                # Never recursively recreate a project that disappeared after resolution.
+                with directory(
+                    Path(project.root), tuple(Path(location.relative).parts), create=True
+                ):
+                    pass
+            except OSError as exc:
+                raise ContentError(ROOT_UNAVAILABLE_ERROR) from exc
             return FileAssetRef(
                 project_id=project.id,
                 path=location.relative,
                 name=location.absolute.name,
                 kind=AssetKind.DIR,
             )
-        try:
-            # Never recursively recreate a project that disappeared after resolution.
-            with directory(Path(project.root), tuple(Path(location.relative).parts), create=True):
-                pass
-        except OSError as exc:
-            raise ContentError(ROOT_UNAVAILABLE_ERROR) from exc
-        return FileAssetRef(
-            project_id=project.id,
-            path=location.relative,
-            name=location.absolute.name,
-            kind=AssetKind.DIR,
-        )
 
     def within_root(self, project_id: str, root: RootKind, path: str) -> str:
         """Translate a root-relative path without leaking layout or allowing escape."""
 
-        cleaned = space.normalize(path)
-        if ".." in cleaned.split(space.SEPARATOR):
-            raise ContentError(PATH_OUTSIDE_ROOT_ERROR)
-        root_path = self.root(project_id, root).path
-        if (
-            root_path
-            and cleaned != root_path
-            and not cleaned.startswith(f"{root_path}{space.SEPARATOR}")
-        ):
-            cleaned = f"{root_path}{space.SEPARATOR}{cleaned}" if cleaned else root_path
-        self._space(project_id).absolute(cleaned)
-        return cleaned
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            cleaned = space.normalize(path)
+            if ".." in cleaned.split(space.SEPARATOR):
+                raise ContentError(PATH_OUTSIDE_ROOT_ERROR)
+            root_path = self.root(project_id, root).path
+            if (
+                root_path
+                and cleaned != root_path
+                and not cleaned.startswith(f"{root_path}{space.SEPARATOR}")
+            ):
+                cleaned = f"{root_path}{space.SEPARATOR}{cleaned}" if cleaned else root_path
+            self._space(project_id).absolute(cleaned)
+            return cleaned
 
     def ensure_directory(self, project_id: str, parent: str, name: str) -> FileAssetRef:
-        scope = self._space(project_id)
-        created = assets.ensure_folder(scope, parent, name)
-        self._wrote(scope.project.id, created.path)
-        return created
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            created = assets.ensure_folder(scope, parent, name)
+            self._wrote(scope.project.id, created.path)
+            return created
 
     def search(self, project_id: str, query: str) -> ResourceSearchResult:
         """Search current authorized resource files through stable Content reads."""
@@ -1585,13 +1877,14 @@ class ContentService:
         name: str,
         kind: AssetKind,
     ) -> FileAssetRef:
-        scope = self._space(project_id)
-        if kind is AssetKind.FILE:
-            target = assets.document_target(scope, parent, name)
-            return self.write_text(scope.project.id, scope.relative(target), "")
-        created = assets.create_folder(scope, parent, name)
-        self._wrote(scope.project.id, created.path)
-        return created
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            if kind is AssetKind.FILE:
+                target = assets.document_target(scope, parent, name)
+                return self.write_text(scope.project.id, scope.relative(target), "")
+            created = assets.create_folder(scope, parent, name)
+            self._wrote(scope.project.id, created.path)
+            return created
 
     def create_text(
         self,
@@ -1602,9 +1895,10 @@ class ContentService:
     ) -> FileAssetRef:
         """Choose one collision-free path and persist its complete initial text."""
 
-        scope = self._space(project_id)
-        target = assets.document_target(scope, parent, name)
-        return self.write_text(scope.project.id, scope.relative(target), content)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            target = assets.document_target(scope, parent, name)
+            return self.write_text(scope.project.id, scope.relative(target), content)
 
     def destination(self, project_id: str, parent: str, name: str) -> FileAssetRef:
         """Choose a generic target through Content's confinement and naming rules."""
@@ -1613,50 +1907,100 @@ class ContentService:
         return assets.node_for(scope, assets.file_target(scope, parent, name))
 
     def rename(self, project_id: str, path: str, name: str) -> FileAssetRef:
-        scope = self._space(project_id)
-        source = scope.relative(scope.absolute(path))
-        destination_path = assets.rename_target(scope, source, name)
-        destination = scope.relative(destination_path)
-        renamed = identity.relocate(
-            scope,
-            self.resolve(scope.project.id, PROJECT_DB_RELATIVE),
-            source,
-            destination,
-            lambda: assets.rename_node(
-                scope,
-                source,
-                name,
-                destination=destination_path,
-            ),
-        )
-        self._moved(scope.project.id, source, renamed.path)
-        return renamed
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            with (
+                self._resource_changes.relocation_scope(scope.project.id)
+                if self._resource_changes is not None
+                else nullcontext()
+            ):
+                source = scope.relative(scope.absolute(path))
+                destination_path = assets.rename_target(scope, source, name)
+                destination = scope.relative(destination_path)
+                renamed = identity.relocate(
+                    scope,
+                    self.resolve(scope.project.id, PROJECT_DB_RELATIVE),
+                    source,
+                    destination,
+                    lambda: assets.rename_node(
+                        scope,
+                        source,
+                        name,
+                        destination=destination_path,
+                    ),
+                )
+                self._moved(scope.project.id, source, renamed.path)
+                return renamed
 
-    def move(self, project_id: str, path: str, target_dir: str) -> FileAssetRef:
-        scope = self._space(project_id)
-        source = scope.relative(scope.absolute(path))
-        destination_path = assets.move_target(scope, source, target_dir)
-        destination = scope.relative(destination_path)
-        moved = identity.relocate(
-            scope,
-            self.resolve(scope.project.id, PROJECT_DB_RELATIVE),
-            source,
-            destination,
-            lambda: assets.move_node(
+    def relocate_file(
+        self,
+        project_id: str,
+        path: str,
+        target: str,
+        expected_revision: str,
+        *,
+        notify: bool = True,
+    ) -> FileAssetRef:
+        with self._activities.enter(ActivityDomain.RESOURCE), ExitStack() as held:
+            scope = self._space(project_id)
+            source = scope.relative(scope.absolute(path))
+            destination = scope.relative(scope.absolute(target))
+            for physical in sorted({scope.absolute(source), scope.absolute(destination)}):
+                held.enter_context(_file_lock(physical))
+            held.enter_context(
+                self._resource_changes.relocation_scope(scope.project.id)
+                if self._resource_changes is not None
+                else nullcontext()
+            )
+            if self.snapshot(project_id, source).revision != expected_revision:
+                raise ContentError("revision_conflict")
+            moved = identity.relocate(
                 scope,
+                self.resolve(scope.project.id, PROJECT_DB_RELATIVE),
                 source,
-                target_dir,
-                destination=destination_path,
-            ),
-        )
-        self._moved(scope.project.id, source, moved.path)
-        return moved
+                destination,
+                lambda: assets.relocate_file(scope, source, destination),
+            )
+            if notify:
+                self._moved(scope.project.id, source, moved.path)
+            return moved
+
+    def move(
+        self, project_id: str, path: str, target_dir: str, *, exact: bool = False
+    ) -> FileAssetRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            with (
+                self._resource_changes.relocation_scope(scope.project.id)
+                if self._resource_changes is not None
+                else nullcontext()
+            ):
+                source = scope.relative(scope.absolute(path))
+                destination_path = assets.move_target(scope, source, target_dir, exact=exact)
+                destination = scope.relative(destination_path)
+                moved = identity.relocate(
+                    scope,
+                    self.resolve(scope.project.id, PROJECT_DB_RELATIVE),
+                    source,
+                    destination,
+                    lambda: assets.move_node(
+                        scope,
+                        source,
+                        target_dir,
+                        destination=destination_path,
+                    ),
+                )
+                self._moved(scope.project.id, source, moved.path)
+                return moved
 
     def copy(self, project_id: str, path: str, target_dir: str | None) -> FileAssetRef:
-        scope = self._space(project_id)
-        copied = self._execute_copy(scope, assets.copy_plan(scope, path, target_dir), "copy_failed")
-        self._wrote(scope.project.id, copied.path)
-        return copied
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            copied = self._execute_copy(
+                scope, assets.copy_plan(scope, path, target_dir), "copy_failed"
+            )
+            self._wrote(scope.project.id, copied.path)
+            return copied
 
     def import_sources(
         self,
@@ -1671,124 +2015,125 @@ class ContentService:
         failure_policy: ImportFailurePolicy = ImportFailurePolicy.FAIL_FAST,
         result_observer: ContentImportResultObserver | None = None,
     ) -> tuple[FileAssetRef, ...]:
-        scope = self._space(project_id)
-        if mode is ImportMode.LINK:
-            if target_names is not None:
-                raise ContentError(assets.INVALID_IMPORT_TARGET_NAMES)
-            return assets.linked_sources(scope, sources)
-        discovered_items = 0
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            if mode is ImportMode.LINK:
+                if target_names is not None:
+                    raise ContentError(assets.INVALID_IMPORT_TARGET_NAMES)
+                return assets.linked_sources(scope, sources)
+            discovered_items = 0
 
-        def discovered(delta: int) -> None:
-            nonlocal discovered_items
-            if cancelled is not None and cancelled():
+            def discovered(delta: int) -> None:
+                nonlocal discovered_items
+                if cancelled is not None and cancelled():
+                    raise ContentError(IMPORT_CANCELLED_ERROR)
+                discovered_items += delta
+                if observer is not None:
+                    observer(
+                        ContentImportProgress(
+                            ContentImportStage.SCANNING,
+                            discovered_items,
+                            0,
+                            0,
+                            0,
+                        )
+                    )
+
+            if observer is not None:
+                observer(ContentImportProgress(ContentImportStage.SCANNING, 0, 0, 0, 0))
+            plan_results = assets.import_plan_results(
+                scope,
+                sources,
+                target_dir,
+                target_names,
+                collision_policy=collision_policy,
+                discovered=discovered,
+            )
+            if any(result.error == IMPORT_CANCELLED_ERROR for result in plan_results):
                 raise ContentError(IMPORT_CANCELLED_ERROR)
-            discovered_items += delta
+            if failure_policy is ImportFailurePolicy.FAIL_FAST:
+                for result in plan_results:
+                    if result.plan is None:
+                        raise ContentError(result.error)
+            elif result_observer is not None:
+                for result in plan_results:
+                    if result.plan is None:
+                        result_observer(
+                            ContentImportSourceResult(result.source_index, None, result.error)
+                        )
+            plans = tuple(result for result in plan_results if result.plan is not None)
             if observer is not None:
                 observer(
                     ContentImportProgress(
                         ContentImportStage.SCANNING,
                         discovered_items,
-                        0,
+                        discovered_items,
                         0,
                         0,
                     )
                 )
-
-        if observer is not None:
-            observer(ContentImportProgress(ContentImportStage.SCANNING, 0, 0, 0, 0))
-        plan_results = assets.import_plan_results(
-            scope,
-            sources,
-            target_dir,
-            target_names,
-            collision_policy=collision_policy,
-            discovered=discovered,
-        )
-        if any(result.error == IMPORT_CANCELLED_ERROR for result in plan_results):
-            raise ContentError(IMPORT_CANCELLED_ERROR)
-        if failure_policy is ImportFailurePolicy.FAIL_FAST:
-            for result in plan_results:
-                if result.plan is None:
-                    raise ContentError(result.error)
-        elif result_observer is not None:
-            for result in plan_results:
-                if result.plan is None:
-                    result_observer(
-                        ContentImportSourceResult(result.source_index, None, result.error)
-                    )
-        plans = tuple(result for result in plan_results if result.plan is not None)
-        if observer is not None:
-            observer(
-                ContentImportProgress(
-                    ContentImportStage.SCANNING,
-                    discovered_items,
-                    discovered_items,
-                    0,
-                    0,
-                )
+            total_items = sum(len(result.plan.files) for result in plans if result.plan is not None)
+            total_bytes = sum(
+                member.source.stat().st_size
+                for result in plans
+                if result.plan is not None
+                for member in result.plan.files
             )
-        total_items = sum(len(result.plan.files) for result in plans if result.plan is not None)
-        total_bytes = sum(
-            member.source.stat().st_size
-            for result in plans
-            if result.plan is not None
-            for member in result.plan.files
-        )
-        completed_items = 0
-        completed_bytes = 0
+            completed_items = 0
+            completed_bytes = 0
 
-        def report(delta_bytes: int, completed: bool) -> None:
-            nonlocal completed_items, completed_bytes
-            completed_bytes += delta_bytes
-            completed_items += int(completed)
-            if observer is not None:
-                observer(
-                    ContentImportProgress(
-                        ContentImportStage.COPYING,
-                        completed_items,
-                        total_items,
-                        completed_bytes,
-                        total_bytes,
+            def report(delta_bytes: int, completed: bool) -> None:
+                nonlocal completed_items, completed_bytes
+                completed_bytes += delta_bytes
+                completed_items += int(completed)
+                if observer is not None:
+                    observer(
+                        ContentImportProgress(
+                            ContentImportStage.COPYING,
+                            completed_items,
+                            total_items,
+                            completed_bytes,
+                            total_bytes,
+                        )
                     )
-                )
 
-        imported_items: list[FileAssetRef] = []
-        import_scope = (
-            self._resource_changes.import_scope(project_id)
-            if self._resource_changes is not None
-            else nullcontext()
-        )
-        with import_scope:
-            for result in plans:
-                if result.plan is None:  # narrowed above; retained for static type checking
-                    continue
-                try:
-                    imported_item = self._execute_copy(
-                        scope,
-                        result.plan,
-                        "import_failed",
-                        progress=report,
-                        cancelled=cancelled,
-                    )
-                except ContentError as error:
-                    if (
-                        error.code == IMPORT_CANCELLED_ERROR
-                        or failure_policy is ImportFailurePolicy.FAIL_FAST
-                    ):
-                        raise
+            imported_items: list[FileAssetRef] = []
+            import_scope = (
+                self._resource_changes.import_scope(project_id)
+                if self._resource_changes is not None
+                else nullcontext()
+            )
+            with import_scope:
+                for result in plans:
+                    if result.plan is None:  # narrowed above; retained for static type checking
+                        continue
+                    try:
+                        imported_item = self._execute_copy(
+                            scope,
+                            result.plan,
+                            "import_failed",
+                            progress=report,
+                            cancelled=cancelled,
+                        )
+                    except ContentError as error:
+                        if (
+                            error.code == IMPORT_CANCELLED_ERROR
+                            or failure_policy is ImportFailurePolicy.FAIL_FAST
+                        ):
+                            raise
+                        if result_observer is not None:
+                            result_observer(
+                                ContentImportSourceResult(result.source_index, None, error.code)
+                            )
+                        continue
+                    imported_items.append(imported_item)
                     if result_observer is not None:
                         result_observer(
-                            ContentImportSourceResult(result.source_index, None, error.code)
+                            ContentImportSourceResult(result.source_index, imported_item, "")
                         )
-                    continue
-                imported_items.append(imported_item)
-                if result_observer is not None:
-                    result_observer(
-                        ContentImportSourceResult(result.source_index, imported_item, "")
-                    )
-        imported = tuple(imported_items)
-        self._wrote(scope.project.id, *(item.path for item in imported))
-        return imported
+            imported = tuple(imported_items)
+            self._wrote(scope.project.id, *(item.path for item in imported))
+            return imported
 
     def _execute_copy(
         self,
@@ -1863,6 +2208,16 @@ class ContentService:
 
     # ---- 项目身份 ----
 
+    def set_recovery_state(self, project_id: str, reason: str | None) -> None:
+        self._registry.set_recovery_state(project_id, reason)
+
+    def recovery(self, project_id: str) -> AbstractContextManager[None]:
+        return self._registry.recovery(project_id)
+
+    def block_project(self, project_id: str, reason: str) -> None:
+        """Expose a failed project without allowing new business IO through it."""
+        self._registry.block(project_id, reason)
+
     def project(self, project_id: str | None = None) -> ProjectRef:
         """单个项目引用。供 api 层回报根路径与项目名。"""
 
@@ -1871,23 +2226,64 @@ class ContentService:
     def projects(self) -> tuple[ProjectRef, ...]:
         return self._registry.projects()
 
+    def plan_project_creation(self, name: str) -> ProjectRow:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._registry.plan_creation(name)
+
+    def preview_project_directory(self, name: str) -> str:
+        return str(self._registry.creation_directory(name))
+
+    def commit_project_creation(self, plan: ProjectRow, *, operation_id: str) -> ProjectRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._registry.commit_creation(plan, operation_id=operation_id)
+
     def create_project(self, name: str) -> ProjectRef:
-        return self._registry.create(name)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._registry.create(name)
 
-    def adopt_project(self, path: str, name: str = "") -> ProjectRef:
-        return self._registry.adopt(Path(path), name)
+    def adopt_project(
+        self, path: str, name: str = "", *, operation_id: str | None = None
+    ) -> ProjectRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._registry.adopt(Path(path), name, operation_id=operation_id)
 
-    def forget_project(self, project_id: str) -> None:
-        self._registry.forget(project_id)
-        self._events.forget(project_id)
-        if self._project_forget_sink is not None:
-            self._project_forget_sink(project_id)
+    def plan_project_forget(self, project_id: str) -> ProjectRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._registry.plan_forget(project_id)
 
-    def rename_project(self, project_id: str, name: str) -> ProjectRef:
-        return self._registry.rename(project_id, name)
+    def begin_project_forget(self, project_id: str, *, operation_id: str) -> ProjectRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project = self._registry.plan_forget(project_id)
+            self._catalog.begin_project_removal(operation_id, project.id)
+            return project
+
+    def forget_project(
+        self, project_id: str, *, operation_id: str | None = None, now: float | None = None
+    ) -> None:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            project = self._registry.plan_forget(project_id)
+            self._events.forget(project.id)
+            if self._project_forget_sink is not None:
+                self._project_forget_sink(project.id)
+            result = {"id": project.id, "removed": True, "files_kept": True}
+            self._registry.forget(
+                project.id, effect=(operation_id, result) if operation_id else None, now=now
+            )
+
+    def rename_project(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        description: str | None = None,
+        pinned: bool | None = None,
+    ) -> ProjectRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._registry.rename(project_id, name, description=description, pinned=pinned)
 
     def set_project_archived(self, project_id: str, archived: bool) -> ProjectRef:
-        return self._registry.set_archived(project_id, archived)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._registry.set_archived(project_id, archived)
 
     def project_for_path(self, absolute: str) -> ProjectRef | None:
         return self._registry.for_path(absolute)
@@ -1899,86 +2295,153 @@ class ContentService:
 
     # ---- 关联外部根与授权 ----
 
+    def plan_root_authorization(self, project_id: str, source: str, mount: str) -> ExternalRootRow:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._roots.plan(self._registry.resolve(project_id), source, mount)
+
+    def commit_root_authorization(
+        self, plan: ExternalRootRow, *, supersede: bool = False, operation_id: str
+    ) -> ExternalRootRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._roots.commit(
+                self._registry.resolve(plan.project_id),
+                (plan,),
+                supersede=supersede,
+                authorization_operation_id=operation_id,
+            )[0]
+
     def authorize_root(
         self, project_id: str, source: str, mount: str, *, supersede: bool = False
     ) -> ExternalRootRef:
-        return self._roots.authorize(
-            self._registry.resolve(project_id), source, mount, supersede=supersede
-        )
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._roots.authorize(
+                self._registry.resolve(project_id), source, mount, supersede=supersede
+            )
 
     def authorize_root_at(
         self, project_id: str, source: str, parent: str, name: str
     ) -> ExternalRootRef:
         """Register a single source at a validated local resource directory."""
 
-        scope = self._space(project_id)
-        parent = self.within_root(project_id, RootKind.RESOURCES, parent)
-        requested = space.SEPARATOR.join(
-            part for part in (parent, assets.validate_name(name)) if part
-        )
-        for existing in self.external_roots(project_id):
-            if existing.mount_path == requested:
-                if existing.source_path == str(Path(source).expanduser().resolve()):
-                    return existing
-                raise ContentError("mount_conflict")
-        candidate = self.destination(project_id, parent, name)
-        if candidate.path != requested:
-            raise ContentError("mount_conflict")
-        if any(
-            parent == root.mount_path or parent.startswith(f"{root.mount_path}/")
-            for root in self.external_roots(project_id)
-        ):
-            raise ContentError("invalid_mount")
-        root = self.root(project_id, RootKind.RESOURCES).path
-        mount = requested[len(root) + 1 :] if root else requested
-        directory = scope.open_directory(parent)
-        try:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            parent = self.within_root(project_id, RootKind.RESOURCES, parent)
+            requested = space.SEPARATOR.join(
+                part for part in (parent, assets.validate_name(name)) if part
+            )
             for existing in self.external_roots(project_id):
                 if existing.mount_path == requested:
                     if existing.source_path == str(Path(source).expanduser().resolve()):
                         return existing
                     raise ContentError("mount_conflict")
-            return self._roots.authorize(scope.project, source, mount, nested=True)
-        finally:
-            directory.close()
+            candidate = self.destination(project_id, parent, name)
+            if candidate.path != requested:
+                raise ContentError("mount_conflict")
+            if any(
+                parent == root.mount_path or parent.startswith(f"{root.mount_path}/")
+                for root in self.external_roots(project_id)
+            ):
+                raise ContentError("invalid_mount")
+            root = self.root(project_id, RootKind.RESOURCES).path
+            mount = requested[len(root) + 1 :] if root else requested
+            directory = scope.open_directory(parent)
+            try:
+                for existing in self.external_roots(project_id):
+                    if existing.mount_path == requested:
+                        if existing.source_path == str(Path(source).expanduser().resolve()):
+                            return existing
+                        raise ContentError("mount_conflict")
+                return self._roots.authorize(scope.project, source, mount, nested=True)
+            finally:
+                directory.close()
 
     def authorize_roots(
         self, project_id: str, sources: tuple[str, ...], mounts: tuple[str, ...]
     ) -> tuple[ExternalRootRef, ...]:
-        return self._roots.authorize_many(self._registry.resolve(project_id), sources, mounts)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._roots.authorize_many(self._registry.resolve(project_id), sources, mounts)
 
-    def authorize_import_roots(
+    def plan_import_roots(
         self, project_id: str, sources: tuple[str, ...], target_dir: str
-    ) -> tuple[ExternalRootRef, ...]:
-        """Authorize selected sources at collision-free names inside one local directory."""
+    ) -> tuple[ExternalRootRow, ...]:
+        """Plan collision-free LINK mounts without registering or copying sources."""
 
-        scope = self._space(project_id)
-        target_dir = self.within_root(scope.project.id, RootKind.RESOURCES, target_dir)
-        if scope.mount_for(target_dir) is not None:
-            raise ContentError("invalid_mount")
-        targets = assets.import_target_paths(
-            scope,
-            target_dir,
-            tuple(Path(source).expanduser().name for source in sources),
-        )
-        resource_root = resolve_root(scope.project, RootKind.RESOURCES).relative
-        prefix = f"{resource_root}/" if resource_root else ""
-        mounts = tuple(scope.relative(target)[len(prefix) :] for target in targets)
-        return self._roots.authorize_many(scope.project, sources, mounts, nested=True)
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            scope = self._space(project_id)
+            target_dir = self.within_root(scope.project.id, RootKind.RESOURCES, target_dir)
+            if scope.mount_for(target_dir) is not None:
+                raise ContentError("invalid_mount")
+            targets = assets.import_target_paths(
+                scope,
+                target_dir,
+                tuple(Path(source).expanduser().name for source in sources),
+            )
+            resource_root = resolve_root(scope.project, RootKind.RESOURCES).relative
+            prefix = f"{resource_root}/" if resource_root else ""
+            mounts = tuple(scope.relative(target)[len(prefix) :] for target in targets)
+            return tuple(
+                self._roots.plan(scope.project, source, mount, nested=True)
+                for source, mount in zip(sources, mounts)
+            )
+
+    def commit_import_roots(
+        self,
+        plans: tuple[ExternalRootRow, ...],
+        *,
+        receipt: tuple[str, str] | None = None,
+        effect: tuple[str, dict[str, object]] | None = None,
+    ) -> tuple[ExternalRootRef, ...]:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            if not plans:
+                raise ContentError("invalid_root_batch")
+            return self._roots.commit(
+                self._registry.resolve(plans[0].project_id), plans, receipt=receipt, effect=effect
+            )
+
+    def root_receipts(self) -> tuple[RootReceipt, ...]:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._catalog.root_receipts()
+
+    def acknowledge_root_receipt(self, operation_id: str, request_json: str) -> None:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            self._catalog.acknowledge_root_receipt(operation_id, request_json)
 
     def assert_import_roots_linkable(self, project_id: str, sources: tuple[str, ...]) -> None:
-        """关联导入创建任务前的只读包含预检; 权威复检仍在 job 执行 `authorize_import_roots` 时。"""
+        """关联导入创建任务前的只读包含预检; 权威复检在目录命令的计划与提交阶段。"""
 
         self._roots.assert_linkable(self._registry.resolve(project_id), sources)
 
-    def revoke_root(self, root_id: str) -> None:
-        self._roots.revoke(root_id)
+    def commit_root_revocation(
+        self, root_id: str, project_id: str | None, *, operation_id: str
+    ) -> dict[str, object]:
+        """Snapshot the completed revocation while composition owns exclusive domains."""
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            plan = self._roots.plan_revocation(root_id, project_id)
+            project = self._registry.resolve(plan.project_id)
+            result: dict[str, object] = {
+                "root_id": plan.root_id,
+                "revoked": True,
+                "writableRoots": [
+                    path for path in self._roots.writable_roots(project) if path != plan.source_path
+                ],
+                # Attachments have drained; later admission reads current authority.
+                "agentSessionsAffected": [],
+            }
+            self._roots.revoke(root_id, project_id, effect=(operation_id, result))
+            return result
+
+    def revoke_root(self, root_id: str, project_id: str | None = None) -> ExternalRootRef:
+        with self._activities.enter(ActivityDomain.RESOURCE):
+            return self._roots.revoke(root_id, project_id)
 
     def external_roots(self, project_id: str) -> tuple[ExternalRootRef, ...]:
         return self._roots.active(self._registry.resolve(project_id).id)
 
     def writable_roots(self, project_id: str) -> tuple[str, ...]:
-        return self._roots.writable_roots(self._registry.resolve(project_id))
+        project = self._registry.resolve(project_id)
+        if not project.available:
+            raise ContentError(ROOT_UNAVAILABLE_ERROR)
+        return self._roots.writable_roots(project)
 
     # ---- 删除接缝 ----
 

@@ -20,7 +20,7 @@ interface ReferenceRange {
   end: number
 }
 
-function referenceRanges(source: string): ReferenceRange[] {
+export function referenceRanges(source: string): ReferenceRange[] {
   const ranges: ReferenceRange[] = []
   let cursor = 0
   while (cursor < source.length) {
@@ -53,9 +53,80 @@ export function visibleMarkdownText(source: string): string {
 /** Keep complete comments so parser offsets remain exact; mask an incomplete streaming tail. */
 export function prepareMarkdownSource(source: string): string {
   const ranges = referenceRanges(source)
-  const partial = ranges.find((range) => range.end === source.length && !source.endsWith(REFERENCE_CLOSE))
+  const partial = ranges.find(
+    (range) => range.end === source.length && !source.endsWith(REFERENCE_CLOSE)
+  )
   if (!partial) return source
   return source.slice(0, partial.start) + source.slice(partial.start).replace(/[^\r\n]/g, ' ')
+}
+
+/** Translate TeX math delimiters without shifting source annotation offsets. */
+export function prepareMathSource(source: string): string {
+  const delimiters: Array<{ index: number; kind: 'inline' | 'display'; opening: boolean }> = []
+  let fenceCharacter = ''
+  let fenceLength = 0
+  let inlineTicks = 0
+  let offset = 0
+
+  for (const line of source.match(/[^\n]*\n|[^\n]+/g) ?? []) {
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (!inlineTicks && fence) {
+      const marker = fence[1]
+      if (!fenceCharacter) {
+        fenceCharacter = marker[0]
+        fenceLength = marker.length
+      } else if (marker[0] === fenceCharacter && marker.length >= fenceLength) {
+        fenceCharacter = ''
+        fenceLength = 0
+      }
+      offset += line.length
+      continue
+    }
+    if (fenceCharacter) {
+      offset += line.length
+      continue
+    }
+
+    for (let index = 0; index < line.length; index += 1) {
+      if (line[index] === '`') {
+        let end = index + 1
+        while (line[end] === '`') end += 1
+        const length = end - index
+        if (!inlineTicks) inlineTicks = length
+        else if (inlineTicks === length) inlineTicks = 0
+        index = end - 1
+        continue
+      }
+      if (inlineTicks || line[index] !== '\\' || line[index - 1] === '\\') continue
+      const marker = line[index + 1]
+      if (marker === '(' || marker === ')' || marker === '[' || marker === ']') {
+        delimiters.push({
+          index: offset + index,
+          kind: marker === '(' || marker === ')' ? 'inline' : 'display',
+          opening: marker === '(' || marker === '[',
+        })
+        index += 1
+      }
+    }
+    offset += line.length
+  }
+
+  const replacements = new Set<number>()
+  const openings: Partial<Record<'inline' | 'display', number>> = {}
+  for (const delimiter of delimiters) {
+    if (delimiter.opening) openings[delimiter.kind] = delimiter.index
+    else {
+      const openingIndex = openings[delimiter.kind]
+      if (openingIndex === undefined) continue
+      replacements.add(openingIndex)
+      replacements.add(delimiter.index)
+      delete openings[delimiter.kind]
+    }
+  }
+  if (!replacements.size) return source
+  return source.replace(/\\[()[\]]/g, (delimiter, index: number) =>
+    replacements.has(index) ? '$$' : delimiter
+  )
 }
 
 function numericCharacterReference(raw: string): string | null {
@@ -85,21 +156,34 @@ function appendAtom(
 ): void {
   output.value += displayed
   for (let index = 1; index <= displayed.length; index += 1) {
-    const splitsSurrogate = index < displayed.length &&
-      /[\uD800-\uDBFF]/.test(displayed[index - 1]) && /[\uDC00-\uDFFF]/.test(displayed[index])
+    const splitsSurrogate =
+      index < displayed.length &&
+      /[\uD800-\uDBFF]/.test(displayed[index - 1]) &&
+      /[\uDC00-\uDFFF]/.test(displayed[index])
     output.boundaries.push(
       splitsSurrogate
         ? null
-        : linear ? sourceStart + index : index === displayed.length ? sourceEnd : null
+        : linear
+          ? sourceStart + index
+          : index === displayed.length
+            ? sourceEnd
+            : null
     )
   }
 }
 
-function decodeSource(raw: string, base: number): { value: string; boundaries: Array<number | null> } {
+function decodeSource(
+  raw: string,
+  base: number
+): { value: string; boundaries: Array<number | null> } {
   const output = { value: '', boundaries: [base] as Array<number | null> }
   let cursor = 0
   while (cursor < raw.length) {
-    if (raw[cursor] === '\\' && cursor + 1 < raw.length && ESCAPABLE_PUNCTUATION.test(raw[cursor + 1])) {
+    if (
+      raw[cursor] === '\\' &&
+      cursor + 1 < raw.length &&
+      ESCAPABLE_PUNCTUATION.test(raw[cursor + 1])
+    ) {
       appendAtom(output, raw[cursor + 1], base + cursor, base + cursor + 2, false)
       cursor += 2
       continue
@@ -129,9 +213,12 @@ function mapCodeSource(
   const output = { value: '', boundaries: [base] as Array<number | null> }
   let cursor = 0
   while (cursor < raw.length) {
-    const lineBreak = raw[cursor] === '\r' && raw[cursor + 1] === '\n'
-      ? '\r\n'
-      : raw[cursor] === '\r' || raw[cursor] === '\n' ? raw[cursor] : ''
+    const lineBreak =
+      raw[cursor] === '\r' && raw[cursor + 1] === '\n'
+        ? '\r\n'
+        : raw[cursor] === '\r' || raw[cursor] === '\n'
+          ? raw[cursor]
+          : ''
     if (lineBreak) {
       appendAtom(output, newline, base + cursor, base + cursor + lineBreak.length, false)
       cursor += lineBreak.length
@@ -158,8 +245,15 @@ function inlineCodeLeaf(raw: string, base: number, expected: string): SourceLeaf
   }
   const mappedStart = mapped.boundaries[0]
   const mappedEnd = mapped.boundaries.at(-1)
-  return mapped.value === expected && typeof mappedStart === 'number' && typeof mappedEnd === 'number'
-    ? { value: expected, startUtf16: mappedStart, endUtf16: mappedEnd, boundaries: mapped.boundaries }
+  return mapped.value === expected &&
+    typeof mappedStart === 'number' &&
+    typeof mappedEnd === 'number'
+    ? {
+        value: expected,
+        startUtf16: mappedStart,
+        endUtf16: mappedEnd,
+        boundaries: mapped.boundaries,
+      }
     : null
 }
 
@@ -169,18 +263,28 @@ function fencedCodeLeaf(raw: string, base: number, expected: string): SourceLeaf
   const opening = raw.match(/^\s*(`{3,}|~{3,})/)?.[1]
   if (!opening) return null
   const lines = raw.split(/\r?\n/)
-  const closingLine = lines.length > 1 && new RegExp(`^\\s*${opening[0]}{${opening.length},}\\s*$`).test(lines.at(-1) ?? '')
-    ? lines.length - 1
-    : -1
+  const closingLine =
+    lines.length > 1 &&
+    new RegExp(`^\\s*${opening[0]}{${opening.length},}\\s*$`).test(lines.at(-1) ?? '')
+      ? lines.length - 1
+      : -1
   const contentLines = lines.slice(1, closingLine < 0 ? lines.length : closingLine)
   const displayed = contentLines.join('\n') + (contentLines.length ? '\n' : '')
   if (displayed !== expected) return null
   const contentStart = openingEnd + (raw[openingEnd] === '\r' ? 2 : 1)
-  const rawContent = raw.slice(contentStart, closingLine < 0 ? raw.length : raw.lastIndexOf(lines[closingLine]))
+  const rawContent = raw.slice(
+    contentStart,
+    closingLine < 0 ? raw.length : raw.lastIndexOf(lines[closingLine])
+  )
   const mapped = mapCodeSource(rawContent, base + contentStart, '\n')
   const mappedEnd = mapped.boundaries.at(-1)
   if (mapped.value !== expected || typeof mappedEnd !== 'number') return null
-  return { value: expected, startUtf16: base + contentStart, endUtf16: mappedEnd, boundaries: mapped.boundaries }
+  return {
+    value: expected,
+    startUtf16: base + contentStart,
+    endUtf16: mappedEnd,
+    boundaries: mapped.boundaries,
+  }
 }
 
 export function sourceLeaf(
@@ -203,7 +307,7 @@ export function encodedBoundaries(leaf: SourceLeaf): string | undefined {
   const linear = leaf.boundaries.every((boundary, index) => boundary === leaf.startUtf16 + index)
   if (linear) return undefined
   return leaf.boundaries
-    .map((boundary) => boundary === null ? UNMAPPED_BOUNDARY : String(boundary - leaf.startUtf16))
+    .map((boundary) => (boundary === null ? UNMAPPED_BOUNDARY : String(boundary - leaf.startUtf16)))
     .join(BOUNDARY_SEPARATOR)
 }
 
@@ -212,9 +316,7 @@ export function mappedSourceBoundary(element: HTMLElement, offset: number): numb
   const end = Number(element.dataset.mdSourceEnd)
   if (!Number.isInteger(start) || !Number.isInteger(end) || offset < 0) return null
   const encoded = element.dataset.mdSourceBoundaries
-  const boundary = encoded
-    ? encoded.split(BOUNDARY_SEPARATOR)[offset]
-    : String(offset)
+  const boundary = encoded ? encoded.split(BOUNDARY_SEPARATOR)[offset] : String(offset)
   if (boundary === undefined || boundary === UNMAPPED_BOUNDARY) return null
   const mapped = start + Number(boundary)
   if (!Number.isInteger(mapped) || mapped < start || mapped > end) return null

@@ -26,8 +26,55 @@ from bibliography_contract import inspect_bibliography, duplicate_citation_defin
 from platform_io import file_lock
 from publication_pages import TRACKING_TEX
 from publication_pages import inspection_plan
+from publication_style import synchronize, metadata_check
 
 PAGE_RENDER_LONG_EDGE=1400
+PRECOMPILE_TIMEOUT_SECONDS = 10
+PRECOMPILE_DIRECTORY = 'compilation_precheck'
+COMPILE_DIAGNOSTIC_LIMIT = 8
+COMPILE_CONTEXT_LINES = 7
+COMPILE_DIAGNOSTIC_CHARS = 4000
+
+
+def latex_engine(text):
+    name = 'xelatex' if re.search(r'ctex|xeCJK|fontspec', text) else 'pdflatex'
+    return shutil.which(name)
+
+
+def precompile(ws, source):
+    source = Path(source)
+    engine = latex_engine(source.read_text())
+    if not engine:
+        return {'status': 'UNAVAILABLE', 'reason': 'LaTeX engine unavailable'}
+    destination = source.parent/'_internal'/PRECOMPILE_DIRECTORY
+    destination.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    for name in ('TEXINPUTS', 'BIBINPUTS', 'BSTINPUTS'):
+        environment[name] = os.pathsep.join((str(source.parent), str(ws), environment.get(name, '')))
+    command = [engine, '-interaction=nonstopmode', '-halt-on-error', '-file-line-error',
+               '-output-directory='+str(destination), source.name]
+    started = time.monotonic()
+    try:
+        result = subprocess.run(command, cwd=source.parent, env=environment,
+                                capture_output=True, text=True, errors='replace',
+                                timeout=PRECOMPILE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return {'status': 'TIMEOUT', 'engine': engine,
+                'duration_sec': round(time.monotonic()-started, 3)}
+    except OSError as error:
+        return {'status': 'UNAVAILABLE', 'engine': engine, 'reason': str(error)}
+    output = result.stdout + result.stderr
+    log = destination/(source.stem+'.log')
+    save(destination/'command.log', output)
+    lines = output.splitlines()
+    contexts = ['\n'.join(lines[index:index+COMPILE_CONTEXT_LINES])
+                for index, line in enumerate(lines)
+                if line.startswith('!') or re.search(r'\.tex:\d+:', line)]
+    errors = contexts[:COMPILE_DIAGNOSTIC_LIMIT] or [output[-COMPILE_DIAGNOSTIC_CHARS:]]
+    return {'status': 'SUCCESS' if result.returncode == 0 else 'FAILED',
+            'engine': engine, 'duration_sec': round(time.monotonic()-started, 3),
+            'returncode': result.returncode, 'log': str(log),
+            'errors': [] if result.returncode == 0 else errors}
 
 def publication_source(ws):
     gen=Path(ws)/'05_generation'
@@ -196,7 +243,9 @@ def publish(ws):
 
 def _publish(ws,env):
     started=time.monotonic();source=publication_source(ws);gen=source.parent
+    settings = synchronize(ws, source)
     rules=content_report(ws)
+    rules['checks'].extend(metadata_check(source, settings))
     if rules['blocking']:
         result={**rules,'code':'BIBLIOGRAPHY_CONFLICT','stage':'generation_publish',
                 'source':str(source),'duration_sec':round(time.monotonic()-started,3),
@@ -206,7 +255,6 @@ def _publish(ws,env):
     if source.suffix=='.md':
         out=_export(ws,source);deliverable=out/'survey.md'
         from citation_formats import CitationResolver,parse_bib_file
-        settings=read(gen/'publication.json') if (gen/'publication.json').exists() else {}
         entries=parse_bib_file(gen/'citations.bib')
         resolver=CitationResolver(entries,settings.get('citation_style','numeric'),settings.get('language','english'))
         raw=source.read_text();resolver.collect(raw)
@@ -232,8 +280,8 @@ def _publish(ws,env):
                 'next_action':'Edit v2 directly and run workflow publish.'}
     else:
         text=source.read_text()
-        engine='xelatex' if re.search(r'ctex|xeCJK|fontspec',text) else 'pdflatex'
-        if not shutil.which(engine):raise ValueError(engine+' unavailable')
+        engine=latex_engine(text)
+        if not engine:raise ValueError('LaTeX engine unavailable')
         # Every invocation compiles the current source; no cache or generation gate.
         record=gen/'_status/phase07_compile_latex.json'
         save(record,{'status':'FAILED','source':str(source),'message':'Current compile running'})
@@ -244,8 +292,11 @@ def _publish(ws,env):
         command=[engine,'-interaction=nonstopmode','-halt-on-error','-jobname='+source.stem,
                  r'\input{_internal/publication_page_tracking.tex}\input{'+source.name+'}']
         logs=[];first=_run(command,gen,env);logs.append(first.stdout+first.stderr)
-        if (gen/(source.stem+'.aux')).exists() and r'\bibliography{' in text and shutil.which('bibtex'):
+        bibliography_required = r'\bibliography{' in text
+        bibliography_ok = not bibliography_required
+        if (gen/(source.stem+'.aux')).exists() and bibliography_required and shutil.which('bibtex'):
             bib=_run(['bibtex',source.stem],gen,env);logs.append(bib.stdout+bib.stderr)
+            bibliography_ok = bib.returncode == 0
         final=first
         for _ in range(2):
             final=_run(command,gen,env);logs.append(final.stdout+final.stderr)
@@ -255,12 +306,13 @@ def _publish(ws,env):
         log_lines=log.splitlines()
         fatal=[line for line in log_lines if line.startswith('!')]
         contexts=['\n'.join(log_lines[i:i+7]) for i,line in enumerate(log_lines) if line.startswith('!')]
-        clean=final.returncode==0 and pdf.exists() and not fatal
+        clean=final.returncode==0 and pdf.exists() and not fatal and bibliography_ok
         duplicate_definitions=duplicate_citation_definitions(log)
         if duplicate_definitions:clean=False
         diagnosis={'verdict':'bibliography_conflict' if duplicate_definitions else 'clean' if clean else 'compile_failed','final_pass_rc':final.returncode,
                    'fatal_errors':fatal,'log_path':str(source.with_suffix('.log')),
                    'error_contexts':contexts,
+                   'bibliography_ok': bibliography_ok,
                    'log_warnings':[line for line in log.splitlines() if 'Warning' in line or 'Overfull' in line]}
         save(record,{'status':'SUCCESS' if clean else 'FAILED','source':str(source),'diagnosis':diagnosis})
         result={'status':'SUCCESS' if clean else 'FAILED','source':str(source),
@@ -291,7 +343,7 @@ def audit(ws,render=False):
     previous=read(ws/'05_generation/generation_report.json') if (ws/'05_generation/generation_report.json').exists() else {}
     result.update(status='FAILED' if result['blocking'] else previous.get('status','FAILED'),visual_review_required=source.suffix=='.tex',
                   visual_review_complete=False,pages_to_read=[],render_error=None)
-    result['checks'] += [c for c in previous.get('checks',[]) if c['id'] in ('compilation','bibliography_definitions')]
+    result['checks'] += [c for c in previous.get('checks',[]) if c['id'] in ('compilation','bibliography_definitions','citation_metadata','citation_fidelity')]
     if render and source.suffix=='.tex' and result['status']=='SUCCESS':
         result['pages_to_read'],result['render_error'],result['inspection_scope']=render_pages(
             ws,previous.get('deliverable'),include_scope=True)

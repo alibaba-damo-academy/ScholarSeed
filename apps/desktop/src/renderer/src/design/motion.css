@@ -1,4 +1,5 @@
 :root {
+  --vds-feedback-shutter-duration: 1000ms;
   --vds-duration-fast: 120ms;
   --vds-duration-normal: 180ms;
   --vds-carousel-transition-duration: 500ms;
@@ -12,6 +13,15 @@
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes vds-streaming-text-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
   }
 }
 
@@ -78,6 +88,78 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes vds-sheet-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes vds-sheet-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes vds-sheet-in-top {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes vds-sheet-in-bottom {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes vds-sheet-out-right {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes vds-sheet-out-left {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes vds-sheet-out-top {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-100%);
+  }
+}
+
+@keyframes vds-sheet-out-bottom {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
   }
 }
 
@@ -154,5 +236,32 @@
   50% {
     opacity: 0.35;
     transform: scale(1.05);
+  }
+}
+
+@keyframes vds-feedback-shutter-flash {
+  0%,
+  45%,
+  100% {
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.65;
+  }
+}
+
+@keyframes vds-feedback-shutter-frame {
+  0% {
+    opacity: 0;
+    transform: scale(1.01);
+  }
+  15%,
+  55% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
   }
 }

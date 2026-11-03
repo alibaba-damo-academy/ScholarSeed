@@ -64,6 +64,14 @@ class ProductEndpointTests(unittest.TestCase):
                 localconf.apply()
                 self.assertEqual(os.environ["PAPERHUB_URL"], expected)
 
+    def test_default_paperhub_route_preserves_proxy(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            localconf, "config_source", return_value=localconf._BUNDLED_CFG_PATH
+        ), patch.object(localconf, "_applied", False):
+            localconf.apply()
+            self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("no_proxy", ""))
+            self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("NO_PROXY", ""))
+
     def test_web_fallback_provenance_names_the_skill(self):
         paper, warning = web_fallback._normalize_paper(
             {"title": "Example", "url": "https://example.test/paper"}
@@ -86,13 +94,15 @@ class ProductEndpointTests(unittest.TestCase):
         self.assertNotIn("`provider` = `native`", skill)
 
     def test_all_workflows_name_the_same_provider_route(self):
-        expected = "`official-api` → `codex-native` → `visible-browser`"
+        expected = "`official-api` → `codex-native`"
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         balanced = (
             ROOT / "references" / "balanced-quality-workflow.md"
         ).read_text(encoding="utf-8")
         self.assertIn(expected, skill)
         self.assertIn(expected, balanced)
+        self.assertNotIn("visible-browser", skill)
+        self.assertNotIn("visible-browser", balanced)
 
 
 if __name__ == "__main__":

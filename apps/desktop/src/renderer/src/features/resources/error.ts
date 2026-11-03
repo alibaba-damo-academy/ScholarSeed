@@ -73,12 +73,5 @@ export function resourceErrorMessage(code?: string): ResourceErrorMessage {
   const key = code && Object.prototype.hasOwnProperty.call(RESOURCE_ERROR_KEYS, code)
     ? RESOURCE_ERROR_KEYS[code as keyof typeof RESOURCE_ERROR_KEYS]
     : 'operationError.unknown'
-  return { key, detail: key === 'operationError.unknown' ? code : undefined }
-}
-
-/** Preserve opaque upstream codes as diagnostics without translating their contents. */
-export function resourceFailureDetail(code: string, detail?: string): string | undefined {
-  if (!code) return detail || undefined
-  if (!detail || detail === code) return code
-  return `${code}: ${detail}`
+  return { key, detail: undefined }
 }

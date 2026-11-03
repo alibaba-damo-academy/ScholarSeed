@@ -1,0 +1,122 @@
+{
+  "data": {
+    "papers": [
+      {
+        "id": "sample-0",
+        "label": "样例：长上下文信息利用",
+        "description": "样例数据，不是研究结论。"
+      },
+      {
+        "id": "sample-1",
+        "label": "样例：检索增强方法",
+        "description": "用于验证选择与授权范围。"
+      }
+    ],
+    "scope_count": 2,
+    "selected_paper_ids": []
+  },
+  "interaction": {
+    "questions": [
+      {
+        "id": "literature-review-fulltext:sample",
+        "header": "综述检索授权",
+        "question": "是否授权读取本次范围内的文献全文？",
+        "options": [
+          {
+            "label": "一键授权"
+          },
+          {
+            "label": "拒绝"
+          }
+        ]
+      }
+    ]
+  },
+  "responses": {},
+  "cases": [
+    {
+      "label": "确认失败后重试",
+      "interaction": {
+        "questions": [
+          {
+            "id": "literature-review-fulltext:sample",
+            "header": "综述检索授权",
+            "question": "是否授权读取本次范围内的文献全文？",
+            "options": [
+              {
+                "label": "一键授权"
+              },
+              {
+                "label": "拒绝"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "error": "preview_submit_failed"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "确认结果未知",
+      "interaction": {
+        "questions": [
+          {
+            "id": "literature-review-fulltext:sample",
+            "header": "综述检索授权",
+            "question": "是否授权读取本次范围内的文献全文？",
+            "options": [
+              {
+                "label": "一键授权"
+              },
+              {
+                "label": "拒绝"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "outcome": "unknown"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "请求已过期",
+      "interaction": {
+        "questions": [
+          {
+            "id": "literature-review-fulltext:sample",
+            "header": "综述检索授权",
+            "question": "是否授权读取本次范围内的文献全文？",
+            "options": [
+              {
+                "label": "一键授权"
+              },
+              {
+                "label": "拒绝"
+              }
+            ]
+          }
+        ],
+        "respond": [
+          {
+            "state": "failed",
+            "data": {
+              "outcome": "stale"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+interface:
+  display_name: "研究验证方案设计"
+  short_description: "Draft-preserving research validation planning"
+  default_prompt: "Use $design-research-validation to turn this research claim into a decisive validation plan, preserve its scientific coverage, and describe proposed experiments without executing them."
+policy:
+  allow_implicit_invocation: true

@@ -8,7 +8,17 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from service.assistant.persistence.utils import extensions
 from service.chat.persistence.catalog import SQLITE_TIMEOUT_SECONDS
+from service.persistence.project import (
+    database_files,
+    open_database,
+    reader,
+    reject_schema_residue,
+    schema_transaction,
+    sql_tokens,
+    table_clauses,
+)
 from service.platform.inference import ModelInvocationStatus
 
 ASSISTANT_INVOCATION_TABLE = "assistant_model_invocation"
@@ -72,16 +82,100 @@ class AssistantInvocationRecord:
     updated_at: float = 0.0
 
 
+@dataclass(frozen=True)
+class InvocationSchema:
+    """Owner initialization requirements, not whole-database admission."""
+
+    create_table: bool
+    create_index: bool
+
+    @property
+    def needs_write(self) -> bool:
+        return self.create_table or self.create_index
+
+
 class AssistantInvocationStore:
     """Own the non-Session action table inside the product aggregate database."""
 
     def __init__(self, database: Path) -> None:
         self._database = database
-        with closing(self._connect()) as connection, connection:
-            self._create_table(connection)
+        if not self.inspect_schema(self._database).needs_write:
+            return
+        with closing(self._connect()) as connection, schema_transaction(connection):
+            self.initialize_schema(connection)
+
+    @classmethod
+    def initialize_schema(cls, connection: sqlite3.Connection) -> None:
+        """Apply owned startup migrations inside the caller's transaction.
+
+        Uses the same code for qualified startup and isolated compatibility
+        projection; this method neither opens files nor grants write access.
+        """
+        if cls.inspect_connection(connection).needs_write:
+            cls._create_table(connection)
+        if cls.inspect_connection(connection).needs_write:
+            raise RuntimeError("initialization did not reach supported format")
+
+    @classmethod
+    def inspect_schema(cls, database: Path) -> InvocationSchema:
+        """Read a guarded WAL snapshot; callers retain directory qualification.
+
+        SQLite can touch SHM. This is neither atomic VFS binding nor row validation.
+        """
+        with database_files(database) as present:
+            if not present:
+                with closing(sqlite3.connect(":memory:")) as connection:
+                    connection.row_factory = sqlite3.Row
+                    return cls.inspect_connection(connection)
+            with reader(database) as connection:
+                connection.execute("BEGIN")
+                return cls.inspect_connection(connection)
+
+    @classmethod
+    def inspect_connection(cls, connection: sqlite3.Connection) -> InvocationSchema:
+        reject_schema_residue(connection, (ASSISTANT_INVOCATION_TABLE,))
+        objects = {
+            row["name"]: row
+            for row in connection.execute("SELECT name,type,tbl_name,sql FROM sqlite_master")
+        }
+        with closing(sqlite3.connect(":memory:")) as reference:
+            cls._create_table(reference)
+            expected = reference.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (ASSISTANT_INVOCATION_TABLE,)
+            ).fetchone()[0]
+            actual = objects.get(ASSISTANT_INVOCATION_TABLE)
+            if actual is not None:
+                try:
+                    known = {
+                        row[1]
+                        for row in reference.execute(
+                            f"PRAGMA table_xinfo({ASSISTANT_INVOCATION_TABLE})"
+                        )
+                    }
+                    extra = extensions(connection, ASSISTANT_INVOCATION_TABLE, known)
+                    valid = actual["type"] == "table" and tuple(
+                        clause
+                        for clause in table_clauses(actual["sql"], ASSISTANT_INVOCATION_TABLE)
+                        if clause[0] not in extra
+                    ) == table_clauses(expected, ASSISTANT_INVOCATION_TABLE)
+                except ValueError as error:
+                    raise RuntimeError("unsupported invocations table definition") from error
+                if not valid:
+                    raise RuntimeError("unsupported invocations table definition")
+            name, definition = reference.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            ).fetchone()
+            owned_index = objects.get(name)
+            if owned_index is not None and (
+                owned_index["type"] != "index"
+                or owned_index["tbl_name"] != ASSISTANT_INVOCATION_TABLE
+                or sql_tokens(owned_index["sql"]) != sql_tokens(definition)
+            ):
+                raise RuntimeError("unsupported invocation owned index")
+            return InvocationSchema(actual is None, owned_index is None)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
+        connection = open_database(
             str(self._database),
             check_same_thread=False,
             timeout=SQLITE_TIMEOUT_SECONDS,
@@ -128,6 +222,12 @@ class AssistantInvocationStore:
             f"CREATE INDEX IF NOT EXISTS idx_{ASSISTANT_INVOCATION_TABLE}_owner_updated "
             f"ON {ASSISTANT_INVOCATION_TABLE}(owner_id, updated_at DESC)"
         )
+
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Use the normal invocation decoder on every projected record."""
+        for row in connection.execute(f"SELECT * FROM {ASSISTANT_INVOCATION_TABLE}"):
+            cls._record(row)
 
     @staticmethod
     def _record(row: sqlite3.Row) -> AssistantInvocationRecord:

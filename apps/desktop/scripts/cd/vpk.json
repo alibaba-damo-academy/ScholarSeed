@@ -1,0 +1,36 @@
+{
+  "version": "1.2.161",
+  "framework": "8.0.32",
+  "entrypoint": "tools/net8.0/any/vpk.dll",
+  "libc": {
+    "file": "lib/velopack_libc_win_x64_msvc.dll",
+    "bytes": 2691072,
+    "sha256": "3387c5f362501374b2f2d942466c3ec565ac573ec24e3d6e7679c0b8e7828b12"
+  },
+  "archives": [
+    {
+      "name": "vpk",
+      "filename": "vpk.1.2.161.nupkg",
+      "url": "https://api.nuget.org/v3-flatcontainer/vpk/1.2.161/vpk.1.2.161.nupkg",
+      "mirrors": ["https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/velopack/vpk.1.2.161.nupkg"],
+      "bytes": 146897348,
+      "sha256": "ac9be73846d9a7a76483f8684abd1503cd50703b992727429dcdc045589c5e08"
+    },
+    {
+      "name": "libc",
+      "filename": "velopack_libc_1.2.161.zip",
+      "url": "https://github.com/velopack/velopack/releases/download/1.2.161/velopack_libc_1.2.161.zip",
+      "mirrors": ["https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/velopack/velopack_libc_1.2.161.zip"],
+      "bytes": 30774789,
+      "sha256": "31de8f2cf05a47bd5328a9f98b0c41aec1582156f6075f1058b26941f7f17c20"
+    },
+    {
+      "name": "dotnet",
+      "filename": "dotnet-runtime-8.0.32-win-x64.zip",
+      "url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/8.0.32/dotnet-runtime-8.0.32-win-x64.zip",
+      "mirrors": ["https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/dotnet/dotnet-runtime-8.0.32-win-x64.zip"],
+      "bytes": 33337383,
+      "sha256": "0132501a735fc584adff29d28084150083f6ba320f5ae52beb7c49f52ba793f7"
+    }
+  ]
+}

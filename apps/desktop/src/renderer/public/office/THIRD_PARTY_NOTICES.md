@@ -34,7 +34,7 @@ To reproduce, configure that core revision with the matching translations in
 then the native gbuild targets `workdir/XcdTarget/Langpack-zh-CN.xcd`,
 `workdir/XcdTarget/registry_zh-CN.xcd`, and
 `workdir/XcdTarget/fcfg_langpack_zh-CN.xcd` (absolute target paths via
-`make -f Makefile.gbuild`). Run `node scripts/locales.cjs <core> <translations>
+`make -f Makefile.gbuild`). Run `node scripts/ci/locales.cjs <core> <translations>
 <asset-output>` with GNU gettext installed. This uses the upstream
 `AllLangMoTarget_*.mk` catalog inventory and `msguniq | msgfmt` pipeline.
 

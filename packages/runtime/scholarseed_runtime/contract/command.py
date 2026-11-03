@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from scholarseed_runtime.contract.artifact import ArtifactDirectiveSpec
 from scholarseed_runtime.contract.binding import RuntimeBinding
 from scholarseed_runtime.contract.capability import RuntimeCapabilityName
-from scholarseed_runtime.contract.event import RuntimeValue
+from scholarseed_runtime.contract.event import (
+    ActorKind,
+    DeliveryClass,
+    RuntimeEvent,
+    RuntimeEventKind,
+    RuntimeValue,
+)
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.history import HistoryEntry
+from scholarseed_runtime.contract.input import SubmissionRetry, TurnAdmission
+from scholarseed_runtime.contract.interaction import RuntimeServiceTool
+from scholarseed_runtime.contract.inventory import SkillPolicy
 from scholarseed_runtime.contract.model import ModelCredentialPort, ModelIntent
 from scholarseed_runtime.contract.permission import PermissionIntent
 from scholarseed_runtime.contract.secret import LaunchSecretIntent, RuntimeSecretPort
@@ -29,6 +41,9 @@ class InventoryKind(str, Enum):
     MODELS = "models"
     SKILLS = "skills"
     MCP = "mcp"
+
+
+RUNTIME_SKILL_POLICY_UNSUPPORTED = "runtime_skill_policy_unsupported"
 
 
 class RuntimeControlKind(str, Enum):
@@ -53,6 +68,107 @@ class CommandReceipt:
 
 
 @dataclass(frozen=True)
+class EmptyThreadReplacementProof:
+    proof_id: str
+    binding: RuntimeBinding
+    command_id: str
+    call_id: str
+    failed_generation: int
+    absence_generation: int
+    event_id: str
+    watermark: int
+    submission_deadline: float
+    submission_attempts: int
+
+    @classmethod
+    def from_event(
+        cls, event: RuntimeEvent, binding: RuntimeBinding
+    ) -> EmptyThreadReplacementProof:
+        payload = event.payload if isinstance(event.payload, Mapping) else {}
+        failed = payload.get("failed_generation")
+        absent = payload.get("absence_generation")
+        proof_id = payload.get("proof_id")
+        deadline = payload.get("submission_deadline")
+        attempts = payload.get("submission_attempts")
+        if (
+            event.kind is not RuntimeEventKind.TURN_NOT_SUBMITTED
+            or event.delivery is not DeliveryClass.MUST_PERSIST
+            or event.actor_kind is not ActorKind.MAIN
+            or event.native_turn_id
+            or not event.correlation_id
+            or not event.call_id
+            or not event.event_id
+            or type(failed) is not int
+            or type(absent) is not int
+            or not 0 < failed < absent
+            or event.process_generation != absent
+            or event.sequence <= 0
+            or not isinstance(proof_id, str)
+            or not proof_id.strip()
+            or not isinstance(deadline, (float, int))
+            or isinstance(deadline, bool)
+            or not math.isfinite(deadline)
+            or deadline <= 0
+            or type(attempts) is not int
+            or attempts <= 0
+            or event.product_session_id != binding.product_session_id
+            or event.runtime_id != binding.runtime_id
+            or event.native_session_id != binding.opaque_session_ref
+        ):
+            raise ValueError("invalid empty-thread replacement proof")
+        return cls(
+            proof_id,
+            binding,
+            event.correlation_id,
+            event.call_id,
+            failed,
+            absent,
+            event.event_id,
+            event.sequence,
+            float(deadline),
+            attempts,
+        )
+
+
+@dataclass(frozen=True)
+class ThreadReplacementProof:
+    """A missing, exited native attachment can be replaced; its outcome stays unknown."""
+
+    proof_id: str
+    binding: RuntimeBinding
+    command_id: str
+    incident_id: str
+    failed_generation: int
+    absence_generation: int
+    watermark: int
+
+
+@dataclass(frozen=True)
+class SubmissionRetryProof:
+    binding: RuntimeBinding
+    command_id: str
+    call_id: str
+    watermark: int
+    submission: SubmissionRetry
+
+
+@dataclass(frozen=True)
+class HostWarmupRequest:
+    """Prepare an application-owned host without opening a native thread or turn."""
+
+    request_id: str
+    cwd: Path
+    process_sharing_scope: str = field(repr=False)
+    model: ModelIntent = ModelIntent()
+    credential_port: ModelCredentialPort | None = None
+    launch_secrets: LaunchSecretIntent = LaunchSecretIntent()
+    secret_port: RuntimeSecretPort | None = None
+    base_instructions: str = ""
+    skill_roots: tuple[Path, ...] = ()
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
 class OpenSessionRequest:
     product_session_id: str
     cwd: Path
@@ -63,14 +179,21 @@ class OpenSessionRequest:
     permission: PermissionIntent = PermissionIntent()
     base_instructions: str = ""
     developer_instructions: str = ""
+    service_tools: tuple[RuntimeServiceTool, ...] = ()
     skill_roots: tuple[Path, ...] = ()
     skill_configurations: tuple[SkillConfiguration, ...] = ()
     artifact_directives: tuple[ArtifactDirectiveSpec, ...] = ()
     required_capabilities: tuple[RuntimeCapabilityName, ...] = ()
+    optional_capabilities: tuple[RuntimeCapabilityName, ...] = ()
     ephemeral: bool = False
+    skill_policy: SkillPolicy = SkillPolicy.INHERIT
     reservation_id: str = ""
     initial_history: tuple[HistoryEntry, ...] = ()
+    execution_scope: str = ""
+    fork_source: ForkRequest | None = None
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
+    process_sharing_scope: str = field(default="", repr=False)
+    execution_environment: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -84,11 +207,16 @@ class ResumeSessionRequest:
     permission: PermissionIntent = PermissionIntent()
     base_instructions: str = ""
     developer_instructions: str = ""
+    service_tools: tuple[RuntimeServiceTool, ...] = ()
     skill_roots: tuple[Path, ...] = ()
     skill_configurations: tuple[SkillConfiguration, ...] = ()
+    skill_policy: SkillPolicy = SkillPolicy.INHERIT
     artifact_directives: tuple[ArtifactDirectiveSpec, ...] = ()
     reservation_id: str = ""
+    execution_scope: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
+    process_sharing_scope: str = field(default="", repr=False)
+    execution_environment: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -97,6 +225,10 @@ class TurnRequest:
     items: tuple[RuntimeValue, ...]
     model: str = ""
     collaboration_mode: str = ""
+    admission: TurnAdmission | None = None
+    submission_deadline: float | None = None
+    submission_attempts: int = 0
+    retry_authorizer: Callable[[SubmissionRetryProof], Awaitable[Callable[[], bool]]] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +242,7 @@ class SteerRequest:
 class InterruptRequest:
     command_id: str
     expected_turn_id: str = ""
+    cleanup_background_processes: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,6 +255,7 @@ class ForkRequest:
     command_id: str
     product_session_id: str
     source: RuntimeBinding
+    source_turn_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,6 +297,7 @@ class InventoryRequest:
 class RuntimeInventory:
     revision: str
     values: RuntimeValue
+    host_identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -179,6 +314,7 @@ class SkillConfigurationRequest:
     skills: tuple[SkillConfiguration, ...]
     roots: tuple[Path, ...] = ()
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
+    host: HostWarmupRequest | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -191,6 +327,7 @@ class RuntimeInspectionRequest:
     launch_secrets: LaunchSecretIntent = LaunchSecretIntent()
     secret_port: RuntimeSecretPort | None = None
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
+    host: HostWarmupRequest | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -207,6 +344,7 @@ __all__ = [
     "CommandState",
     "DeleteRequest",
     "ForkRequest",
+    "HostWarmupRequest",
     "InventoryKind",
     "InterruptRequest",
     "InventoryRequest",

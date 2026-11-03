@@ -5,6 +5,37 @@
 // them: no Node, Electron or product-policy imports, so both tsconfig projects can
 // list it.
 
+export const UPDATE_HEALTH_CHANNEL = 'scholarseed:update-workbench-ready'
+
+// 渠道集合放在共享契约：main 的产品配置校验与 renderer 的关于页展示消费同一份
+// 字面量，避免跨进程边界各写一遍 'preview'。
+export const UPDATE_CHANNELS = ['preview', 'release'] as const
+export type UpdateChannel = (typeof UPDATE_CHANNELS)[number]
+export const PREVIEW_UPDATE_CHANNEL: UpdateChannel = 'preview'
+
+// 产品决策：只有 preview 渠道在关于页自报渠道，release 保持无标签。
+export function isPreviewUpdateChannel(channel: string): boolean {
+  return channel === PREVIEW_UPDATE_CHANNEL
+}
+
+export const PREVIEW_UPDATE_SCOPES = ['current-line', 'current-version'] as const
+export type PreviewUpdateScope = (typeof PREVIEW_UPDATE_SCOPES)[number]
+export interface PreviewUpdatePolicy {
+  scope: PreviewUpdateScope
+  target?: LatestVersionMeta
+}
+export interface PreviewUpdateLine {
+  line: string
+  latest: LatestVersionMeta
+}
+export const PREVIEW_UPDATE_IPC = {
+  get: 'scholarseed:preview-policy-get',
+  scope: 'scholarseed:preview-policy-scope',
+  lines: 'scholarseed:preview-policy-lines',
+  select: 'scholarseed:preview-policy-select',
+  cancel: 'scholarseed:preview-policy-cancel',
+} as const
+
 /** Release identity as the update service reports it. */
 export interface LatestVersionMeta {
   id: string
@@ -28,6 +59,10 @@ export interface LatestVersionMeta {
 export interface UpdateCheckResult {
   has_update: boolean
   latest: LatestVersionMeta | null
+  /** Main-only policy epoch; never trusted from HTTP. */
+  previewRevision?: number
+  /** Main-only check generation; invalidated replies cannot restore rejected candidates. */
+  checkRevision?: number
 }
 
 export interface DownloadInfo extends LatestVersionMeta {
@@ -41,6 +76,7 @@ export type UpdatePhase =
   | 'available'
   | 'downloading'
   | 'verifying'
+  | 'preparing'
   // 安装包已下载并通过 SHA-512 校验、暂存在磁盘上，等用户自己挑时间重启。
   // PRD「更新已就绪」态：下载与安装之间必须能停靠，且要能跨客户端重启保留。
   | 'ready'
@@ -53,6 +89,31 @@ export type UpdatePhase =
 
 export type UpdateInstallStage = 'preparing' | 'copying' | 'restarting'
 
+export type UpdateInstallStep =
+  | 'package'
+  | 'image'
+  | 'mounts'
+  | 'mounting'
+  | 'identity'
+  | 'signature'
+  | 'gatekeeper'
+  | 'notarization'
+  | 'publisher'
+  | 'staging-cleanup'
+  | 'copying'
+  | 'cleanup'
+  | 'restarting'
+
+/** Main-owned timestamps survive renderer remounts; timeout is a limit, never an ETA. */
+export interface UpdateInstallation {
+  step: UpdateInstallStep
+  startedAt: number
+  stepStartedAt: number
+  timeoutMs?: number
+  application?: 'source' | 'staged'
+  cancelling: boolean
+}
+
 /**
  * 失败来自哪一次用户动作。
  *
@@ -62,7 +123,7 @@ export type UpdateInstallStage = 'preparing' | 'copying' | 'restarting'
  * 展示侧要按动作来源选文案（「下载失败」与「安装失败」是两件事），所以来源由主进程
  * 显式标注，与 `errorFallback` 同一条原则：绝不从 error 文本反推。
  */
-export type UpdateErrorOrigin = 'check' | 'download' | 'install'
+export type UpdateErrorOrigin = 'check' | 'download' | 'preparation' | 'install'
 
 /**
  * 安装失败的结构化分类。主进程显式标注、随快照下发，展示侧据此选文案——绝不从 error
@@ -84,7 +145,18 @@ export type UpdateInstallFallback =
   | 'install_verify_unavailable'
   | 'install_signature_untrusted'
   | 'install_signature_indeterminate'
+  | 'install_notarization_indeterminate'
   | 'install_already_running'
+  | 'install_in_use'
+  | 'install_occupancy_unknown'
+  | 'preparation_connection_closed'
+  | 'launcher_maintenance_required'
+  | 'preparation_failed'
+  | 'activation_unavailable'
+  | 'activation_candidate_changed'
+  | 'activation_recovery_required'
+  | 'preparation_unverified'
+  | 'activation_authorization_required'
 
 /**
  * 主进程内部 updater → shell 的进度回调形状，不过 IPC 桥。
@@ -93,11 +165,12 @@ export type UpdateInstallFallback =
  * 所以再开一条并行的进度通道只会让两个表面各说一套。
  */
 export interface UpdateProgress {
-  phase: 'downloading' | 'verifying' | 'installing'
+  phase: 'downloading' | 'verifying' | 'preparing' | 'installing'
   percent?: number
   /** 已落盘字节数。总量不重复携带 —— 它就是 candidate.file_size。 */
   receivedBytes?: number
   install_stage?: UpdateInstallStage
+  installation?: UpdateInstallation
 }
 
 export interface UpdateSnapshot {
@@ -105,11 +178,16 @@ export interface UpdateSnapshot {
   errorFallback?: UpdateInstallFallback
   phase: UpdatePhase
   currentVersion: string
+  /** User requested restart; the prepared release is pinned until this attempt ends. */
+  restartPending?: boolean
   checkedAt?: number
   candidate?: LatestVersionMeta
+  latestCandidate?: LatestVersionMeta
+  nextBackgroundPreparationAt?: number
   percent?: number
   receivedBytes?: number
   installStage?: UpdateInstallStage
+  installation?: UpdateInstallation
   error?: string
   /** `error` 来自哪一次动作；展示侧据此选文案，不从相位或 error 文本反推。 */
   errorOrigin?: UpdateErrorOrigin
@@ -121,10 +199,10 @@ export interface UpdateSnapshot {
   rollbackVersion?: string
   reason?: string
   /**
-   * 用户已经收起过「发现新版本」弹窗的候选身份（`<version>-<build_number>`）。
+   * 用户已经主动查看或确认的候选身份（`<version>-<build_number>`）。
    *
    * 必须由主进程持有并落盘：渲染层的 origin 含后端随机端口（`listen(0)`），
-   * localStorage 按 origin 分区，写在渲染层的确认每次启动都读不回来，弹窗会反复自动弹。
+   * localStorage 按 origin 分区，写在渲染层的确认每次启动都读不回来，入口会反复显示未读。
    */
   announcedKey?: string
 }
@@ -133,22 +211,17 @@ export interface UpdateSnapshot {
 export const LOCAL_LANE_UPDATE_REASON = 'local-lane'
 
 /**
- * 候选版本的稳定身份，「发现新版本」弹窗的收起确认按它记。
+ * 候选版本的稳定身份，入口未读确认和安装动作按它识别具体构建。
  *
  * 主进程写、渲染层比对，两边必须是同一份定义，否则确认永远对不上。带 build_number 是
- * 有意的：同一 version 的下一次构建要重新弹一次。没有候选包时无从弹起，返回 null。
+ * 有意的：同一 version 的下一次构建是新候选，但仅更新入口状态，不自动弹窗。无候选返回 null。
  */
 export function updateCandidateKey(candidate: LatestVersionMeta | undefined): string | null {
   return candidate ? `${candidate.version}-${candidate.build_number}` : null
 }
 
 /** Identity fields the update check compares against the packaged product policy. */
-export type UpdateIdentityField =
-  | 'product_id'
-  | 'bundle_id'
-  | 'arch_type'
-  | 'channel'
-  | 'team_id'
+export type UpdateIdentityField = 'product_id' | 'bundle_id' | 'arch_type' | 'channel' | 'team_id'
 
 /** Read-only view of one update check: the server identity next to the packaged policy. */
 export interface UpdateDiagnosis {
@@ -175,10 +248,11 @@ export interface UpdateDiagnosis {
 
 export interface StartUpdateResult {
   ok: boolean
+  cancelled?: boolean
   mode?: 'auto' | 'manual'
   error?: string
   /**
-   * 安装失败的结构化分类。带它时**不带** `error` 原文：校验/安装失败的诊断（可能含
+   * 准备或安装失败的结构化分类。带它时**不带** `error` 原文：校验/安装失败的诊断（可能含
    * 代码页乱码的 PowerShell stderr）只落 `$SCHOLARSEED_HOME/logs/update.log`，界面按分类
    * 给本地化文案。见 bug 87042987。
    */

@@ -13,7 +13,7 @@ document.
 
 ## 1. Scope
 
-`web-search` runs **exactly one** provider per invocation and publishes **one** result.
+`web-search` runs **exactly one** provider per invocation and writes **one** result for publication.
 There are three logical legs, but only two of them are produced by this skill's scripts:
 
 | Leg | `provider` value | Produced by | Result form |
@@ -26,45 +26,123 @@ A consumer that calls this skill reads the **artifact** for the `official-api` a
 `visible-browser` legs. The `codex-native` leg never writes this artifact; the host
 fallback order (`official → native → browser`) is owned by the caller, never by this skill.
 
+The resource search box first uses a deterministic Serve official-API request outside
+an Agent. Its `fallback` profile only owns `native → browser` inside one Invocation,
+and never retries the official provider. The public `automatic` and direct profiles
+keep their existing meanings. A valid empty result terminates either path.
+
+All profiles inherit the caller's effective permission intent. Conversation search uses
+the active parent session; resource search has no parent session and uses the current
+global permission setting through the same session policy builder. Both discard inherited
+writable roots outside the Invocation workspace. No profile requests full access, and an
+explicit permission request exceeding its parent remains rejected. Embedded browser use
+still requires an eligible active Invocation, a non-read-only mode, and host website
+navigation/read authorization. Resource results are accepted only while the current
+permission intent matches the snapshot taken at preparation; this is not live runtime
+permission revocation.
+
+The resource-only fallback API declares host-owned completion. After a successful
+tool exit, Serve correlates the script receipt (or explicit failed-provider write
+receipt), validates and hashes the exact artifact snapshot, and publishes it without
+a model publication call. `result.ready` means the business result is available;
+it does not claim runtime completion. Serve requests an intentional stop and waits
+for the real runtime terminal and cleanup. Runtime interruption stays observable;
+failed provider results, user cancellation and cleanup errors never become success.
+
 ---
 
 ## 2. How to invoke
 
 ```text
 scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider official-api    --query <query> --limit 20
-scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider visible-browser --query <query> --limit 20 [--headless]
+scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider visible-browser --query <query> --limit 20 --bridge-response <response_path>
 ```
 
 - `--limit` is bounded to **1–20** (`official.MINIMUM_LIMIT` / `MAXIMUM_LIMIT`); default 20.
 - `--provider` is required and restricted to `official-api` | `visible-browser`.
+- The product `invoke.py` entrypoint defaults to and only accepts `resource-session`.
+  This policy consumes the bounded response file returned by the native
+  `scholarseed_bridge` search/browser operation, passed through `--bridge-response`.
+  The file must be a non-linked relative web-search-browser-response UUID JSON file.
+  The script validates URL/query, challenge state and card shape, normalizes URLs,
+  deduplicates candidates and preserves the result/receipt contract. The product host
+  owns navigation authorization, stable extraction and private-target cleanup. It opens
+  Bing's homepage, reads the registered same-origin GET form, and freezes the exact query,
+  submission URL and bounded fields before issuing a one-use search grant. That grant
+  requires existing website read/interact decisions of allow and binds the complete
+  execution scope, target instance and policy revision. It permits only native input and
+  submission on the private search target, never general webpage actions or automatic
+  approval of ask/block. During input/submission the host rejects POST, XHR/fetch/beacon,
+  cross-origin requests, altered targets or fields, replay and cancelled/revoked effects.
+  Result extraction requires a fresh read grant after submission. Ordinary action HIL,
+  site policy, permission inheritance and stale/cleanup checks are unchanged.
+  The only regional-homepage continuation consumes a short-TTL, one-use receipt for a
+  real cross-origin redirect already blocked on the owned private search target, bound
+  to the original request and target. At most one hop is allowed between the provider's
+  exact HTTPS `www.bing.com` and `cn.bing.com` homepage paths. The destination must have
+  no `q` parameter, credentials or fragment; Bing non-`q` regional parameters such as
+  `mkt` are permitted, rather than banning every query parameter. The receipt grants no
+  website access: the complete destination requires independent Navigate and Read grants,
+  with no `www` permission inherited by `cn`. An ask/block decision stops the flow without
+  changing website settings. Missing, expired or replayed receipts, a second regional
+  hop and other unknown navigation outcomes are not retried. Form submission remains a
+  single same-origin GET and rejects every redirect, including a regional homepage hop.
+  Only the private search page starts with `webPreferences.javascript=false`, before
+  navigation, to prevent page scripts from opening WebSocket/WebRTC/WebTransport or
+  stream-write channels. Fixed host-owned isolated reads and native input/GET submission
+  remain available; request guards apply from target creation throughout the flow.
+  Ordinary Agent/manual webpages are unchanged. Bing requiring page JavaScript is an
+  explicit failure, never a reason to re-enable scripts or use an external browser.
+  Resource fallback does not launch external browsers or require external CDP.
+  Missing or invalid responses fail; there is no external-browser retry.
+  The independent developer browser.py CLI's `standard` and `visible-snapshot`
+  policies retain temporary contexts and button submission; they are not product Invocation policies.
+  Both snapshot policies wait for natural navigation, complete document readiness, matching URL
+  and input query, rendered-visible organic results, and no busy result region. It
+  compares two immutable, atomic DOM snapshots at the existing 250 ms interval,
+  resetting stability on navigation, hidden results, or changed content. It never
+  refreshes the page or waits for a fabricated redirect parameter. This proves bounded
+  observed stability, not that Bing can never update the page later.
+  If Chromium reports an offscreen result subtree skipped by `content-visibility:auto`,
+  the provider normally scrolls its card into view within the same budget, then resets
+  readiness through new snapshots while the browser renders. It does not change CSS,
+  read hidden `textContent`, or combine results from intermediate scroll positions.
+  Snapshot extraction also supports the currently visible Bing rich-card tab-panel
+  snippet; inactive panels and tab-menu labels are not candidate descriptions. This
+  additional selector does not change the default `standard` extraction path.
+  Navigation stages and capture share one timeout budget after browser launch.
+  Only known navigation execution-context errors are retried; other errors propagate.
+  Missing cards alone are not an empty result: an explicit visible provider empty
+  marker is required. Challenges remain `action_required` without bypass.
 - The official leg only makes a network request when a trimmed `SCHOLARSEED_API_KEY` exists;
   otherwise it returns the stable `credential_unavailable` artifact with **no** request.
-- The browser leg launches a visible, isolated local browser (Chrome → Edge → installed
-  Chromium). `--headless` is diagnostic only.
+- The product browser leg uses the managed embedded browser. `--headless` does not
+  select an external browser. Standalone developer browser.py behavior is unchanged.
 
 ---
 
 ## 3. Where the result lands, and what the exit code means
 
-`invoke.py` is the **only** writer and publisher of the result file.
+`invoke.py` writes the result file. Ordinary profiles use model publication through
+the product tool; resource fallback with declared host completion uses Serve publication.
 
 1. It runs the selected provider, getting back `(payload, search_exit_code)`.
-2. It writes `payload` to **`web-search-result.json`** (relative to the process working
+2. It writes `payload` to **`web-search-result.json`** by default, or the relative JSON filename
+   supplied by `--artifact-path` (relative to the process working
    directory; inside a ScholarSeed Invocation this is the one-shot workspace) as sorted-key,
    `ensure_ascii=False`, UTF-8 JSON with a trailing newline.
-3. It publishes that file as a **`role: final` Invocation artifact** through the product
-   bridge (`scholarseed-bridge artifact publish`). The packaged Desktop injects its
-   relocatable bridge through `SCHOLARSEED_BRIDGE_DIR` and `PATH`; publication never imports
-   `service` from the Python interpreter used to run this Skill.
-4. **`invoke.py`'s process exit code is the *publish* status, not the search status.**
+3. Unless the resource host explicitly owns completion, after the script returns call
+   the `scholarseed_bridge` model tool with
+   `{"capability":"artifact","operation":"publish","request":{"path":"<actual artifact filename>","role":"final"}}`.
+4. **`invoke.py`'s process exit code is the file-write status, not the search status or publication status.**
 
 > **Read the search outcome from the artifact's `status` field, never from the process
-> exit code.** A `failed` search still writes a well-formed artifact and still exits `0`
-> if publication succeeded. Conversely, a non-zero exit means the artifact could not be
-> published (bridge missing / unavailable), so there may be **no** artifact to read.
+> exit code.** A `failed` search still writes a well-formed artifact and exits `0`
+> if writing succeeded. Check the separate tool response before claiming publication.
 
-The artifact is registered for **every** search outcome — `completed`, `empty`,
-`unavailable`, `action_required`, and `failed` all produce a readable artifact.
+Publish every written result, including `completed`, `empty`, `unavailable`,
+`action_required`, and `failed` outcomes.
+In host-completion mode, the same publication obligation belongs to Serve, not the model.
 
 ---
 
@@ -94,6 +172,7 @@ each provider then adds its own extension keys.
 | `diagnostics` | **present**: `null` on success, or `{ "phase", ... }` on a problem | **absent** |
 | `engine` | **absent** | **present**: registered provider name, e.g. `"bing"` |
 | `browser` | **absent** | **present**: `"chrome"` \| `"msedge"` \| `"chromium"` \| `null` (null when no browser launched) |
+| `capture` | **absent** | Optional snapshot-policy metadata: `policy`, `document_id`, `samples`, `stable_samples`, `document_changes`, `render_actions`, `elapsed_ms`, safe `readiness` diagnostics (subset on failure) |
 
 `official-api` `diagnostics.phase` ∈ `validation` \| `credential` \| `request` \|
 `response` \| `decoding`, and may carry `error_type`, `upstream_http_status`,
@@ -121,7 +200,7 @@ whether to fall through to the next leg or stop. The skill never switches provid
 itself.
 
 (Reminder: these are the *search* exit codes from `official.search` / `browser.search`.
-`invoke.py` returns the *publish* exit code instead — see §3.)
+`invoke.py` returns the *file-write* exit code instead — see §3.)
 
 ---
 
@@ -142,11 +221,15 @@ Every element of `candidates` is exactly:
   - `official-api`: always **non-empty** (candidates with an empty description are
     rejected at the source).
   - `visible-browser`: **may be `""`** when Bing exposed no snippet for that card.
+    The opt-in snapshot policies also retain such cards with an
+    empty description. Auto-skipped content receives a bounded normal scroll and
+    new stable samples; missing snippets alone never block the batch. Titles and
+    URLs remain required, and snippets are never fabricated.
 - Candidates are deduplicated by normalized `url`; at most `limit` (≤ 20) are returned.
 
-> Consumers that require a non-empty `description` (the desktop renderer does) will drop
-> browser candidates whose snippet is empty. Treat an empty `description` as optional
-> metadata, not as a hard error.
+> Ordinary desktop projections retain their non-empty-description default. Only the
+> resource search-box browser fallback projection accepts empty descriptions as
+> optional metadata and preserves the real candidate title and URL.
 
 ---
 

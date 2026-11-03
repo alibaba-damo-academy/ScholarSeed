@@ -16,6 +16,12 @@ class CapabilityState(str, Enum):
 class RuntimeCapabilityName(str, Enum):
     SUSPEND = "suspend"
     RESOURCE_ADMISSION = "resource_admission"
+    HOST_WARMUP = "host_warmup"
+    HOST_RECONFIGURATION = "host_reconfiguration"
+    SHARED_HOST_CONTROL = "shared_host_control"
+    TURN_CONFIRMATION = "turn_confirmation"
+    THREAD_REPLACEMENT = "thread_replacement"
+    TURN_ADMISSION = "turn_admission"
     RESUME = "resume"
     FORK = "fork"
     STEER = "steer"

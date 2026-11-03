@@ -3,10 +3,19 @@ import test from 'node:test'
 
 import {
   encodedBoundaries,
+  prepareMathSource,
   prepareMarkdownSource,
   sourceLeaf,
   visibleMarkdownText
 } from './source.ts'
+
+test('TeX delimiters become offset-stable math markers outside code', () => {
+  const source = '公式 \\(x^2\\) 与 \\[a+b\\]。`\\(code\\)`\n```tex\n\\[code\\]\n```'
+  const prepared = prepareMathSource(source)
+  assert.equal(prepared, '公式 $$x^2$$ 与 $$a+b$$。`\\(code\\)`\n```tex\n\\[code\\]\n```')
+  assert.equal(prepared.length, source.length)
+  assert.equal(prepareMathSource('未闭合 \\(x^2'), '未闭合 \\(x^2')
+})
 
 test('private evidence comments remain offset-stable while rendering and disappear on copy', () => {
   const complete = '回答<!-- scholarseed-ref claim="a" -->正文'

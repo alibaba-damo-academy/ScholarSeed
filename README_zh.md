@@ -6,7 +6,7 @@
 
 **让每一次阅读与思考，生长为下一步研究。**
 
-[为什么选择书深](#为什么选择书深) · [研究论文](#研究论文) · [从文献到成果](#从文献到成果) · [快速开始](#快速开始) · [安装](#安装) · [本地开发](#本地开发) · [社区与支持](#社区与支持)
+[为什么选择书深](#为什么选择书深) · [研究论文](#研究论文) · [从文献到成果](#从文献到成果) · [快速开始](#快速开始) · [安装](#安装) · [本地开发](#本地开发) · [插件](#插件) · [社区与支持](#社区与支持)
 
 </div>
 
@@ -118,57 +118,109 @@ ScholarSeed 采用桌面客户端、本地服务与 Agent 运行时分层架构�
 
 ### 从源码运行
 
-环境要求：Git、Node.js **24.16.0**、npm **11.13.0**、uv **≥ 0.12.11**，以及目标平台的原生构建工具。
+环境要求：Git、Node.js **24.16.0**、pnpm **12.14.0**（默认；同时支持 npm 和 Yarn）、uv **≥ 0.12.11**，以及目标平台的原生构建工具。
+
+Worktree 默认以 `pnpm install --frozen-lockfile` 初始化，共享 pnpm store 而不是整个 `node_modules`。pnpm 缺失或版本不符时，按[工具链与授权安装流程](docs/runbooks/development.md#worktree-初始化与-pnpm-前提)处理；AI 获得本次明确批准后才可安装。
 
 克隆本仓库后，在仓库根目录执行：
 
 ```bash
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm ops dev
 ```
 
-`npm run dev` 会准备清单固定版本的 Python 和开发环境，再启动 Electron。运行时二进制从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机；不需要 Git LFS 或 GitHub Release 访问权限。首次构建需要联网，可用 `SCHOLARSEED_ARTIFACT_CACHE` 指定独立缓存目录。
+`pnpm ops dev` 会准备清单固定版本的 Python 和开发环境，再启动 Electron。运行时二进制从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机；不需要 Git LFS 或 GitHub Release 访问权限。首次构建需要联网，可用 `SCHOLARSEED_ARTIFACT_CACHE` 指定独立缓存目录。需要使用其他包管理器时，可在根目录和 Desktop 目录分别使用 `npm ci` 或 `yarn install`；脚本会识别实际调用它的包管理器。
 
 启动后，在设置中配置模型连接，或登录书深账号。文献检索与全文获取需要对应服务和访问权限。
 
-需要分步安装时，依次执行 `npm run install:python`、`npm run config:template`、`npm run build`、`npm run desktop`。`npm run config` 提供交互式配置；调整已有配置前请先备份。
+需要分步安装时，依次执行 `pnpm ops pre install python`、`pnpm ops pre config template`、`pnpm ops cd build local --stage app`、`pnpm run desktop`。`pnpm ops pre config edit` 提供交互式配置；调整已有配置前请先备份。
 
 ## 本地开发
 
 ```bash
 # 检查开发环境
-npm run doctor
+pnpm ops pre doctor
 
 # 启动桌面开发环境
-npm run dev
+pnpm ops dev
 
 # 构建桌面端
-npm run build
+pnpm ops cd build local --stage app
 
 # 运行桌面测试与类型检查
-npm --prefix apps/desktop test
-npm --prefix apps/desktop run typecheck
+pnpm --dir apps/desktop test
+pnpm --dir apps/desktop run typecheck
 
 # 检查 Python 代码
-npm run check
+pnpm ops ci check --profile python
 ```
 
-科研技能源码位于 `skills/community/`。修改后可通过 `npm run skills:install` 构建技能包，通过 `npm run skills:verify` 检查与源码的一致性。
+科研技能源码位于 `skills/community/`。修改后可通过 `pnpm ops cd build local --target skills` 构建技能包，通过 `pnpm ops ci check skills product --mode source` 检查与源码的一致性。
+
+## 插件
+
+**书深插件可以把科研步骤、对话卡片和资料整理串成一个可重复使用的流程。让 AI 按你的研究方法分析材料，在关键步骤请研究者作出选择，再生成报告、保存笔记和整理文献。**
+
+在书深中，开发者可以先编写 Skill（科研流程规则），在 `SKILL.md` 文件中说明研究步骤、需要的材料和结果要求；再按需要加入对话卡片，让研究者在关键步骤作出选择，继续分析并整理文献。
+
+插件目前为开发者预览，开发与安装方式见[插件文档](doc/plugins.md)。
+
+### 不只生成内容，也能操作书深
+
+Skill 可通过 `scholarseed-bridge`（书深提供的应用操作接口）调用已有功能，把分析结果落实到应用中：
+
+- **使用资料：** 检索项目文件、读取获准 PDF 与标注，将生成的文件导入项目。
+- **整理文献：** 导入论文、保存或修改笔记、批量添加标签，调整分类与项目归属。
+- **推进任务：** 查看获准的历史对话、更新任务计划，展示卡片并根据研究者的选择继续。
+
+这些操作由 AI 按 Skill 调用，再由书深检查当前项目范围和权限；卡片本身不拥有全部操作权限，也不能自动批准敏感操作。可用操作见[插件 API 文档](doc/plugins/api.md)。
+
+### 与 Codex 桌面端、Zotero AI 插件的区别
+
+| 对比项 | 书深 | Codex 桌面端 | Zotero＋AI 插件 |
+| --- | --- | --- | --- |
+| 自定义流程 | Skill＋可选脚本 | Skill＋可选脚本 | 部分插件支持 Skill |
+| 研究交互 | 科研卡片＋自定义卡片 | 工具与插件提供 | 依插件提供的方式 |
+| 研究资料 | 项目资料＋文献库 | 文件＋外接服务 | 插件读取文献库 |
+| 整理结果 | 直接调用书深功能 | 文献管理需另接 | 调用插件文库工具 |
+
+Codex 桌面端同样支持 Skills、插件和 MCP（连接外部工具的协议），也能调用应用工具。**书深的特别之处，是直接提供科研卡片、项目资料与文献操作，让“分析—选择—整理”在同一应用中完成，无需先接入独立的文献管理服务。**
+
+### 一个场景：按课题组的方法读完 30 篇论文
+
+研究者希望按“研究问题、方法、证据、局限”比较 30 篇论文，选出值得深入研究的论文，形成报告并保存阅读笔记。
+
+在书深中，开发者可以把这些步骤做成一个流程：
+
+1. **写清阅读方法。** 在 `SKILL.md` 中规定比较哪些内容、如何标注来源，以及证据不足时怎样说明。
+2. **结合项目资料分析。** 使用书深已有的资料与文献功能，将项目研究问题、课题组阅读要求和论文内容一起分析。
+3. **通过卡片选择论文。** 用自定义对话卡片展示论文与比较结果。研究者勾选要保留的论文、补充意见后，AI 根据选择继续分析。
+4. **生成报告、整理文献。** 输出比较报告，在授权范围内保存笔记、添加标签、将文献归入项目，供后续研究使用。
+
+同一任务在 Zotero 中，可以安装并配置 LLM-for-Zotero，开启 Agent 模式，用自定义 Skill 规定阅读方法，再让 AI 分析论文、保存笔记。如果需要专门的论文筛选界面，则要根据插件提供的开发接口进一步实现。
+
+在 Codex 桌面端，也可以用 Skill 组织论文分析；若要同步文献标签、笔记与分类，则需要接入相应的文献管理工具或服务。
+
+**阅读规则决定分析方法，卡片承接研究者的判断，结果再回到资料与文献管理中。开发者可以专注于设计科研步骤，复用书深已有功能，无需为每个流程重新开发 AI 接入和文献管理功能。**
+
+一份 `SKILL.md` 不会自动生成定制界面。专用卡片仍需编写界面代码、制作安装包并测试；读取或修改资料需要相应授权，科研结论仍需核对原文与证据。
+
+参考资料：[Codex Skills](https://developers.openai.com/codex/skills)、[OpenAI 插件文档](https://developers.openai.com/plugins/build/plugins)、[Zotero 插件开发文档](https://www.zotero.org/support/dev/client_coding/plugin_development)、[LLM-for-Zotero 文档](https://yilewang.github.io/llm-for-zotero/zh/)、[zotero-gpt 项目](https://github.com/MuiseDestiny/zotero-gpt)。具体功能以所用版本和设置为准。
 
 ## 打包
 
 ```bash
 # 构建开发版安装包
-npm run package
+pnpm ops cd build local
 
 # 只验证未签名应用，不生成安装器
-npm run package:check
+pnpm ops cd build release --stage dir --candidate
 
 # 正式签名安装包（需要通过安全环境注入发布凭据）
-npm run package:dist
+pnpm ops cd build release --workflow distribution
 
 # 查看平台、架构和发布选项
-node apps/desktop/scripts/build.cjs --help
+node apps/desktop/scripts/cd/build.cjs --help
 ```
 
 默认生成 `dev` 开发包。`preview` 和 `release` 发布构建需配置更新服务和平台签名；macOS 签名发布还需配置公证凭据。

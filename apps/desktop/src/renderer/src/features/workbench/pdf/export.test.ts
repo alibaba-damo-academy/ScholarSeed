@@ -183,6 +183,19 @@ test('export retains marks, comments and notes in the JSON attachment', async ()
   })
 })
 
+test('PDF without record target saves original bytes without adding annotations', async () => {
+  const input = await sourcePdf()
+  let saved: Uint8Array | undefined
+  Reflect.set(globalThis, 'window', {
+    scholarseed: { saveFileCopy: async ({ bytes }: { bytes: Uint8Array }) => {
+      saved = bytes
+      return { ok: true, path: 'copy.pdf' }
+    } }
+  })
+  assert.deepEqual(await exportAnnotatedPdf(input, null, 'copy.pdf', ATTACHMENT_DESCRIPTION), { ok: true, path: 'copy.pdf' })
+  assert.deepEqual(saved, input)
+})
+
 test('save cancellation is not an error and save failures retain their stage', async () => {
   const input = await sourcePdf()
   Reflect.set(globalThis, 'window', {

@@ -16,7 +16,7 @@ import { Home } from '../features/home/Home'
 import { DocumentDock } from '../features/workbench/Dock'
 import { useDocumentWorkspace } from '../features/workbench/workspace'
 import { Icon } from '../icons'
-import { DeliveryCardMember } from '../model'
+import type { DeliveryCardMember } from '../model'
 import { blocksRuntimePreflight, effectiveReadiness } from '../runtime'
 import { activeThread, useApp } from '../store'
 

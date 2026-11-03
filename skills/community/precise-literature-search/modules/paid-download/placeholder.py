@@ -12,6 +12,7 @@ SKILL_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
 from download_access import download_access
+from filesystem import filesystem_path
 from io_utils import (  # noqa: E402
     atomic_write_json,
     read_json,
@@ -57,7 +58,8 @@ def main() -> int:
         metadata = read_json(resolve_under_run(args.run_dir, metadata_path))
         paper_by_id = {paper.get("id"): paper for paper in metadata.get("papers", []) if isinstance(paper, dict)}
         existing: dict[str, dict[str, Any]] = {}
-        if args.output.is_file() and args.output.stat().st_size:
+        previous_output = filesystem_path(args.output)
+        if previous_output.is_file() and previous_output.stat().st_size:
             previous = read_json(args.output)
             existing = {item.get("paper_id"): item for item in previous.get("papers", []) if isinstance(item, dict)}
         occupied_paths = {
@@ -93,7 +95,7 @@ def main() -> int:
                 item = {
                     "paper_id": paper_id, "title": str(paper.get("title", "Untitled")), **download_access(paper, "paid-download"),
                     "status": "downloaded", "file_path": relative.as_posix(), "content_type": "application/pdf",
-                    "verified_exists": absolute.is_file(),
+                    "verified_exists": filesystem_path(absolute).is_file(),
                     "message": "Generated simulated paid-access placeholder PDF after explicit resume.",
                 }
             existing[paper_id] = item

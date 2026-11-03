@@ -1,0 +1,64 @@
+{
+  "id": "conversation-management",
+  "project": {
+    "name": "P1 会话管理与交付",
+    "files": [
+      {
+        "path": "inputs/树/根.md",
+        "contentFrom": "../p1-assets/fixtures/树/根.md"
+      },
+      {
+        "path": "inputs/树/子目录 空格/证据.md",
+        "contentFrom": "../p1-assets/fixtures/树/子目录 空格/证据.md"
+      },
+      {
+        "path": "inputs/conflict/old/计划.md",
+        "contentFrom": "../p1-assets/fixtures/conflict/old/计划.md"
+      },
+      {
+        "path": "inputs/conflict/new/计划.md",
+        "contentFrom": "../p1-assets/fixtures/conflict/new/计划.md"
+      },
+      {
+        "path": "inputs/reference/alpha/事实.md",
+        "contentFrom": "../p1-assets/fixtures/reference/alpha/事实.md"
+      },
+      {
+        "path": "inputs/reference/beta/事实.md",
+        "contentFrom": "../p1-assets/fixtures/reference/beta/事实.md"
+      },
+      {
+        "path": "inputs/supplement.pdf",
+        "contentFrom": "../p1-assets/fixtures/supplement.pdf"
+      },
+      {
+        "path": "inputs/selected.bib",
+        "contentFrom": "../p1-assets/fixtures/selected.bib"
+      },
+      {
+        "path": "inputs/control.bib",
+        "contentFrom": "../p1-assets/fixtures/control.bib"
+      },
+      {
+        "path": "inputs/document.pdf",
+        "contentFrom": "../p1-assets/fixtures/document.pdf"
+      },
+      {
+        "path": "p2-inputs/source/移动前.md",
+        "contentFrom": "../p2-assets/fixtures/source/移动前.md"
+      },
+      {
+        "path": "p2-inputs/source/副本原件.md",
+        "contentFrom": "../p2-assets/fixtures/source/副本原件.md"
+      },
+      {
+        "path": "p2-inputs/P2-SEARCH-TOKEN.md",
+        "contentFrom": "../p2-assets/fixtures/P2-SEARCH-TOKEN.md"
+      }
+    ]
+  },
+  "config": {
+    "language": "zh"
+  },
+  "drive": "cmd.jsonl"
+}

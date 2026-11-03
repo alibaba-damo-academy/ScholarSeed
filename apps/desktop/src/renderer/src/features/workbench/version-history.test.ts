@@ -5,10 +5,15 @@ import test from 'node:test'
 const history = readFileSync(new URL('./VersionHistory.tsx', import.meta.url), 'utf8')
 const comparison = readFileSync(new URL('./VersionDiff.tsx', import.meta.url), 'utf8')
 const resourceApi = readFileSync(new URL('../resources/api.ts', import.meta.url), 'utf8')
-const messages = ['zh', 'en'].map(language => JSON.parse(readFileSync(
-  new URL(`../../../../localization/locales/${language}/workbench.json`, import.meta.url),
-  'utf8'
-)).history)
+const messages = ['zh', 'en'].map(
+  (language) =>
+    JSON.parse(
+      readFileSync(
+        new URL(`../../../../localization/locales/${language}/workbench.json`, import.meta.url),
+        'utf8'
+      )
+    ).history
+)
 
 test('version history uses the compact management interaction hierarchy', () => {
   assert.match(history, /SearchBox/)
@@ -27,13 +32,19 @@ test('version history keeps every hook before its unavailable return', () => {
   const unavailableReturn = history.indexOf('if (!available) return null')
   const lastHook = history.lastIndexOf('React.useEffect(')
 
-  assert.ok(unavailableReturn > lastHook, 'an unavailable version projection must not change the hook count')
+  assert.ok(
+    unavailableReturn > lastHook,
+    'an unavailable version projection must not change the hook count'
+  )
   assert.match(history, /if \(!available \|\| !open\) return undefined/)
 })
 
 test('successful version mutations use the transient top-right toast', () => {
   assert.match(history, /useToast\(\)/)
-  assert.match(history, /toast\(\{ title: <HistoryNoticeText notice=\{success\} \/>, tone: 'success' \}\)/)
+  assert.match(
+    history,
+    /toast\(\{ title: <HistoryNoticeText notice=\{success\} \/>, tone: 'success' \}\)/
+  )
   assert.doesNotMatch(history, /setNotice\(\{ key: 'history\.(?:restored|aliasSaved|deleted)'/)
 })
 
@@ -68,10 +79,19 @@ test('text and Office history open one special comparison tab against the frozen
 })
 
 test('text comparison headers constrain long paths without shrinking version labels', () => {
-  const textHeader = comparison.slice(comparison.indexOf('{!office && <header'), comparison.indexOf('{failed &&'))
+  const textHeader = comparison.slice(
+    comparison.indexOf('{!office && ('),
+    comparison.indexOf('{failed &&')
+  )
   assert.equal((textHeader.match(/className="flex min-w-0 items-center/g) ?? []).length, 2)
   assert.equal((textHeader.match(/<strong className="shrink-0">/g) ?? []).length, 2)
-  assert.equal((textHeader.match(/<EllipsisText wrapperClassName="ml-\[var\(--vds-space-2\)\] flex-1"/g) ?? []).length, 2)
+  assert.equal(
+    (
+      textHeader.match(/<EllipsisText\s+wrapperClassName="ml-\[var\(--vds-space-2\)\] flex-1"/g) ??
+      []
+    ).length,
+    2
+  )
   assert.equal((textHeader.match(/tooltipPortalled/g) ?? []).length, 2)
   assert.doesNotMatch(textHeader, /<span/)
 })

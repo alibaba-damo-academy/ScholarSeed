@@ -1,19 +1,19 @@
 # Reviewed python-build-standalone runtimes
 
-`apps/desktop/scripts/build.cjs` embeds a **relocatable CPython** into the
+`apps/desktop/scripts/cd/build.cjs` embeds a **relocatable CPython** into the
 packaged ScholarSeed.app so the desktop backend runs off any machine (no dev repo /
 `.venv`). That runtime comes from
 [astral-sh/python-build-standalone](https://github.com/astral-sh/python-build-standalone).
 
 The archives are not stored in Git. `manifest.json` pins reviewed OSS download URLs,
-byte lengths and SHA-256 values. `scripts/artifacts.cjs` restores missing files
+byte lengths and SHA-256 values. `scripts/shared/artifacts.cjs` restores missing files
 through a verified user-level cache before development setup or packaging.
 
 The exact Python version, upstream release, SQLite engine and platform paths are
-declared in `manifest.json`. `scripts/python.cjs` validates that declaration and
-the archive's SHA-256 for both development and packaging. Default `npm run install:python`
+declared in `manifest.json`. `scripts/shared/python.cjs` validates that declaration and
+the archive's SHA-256 for both development and packaging. Default `pnpm ops pre install python`
 extracts the same archive to the ignored `.python/<sha256>/` cache and uses it as
-the base of `.venv`; `npm run check:python` verifies the actual Python/SQLite and base
+the base of `.venv`; `pnpm ops pre doctor --scope interpreter` verifies the actual Python/SQLite and base
 path. Stop processes using a venv before switching its base runtime.
 
 ## Layout
@@ -62,4 +62,4 @@ Update `manifest.json` with the Python version, release and actual SQLite versio
 then upload the byte-exact archive to OSS and set its public HTTPS URL in the manifest.
 Verify every affected native target. Packaging verifies the actual engine again in
 the final App. `fetch-vendor.sh` is a legacy macOS upstream acquisition helper;
-normal development and packaging use the manifest through `scripts/artifacts.cjs`.
+normal development and packaging use the manifest through `scripts/shared/artifacts.cjs`.

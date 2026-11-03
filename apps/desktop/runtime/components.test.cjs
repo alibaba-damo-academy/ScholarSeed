@@ -22,7 +22,7 @@ test('runtime 布局常量与 serve paths.py 契约逐字一致', () => {
   assert.equal(components.STAGING_DIRNAME, pythonConstant('RUNTIME_STAGING_DIRNAME'))
   assert.equal(components.MANIFESTS_DIRNAME, pythonConstant('RUNTIME_MANIFESTS_DIRNAME'))
   assert.equal(components.LOCKS_DIRNAME, pythonConstant('RUNTIME_LOCKS_DIRNAME'))
-  // kinds 元组：paths.py 是 ("python", "texlive")
+  // kinds 元组由 Serve 与 Desktop 共同冻结。
   const kinds = PATHS_PY.match(/^RUNTIME_COMPONENT_KINDS = \((.+)\)$/m)
   assert.ok(kinds, 'paths.py is missing RUNTIME_COMPONENT_KINDS')
   const parsed = kinds[1].split(',').map(item => item.trim().replace(/"/g, '')).filter(Boolean)
@@ -41,9 +41,14 @@ test('contentId 由冻结输入派生：确定性 + 每个输入单独敏感', (
     pythonArchiveSha256: 'a1'.repeat(32),
     requirementsSha256: 'b2'.repeat(32),
     lockSha256: 'c3'.repeat(32),
+    bytecodeSha256: 'e1'.repeat(32),
     binaryPackages: ['cryptography', 'orjson']
   }
+  assert.throws(() => components.derivePythonContentId({ ...base, bytecodeSha256: undefined }), /compiler digest/)
   const id = components.derivePythonContentId(base)
+  assert.notEqual(components.derivePythonContentId({ ...base, skillWheels: [{ name: 'local', sha256: '1'.repeat(64) }] }), id)
+  assert.notEqual(components.derivePythonContentId({ ...base, recipe: { normalizer: 'changed' } }), id)
+  assert.notEqual(components.derivePythonContentId({ ...base, bytecodeSha256: 'f1'.repeat(32) }), id)
   assert.match(id, components.CONTENT_ID_PATTERN)
   // 确定性：数组顺序不影响
   assert.equal(components.derivePythonContentId({ ...base, binaryPackages: ['orjson', 'cryptography'] }), id)
@@ -57,8 +62,20 @@ test('contentId 由冻结输入派生：确定性 + 每个输入单独敏感', (
   assert.match(texlive, components.CONTENT_ID_PATTERN)
   assert.notEqual(texlive, components.deriveTexliveContentId({ target: 'win32-x86_64', archiveSha256: 'e5'.repeat(32), texlive: '2024' }))
   assert.notEqual(texlive, components.deriveTexliveContentId({ target: 'win32-x86_64', archiveSha256: 'f6'.repeat(32), texlive: '2025' }))
-  // python 与 texlive 输入空间不串号
+  const powershell = components.derivePowerShellContentId({
+    target: 'win32-x86_64', archiveSha256: '17'.repeat(32), version: '7.6.6'
+  })
+  assert.match(powershell, components.CONTENT_ID_PATTERN)
+  assert.notEqual(powershell, components.derivePowerShellContentId({
+    target: 'win32-x86_64', archiveSha256: '17'.repeat(32), version: '7.6.5'
+  }))
+  assert.notEqual(powershell, components.derivePowerShellContentId({
+    target: 'win32-x86_64', archiveSha256: '18'.repeat(32), version: '7.6.6'
+  }))
+  // 三种组件输入空间不串号
   assert.notEqual(id, texlive)
+  assert.notEqual(id, powershell)
+  assert.notEqual(texlive, powershell)
 })
 
 test('componentDirectoryName 拒绝穿越与非法形状', () => {
@@ -74,24 +91,49 @@ test('app-components 清单校验：完整形态通过，每类缺陷单独拒�
   const texId = 'b2'.repeat(32)
   const python = {
     kind: 'python', contentId: id, archive: components.componentArchiveName('python', id),
-    archiveSha256: 'c3'.repeat(32), archiveBytes: 10, entry: components.PYTHON_ENTRY_RELATIVE
+    archiveSha256: 'c3'.repeat(32), archiveBytes: 10, entry: components.PYTHON_ENTRY_RELATIVE, python: '3.12.13', sqlite: '3.53.1'
   }
   const texlive = {
     kind: 'texlive', contentId: texId, archive: components.componentArchiveName('texlive', texId),
     archiveSha256: 'd4'.repeat(32), archiveBytes: 10,
-    entry: `${components.TEXLIVE_BIN_PARENT_RELATIVE}/bin/windows`, executables: ['xelatex']
+    entry: `${components.TEXLIVE_BIN_PARENT_RELATIVE}/bin/windows`, executables: ['xelatex', 'pdflatex', 'bibtex', 'kpsewhich'], texlive: '2026'
   }
-  const good = components.appComponentsManifest('win32-x86_64', [python, texlive])
+  const powershellId = 'e5'.repeat(32)
+  const powershell = {
+    kind: 'powershell', contentId: powershellId,
+    archive: components.componentArchiveName('powershell', powershellId),
+    archiveSha256: 'f6'.repeat(32), archiveBytes: 10,
+    entry: components.POWERSHELL_ENTRY_RELATIVE, version: '7.6.6'
+  }
+  const good = components.appComponentsManifest('win32-x86_64', [python, texlive, powershell])
   assert.equal(components.validateAppComponents(good), true)
+  const budget = { format: 'zip', expandedBytes: 300, fileCount: 4 }
+  assert.equal(components.validateAppComponents({ ...good,
+    components: [{ ...python, ...budget }, texlive, powershell] }), true)
+  for (const broken of [
+    { expandedBytes: 300 }, { ...budget, format: 'tar.gz' },
+    { ...budget, fileCount: 0 }, { ...budget, expandedBytes: -1 },
+    { ...budget, fileCount: 1.5 }, { ...budget, expandedBytes: Number.MAX_SAFE_INTEGER + 1 }
+  ]) {
+    assert.equal(components.validateAppComponents({ ...good,
+      components: [{ ...python, ...broken }, texlive, powershell] }), false)
+  }
   assert.equal(components.parseAppComponents(JSON.stringify(good)).target, 'win32-x86_64')
   assert.equal(components.parseAppComponents('{'), null)
   assert.equal(components.validateAppComponents({ ...good, schemaVersion: 2 }), false)
-  assert.equal(components.validateAppComponents({ ...good, components: [python] }), false, 'texlive 缺失')
+  assert.equal(components.validateAppComponents({ ...good, components: [python, texlive] }), false, 'powershell 缺失')
   assert.equal(components.validateAppComponents({ ...good, components: [python, texlive, python] }), false, 'kind 重复')
-  assert.equal(components.validateAppComponents({ ...good, components: [python, { ...texlive, archive: 'texlive-x.zip' }] }), false)
-  assert.equal(components.validateAppComponents({ ...good, components: [{ ...python, entry: '/etc/passwd' }] }), false)
-  assert.equal(components.validateAppComponents({ ...good, components: [{ ...python, entry: 'python.exe' }] }), false)
-  assert.equal(components.validateAppComponents({ ...good, components: [python, { ...texlive, executables: [] }] }), false)
+  assert.equal(components.validateAppComponents({ ...good, components: [python, { ...texlive, archive: 'texlive-x.zip' }, powershell] }), false)
+  assert.equal(components.validateAppComponents({ ...good, components: [{ ...python, entry: '/etc/passwd' }, texlive, powershell] }), false)
+  assert.equal(components.validateAppComponents({ ...good, components: [{ ...python, entry: 'python.exe' }, texlive, powershell] }), false)
+  assert.equal(components.validateAppComponents({ ...good, components: [python, { ...texlive, executables: [] }, powershell] }), false)
+  assert.equal(components.validateAppComponents({ ...good, components: [python, texlive, { ...powershell, version: '' }] }), false)
+  for (const change of [{ python: '' }, { sqlite: '' }, { python: '3.12' }]) {
+    assert.equal(components.validateAppComponents({ ...good, components: [{ ...python, ...change }, texlive, powershell] }), false)
+  }
+  for (const change of [{ texlive: '' }, { executables: ['../xelatex'] }, { executables: ['xelatex', 'xelatex'] }]) {
+    assert.equal(components.validateAppComponents({ ...good, components: [python, { ...texlive, ...change }, powershell] }), false)
+  }
   assert.equal(components.validateAppComponents(null), false)
 })
 
@@ -108,40 +150,29 @@ test('store 路径函数拒绝非法 contentId 并给出稳定布局', () => {
   assert.throws(() => components.storeManifestPath(root, '../x'), /invalid contentId/)
 })
 
-test('.cmd 前导锚定组件仓库、注入 pylibs、缺组件时显式失败且不回落宿主 Python', () => {
-  const id = 'a1'.repeat(32)
-  const preamble = components.windowsComponentPreamble('win32-x86_64', id).join('\r\n')
-  // 三档寻址与 Node 侧 resolveRuntimeStoreRoot 同档同序：首装自定义 store 覆盖优先。
-  assert.match(preamble, /if defined SCHOLARSEED_RUNTIME_STORE \(set "SS_RUNTIME=%SCHOLARSEED_RUNTIME_STORE%"\) else \(if defined SCHOLARSEED_HOME \(set "SS_RUNTIME=%SCHOLARSEED_HOME%\\runtime"\) else \(set "SS_RUNTIME=%USERPROFILE%\\\.scholarseed\\runtime"\)\)/)
-  assert.match(preamble, new RegExp(`win32-x86_64-${id}\\\\python\\\\python\\.exe`))
+test('.cmd commands inherit the Desktop interpreter and inject product libraries', () => {
+  const preamble = components.windowsComponentPreamble().join('\r\n')
+  assert.match(preamble, /if not defined SCHOLARSEED_PYTHON .*exit \/b 1/)
+  assert.match(preamble, /set "SS_PY=%SCHOLARSEED_PYTHON%"/)
+  assert.ok(preamble.includes('if /I "%SS_PY:~0,8%"=="\\\\?\\UNC\\" set "SS_PY=\\\\%SS_PY:~8%"'))
+  assert.ok(preamble.includes('if "%SS_PY:~0,4%"=="\\\\?\\" set "SS_PY=%SS_PY:~4%"'))
+  assert.doesNotMatch(preamble, /SS_RUNTIME|USERPROFILE|SCHOLARSEED_HOME|where python|py -3/)
   assert.match(preamble, /if not exist "%SS_PY%".*exit \/b 1/)
-  assert.match(preamble, /set "PYTHONPATH=%~dp0\.\.\\pylibs;%PYTHONPATH%"/)
-  assert.doesNotMatch(preamble, /where python|py -3/)
-  const skill = components.skillPythonLauncherCommand('win32-x86_64', id, 'service.cli.skill_python')
-  assert.match(skill, /"%SS_PY%" -m service\.cli\.skill_python %\*/)
-  const console = components.consoleScriptLauncherCommand('win32-x86_64', id, 'import sys; sys.exit(0)')
-  assert.match(console, /"%SS_PY%" -c "import sys; sys\.exit\(0\)" %\*/)
+  assert.ok(preamble.includes('set "PYTHONPATH=%~dp0..\\pylibs"'))
+  const skill = components.skillPythonLauncherCommand('service.cli.skill_python')
+  assert.match(skill, /"%SS_PY%" -I -B -c "[^\"]+" -P -s -B -m service\.cli\.skill_python %\*/)
+  const console = components.consoleScriptLauncherCommand('import sys; sys.exit(0)')
+  assert.match(console, /"%SS_PY%" -I -B -c "[^\"]+" -P -s -B -c "import sys; sys\.exit\(0\)" %\*/)
 })
 
-test('runtime store 根解析：env 覆盖优先、形状非法 fail-closed、缺省回 home', () => {
-  assert.equal(components.isValidRuntimeStoreRoot('D:\\ss-runtime', 'win32'), true)
-  assert.equal(components.isValidRuntimeStoreRoot('\\\\nas\\ss\\runtime', 'win32'), true)
-  assert.equal(components.isValidRuntimeStoreRoot('D:/ss-runtime', 'win32'), true)
-  assert.equal(components.isValidRuntimeStoreRoot('relative\\runtime', 'win32'), false)
-  assert.equal(components.isValidRuntimeStoreRoot('/Volumes/ss/runtime', 'win32'), false)
-  assert.equal(components.isValidRuntimeStoreRoot('/Volumes/ss/runtime', 'darwin'), true)
-  assert.equal(components.isValidRuntimeStoreRoot('', 'win32'), false)
+test('runtime store 根解析：恒为 <home>/runtime（收敛掉独立覆盖轴）', () => {
   const home = path.join(os.tmpdir(), 'ss-home')
-  assert.equal(components.resolveRuntimeStoreRoot({}, home, 'win32'), path.join(home, 'runtime'))
-  assert.equal(
-    components.resolveRuntimeStoreRoot({ SCHOLARSEED_RUNTIME_STORE: 'D:\\ss-runtime' }, home, 'win32'),
-    'D:\\ss-runtime'
-  )
-  // env 被手改坏：显式抛错而不是半路写出不存在的解释器路径（与 .cmd 同读同档，不会走岔）。
-  assert.throws(
-    () => components.resolveRuntimeStoreRoot({ SCHOLARSEED_RUNTIME_STORE: 'relative' }, home, 'win32'),
-    /invalid SCHOLARSEED_RUNTIME_STORE/
-  )
+  assert.equal(components.runtimeStoreRoot(home), path.join(home, 'runtime'))
+  // 收敛后不存在 env 覆盖档：组件仓库永远是 home 的子目录，仅由旧组件存储消费。
+  assert.equal(components.runtimeStoreRoot(home), path.join(home, components.RUNTIME_DIRNAME))
+  assert.equal(typeof components.resolveRuntimeStoreRoot, 'undefined')
+  assert.equal(typeof components.isValidRuntimeStoreRoot, 'undefined')
+  assert.equal(components.RUNTIME_STORE_ENV, undefined)
 })
 
 test('writeProductLibraries 只接受纯 Python wheel（真实解释器执行）', (t) => {

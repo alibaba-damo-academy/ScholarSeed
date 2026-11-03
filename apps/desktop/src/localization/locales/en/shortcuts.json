@@ -113,6 +113,7 @@
     "codeLineComment": { "title": "Toggle line comment", "description": "Toggle line comments for the current or selected lines." },
     "codeIndent": { "title": "Indent", "description": "Indent the current line or selection." },
     "codeOutdent": { "title": "Outdent", "description": "Reduce indentation for the current line or selection." },
+    "pdfUndo": { "title": "Undo PDF annotation", "description": "Undo the last saved annotation change in the current PDF, including additions, edits and deletions. Text fields retain native text undo." },
     "pdfFind": {
       "title": "Find in PDF",
       "description": "Open in-document search for the current PDF."

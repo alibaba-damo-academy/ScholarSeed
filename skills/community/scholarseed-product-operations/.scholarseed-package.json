@@ -1,0 +1,66 @@
+{
+  "dependencies": {},
+  "files": [
+    {
+      "mode": 420,
+      "path": "PACKAGE-MANIFEST.sha256",
+      "sha256": "e437ede96f64d260cbc023700351424cf47e4afa6390fc81413d31883bdf14a1",
+      "size": 677
+    },
+    {
+      "mode": 420,
+      "path": "SKILL.md",
+      "sha256": "6fd8eb4ed16ef0876084b42e45dbcf46ba2854787170ca59c24b85d70906f2a3",
+      "size": 8395
+    },
+    {
+      "mode": 420,
+      "path": "VERSION",
+      "sha256": "87f5b13e3a4330f0625276d4dc586b8d3623decb5779db215fc7a20d736128eb",
+      "size": 13
+    },
+    {
+      "mode": 420,
+      "path": "references/artifacts.md",
+      "sha256": "61ba54fb6907280f9dc2591800fd5038fab71456fef943302a4484b37725ff22",
+      "size": 4573
+    },
+    {
+      "mode": 420,
+      "path": "references/history.md",
+      "sha256": "aa22a1a49af70c4cd817384dc21bcb813a9fdc560ae11a1cf5a1f7d2d640c7e1",
+      "size": 1389
+    },
+    {
+      "mode": 420,
+      "path": "references/mcp.md",
+      "sha256": "b633e65e0c070682f0284d6c49ad7a2d219a58775d7ddc068f784ffd759cc117",
+      "size": 4177
+    },
+    {
+      "mode": 420,
+      "path": "references/plans.md",
+      "sha256": "d2da6d9cd468d360de54014f2a2b442ab89cdae788fd6bc56a0fe6220aff1169",
+      "size": 4187
+    },
+    {
+      "mode": 420,
+      "path": "references/resources.md",
+      "sha256": "c9301a0c4be6f4ea51382c1f9e23441552c91e10aef5159ae4e3cb69be9dec72",
+      "size": 3825
+    },
+    {
+      "mode": 420,
+      "path": "references/retrieval.md",
+      "sha256": "d8858f1ec750457559c06958d1068fcec92e913db1b3c5da87ff9734819fcc43",
+      "size": 2915
+    }
+  ],
+  "name": "scholarseed-product-operations",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "6fd8eb4ed16ef0876084b42e45dbcf46ba2854787170ca59c24b85d70906f2a3",
+  "version": "2026.10.29+4"
+}

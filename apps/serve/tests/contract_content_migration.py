@@ -11,8 +11,14 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
+import stat
+import subprocess
+import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -27,6 +33,7 @@ from service.content.domain.model import (
 from service.content.persistence.catalog import AUDIT_MIGRATE, ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.identity.utils import HOST_PROCESS_HEADER, HOST_PROCESS_KEY_ENV
+from service.platform.activity import Activities
 from service.platform.content import ProjectLayout, RootKind
 
 PASS = 0
@@ -56,6 +63,125 @@ def _legacy_project(root: Path, name: str) -> Path:
     return project
 
 
+def _acl(path: Path, script: str, original: str = "") -> str:
+    return subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$ErrorActionPreference='Stop'; " + script,
+        ],
+        env={**os.environ, "CONTRACT_DIRECTORY": str(path), "CONTRACT_DIRECTORY_SDDL": original},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    ).stdout.strip()
+
+
+@contextmanager
+def _ordinary_file_privileges() -> Iterator[None]:
+    """Temporarily remove backup/restore bypass from this test process only."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    security = ctypes.WinDLL("advapi32", use_last_error=True)
+    handle = ctypes.c_void_p
+    word = ctypes.c_uint32
+    kernel.GetCurrentProcess.restype = handle
+    kernel.CloseHandle.argtypes = [handle]
+    kernel.CloseHandle.restype = ctypes.c_int
+    security.OpenProcessToken.argtypes = [handle, word, ctypes.POINTER(handle)]
+    security.OpenProcessToken.restype = ctypes.c_int
+    security.LookupPrivilegeValueW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_void_p]
+    security.LookupPrivilegeValueW.restype = ctypes.c_int
+    security.AdjustTokenPrivileges.argtypes = [
+        handle,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        word,
+        ctypes.c_void_p,
+        ctypes.POINTER(word),
+    ]
+    security.AdjustTokenPrivileges.restype = ctypes.c_int
+    token = handle()
+    token_query, token_adjust_privileges = 0x0008, 0x0020
+    not_all_assigned = 1300
+    if not security.OpenProcessToken(
+        kernel.GetCurrentProcess(), token_query | token_adjust_privileges, ctypes.byref(token)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    previous_states = []
+    try:
+        for name in ("SeBackupPrivilege", "SeRestorePrivilege"):
+            # TOKEN_PRIVILEGES with one LUID_AND_ATTRIBUTES: DWORD count,
+            # DWORD LUID low/high, DWORD attributes (zero disables, not removes).
+            requested = (word * 4)(1, 0, 0, 0)
+            previous = (word * 4)()
+            length = word()
+            if not security.LookupPrivilegeValueW(
+                None, name, ctypes.byref(requested, ctypes.sizeof(word))
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            ctypes.set_last_error(0)
+            changed = security.AdjustTokenPrivileges(
+                token, False, requested, ctypes.sizeof(previous), previous, ctypes.byref(length)
+            )
+            error = ctypes.get_last_error()
+            if not changed or error not in (0, not_all_assigned):
+                raise ctypes.WinError(error)
+            previous_states.append(previous)
+        yield
+    finally:
+        try:
+            for previous in reversed(previous_states):
+                ctypes.set_last_error(0)
+                restored = security.AdjustTokenPrivileges(token, False, previous, 0, None, None)
+                error = ctypes.get_last_error()
+                if not restored or error:
+                    raise ctypes.WinError(error)
+        finally:
+            if not kernel.CloseHandle(token):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+
+@contextmanager
+def _readonly_directory(path: Path) -> Iterator[None]:
+    """Deny child creation on this test-owned directory, then restore its authority."""
+    if sys.platform != "win32":
+        original_mode = stat.S_IMODE(path.stat().st_mode)
+        try:
+            path.chmod(0o500)
+            yield
+        finally:
+            path.chmod(original_mode)
+        return
+    original_acl = _acl(path, "(Get-Acl -LiteralPath $env:CONTRACT_DIRECTORY).Sddl")
+    try:
+        _acl(
+            path,
+            """
+$acl = Get-Acl -LiteralPath $env:CONTRACT_DIRECTORY
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$rights = [System.Security.AccessControl.FileSystemRights]'CreateFiles,CreateDirectories,DeleteSubdirectoriesAndFiles'
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, [System.Security.AccessControl.AccessControlType]::Deny)
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $env:CONTRACT_DIRECTORY -AclObject $acl
+""",
+        )
+        with _ordinary_file_privileges():
+            yield
+    finally:
+        _acl(
+            path,
+            """
+$acl = Get-Acl -LiteralPath $env:CONTRACT_DIRECTORY
+$acl.SetSecurityDescriptorSddlForm($env:CONTRACT_DIRECTORY_SDDL)
+Set-Acl -LiteralPath $env:CONTRACT_DIRECTORY -AclObject $acl
+""",
+            original_acl,
+        )
+
+
 def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="content-migration-")).resolve()
     workspace = root / "workspace"
@@ -67,7 +193,7 @@ def main() -> int:
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_legacy(((legacy, "老项目"), (partial, "半迁项目")))
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     legacy_ref = next(item for item in content.projects() if item.root == str(legacy))
     partial_ref = next(item for item in content.projects() if item.root == str(partial))
 
@@ -198,8 +324,16 @@ def main() -> int:
     readonly = _legacy_project(root, "只读项目")
     registry.seed_legacy(((readonly, "只读项目"),))
     readonly_ref = next(item for item in content.projects() if item.root == str(readonly))
-    readonly.chmod(0o500)
-    try:
+    with _readonly_directory(readonly):
+        probe = readonly / ".write-probe"
+        denied = False
+        try:
+            probe.mkdir()
+        except PermissionError:
+            denied = True
+        else:
+            probe.rmdir()
+        check("权限夹具确实禁止创建子目录", denied)
         outcome = content.migrate_project(readonly_ref.id)
         check(
             "项目根不可写时逐项失败, 且不转 MANAGED",
@@ -211,8 +345,9 @@ def main() -> int:
             (readonly / "数据.csv").is_file() and (readonly / "笔记").is_dir(),
             str(sorted(item.name for item in readonly.iterdir())),
         )
-    finally:
-        readonly.chmod(0o700)
+    probe.mkdir()
+    probe.rmdir()
+    check("权限夹具退出后恢复写入权限", True)
 
     # ---- 删除令牌: 只有主进程能兑换 ----
     app = FastAPI()

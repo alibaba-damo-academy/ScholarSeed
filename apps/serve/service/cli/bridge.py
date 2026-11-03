@@ -4,27 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError
 
 from service.platform.bridge import (
     ANNOTATIONS_OPERATION,
+    BLOCKING_CHECKPOINTS,
+    BLOCKING_OPERATIONS,
     BRIDGE_COMMAND,
-    BRIDGE_MAX_REQUEST_BYTES,
-    BRIDGE_MAX_RESPONSE_BYTES,
     BRIDGE_REQUESTS,
-    BRIDGE_SESSION_ENV,
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_SOCKET_ENV,
-    BRIDGE_TIMEOUT_SECONDS,
-    BRIDGE_TOKEN_ENV,
-    BRIDGE_TOKEN_HEADER,
+    COMPONENT_CAPABILITY,
     HISTORY_REQUESTS,
-    INTERNAL_BASE_URL_ENV,
     LITERATURE_REQUESTS,
     PDF_REQUESTS,
     PLAN_REQUESTS,
@@ -32,22 +24,9 @@ from service.platform.bridge import (
     DisplayCard,
     TaskActivate,
 )
+from service.platform.channel import BridgeResponseError, decode, request
 
 EXIT_FAILURE = 1
-JSON_ENCODING = "utf-8"
-LOOPBACK_NAMES = frozenset(("localhost", "127.0.0.1", "::1"))
-LOCAL_SOCKET_BASE_URL = "http://localhost"
-# Product-owned authorization checkpoints wait for a user decision without a read deadline.
-BLOCKING_CHECKPOINTS = {
-    ("literature", "review"): frozenset(("retrieval",)),
-    ("literature", "result"): frozenset(("selection", "candidates")),
-}
-
-
-class BridgeResponseError(ValueError):
-    def __init__(self, payload: dict) -> None:
-        super().__init__(str(payload.get("error") or "bridge_query_failed"))
-        self.payload = payload
 
 
 def parser() -> argparse.ArgumentParser:
@@ -74,7 +53,7 @@ def parser() -> argparse.ArgumentParser:
         command.epilog = json.dumps(history_request.model_json_schema(), ensure_ascii=False)
     artifact = groups.add_parser("artifact", help="发布本轮已生成的独立文件产物")
     artifact_verbs = artifact.add_subparsers(dest="operation")
-    publish_request, _publish_route = BRIDGE_REQUESTS[("artifact", "publish")]
+    publish_request = BRIDGE_REQUESTS[("artifact", "publish")].request_type
     publish = artifact_verbs.add_parser(
         "publish",
         help="登记一个已写入当前会话工作目录的文件",
@@ -110,6 +89,7 @@ def parser() -> argparse.ArgumentParser:
     )
     literature_verbs = literature.add_subparsers(dest="operation")
     literature_descriptions = {
+        "import": "按用户明确指令将已发布会话文件导入当前项目文献库；不弹授权窗口、不重新检索下载。传 artifact_id 或会话工作目录相对 path 二选一。",
         "list": (
             "列出当前会话项目的文献及 PDF 总页数。"
             "示例：--json '{\"limit\":20}'；"
@@ -122,6 +102,27 @@ def parser() -> argparse.ArgumentParser:
         "authorize": (
             "为当前研究想法任务登记明确的全文候选集合，并返回原生一键授权问题。"
             '示例：--json \'{"authorization_type":"research_idea_fulltext","refs":["literature:<id>"]}\'。'
+        ),
+        "acquire": (
+            "在全文授权通过后由 serve 侧下载指定论文的开放获取全文并托管，"
+            "返回可读取的 paper: 引用与逐篇成败证据。"
+            '示例：--json \'{"run":"<run 相对会话工作目录>","papers":[{"paper_id":"<id>",'
+            '"identifier":"2502.12110","identifier_kind":"arxiv"}]}\'。'
+        ),
+        "receipt": (
+            "查询本回合全文授权的实际生效范围与已托管的论文全文；"
+            "run 目录不是真源，阅读前必须以本命令的返回为准。"
+            '示例：--json \'{"run":"<run 相对会话工作目录>"}\'。'
+        ),
+        "delivery": (
+            "冻结当前 run 实际获取的全文批次并显示产品保存弹框；不指定目录，不等同于保存成功。"
+            '示例：--json \'{"run":"<run 相对会话工作目录>"}\'。'
+        ),
+        "ingest": (
+            "将本轮已获准下载的论文入库并关联当前项目，展示可打开全文的文献卡；"
+            "读取 run 清单、校验 PDF 与题录，同一次重试不重复入库；"
+            "大结果按 next_cursor 传回 cursor 续页，只读已保存回执。"
+            '示例：--json \'{"run":"<run 相对会话工作目录>"}\'。'
         ),
         ANNOTATIONS_OPERATION: (
             "分页读取当前项目或全局文献中的用户标注和阅读笔记；这些内容不是 PDF 引用证据。"
@@ -137,8 +138,10 @@ def parser() -> argparse.ArgumentParser:
     for name, literature_request in LITERATURE_REQUESTS.items():
         command = literature_verbs.add_parser(
             name,
-            help=literature_descriptions[name],
-            description=literature_descriptions[name],
+            help=literature_descriptions.get(name, BRIDGE_REQUESTS[("literature", name)].summary),
+            description=literature_descriptions.get(
+                name, BRIDGE_REQUESTS[("literature", name)].summary
+            ),
         )
         command.add_argument(
             "--json",
@@ -146,13 +149,18 @@ def parser() -> argparse.ArgumentParser:
             help="请求 JSON；凭证和当前项目由产品会话提供，不放入参数",
         )
         command.epilog = json.dumps(literature_request.model_json_schema(), ensure_ascii=False)
-    resource = groups.add_parser("resource", help="列出当前项目资料库文件")
+    resource = groups.add_parser("resource", help="访问当前项目资料库文件")
     resource_verbs = resource.add_subparsers(dest="operation")
     for name, resource_request in RESOURCE_REQUESTS.items():
+        description = {
+            "import": "按用户明确要求将已发布会话文件导入资料库，并保留会话关联。",
+            "list": "列出当前会话项目的资料库文件；返回 cursor 可用于续页。",
+            "read": "读取当前会话项目资料库或关联根中的一段文件内容。",
+        }[name]
         command = resource_verbs.add_parser(
             name,
-            help="按项目相对路径列出资料库文件",
-            description="列出当前会话项目的资料库文件；返回 cursor 可用于续页。",
+            help=description,
+            description=description,
         )
         command.add_argument(
             "--json",
@@ -164,6 +172,15 @@ def parser() -> argparse.ArgumentParser:
     resource.set_defaults(capability_parser=resource)
     pdf.set_defaults(capability_parser=pdf)
     root.set_defaults(capability_parser=None)
+    search = groups.add_parser("search", help="执行产品网页搜索")
+    search_verbs = search.add_subparsers(dest="operation")
+    for (capability, operation), entry in BRIDGE_REQUESTS.items():
+        if capability != "search":
+            continue
+        command = search_verbs.add_parser(operation)
+        command.add_argument("--json", required=True, help="查询、引擎与结果数量；身份由宿主提供")
+        command.epilog = json.dumps(entry.request_type.model_json_schema(), ensure_ascii=False)
+    search.set_defaults(capability_parser=search)
     history.set_defaults(capability_parser=history)
     artifact.set_defaults(capability_parser=artifact)
     task = groups.add_parser("task", help="激活当前 turn 的已验证产品任务身份")
@@ -188,53 +205,25 @@ def parser() -> argparse.ArgumentParser:
     )
     display_card.epilog = json.dumps(DisplayCard.model_json_schema(), ensure_ascii=False)
     display_card.set_defaults(capability_parser=display_card, operation="publish")
+    component = groups.add_parser(COMPONENT_CAPABILITY, help="查询或使用已启用的对话组件")
+    component_verbs = component.add_subparsers(dest="operation")
+    for (capability, operation), contract in BRIDGE_REQUESTS.items():
+        if capability != COMPONENT_CAPABILITY:
+            continue
+        command = component_verbs.add_parser(operation, help=contract.summary)
+        command.add_argument("--json", required=True, help="组件参数；组件身份及权限由宿主校验")
+        command.epilog = json.dumps(contract.request_type.model_json_schema(), ensure_ascii=False)
+    component.set_defaults(capability_parser=component)
     return root
 
 
 def execute(capability: str, operation: str, raw: str) -> dict:
-    if len(raw.encode(JSON_ENCODING)) > BRIDGE_MAX_REQUEST_BYTES:
-        raise ValueError("bridge_request_too_large")
-    request_type, route = BRIDGE_REQUESTS[(capability, operation)]
-    payload = request_type.model_validate(json.loads(raw)).model_dump()
-    base_url = os.environ.get(INTERNAL_BASE_URL_ENV, "").rstrip("/")
-    token = os.environ.get(BRIDGE_TOKEN_ENV, "")
-    session_id = os.environ.get(BRIDGE_SESSION_ENV, "")
-    local_socket = os.environ.get(BRIDGE_SOCKET_ENV, "")
-    if (not base_url and not local_socket) or not token or not session_id:
-        raise ValueError("bridge_context_unavailable: run inside a ScholarSeed Agent session")
-    if local_socket:
-        base_url = LOCAL_SOCKET_BASE_URL
-    address = urlsplit(base_url)
-    if address.username or address.password or address.query or address.fragment:
-        raise ValueError("bridge_address_invalid")
-    if address.scheme != "https" and not (
-        address.scheme == "http" and address.hostname in LOOPBACK_NAMES
-    ):
-        raise ValueError("bridge_secure_transport_required")
-    transport = httpx.HTTPTransport(uds=local_socket) if local_socket else None
-    timeout = (
-        httpx.Timeout(BRIDGE_TIMEOUT_SECONDS, read=None)
-        if payload.get("checkpoint") in BLOCKING_CHECKPOINTS.get((capability, operation), ())
-        else httpx.Timeout(BRIDGE_TIMEOUT_SECONDS)
-    )
-    with httpx.Client(timeout=timeout, trust_env=False, transport=transport) as client:
-        with client.stream(
-            "POST",
-            f"{base_url}{route}",
-            headers={BRIDGE_SESSION_HEADER: session_id, BRIDGE_TOKEN_HEADER: token},
-            json=payload,
-        ) as response:
-            body = bytearray()
-            for chunk in response.iter_bytes():
-                body.extend(chunk)
-                if len(body) > BRIDGE_MAX_RESPONSE_BYTES:
-                    raise ValueError("bridge_response_too_large")
-            result = json.loads(body)
-            if not isinstance(result, dict):
-                raise ValueError("bridge_response_invalid")
-            if response.is_error:
-                raise BridgeResponseError(result)
-            return result
+    entry = BRIDGE_REQUESTS[(capability, operation)]
+    payload = decode(raw, entry.request_type)
+    blocking = (capability, operation) in BLOCKING_OPERATIONS or payload.get(
+        "checkpoint"
+    ) in BLOCKING_CHECKPOINTS.get((capability, operation), ())
+    return request(entry.route, payload, blocking=blocking)
 
 
 def main(argv: list[str] | None = None) -> int:

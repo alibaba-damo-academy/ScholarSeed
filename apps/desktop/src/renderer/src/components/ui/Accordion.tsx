@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, KeyboardEvent, ReactNode, Ref } from 'react'
+import { ChevronDown } from 'lucide-react'
 import {
   Children,
   cloneElement,
@@ -233,7 +234,7 @@ export const AccordionItem = forwardRef<HTMLDivElement, AccordionItemProps>(
 AccordionItem.displayName = 'AccordionItem'
 
 export const AccordionTrigger = forwardRef<HTMLButtonElement, AccordionTriggerProps>(
-  ({ className, disabled, onClick, type = 'button', ...props }, ref) => {
+  ({ children, className, disabled, onClick, type = 'button', ...props }, ref) => {
     const context = useAccordionContext('AccordionTrigger')
     const item = useAccordionItemContext('AccordionTrigger')
     const isDisabled = item.disabled || disabled
@@ -263,7 +264,14 @@ export const AccordionTrigger = forwardRef<HTMLButtonElement, AccordionTriggerPr
           if (!event.defaultPrevented) toggle()
         }}
         {...props}
-      />
+      >
+        {children}
+        <ChevronDown
+          aria-hidden="true"
+          className="shrink-0 transition-transform duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)] group-data-[state=open]/accordion-trigger:rotate-180"
+          size={16}
+        />
+      </button>
     )
   }
 )

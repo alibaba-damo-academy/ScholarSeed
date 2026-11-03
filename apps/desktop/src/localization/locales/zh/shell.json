@@ -1,13 +1,25 @@
 {
   "navigation": {
     "projects": "首页",
-    "returnHome": "返回首页"
+    "returnHome": "返回项目中心",
+    "skipToContent": "跳转到主要内容"
+  },
+  "errorBoundary": {
+    "title": "页面遇到了一些问题",
+    "description": "书深没有正常完成页面渲染，但你的项目和本地文件不会因此丢失。",
+    "notice": "应用暂时无法继续显示",
+    "guidance": "可返回首页、重新加载页面，或发送错误反馈。反馈会包含本次错误详情和本机诊断日志，帮助我们定位问题。",
+    "reload": "重新加载",
+    "feedback": "反馈错误",
+    "feedbackSubmitted": "反馈已发送",
+    "feedbackFailedTitle": "反馈发送失败",
+    "feedbackFailed": "暂时无法发送错误信息，请检查网络后重试。"
   },
   "chrome": {
     "projectOverview": "首页",
-    "literatureOverview": "文献全览",
+    "literatureOverview": "文献中心",
     "selectProject": "选择项目",
-    "globalSearch": "搜索项目文件、对话、文献、素材（⌘K）",
+    "globalSearch": "搜索项目文件、任务、文献、素材（⌘K）",
     "search": "搜索",
     "collapseSidebar": "收起侧栏",
     "expandSidebar": "展开侧栏",
@@ -16,8 +28,8 @@
     "aiAssistant": "AI 助手",
     "scholarseedAi": "书深 AI",
     "requiresProject": "{{label}}（先选择或新建项目）",
-    "taskCenter": "任务中心",
-    "taskCenterCount": "任务中心，{{count}} 个进行中",
+    "taskCenter": "消息中心",
+    "taskCenterCount": "消息中心，{{count}} 个进行中",
     "projectLiterature": "文献库"
   },
   "tabs": {
@@ -44,8 +56,12 @@
     "hint": "请根据以下提示处理：",
     "runtimeNotReady": "Codex Runtime 尚未就绪。",
     "submitNotReady": "真实消息提交入口尚未就绪。",
+    "harnessLanding": "无头 harness 前提未满足：首启首页尚未关闭。先走完首启链（跳过首页、创建项目、跳过新手引导），或按隔离实例 + CDP 配方驱动，再重试。",
+    "harnessLogin": "无头 harness 前提未满足：登录 dialog 尚未关闭。先登录或选择「暂不登录」关闭它，再重试。",
+    "harnessGuide": "无头 harness 前提未满足：新手引导尚未跳过。先跳过引导，再重试。",
+    "harnessNoProject": "无头 harness 前提未满足：尚无任何项目，消息输入框只挂在项目的 AI 面板内。先创建至少一个项目，再重试。",
     "reviewUnknown": "无法确认待审阅状态，请稍后重试。",
-    "reviewUnsaved": "待审阅文件仍有未保存编辑，请先保存或放弃编辑后再继续对话。",
+    "reviewUnsaved": "待审阅文件仍有未保存编辑，请先保存或放弃编辑后再继续任务。",
     "effortFailed": "思考深度切换失败，请重试。",
     "workspaceAuthorization": "会话工作空间授权失败，请检查文件夹权限后重新连接。",
     "permissionConnection": "无法连接书深服务，请检查连接后重试权限切换。",
@@ -55,8 +71,8 @@
   },
   "search": {
     "project": {
-      "untitledSession": "未命名对话",
-      "placeholder": "搜索项目文件/对话/文献/资料等…",
+      "untitledSession": "未命名任务",
+      "placeholder": "搜索项目文件/任务/文献/资料等…",
       "filesPlaceholder": "快速打开项目文件…",
       "empty": "输入关键词，搜索当前项目的资料、文献和会话。",
       "loading": "检索中…"
@@ -64,7 +80,7 @@
     "domain": {
       "resource": "资料",
       "literature": "文献",
-      "session": "对话"
+      "session": "任务"
     },
     "recent": {
       "title": "最近打开",
@@ -93,12 +109,14 @@
     "reproduceHint": "调用论文复现技能：拆算法、落代码、跑 demo 验证"
   },
   "workspaceLoading": {
+    "retrying": "会话目录暂时不可用，当前工作台保持可用，正在自动恢复。",
+    "unavailable": "会话目录返回了不可识别的数据，当前工作台保持可用，请稍后重新加载。",
     "signInTitle": "登录后继续",
-    "failedTitle": "对话暂时没有加载完成",
+    "failedTitle": "工作台数据暂时无法加载",
     "loadingTitle": "正在加载工作台",
     "signInDetail": "本地服务要登录才能读取项目与会话目录。",
-    "failedDetail": "本地服务没有返回会话目录，可以立即重试。",
-    "syncing": "正在同步项目和最近对话…",
+    "failedDetail": "本地服务未返回完整的项目或任务目录，可以重新加载。",
+    "syncing": "正在同步项目和最近任务…",
     "connecting": "正在连接本地服务…",
     "signIn": "登录",
     "reload": "重新加载"
@@ -108,16 +126,17 @@
     "waiting": "需要你的确认或输入",
     "done": "任务已完成",
     "failed": "任务执行失败",
-    "abandoned": "任务已终止"
+    "abandoned": "任务已终止",
+    "openFailed": "无法打开通知对应的项目或任务，请从项目列表重新打开。"
   },
   "delete": {
-    "title": "确认删除会话？",
-    "filesRetained": "删除会话不会删除本机产物文件，文件仍在工作目录",
-    "irreversible": "删除 <name/> 后无法撤销。",
-    "running": "该会话正在运行 —— 请先中断它再删除。",
+    "title": "删除任务",
+    "filesRetained": "将自动停止此任务正在执行和排队的工作，再删除任务记录、全部过程产物及输出产物，且不可恢复。用户导入或引用的原始资料、文献和已导入资料库的独立副本继续保留。",
+    "irreversible": "确定要删除「<name/>」吗？任务及其全部产物会被一并删除，且不可恢复。",
+    "stopFailed": "暂时无法确认此任务的所有工作已停止，尚未删除任务。请稍后重试。",
     "failed": "删除失败 —— 后端未确认 (检查 serve 日志)。",
     "cancel": "取消",
-    "deleting": "删除中…",
+    "deleting": "停止并删除中…",
     "confirm": "删除"
   }
 }

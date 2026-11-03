@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts import lint
+from scripts.ci import lint
 
 ROOT = Path(__file__).resolve().parents[2]
 TIMEOUT_SECONDS = 120
@@ -102,7 +102,7 @@ class LintContracts(unittest.TestCase):
                 (root / "settings.txt").write_text("VEDA_" + "UNSUPPORTED=1\n", encoding="utf-8")
                 subprocess.run(["git", "add", "settings.txt"], cwd=root, check=True)
             return subprocess.run(
-                [sys.executable, str(ROOT / "scripts/lint.py"), "."],
+                [sys.executable, str(ROOT / "scripts/ci/lint.py"), "."],
                 cwd=root,
                 capture_output=True,
                 text=True,
@@ -142,11 +142,11 @@ class LintContracts(unittest.TestCase):
         ]
         for name in (
             "apps/serve/service/capabilities/skills/pack/broken.py",
-            "apps/desktop/node_modules/package/broken.py",
+            "__lint_contract__/node_modules/package/broken.py",
             "packages/damoatrace/damoatrace/trace.py",
         ):
             self.assertTrue(lint._is_excluded(Path.cwd() / name, patterns))
-        self.assertFalse(lint._is_excluded(Path.cwd() / "scripts/lint.py", patterns))
+        self.assertFalse(lint._is_excluded(Path.cwd() / "scripts/ci/lint.py", patterns))
 
     def test_argument_batches_preserve_paths_and_windows_budget(self) -> None:
         paths = [Path("folder with spaces") / f"source_{number}.py" for number in range(1500)]

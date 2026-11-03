@@ -12,9 +12,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from service.platform.content import ProjectLayout, ProjectRef, RootKind
+
+
+class OperationState(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+OPERATION_INTERRUPTED = "content_operation_interrupted"
+
 
 #: LEGACY 布局下资料库根相对项目根的位置。空串 = 项目根本身。
 #:
@@ -38,13 +50,18 @@ MANAGED_LITERATURE_ROOT_RELATIVE = "literature"
 ARTIFACTS_ROOT_RELATIVE = "artifacts"
 SESSIONS_ROOT_RELATIVE = "sessions"
 OWNED_ROOT_KINDS = frozenset({RootKind.ARTIFACTS, RootKind.SESSIONS})
+WORKING_CONTENT_CONFLICT = "working_content_conflict"
+WORKING_CONTENT_PATH_INVALID = "working_content_path_invalid"
 PREPARED_CONFLICT = "prepared_content_conflict"
 PREPARED_UNAVAILABLE = "prepared_content_unavailable"
 
 #: 项目内产品状态目录 (文献库 JSON 等)。集中在一处, 不散落在用户资料里。
 PROJECT_STATE_DIRNAME = ".scholarseed"
 ROOT_UNAVAILABLE_ERROR = "root_unavailable"
+PROJECT_RECOVERY_PENDING = "project_recovery_pending"
+ROOT_SOURCE_CHANGED_ERROR = "root_source_changed"
 PATH_OUTSIDE_ROOT_ERROR = "path_outside_root"
+READ_FAILED = "read_failed"
 
 #: 不进入任何扫描的目录名 (版本库内部、依赖、系统噪声、产品自己的状态目录)。
 IGNORED_NAMES = frozenset(
@@ -68,6 +85,14 @@ class ContentError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class ContentReadPermissionError(ContentError):
+    """A refused read with its authorized project-relative location."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(READ_FAILED)
+        self.path = path
 
 
 @dataclass(frozen=True)
@@ -134,6 +159,8 @@ __all__ = [
     "RESOURCES_ROOT_RELATIVE",
     "ROOT_RELATIVE",
     "ContentError",
+    "OperationState",
+    "OPERATION_INTERRUPTED",
     "RootLocation",
     "resolve_root",
     "root_relative",

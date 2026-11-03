@@ -18,6 +18,13 @@ class ModelDefaultRequest(BaseModel):
     persist: bool = True
 
 
+class RuntimePreparationRequest(BaseModel):
+    request_id: str
+    model_id: str
+    service_instance_id: str
+    persist_default: StrictBool = False
+
+
 class PersonalApiModel(BaseModel):
     """One model the user checked on a personal connection."""
 
@@ -98,11 +105,22 @@ class SessionRenameRequest(BaseModel):
     title: str
 
 
+class SessionArchiveRequest(BaseModel):
+    archived: StrictBool
+
+
+class SessionPinRequest(BaseModel):
+    """Explicit desired pin state for one owned product session."""
+
+    pinned: StrictBool
+
+
 class SessionModelRequest(BaseModel):
-    """Replace the model binding of one owned idle session."""
+    """Persist owned model intent and optionally the default for future sessions."""
 
     model_id: str
     reasoning_effort: str = ""
+    remember_default: StrictBool = False
     # 开关/预算形态的思考选择，与 ``reasoning_effort`` 互斥：一条坐标到底是哪种形态由能力
     # 声明决定。载荷形状 ``{"enabled": bool}`` / ``{"budget": int}``，缺省即「没选」。
     thinking: dict[str, Any] | None = None

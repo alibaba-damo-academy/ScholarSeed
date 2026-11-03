@@ -1,4 +1,5 @@
 import type { ForegroundMessage } from '../../contracts/feedback'
+import type { AssistantSourceBrowse } from '../../contracts/features'
 /**
  * AI 对话面板领域状态切片（MVP 0.2）。
  *
@@ -14,18 +15,104 @@ import type {
   AnswerAnnotation,
   AssistantContextCandidate,
   AssistantContextRef,
+  AssistantContextSelection,
+  AssistantFailure,
   AssistantInvocationResult,
   AssistantTranslationInput,
   AssistantTranslationTarget,
   ProjectContextPolicy,
-  SearchScope
+  SearchScope,
 } from '../../contracts/assistant'
 import type { IconName } from '../../icons'
+import type { ConvItem } from '../../model'
 import type { AnswerAnnotationLocation } from './anchors'
+import { assistantFailureDetail } from './failure.ts'
 
-export type AssistantContextError = { key: 'contextErrors.loading' | 'contextErrors.updated' | 'contextErrors.saveFailed' | 'contextErrors.syncFailed' | 'contextErrors.loadFailed' | 'contextErrors.initializeFailed' | 'contextErrors.newSaveFailed' | 'contextErrors.wrongProject' | 'contextErrors.annotationFailed' | 'contextErrors.removeFailed' | 'contextErrors.saveRetry' | 'contextErrors.projectLoading' | 'contextErrors.sourceUnavailable' | 'contextErrors.sourcePending'; detail?: string } | { raw: string }
+export type AssistantContextError =
+  | {
+      key:
+        | 'contextErrors.loading'
+        | 'contextErrors.updated'
+        | 'contextErrors.saveFailed'
+        | 'contextErrors.syncFailed'
+        | 'contextErrors.loadFailed'
+        | 'contextErrors.initializeFailed'
+        | 'contextErrors.newSaveFailed'
+        | 'contextErrors.wrongProject'
+        | 'contextErrors.annotationFailed'
+        | 'contextErrors.removeFailed'
+        | 'contextErrors.saveRetry'
+        | 'contextErrors.projectLoading'
+        | 'contextErrors.sourceUnavailable'
+        | 'contextErrors.sourcePending'
+      detail?: string
+    }
+  | { raw: string }
+
+export const ASSISTANT_CLAIMED_REFS_IMMUTABLE = 'assistant_claimed_refs_immutable'
+
+export function assistantContextSaveError(failure?: AssistantFailure): AssistantContextError {
+  const detail = failure ? assistantFailureDetail(failure) : undefined
+  return detail ? { key: 'contextErrors.saveFailed', detail } : { key: 'contextErrors.saveRetry' }
+}
 
 export type AssistantContextLoadState = 'idle' | 'loading' | 'ready' | 'saving' | 'error'
+
+export function submittedContextRefIds(
+  refs: readonly AssistantContextRef[],
+  claimedRefIds: readonly string[],
+  queuedRefIds: readonly string[]
+): string[] {
+  const submitted = new Set([...claimedRefIds, ...queuedRefIds])
+  return refs.filter((ref) => submitted.has(ref.ref_id)).map((ref) => ref.ref_id)
+}
+
+export function assistantContextProjection(
+  selection: AssistantContextSelection,
+  submittedRefIds: readonly string[]
+): Pick<
+  AiPanelState,
+  'revision' | 'projectPolicy' | 'searchScope' | 'refs' | 'capabilities' | 'submittedRefIds'
+> {
+  return {
+    revision: selection.revision,
+    projectPolicy: selection.project_policy,
+    searchScope: selection.search_scope,
+    refs: selection.refs,
+    capabilities: selection.capabilities,
+    submittedRefIds: submittedContextRefIds(
+      selection.refs,
+      selection.claimed_ref_ids ?? [],
+      submittedRefIds
+    ),
+  }
+}
+
+export function loadedAssistantContext(
+  panel: AiPanelState,
+  selection: AssistantContextSelection | null,
+  annotations: AnswerAnnotation[],
+  submittedRefIds: readonly string[]
+): AiPanelState {
+  if (
+    selection &&
+    panel.sessionId === selection.session_id &&
+    panel.revision > selection.revision
+  ) {
+    return panel
+  }
+  if (!selection) {
+    return { ...panel, contextState: 'error', contextError: { key: 'contextErrors.loadFailed' } }
+  }
+  return {
+    ...panel,
+    ...assistantContextProjection(selection, submittedRefIds),
+    sessionId: selection.session_id,
+    contextState: 'ready',
+    annotations,
+    contextError: null,
+  }
+}
 
 /** 原型 `+` 两栏菜单中的业务来源；Skill/本机附件仍由 Composer 自己拥有。 */
 export type AiContextSource = string
@@ -36,6 +123,7 @@ export interface AiContextSourceOption {
   icon: IconName
   emptyLabel: ForegroundMessage
   requiresProject: boolean
+  browse?: AssistantSourceBrowse
 }
 
 export interface AssistantTranslationView {
@@ -69,6 +157,9 @@ export interface AiPanelState {
     sessionId: string
     turnId?: string | null
     itemId?: string | null
+    requestId?: string | null
+    incidentId?: string | null
+    kind?: 'waiting' | 'completed' | 'failed' | 'progress' | 'recovery'
     sourceRange?: { unit: string; start: number; end: number } | null
   } | null
   /** 当前投影对应的 Session；切换 Session 时先清空，避免上下文串线。 */
@@ -125,21 +216,46 @@ export const INITIAL_AI_PANEL_STATE: AiPanelState = {
   artifactLinksState: 'idle',
   answerAnnotationFocus: null,
   saveTarget: null,
-  translation: null
+  translation: null,
+}
+
+export function sentAnswerAnnotationIds(
+  conversation: readonly ConvItem[],
+  refs: readonly AssistantContextRef[],
+  submittedRefIds: readonly string[]
+): Set<string> {
+  const submitted = new Set(submittedRefIds)
+  const ids = new Set(
+    refs
+      .filter((ref) => ref.kind === 'note' && submitted.has(ref.ref_id))
+      .map((ref) => ref.source_id)
+  )
+  for (const item of conversation) {
+    if (item.kind !== 'user' || !item.turnId || item.cancelled) continue
+    for (const reference of item.refs ?? []) {
+      if (
+        reference.type === 'assistant_context' &&
+        reference.kind === 'note' &&
+        reference.sourceId
+      ) {
+        ids.add(reference.sourceId)
+      }
+    }
+  }
+  return ids
 }
 
 export const ASSISTANT_CONTEXT_FAILURE = {
   PROJECT_LOADING: 'assistant_project_loading',
   SOURCE_UNAVAILABLE: 'assistant_source_unavailable',
-  SOURCE_PENDING: 'assistant_source_pending'
+  SOURCE_PENDING: 'assistant_source_pending',
 } as const
 
 export function beginContextCandidateLoad(
   current: AiPanelState,
   source: AiContextSource
 ): AiPanelState {
-  const keepVisibleCandidates =
-    current.contextPickerOpen && current.contextPickerSource === source
+  const keepVisibleCandidates = current.contextPickerOpen && current.contextPickerSource === source
   return {
     ...current,
     open: true,
@@ -147,7 +263,7 @@ export function beginContextCandidateLoad(
     contextPickerSource: source,
     contextCandidates: keepVisibleCandidates ? current.contextCandidates : [],
     contextCandidatesLoading: true,
-    contextError: null
+    contextError: null,
   }
 }
 
@@ -156,9 +272,7 @@ export function replaceCurrentDocumentRefs(
   submittedRefIds: readonly string[]
 ): AssistantContextRef[] {
   const submitted = new Set(submittedRefIds)
-  return refs.filter(
-    (ref) => ref.origin !== 'current_document' || submitted.has(ref.ref_id)
-  )
+  return refs.filter((ref) => ref.origin !== 'current_document' || submitted.has(ref.ref_id))
 }
 
 export function contextRefMatchesCandidate(
@@ -166,9 +280,10 @@ export function contextRefMatchesCandidate(
   candidate: AssistantContextCandidate
 ): boolean {
   if (
-    ref.kind !== candidate.kind
-    || ref.source_id !== candidate.source_id
-    || JSON.stringify(ref.anchor ?? null) !== JSON.stringify(candidate.anchor ?? null)
+    ref.kind !== candidate.kind ||
+    ref.source_id !== candidate.source_id ||
+    (ref.project_id ?? null) !== (candidate.project_id ?? null) ||
+    JSON.stringify(ref.anchor ?? null) !== JSON.stringify(candidate.anchor ?? null)
   ) {
     return false
   }
@@ -176,8 +291,9 @@ export function contextRefMatchesCandidate(
     return true
   }
   return (
-    candidate.origin === 'current_document' && ref.origin === 'explicit'
-  ) || ref.source_revision === (candidate.source_revision ?? null)
+    (candidate.origin === 'current_document' && ref.origin === 'explicit') ||
+    ref.source_revision === (candidate.source_revision ?? null)
+  )
 }
 
 export function mergeContextCandidates(
@@ -196,8 +312,8 @@ export function mergeContextCandidates(
       changed ||= retained.length !== nextRefs.length
       nextRefs = retained
     }
-    const matches = nextRefs.filter((ref) =>
-      !submitted.has(ref.ref_id) && contextRefMatchesCandidate(ref, candidate)
+    const matches = nextRefs.filter(
+      (ref) => !submitted.has(ref.ref_id) && contextRefMatchesCandidate(ref, candidate)
     )
     if (matches.length > 0) {
       const preferred = matches.find((ref) => ref.origin === 'explicit') ?? matches[0]
@@ -205,22 +321,24 @@ export function mergeContextCandidates(
         nextRefs = nextRefs.filter((ref) => ref === preferred || !matches.includes(ref))
         changed = true
       }
-      const updated = candidate.origin === 'explicit'
-        ? {
-            ...preferred,
-            origin: 'explicit' as const,
-            retention: candidate.retention ?? preferred.retention,
-            source_revision: candidate.kind === 'file'
-              ? candidate.source_revision ?? null
-              : preferred.source_revision
-          }
-        : preferred
+      const updated =
+        candidate.origin === 'explicit'
+          ? {
+              ...preferred,
+              origin: 'explicit' as const,
+              retention: candidate.retention ?? preferred.retention,
+              source_revision:
+                candidate.kind === 'file'
+                  ? (candidate.source_revision ?? null)
+                  : preferred.source_revision,
+            }
+          : preferred
       if (
-        updated.origin !== preferred.origin
-        || updated.retention !== preferred.retention
-        || updated.source_revision !== preferred.source_revision
+        updated.origin !== preferred.origin ||
+        updated.retention !== preferred.retention ||
+        updated.source_revision !== preferred.source_revision
       ) {
-        nextRefs = nextRefs.map((ref) => ref === preferred ? updated : ref)
+        nextRefs = nextRefs.map((ref) => (ref === preferred ? updated : ref))
         changed = true
       }
       acceptedRefIds.push(preferred.ref_id)
@@ -231,13 +349,18 @@ export function mergeContextCandidates(
       ref_id: createRefId(candidate),
       kind: candidate.kind,
       source_id: candidate.source_id,
+      ...(candidate.project_id ? { project_id: candidate.project_id } : {}),
       source_revision: candidate.source_revision ?? null,
       label: candidate.label,
-      ...((candidate.kind === 'selection' || candidate.kind === 'literature') && candidate.anchor && typeof candidate.selection_source_label === 'string' ? { selection_source_label: candidate.selection_source_label } : {}),
+      ...((candidate.kind === 'selection' || candidate.kind === 'literature') &&
+      candidate.anchor &&
+      typeof candidate.selection_source_label === 'string'
+        ? { selection_source_label: candidate.selection_source_label }
+        : {}),
       ...(labelFallback ? { label_fallback: labelFallback } : {}),
       anchor: candidate.anchor ?? null,
       retention: candidate.retention ?? 'next_turn',
-      origin: candidate.origin
+      origin: candidate.origin,
     })
     changed = true
     acceptedRefIds.push(nextRefs[nextRefs.length - 1].ref_id)
@@ -248,7 +371,7 @@ export function mergeContextCandidates(
 const CONTEXT_FAILURE_KEYS = {
   [ASSISTANT_CONTEXT_FAILURE.PROJECT_LOADING]: 'contextErrors.projectLoading',
   [ASSISTANT_CONTEXT_FAILURE.SOURCE_UNAVAILABLE]: 'contextErrors.sourceUnavailable',
-  [ASSISTANT_CONTEXT_FAILURE.SOURCE_PENDING]: 'contextErrors.sourcePending'
+  [ASSISTANT_CONTEXT_FAILURE.SOURCE_PENDING]: 'contextErrors.sourcePending',
 } as const
 
 export function assistantContextFailure(message: string): AssistantContextError {

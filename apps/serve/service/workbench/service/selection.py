@@ -18,6 +18,7 @@ from service.workbench.domain.selection import (
     SelectionEvidenceError,
     SelectionEvidenceMode,
     SelectionEvidenceProvider,
+    SelectionEvidenceReference,
     VerifiedSelectionEvidence,
 )
 
@@ -114,6 +115,9 @@ class SelectionActionService:
 
     async def cancel(self, *, invocation_id: str, owner_id: str) -> bool:
         return await self._actions.cancel(invocation_id=invocation_id, owner_id=owner_id)
+
+    def snapshot(self, reference: SelectionEvidenceReference) -> VerifiedSelectionEvidence:
+        return self._evidence.resolve_action(reference)
 
     async def execute(
         self, command: SelectionActionInput, *, observer: ModelInvocationObserver | None = None

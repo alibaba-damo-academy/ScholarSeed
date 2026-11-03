@@ -16,54 +16,89 @@ pool without a limit argument. The index has no review_ref. Use its `inspection.
 and append `--ids ID1 ID2` (up to 20) to obtain source evidence and per-paper references.
 Do not write a pagination program or scan pool.json: use returned continuation commands.
 
+## Web search capability
+
+This shared contract applies to quick, balance and full modes. Web may be a native
+tool, MCP/connector, or an installed search skill available to the current executor.
+Follow the host's discovery and permission rules; do not invent an invocation API
+or assume a delegated executor inherits the parent's tools. A non-empty
+`WEB_SEARCH_INVOKE` locates the sibling `web-search/scripts/invoke.py`. Read that
+skill's `SKILL.md` and `CONTRACT.md` before use. If it is absent, discover an
+available equivalent and read its actual contract rather than guessing its schema.
+If no permitted capability can run, preserve the coverage limitation.
+
+### ScholarSeed route and artifacts
+
+Use the current `web-search` contract **`scholarseed.web_search.v1`**, not the
+upstream `shushen` schema. Select one provider per script invocation. The caller
+owns the route **official-api → native (if available) → visible-browser (if
+supported and permitted)**. If the host explicitly invokes the `automatic`
+profile, that Invocation owns this same route; consume its outcomes rather than
+running a second fallback chain. Never select `native` when native Web is absent.
+
+For direct official/browser execution, use the supplied product `PLS_PYTHON` and
+absolute `WEB_SEARCH_INVOKE`. Run from `WORK/results` and choose a fresh relative
+JSON **filename** per query, provider and attempt, for example
+`web-q001-official-a001.json` and `web-q001-browser-a001.json`:
+
+```text
+"$PLS_PYTHON" "$WEB_SEARCH_INVOKE" --provider official-api --query "<actual query>" --limit 20 --artifact-path web-q001-official-a001.json
+```
+
+Use PowerShell's call operator on Windows as described in the Windows guide.
+`--artifact-path` accepts a filename, not an absolute path or `results/...` path.
+Do not overwrite a previous attempt or share a default filename across queries.
+For a separate host Invocation, retain its independently published artifacts and
+save exact copies under distinct `WORK/results` paths before recording observations.
+
+- Read the written JSON, check its `schema`, `provider` and exact executed `query`,
+  and branch on `status`. The process exit code reports **file writing**, not
+  search success or publication. A missing/invalid artifact is not an empty result.
+- `completed` **and `empty` terminate the route successfully** for that query.
+  Do not try a later provider after either, even if no candidate is a scholarly
+  paper. Scholarly filtering does not turn successful Web execution into failure.
+- Only `unavailable`, `failed`, or an unexecutable/invalid native result can move
+  to the next permitted leg. Do not retry 401/403. Browser `action_required`
+  preserves the manual-verification requirement; never bypass CAPTCHA or host denial.
+- After each official/browser script returns, publish its exact written artifact
+  via `scholarseed_bridge` (`capability=artifact`, `operation=publish`,
+  `request={"path":"<actual workspace-relative path>","role":"final"}`). Publish
+  failure and empty results too. Check `ok: true` separately; publication failure
+  does not justify rerunning search or replacing the artifact with model-written JSON.
+- The native tool does not run `invoke.py`. Save its actual returned evidence
+  separately; the host's native marker envelope has no timing fields and is not
+  the script artifact. Preserve the raw response, never fabricate provider fields.
+
+Query budgets count research queries, not tool calls. Split a batch into
+single-query invocations without adding angles. Keep all provider attempts within
+the saved deadline and reuse their artifacts on resume. Retain raw candidates,
+provider/status/error details and measured duration for **every** attempt, including
+failed legs before a successful fallback. Do not save credentials or request headers.
+Convert `duration_ms` to seconds; use `null` for unknown native timing.
+Candidate `description` is a snippet, not a verified abstract or full text. Preserve
+it in raw evidence, including empty browser descriptions; extract only evidenced
+scholarly metadata into `papers`.
+
 ## record-web → web-decisions.json
 
-Run the Web route below, then register the actual observations. No separate call
-permission is needed. Recording is retrospective and cannot enforce Web call
-counts. `web_batch_count` counts submissions containing new observations;
-`web_query_count` counts distinct recorded query outcomes. These are registration
-counts, not verified network-call counts. Identical observations are indistinguishable
-from resubmissions, even if another real call produced them. Replaying an
-unchanged submission is idempotent; registration and classification repair do not
-run Web. Preserve saved results across resume instead of repeating the search.
+Use the shared capability above, then register one entry per actual provider
+outcome, preserving failures even if a later provider succeeds. Include the saved
+`raw_result_path` relative to `WORK` and the original `provider` and
+`provider_status` alongside `query,status,elapsed_seconds,papers,error?`.
+These extra provenance fields survive in the worker's immutable raw outcome.
+For quick/full pool/state recording, retain the same evidence paths in the saved
+Web result and log each actual outcome through their existing recording tools.
 
-### Web route (official API → native → browser)
+Map `completed`/`empty` to `success`; credential/authorization failures to
+`authentication_error`; unavailable execution or `action_required` to
+`execution_blocked`; request/response failures to `transport_error`. Keep the
+original status/code in the raw artifact and a sanitized error explanation for
+failures. A missing API key is an authentication limitation, not a sandbox denial.
 
-When the dispatch supplies a non-empty `WEB_SEARCH_INVOKE`, prefer the sibling
-`web-search` skill for each planned query; otherwise use the executor's native Web
-Search tool. Run every `web-search` leg from `WORK` so its artifact lands there:
-
-1. **official-api** (only when `WEB_SEARCH_INVOKE` is non-empty): run
-   `"$PLS_PYTHON" "$WEB_SEARCH_INVOKE" --provider official-api --query "<q>" --limit 20`,
-   then read `WORK/web-search-result.json` before the next call (it is overwritten
-   each run). Ignore the exit code — it reports artifact publication, not the
-   search outcome; judge only by the artifact's `status` and `candidates`. Map its
-   `duration_ms` to `elapsed_seconds`. Each candidate carries `title`, `url`,
-   `description`; copy `title` and `url` into `papers` (the `description` is a
-   search snippet, not a verified abstract — do not record it as `abstract`).
-   - `completed`: accept its candidates as the observation; record `success`.
-   - `empty`, or `unavailable` (error `credential_unavailable`, no
-     `SCHOLARSEED_API_KEY`): a fall-through signal — try step 2 for the same
-     query. Never record `unavailable` as a status; it is not in the allowed enum.
-   - `failed`: an authorization rejection (error
-     `official_api_authorization_failed`, 401/403) records `authentication_error`
-     and skips official-api for the rest of the batch without retrying; a
-     transport/response failure (`official_api_request_failed`,
-     `official_api_response_invalid`) records `transport_error`. Then fall through
-     to step 2 for discovery.
-2. **native Web Search**: run the same query with the executor's own web tool and
-   keep only paper landing pages. This is the fallback when official-api is
-   absent, `unavailable`, or `empty`, and the only path when `WEB_SEARCH_INVOKE`
-   is empty.
-3. **visible-browser** (only when `WEB_SEARCH_INVOKE` is non-empty and steps 1–2
-   produced nothing usable): run
-   `"$PLS_PYTHON" "$WEB_SEARCH_INVOKE" --provider visible-browser --query "<q>" --limit 20`
-   and read `WORK/web-search-result.json` exactly as in step 1.
-
-Record one entry per executed query carrying the status of the leg that produced
-the observation, or the terminal failure when every leg failed. A query whose
-official leg was `unavailable`/`empty` but whose native leg succeeded records
-`success` from the native observation, not the official signal.
+Recording grants no execution permission and cannot enforce provider call counts.
+`web_batch_count` counts submissions containing new observations; `web_query_count`
+counts distinct recorded outcomes, not verified network calls. Replaying unchanged
+outcomes or repairing classification is idempotent and does not run Web.
 
 ```json
 {"queries":[{"query":"actual executed query","status":"success","elapsed_seconds":1.2,"papers":[{"title":"Actual paper title","url":"https://arxiv.org/abs/1234.56789"}]}]}
@@ -71,9 +106,7 @@ official leg was `unavailable`/`empty` but whose native leg succeeded records
 
 Copy the executed query exactly; use its measured duration (or `null` if unknown).
 `status` is `success`, `transport_error`, `authentication_error` or `execution_blocked`;
-include the observed `error` for a failed call. Reserve `execution_blocked` for a
-genuine host/sandbox permission block (for example the visible-browser leg cannot
-launch a browser); a missing API key is an `unavailable` fall-through, not a block.
+include the observed sanitized `error` for a failed call, using the mapping above.
 `papers:[]` is valid when no scholarly record is supported. Supply only evidenced
 fields: title and a recognized scholarly URL (including NeurIPS proceedings) are
 sufficient. For an author-hosted or unrecognized URL, supply `document_type:"paper"`

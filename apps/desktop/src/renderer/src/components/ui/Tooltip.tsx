@@ -1,4 +1,13 @@
-import type { ButtonHTMLAttributes, CSSProperties, FocusEvent, HTMLAttributes, MouseEvent, MutableRefObject, ReactElement, ReactNode } from 'react'
+import type {
+  ButtonHTMLAttributes,
+  CSSProperties,
+  FocusEvent,
+  HTMLAttributes,
+  MouseEvent,
+  MutableRefObject,
+  ReactElement,
+  ReactNode,
+} from 'react'
 import {
   Children,
   cloneElement,
@@ -12,9 +21,9 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState
+  useState,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 
 import {
   tooltipClassName,
@@ -22,7 +31,7 @@ import {
   tooltipContentSideClassNames,
   tooltipStyleClassName,
   tooltipTriggerClassName,
-  type TooltipSide
+  type TooltipSide,
 } from './classes'
 import { cx } from './utils'
 import { visibleContent } from './focus'
@@ -40,6 +49,7 @@ interface TooltipContextValue {
   portalled: boolean
   rootRef: { current: HTMLSpanElement | null }
   scheduleClose: () => void
+  scheduleOpen: () => void
   setContentId: (id: string) => void
   setContentScrollable: (scrollable: boolean) => void
   setOpen: (open: boolean) => void
@@ -112,13 +122,15 @@ function getExplicitContentId(children: ReactNode): string | undefined {
 
 export type TooltipAlign = 'center' | 'start'
 
-export interface TooltipProps extends Omit<HTMLAttributes<HTMLSpanElement>, 'content'>, LocalizationMetadata {
+export interface TooltipProps
+  extends Omit<HTMLAttributes<HTMLSpanElement>, 'content'>, LocalizationMetadata {
   align?: TooltipAlign
   anchorRef?: { current: HTMLElement | null }
   children: ReactNode
   content?: ReactNode
   contentClassName?: string
   defaultOpen?: boolean
+  delayDuration?: number
   disabled?: boolean
   offset?: number
   onOpenChange?: (open: boolean) => void
@@ -155,11 +167,12 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
       content,
       contentClassName,
       defaultOpen = false,
+      delayDuration = TOOLTIP_DEFAULT_OPEN_DELAY_MS,
       disabled = false,
       offset = TOOLTIP_PORTAL_OFFSET,
       onOpenChange,
       open,
-      portalled = false,
+      portalled = true,
       side = 'top',
       ...props
     },
@@ -172,6 +185,7 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
     const [contentScrollable, setContentScrollable] = useState(false)
     const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen)
     const closeTimerRef = useRef<number | null>(null)
+    const openTimerRef = useRef<number | null>(null)
     const explicitContentId = content === undefined ? getExplicitContentId(children) : undefined
     const describedContentId = explicitContentId ?? contentId
     const currentOpen = !disabled && (open ?? uncontrolledOpen)
@@ -186,9 +200,15 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
       window.clearTimeout(closeTimerRef.current)
       closeTimerRef.current = null
     }, [])
+    const cancelScheduledOpen = useCallback((): void => {
+      if (openTimerRef.current === null) return
+      window.clearTimeout(openTimerRef.current)
+      openTimerRef.current = null
+    }, [])
     const setOpen = useCallback(
       (nextOpen: boolean) => {
         cancelScheduledClose()
+        cancelScheduledOpen()
         if (disabled && nextOpen) return
         if (!nextOpen && open === undefined) setUncontrolledOpen(false)
         if (nextOpen === requestedOpenRef.current) return
@@ -196,33 +216,58 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
         if (open === undefined) setUncontrolledOpen(nextOpen)
         onOpenChange?.(nextOpen)
       },
-      [cancelScheduledClose, disabled, onOpenChange, open]
+      [cancelScheduledClose, cancelScheduledOpen, disabled, onOpenChange, open]
     )
+    const scheduleOpen = useCallback((): void => {
+      cancelScheduledClose()
+      if (disabled || requestedOpenRef.current || openTimerRef.current !== null) return
+      if (delayDuration <= 0) {
+        setOpen(true)
+        return
+      }
+      openTimerRef.current = window.setTimeout(() => setOpen(true), delayDuration)
+    }, [cancelScheduledClose, delayDuration, disabled, setOpen])
     const scheduleClose = useCallback((): void => {
       cancelScheduledClose()
-      closeTimerRef.current = window.setTimeout(() => setOpen(false), TOOLTIP_POINTER_TRANSITION_DELAY_MS)
-    }, [cancelScheduledClose, setOpen])
+      cancelScheduledOpen()
+      closeTimerRef.current = window.setTimeout(
+        () => setOpen(false),
+        TOOLTIP_POINTER_TRANSITION_DELAY_MS
+      )
+    }, [cancelScheduledClose, cancelScheduledOpen, setOpen])
 
     useEffect(() => cancelScheduledClose, [cancelScheduledClose])
+    useEffect(() => cancelScheduledOpen, [cancelScheduledOpen, delayDuration])
 
     useEffect(() => {
       if (!disabled) return
       cancelScheduledClose()
+      cancelScheduledOpen()
       requestedOpenRef.current = false
       setUncontrolledOpen(false)
-    }, [cancelScheduledClose, disabled])
+    }, [cancelScheduledClose, cancelScheduledOpen, disabled])
 
     useEffect(() => {
       if (!currentOpen) return
       const dismiss = (event: KeyboardEvent): void => {
         const content = document.getElementById(describedContentId)
-        if (event.key !== 'Escape' || event.defaultPrevented || !visibleContent(content) || !content.parentElement?.matches(':hover, :focus-within')) return
+        if (
+          event.key !== 'Escape' ||
+          event.defaultPrevented ||
+          !visibleContent(content) ||
+          !(
+            rootRef.current?.matches(':hover, :focus-within') ||
+            anchorRef?.current?.matches(':hover, :focus-within') ||
+            content.matches(':hover, :focus-within')
+          )
+        )
+          return
         event.preventDefault()
         setOpen(false)
       }
       document.addEventListener('keydown', dismiss, true)
       return () => document.removeEventListener('keydown', dismiss, true)
-    }, [currentOpen, describedContentId, setOpen])
+    }, [anchorRef, currentOpen, describedContentId, setOpen])
 
     const context = useMemo<TooltipContextValue>(
       () => ({
@@ -237,31 +282,55 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
         portalled,
         rootRef,
         scheduleClose,
+        scheduleOpen,
         setContentId,
         setContentScrollable,
         setOpen,
-        side
+        side,
       }),
-      [align, anchorRef, cancelScheduledClose, contentScrollable, describedContentId, currentOpen, disabled, offset, portalled, scheduleClose, setOpen, side]
+      [
+        align,
+        anchorRef,
+        cancelScheduledClose,
+        contentScrollable,
+        describedContentId,
+        currentOpen,
+        disabled,
+        offset,
+        portalled,
+        scheduleClose,
+        scheduleOpen,
+        setOpen,
+        side,
+      ]
     )
 
     const contentSource = import.meta.env.DEV ? props['data-i18n-content'] : undefined
-    const shortcutContent = content === undefined
-      ? null
-      : <TooltipContent className={contentClassName} {...(contentSource ? { 'data-i18n-text': contentSource } : {})}>{content}</TooltipContent>
+    const shortcutContent =
+      content === undefined ? null : (
+        <TooltipContent
+          className={contentClassName}
+          {...(contentSource ? { 'data-i18n-text': contentSource } : {})}
+        >
+          {content}
+        </TooltipContent>
+      )
     const setRootRef = (node: HTMLSpanElement | null): void => {
       rootRef.current = node
       if (typeof ref === 'function') {
         ref(node)
       } else if (ref) {
-        ; (ref as MutableRefObject<HTMLSpanElement | null>).current = node
+        ;(ref as MutableRefObject<HTMLSpanElement | null>).current = node
       }
     }
 
     return (
       <TooltipContext.Provider value={context}>
         <span
-          className={cx(tooltipStyleClassName(), tooltipClassName({ className, disabled, open: currentOpen, side }))}
+          className={cx(
+            tooltipStyleClassName(),
+            tooltipClassName({ className, disabled, open: currentOpen, side })
+          )}
           data-side={side}
           data-state={currentOpen ? 'open' : 'closed'}
           ref={setRootRef}
@@ -296,7 +365,7 @@ export const TooltipTrigger = forwardRef<HTMLButtonElement, TooltipTriggerProps>
     const context = useTooltipContext('TooltipTrigger')
     const tooltipDescribedBy = context.open && !context.disabled ? context.contentId : undefined
 
-    const show = (): void => context.setOpen(true)
+    const show = (): void => context.scheduleOpen()
     const hide = (): void => context.setOpen(false)
     const hideAfterPointerLeave = (): void => {
       if (context.contentScrollable) {
@@ -311,7 +380,11 @@ export const TooltipTrigger = forwardRef<HTMLButtonElement, TooltipTriggerProps>
         throw new Error('TooltipTrigger with asChild expects a single React element')
       }
       const child = children as TriggerElement
-      const describedBy = mergeDescribedBy(ariaDescribedBy, child.props['aria-describedby'], tooltipDescribedBy)
+      const describedBy = mergeDescribedBy(
+        ariaDescribedBy,
+        child.props['aria-describedby'],
+        tooltipDescribedBy
+      )
 
       return cloneElement(child, {
         'aria-describedby': describedBy,
@@ -319,7 +392,7 @@ export const TooltipTrigger = forwardRef<HTMLButtonElement, TooltipTriggerProps>
         onBlur: composeEventHandlers(child.props.onBlur, hide),
         onFocus: composeEventHandlers(child.props.onFocus, show),
         onMouseEnter: composeEventHandlers(child.props.onMouseEnter, show),
-        onMouseLeave: composeEventHandlers(child.props.onMouseLeave, hideAfterPointerLeave)
+        onMouseLeave: composeEventHandlers(child.props.onMouseLeave, hideAfterPointerLeave),
       })
     }
 
@@ -343,6 +416,7 @@ export const TooltipTrigger = forwardRef<HTMLButtonElement, TooltipTriggerProps>
 
 TooltipTrigger.displayName = 'TooltipTrigger'
 
+const TOOLTIP_DEFAULT_OPEN_DELAY_MS = 300
 const TOOLTIP_POINTER_TRANSITION_DELAY_MS = 100
 const TOOLTIP_PORTAL_OFFSET = 8
 const TOOLTIP_PORTAL_VIEWPORT_MARGIN = 8
@@ -365,27 +439,51 @@ function portalledTooltipStyle(
     return {
       left: clampTooltipCoordinate(anchor.right + offset, content.width, window.innerWidth),
       position: 'fixed',
-      top: clampTooltipCoordinate(align === 'start' ? anchor.top : anchor.top + (anchor.height - content.height) / 2, content.height, window.innerHeight)
+      top: clampTooltipCoordinate(
+        align === 'start' ? anchor.top : anchor.top + (anchor.height - content.height) / 2,
+        content.height,
+        window.innerHeight
+      ),
     }
   }
   if (side === 'bottom') {
     return {
-      left: clampTooltipCoordinate(align === 'start' ? anchor.left : anchor.left + (anchor.width - content.width) / 2, content.width, window.innerWidth),
+      left: clampTooltipCoordinate(
+        align === 'start' ? anchor.left : anchor.left + (anchor.width - content.width) / 2,
+        content.width,
+        window.innerWidth
+      ),
       position: 'fixed',
-      top: clampTooltipCoordinate(anchor.bottom + offset, content.height, window.innerHeight)
+      top: clampTooltipCoordinate(anchor.bottom + offset, content.height, window.innerHeight),
     }
   }
   if (side === 'left') {
     return {
-      left: clampTooltipCoordinate(anchor.left - content.width - offset, content.width, window.innerWidth),
+      left: clampTooltipCoordinate(
+        anchor.left - content.width - offset,
+        content.width,
+        window.innerWidth
+      ),
       position: 'fixed',
-      top: clampTooltipCoordinate(align === 'start' ? anchor.top : anchor.top + (anchor.height - content.height) / 2, content.height, window.innerHeight)
+      top: clampTooltipCoordinate(
+        align === 'start' ? anchor.top : anchor.top + (anchor.height - content.height) / 2,
+        content.height,
+        window.innerHeight
+      ),
     }
   }
   return {
-    left: clampTooltipCoordinate(align === 'start' ? anchor.left : anchor.left + (anchor.width - content.width) / 2, content.width, window.innerWidth),
+    left: clampTooltipCoordinate(
+      align === 'start' ? anchor.left : anchor.left + (anchor.width - content.width) / 2,
+      content.width,
+      window.innerWidth
+    ),
     position: 'fixed',
-    top: clampTooltipCoordinate(anchor.top - content.height - offset, content.height, window.innerHeight)
+    top: clampTooltipCoordinate(
+      anchor.top - content.height - offset,
+      content.height,
+      window.innerHeight
+    ),
   }
 }
 
@@ -399,27 +497,27 @@ function initialPortalledTooltipStyle(
     return {
       left: anchor.right + offset,
       position: 'fixed',
-      top: align === 'start' ? anchor.top : anchor.top + anchor.height / 2
+      top: align === 'start' ? anchor.top : anchor.top + anchor.height / 2,
     }
   }
   if (side === 'bottom') {
     return {
       left: align === 'start' ? anchor.left : anchor.left + anchor.width / 2,
       position: 'fixed',
-      top: anchor.bottom + offset
+      top: anchor.bottom + offset,
     }
   }
   if (side === 'left') {
     return {
       left: anchor.left - offset,
       position: 'fixed',
-      top: align === 'start' ? anchor.top : anchor.top + anchor.height / 2
+      top: align === 'start' ? anchor.top : anchor.top + anchor.height / 2,
     }
   }
   return {
     left: align === 'start' ? anchor.left : anchor.left + anchor.width / 2,
     position: 'fixed',
-    top: anchor.top - offset
+    top: anchor.top - offset,
   }
 }
 
@@ -442,9 +540,26 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
       const anchor = context.anchorRef?.current ?? context.rootRef.current
       const content = contentRef.current
       if (!anchor || !content) return
-      const nextStyle = portalledTooltipStyle(anchor.getBoundingClientRect(), content.getBoundingClientRect(), currentSide, context.align, context.offset)
-      setPortalledStyle((previousStyle) => sameTooltipStyle(previousStyle, nextStyle) ? previousStyle : nextStyle)
-    }, [context.align, context.anchorRef, context.disabled, context.offset, context.open, context.portalled, context.rootRef, currentSide])
+      const nextStyle = portalledTooltipStyle(
+        anchor.getBoundingClientRect(),
+        content.getBoundingClientRect(),
+        currentSide,
+        context.align,
+        context.offset
+      )
+      setPortalledStyle((previousStyle) =>
+        sameTooltipStyle(previousStyle, nextStyle) ? previousStyle : nextStyle
+      )
+    }, [
+      context.align,
+      context.anchorRef,
+      context.disabled,
+      context.offset,
+      context.open,
+      context.portalled,
+      context.rootRef,
+      currentSide,
+    ])
 
     useEffect(() => {
       context.setContentId(contentId)
@@ -458,6 +573,7 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
         const nextScrollable = content.scrollHeight > content.clientHeight
         setScrollable(nextScrollable)
         context.setContentScrollable(nextScrollable)
+        updatePortalledStyle()
       }
       measureScrollable()
       if (typeof ResizeObserver === 'undefined') return
@@ -467,7 +583,13 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
         observer.disconnect()
         context.setContentScrollable(false)
       }
-    }, [children, context.disabled, context.open, context.setContentScrollable])
+    }, [
+      children,
+      context.disabled,
+      context.open,
+      context.setContentScrollable,
+      updatePortalledStyle,
+    ])
 
     useLayoutEffect(() => {
       if (!context.open || context.disabled || !context.portalled) return
@@ -482,9 +604,15 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
 
     if (!context.open || context.disabled) return null
     const anchor = context.anchorRef?.current ?? context.rootRef.current
-    const fallbackPortalledStyle = context.portalled && anchor
-      ? initialPortalledTooltipStyle(anchor.getBoundingClientRect(), currentSide, context.align, context.offset)
-      : null
+    const fallbackPortalledStyle =
+      context.portalled && anchor
+        ? initialPortalledTooltipStyle(
+            anchor.getBoundingClientRect(),
+            currentSide,
+            context.align,
+            context.offset
+          )
+        : null
 
     const setContentRef = (node: HTMLSpanElement | null): void => {
       contentRef.current = node
@@ -492,7 +620,7 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
       if (typeof ref === 'function') {
         ref(node)
       } else if (ref) {
-        ; (ref as MutableRefObject<HTMLSpanElement | null>).current = node
+        ;(ref as MutableRefObject<HTMLSpanElement | null>).current = node
       }
     }
     const content = (
@@ -513,14 +641,16 @@ export const TooltipContent = forwardRef<HTMLSpanElement, TooltipContentProps>(
         onMouseLeave={composeEventHandlers(onMouseLeave, context.scheduleClose)}
         ref={setContentRef}
         role="tooltip"
-        style={context.portalled ? { ...fallbackPortalledStyle, ...portalledStyle, ...style } : style}
+        style={
+          context.portalled ? { ...fallbackPortalledStyle, ...portalledStyle, ...style } : style
+        }
         {...props}
       >
         {normalizeTooltipContentChildren(children)}
       </span>
     )
 
-    return context.portalled ? createPortal(content, document.body) : content
+    return context.portalled ? <Portal>{content}</Portal> : content
   }
 )
 

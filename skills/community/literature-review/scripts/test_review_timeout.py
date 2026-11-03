@@ -6,22 +6,26 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 import review_timeout as timer
+import slr
 import test_native_pipeline as fixtures
+from citation_styles import style_ids
 from manuscript import prepare
 from operator_cli import approve, configure_outline, review_packet
 from task_contract import atomic_json, configure, read_request, validate_request
-from writing_contract import require_approval
+from writing_contract import require_approval, digest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 CHOICES = {
     "formats": ["markdown", "latex_pdf"],
     "templates": [{"id": "neurips", "usable": True}, {"id": "ctexart", "usable": True}],
-    "citation_styles": [{"id": "numeric", "usable": True}, {"id": "ieee", "usable": True}],
+    "citation_styles": [{"id": style_id, "usable": True} for style_id in style_ids()],
 }
 
 
@@ -44,6 +48,123 @@ class ReviewTimeoutTest(unittest.TestCase):
         )
         self.packet = review_packet(self.ws)
         self.pid = self.packet["packet_id"]
+
+    def host_receipt(self, decision):
+        return {"packet_id": self.pid, "snapshot_id": digest(self.packet["snapshot"]),
+                "request_id": "product-question", "started_at": self.now - 300,
+                "deadline_at": self.now, "decision": decision}
+
+    def test_every_registered_style_completes_timeout_in_both_languages(self):
+        for language in ("CHINESE", "ENGLISH"):
+            for style_id in style_ids():
+                with self.subTest(language=language, style=style_id):
+                    configure(self.ws, {"language": language,
+                                        "publication": {"citation_style": style_id}})
+                    outline = copy.deepcopy(self.outline)
+                    outline["outline_tree"][0]["title"] = "摘要" if language == "CHINESE" else "Abstract"
+                    configure_outline(self.ws, outline)
+                    self.packet = review_packet(self.ws)
+                    self.pid = self.packet["packet_id"]
+                    receipt = self.host_receipt({"timed_out": True})
+                    result = timer.complete(self.ws, receipt)
+                    self.assertEqual(result["state"], "timeout_applied")
+                    self.assertTrue(result["can_continue"])
+                    self.assertEqual(result["publication"]["citation_style"], style_id)
+                    self.assertTrue(result["notice"])
+                    if style_id == "gbt7714_2025":
+                        self.assertIn("GB/T 7714", result["notice"])
+                        self.assertIn("2025", result["notice"])
+                    approval = json.loads((self.ws / "04_outline/approval.json").read_text())
+                    self.assertEqual(approval["publication"]["citation_style"], style_id)
+                    self.assertIsNone(approval["user_response"])
+                    self.assertEqual(timer.complete(self.ws, receipt)["decision_id"], result["decision_id"])
+                    require_approval(self.ws)
+
+    def test_gbt_manual_confirmation_preserves_style_without_timeout(self):
+        configure(self.ws, {"publication": {"citation_style": "gbt7714_2025"}})
+        self.packet = review_packet(self.ws)
+        self.pid = self.packet["packet_id"]
+        result = timer.complete(self.ws, self.host_receipt({"answers": {"product-question": "Confirmed."}}))
+        self.assertEqual(result["state"], "responded")
+        approve(self.ws, {"packet_id": self.pid, "user_response": "Confirmed."})
+        approval = json.loads((self.ws / "04_outline/approval.json").read_text())
+        self.assertEqual(approval["publication"]["citation_style"], "gbt7714_2025")
+        self.assertFalse(timer.apply_timeout(self.ws, self.pid)["did_apply"])
+        require_approval(self.ws)
+
+    def test_internal_key_error_is_not_reported_as_invalid_user_input(self):
+        output = StringIO()
+        with (
+            patch.object(sys, "argv", ["slr", "writing", "review-complete", "--workspace", str(self.ws)]),
+            patch.object(slr, "cmd_writing", side_effect=KeyError("gbt7714_2025")),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(slr.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["code"], "INTERNAL_ERROR")
+        self.assertEqual(result["error_type"], "KeyError")
+        self.assertIn("gbt7714_2025", result["message"])
+        self.assertNotIn("describe_input", result)
+        self.assertIn("Preserve", result["next_action"])
+
+    def test_host_timeout_receipt_applies_once_without_fake_answer(self):
+        receipt = self.host_receipt({"timed_out": True})
+        result = timer.complete(self.ws, receipt)
+        self.assertTrue(result["can_continue"])
+        approval = json.loads((self.ws / "04_outline/approval.json").read_text())
+        self.assertEqual(approval["decision_source"], "timeout_default")
+        self.assertIsNone(approval["user_response"])
+        self.assertEqual(timer.complete(self.ws, receipt)["decision_id"], result["decision_id"])
+        require_approval(self.ws)
+
+    def test_host_revision_is_not_approval_and_stops_timeout(self):
+        receipt = self.host_receipt({"answers": {"product-question": "请增加对比章节"}})
+        result = timer.complete(self.ws, receipt)
+        self.assertFalse(result["can_continue"])
+        self.assertEqual(result["user_response"], "请增加对比章节")
+        with self.assertRaises(ValueError):
+            require_approval(self.ws)
+        with self.assertRaises(ValueError):
+            timer.complete(self.ws, self.host_receipt({"timed_out": True}))
+
+    def test_host_new_packet_can_timeout_after_previous_timeout(self):
+        timer.complete(self.ws, self.host_receipt({"timed_out": True}))
+        outline = copy.deepcopy(self.outline)
+        outline["survey_title"] = "Revised title"
+        configure_outline(self.ws, outline)
+        self.packet = review_packet(self.ws)
+        self.pid = self.packet["packet_id"]
+        result = timer.complete(self.ws, self.host_receipt({"timed_out": True}))
+        self.assertTrue(result["can_continue"])
+        require_approval(self.ws)
+
+    def test_host_timeout_recovers_interrupted_approval_write(self):
+        receipt = self.host_receipt({"timed_out": True})
+        original = timer.atomic_json
+
+        def write(path, value):
+            if Path(path).name == "approval.json":
+                raise OSError("interrupted write")
+            original(path, value)
+
+        with patch.object(timer, "atomic_json", side_effect=write):
+            with self.assertRaises(OSError):
+                timer.complete(self.ws, receipt)
+        result = timer.complete(self.ws, receipt)
+        self.assertTrue(result["can_continue"])
+        require_approval(self.ws)
+
+    def test_host_receipt_rejects_stale_snapshot_and_early_timeout(self):
+        receipt = self.host_receipt({"timed_out": True})
+        receipt["snapshot_id"] = "stale"
+        with self.assertRaises(ValueError):
+            timer.complete(self.ws, receipt)
+        receipt = self.host_receipt({"timed_out": True})
+        receipt["started_at"] += 1
+        receipt["deadline_at"] += 1
+        with self.assertRaises(ValueError):
+            timer.complete(self.ws, receipt)
 
     def start(self):
         return timer.start(self.ws, {"packet_id": self.pid, "displayed": True})
@@ -308,6 +429,7 @@ class ReviewTimeoutTest(unittest.TestCase):
             if path.is_file()
         }
         for action in (
+            "review-complete",
             "review-start",
             "review-status",
             "review-wait",
@@ -336,6 +458,17 @@ class ReviewTimeoutTest(unittest.TestCase):
             if path.is_file()
         }
         self.assertEqual(before, after)
+
+    def test_invalid_host_receipt_returns_actionable_cli_error(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/slr.py"), "writing", "review-complete",
+             "--workspace", str(self.ws), "--request", "-"],
+            input="{}", capture_output=True, text=True, timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("unchanged bridge confirmation receipt", result.stdout)
+        self.assertIsInstance(json.loads(result.stdout), dict)
 
 
 if __name__ == "__main__":

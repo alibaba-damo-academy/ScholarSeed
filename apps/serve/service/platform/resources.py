@@ -123,6 +123,7 @@ class ReviewBatchDecision:
     pending_revision: int
     action: ReviewAction
     expected_disk_revision: str | None
+    revised_content: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -362,6 +363,7 @@ class VersionRef:
     review_outcome: ReviewOutcome | None = None
     alias: str | None = None
     metadata_revision: int = 0
+    review_backup: bool = False
 
 
 @dataclass(frozen=True)
@@ -419,6 +421,7 @@ class SealResult:
 
     version: VersionRef
     unchanged: bool
+    replaced: bool = False
 
 
 @dataclass(frozen=True)
@@ -633,6 +636,10 @@ class ResourceChangeSink(Protocol):
         """Move stable identities for a successful file or directory mutation."""
         raise NotImplementedError
 
+    def relocation_scope(self, project_id: str) -> AbstractContextManager[None]:
+        """Exclude observation until filesystem and stable path identities agree."""
+        raise NotImplementedError
+
     def import_scope(self, project_id: str) -> AbstractContextManager[None]:
         """Reuse one resource eligibility snapshot for a COPY import batch."""
         raise NotImplementedError
@@ -681,6 +688,7 @@ class AgentResourceChangeSink(Protocol):
         tool_input: object,
         *,
         generation: str,
+        event_id: str = "",
     ) -> None:
         """Match write-capable tool input against the admitted file inventory."""
         raise NotImplementedError
@@ -734,6 +742,10 @@ class ResourceFormatPolicy(Protocol):
 
     def diffable(self, path: str) -> bool:
         """Whether historical raw bytes support UTF-8 line comparison."""
+        raise NotImplementedError
+
+    def reviewable(self, path: str) -> bool:
+        """Whether the current Workbench can present a file review."""
         raise NotImplementedError
 
 

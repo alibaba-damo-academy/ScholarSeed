@@ -6,11 +6,67 @@
   "description": "达摩院书深项目",
   "glyphs": [
     {
-      "icon_id": "48528043",
-      "name": "zotero",
-      "font_class": "zotero1",
+      "icon_id": "48775666",
+      "name": "shushen",
+      "font_class": "shushen",
+      "unicode": "e62a",
+      "unicode_decimal": 58922
+    },
+    {
+      "icon_id": "48713879",
+      "name": "panel-left",
+      "font_class": "panel-left",
       "unicode": "e629",
       "unicode_decimal": 58921
+    },
+    {
+      "icon_id": "47041590",
+      "name": "line-tool-batch-follow-up",
+      "font_class": "line-tool-batch-follow-up",
+      "unicode": "e6df",
+      "unicode_decimal": 59103
+    },
+    {
+      "icon_id": "16035789",
+      "name": "h-1",
+      "font_class": "h1",
+      "unicode": "e732",
+      "unicode_decimal": 59186
+    },
+    {
+      "icon_id": "35094462",
+      "name": "h-3",
+      "font_class": "h3",
+      "unicode": "e700",
+      "unicode_decimal": 59136
+    },
+    {
+      "icon_id": "39248628",
+      "name": "h-2",
+      "font_class": "h2",
+      "unicode": "e9e2",
+      "unicode_decimal": 59874
+    },
+    {
+      "icon_id": "47041630",
+      "name": "chart-up-circle",
+      "font_class": "chart-up-circle",
+      "unicode": "e7ee",
+      "unicode_decimal": 59374
+    },
+    {
+      "icon_id": "47041516",
+      "name": "fill-tool-pin",
+      "font_class": "fill-tool-pin",
+      "unicode": "e721",
+      "unicode_decimal": 59169
+    },
+    {
+      "icon_id": "47041788",
+      "name": "line-tool-pin",
+      "font_class": "line-tool-pin",
+      "unicode": "e762",
+      "unicode_decimal": 59234
     },
     {
       "icon_id": "48507089",

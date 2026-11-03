@@ -8,7 +8,14 @@
  * `{ ok, error }` 并把后端 detail 码原样带回，让 UI 按码提示。
  */
 
+import { resolveContentResponse } from '../../app/api/content.ts'
+import { LIVE_CATALOG_REQUEST } from '../../app/api/client.ts'
+
 import type { ContentErrorCode, ExternalRootRef, ProjectRef } from '../../contracts/content'
+
+const FAILURE_CODES = {
+  networkError: 'network_error',
+} as const
 
 /** 项目列表 + 当前项目 + 生效工作区根。 */
 export interface ProjectListing {
@@ -31,11 +38,149 @@ export interface ProjectMutation {
   project?: ProjectRef
 }
 
+export interface CreationRecovery {
+  operation: string
+  project: { project_id: string; display_name: string; dir_root: string }
+  outcome: { state: string; error: string | null }
+}
+
+export async function listCreationRecoveries(): Promise<CreationRecovery[] | null> {
+  const result = await readJson<{ creations: CreationRecovery[] }>(
+    '/api/content/projects/recoveries'
+  )
+  return result?.creations ?? null
+}
+
+export async function retryCreation(operation: string): Promise<ProjectMutation> {
+  const result = await sendJson(
+    `/api/content/projects/recoveries/${encodeURIComponent(operation)}/retry`,
+    'POST',
+    {}
+  )
+  return { ok: result.ok, error: result.error, project: result.payload as ProjectRef | undefined }
+}
+
+export async function preserveCreation(operation: string): Promise<ProjectMutation> {
+  const result = await sendJson(
+    `/api/content/projects/recoveries/${encodeURIComponent(operation)}/preserve`,
+    'POST',
+    {}
+  )
+  return { ok: result.ok, error: result.error }
+}
+
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
 
-async function readJson<T>(path: string): Promise<T | null> {
+export interface ProjectTreeNode {
+  path: string
+  name: string
+  kind: 'file' | 'dir'
+  available: boolean
+  count: number | null
+  artifact?: boolean
+}
+
+export interface ProjectTreePage {
+  root: string
+  nodes: ProjectTreeNode[]
+  total: number
+  offset: number
+}
+
+export async function readProjectTree(
+  project: string,
+  path = '',
+  offset = 0,
+  signal?: AbortSignal
+): Promise<ProjectTreePage | null> {
+  const query = new URLSearchParams({ path, offset: String(offset) })
+  return readJson<ProjectTreePage>(
+    `/api/content/projects/${encodeURIComponent(project)}/tree?${query}`,
+    { signal }
+  )
+}
+
+export async function listProjectFiles(
+  project: string,
+  signal: AbortSignal
+): Promise<ProjectTreeNode[] | null> {
+  const directories = ['']
+  const visited = new Set<string>()
+  const files = new Map<string, ProjectTreeNode>()
+  for (let directoryIndex = 0; directoryIndex < directories.length; directoryIndex += 1) {
+    const directory = directories[directoryIndex]
+    if (visited.has(directory)) continue
+    visited.add(directory)
+    let offset = 0
+    while (!signal.aborted) {
+      const page = await readProjectTree(project, directory, offset, signal)
+      if (!page || signal.aborted) return null
+      for (const node of page.nodes) {
+        if (node.kind === 'file') files.set(node.path, node)
+        else if (node.available && !visited.has(node.path)) directories.push(node.path)
+      }
+      offset += page.nodes.length
+      if (offset >= page.total) break
+      if (page.nodes.length === 0) return null
+    }
+    if (signal.aborted) return null
+  }
+  return [...files.values()]
+}
+
+export type ProjectNodeAction = 'create_document' | 'create_folder' | 'rename' | 'move' | 'copy'
+
+export interface ProjectNodeMutation {
+  ok: boolean
+  error?: string
+  node?: Pick<ProjectTreeNode, 'path' | 'name' | 'kind'>
+}
+
+export async function mutateProjectNode(
+  project: string,
+  action: ProjectNodeAction,
+  input: { path?: string; parent?: string; name?: string; targetDir?: string }
+): Promise<ProjectNodeMutation> {
+  const result = await sendJson(
+    `/api/content/projects/${encodeURIComponent(project)}/nodes`,
+    'POST',
+    {
+      action,
+      path: input.path ?? '',
+      parent: input.parent ?? '',
+      name: input.name ?? '',
+      target_dir: input.targetDir ?? '',
+    }
+  )
+  return { ok: result.ok, error: result.error, node: result.payload as ProjectNodeMutation['node'] }
+}
+
+export async function importProjectFiles(
+  project: string,
+  sources: string[],
+  targetDir: string
+): Promise<{ ok: boolean; error?: string; paths?: string[] }> {
+  const result = await sendJson(
+    `/api/content/projects/${encodeURIComponent(project)}/import`,
+    'POST',
+    {
+      sources,
+      target_dir: targetDir,
+    }
+  )
+  return {
+    ok: result.ok,
+    error: result.error,
+    paths: (result.payload as { paths?: string[] } | undefined)?.paths,
+  }
+}
+
+async function readJson<T>(
+  path: string,
+  options?: Pick<RequestInit, 'cache' | 'signal'>
+): Promise<T | null> {
   try {
-    const response = await fetch(`${base()}${path}`, { credentials: 'include' })
+    const response = await fetch(`${base()}${path}`, { credentials: 'include', ...options })
     if (!response.ok) return null
     return (await response.json()) as T
   } catch {
@@ -49,12 +194,13 @@ async function sendJson(
   body: Record<string, unknown>
 ): Promise<{ ok: boolean; error?: string; payload?: unknown }> {
   try {
-    const response = await fetch(`${base()}${path}`, {
+    let response = await fetch(`${base()}${path}`, {
       method,
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     })
+    response = await resolveContentResponse(response)
     const payload = await response.json().catch(() => null)
     if (!response.ok) {
       const detail =
@@ -65,19 +211,19 @@ async function sendJson(
     }
     return { ok: true, payload }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'network_error' }
+    return { ok: false, error: error instanceof Error ? error.message : FAILURE_CODES.networkError }
   }
 }
 
 export async function listProjects(includeArchived = false): Promise<ProjectListing | null> {
   const query = includeArchived ? '?includeArchived=true' : ''
-  return readJson<ProjectListing>(`/api/content/projects${query}`)
+  return readJson<ProjectListing>(`/api/content/projects${query}`, LIVE_CATALOG_REQUEST)
 }
 
 /** 归档/解归档项目：只影响默认列表可见性，目录与会话数据不动。 */
 export async function setProjectArchived(id: string, archived: boolean): Promise<ProjectMutation> {
   const result = await sendJson(`/api/content/projects/${encodeURIComponent(id)}/archive`, 'POST', {
-    archived
+    archived,
   })
   return { ok: result.ok, error: result.error, project: result.payload as ProjectRef | undefined }
 }
@@ -88,10 +234,11 @@ export async function setProjectArchived(id: string, archived: boolean): Promise
  */
 export async function forgetProject(id: string): Promise<ProjectMutation> {
   try {
-    const response = await fetch(`${base()}/api/content/projects/${encodeURIComponent(id)}`, {
+    let response = await fetch(`${base()}/api/content/projects/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      credentials: 'include'
+      credentials: 'include',
     })
+    response = await resolveContentResponse(response)
     const payload = await response.json().catch(() => null)
     if (!response.ok) {
       const detail =
@@ -102,7 +249,7 @@ export async function forgetProject(id: string): Promise<ProjectMutation> {
     }
     return { ok: true }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'network_error' }
+    return { ok: false, error: error instanceof Error ? error.message : FAILURE_CODES.networkError }
   }
 }
 
@@ -113,13 +260,23 @@ export async function createProject(name: string): Promise<ProjectMutation> {
 }
 
 /** 改显示名：目录名不跟随，已开会话与关联登记都不受影响。 */
-export async function renameProject(id: string, name: string): Promise<ProjectMutation> {
-  const result = await sendJson('/api/content/projects', 'PATCH', { id, name })
+export async function renameProject(
+  id: string,
+  name: string,
+  metadata: { description?: string; pinned?: boolean } = {}
+): Promise<ProjectMutation> {
+  const result = await sendJson('/api/content/projects', 'PATCH', { id, name, ...metadata })
   return { ok: result.ok, error: result.error, project: result.payload as ProjectRef | undefined }
 }
 
 export async function loadWorkspaceRoot(): Promise<WorkspaceRootState | null> {
   return readJson<WorkspaceRootState>('/api/serve/workspace-root')
+}
+
+export async function previewProjectDirectory(name: string): Promise<{ root: string } | null> {
+  return readJson<{ root: string }>(
+    `/api/content/projects/directory?${new URLSearchParams({ name })}`
+  )
 }
 
 /** 设置新建项目的落地根。已登记项目不搬动；生效需重启后端。 */
@@ -130,7 +287,7 @@ export async function saveWorkspaceRoot(
   return {
     ok: result.ok,
     error: result.error,
-    state: result.payload as WorkspaceRootState | undefined
+    state: result.payload as WorkspaceRootState | undefined,
   }
 }
 
@@ -156,6 +313,16 @@ interface ExternalRootSyncOperation {
 }
 
 let externalRootSyncOperation: ExternalRootSyncOperation | null = null
+let externalRootProject: string | null = null
+
+export function selectExternalRootProject(projectId: string | null): void {
+  if (externalRootProject === projectId) return
+  externalRootProject = projectId
+  externalRootSyncOperation = null
+  void window.scholarseed.syncAuthorizedRoots('external', []).catch((error) => {
+    console.error('External root authorization reset failed', error)
+  })
+}
 
 function toRoot(payload: ExternalRootPayload): ExternalRootRef {
   return {
@@ -165,7 +332,7 @@ function toRoot(payload: ExternalRootPayload): ExternalRootRef {
     sourcePath: payload.source_path,
     kind: payload.kind,
     authorizedAt: payload.authorized_at,
-    available: payload.available
+    available: payload.available,
   }
 }
 
@@ -176,25 +343,32 @@ function toRoot(payload: ExternalRootPayload): ExternalRootRef {
  * 调用点就等于撤销在 OS 面没生效（`writableRoots` 是唯一来源，见 §6.9）。
  */
 export function listExternalRoots(projectId: string): Promise<ExternalRootListing | null> {
-  if (externalRootSyncOperation?.projectId === projectId) {
+  const synchronize = projectId === externalRootProject
+  if (synchronize && externalRootSyncOperation?.projectId === projectId) {
     return externalRootSyncOperation.promise
   }
 
   const operation: ExternalRootSyncOperation = {
     projectId,
-    promise: Promise.resolve(null)
+    promise: Promise.resolve(null),
   }
   operation.promise = (async () => {
     const query = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
     const payload = await readJson<{ roots: ExternalRootPayload[]; writableRoots: string[] }>(
       `/api/content/roots${query}`
     )
-    if (!payload || externalRootSyncOperation !== operation) return null
-    const synchronized = await window.scholarseed.syncAuthorizedRoots('external', payload.writableRoots)
+    if (!payload) return null
+    const listing = { roots: payload.roots.map(toRoot), writableRoots: payload.writableRoots }
+    if (!synchronize) return listing
+    if (projectId !== externalRootProject || externalRootSyncOperation !== operation) return null
+    const synchronized = await window.scholarseed.syncAuthorizedRoots(
+      'external',
+      payload.writableRoots
+    )
     if (!synchronized || externalRootSyncOperation !== operation) return null
-    return { roots: payload.roots.map(toRoot), writableRoots: payload.writableRoots }
+    return listing
   })()
-  externalRootSyncOperation = operation
+  if (synchronize) externalRootSyncOperation = operation
   const clear = (): void => {
     if (externalRootSyncOperation === operation) externalRootSyncOperation = null
   }
@@ -217,7 +391,7 @@ export async function authorizeRoot(
     project: projectId,
     source,
     mount,
-    ...(supersede ? { supersede: true } : {})
+    ...(supersede ? { supersede: true } : {}),
   })
   if (!result.ok) return { ok: false, error: result.error }
   await listExternalRoots(projectId)
@@ -228,32 +402,36 @@ export async function authorizeRoot(
 export async function revokeRoot(
   projectId: string,
   rootId: string
-): Promise<{ ok: boolean; error?: string; agentSessionsUpdated: string[] }> {
+): Promise<{ ok: boolean; error?: string; agentSessionsAffected: string[] }> {
   const query = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
   try {
-    const response = await fetch(
+    let response = await fetch(
       `${base()}/api/content/roots/${encodeURIComponent(rootId)}${query}`,
       { method: 'DELETE', credentials: 'include' }
     )
+    response = await resolveContentResponse(response)
     const payload = await response.json().catch(() => null)
     if (!response.ok) {
       const detail =
         payload && typeof payload === 'object' && 'detail' in payload
           ? String((payload as { detail: unknown }).detail)
           : `http_${response.status}`
-      return { ok: false, error: detail, agentSessionsUpdated: [] }
+      return { ok: false, error: detail, agentSessionsAffected: [] }
     }
     await listExternalRoots(projectId)
-    const updated =
-      payload && typeof payload === 'object' && Array.isArray((payload as any).agentSessionsUpdated)
-        ? ((payload as any).agentSessionsUpdated as string[])
+    const affected =
+      payload &&
+      typeof payload === 'object' &&
+      'agentSessionsAffected' in payload &&
+      Array.isArray(payload.agentSessionsAffected)
+        ? (payload.agentSessionsAffected as string[])
         : []
-    return { ok: true, agentSessionsUpdated: updated }
+    return { ok: true, agentSessionsAffected: affected }
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : 'network_error',
-      agentSessionsUpdated: []
+      error: error instanceof Error ? error.message : FAILURE_CODES.networkError,
+      agentSessionsAffected: [],
     }
   }
 }
@@ -301,9 +479,7 @@ export async function runMigration(
 }
 
 /** 最近被移入废纸篓的资料（原位置 + 时间）。 */
-export async function loadTrashHistory(
-  projectId: string
-): Promise<{ at: number; path: string }[]> {
+export async function loadTrashHistory(projectId: string): Promise<{ at: number; path: string }[]> {
   const query = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
   const payload = await readJson<{ entries: { at: number; path: string }[] }>(
     `/api/content/trash${query}`

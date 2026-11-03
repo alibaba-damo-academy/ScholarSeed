@@ -27,8 +27,8 @@ def search(event: RuntimeEvent, payload: Mapping[str, Any], completed: bool) -> 
     }
     if completed:
         rows = payload.get("results")
-        results = list(rows) if isinstance(rows, list) else []
-        result.update(results=results, result_count=len(results))
+        if isinstance(rows, list):
+            result.update(results=list(rows), result_count=len(rows))
     return result
 
 

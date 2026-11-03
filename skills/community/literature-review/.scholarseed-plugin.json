@@ -1,0 +1,151 @@
+{
+  "schema": 2,
+  "id": "literature-review",
+  "version": "2026.10.30+1",
+  "host": ">=0.2.0,<0.4.0",
+  "skill": "SKILL.md",
+  "ui": { "compatibility": "1.0", "exports": ["React", "mount", "Conversation"] },
+  "capabilities": [
+    "navigation.open",
+    "literature.read",
+    "literature.write",
+    "interaction.answer"
+  ],
+  "components": [
+    {
+      "id": "results",
+      "slot": "display.literature-search",
+      "preview": "components/results.json",
+      "actions": [
+        {
+          "id": "open-results",
+          "capability": "navigation.open"
+        }
+      ],
+      "public": true
+    },
+    {
+      "id": "downloads",
+      "slot": "display.literature-downloads",
+      "preview": "components/downloads.json",
+      "actions": [
+        {
+          "id": "open-fulltext",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "open-library",
+          "capability": "navigation.open"
+        }
+      ],
+      "public": true
+    },
+    {
+      "id": "delivery",
+      "slot": "display.literature-delivery",
+      "preview": "components/delivery.json",
+      "actions": [
+        {
+          "id": "delivery",
+          "capability": "literature.read"
+        },
+        {
+          "id": "folders",
+          "capability": "literature.read"
+        },
+        {
+          "id": "collections",
+          "capability": "literature.read"
+        },
+        {
+          "id": "pick-directory",
+          "capability": "literature.write"
+        },
+        {
+          "id": "save",
+          "capability": "literature.write"
+        },
+        {
+          "id": "cancel",
+          "capability": "literature.write"
+        },
+        {
+          "id": "open-directory",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "open-library",
+          "capability": "navigation.open"
+        }
+      ],
+      "public": true
+    },
+    {
+      "id": "review",
+      "slot": "display.literature-review",
+      "entry": "components/cards.js",
+      "preview": "components/review.json",
+      "actions": [
+        {
+          "id": "open-artifact",
+          "capability": "navigation.open"
+        }
+      ]
+    },
+    {
+      "id": "question",
+      "slot": "interaction.question",
+      "preview": "components/question.json",
+      "actions": [
+        {
+          "id": "choose",
+          "capability": "interaction.answer"
+        }
+      ],
+      "public": true
+    },
+    {
+      "id": "authorization",
+      "slot": "literature.authorization",
+      "preview": "components/authorization.json",
+      "actions": [],
+      "public": true
+    },
+    {
+      "id": "outline",
+      "slot": "literature.outline",
+      "entry": "components/cards.js",
+      "preview": "components/outline.json",
+      "actions": [
+        {
+          "id": "choose",
+          "capability": "interaction.answer"
+        }
+      ]
+    },
+    {
+      "id": "details",
+      "slot": "preview.literature-results",
+      "preview": "components/details.json",
+      "actions": [
+        {
+          "id": "open-source",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "add-reference",
+          "capability": "literature.write"
+        },
+        {
+          "id": "collections",
+          "capability": "literature.read"
+        },
+        {
+          "id": "create-collection",
+          "capability": "literature.write"
+        }
+      ],
+      "public": true
+    }
+  ]
+}

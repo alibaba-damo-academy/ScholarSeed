@@ -2,12 +2,17 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { createFormatters } from '../../../../localization/format'
-import { Project } from '../../api'
+import type { Project } from '../../api'
 import { Button, IconButton, Input } from '../../components/ui'
 import { Icon } from '../../icons'
-import { filterProjects, projectFileLabel, projectSummary, projectTimeLabel } from '../../project'
+import {
+  filterProjects,
+  isProjectAvailable,
+  projectFileLabel,
+  projectSummary,
+  projectTimeLabel,
+} from '../../project'
 import { useApp } from '../../store'
-
 
 function ProjectCard({ project }: { project: Project }): React.JSX.Element {
   const { t, i18n } = useTranslation('project')
@@ -17,27 +22,39 @@ function ProjectCard({ project }: { project: Project }): React.JSX.Element {
   const updated = projectTimeLabel(summary.activityAt, t, format)
 
   return (
-    <article className="project-card" data-testid={`project-card-${project.name}`}>
+    <article
+      className="project-card"
+      data-testid={`project-card-${project.name}`}
+      title={!isProjectAvailable(project) ? t('cards.unavailable') : undefined}
+    >
       <Button
-        className="project-card-main"
+        className="project-card-main disabled:pointer-events-none"
+        disabled={!isProjectAvailable(project)}
         // 不能用 startDraft：它走 HOME_RESET（含 mainView: 'home'），会把用户从
         // 工作台弹回 0.1 双栏。选中语义与顶栏项目菜单保持一致。
         onClick={() => {
           act.selectProject(project.id)
           act.openWorkbenchView('resource')
         }}
-        title={t('cards.enter', { name: project.name })}
+        title={isProjectAvailable(project) ? t('cards.enter', { name: project.name }) : undefined}
         variant="ghost"
       >
         <span className="project-card-head">
-          <span className="project-card-icon"><Icon name="folder" size={17} /></span>
+          <span className="project-card-icon">
+            <Icon name="folder" size={17} />
+          </span>
           <strong>{project.name}</strong>
         </span>
         <span className="project-card-description">{t('cards.description')}</span>
-        <span className="project-card-path" title={project.path}>{project.path}</span>
+        <span className="project-card-path" title={project.path}>
+          {project.path}
+        </span>
         <span className="project-card-footer">
           <span>{t('cards.chats', { total: summary.chats })}</span>
-          <span>{projectFileLabel(project, t)}{updated ? ` · ${updated}` : ''}</span>
+          <span>
+            {projectFileLabel(project, t)}
+            {isProjectAvailable(project) && updated ? ` · ${updated}` : ''}
+          </span>
         </span>
       </Button>
       <IconButton
@@ -56,10 +73,11 @@ export function ProjectCards(): React.JSX.Element {
   const { t } = useTranslation('project')
   const { state, set } = useApp()
   const [query, setQuery] = React.useState('')
-  const visible = filterProjects(state.projects, query).sort((left, right) => (
-    projectSummary(right, state.sessions).activityAt
-    - projectSummary(left, state.sessions).activityAt
-  ))
+  const visible = filterProjects(state.projects, query).sort(
+    (left, right) =>
+      projectSummary(right, state.sessions).activityAt -
+      projectSummary(left, state.sessions).activityAt
+  )
 
   return (
     <div className="projects-page" data-testid="projects-page">
@@ -90,7 +108,9 @@ export function ProjectCards(): React.JSX.Element {
       </header>
 
       <main className="projects-body">
-        {visible.map((project) => <ProjectCard key={project.path} project={project} />)}
+        {visible.map((project) => (
+          <ProjectCard key={project.path} project={project} />
+        ))}
         {!query.trim() && (
           <Button
             className="project-card project-card-add"
@@ -104,7 +124,9 @@ export function ProjectCards(): React.JSX.Element {
           </Button>
         )}
         {query.trim() && visible.length === 0 && (
-          <div className="projects-empty" data-testid="projects-empty">{t('cards.noMatch')}</div>
+          <div className="projects-empty" data-testid="projects-empty">
+            {t('cards.noMatch')}
+          </div>
         )}
       </main>
     </div>

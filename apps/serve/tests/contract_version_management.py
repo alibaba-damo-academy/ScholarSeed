@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.resources import VersionOrigin, VersionPolicyMode
 from service.resources.api.versions import register_version_routes
 from service.resources.service.history import ResourceVersionService
@@ -58,7 +59,7 @@ def main() -> int:
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         project = registry.create("版本管理")
         target = Path(project.root) / "resources" / "notes.md"
         target.parent.mkdir(parents=True, exist_ok=True)

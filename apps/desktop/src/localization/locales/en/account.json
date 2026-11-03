@@ -1,4 +1,22 @@
 {
+  "permissions": {
+    "title": "Permissions and privacy",
+    "description": "Review system capability status. Access depends on operating system permissions and project authorization.",
+    "checking": "Checking…",
+    "check": "Check again",
+    "granted": "Granted",
+    "denied": "Denied",
+    "restricted": "Restricted",
+    "not-determined": "Not set",
+    "unavailable": "Unavailable",
+    "system-managed": "Check system settings",
+    "project-scoped": "Authorized per project",
+    "query-error": "Query failed"
+  },
+  "profile": {
+    "loading": "Confirming account status…",
+    "unconfirmed": "Account sign-in status has not been confirmed. Please retry."
+  },
   "identity": {
     "defaultName": "ScholarSeed user"
   },
@@ -21,7 +39,7 @@
     "never": "Never used",
     "unnamed": "Unnamed key",
     "managedName": "ScholarSeed skill credential",
-    "managed": "{{prefix}}··· · Managed by ScholarSeed and shared across devices. Rotation immediately invalidates the old key; devices obtain the new key when starting their next conversation. · Last used {{lastUsed}}",
+    "managed": "{{prefix}}··· · Managed by ScholarSeed and shared across devices. Rotation immediately invalidates the old key; devices obtain the new key when starting their next task. · Last used {{lastUsed}}",
     "keyDates": "{{prefix}}··· · Created {{created}} · Last used {{lastUsed}}"
   },
   "permissionDetails": {
@@ -45,12 +63,15 @@
     "chatgptConnected": " · ChatGPT connected",
     "chatgptLoginRequired": " · ChatGPT sign-in required",
     "noKey": " · No API key",
+    "apiKeyClear": "Clear API key",
+    "apiKeyReplacementPlaceholder": "Enter a new API key",
+    "apiKeyReplacementRequired": "Enter a new API key before saving, testing, or refreshing. Cancel to keep the existing key.",
     "enableNamed": "Enable {{name}}",
     "add": "Add connection",
     "chatgptSubscription": "ChatGPT (subscription sign-in)",
     "customProvider": "Custom (self-hosted or unlisted provider)",
-    "wireHint": "Select a protocol supported by the service. Codex native tools, such as web search, require Responses; endpoints that only support Chat Completions cannot run these tools. After changing the protocol, start a new conversation or restart the app before continuing the existing conversation.",
-    "wireChatCompletions": "OpenAI compatible · /chat/completions",
+    "wireHint": "Select a protocol supported by the service. Codex native tools, such as web search, require Responses; endpoints that only support Chat Completions cannot run these tools. After changing the protocol, start a new task or restart the app before continuing the existing task.",
+    "wireChatCompletions": "OpenAI compatible · /task/completions",
     "wireResponses": "OpenAI Responses · /responses",
     "reasoningNamed": "{{name}} · Reasoning effort",
     "reasoningLevelNamed": "Reasoning effort level for {{name}}",
@@ -58,10 +79,14 @@
     "providerModel": "{{provider}} · {{model}}",
     "disabledReasons": {
       "gatewayCredentialRequired": "Sign in to use built-in models",
-      "subscriptionConnectionRequired": "Connect ChatGPT in Model services"
+      "subscriptionConnectionRequired": "Connect ChatGPT in Model services",
+      "subscriptionStorageUnavailable": "Local credentials are unavailable. Restore storage access and retry."
+    },
+    "disabledTags": {
+      "gatewayCredentialRequired": "Sign in to use"
     },
     "capabilitiesTitle": "Model capabilities",
-    "capabilitiesDescription": "Manage reasoning levels, context windows, and input modalities for each model on the right. Provider defaults are suggestions; saved model declarations take priority in conversations.",
+    "capabilitiesDescription": "Manage reasoning levels, context windows, and input modalities for each model on the right. Provider defaults are suggestions; saved model declarations take priority in tasks.",
     "contextWindowHint": "Leave empty to use the provider default",
     "contextWindowPlaceholder": "e.g. 1000000",
     "maxOutput": "Maximum output",
@@ -72,7 +97,8 @@
     "editEfforts": "Edit reasoning levels",
     "effortsUnconfirmed": "Unconfirmed",
     "tokenPlanPersonal": "Alibaba Cloud Model Studio Token Plan (Personal)",
-    "tokenPlanTeam": "Alibaba Cloud Model Studio Token Plan (Team)"
+    "tokenPlanTeam": "Alibaba Cloud Model Studio Token Plan (Team)",
+    "chatgptStorageUnavailable": " · Credentials unavailable"
   },
   "sharing": {
     "private": "Private mode",
@@ -120,13 +146,25 @@
     }
   },
   "update": {
-    "installFailed": "Update installation failed. Try again."
+    "installFailed": "Update installation failed. Try again.",
+    "launcherMaintenanceRequired": "The installed launcher needs an upgrade. Quit ScholarSeed normally, download the latest installer from the official channel, and install it in the existing location. Then reopen the app. In-app updates cannot replace this launcher.",
+    "preparationConnectionClosed": "The update preparation connection closed. Retry preparation.",
+    "preparationFailed": "Could not prepare the update. Retry preparation.",
+    "installationInProgress": "An update is being installed. ScholarSeed will exit to let installation finish. Please open it again shortly.",
+    "installationFailed": "Update installation failed. Quit and reopen ScholarSeed. If it still cannot start, reinstall the latest version and include update diagnostics in your feedback.",
+    "activationRecoveryRequired": "The update handoff could not be confirmed. Quit and reopen ScholarSeed. If this message persists, reinstall the latest version from the official website and include update diagnostics when contacting support.",
+    "activationCandidateChanged": "This update has changed. Retrying the old package has stopped. Please check for updates again.",
+    "activationUnavailable": "This version does not yet support applying this update.",
+    "preparationUnverified": "The prepared update is no longer verified. Prepare the update again.",
+    "activationAuthorizationRequired": "Restart confirmation is required. Start the update again."
   },
   "loginFailure": {
     "account_base_unavailable": "The account service address is unavailable. Try again later.",
     "open_browser_failed": "Could not open the system browser. Try again.",
     "bad_callback": "The sign-in callback is invalid. Start sign-in again.",
     "state_mismatch": "This sign-in could not be matched to the current app. Start sign-in again.",
+    "handoff_unclaimed": "This sign-in request could not be matched. It may have expired, the app may have restarted, or another copy of ScholarSeed may have received the callback. Return to the copy you want to use and start sign-in again.",
+    "login_expired": "This sign-in attempt has expired. Return to ScholarSeed and start sign-in again.",
     "handoff_invalid": "The sign-in credential is invalid or expired. Sign in again.",
     "adopt_failed": "Could not complete sign-in on this device. Try again.",
     "exchange_error": "Could not connect to the account service to complete sign-in. Check your network and try again.",
@@ -161,13 +199,14 @@
     "invalid_api_key": "The API key is invalid or has been revoked",
     "invalid_api_key_name": "The API key name is too long",
     "api_key_limit": "The active API key limit has been reached. Revoke a key first.",
-    "api_key_managed": "ScholarSeed manages this key across all devices. It can only be rotated, not revoked. After rotation, each device receives the new key when its next conversation starts.",
+    "api_key_managed": "ScholarSeed manages this key across all devices. It can only be rotated, not revoked. After rotation, each device receives the new key when its next task starts.",
     "network": "Could not connect to the account service",
     "no_base_url": "The account service URL is not configured",
     "invalid_response": "The account service returned an unrecognized response. Try again later.",
     "local_logout_failed": "Could not clear local sign-in credentials. Try again.",
     "logout_revocation_failed": "Could not clear local execution credentials. Try signing out again.",
     "http_failure": "Request failed ({{status}})",
+    "unknown": "The operation did not complete. Please try again.",
     "diagnostic": "{{message}}\n{{detail}}"
   },
   "modelSettings": {

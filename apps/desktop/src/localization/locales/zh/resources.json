@@ -1,6 +1,6 @@
 {
   "menu": {
-    "addToConversation": "加入当前对话",
+    "addToConversation": "加入当前任务",
     "rename": "重命名",
     "moveTo": "移动到…",
     "moveUp": "移到上一级目录",
@@ -68,9 +68,9 @@
     "fileTitle": "删除资料",
     "folderDescription": "将要删除 <name>{{name}}</name>（含其中全部内容）。",
     "fileDescription": "将要删除 <name>{{name}}</name>。",
-    "warning": "这会同步影响你的本地文件：文件将被移到系统废纸篓，可从废纸篓恢复。",
-    "unsavedWarning": "这份资料或其子页签有未保存修改。继续后将丢弃这些修改，并把本地文件移到系统废纸篓。",
-    "action": "移到废纸篓"
+    "warning": "这会同步影响你的本地文件：文件将被移到系统{{trash}}，可从{{trash}}恢复。",
+    "unsavedWarning": "这份资料或其子页签有未保存修改。继续后将丢弃这些修改，并把本地文件移到系统{{trash}}。",
+    "action": "移到{{trash}}"
   },
   "linkedCreate": {
     "label": "确认修改关联文件夹",
@@ -81,9 +81,10 @@
     "continue": "继续创建"
   },
   "origin": {
-    "artifact": "返回生成这份产物的对话",
-    "answer": "返回这段回答的原对话",
-    "view": "查看原对话"
+    "deleted": "来源任务已删除",
+    "artifact": "返回生成这份产物的任务",
+    "answer": "返回这段回答的原任务",
+    "view": "查看原任务"
   },
   "webImportError": {
     "web_invalid_url": "网址格式无效。",
@@ -139,9 +140,9 @@
   "webFeedback": {
     "failed": "全网搜索未完成",
     "completed": "全网搜索已完成",
-    "browser": "已切换到本机浏览器",
-    "browserReason": "原因：{{reason}} 书深已按自动策略使用本机浏览器继续搜索。",
-    "browserDefault": "Web Search 未完成，书深已按自动策略使用本机浏览器继续搜索。",
+    "browser": "已切换到内置浏览器",
+    "browserReason": "原因：{{reason}} 书深已使用内置浏览器继续搜索。",
+    "browserDefault": "Web Search 未完成，书深已使用内置浏览器继续搜索。",
     "candidates": "已整理 {{total}} 条候选网页。",
     "requestFailed": "保存请求未完成",
     "projectUnavailable": "当前项目不可用，请关闭弹窗后重试。",
@@ -203,6 +204,13 @@
     "manualAdmitted": "已手动加入版本管理，优先于模式规则",
     "migrationRequired": "版本管理待设置",
     "git": "由 Git 管理版本"
+  },
+  "creation": {
+    "folderName": "文件夹名称",
+    "documentName": "文件名称",
+    "folderPlaceholder": "请输入文件夹名称",
+    "documentPlaceholder": "请输入文件名称",
+    "nameTooLong": "名称不能超过 20 字，请缩短后重试。"
   },
   "panel": {
     "matchName": "文件名",
@@ -268,7 +276,7 @@
     "pathUnavailable": "没取到真实路径。",
     "pathCopied": "已复制路径",
     "deleteDirty": "这份资料或其子页签有未保存修改，请先保存后再删除。",
-    "trashUnavailable": "当前环境不支持移入废纸篓。",
+    "trashUnavailable": "当前环境不支持移入{{trash}}。",
     "unlinkDirty": "关联资料的子页签有未保存修改，请先保存后再取消关联。",
     "moveDirty": "这份资料或其子页签有未保存修改，请先保存后再移动。",
     "movePathMissing": "移动已返回，但没有最终资料路径。",
@@ -276,17 +284,17 @@
     "importChanged": "资料状态已经变化，请重新确认处理方式。",
     "clipboardFailed": "剪贴板写入失败。",
     "revealFailed": "无法在文件管理器中显示此资料。",
-    "trashFailed": "移入废纸篓失败。",
+    "trashFailed": "移入{{trash}}失败。",
     "unlinkFailed": "取消关联失败。",
     "copied": "已创建副本 {{name}}",
     "renamed": "已重命名为 {{name}}",
     "renamedSyncFailed": "已重命名为 {{name}}，但当前 Agent 引用同步失败。",
     "moved": "已移动为 {{name}}",
     "movedSyncFailed": "已移动为 {{name}}，但当前 Agent 引用同步失败。",
-    "trashed": "已将 {{name}} 移到废纸篓",
-    "trashReceiptFailed": "已将 {{name}} 移到废纸篓，但删除回执同步失败。",
-    "trashTabsFailed": "已将 {{name}} 移到废纸篓，但子页签同步失败。",
-    "trashContextFailed": "已将 {{name}} 移到废纸篓，但当前 Agent 引用同步失败。",
+    "trashed": "已将 {{name}} 移到{{trash}}",
+    "trashReceiptFailed": "已将 {{name}} 移到{{trash}}，但删除回执同步失败。",
+    "trashTabsFailed": "已将 {{name}} 移到{{trash}}，但子页签同步失败。",
+    "trashContextFailed": "已将 {{name}} 移到{{trash}}，但当前 Agent 引用同步失败。",
     "unlinkTabsFailed": "已取消关联 {{name}}，原文件已保留，但子页签同步失败。",
     "unlinkContextFailed": "已取消关联 {{name}}，原文件已保留，但当前 Agent 引用同步失败。",
     "unlinked": "已取消关联 {{name}}，原文件保持不变；Agent 权限将在下一轮更新。",
@@ -307,7 +315,7 @@
     "revealDesktopUnavailable": "无法在文件管理器中显示此资料：桌面连接未就绪。"
   },
   "operationError": {
-    "invalid_name": "名称不能为空，也不能包含路径分隔符。",
+    "invalid_name": "名称不能为空或仅为 .、..，也不能包含 /、\\、冒号（:）或空字符。请修改名称，例如将时间中的冒号改为连字符（-）。",
     "name_too_long": "文件或文件夹名称、路径过长，请缩短名称后重试。",
     "name_exists": "该位置已有同名项。",
     "node_not_found": "这份资料已不在原位置，先刷新一下。",
@@ -342,7 +350,7 @@
     "import_decisions_invalid": "重名处理选择无效，请重新操作。",
     "replace_not_supported": "这些重名项不能安全保留版本，请选择自动重命名。",
     "idempotency_conflict": "这次导入确认与先前请求不一致，请重新选择资料。",
-    "assistant_project_unavailable": "当前对话未关联项目，无法存入资料库。",
+    "assistant_project_unavailable": "当前任务未关联项目，无法存入资料库。",
     "session_artifact_not_found": "会话产物已不存在。",
     "session_artifact_path_forbidden": "该会话产物不在允许导入的位置。",
     "session_artifact_integrity_mismatch": "会话产物内容已变化，请重新生成或刷新后再导入。",
@@ -489,9 +497,15 @@
   "finalizations": {
     "notReadyTitle": "文件审阅快照未就绪",
     "refresh": "刷新审阅快照状态",
+    "refreshAction": "刷新状态",
     "more": "更多未就绪回合",
     "startedAt": "回合开始于",
     "reason": "原因：",
+    "reasons": {
+      "readFailed": "无法读取文件，未能保存本轮审阅快照。",
+      "snapshotUnavailable": "本轮结束时的审阅快照未保存，无法恢复。",
+      "unknown": "本轮审阅快照处理失败。"
+    },
     "loadFailed": "无法读取审阅快照状态，请稍后重试。",
     "retryFailed": "审阅快照重试未完成（{{detail}}）。文件现状未改写。",
     "openFailed": "无法打开 {{path}}，请检查文件是否仍可访问。",
@@ -528,6 +542,8 @@
     "promptGuideSuffix": "中调整",
     "promptSettings": "AI 提示词设置",
     "original": "原文",
+    "expandOriginal": "展开",
+    "collapseOriginal": "收起",
     "translation": "译文",
     "close": "关闭",
     "stop": "停止生成",
@@ -572,7 +588,7 @@
     "agent": "Agent 改动",
     "external": "外部改动",
     "invalid": "审阅地址无效",
-    "reopen": "请从对话中的审核卡片重新进入。",
+    "reopen": "请从任务中的审核卡片重新进入。",
     "loading": "正在加载审阅批次",
     "unavailable": "无法打开审阅",
     "missing": "批次不存在或已不可用。",
@@ -584,7 +600,25 @@
     "content": "文件审阅内容",
     "failed": "审阅操作未完成",
     "changed": "文件在 Agent 完成后又发生了变化",
-    "changedDetail": "下方展示的是当前磁盘实际内容；接受或修订会以你现在看到的内容创建版本。",
+    "changedBadge": "外部修改",
+    "agentPreview": "Agent 版本",
+    "basePreview": "Agent 前版本",
+    "draftPreview": "修订草稿",
+    "diskPreview": "当前磁盘",
+    "changedDetail": "下方展示的是当前磁盘实际内容；接受会恢复并采纳 Agent 改动，修订会保留当前内容。",
+    "undoTitle": "撤销所选文件的修订",
+    "undoDescription": "将恢复 {{count}} 个文件为 Agent 版本；其中 {{backups}} 个文件的当前内容会先存为可恢复版本，{{drafts}} 个页内草稿将被舍弃。",
+    "undoConfirm": "确认撤销",
+    "undoCancel": "取消",
+    "undoResult": "撤销结果",
+    "undoSucceeded": "已恢复",
+    "undoRetry": "未恢复，请重试",
+    "partialResult": "部分文件未提交",
+    "submitFailedFile": "未提交",
+    "retryFailed": "重试失败文件",
+    "submitDraftTitle": "仍有未提交的页内草稿",
+    "submitDraftDescription": "接受或拒绝会写入所选版本；页内草稿不会被采纳，仍保留在编辑器供你处理。若要采纳草稿，请改选“修订”。",
+    "submitDraftConfirm": "按当前决定提交",
     "processed": "本批次已处理",
     "decided": "所有文件都已有明确决定。",
     "submitted": "这个文件已提交",
@@ -593,20 +627,26 @@
     "unsupported": "该格式暂不支持内置审阅",
     "wholeSnapshot": "仍可接受或拒绝这个完整文件快照。",
     "count": "{{total}} 个文件 · 已决定 {{decided}}",
-    "outcomeProgress": "已处理 {{reviewed}} · 待处理 {{pending}} · 失败 {{failed}}",
+    "outcomeProgress": "已决定 {{reviewed}} · 待决定 {{pending}} · 失败 {{failed}}",
     "loadFailed": "无法读取这个审阅批次。",
     "contentFailed": "无法读取文件审阅内容。",
     "prepareFailed": "无法准备文件审阅。",
     "refreshFailed": "无法刷新审阅批次。",
     "stale": "文件内容已变化，请重新确认未决定的文件。",
     "submitFailed": "批次提交未完成，请按当前决定重试。",
-    "undoFailed": "“{{path}}”的内存编辑无法撤销。",
+    "undoFailed": "“{{path}}”未能恢复为 Agent 版本。",
     "diskFailed": "无法读取“{{path}}”的当前磁盘内容。",
-    "saveFailed": "“{{path}}”的修订内容未能保存，批次仍保持待审阅。"
+    "saveFailed": "无法读取“{{path}}”的修订草稿，批次仍保持待审阅。",
+    "syncFailed": "提交已完成，但编辑器未能同步磁盘内容，请手动重新加载。"
   },
   "reviewOrigin": {
     "agent": "Agent 改动",
     "external": "外部改动"
+  },
+  "reviewAdmission": {
+    "pending": "还有未提交的文件审阅。请先处理审阅，再继续任务。",
+    "open": "前往审阅",
+    "cancel": "取消"
   },
   "admissionFailure": {
     "undoFailed": "无法撤销“{{path}}”的内存编辑，请前往审阅处理。",
@@ -614,6 +654,10 @@
     "submitFailed": "审阅批次提交失败，请前往审阅处理。{{detail}}"
   },
   "webSearchFailure": {
+    "browser_search_navigation_unknown": "内置浏览器导航未确认完成，本次搜索未取得结果。可重新发起搜索。",
+    "browser_search_navigation_failed": "内置浏览器未能打开搜索页面，请检查网络后重试。",
+    "browser_search_extraction_failed": "搜索页面已打开，但未能读取搜索结果。请重试。",
+    "search_not_authenticated": "当前未登录，官方搜索暂不可用。",
     "invalid_query": "搜索内容不能为空。",
     "verification_required": "Bing 需要人工验证，请在可见浏览器中完成验证后重试。",
     "execution_denied": "当前执行环境拒绝启动本机浏览器，请检查系统执行权限后重试。",

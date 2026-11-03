@@ -5,11 +5,45 @@
  *
  * 硬约定：`AssistantContextRef.source_id` **永远是稳定 ID 而非绝对路径**
  * （架构文档 §2.3）。FILE/DIR → 项目内相对路径；RESOURCE/LITERATURE →
- * 条目 id；SESSION → 会话 id。`preview_text` 仅供页面展示，模型材料由服务端
- * 在 Turn 准入时根据稳定 ID 和版本重新解析。
+ * 条目 id；SESSION → 会话 id。`preview_text` 仅供页面展示。所有选区携带
+ * 用户显式加入对话时冻结的 `snapshot_text`；所有选区发送时直接使用完整快照。
  */
 
-import type { SelectionLocator } from './workbench'
+import type { SelectionLocator, LiteratureDocumentSource, SessionFileSource } from './workbench'
+
+export type ComposerReference =
+  | {
+      type: 'skill'
+      id: string
+      title: string
+      status?: string
+      path: string
+      version?: string
+    }
+  | {
+      type: 'file'
+      id: string
+      title: string
+      status?: string
+      path: string
+      referenceId?: string
+      registrationRequired?: boolean
+      previewSource?: LiteratureDocumentSource | SessionFileSource
+      mediaType?: string
+      sha256?: string
+      size?: number
+    }
+  | {
+      type: 'directory'
+      id: string
+      title: string
+      status?: string
+      path: string
+      referenceId?: string
+      registrationRequired?: boolean
+    }
+
+export const ASSISTANT_CONTEXT_REVISION_CONFLICT = 'assistant_context_revision_conflict'
 import type { ResourceNode } from './resources'
 
 export interface ArtifactLinkIdentity {
@@ -36,12 +70,10 @@ export interface ArtifactLiteratureLink extends ArtifactLinkIdentity {
 
 export type ArtifactLibraryLink = ArtifactResourceLink | ArtifactLiteratureLink
 export type ArtifactLibraryLinksResult =
-  | { ok: true; links: ArtifactLibraryLink[] }
-  | ({ ok: false; error: string } & AssistantFailure)
+  { ok: true; links: ArtifactLibraryLink[] } | ({ ok: false; error: string } & AssistantFailure)
 
 export type ArtifactResourceLinksResult =
-  | { ok: true; links: ArtifactResourceLink[] }
-  | { ok: false; error: string }
+  { ok: true; links: ArtifactResourceLink[] } | { ok: false; error: string }
 
 /** 是否允许服务端自动引入当前项目上下文。 */
 export type ProjectContextPolicy = 'auto_project' | 'explicit_only'
@@ -65,21 +97,34 @@ export interface AssistantSelectionAnchor {
   document_id?: string | null
   /** 唯一坐标联合由 Workbench 定义；Assistant 不按文件类型解释它。 */
   locator: SelectionLocator
-  /** 被选择原文的哈希，用于发现来源内容变化。 */
+  /** 加入时选中文字的指纹；发送不与源文件比较。 */
   selected_text_hash: string
   /** 仅供页面展示的安全预览，不直接作为模型事实源。 */
   preview_text: string
+  /** 用户显式加入对话时冻结的完整选区正文，发送直接使用。 */
+  snapshot_text?: string
 }
 
 export type ContextLabelFallback = 'untitled_session' | 'new_session' | null
 
-export function contextLabelFallback(kind: string | undefined, fallback: unknown): ContextLabelFallback {
-  return kind === 'session' && (fallback === 'untitled_session' || fallback === 'new_session') ? fallback : null
+export function contextLabelFallback(
+  kind: string | undefined,
+  fallback: unknown
+): ContextLabelFallback {
+  return kind === 'session' && (fallback === 'untitled_session' || fallback === 'new_session')
+    ? fallback
+    : null
 }
 
-export function candidateLabelFallback(item: Pick<AssistantContextCandidate, 'kind' | 'labelFallback'>): ContextLabelFallback {
+export function candidateLabelFallback(
+  item: Pick<AssistantContextCandidate, 'kind' | 'labelFallback'>
+): ContextLabelFallback {
   return item.kind === 'session'
-    ? item.labelFallback === 'newSession' ? 'new_session' : item.labelFallback === 'untitledSession' ? 'untitled_session' : null
+    ? item.labelFallback === 'newSession'
+      ? 'new_session'
+      : item.labelFallback === 'untitledSession'
+        ? 'untitled_session'
+        : null
     : null
 }
 
@@ -89,6 +134,7 @@ export type AssistantSourceFilter = 'all' | 'recent' | 'newest'
 
 /** Session 选择中的一条结构化上下文引用。 */
 export interface AssistantContextRef {
+  project_id?: string | null
   /** Original source title, including empty strings; only selection/literature with an anchor. */
   selection_source_label?: string | null
   label_fallback?: ContextLabelFallback
@@ -106,8 +152,16 @@ export interface AssistantContextRef {
   origin: ContextOrigin
 }
 
+export function pendingAssistantContextRefs(
+  refs: readonly AssistantContextRef[],
+  submittedRefIds: readonly string[]
+): AssistantContextRef[] {
+  return refs.filter((reference) => !submittedRefIds.includes(reference.ref_id))
+}
+
 /** 资料、文献与 Viewer 交给 AI 对话的页面安全候选。 */
 export interface AssistantContextCandidate {
+  project_id?: string | null
   /** Original source title, including empty strings; only selection/literature with an anchor. */
   selection_source_label?: string | null
   labelFallback?: 'untitledSession' | 'newSession'
@@ -120,6 +174,7 @@ export interface AssistantContextCandidate {
   origin: Extract<ContextOrigin, 'explicit' | 'current_document'>
   anchor?: AssistantSelectionAnchor | null
   hint?: string
+  child_count?: number
   unavailable_reason?: string
   /** Picker-only creation timestamp used by the newest-first quick filter. */
   created_at?: number
@@ -135,38 +190,16 @@ export interface AssistantContextMutationResult {
 }
 
 export type AssistantInvocationStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'unknown'
+  'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown'
 
-export const ASSISTANT_TRANSLATION_TARGETS = [
-  'zh-CN',
-  'zh-TW',
-  'en',
-  'ja',
-  'ko',
-  'fr',
-  'de',
-  'es',
-  'pt',
-  'it',
-  'ru',
-  'ar',
-  'hi',
-  'th',
-  'vi',
-  'id',
-  'tr',
-  'nl'
-] as const
-export type AssistantTranslationTarget = typeof ASSISTANT_TRANSLATION_TARGETS[number]
+export const ASSISTANT_TRANSLATION_TARGETS = ['zh-CN', 'en'] as const
+export type AssistantTranslationTarget = (typeof ASSISTANT_TRANSLATION_TARGETS)[number]
 
 export function isAssistantTranslationTarget(value: unknown): value is AssistantTranslationTarget {
-  return typeof value === 'string'
-    && (ASSISTANT_TRANSLATION_TARGETS as readonly string[]).includes(value)
+  return (
+    typeof value === 'string' &&
+    (ASSISTANT_TRANSLATION_TARGETS as readonly string[]).includes(value)
+  )
 }
 
 /** 不进入会话列表的一次性 Agent 调用。 */
@@ -264,13 +297,14 @@ export interface AssistantSelectionActionResult {
 }
 
 export type AssistantSelectionActionMutationResult =
-  | { ok: true; result: AssistantSelectionActionResult }
-  | { ok: false; error: string }
+  { ok: true; result: AssistantSelectionActionResult } | { ok: false; error: string }
 
 /** 其它前端 Feature 只能通过这个窄入口加入上下文。 */
 export interface AssistantIngress {
   addContext(candidate: AssistantContextCandidate): Promise<AssistantContextMutationResult>
-  addContexts(candidates: readonly AssistantContextCandidate[]): Promise<AssistantContextMutationResult>
+  addContexts(
+    candidates: readonly AssistantContextCandidate[]
+  ): Promise<AssistantContextMutationResult>
   invokeOnce(input: AssistantOneShotInput): Promise<AssistantInvocationMutationResult>
   translate(input: AssistantTranslationInput): Promise<AssistantInvocationMutationResult>
   invokeSelection(
@@ -296,6 +330,7 @@ export interface AssistantContextSelection {
   project_policy: ProjectContextPolicy
   search_scope: SearchScope
   refs: AssistantContextRef[]
+  claimed_ref_ids?: string[]
   updated_at: number
   capabilities: AssistantCapability[]
 }

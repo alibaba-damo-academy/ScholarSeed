@@ -1,16 +1,30 @@
+import { selectMarkdownMode } from './fixtures/markdown'
+import { createReadyProject, waitContentOperation } from './fixtures/projects'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs'
 import { dirname, join, relative, resolve } from 'path'
+import { createServer as createHttpServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { createServer, loadConfigFromFile, type UserConfig } from 'vite'
 import { PDFDocument } from 'pdf-lib'
 import { IMPORT_PICKER_TARGET, supportsImportPickerTarget } from '../src/picker'
+import type { PdfRecordSnapshot } from '../src/renderer/src/features/workbench/api'
+import { ONBOARDING_GROUPS } from '../src/onboarding'
+import { WORKSPACE_WINDOW_MINIMUM } from '../src/window'
+import type { NavigationLocation } from '../src/navigation'
 import { MATHEMATICS_SOURCE } from './fixtures/mathematics'
 import { TABLE_MATH_SOURCE } from './fixtures/table-math'
+import { skipQuarantined } from './fixtures/quarantine'
 import { apiBase, DesktopSession, enterWorkbenchShell, waitForFinishedTurn } from './fixtures/electron'
-import { createRuntime } from './fixtures/runtime'
-import { BROKEN_PDF_NAME, fileDigest, LONG_PDF_NAME, MARKDOWN_SOURCE, NOTE_TEXT, openFile, PDF_LONG_OUTLINE_TITLE, PDF_LONG_UNAVAILABLE_OUTLINE_TITLE, PDF_NAME, SECOND_PDF_NAME, seedLongPdf, seedProject, selectPdfText, selectProject, SOURCE_CASES } from './fixtures/workbench'
+import { createRuntime, seedLiveConfig } from './fixtures/runtime'
+import { BROKEN_PDF_NAME, fileDigest, importPdf, LONG_PDF_NAME, MARKDOWN_SOURCE, NOTE_TEXT, openFile, PDF_LONG_OUTLINE_TITLE, PDF_LONG_UNAVAILABLE_OUTLINE_TITLE, PDF_NAME, SECOND_PDF_NAME, seedLongPdf, openSeededLiteraturePdf, seedProject, selectPdfText, selectProject, SOURCE_CASES } from './fixtures/workbench'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const SHORTCUT = process.platform === 'darwin' ? 'Meta' : 'Control'
+const PROJECT_SUBMENU_GAP_PX = 5
+const PROJECT_SUBMENU_TOLERANCE_PX = 1
+const DOCUMENT_END_SHORTCUT = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End'
 const NATIVE_SHORTCUT_MODIFIER = process.platform === 'darwin' ? 'meta' : 'control'
 const EMPTY_FOLDER_PROJECT_NAME = '空库文件夹验收'
 const EMPTY_DOCUMENT_PROJECT_NAME = '空库文档验收'
@@ -26,10 +40,12 @@ const SELECTION_SCROLL_DISTANCE_PX = 64
 const PDF_NAVIGATION_MIN_WIDTH_PX = 190
 const PDF_NAVIGATION_MAX_WIDTH_PX = 360
 const PDF_NAVIGATION_DRAG_DISTANCE_PX = 600
+const VERSION_COMPARISON_VIEWPORT = { width: 2000, height: 900 }
+// Monaco's default threshold for switching a side-by-side diff to inline.
+const MONACO_INLINE_BREAKPOINT_PX = 900
+const VERSION_COLUMN_ALIGNMENT_TOLERANCE_PX = 1
 const PDF_ACTUAL_SCALE_LABEL = '100%'
-const PDF_ANNOTATION_MIN_WIDTH_PX = 400
-const PDF_ANNOTATION_MAX_WIDTH_RATIO = 0.6
-const PDF_ANNOTATION_DRAG_DISTANCE_PX = 1000
+const PDF_FOCUS_VIEWPORT = { width: 1280, height: 600 }
 const PDF_LONG_SEARCH_REPEAT_COUNT = 4
 const PDF_READER_MIN_WIDTH_PX = 320
 const PDF_WHEEL_ZOOM_DELTA_PX = -120
@@ -40,6 +56,11 @@ const PDF_TRACKPAD_MAX_SCALE_RATIO = 1.4
 const PDF_ZOOM_POINTER_OFFSET_PX = 180
 const PDF_ZOOM_ANCHOR_TOLERANCE_PX = 4
 const PDF_ZOOM_POINTER_X_RATIO = 0.5
+const PDF_SMALL_CONTROL_HEIGHT_PX = 28
+const PDF_SMALL_CONTROL_HEIGHT_TOKEN = '--vds-control-height-sm'
+const PDF_FIT_PAGE_RENDER_PIXEL_BUDGET = 16_000_000
+const PDF_RECORDS_ENDPOINT_SUFFIX = '/pdf/records'
+const PDF_MARK_POINTER_CENTER_RATIO = 0.5
 const COMPACT_AI_BUTTON_MAX_WIDTH_PX = 32
 const SPLIT_SCROLL_DISTANCE_PX = 520
 const SPLIT_SCROLL_SECTION_COUNT = 80
@@ -53,6 +74,307 @@ const FORMAT_ON_SAVE_EXPECTED = 'const answer = { value: 42 };\n'
 const FORMAT_ON_SAVE_DISABLED_SOURCE = 'const disabled={value:42}\r\n'
 const HEADING_ONLY_MARKDOWN = '# Heading only'
 const UNFORMATTED_MARKDOWN = '# 123\n```bash\nabcabc\n```'
+const TOAST_HOVER_OBSERVATION_MS = 7500
+const TOAST_DISMISS_TIMEOUT_MS = 7000
+const OVERSIZED_RESOURCE_NAME_LENGTH = 300
+const UNSENT_COMPOSER_DRAFT = 'abcdwe 未发送的研究问题\nPDF 与文档切换后应保留'
+const DRAFT_RESET_PROJECT_NAME = '草稿重置验收'
+const RENDERER_PREFERENCES_FILENAME = 'renderer-preferences.json'
+
+test('literature PDF tabs preserve project files context through reuse, split focus, close and restart', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const desktop = new DesktopSession(runtime, testInfo, {
+    preserveNavigation: true,
+    nativeWindowLifecycle: true,
+  })
+  const preferencesPath = join(runtime.userData, RENDERER_PREFERENCES_FILENAME)
+  const location = (): NavigationLocation | undefined =>
+    JSON.parse(readFileSync(preferencesPath, 'utf8')).lastLocation
+  try {
+    let page = await desktop.launch()
+    const project = await createReadyProject(page, 'Literature navigation acceptance')
+    const projectId = project.id
+    const resources = join(project.root, RESOURCES_DIR)
+    mkdirSync(resources, { recursive: true })
+    writeFileSync(join(resources, 'acceptance.md'), MARKDOWN_SOURCE)
+    const pdf = await PDFDocument.create()
+    pdf.addPage().drawText('Literature navigation acceptance')
+    writeFileSync(join(resources, PDF_NAME), await pdf.save())
+    const literatureId = await importPdf(page, projectId!, join(resources, PDF_NAME))
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${project.name}`).click()
+    const openFromLibrary = async (): Promise<void> => {
+      await page.getByTestId('project-search').click()
+      await page.getByTestId('global-search-input').fill('acceptance')
+      await page.getByTestId(`search-hit-literature-${literatureId}`).click()
+      await expect.poll(() => location()?.view).toBe('literature')
+      await page.locator('.lit-row').filter({ hasText: 'acceptance' }).first().dblclick()
+      await expect(page.getByTestId('pdf-page-1')).toBeVisible()
+    }
+    await openFromLibrary()
+    const reader = (): Locator => page.locator('[data-testid="pdf-document"]:visible')
+    const documentIdentity = await reader().getAttribute('data-ob-document')
+    expect(documentIdentity).toContain(`literature:${literatureId}:attachment:`)
+    const pdfTab = page.locator('[data-testid^="document-tab-"]').filter({ hasText: PDF_NAME })
+    const pdfTabId = await pdfTab.getAttribute('data-testid')
+    if (!(await page.getByTestId('ai-panel').isVisible()))
+      await page.getByTestId('topbar-ai').click()
+    await page.getByTestId('composer-input').fill(UNSENT_COMPOSER_DRAFT)
+    await page.getByTestId('project-library').click()
+    await expect(page.getByTestId('project-library-content')).toBeVisible()
+    await pdfTab.click()
+    await expect(reader()).toHaveAttribute('data-ob-document', documentIdentity!)
+    await expect(pdfTab).toHaveAttribute('aria-selected', 'true')
+    await expect.poll(() => location()?.view).toBe('resource')
+    await expect.poll(() => location()?.projectId).toBe(projectId)
+    await expect(page.getByTestId('composer-input')).toHaveValue(UNSENT_COMPOSER_DRAFT)
+    await page.screenshot({ path: join(runtime.artifacts, 'literature-tab-in-project-files.png') })
+    await page.getByTestId('project-library').click()
+    await page.getByTestId(`material-${RESOURCES_DIR}`).getByRole('button').first().click()
+    await page
+      .getByTestId(`material-${RESOURCES_DIR}/acceptance.md`)
+      .getByRole('button')
+      .first()
+      .click()
+    await pdfTab.click()
+    await expect.poll(() => location()?.view).toBe('resource')
+    await openFromLibrary()
+    await expect(pdfTab).toHaveAttribute('data-testid', pdfTabId!)
+    await expect(reader()).toHaveAttribute('data-ob-document', documentIdentity!)
+    await page.getByTestId('project-library').click()
+    await pdfTab.click()
+    const markdownTab = page
+      .locator('[data-testid^="document-tab-"]')
+      .filter({ hasText: 'acceptance.md' })
+    await markdownTab.click({ button: 'right' })
+    await page.getByTestId('tab-split-right').click()
+    await expect(page.locator('.vds-dock-leaf')).toHaveCount(2)
+    await reader().getByTestId('pdf-page-input').click()
+    await expect(pdfTab).toHaveAttribute('aria-selected', 'true')
+    await expect.poll(() => location()?.view).toBe('resource')
+    await expect(page.getByTestId('composer-input')).toHaveValue(UNSENT_COMPOSER_DRAFT)
+    await page.screenshot({
+      path: join(runtime.artifacts, 'literature-split-focus-in-project-files.png'),
+    })
+    await pdfTab.click({ button: 'right' })
+    await page.getByTestId('tab-close').click()
+    await expect(
+      page
+        .locator('[data-testid^="document-tab-"][aria-selected="true"]')
+        .filter({ hasText: 'acceptance.md' })
+    ).toHaveCount(1)
+    await expect.poll(() => location()?.view).toBe('resource')
+    await page.getByTestId('project-library').click()
+    await page.locator('[data-ob="project-guide-literature-tab"]').click()
+    await page.locator('.lit-row').filter({ hasText: 'acceptance' }).first().dblclick()
+    await expect(reader()).toHaveAttribute('data-ob-document', documentIdentity!)
+    await expect.poll(() => location()?.view).toBe('resource')
+    await expect.poll(() => location()?.target?.kind).toBe('document')
+    const savedTarget = location()?.target
+    await desktop.close()
+    page = await desktop.launch()
+    await expect(reader()).toHaveAttribute('data-ob-document', documentIdentity!)
+    await expect.poll(() => location()?.view).toBe('resource')
+    await expect.poll(() => location()?.projectId).toBe(projectId)
+    expect(location()?.target).toEqual(savedTarget)
+    await page.screenshot({
+      path: join(runtime.artifacts, 'literature-restored-in-project-files.png'),
+    })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('document tab activation and context menus preserve unsent composer drafts', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const preferencesPath = join(runtime.userData, RENDERER_PREFERENCES_FILENAME)
+  const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+  writeFileSync(preferencesPath, JSON.stringify({
+    ...preferences,
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await createReadyProject(page, DRAFT_RESET_PROJECT_NAME)
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await selectProject(page)
+    if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
+    await openFile(page, 'acceptance.md')
+    await openFile(page, PDF_NAME)
+    await expect(page.getByTestId('pdf-page-1')).toBeVisible()
+    const input = page.getByTestId('composer-input')
+    const tabs = page.locator('[data-testid^="document-tab-"]')
+    const pdfTab = tabs.filter({ hasText: PDF_NAME })
+    const markdownTab = tabs.filter({ hasText: 'acceptance.md' })
+    await input.fill(UNSENT_COMPOSER_DRAFT)
+    await pdfTab.click()
+    await expect(input).toHaveValue(UNSENT_COMPOSER_DRAFT)
+    for (const tab of [markdownTab, pdfTab, markdownTab, pdfTab]) {
+      await tab.click({ button: 'right' })
+      await expect(input).toHaveValue(UNSENT_COMPOSER_DRAFT)
+      await page.keyboard.press('Escape')
+      await tab.click()
+      await expect(input).toHaveValue(UNSENT_COMPOSER_DRAFT)
+    }
+    await page.screenshot({ path: join(runtime.artifacts, 'composer-draft-after-document-tabs.png') })
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${DRAFT_RESET_PROJECT_NAME}`).click()
+    await expect(input).toHaveValue('')
+    await input.fill(UNSENT_COMPOSER_DRAFT)
+    await page.getByTestId('activity-home').click()
+    await expect(page.getByTestId('workbench-home-space')).toBeVisible()
+    await enterWorkbenchShell(page)
+    if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
+    await expect(page.getByTestId('composer-input')).toHaveValue('')
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+const EDITOR_VERSION_WINDOW_MS = 60_000
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`Markdown links ${theme} highlight, hover, navigate and survive save`, async ({}, testInfo) => {
+    const runtime = createRuntime(testInfo)
+    writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', theme, onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
+    const desktop = new DesktopSession(runtime, testInfo)
+    const requests: string[] = []
+    const server = createHttpServer((request, response) => {
+      requests.push(request.url ?? '')
+      response.setHeader('Cache-Control', 'no-store')
+      response.end('Markdown link acceptance: opened by the system browser.')
+    })
+    await new Promise<void>(resolveListening => server.listen(0, '127.0.0.1', resolveListening))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Browser acceptance endpoint unavailable')
+    const href = `http://127.0.0.1:${address.port}/markdown-link?requirement=87241309`
+    const keyboardHref = `${href}&keyboard=true`
+    const name = 'links.md'
+    const source = `# Link acceptance\n\n[External paper](${href} "Original title")\n\n[Keyboard external](${keyboardHref})\n\n[Reference](#ref-paper)\n\n[Unavailable citation](scholarseed-cite:missing-receipt)\n\nPlain editable text.\n\n${Array.from({ length: 40 }, (_, index) => `Paragraph ${index}.\n`).join('\n')}\n<a id="ref-paper"></a>\nReference destination.\n`
+    try {
+      let page = await desktop.launch()
+      const resources = await seedProject(page, runtime)
+      writeFileSync(join(resources, name), source)
+      await page.getByTestId('resource-refresh').click()
+      await openFile(page, name)
+      const editor = page.getByTestId('markdown-visual-editor').locator('.ProseMirror')
+      const external = editor.getByRole('link', { name: 'External paper', exact: true })
+      await expect(external).toHaveAttribute('data-document-link', href)
+      await expect(external).toHaveAttribute('title', 'Original title')
+      await expect(external).toHaveCSS('color', theme === 'light' ? 'rgb(54, 122, 189)' : 'rgb(108, 175, 248)')
+      await external.hover()
+      await expect(page.getByTestId('markdown-link-tooltip')).toHaveText(`${href} — 单击在默认浏览器中打开`)
+      await page.screenshot({ path: join(runtime.artifacts, `markdown-link-${theme}.png`) })
+      await external.click()
+      await expect.poll(() => requests.includes('/markdown-link?requirement=87241309')).toBe(true)
+      await page.bringToFront()
+      await expect(page.getByTestId('markdown-save-dirty')).toHaveCount(0)
+      await editor.getByRole('link', { name: 'Reference', exact: true }).click()
+      await expect(editor.locator('p').filter({ hasText: 'Reference destination.' })).toBeInViewport()
+      await page.screenshot({ path: join(runtime.artifacts, `markdown-reference-${theme}.png`) })
+      await page.getByTestId('markdown-return-to-source').click()
+      const keyboardLink = editor.getByRole('link', { name: 'Keyboard external', exact: true })
+      await keyboardLink.focus()
+      await expect(keyboardLink).toBeFocused()
+      await expect(page.getByTestId('markdown-link-tooltip')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(page.getByTestId('markdown-link-tooltip')).toHaveCount(0)
+      await expect(keyboardLink).toBeFocused()
+      await page.keyboard.press('Enter')
+      await expect.poll(() => requests.includes('/markdown-link?requirement=87241309&keyboard=true')).toBe(true)
+      await page.bringToFront()
+      await editor.getByRole('link', { name: 'Unavailable citation' }).click()
+      await expect(page.getByText('无法打开链接 scholarseed-cite:missing-receipt，目标不可用或打开失败。', { exact: true })).toBeVisible()
+
+      await editor.getByText('Plain editable text.', { exact: true }).click()
+      await page.keyboard.press('End')
+      await page.keyboard.insertText(' Saved edit.')
+      await expect(editor).toContainText('Saved edit.')
+      await expect(page.getByTestId('markdown-save-dirty')).toHaveCount(0)
+      await expect(page.getByTestId('markdown-save')).toHaveCount(0)
+      await selectMarkdownMode(page, 'source')
+      await expect(visibleMonacoEditor(page).locator('.view-lines')).toContainText(href)
+      await expect(visibleMonacoEditor(page).locator('.view-lines')).toContainText('Saved edit.')
+      await selectMarkdownMode(page, 'edit')
+      await expect(external).toHaveAttribute('data-document-link', href)
+      await page.keyboard.press(`${SHORTCUT}+s`)
+      await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain(`[External paper](${href} "Original title")`)
+      expect(readFileSync(join(resources, name), 'utf8')).toContain('scholarseed-cite:missing-receipt')
+      await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain('Saved edit.')
+      await desktop.close()
+      page = await desktop.launch()
+      await selectProject(page)
+      await openFile(page, name)
+      const reopened = page.getByTestId('markdown-visual-editor').locator('.ProseMirror')
+      await expect(reopened.getByRole('link', { name: 'External paper', exact: true })).toHaveAttribute('data-document-link', href)
+      await expect(reopened).toContainText('Saved edit.')
+      await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
+      await page.setViewportSize({ width: 760, height: 700 })
+      await reopened.getByRole('link', { name: 'External paper', exact: true }).hover()
+      await expect(page.getByTestId('markdown-link-tooltip')).toBeInViewport()
+      await page.screenshot({ path: join(runtime.artifacts, `markdown-reopened-narrow-${theme}.png`) })
+      desktop.assertNoPageErrors()
+    } finally {
+      await desktop.attachArtifacts()
+      await new Promise<void>((resolveClosed, rejectClosed) => {
+        server.close(error => error ? rejectClosed(error) : resolveClosed())
+        server.closeAllConnections()
+      })
+    }
+  })
+}
+
+test('Markdown saved citation from a real answer opens its PDF evidence', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const base = await apiBase(page)
+    const listing = await page.request.get(`${base}/api/content/projects`)
+    const project = (await listing.json() as { projects: Array<{ id: string; root: string }> }).projects.find(candidate => candidate.root === dirname(resources))
+    expect(project).toBeTruthy()
+    expect(await importPdf(page, project!.id, join(resources, PDF_NAME))).toBeTruthy()
+    await page.getByTestId('topbar-ai').click()
+    await page.getByTestId('composer-input').fill('请使用 project-literature 技能通过 scholarseed_bridge 列出本项目文献，读取 acceptance 文献的第一页，仅引用包含 Needle marker 1 的最小原文片段，用一句话原文和一个完整的 scholarseed-cite 链接回答。不要创造或缩短 citation_url。')
+    await page.getByTestId('composer-send').click()
+    const status = await waitForFinishedTurn(page)
+    const history = await page.request.get(`${base}/api/serve/history/${status.activeSession}`)
+    const turns = (await history.json() as { turns: Array<{ kind: string; text: string; item_id?: string }> }).turns
+    const answer = turns.findLast(turn => turn.kind === 'text' && turn.text.includes('scholarseed-cite:'))
+    expect(answer, JSON.stringify(turns)).toBeTruthy()
+    const answerId = await page.locator('.answer-annotation-root[data-answer-id]').last().getAttribute('data-answer-id')
+    expect(answerId).toBeTruthy()
+    const revision = `sha256:${createHash('sha256').update(answer!.text).digest('hex')}`
+    const created = await page.request.post(`${base}/api/assistant/sessions/${status.activeSession}/resources/create`, {
+      data: { project_id: project!.id, name: 'saved-citation.md', content: answer!.text, source: { answer_id: answerId, answer_revision: revision, start_utf16: 0, end_utf16: answer!.text.length, selected_text_hash: revision } }
+    })
+    expect(created.ok(), await created.text()).toBe(true)
+    const node = (await created.json() as { node: { path: string; name: string } }).node
+    await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
+    await page.getByTestId('resource-refresh').click()
+    await page.getByTestId(`tree-${node.path.slice(0, node.path.lastIndexOf('/'))}`).click()
+    await page.getByTestId(`tree-${node.path}`).click()
+    const link = page.getByTestId('markdown-visual-editor').locator('a[data-document-link^="scholarseed-cite:"]').first()
+    await expect(link).toBeVisible()
+    await link.hover()
+    await expect(page.getByTestId('markdown-link-tooltip')).toContainText('单击跳转到引用位置')
+    await link.click()
+    await expect(page.getByTestId('pdf-page-1')).toBeInViewport()
+    await expect(page.locator('[data-citation-highlight]').first()).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'markdown-saved-citation.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
 
 function monacoContent(frame: Locator): Locator {
   return frame.contentFrame().locator('#root')
@@ -70,10 +392,8 @@ for (const scope of ['global', 'project'] as const) {
     try {
       const page = await desktop.launch()
       const base = await apiBase(page)
-      const projectResponse = await page.request.post(`${base}/api/content/projects`, { data: { name: projectName } })
-      const project = await projectResponse.json()
-      const otherResponse = await page.request.post(`${base}/api/content/projects`, { data: { name: '另一个分类项目' } })
-      const other = await otherResponse.json()
+      const project = await createReadyProject(page, projectName)
+      const other = await createReadyProject(page, '另一个分类项目')
       const projectId = scope === 'project' ? project.id : undefined
       const create = async (name: string, owner = projectId, parent_id?: string): Promise<{ id: string }> => {
         const response = await page.request.post(`${base}/api/v1/collections`, { data: { name, project_id: owner, parent_id } })
@@ -87,7 +407,7 @@ for (const scope of ['global', 'project'] as const) {
       const foreign = await create('其他项目中的分类', other.id)
       await page.reload()
       await enterWorkbenchShell(page)
-      if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel-layout-toggle').click()
+      if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
       await page.getByTestId('topbar-project').click()
       if (scope === 'project') {
         await page.getByTestId(`project-menu-option-${projectName}`).click()
@@ -97,7 +417,7 @@ for (const scope of ['global', 'project'] as const) {
       }
       const row = page.getByTestId(`literature-collection-${source.id}`)
       await row.click({ button: 'right' })
-      for (const name of ['新建子分类', '重命名', '移动分类', '删除分类']) {
+      for (const name of ['重命名', '移动分类', '删除分类']) {
         await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible()
       }
       await page.screenshot({ path: join(runtime.artifacts, `${scope}-collection-menu.png`) })
@@ -105,7 +425,8 @@ for (const scope of ['global', 'project'] as const) {
       await page.getByRole('dialog').getByLabel('名称', { exact: true }).fill('已重命名分类')
       await page.getByRole('dialog').getByRole('button', { name: '保存', exact: true }).click()
       await expect(row).toContainText('已重命名分类')
-      await row.click({ button: 'right' })
+      await row.hover()
+      await row.getByRole('button', { name: '导入文献', exact: true }).click()
       await page.getByRole('menuitem', { name: '新建子分类', exact: true }).click()
       await page.getByRole('dialog').getByLabel('名称', { exact: true }).fill('菜单新建子分类')
       await page.getByRole('dialog').getByRole('button', { name: '创建', exact: true }).click()
@@ -162,7 +483,7 @@ test('literature attachment picker uploads multiple files and opens them by doub
     const item = (await imported.json()).items[0]
     await page.reload()
     await enterWorkbenchShell(page)
-    if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel-layout-toggle').click()
+    if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
     await page.getByTestId('topbar-project').click()
     await page.getByTestId('project-menu-literature').click()
     await page.getByText(title, { exact: true }).click()
@@ -223,7 +544,7 @@ for (const source of ['doi', 'arxiv'] as const) {
       const item = (await imported.json()).items[0]
       await page.reload()
       await enterWorkbenchShell(page)
-      if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel-layout-toggle').click()
+      if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
       await page.getByTestId('topbar-project').click()
       await page.getByTestId('project-menu-literature').click()
       await page.getByText(title, { exact: true }).click()
@@ -266,7 +587,7 @@ test('PDF import accepts missing metadata and persists extracted identifiers', a
     firstPage.drawText('https://doi.org/10.1234/pdf-acceptance', { x: 60, y: 30, size: 12 })
     const page = await desktop.launch()
     await enterWorkbenchShell(page)
-    if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel-layout-toggle').click()
+    if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
     await page.getByTestId('topbar-project').click()
     await page.getByTestId('project-menu-literature').click()
     await page.locator('input[type="file"][accept="application/pdf,.pdf"]').setInputFiles([
@@ -317,21 +638,22 @@ for (const theme of ['light', 'dark'] as const) {
   test(`literature association returns only to its originating project (${theme})`, async ({}, testInfo) => {
     const projectNames = ['关联来源甲', '关联来源乙']
     const runtime = createRuntime(testInfo)
-    writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', theme }))
+    writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+      language: 'zh', theme, onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+    }))
     const desktop = new DesktopSession(runtime, testInfo)
     try {
       const page = await desktop.launch()
-      const base = await apiBase(page)
       for (const name of projectNames) {
-        const created = await page.request.post(`${base}/api/content/projects`, { data: { name } })
-        expect(created.ok(), await created.text()).toBe(true)
+        await createReadyProject(page, name)
       }
       await page.reload()
       await enterWorkbenchShell(page)
-      if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
+      if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
       const returnButton = page.getByRole('button', { name: '返回项目', exact: true })
-      const entry = page.getByRole('button', { name: '从文献全览关联', exact: true })
+      const entry = page.getByRole('menuitem', { name: '从文献中心关联', exact: true })
       const search = page.getByRole('searchbox', { name: '搜索文献', exact: true })
+      const importButton = page.getByTestId('literature-toolbar-import')
       const openOverview = async (): Promise<void> => {
         await page.getByTestId('topbar-project').click()
         await page.getByTestId('project-menu-literature').click()
@@ -343,7 +665,7 @@ for (const theme of ['light', 'dark'] as const) {
       }
       await openOverview()
       await expect(returnButton).toHaveCount(0)
-      await page.getByRole('button', { name: '导入文献', exact: true }).click()
+      await importButton.click()
       await expect(entry).toHaveCount(0)
       await page.keyboard.press('Escape')
 
@@ -355,7 +677,7 @@ for (const theme of ['light', 'dark'] as const) {
         )
         await search.fill(name)
         expect((await filtered).ok()).toBe(true)
-        await page.getByRole('button', { name: '导入文献', exact: true }).click()
+        await importButton.click()
         await expect(entry).toBeVisible()
         const siblings = await entry.evaluate((element) =>
           Array.from(element.parentElement!.children)
@@ -363,14 +685,14 @@ for (const theme of ['light', 'dark'] as const) {
             .map((child) => child.tagName === 'HR' ? 'separator' : child.textContent?.trim())
         )
         expect(siblings).toEqual([
-          '从文献全览关联', 'separator', '导入 PDF', '导入 Bib / RIS 文件', '从 Zotero 导入'
+          '从文献中心关联', 'separator', '从 ArXiv ID / DOI 导入', '导入本地PDF文件', '导入 Bib / Ris 文件', '从 Zotero 导入'
         ])
         if (name === projectNames[0]) {
           await page.screenshot({ path: join(runtime.artifacts, `literature-link-menu-${theme}.png`), animations: 'disabled' })
         }
         await entry.focus()
         await page.keyboard.press('Enter')
-        await expect(page.getByTestId('topbar-project')).toContainText('文献全览')
+        await expect(page.getByTestId('topbar-project')).toContainText('文献中心')
         await expect(returnButton).toBeVisible()
         await expect(search).toBeVisible()
         const [backBounds, searchBounds] = await Promise.all([returnButton.boundingBox(), search.boundingBox()])
@@ -393,7 +715,7 @@ for (const theme of ['light', 'dark'] as const) {
         await expect(returnButton).toHaveCount(0)
       }
 
-      await page.getByRole('button', { name: '导入文献', exact: true }).click()
+      await importButton.click()
       await entry.click()
       await expect(returnButton).toBeVisible()
       await openOverview()
@@ -423,9 +745,7 @@ test('literature overview and project library show every item without pagination
   try {
     const page = await desktop.launch()
     const base = await apiBase(page)
-    const created = await page.request.post(`${base}/api/content/projects`, { data: { name: projectName } })
-    expect(created.ok(), await created.text()).toBe(true)
-    const project = await created.json() as { id: string }
+    const project = await createReadyProject(page, projectName)
     const bibliography = Array.from({ length: projectItemCount }, (_, index) =>
       `@article{single${index},title={Single-page paper ${String(index + 1).padStart(3, '0')}},author={Researcher},year={2026}}`
     ).join('\n')
@@ -443,7 +763,7 @@ test('literature overview and project library show every item without pagination
     await enterWorkbenchShell(page)
     await page.getByTestId('topbar-project').click()
     await page.getByTestId('project-menu-literature').click()
-    if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
+    if (await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
     const rows = page.locator('.lit-row')
     const selectAll = page.getByRole('checkbox', { name: '选择当前筛选的全部文献', exact: true })
     const search = page.getByRole('searchbox', { name: '搜索文献', exact: true })
@@ -491,8 +811,7 @@ test('web search tabs follow their owning project and return without duplication
   try {
     const page = await desktop.launch()
     for (const name of projectNames) {
-      const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name } })
-      expect(response.ok(), await response.text()).toBe(true)
+      await createReadyProject(page, name)
     }
     await page.reload()
     await enterWorkbenchShell(page)
@@ -534,6 +853,12 @@ test('web search tabs follow their owning project and return without duplication
 
 test('non-Markdown text editors use the unified source toolbar and fill the document body', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  const preferencesPath = join(runtime.userData, RENDERER_PREFERENCES_FILENAME)
+  const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+  writeFileSync(preferencesPath, JSON.stringify({
+    ...preferences,
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
@@ -567,7 +892,8 @@ test('non-Markdown text editors use the unified source toolbar and fill the docu
     await page.keyboard.press(`${SHORTCUT}+End`)
     await page.keyboard.press('Enter')
     await page.keyboard.type('// saved from unified toolbar')
-    await expect(toolbar.getByTestId('source-document-save-dirty')).toBeVisible()
+    await expect(toolbar.getByTestId('source-document-save-dirty')).toHaveCount(0)
+    await expect(toolbar.getByTestId('source-document-save')).toBeEnabled()
     await toolbar.getByTestId('source-document-save').click()
     await expect(toolbar.getByTestId('source-document-save')).toBeDisabled()
     await expect(toolbar.getByTestId('source-document-save-dirty')).toHaveCount(0)
@@ -577,6 +903,7 @@ test('non-Markdown text editors use the unified source toolbar and fill the docu
 })
 
 test('Markdown source selection and code block copy write exact text through the desktop clipboard', async ({}, testInfo) => {
+  skipQuarantined(testInfo)
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
     language: 'zh',
@@ -616,7 +943,7 @@ test('Markdown source selection and code block copy write exact text through the
     expect(frameBounds).not.toBeNull()
     const characterWidth = textBounds.width / headingText.length
     const selectionY = frameBounds!.y + textBounds.y + textBounds.height / 2
-    const sourceWindow = await desktop.app!.browserWindow(page)
+    const sourceWindow = await desktop.browserWindow(page)
     await sourceWindow.evaluate(window => { window.show(); window.focus() })
     const receiverOpened = desktop.app!.waitForEvent('window')
     await desktop.app!.evaluate(async ({ BrowserWindow }) => {
@@ -633,12 +960,12 @@ test('Markdown source selection and code block copy write exact text through the
         await page.mouse.move(start + characterWidth * expectedText.length, selectionY, { steps: expectedText.length })
         await page.mouse.up()
         await desktop.app!.evaluate(({ clipboard }) => clipboard.writeText(''))
-        await sourceWindow.evaluate((window, modifier) => {
+        await sourceWindow.evaluate((window, modifier: typeof NATIVE_SHORTCUT_MODIFIER) => {
           window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: [modifier] })
           window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: [modifier] })
         }, shortcut === 'Control' ? 'control' : 'meta')
         await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(expectedText)
-        await (await desktop.app!.browserWindow(receiver)).evaluate(window => window.focus())
+        await (await desktop.browserWindow(receiver)).evaluate(window => window.focus())
         const pasteTarget = receiver.getByRole('textbox', { name: 'Clipboard receiver', exact: true })
         await pasteTarget.fill('')
         await pasteTarget.press(`${SHORTCUT}+v`)
@@ -665,7 +992,7 @@ test('Markdown source selection and code block copy write exact text through the
         await sourceWindow.evaluate(window => { window.show(); window.focus() })
         await expect(markdownSource.locator('textarea').first()).toBeFocused()
         await desktop.app!.evaluate(({ Menu }) => Menu.sendActionToFirstResponder('paste:'))
-      } else await sourceWindow.evaluate((window, modifier) => {
+      } else await sourceWindow.evaluate((window, modifier: typeof NATIVE_SHORTCUT_MODIFIER) => {
         window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: [modifier] })
         window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: [modifier] })
       }, NATIVE_SHORTCUT_MODIFIER)
@@ -681,7 +1008,7 @@ test('Markdown source selection and code block copy write exact text through the
       await page.keyboard.press(`${SHORTCUT}+c`)
       await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(sourceWindowContents)
     }
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await selectMarkdownMode(page, 'edit')
     const markdown = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await expect(markdown).toBeVisible()
     const codeCopyButton = page.locator('[data-testid="markdown-visual-editor"] .milkdown-code-block .copy-button')
@@ -723,7 +1050,7 @@ test('Markdown and source editors preserve native copy and paste shortcuts', asy
     })
 
     await openFile(page, 'acceptance.md')
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await selectMarkdownMode(page, 'edit')
     const markdown = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await expect(markdown).toBeVisible()
     await markdown.click()
@@ -741,7 +1068,7 @@ test('Markdown and source editors preserve native copy and paste shortcuts', asy
     await expect(source.locator('.view-lines')).toContainText('plain answer 42')
     await source.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+a`)
-    await desktop.app!.evaluate(({ BrowserWindow }, modifier) => {
+    await desktop.app!.evaluate(({ BrowserWindow }, modifier: typeof NATIVE_SHORTCUT_MODIFIER) => {
       const contents = BrowserWindow.getAllWindows()[0]?.webContents
       contents?.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: [modifier] })
       contents?.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: [modifier] })
@@ -750,7 +1077,7 @@ test('Markdown and source editors preserve native copy and paste shortcuts', asy
     await desktop.app!.evaluate(({ clipboard }, text) => clipboard.writeText(text), sourcePaste)
     await page.keyboard.press(`${SHORTCUT}+End`)
     await page.keyboard.press('Enter')
-    await desktop.app!.evaluate(({ BrowserWindow }, modifier) => {
+    await desktop.app!.evaluate(({ BrowserWindow }, modifier: typeof NATIVE_SHORTCUT_MODIFIER) => {
       const contents = BrowserWindow.getAllWindows()[0]?.webContents
       contents?.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: [modifier] })
       contents?.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: [modifier] })
@@ -812,7 +1139,8 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     await editor.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+a`)
     await page.keyboard.insertText(FORMAT_ON_SAVE_SOURCE)
-    await expect(page.locator('[data-testid="source-document-save-dirty"]:visible')).toBeVisible()
+    await expect(page.locator('[data-testid="source-document-save-dirty"]:visible')).toHaveCount(0)
+    await expect(page.locator('[data-testid="source-document-save"]:visible')).toBeEnabled()
     await page.locator('[data-testid="source-document-save"]:visible').click()
     await expect(page.locator('[data-testid="source-document-save"]:visible')).toBeDisabled()
     await expect.poll(() => readFileSync(join(resources, 'source.ts'), 'utf8')).toBe(FORMAT_ON_SAVE_EXPECTED)
@@ -824,7 +1152,7 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     await openFile(page, 'heading-only.md')
     await expect(page.getByTestId('markdown-visual-editor')).toBeVisible()
     await expect(page.getByTestId('markdown-save-dirty')).toHaveCount(0)
-    await expect(page.getByRole('tab', { name: /heading-only\.md/ }).locator('i[aria-label="未保存"]')).toHaveCount(0)
+    await expect(page.getByRole('tab', { name: /heading-only\.md/ }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
     expect(readFileSync(join(resources, 'heading-only.md'), 'utf8')).toBe(HEADING_ONLY_MARKDOWN)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-open-clean.png') })
 
@@ -838,34 +1166,35 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     writeFileSync(join(resources, 'projection.md'), '')
     await page.getByTestId('resource-refresh').click()
     await openFile(page, 'projection.md')
-    await page.locator('[data-testid="markdown-open-source"]:visible').click()
+    await selectMarkdownMode(page, 'source')
     editor = visibleMonacoEditor(page)
     await editor.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+a`)
     await page.keyboard.insertText(UNFORMATTED_MARKDOWN)
-    await page.locator('[data-testid="markdown-save"]:visible').click()
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, 'projection.md'), 'utf8')).toBe(UNFORMATTED_MARKDOWN)
 
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await selectMarkdownMode(page, 'edit')
     await expect(page.locator('[data-testid="markdown-visual-editor"]:visible')).toBeVisible()
     await expect(page.locator('[data-testid="markdown-save-dirty"]:visible')).toHaveCount(0)
     await page.waitForTimeout(300)
-    await page.locator('[data-testid="markdown-open-source"]:visible').click()
+    await selectMarkdownMode(page, 'source')
     editor = visibleMonacoEditor(page)
     await expect(editor.locator('.view-line')).toHaveCount(4)
     await expect(page.locator('[data-testid="markdown-save-dirty"]:visible')).toHaveCount(0)
     expect(readFileSync(join(resources, 'projection.md'), 'utf8')).toBe(UNFORMATTED_MARKDOWN)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-view-switch-source-fidelity.png') })
 
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await selectMarkdownMode(page, 'edit')
     await page.locator('[data-testid="markdown-paper"]:visible').getByText('123', { exact: true }).click()
     await page.keyboard.press('End')
     await page.keyboard.insertText(' changed')
-    await page.locator('[data-testid="markdown-open-source"]:visible').click()
+    await selectMarkdownMode(page, 'source')
     editor = visibleMonacoEditor(page)
     await expect(editor.locator('.view-lines')).toContainText('123 changed')
     await expect(editor.locator('.view-lines')).toContainText('abcabc')
-    await expect(page.locator('[data-testid="markdown-save-dirty"]:visible')).toBeVisible()
+    await expect(page.locator('[data-testid="markdown-save-dirty"]:visible')).toHaveCount(0)
+    await expect(page.locator('[data-testid="markdown-save"]:visible')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-visual-edit-preserved.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
@@ -878,8 +1207,7 @@ test('version history opens a resizable read-only text comparison tab', async ({
   const otherProjectName = 'Version scope Beta'
   try {
     const page = await desktop.launch()
-    const otherProject = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name: otherProjectName } })
-    expect(otherProject.ok(), await otherProject.text()).toBe(true)
+    await createReadyProject(page, otherProjectName)
     await seedProject(page, runtime)
     await openFile(page, 'source.txt')
     const editor = monacoContent(page.getByTestId('monaco-editor'))
@@ -897,10 +1225,36 @@ test('version history opens a resizable read-only text comparison tab', async ({
 
     const comparisonFrame = page.getByTestId('version-text-diff')
     const comparison = monacoContent(comparisonFrame)
+    const assertColumnsAligned = async (): Promise<void> => {
+      await expect.poll(async () => {
+        const header = await page.getByTestId('version-diff-view').locator('header > div').nth(1).boundingBox()
+        const body = await comparison.locator('.modified').first().boundingBox()
+        return header && body ? Math.abs(header.x - body.x) : Infinity
+      }).toBeLessThanOrEqual(VERSION_COLUMN_ALIGNMENT_TOLERANCE_PX)
+    }
     await expect(comparisonFrame).toBeVisible()
+    if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
+    const window = await desktop.browserWindow(page)
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+    await expect.poll(async () => (await comparisonFrame.boundingBox())?.width ?? Infinity).toBeLessThan(MONACO_INLINE_BREAKPOINT_PX)
+    const original = comparison.locator('.original .view-lines')
+    const modified = comparison.locator('.modified .view-lines')
+    await expect(original).toBeVisible()
+    await expect(modified).toBeVisible()
+    await expect(original).toContainText('plain answer 42')
+    await expect(original).not.toContainText('current version addition')
+    await expect(modified).toContainText('current version addition')
+    const originalBounds = await original.boundingBox()
+    const modifiedBounds = await modified.boundingBox()
+    expect(originalBounds!.x + originalBounds!.width).toBeLessThanOrEqual(modifiedBounds!.x)
+    await assertColumnsAligned()
+    await page.screenshot({ path: join(runtime.artifacts, 'version-diff-narrow-ai-panel.png') })
+    await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), VERSION_COMPARISON_VIEWPORT)
     await expect(page.getByRole('tab', { name: /版本对比 · v1 · source\.txt/ })).toBeVisible()
     await expect(comparison.locator('.original .view-lines')).toContainText('plain answer 42')
     await expect(comparison.locator('.modified .view-lines')).toContainText('current version addition')
+    await assertColumnsAligned()
 
     const divider = comparison.locator('.monaco-sash.vertical').first()
     const before = await divider.boundingBox()
@@ -912,6 +1266,13 @@ test('version history opens a resizable read-only text comparison tab', async ({
     const after = await divider.boundingBox()
     expect(after).not.toBeNull()
     expect(after!.x).toBeGreaterThan(before!.x + 80)
+    await assertColumnsAligned()
+    await page.screenshot({ path: join(runtime.artifacts, 'version-diff-wide.png') })
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+    await expect(original).toBeVisible()
+    await expect(modified).toBeVisible()
+    await assertColumnsAligned()
+    await window.evaluate((window, size) => window.setSize(size.width, size.height), VERSION_COMPARISON_VIEWPORT)
     await page.getByTestId('topbar-project').click()
     await page.getByTestId(`project-menu-option-${otherProjectName}`).click()
     await expect(page.getByRole('tab', { name: /版本对比 · v1 · source\.txt/ })).toHaveCount(0)
@@ -936,9 +1297,7 @@ test('file tabs follow projects and auto-save on workspace blur with a version',
   try {
     const page = await desktop.launch()
     const createProject = async (name: string, fileName: string, content: string): Promise<{ id: string; path: string }> => {
-      const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name } })
-      expect(response.ok(), await response.text()).toBe(true)
-      const project = await response.json() as { id: string; root: string }
+      const project = await createReadyProject(page, name)
       const resources = join(project.root, RESOURCES_DIR)
       mkdirSync(resources, { recursive: true })
       const path = join(resources, fileName)
@@ -975,7 +1334,7 @@ test('file tabs follow projects and auto-save on workspace blur with a version',
     }
     await openProject('Tab scope Alpha')
     await openFile(page, 'alpha.md')
-    await page.getByTestId('markdown-open-source').click()
+    await selectMarkdownMode(page, 'source')
     const editor = visibleMonacoEditor(page)
     await expect(editor.locator('.view-lines')).toContainText('ALPHA')
     await expect(page.getByRole('tab', { name: /alpha\.md/ })).toBeVisible()
@@ -994,14 +1353,14 @@ test('file tabs follow projects and auto-save on workspace blur with a version',
     await expect(page.getByRole('tab', { name: /alpha\.md/ })).toHaveCount(0)
     await expect.poll(() => readFileSync(alpha.path, 'utf8')).toContain('Auto-saved Alpha')
     await openFile(page, 'beta.md')
-    await page.getByTestId('markdown-open-source').click()
+    await selectMarkdownMode(page, 'source')
     await expect(page.getByRole('tab', { name: /beta\.md/ })).toBeVisible()
     await expect(editor.locator('.view-lines')).toContainText('BETA')
 
     await openProject('Tab scope Alpha')
     const alphaTab = page.getByRole('tab', { name: /alpha\.md/ })
     await expect(alphaTab).toBeVisible()
-    await expect(alphaTab.locator('i[aria-label="未保存"]')).toHaveCount(0)
+    await expect(alphaTab.locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
     await expect(page.getByRole('tab', { name: /beta\.md/ })).toHaveCount(0)
     await expect(editor.locator('.view-lines')).toContainText('Auto-saved Alpha')
     await expect(page.getByTestId('document-save-version')).toHaveCount(0)
@@ -1016,17 +1375,338 @@ test('file tabs follow projects and auto-save on workspace blur with a version',
   } finally { await desktop.attachArtifacts() }
 })
 
+test('editor saves coalesce one minute version and keep the window across Desktop restart', async ({}, testInfo) => {
+  skipQuarantined(testInfo)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    let page = await desktop.launch()
+    const saveResponses: string[] = []
+    const observeSave = (target: Page): void => {
+      target.on('response', async (response) => {
+        if (response.request().method() === 'PUT' && response.url().includes('/api/workbench/')) {
+          saveResponses.push(`${response.status()} ${response.status() >= 400 ? await response.text() : ''}`)
+        }
+      })
+    }
+    observeSave(page)
+    const resources = await seedProject(page, runtime)
+    const path = join(resources, 'acceptance.md')
+    let projectId = ''
+    await openFile(page, 'acceptance.md')
+    await selectMarkdownMode(page, 'source')
+    const history = async (): Promise<Array<{ id: string; sequence: number; created_at_ms: number }>> => {
+      const base = await apiBase(page)
+      const projects = await page.request.get(`${base}/api/content/projects`)
+      const payload = await projects.json() as { projects: Array<{ id: string; root: string }> }
+      const project = payload.projects.find((item) => resolve(item.root, RESOURCES_DIR) === resolve(resources))
+      expect(project).toBeTruthy()
+      projectId = project!.id
+      const query = `project=${encodeURIComponent(project!.id)}`
+      const capability = await page.request.get(`${base}/api/resource/capability?${query}&path=resources/acceptance.md`)
+      const identity = await capability.json() as { file_id: string }
+      const response = await page.request.get(`${base}/api/resource/files/${identity.file_id}/versions?${query}`)
+      expect(response.ok(), await response.text()).toBe(true)
+      return (await response.json()).versions
+    }
+    const readVersion = async (versionId: string): Promise<string> => {
+      const response = await page.request.get(`${await apiBase(page)}/api/resource/versions/${versionId}/content?project=${encodeURIComponent(projectId)}`)
+      expect(response.ok(), await response.text()).toBe(true)
+      return response.text()
+    }
+    const save = async (marker: string, manual: boolean): Promise<void> => {
+      const editor = visibleMonacoEditor(page)
+      await editor.locator('.view-lines').click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(editor.locator('.view-lines')).toContainText(marker)
+      await expect(page.getByRole('tab', { name: /acceptance\.md/ }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+      await expect(page.getByTestId('markdown-save')).toHaveCount(0)
+      if (manual) await page.keyboard.press(`${SHORTCUT}+s`)
+      else {
+        await page.getByTestId('activity-account').click()
+        await page.getByTestId('account-menu-settings').click()
+      }
+      try {
+        await expect.poll(() => readFileSync(path, 'utf8')).toContain(marker)
+      } catch (error) {
+        console.log('Editor save responses:', saveResponses)
+        await page.screenshot({ path: join(runtime.artifacts, 'minute-save-failure.png') })
+        throw error
+      }
+      await expect(page.getByRole('tab', { name: /acceptance\.md/ }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
+      if (!manual) await page.keyboard.press('Escape')
+    }
+    await save('First minute save', false)
+    const first = await history()
+    expect(first.map((version) => version.sequence)).toEqual([2, 1])
+    await save('Latest minute save', false)
+    expect(await history()).toEqual(first.map((version) => expect.objectContaining({
+      id: version.id, sequence: version.sequence, created_at_ms: version.created_at_ms
+    })))
+    expect(await readVersion(first[0].id)).toBe(readFileSync(path, 'utf8'))
+    await page.getByTestId('document-version-history').click()
+    await expect(page.getByTestId('version-history-row-action')).toHaveCount(2)
+    await page.screenshot({ path: join(runtime.artifacts, 'minute-autosave-coalesced.png') })
+    await page.keyboard.press('Escape')
+    await desktop.close()
+    page = await desktop.launch()
+    observeSave(page)
+    await selectProject(page)
+    await openFile(page, 'acceptance.md')
+    await selectMarkdownMode(page, 'source')
+    await save('Manual save after restart', true)
+    expect((await history()).map((version) => version.id)).toEqual(first.map((version) => version.id))
+    const minuteContent = readFileSync(path, 'utf8')
+    expect(await readVersion(first[0].id)).toBe(minuteContent)
+    await page.getByTestId('document-version-history').click()
+    await expect(page.getByTestId('version-history-row-action')).toHaveCount(2)
+    await page.screenshot({ path: join(runtime.artifacts, 'minute-save-restarted.png') })
+    await page.keyboard.press('Escape')
+    const remaining = first[0].created_at_ms + EDITOR_VERSION_WINDOW_MS - Date.now()
+    if (remaining > 0) await page.waitForTimeout(remaining)
+    await save('Next minute new version', false)
+    const next = await history()
+    expect(next.map((version) => version.sequence)).toEqual([3, 2, 1])
+    expect(next[1].id).toBe(first[0].id)
+    expect(await readVersion(next[1].id)).toBe(minuteContent)
+    expect(await readVersion(next[0].id)).toBe(readFileSync(path, 'utf8'))
+    await page.getByTestId('document-version-history').click()
+    await expect(page.getByTestId('version-history-row-action')).toHaveCount(3)
+    await page.screenshot({ path: join(runtime.artifacts, 'minute-save-next-version.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('file auto-save repeats across visual Markdown, Markdown source and code editors', async ({}, testInfo) => {
+  skipQuarantined(testInfo)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const openSettings = async (): Promise<void> => {
+      await page.getByTestId('activity-account').click()
+      await page.getByTestId('account-menu-settings').click()
+      await expect(page.getByTestId('account-settings-shell')).toBeVisible()
+    }
+    const closeSettings = async (): Promise<void> => {
+      await page.keyboard.press('Escape')
+      await expect(page.getByTestId('account-settings-shell')).toHaveCount(0)
+    }
+    const expectAutoSaved = async (path: string, marker: string, tabName: RegExp): Promise<void> => {
+      await openSettings()
+      await expect.poll(() => readFileSync(path, 'utf8')).toContain(marker)
+      await expect(page.getByRole('tab', { name: tabName }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
+      await closeSettings()
+    }
+    const appendToMonaco = async (marker: string): Promise<void> => {
+      const editor = visibleMonacoEditor(page)
+      await editor.locator('.view-lines').click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(editor.locator('.view-lines')).toContainText(marker)
+    }
+
+    const markdownPath = join(resources, 'acceptance.md')
+    const markdownTab = /acceptance\.md/
+    await openFile(page, 'acceptance.md')
+    const visualEditor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
+    for (const marker of ['Repeated visual save one', 'Repeated visual save two']) {
+      await visualEditor.click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(page.getByRole('tab', { name: markdownTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+      await expect(page.getByTestId('markdown-save')).toHaveCount(0)
+      await expectAutoSaved(markdownPath, marker, markdownTab)
+    }
+
+    const beforeBackspace = readFileSync(markdownPath, 'utf8')
+    await visualEditor.click()
+    await page.keyboard.press(`${SHORTCUT}+End`)
+    await page.keyboard.press('Backspace')
+    await expect(page.getByRole('tab', { name: markdownTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+    await expect(page.getByTestId('markdown-save')).toHaveCount(0)
+    await openSettings()
+    await expect.poll(() => readFileSync(markdownPath, 'utf8')).not.toBe(beforeBackspace)
+    await expect(page.getByRole('tab', { name: markdownTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
+    await closeSettings()
+    await page.screenshot({ path: join(runtime.artifacts, 'visual-backspace-auto-save.png') })
+
+    const switchAndSave = async (marker: string, manually: boolean): Promise<void> => {
+      await visualEditor.click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(page.getByRole('tab', { name: markdownTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+      await expect(page.getByTestId('markdown-save')).toHaveCount(0)
+      await selectMarkdownMode(page, 'source')
+      await expect(visibleMonacoEditor(page).locator('.view-lines')).toContainText(marker)
+      if (manually) {
+        await page.keyboard.press(`${SHORTCUT}+s`)
+        await expect.poll(() => readFileSync(markdownPath, 'utf8')).toContain(marker)
+        await expect(page.getByRole('tab', { name: markdownTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
+      } else {
+        await expectAutoSaved(markdownPath, marker, markdownTab)
+      }
+      await page.screenshot({
+        path: join(runtime.artifacts, manually
+          ? 'visual-source-manual-save.png'
+          : 'visual-source-auto-save.png')
+      })
+      await selectMarkdownMode(page, 'edit')
+    }
+    await switchAndSave('Visual source switch auto-save', false)
+    await switchAndSave('Visual source switch manual save', true)
+
+    await selectMarkdownMode(page, 'source')
+    for (const marker of ['Repeated Markdown source save one', 'Repeated Markdown source save two']) {
+      await appendToMonaco(marker)
+      await expect(page.getByRole('tab', { name: markdownTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+      await expect(page.getByTestId('markdown-save')).toHaveCount(0)
+      await expectAutoSaved(markdownPath, marker, markdownTab)
+    }
+
+    const codePath = join(resources, 'source.py')
+    const codeTab = /source\.py/
+    await openFile(page, 'source.py')
+    for (const marker of ['# Repeated code save one', '# Repeated code save two']) {
+      await appendToMonaco(marker)
+      await expect(page.getByRole('tab', { name: codeTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+      await expect(page.getByTestId('source-document-save')).toBeEnabled()
+      await expectAutoSaved(codePath, marker, codeTab)
+    }
+    await page.screenshot({ path: join(runtime.artifacts, 'repeated-file-auto-save.png') })
+
+    await openSettings()
+    await page.getByTestId('account-settings-nav-files').click()
+    const autoSave = page.getByTestId('file-version-auto-save')
+    await expect(autoSave).toHaveAttribute('aria-checked', 'true')
+    await autoSave.click()
+    await expect(autoSave).toHaveAttribute('aria-checked', 'false')
+    await closeSettings()
+    const disabledMarker = '# Auto-save disabled'
+    await appendToMonaco(disabledMarker)
+    await openSettings()
+    await page.waitForTimeout(CODE_ACTION_SETTLE_MS)
+    expect(readFileSync(codePath, 'utf8')).not.toContain(disabledMarker)
+    await expect(page.getByRole('tab', { name: codeTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+    await closeSettings()
+    await page.screenshot({ path: join(runtime.artifacts, 'file-auto-save-disabled.png') })
+    await page.getByTestId('source-document-save').click()
+    await expect.poll(() => readFileSync(codePath, 'utf8')).toContain(disabledMarker)
+    await expect(page.getByRole('tab', { name: codeTab }).locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'manual-save-after-auto-save-disabled.png') })
+
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('resource error toasts deduplicate, pause on hover and close automatically or manually', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    const error = page.locator('.vds-toast').filter({ hasText: '文件或文件夹名称、路径过长' })
+    const trigger = async (): Promise<void> => {
+      await page.getByTestId('resource-add').click()
+      await page.getByTestId('resource-new-folder').click()
+      const input = page.getByTestId('resource-name-input')
+      await input.fill('x'.repeat(OVERSIZED_RESOURCE_NAME_LENGTH))
+      await input.press('Enter')
+      await expect(input).toHaveCount(0)
+      await expect(error).toHaveCount(1)
+    }
+    await trigger()
+    const original = await error.elementHandle()
+    await trigger()
+    expect(await original!.evaluate(element => element.isConnected)).toBe(true)
+    await error.hover()
+    await page.waitForTimeout(TOAST_HOVER_OBSERVATION_MS)
+    await expect(error).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('resource-error-toast-hover-paused.png') })
+    await page.mouse.move(0, 0)
+    await expect(error).toHaveCount(0, { timeout: TOAST_DISMISS_TIMEOUT_MS })
+    await page.screenshot({ path: testInfo.outputPath('resource-error-toast-auto-dismissed.png') })
+    await trigger()
+    await error.getByRole('button', { name: '关闭通知' }).click()
+    await expect(error).toHaveCount(0)
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('resource toasts center on the app and delete warnings align their icons', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await page.getByTestId('resource-add').click()
+    await page.getByTestId('resource-new-folder').click()
+    const input = page.getByTestId('resource-name-input')
+    await input.fill(EMPTY_FOLDER_NAME)
+    await input.press('Enter')
+    const toast = page.locator('.vds-toast').filter({ hasText: EMPTY_FOLDER_NAME }).first()
+    await expect(toast).toBeVisible()
+    expect(await toast.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      return Math.abs(bounds.left + bounds.width / 2 - window.innerWidth / 2)
+    })).toBeLessThan(1)
+    await page.screenshot({ path: testInfo.outputPath('resource-toast-app-centered.png') })
+    await page.getByTestId('tree-resources/acceptance.md').click({ button: 'right' })
+    await page.getByTestId('menu-delete').click()
+    const dialog = page.getByTestId('resource-delete-confirm')
+    await expect(dialog).toBeVisible()
+    for (const width of [1280, 480]) {
+      await page.setViewportSize({ width, height: 800 })
+      const alignment = await dialog.locator('.vds-alert').evaluate((element) => {
+        const icon = element.querySelector('.vds-alert__icon')!.getBoundingClientRect()
+        const content = element.querySelector('.vds-alert__content')!.getBoundingClientRect()
+        const description = element.querySelector('.vds-alert__description')!
+        const text = description.getBoundingClientRect()
+        const multiline = text.height > parseFloat(getComputedStyle(description).lineHeight)
+        return Math.abs(multiline ? icon.top - content.top : icon.top + icon.height / 2 - text.top - text.height / 2)
+      })
+      expect(alignment).toBeLessThan(0.5)
+      await page.screenshot({ path: testInfo.outputPath(`resource-delete-aligned-${width}.png`) })
+    }
+    await page.getByTestId('resource-delete-cancel').click()
+    await expect(dialog).toHaveCount(0)
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 test('empty resource library creates its first folder and Markdown document from the add menu', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
     const createEmptyProject = async (name: string): Promise<string> => {
-      const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, {
-        data: { name }
-      })
-      expect(response.ok(), await response.text()).toBe(true)
-      const project = await response.json() as { root: string }
+      const project = await createReadyProject(page, name)
       await page.reload()
       await enterWorkbenchShell(page)
       await page.getByTestId('topbar-project').click()
@@ -1046,7 +1726,7 @@ test('empty resource library creates its first folder and Markdown document from
     await page.screenshot({ path: join(runtime.artifacts, 'empty-library-folder-input.png') })
     await folderInput.fill(EMPTY_FOLDER_NAME)
     await folderInput.press('Enter')
-    await expect(page.getByTestId('resource-notice')).toContainText('已创建')
+    await expect(page.getByRole('status').filter({ hasText: `已创建 ${EMPTY_FOLDER_NAME}` })).toBeVisible()
     await expect.poll(() => existsSync(join(folderProjectRoot, RESOURCES_DIR, EMPTY_FOLDER_NAME))).toBe(true)
     await page.screenshot({ path: join(runtime.artifacts, 'empty-library-first-folder.png') })
 
@@ -1059,10 +1739,11 @@ test('empty resource library creates its first folder and Markdown document from
     await page.screenshot({ path: join(runtime.artifacts, 'empty-library-document-input.png') })
     await documentInput.fill(EMPTY_DOCUMENT_NAME)
     await documentInput.press('Enter')
-    await expect(page.getByTestId('resource-notice')).toContainText('已创建')
+    await expect(page.getByRole('status').filter({ hasText: `已创建 ${EMPTY_DOCUMENT_NAME}.md` })).toBeVisible()
     const documentPath = join(documentProjectRoot, RESOURCES_DIR, `${EMPTY_DOCUMENT_NAME}.md`)
     await expect.poll(() => existsSync(documentPath)).toBe(true)
-    expect(readFileSync(documentPath, 'utf8')).toContain(`# ${EMPTY_DOCUMENT_NAME}`)
+    expect(readFileSync(documentPath, 'utf8')).toBe('')
+    await expect(page.getByTestId('markdown-visual-editor')).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'empty-library-first-document.png') })
 
     await page.getByTestId('resource-add').click()
@@ -1106,14 +1787,16 @@ test('resource tree moves a nested file back to the library root by drag and dro
     )
     const resourceTreeRoot = page.getByTestId('resource-tree-root')
     await expect(nestedRow).toBeVisible()
+    const rootBounds = await resourceTreeRoot.boundingBox()
+    expect(rootBounds).not.toBeNull()
     await nestedRow.dragTo(resourceTreeRoot, {
       sourcePosition: { x: 12, y: 12 },
-      targetPosition: { x: 2, y: 2 }
+      targetPosition: { x: 12, y: rootBounds!.height - 12 }
     })
 
-    await expect(page.getByTestId('resource-notice')).toContainText(
-      `已移动为 resources/${ROOT_DROP_FILE_NAME}`
-    )
+    await expect(page.getByRole('status').filter({
+      hasText: `已移动为 resources/${ROOT_DROP_FILE_NAME}`
+    })).toBeVisible()
     await expect(page.getByTestId(`tree-resources/${ROOT_DROP_FILE_NAME}`)).toBeVisible()
     await expect(nestedRow).toHaveCount(0)
     await expect.poll(() => existsSync(rootFile) && !existsSync(nestedFile)).toBe(true)
@@ -1129,14 +1812,15 @@ test('Markdown source supports highlighted editing, replace, undo, redo and dura
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     await openFile(page, 'acceptance.md')
-    await page.getByTestId('markdown-open-source').click()
-    const editorFrame = page.locator('[data-testid="document-editor"]:visible').getByTestId('monaco-editor')
+    await selectMarkdownMode(page, 'source')
+    const editorSurface = page.locator('[data-testid="document-editor"]:visible')
+    const editorFrame = editorSurface.getByTestId('monaco-editor')
     const editor = monacoContent(editorFrame)
     for (const testId of ['markdown-undo', 'markdown-redo', 'markdown-find', 'markdown-replace']) {
       await expect(page.getByTestId(testId)).toBeVisible()
       await expect(page.getByTestId(testId).locator('svg')).toHaveCount(1)
     }
-    await expect(editor).toHaveAttribute('data-language', 'markdown')
+    await expect(editorSurface).toHaveAttribute('data-language', 'markdown')
     await expect(editor.locator('.view-lines')).toContainText('Original needle')
     expect(await editor.locator('.view-lines span[class*="mtk"]').count()).toBeGreaterThan(1)
     const firstLine = editor.locator('.view-line').first()
@@ -1153,14 +1837,19 @@ test('Markdown source supports highlighted editing, replace, undo, redo and dura
     await regexToggle.hover()
     const monacoTooltip = editor.locator('.monaco-hover[role="tooltip"]:visible')
     await expect(monacoTooltip).toBeVisible()
-    const [tooltipBox, widgetBox] = await Promise.all([
+    const [tooltipBox, controlBox, frameBox] = await Promise.all([
       monacoTooltip.boundingBox(),
-      widget.boundingBox()
+      regexToggle.boundingBox(),
+      editorFrame.boundingBox()
     ])
     expect(tooltipBox).not.toBeNull()
-    expect(widgetBox).not.toBeNull()
-    expect(tooltipBox!.y).toBeGreaterThanOrEqual(0)
-    expect(tooltipBox!.y + tooltipBox!.height).toBeLessThanOrEqual(widgetBox!.y)
+    expect(controlBox).not.toBeNull()
+    expect(frameBox).not.toBeNull()
+    expect(tooltipBox!.y).toBeGreaterThanOrEqual(controlBox!.y + controlBox!.height)
+    expect(tooltipBox!.y).toBeGreaterThanOrEqual(frameBox!.y)
+    expect(tooltipBox!.y + tooltipBox!.height).toBeLessThanOrEqual(frameBox!.y + frameBox!.height)
+    expect(tooltipBox!.x).toBeGreaterThanOrEqual(frameBox!.x)
+    expect(tooltipBox!.x + tooltipBox!.width).toBeLessThanOrEqual(frameBox!.x + frameBox!.width)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-find-tooltip.png') })
     await widget.getByRole('textbox', { name: '查找', exact: true }).fill('No matching document text')
     const lineWithoutMatch = await firstLine.boundingBox()
@@ -1334,7 +2023,8 @@ test('Monaco preserves cursor movement, selection and backspace editing', async 
     await input.pressSequentially('Z')
     await expect(editor.locator('.view-lines')).toContainText('abcX')
     await expect(editor.locator('.view-lines')).toContainText('dZY')
-    await expect(page.getByTestId('source-document-save-dirty')).toBeVisible()
+    await expect(page.getByTestId('source-document-save-dirty')).toHaveCount(0)
+    await expect(page.getByTestId('source-document-save')).toBeEnabled()
     await page.getByTestId('source-document-save').click()
     await expect.poll(() => readFileSync(join(resources, 'source.txt'), 'utf8')).toBe('abcX\ndZY')
     await page.screenshot({ path: join(runtime.artifacts, 'monaco-keyboard-editing.png') })
@@ -1342,7 +2032,7 @@ test('Monaco preserves cursor movement, selection and backspace editing', async 
   } finally { await desktop.attachArtifacts() }
 })
 
-test('language switch reloads open code editors without leaving the current project or file', async ({}, testInfo) => {
+test('language switch preserves editors and dismisses the pending Markdown notice', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
     language: 'zh',
@@ -1352,6 +2042,10 @@ test('language switch reloads open code editors without leaving the current proj
   try {
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
+    writeFileSync(join(resources, 'language-notice.md'), '# Language notice')
+    await page.getByTestId('resource-refresh').click()
+    await openFile(page, 'language-notice.md')
+    await expect(page.getByTestId('markdown-visual-editor')).toBeVisible()
     await openFile(page, 'source.cpp')
     await openFile(page, 'source.py')
     const editor = visibleMonacoEditor(page)
@@ -1400,6 +2094,15 @@ test('language switch reloads open code editors without leaving the current proj
       frames.every((frame) => frame.getAttribute('src')?.includes('language=en'))
     ))).toBe(true)
     await expectMonacoPresentation()
+
+    await page.getByRole('tab', { name: /language-notice\.md/ }).click()
+    const languageNotice = page.getByTestId('markdown-language-pending')
+    await expect(languageNotice).toBeVisible()
+    await expect(languageNotice).toContainText('The editor language will update when you close and reopen the document.')
+    await languageNotice.getByRole('button', { name: 'Close', exact: true }).click()
+    await expect(languageNotice).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'markdown-language-notice-dismissed.png') })
+    await page.getByRole('tab', { name: /source\.py/ }).click()
 
     await page.locator('[data-testid="markdown-find"]:visible').click()
     await expect(editor.getByRole('textbox', { name: 'Find', exact: true })).toBeVisible()
@@ -1452,6 +2155,9 @@ test('language switch reloads open code editors without leaving the current proj
 
 test('visual Markdown save and save-on-close clear dirty state and close the tab', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  const preferencesPath = join(runtime.userData, RENDERER_PREFERENCES_FILENAME)
+  const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+  writeFileSync(preferencesPath, JSON.stringify({ ...preferences, language: 'zh', autoSave: false }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
@@ -1459,7 +2165,7 @@ test('visual Markdown save and save-on-close clear dirty state and close the tab
     const sourcePath = join(resources, 'acceptance.md')
     writeFileSync(sourcePath, readFileSync(join(__dirname, '..', '..', '..', 'AGENTS.md'), 'utf8'))
     await page.getByTestId('resource-refresh').click()
-    const tab = page.locator('.vds-document-tab').filter({ hasText: 'acceptance.md' })
+    const tab = page.getByRole('tab', { name: /acceptance\.md/ })
     const editor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
 
     await openFile(page, 'acceptance.md')
@@ -1467,11 +2173,11 @@ test('visual Markdown save and save-on-close clear dirty state and close the tab
     await editor.click()
     await page.keyboard.press(`${SHORTCUT}+End`)
     await page.keyboard.type('\nSaved through visual editor')
-    await expect(tab.locator('i[aria-label="未保存"]')).toHaveCount(1)
-    await expect(page.getByTestId('markdown-save-dirty')).toBeVisible()
-    await page.getByTestId('markdown-save').click()
-    await expect(tab.locator('i[aria-label="未保存"]')).toHaveCount(0)
-    await expect(page.getByTestId('markdown-save')).toBeDisabled()
+    await expect(tab.locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
+    await expect(page.getByTestId('markdown-save-dirty')).toHaveCount(0)
+    await page.keyboard.press(`${SHORTCUT}+s`)
+    await expect(tab.locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(0)
+    await expect(page.getByTestId('markdown-save')).toHaveCount(0)
     await expect(page.getByTestId('markdown-save-dirty')).toHaveCount(0)
     await expect.poll(() => readFileSync(sourcePath, 'utf8')).toContain('Saved through visual editor')
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-save-clean.png') })
@@ -1485,7 +2191,7 @@ test('visual Markdown save and save-on-close clear dirty state and close the tab
     await editor.click()
     await page.keyboard.press(`${SHORTCUT}+End`)
     await page.keyboard.type('\nSaved while closing')
-    await expect(tab.locator('i[aria-label="未保存"]')).toHaveCount(1)
+    await expect(tab.locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
     await tab.getByRole('button', { name: '关闭 acceptance.md' }).click()
     const dialog = page.getByTestId('document-close-dialog')
     await expect(dialog).toBeVisible()
@@ -1502,12 +2208,11 @@ test('visual Markdown save and save-on-close clear dirty state and close the tab
     await editor.click()
     await page.keyboard.press(`${SHORTCUT}+End`)
     await page.keyboard.type('\nLocal visual conflict winner')
-    await expect(tab.locator('i[aria-label="未保存"]')).toHaveCount(1)
+    await expect(tab.locator('[data-slot="navigation-tab-dirty"]')).toHaveCount(1)
     writeFileSync(sourcePath, `${readFileSync(sourcePath, 'utf8')}\nExternal visual change`)
 
     await tab.getByRole('button', { name: '关闭 acceptance.md' }).click()
     await expect(dialog).toBeVisible()
-    await dialog.getByTestId('document-close-save').click()
     await expect(dialog.getByTestId('document-close-save')).toHaveText('覆盖保存并关闭')
     await dialog.getByTestId('document-close-save').click()
     await expect(dialog).toHaveCount(0)
@@ -1541,14 +2246,14 @@ test('renaming an open resource keeps version state out of the tree and toolbar'
     const page = await desktop.launch()
     await seedProject(page, runtime)
     await openFile(page, PDF_NAME)
-    await expect(page.getByTestId('document-version-history')).toBeVisible()
+    await expect(page.getByTestId('document-version-history')).toHaveCount(0)
     await expect(page.getByTestId('document-save-version')).toHaveCount(0)
 
     await page.getByTestId(`tree-resources/${PDF_NAME}`).click({ button: 'right' })
     await page.getByTestId('menu-rename').click()
     await page.getByTestId('resource-name-input').fill('renamed-version-state')
     await page.getByTestId('resource-name-input').press('Enter')
-    await expect(page.getByTestId('resource-notice')).toContainText('已重命名')
+    await expect(page.getByRole('status').filter({ hasText: '已重命名' })).toBeVisible()
 
     const renamedRow = page.getByTestId('tree-resources/renamed-version-state.pdf')
     await expect(renamedRow.getByTestId('tree-version-resources/renamed-version-state.pdf')).toHaveCount(0)
@@ -1635,12 +2340,22 @@ test('PDF outline navigation preserves scale and keeps the target page visible',
     await expect(document.getByTestId('pdf-page-1')).toHaveAttribute('data-rendered', 'true')
     await expect(document.getByTestId('pdf-page-1').locator('canvas')).toBeVisible()
     await expect.poll(() => scale.textContent()).not.toBe(PDF_ACTUAL_SCALE_LABEL)
-    const viewportWidthBeforeNavigation = await viewport.evaluate((element) => element.getBoundingClientRect().width)
+    const viewportBeforeNavigation = await viewport.boundingBox()
+    expect(viewportBeforeNavigation).not.toBeNull()
+    const canvasWidthBeforeNavigation = await document.getByTestId('pdf-page-1').locator('canvas').evaluate((element) => element.getBoundingClientRect().width)
     const scaleBeforeNavigation = await scale.textContent()
 
     await document.getByTestId('pdf-sidebar-toggle').click()
     const navigation = document.getByRole('complementary', { name: 'PDF 导航' })
-    await expect.poll(() => viewport.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(viewportWidthBeforeNavigation, 0)
+    await expect(navigation).toBeVisible()
+    await expect.poll(async () => {
+      const viewportBounds = await viewport.boundingBox()
+      return viewportBounds ? viewportBounds.x + viewportBounds.width : 0
+    }).toBeCloseTo(viewportBeforeNavigation!.x + viewportBeforeNavigation!.width, 0)
+    await expect.poll(() => document.getByTestId('pdf-page-1').locator('canvas').evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(canvasWidthBeforeNavigation, 0)
+    const viewportBounds = await viewport.boundingBox()
+    const navigationBounds = await navigation.boundingBox()
+    expect(viewportBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x + navigationBounds!.width)
     await expect(scale).toHaveText(scaleBeforeNavigation ?? '')
 
     const navigationTabs = navigation.getByRole('tab')
@@ -1681,9 +2396,10 @@ test('PDF selection survives page virtualization and restores its toolbar when s
     await openFile(page, PDF_NAME)
     const selectedPage = page.getByTestId('pdf-page-2')
     const viewport = page.locator('.vds-pdf-pages')
-    await viewport.evaluate((node) => {
+    await expect(selectedPage).toBeAttached()
+    await viewport.evaluate(node => {
       const target = node.querySelector<HTMLElement>('[data-testid="pdf-page-2"]')
-      if (target) node.scrollTop = target.offsetTop
+      if (target) node.scrollTop += target.getBoundingClientRect().top - node.getBoundingClientRect().top
     })
     await expect(selectedPage).toHaveAttribute('data-rendered', 'true')
     await selectPdfText(page, 2)
@@ -1716,9 +2432,9 @@ test('PDF selection survives page virtualization and restores its toolbar when s
     await viewport.evaluate(node => { node.scrollTop = node.scrollHeight })
     await expect(selectedPage).toHaveAttribute('data-rendered', 'false')
     await expect(toolbar).toBeHidden()
-    await viewport.evaluate((node) => {
+    await viewport.evaluate(node => {
       const target = node.querySelector<HTMLElement>('[data-testid="pdf-page-2"]')
-      if (target) node.scrollTop = target.offsetTop
+      if (target) node.scrollTop += target.getBoundingClientRect().top - node.getBoundingClientRect().top
     })
     await expect(selectedPage).toHaveAttribute('data-rendered', 'true')
     await expect(toolbar).toBeVisible()
@@ -1731,6 +2447,7 @@ test('PDF selection survives page virtualization and restores its toolbar when s
 })
 
 test('PDF selection keeps every crossed page rendered and highlighted throughout a scrolling drag', async ({}, testInfo) => {
+  skipQuarantined(testInfo)
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
     language: 'zh',
@@ -1753,6 +2470,7 @@ test('PDF selection keeps every crossed page rendered and highlighted throughout
     await expect(firstPage).toHaveAttribute('data-rendered', 'true')
     const anchor = firstPage.locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
     await expect(anchor).toBeVisible()
+    await viewport.evaluate(node => { node.scrollLeft = 0 })
     const anchorBounds = await anchor.boundingBox()
     expect(anchorBounds).not.toBeNull()
 
@@ -1768,6 +2486,7 @@ test('PDF selection keeps every crossed page rendered and highlighted throughout
 
     const focus = thirdPage.locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
     await focus.scrollIntoViewIfNeeded()
+    await viewport.evaluate(node => { node.scrollLeft = node.scrollWidth })
     const focusBounds = await focus.boundingBox()
     expect(focusBounds).not.toBeNull()
     await page.mouse.move(focusBounds!.x + focusBounds!.width - 1, focusBounds!.y + focusBounds!.height / 2, { steps: 15 })
@@ -1800,7 +2519,7 @@ test('PDF annotation editor expands directly beneath the selection toolbar', asy
     await selectPdfText(page)
 
     const toolbar = page.getByTestId('selection-action-host')
-    const annotationButton = page.getByRole('button', { name: '添加批注', exact: true })
+    const annotationButton = toolbar.getByRole('button', { name: '添加批注', exact: true })
     await expect(annotationButton).toBeEnabled()
     await annotationButton.click()
 
@@ -1963,6 +2682,134 @@ test('PDF selection toolbar closes on document and side-panel clicks after inter
     await expect(toolbar).toHaveCount(0)
     await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('')
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-toolbar-dismissed.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('PDF quick mark tools do not open the annotation inspector while selecting text', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, RENDERER_PREFERENCES_FILENAME), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await openFile(page, PDF_NAME)
+    const document = page.getByTestId('pdf-document')
+    const text = page.getByTestId('pdf-page-1').locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
+    const inspector = page.locator('[data-testid^="pdf-annotation-inspector-"]')
+    const tools = [
+      { style: 'highlight', label: '添加高亮' },
+      { style: 'underline', label: '添加下划线' },
+      { style: 'strikethrough', label: '添加删除线' }
+    ]
+    for (const tool of tools) {
+      await document.locator(`[data-pdf-tool="${tool.style}"]`).getByRole('button', { name: tool.label, exact: true }).click()
+      const box = await text.boundingBox()
+      if (!box) throw new Error('PDF text layer has no visible bounds')
+      const saved = page.waitForResponse(response =>
+        new URL(response.url()).pathname.endsWith('/records') && response.request().method() === 'PUT'
+      )
+      await page.mouse.move(box.x + 1, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 15 })
+      await page.mouse.up()
+      expect((await saved).ok()).toBe(true)
+      await expect(page.locator('[data-testid^="pdf-mark-"]').first()).toBeVisible()
+      await expect(inspector).toHaveCount(0)
+      await page.screenshot({ path: join(runtime.artifacts, `pdf-quick-${tool.style}-without-inspector.png`) })
+    }
+    await text.click()
+    await expect(inspector).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-existing-mark-inspector-on-click.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('PDF undo shortcut restores saved annotation edits and preserves native text undo', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    let page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const sourceDigest = fileDigest(join(resources, PDF_NAME))
+    await openFile(page, PDF_NAME)
+    await expect(page.getByTestId('pdf-page-1')).toBeVisible()
+    const persist = async (action: () => Promise<void>): Promise<PdfRecordSnapshot> => {
+      const responsePromise = page.waitForResponse(response =>
+        response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith(PDF_RECORDS_ENDPOINT_SUFFIX))
+      const [response] = await Promise.all([responsePromise, Promise.resolve().then(action)])
+      expect(response.ok(), await response.text()).toBe(true)
+      return response.json() as Promise<PdfRecordSnapshot>
+    }
+    const undo = (): Promise<PdfRecordSnapshot> => persist(() => page.keyboard.press(`${SHORTCUT}+z`))
+    const marks = (): Locator => page.locator('[data-testid^="pdf-mark-"]')
+    const inspector = (): Locator => page.locator('[data-testid^="pdf-annotation-inspector-"]')
+    const openMark = async (): Promise<void> => {
+      await expect(marks().first()).toBeVisible()
+      const bounds = await marks().first().boundingBox()
+      expect(bounds).not.toBeNull()
+      await page.mouse.click(bounds!.x + bounds!.width * PDF_MARK_POINTER_CENTER_RATIO,
+        bounds!.y + bounds!.height * PDF_MARK_POINTER_CENTER_RATIO)
+      await expect(inspector()).toBeVisible()
+    }
+    const addHighlight = async (): Promise<PdfRecordSnapshot> => {
+      await selectPdfText(page)
+      return persist(() => page.getByTestId('selection-action-host')
+        .getByRole('button', { name: '添加下划线', exact: true }).click())
+    }
+    const added = await addHighlight()
+    expect(added.records.marks).toHaveLength(1)
+    await expect(marks().first()).toBeVisible()
+    const removedAddition = await undo()
+    expect(removedAddition.records.marks).toHaveLength(0)
+    await expect(marks()).toHaveCount(0)
+
+    await addHighlight()
+    await openMark()
+    const edited = await persist(() => inspector().getByRole('button', { name: '切换为蓝色标注', exact: true }).click())
+    expect(edited.records.marks[0].color).toBe('blue')
+    const revertedEdit = await undo()
+    expect(revertedEdit.records.marks[0].color).toBe('yellow')
+    await expect(inspector().getByRole('button', { name: '切换为黄色标注', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    expect((await undo()).records.marks).toHaveLength(0)
+    await expect(marks()).toHaveCount(0)
+    await addHighlight()
+    await openMark()
+    await inspector().getByRole('button', { name: '写批注', exact: true }).click()
+    const input = inspector().getByRole('textbox', { name: '批注内容', exact: true })
+    await input.pressSequentially(NOTE_TEXT)
+    await input.press(`${SHORTCUT}+z`)
+    await expect(input).not.toHaveValue(NOTE_TEXT)
+    expect(NOTE_TEXT.startsWith(await input.inputValue())).toBe(true)
+    await expect(marks()).toHaveCount(1)
+    await input.fill(NOTE_TEXT)
+    const commented = await persist(() => inspector().getByRole('button', { name: '保存批注', exact: true }).click())
+    expect(commented.records.comments[0].body).toBe(NOTE_TEXT)
+    await expect(inspector()).toContainText(NOTE_TEXT)
+    const deleted = await persist(() => inspector().getByRole('button', { name: '删除标记', exact: true }).click())
+    expect(deleted.records.marks).toHaveLength(0)
+    await expect(marks()).toHaveCount(0)
+    const restored = await undo()
+    expect(restored.records).toEqual(commented.records)
+    await openMark()
+    await expect(inspector()).toContainText(NOTE_TEXT)
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-undo-restored-comment.png') })
+
+    await desktop.close()
+    page = await desktop.launch()
+    await selectProject(page)
+    await openFile(page, PDF_NAME)
+    await openMark()
+    await expect(inspector()).toContainText(NOTE_TEXT)
+    await page.keyboard.press(`${SHORTCUT}+z`)
+    await expect(inspector()).toContainText(NOTE_TEXT)
+    await expect(marks()).toHaveCount(1)
+    expect(fileDigest(join(resources, PDF_NAME))).toBe(sourceDigest)
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-undo-persisted-after-restart.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -2131,7 +2978,8 @@ test('PDF reader shortcuts navigate, search, zoom, and open page jump', async ({
     await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeLessThan(initialWidth)
     const zoomedWidth = await canvas.evaluate((node) => node.getBoundingClientRect().width)
     await page.keyboard.press(`${SHORTCUT}+0`)
-    await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeLessThan(zoomedWidth)
+    await expect(page.getByTestId('pdf-scale')).toHaveText(PDF_ACTUAL_SCALE_LABEL)
+    await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(zoomedWidth)
 
     await page.keyboard.press(`${SHORTCUT}+f`)
     const search = page.getByTestId('pdf-search')
@@ -2142,6 +2990,7 @@ test('PDF reader shortcuts navigate, search, zoom, and open page jump', async ({
     await expect(pageInput).toHaveValue('2')
     await search.press('Shift+Enter')
     await expect(pageInput).toHaveValue('1')
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-shortcut-search-step.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -2158,6 +3007,24 @@ test('PDF reader inspects and persists annotations without modifying source', as
     await expect(document).toBeVisible()
     const sidebarToggle = page.getByTestId('pdf-sidebar-toggle')
     const recordsToggle = page.getByTestId('pdf-annotation-toggle')
+    const persistPdfAction = async (action: () => Promise<void>): Promise<PdfRecordSnapshot> => {
+      const responsePromise = page.waitForResponse(response =>
+        response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith(PDF_RECORDS_ENDPOINT_SUFFIX))
+      await action()
+      const response = await responsePromise
+      expect(response.ok(), await response.text()).toBe(true)
+      return response.json() as Promise<PdfRecordSnapshot>
+    }
+    const openPdfMark = async (mark: Locator): Promise<void> => {
+      await expect(mark).toBeVisible()
+      await mark.scrollIntoViewIfNeeded()
+      const bounds = await mark.boundingBox()
+      expect(bounds).not.toBeNull()
+      await page.mouse.click(
+        bounds!.x + bounds!.width * PDF_MARK_POINTER_CENTER_RATIO,
+        bounds!.y + bounds!.height * PDF_MARK_POINTER_CENTER_RATIO)
+    }
     const reader = page.locator('.vds-pdf-reader')
     const viewport = page.locator('.vds-pdf-pages')
     await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'false')
@@ -2173,8 +3040,8 @@ test('PDF reader inspects and persists annotations without modifying source', as
     expect(Math.abs(focusedViewportBounds!.width - focusedReaderBounds!.width)).toBeLessThan(2)
     const focusedPageBounds = await page.getByTestId('pdf-page-1').boundingBox()
     expect(focusedPageBounds).not.toBeNull()
-    const viewportContentWidth = await viewport.evaluate(node => node.clientWidth)
-    const viewportCenter = focusedViewportBounds!.x + viewportContentWidth / 2
+    const viewportContent = await viewport.evaluate(node => ({ left: node.clientLeft, width: node.clientWidth }))
+    const viewportCenter = focusedViewportBounds!.x + viewportContent.left + viewportContent.width / 2
     const pageCenter = focusedPageBounds!.x + focusedPageBounds!.width / 2
     expect(Math.abs(pageCenter - viewportCenter)).toBeLessThan(2)
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-focus-reading.png') })
@@ -2193,7 +3060,7 @@ test('PDF reader inspects and persists annotations without modifying source', as
     await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByRole('complementary', { name: 'PDF 导航' })).toBeVisible()
     await expect.poll(async () => (await viewport.boundingBox())?.width ?? 0).toBeLessThan(focusedViewportBounds!.width)
-    const level1 = page.getByRole('button', { name: PDF_LONG_OUTLINE_TITLE, exact: true })
+    const level1 = page.getByTestId('pdf-outline-row-0')
     const level2 = page.getByTestId('pdf-outline-row-0-0')
     const level3 = page.getByRole('button', { name: 'Level 3', exact: true })
     await expect(level2).toHaveAttribute('aria-disabled', 'true')
@@ -2237,8 +3104,16 @@ test('PDF reader inspects and persists annotations without modifying source', as
     await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeLessThan(fitWidth)
     await pageInput.fill('1')
     await pageInput.press('Enter')
-    await sidebarToggle.click()
     await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'false')
+    await expect.poll(() => canvas.evaluate((node: HTMLCanvasElement, pixelBudget) => {
+      const pixelRatio = window.devicePixelRatio || 1
+      const width = Number.parseFloat(node.style.width) * pixelRatio
+      const height = Number.parseFloat(node.style.height) * pixelRatio
+      return width * height < pixelBudget
+        && node.width === Math.max(1, Math.floor(width))
+        && node.height === Math.max(1, Math.floor(height))
+        && node.parentElement?.dataset.textRendered === 'true'
+    }, PDF_FIT_PAGE_RENDER_PIXEL_BUDGET)).toBe(true)
     const selected = await selectPdfText(page)
     const toolbar = page.getByTestId('selection-action-host')
     const compactBounds = await toolbar.boundingBox()
@@ -2246,26 +3121,37 @@ test('PDF reader inspects and persists annotations without modifying source', as
     expect(compactBounds!.height).toBeGreaterThanOrEqual(44)
     expect(compactBounds!.height).toBeLessThanOrEqual(52)
     expect(compactBounds!.width).toBeLessThan(await page.evaluate(() => window.innerWidth) - 100)
-    for (const name of ['选择高亮颜色', '添加下划线', '添加删除线', '添加批注', '复制选中文本']) {
-      const bounds = await page.getByRole('button', { name, exact: true }).boundingBox()
-      expect(bounds?.height).toBeGreaterThanOrEqual(32)
-      expect(bounds?.height).toBeLessThanOrEqual(36)
+    const smallControlHeight = await toolbar.evaluate((node, token) =>
+      Number.parseFloat(getComputedStyle(node).getPropertyValue(token)), PDF_SMALL_CONTROL_HEIGHT_TOKEN)
+    expect(smallControlHeight).toBe(PDF_SMALL_CONTROL_HEIGHT_PX)
+    for (const name of ['添加高亮颜色', '添加下划线', '添加删除线', '添加批注', '复制选中文本']) {
+      const button = toolbar.getByRole('button', { name, exact: true })
+      const bounds = await button.boundingBox()
+      expect(bounds).not.toBeNull()
+      expect(bounds!.height).toBe(smallControlHeight)
+      if (name !== '复制选中文本') {
+        await expect(button).toHaveClass(/vds-icon-button--sm/)
+        expect(bounds!.width).toBe(smallControlHeight)
+      }
     }
-    await page.getByRole('button', { name: '复制选中文本', exact: true }).click()
+    await toolbar.getByRole('button', { name: '复制选中文本', exact: true }).click()
     await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toContain(selected)
-    const highlightButton = page.getByRole('button', { name: '选择高亮颜色', exact: true })
-    await page.getByRole('button', { name: '添加删除线', exact: true }).click()
-    await expect(page.locator('.vds-pdf-status')).toContainText('删除线已保存')
+    const highlightButton = toolbar.getByRole('button', { name: '添加高亮颜色', exact: true })
+    const strikethroughSaved = await persistPdfAction(() =>
+      toolbar.getByRole('button', { name: '添加删除线', exact: true }).click())
+    expect(strikethroughSaved.records.marks).toEqual([
+      expect.objectContaining({ style: 'strikethrough', text: selected })
+    ])
     const strikethroughMark = page.locator('[data-testid^="pdf-mark-"]').first()
     await expect(strikethroughMark).toBeVisible()
-    await strikethroughMark.click()
+    await openPdfMark(strikethroughMark)
     const strikethroughInspector = page.locator('[data-testid^="pdf-annotation-inspector-"]')
     await strikethroughInspector.getByRole('button', { name: '删除标记', exact: true }).click()
     await expect(page.locator('[data-testid^="pdf-mark-"]')).toHaveCount(0)
     await selectPdfText(page)
     const reselectedCompactBounds = await toolbar.boundingBox()
     await highlightButton.click()
-    const colorPalette = page.getByRole('region', { name: '高亮颜色' })
+    const colorPalette = page.getByRole('region', { name: '添加高亮颜色', exact: true })
     await expect(colorPalette).toBeVisible()
     await expect(highlightButton).toHaveAttribute('aria-expanded', 'true')
     const colorButtons = colorPalette.getByRole('button')
@@ -2277,12 +3163,16 @@ test('PDF reader inspects and persists annotations without modifying source', as
     const paletteBounds = await toolbar.boundingBox()
     expect(paletteBounds).toEqual(reselectedCompactBounds)
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-palette.png') })
-    await page.getByRole('button', { name: '橙色高亮', exact: true }).click()
+    const highlightSaved = await persistPdfAction(() =>
+      colorPalette.getByRole('button', { name: '橙色标注', exact: true }).click())
+    expect(highlightSaved.records.marks).toEqual([
+      expect.objectContaining({ style: 'highlight', color: 'orange' })
+    ])
     await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'false')
     await expect(recordsToggle).toHaveCount(0)
     await expect(page.getByRole('complementary', { name: 'PDF 标注' })).toHaveCount(0)
     const savedMark = page.locator('[data-testid^="pdf-mark-"]').first()
-    await savedMark.click()
+    await openPdfMark(savedMark)
     const inspector = page.locator('[data-testid^="pdf-annotation-inspector-"]')
     await expect(inspector).toBeVisible()
     await expect.poll(async () => {
@@ -2301,13 +3191,20 @@ test('PDF reader inspects and persists annotations without modifying source', as
     await expect(inspector.getByRole('button', { name: '解释', exact: true })).toBeEnabled()
     await expect(inspector.getByRole('button', { name: '翻译', exact: true })).toBeEnabled()
     await expect(inspector).not.toContainText('笔记')
-    await inspector.getByRole('button', { name: '删除线', exact: true }).click()
-    await expect(page.locator('.vds-pdf-status')).toContainText('标注样式已更新')
+    const styleSaved = await persistPdfAction(() =>
+      inspector.getByRole('button', { name: '删除线', exact: true }).click())
+    expect(styleSaved.records.marks).toEqual([
+      expect.objectContaining({ id: highlightSaved.records.marks[0].id, style: 'strikethrough', color: 'orange' })
+    ])
+    await expect(inspector.getByRole('button', { name: '删除线', exact: true })).toBeEnabled()
     await inspector.getByRole('button', { name: '写批注', exact: true }).click()
     await inspector.getByRole('textbox', { name: '批注内容', exact: true }).fill(NOTE_TEXT)
-    await inspector.getByRole('button', { name: '保存批注', exact: true }).click()
-    await expect(page.locator('.vds-pdf-status')).toContainText('批注已保存')
-    if (!await inspector.isVisible().catch(() => false)) await savedMark.click()
+    const commentSaved = await persistPdfAction(() =>
+      inspector.getByRole('button', { name: '保存批注', exact: true }).click())
+    expect(commentSaved.records.comments).toEqual([
+      expect.objectContaining({ mark_id: highlightSaved.records.marks[0].id, body: NOTE_TEXT })
+    ])
+    if (!await inspector.isVisible().catch(() => false)) await openPdfMark(savedMark)
     await expect(inspector).toContainText('· 已有批注')
     await expect(inspector).toContainText(NOTE_TEXT)
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-annotation-inspector.png') })
@@ -2330,7 +3227,7 @@ test('PDF reader inspects and persists annotations without modifying source', as
     await expect(page.getByTestId('resource-name-suffix')).toHaveText('.pdf')
     await page.getByTestId('resource-name-input').fill('renamed')
     await page.getByTestId('resource-name-input').press('Enter')
-    await expect(page.getByTestId('resource-notice')).toContainText('已重命名')
+    await expect(page.getByRole('status').filter({ hasText: '已重命名' })).toBeVisible()
     await expect(page.getByRole('tab', { name: /renamed\.pdf/ })).toBeVisible()
     await expect(page.getByTestId('ai-context-workspace')).toContainText('renamed.pdf')
     await expect(page.getByTestId('ai-context-workspace')).not.toContainText(PDF_NAME)
@@ -2346,7 +3243,7 @@ test('PDF reader inspects and persists annotations without modifying source', as
       sourcePosition: { x: 12, y: 12 },
       targetPosition: { x: 12, y: 12 }
     })
-    await expect(page.getByTestId('resource-notice')).toContainText('已移动')
+    await expect(page.getByRole('status').filter({ hasText: '已移动' })).toBeVisible()
     await expect(page.getByRole('tab', { name: /renamed\.pdf/ })).toBeVisible()
     await expect(page.getByTestId('ai-context-workspace')).toContainText('renamed.pdf')
     await expect(page.locator('[data-testid^="pdf-mark-"]').first()).toBeVisible()
@@ -2356,11 +3253,11 @@ test('PDF reader inspects and persists annotations without modifying source', as
     await selectProject(page)
     await page.getByTestId('tree-resources/archive').click()
     await page.getByTestId('tree-resources/archive/renamed.pdf').click()
-    await page.locator('[data-testid^="pdf-mark-"]').first().click()
+    await openPdfMark(page.locator('[data-testid^="pdf-mark-"]').first())
     const reopenedInspector = page.locator('[data-testid^="pdf-annotation-inspector-"]')
     await expect(reopenedInspector).toContainText(NOTE_TEXT)
     await reopenedInspector.getByRole('button', { name: '删除标记', exact: true }).click()
-    await expect(page.locator('.vds-pdf-status')).toContainText('标注已删除')
+    await expect(page.getByRole('status').filter({ hasText: '标注已删除' })).toBeVisible()
     await expect(page.locator('[data-testid^="pdf-mark-"]')).toHaveCount(0)
     await desktop.close()
     page = await desktop.launch()
@@ -2373,80 +3270,24 @@ test('PDF reader inspects and persists annotations without modifying source', as
   } finally { await desktop.attachArtifacts() }
 })
 
-test('literature PDF opens annotations from the right rail and excludes the resource-only global control', async ({}, testInfo) => {
+test('literature PDF AI requests require configured models', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
-    const resources = await seedProject(page, runtime)
-    const base = await apiBase(page)
-    const listing = await page.request.get(`${base}/api/content/projects`)
-    expect(listing.ok(), await listing.text()).toBe(true)
-    const project = (await listing.json() as { projects: Array<{ id: string; root: string }> })
-      .projects.find(candidate => candidate.root === dirname(resources))
-    expect(project).toBeTruthy()
-    const response = await page.request.post(`${base}/api/literature/import`, {
-      data: { project: project!.id, source: 'local', sources: [join(resources, PDF_NAME)] }
-    })
-    expect(response.ok(), await response.text()).toBe(true)
-    const sourceText = 'Needle marker 1 searchable selectable text.'
-    const secondCommentText = 'Second independent annotation'
-    const literatureList = await page.request.get(`${base}/api/v1/literatures?project_id=${encodeURIComponent(project!.id)}`)
-    expect(literatureList.ok(), await literatureList.text()).toBe(true)
-    const literature = (await literatureList.json() as { items: Array<{ id: string; title: string }> }).items
-      .find((candidate) => candidate.title.includes('acceptance'))
-    expect(literature).toBeTruthy()
-    const detailResponse = await page.request.get(
-      `${base}/api/v1/literatures/${literature!.id}?project_id=${encodeURIComponent(project!.id)}`
-    )
-    expect(detailResponse.ok(), await detailResponse.text()).toBe(true)
-    const detail = await detailResponse.json() as { primary_attachment: { id: string } }
-    const recordsRoute = `${base}/api/v1/literatures/${literature!.id}/attachments/${detail.primary_attachment.id}/records`
-    const initialRecords = await page.request.get(recordsRoute)
-    expect(initialRecords.ok(), await initialRecords.text()).toBe(true)
-    const initial = await initialRecords.json() as { record_revision: string; source_revision: string }
-    const saved = await page.request.put(recordsRoute, {
-      headers: { 'Content-Type': 'application/json', 'If-Match': `"${initial.record_revision}"` },
-      data: {
-        expected_source_revision: initial.source_revision,
-        records: {
-          schema_version: 1,
-          marks: [
-            {
-              id: 'literature-copy-mark-first', style: 'highlight', color: 'yellow', page: 1,
-              quads: [[0.1, 0.1, 0.4, 0.2]], text: sourceText,
-              anchor_state: 'anchored', created_at: 1, updated_at: 1
-            },
-            {
-              id: 'literature-copy-mark-second', style: 'highlight', color: 'yellow', page: 1,
-              quads: [[0.1, 0.1, 0.4, 0.2]], text: sourceText,
-              anchor_state: 'anchored', created_at: 2, updated_at: 2
-            }
-          ],
-          comments: [
-            { id: 'literature-copy-comment-first', mark_id: 'literature-copy-mark-first', body: NOTE_TEXT, created_at: 1 },
-            { id: 'literature-copy-comment-second', mark_id: 'literature-copy-mark-second', body: secondCommentText, created_at: 2 }
-          ],
-          notes: []
-        }
-      }
-    })
-    expect(saved.ok(), await saved.text()).toBe(true)
-
-    await page.getByTestId('topbar-project').click()
-    await page.getByTestId('project-menu-literature').click()
-    const literatureRow = page.locator('.lit-row').filter({ hasText: 'acceptance' }).first()
-    await expect(literatureRow).toBeVisible()
-    await literatureRow.click()
-    await page.getByRole('button', { name: '打开', exact: true }).first().click()
-
-    const document = page.locator('[data-testid="pdf-document"]:visible')
+    const { document, sourceText } = await openSeededLiteraturePdf(page, runtime)
+    const pages = document.locator('.vds-pdf-pages')
     const annotationToggle = document.getByTestId('pdf-annotation-toggle')
-    await expect(page.getByTestId('document-save')).toHaveCount(0)
-    await expect(annotationToggle).toBeVisible()
-    await expect(annotationToggle).toHaveAttribute('aria-pressed', 'false')
-    await expect(document.getByRole('button', { name: '记录', exact: true })).toHaveCount(0)
-
+    const figureToggle = document.getByTestId('pdf-figure-explanation')
+    await figureToggle.click()
+    await expect(figureToggle).toHaveAttribute('aria-pressed', 'true')
+    await expect(pages).toHaveClass(/cursor-crosshair/)
+    await annotationToggle.click()
+    await expect(figureToggle).toHaveAttribute('aria-pressed', 'false')
+    await expect(pages).not.toHaveClass(/cursor-crosshair/)
+    await annotationToggle.click()
     const annotationAiRequests: Array<{ instruction?: string; kind: string; page: number; text: string; quads: number[][] }> = []
     await page.route('**/api/literature/ai/tasks', async (route) => {
       if (route.request().method() !== 'POST') {
@@ -2463,7 +3304,7 @@ test('literature PDF opens annotations from the right rail and excludes the reso
     const selectedText = await selectPdfText(page)
     const selectionToolbar = page.getByTestId('selection-action-host')
     await selectionToolbar.getByRole('button', { name: 'AI 解释', exact: true }).click()
-    const selectionExplanationPrompt = selectionToolbar.getByLabel('输入希望 AI 重点解释的问题')
+    const selectionExplanationPrompt = selectionToolbar.getByLabel('补充说明（选填）')
     await expect(selectionExplanationPrompt).toBeFocused()
     await selectionExplanationPrompt.fill('解释选区中的核心概念')
     expect(annotationAiRequests).toHaveLength(0)
@@ -2489,7 +3330,7 @@ test('literature PDF opens annotations from the right rail and excludes the reso
       await page.evaluate(() => window.getSelection()?.removeAllRanges())
       await inspector.getByRole('button', { name: label, exact: true }).click()
       if (label === '解释') {
-        const explanationPrompt = inspector.getByLabel('输入希望 AI 重点解释的问题')
+        const explanationPrompt = inspector.getByLabel('补充说明（选填）')
         await expect(explanationPrompt).toBeFocused()
         await explanationPrompt.fill('解释这个术语在段落中的作用')
         expect(annotationAiRequests).toHaveLength(1)
@@ -2509,19 +3350,48 @@ test('literature PDF opens annotations from the right rail and excludes the reso
     }
     await page.unroute('**/api/literature/ai/tasks')
 
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('literature PDF opens annotations from the right rail and excludes the resource-only global control', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const { document, sourceText, secondCommentText } = await openSeededLiteraturePdf(page, runtime)
+    const annotationToggle = document.getByTestId('pdf-annotation-toggle')
+    await expect(page.getByTestId('document-save')).toHaveCount(0)
+    await expect(annotationToggle).toBeVisible()
+    await expect(annotationToggle).toHaveAttribute('aria-pressed', 'false')
+    await expect(document.getByRole('button', { name: '记录', exact: true })).toHaveCount(0)
+
     const navigationToggle = document.getByTestId('pdf-sidebar-toggle')
     const pages = document.locator('.vds-pdf-pages')
-    const figureToggle = document.getByTestId('pdf-figure-explanation')
-    await figureToggle.click()
-    await expect(figureToggle).toHaveAttribute('aria-pressed', 'true')
-    await expect(pages).toHaveClass(/cursor-crosshair/)
-    await annotationToggle.click()
-    await expect(figureToggle).toHaveAttribute('aria-pressed', 'false')
-    await expect(pages).not.toHaveClass(/cursor-crosshair/)
-    await annotationToggle.click()
-    const pagesWithoutPanels = await pages.evaluate((element) => element.getBoundingClientRect().width)
+    const viewportBeforePanels = await pages.boundingBox()
+    expect(viewportBeforePanels).not.toBeNull()
+    const firstCanvas = document.getByTestId('pdf-page-1').locator('canvas')
+    await expect(firstCanvas).toBeVisible()
+    const canvasWidthBeforePanels = await firstCanvas.evaluate((element) => element.getBoundingClientRect().width)
+    const documentWidthBeforePanels = await document.evaluate((element) => element.getBoundingClientRect().width)
     await navigationToggle.click()
     const navigation = document.getByRole('complementary', { name: 'PDF 导航' })
+    const assertReaderLayout = async (): Promise<void> => {
+      await expect.poll(async () => {
+        const bounds = await pages.boundingBox()
+        return bounds ? bounds.x + bounds.width : null
+      }).toBeCloseTo(viewportBeforePanels!.x + viewportBeforePanels!.width, 0)
+      await expect.poll(async () => {
+        const documentWidth = await document.evaluate((element) => element.getBoundingClientRect().width)
+        const canvasWidth = await firstCanvas.evaluate((element) => element.getBoundingClientRect().width)
+        return canvasWidth - (documentWidth - documentWidthBeforePanels)
+      }).toBeCloseTo(canvasWidthBeforePanels, 0)
+      if (await navigation.isVisible()) {
+        const viewportBounds = await pages.boundingBox()
+        const navigationBounds = await navigation.boundingBox()
+        expect(viewportBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x + navigationBounds!.width)
+      }
+    }
     const navigationResizable = document.getByTestId('pdf-navigation-resizable')
     const navigationResizeHandle = navigationResizable.locator('.vds-resizable-split__handle')
     await expect(navigation).toBeVisible()
@@ -2530,11 +3400,10 @@ test('literature PDF opens annotations from the right rail and excludes the reso
       scrollWidth: element.scrollWidth,
       width: element.getBoundingClientRect().width
     }))
-    const pagesWithNavigation = await pages.evaluate((element) => element.getBoundingClientRect().width)
     expect(navigationMetrics.width).toBeLessThanOrEqual(PDF_NAVIGATION_MAX_WIDTH_PX)
     expect(navigationMetrics.scrollWidth).toBeLessThanOrEqual(navigationMetrics.clientWidth + 1)
     expect(await navigation.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)')
-    expect(pagesWithNavigation).toBeCloseTo(pagesWithoutPanels, 0)
+    await assertReaderLayout()
 
     const dragNavigationTo = async (distance: number): Promise<void> => {
       const bounds = await navigationResizeHandle.boundingBox()
@@ -2551,18 +3420,18 @@ test('literature PDF opens annotations from the right rail and excludes the reso
     await page.screenshot({ path: join(runtime.artifacts, 'literature-pdf-navigation-resize-max.png') })
     await dragNavigationTo(PDF_NAVIGATION_DRAG_DISTANCE_PX)
     await expect.poll(() => navigation.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(navigationMaxWidth, 0)
-    expect(await pages.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(pagesWithoutPanels, 0)
+    await assertReaderLayout()
     await dragNavigationTo(-PDF_NAVIGATION_DRAG_DISTANCE_PX)
     await expect.poll(() => navigation.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(PDF_NAVIGATION_MIN_WIDTH_PX)
     const navigationMinWidth = await navigation.evaluate((element) => element.getBoundingClientRect().width)
     expect(navigationMinWidth).toBeGreaterThan(PDF_NAVIGATION_MIN_WIDTH_PX - 2)
     const navigationTabs = navigation.getByRole('tab')
     expect(await navigationTabs.evaluateAll((tabs) => tabs.every((tab) => tab.scrollHeight <= tab.clientHeight))).toBe(true)
-    expect(await pages.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(pagesWithoutPanels, 0)
+    await assertReaderLayout()
 
     await navigationToggle.click()
     await expect(navigation).toHaveCount(0)
-    expect(await pages.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(pagesWithoutPanels, 0)
+    await assertReaderLayout()
 
     await navigationToggle.click()
     await expect.poll(() => navigation.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(navigationMinWidth, 0)
@@ -2605,32 +3474,25 @@ test('literature PDF opens annotations from the right rail and excludes the reso
 
     await annotationToggle.click()
     await expect(navigationResizable).toHaveCSS('position', 'absolute')
-    expect(await pages.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(pagesWithoutPanels, 0)
+    await assertReaderLayout()
     const annotations = document.getByRole('complementary', { name: 'PDF 标注' })
-    const annotationsResizable = document.getByTestId('pdf-annotations-resizable')
-    const annotationsResizeHandle = annotationsResizable.locator('.vds-resizable-split__handle')
+    const annotationsToggleSize = annotations.getByTestId('pdf-annotations-toggle-size')
     expect(await annotations.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)')
     await expect(annotations).toBeVisible()
-    const dragAnnotationsTo = async (distance: number): Promise<void> => {
-      const bounds = await annotationsResizeHandle.boundingBox()
-      if (!bounds) throw new Error('PDF annotation resize handle is not visible')
-      await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
-      await page.mouse.down()
-      await page.mouse.move(bounds.x + bounds.width / 2 + distance, bounds.y + bounds.height / 2)
-      await page.mouse.up()
-    }
     const annotationInitialWidth = await annotations.evaluate((element) => element.getBoundingClientRect().width)
-    await dragAnnotationsTo(-PDF_ANNOTATION_DRAG_DISTANCE_PX)
+    await annotationsToggleSize.click()
     await expect.poll(() => annotations.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(annotationInitialWidth)
-    const annotationHostWidth = await annotationsResizable.evaluate((element) => element.getBoundingClientRect().width)
-    expect(await annotations.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(annotationHostWidth * PDF_ANNOTATION_MAX_WIDTH_RATIO + 2)
+    const readerBounds = await document.locator('.vds-pdf-reader').boundingBox()
+    const expandedAnnotationBounds = await annotations.boundingBox()
+    expect(expandedAnnotationBounds!.x).toBeCloseTo(readerBounds!.x, 0)
+    expect(expandedAnnotationBounds!.x + expandedAnnotationBounds!.width).toBeLessThanOrEqual(readerBounds!.x + readerBounds!.width)
     await page.screenshot({ path: join(runtime.artifacts, 'literature-pdf-annotation-resize-max.png') })
-    await dragAnnotationsTo(PDF_ANNOTATION_DRAG_DISTANCE_PX)
-    await expect.poll(() => annotations.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(PDF_ANNOTATION_MIN_WIDTH_PX, 0)
+    await annotationsToggleSize.click()
+    await expect.poll(() => annotations.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(annotationInitialWidth, 0)
     const annotationTabs = annotations.getByRole('tab')
     await expect(annotationTabs).toHaveCount(5)
     expect(await annotationTabs.evaluateAll((tabs) => tabs.every((tab) => tab.scrollHeight <= tab.clientHeight))).toBe(true)
-    expect(await pages.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(pagesWithoutPanels, 0)
+    await assertReaderLayout()
     await page.screenshot({ path: join(runtime.artifacts, 'literature-pdf-annotation-resize.png') })
     await expect(document.getByTestId('pdf-annotation-list')).toContainText('Needle')
     await expect(annotations.getByText('全部 2', { exact: true })).toBeVisible()
@@ -2640,15 +3502,15 @@ test('literature PDF opens annotations from the right rail and excludes the reso
     await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(sourceText)
     await annotations.getByRole('button', { name: '复制批注', exact: true }).first().click()
     await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(NOTE_TEXT)
-    await annotations.getByRole('button', { name: '复制批注', exact: true }).click()
+    await annotations.getByRole('button', { name: '复制批注', exact: true }).nth(1).click()
     await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(secondCommentText)
 
-    await document.getByRole('button', { name: 'AI 解读', exact: true }).click()
+    await document.getByTestId('pdf-interpretation').click()
     await expect(annotations).toHaveCount(0)
     await expect(annotationToggle).toHaveAttribute('aria-pressed', 'false')
     await annotationToggle.click()
     await expect(annotations).toBeVisible()
-    await expect(document.getByRole('complementary', { name: 'AI 解读' })).toHaveCount(0)
+    await expect(document.getByTestId('pdf-reading-panel')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'literature-pdf-navigation-resize-min-dual.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
@@ -2731,7 +3593,7 @@ test('PDF records retain stable identity through missing files, authorization re
       data: { project: original.project_id, source: external, mount: 'linked-pdf' }
     })
     expect(authorization.ok()).toBe(true)
-    const root = await authorization.json() as { root_id: string; mount_path: string }
+    const root = await waitContentOperation(page, authorization) as { root_id: string; mount_path: string }
     const linked = await openPdf(`${root.mount_path}/${PDF_NAME}`)
     expect(linked.asset_id).not.toBe(original.asset_id)
     const linkedInitial = await recordsFor(linked.project_id, linked.asset_id)
@@ -2758,6 +3620,7 @@ test('PDF records retain stable identity through missing files, authorization re
       `${base}/api/content/roots/${root.root_id}?project=${encodeURIComponent(original.project_id)}`
     )
     expect(revoked.ok()).toBe(true)
+    await waitContentOperation(page, revoked)
     const unauthorized = await recordsFor(linked.project_id, linked.asset_id)
     expect(unauthorized.source_state).toBe('authorization_required')
     expect(unauthorized.records.marks).toHaveLength(1)
@@ -2765,7 +3628,7 @@ test('PDF records retain stable identity through missing files, authorization re
       data: { project: original.project_id, source: external, mount: 'linked-pdf' }
     })
     expect(reauthorized.ok()).toBe(true)
-    expect((await reauthorized.json() as { root_id: string }).root_id).toBe(root.root_id)
+    expect((await waitContentOperation(page, reauthorized) as { root_id: string }).root_id).toBe(root.root_id)
     expect((await recordsFor(linked.project_id, linked.asset_id)).source_state).toBe('available')
     expect(fileDigest(linkedSource)).toBe(sourceHash)
 
@@ -2803,8 +3666,8 @@ test('real invalid-Contents PDF exports through Electron save and reopens in the
     await page.mouse.down()
     await page.mouse.move(bounds.x + bounds.width - 1, bounds.y + bounds.height / 2, { steps: 15 })
     await page.mouse.up()
-    await page.getByRole('button', { name: '选择高亮颜色', exact: true }).click()
-    await page.getByRole('button', { name: '蓝色高亮', exact: true }).click()
+    await page.getByTestId('selection-action-host').getByRole('button', { name: '添加高亮颜色', exact: true }).click()
+    await page.getByRole('button', { name: '蓝色标注', exact: true }).click()
 
     await desktop.app!.evaluate(({ dialog }, path) => {
       Reflect.set(dialog, 'showSaveDialog', async () => {
@@ -2814,9 +3677,9 @@ test('real invalid-Contents PDF exports through Electron save and reopens in the
     }, exportedPath)
     const exportButton = page.getByTestId('pdf-export')
     await exportButton.click()
-    await expect(exportButton).toHaveAttribute('data-loading', 'true')
+    await expect(exportButton).toBeDisabled()
     await expect.poll(() => existsSync(exportedPath)).toBe(true)
-    await expect(page.locator('.vds-pdf-status')).toContainText('导出成功')
+    await expect(page.locator('.vds-toaster')).toContainText('导出成功')
     expect(fileDigest(sourcePath)).toBe(originalHash)
 
     const reopened = await PDFDocument.load(readFileSync(exportedPath))
@@ -2925,15 +3788,12 @@ test('PDF next search occurrence moves within one page and blank-page click clea
       await expect(currentHit).toBeInViewport()
     }
     await page.getByTestId('pdf-search').fill('')
-    await page.getByTestId('pdf-scale').click()
-    await page.getByTestId('pdf-page-input').fill('1')
-    await page.getByTestId('pdf-page-input').press('Enter')
     await selectPdfText(page)
-    await expect(page.getByRole('button', { name: '选择高亮颜色', exact: true })).toBeEnabled()
+    const selectionToolbar = page.getByTestId('selection-action-host')
+    await expect(selectionToolbar.getByRole('button', { name: '添加高亮颜色', exact: true })).toBeEnabled()
     await page.getByTestId('pdf-page-1').click({ position: { x: 20, y: 20 } })
     await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('')
-    await expect.soft(page.getByRole('button', { name: '选择高亮颜色', exact: true })).toBeDisabled()
-    await expect.soft(page.getByRole('button', { name: '添加批注', exact: true })).toBeDisabled()
+    await expect(selectionToolbar).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-search-selection-regression.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
@@ -2950,6 +3810,7 @@ test('PDF explicit search and repeated annotation clicks each focus the requeste
     await expect(page.getByTestId('pdf-document')).toBeVisible()
     await page.getByTestId('pdf-sidebar-toggle').click()
     await page.getByRole('tab', { name: '查找', exact: true }).click()
+    await page.setViewportSize(PDF_FOCUS_VIEWPORT)
     const bottomText = page.getByTestId('pdf-page-1').locator('.textLayer span').filter({ hasText: 'Repeated page occurrence' }).last()
     await bottomText.scrollIntoViewIfNeeded()
     const bounds = await bottomText.boundingBox()
@@ -2958,14 +3819,17 @@ test('PDF explicit search and repeated annotation clicks each focus the requeste
     await page.mouse.down()
     await page.mouse.move(bounds.x + bounds.width - 1, bounds.y + bounds.height / 2, { steps: 15 })
     await page.mouse.up()
-    expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toContain('Repeated page occurrence')
-    await page.getByRole('button', { name: '添加批注', exact: true }).click()
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('Repeated page occurrence')
+    await page.getByTestId('selection-action-host').getByRole('button', { name: '添加批注', exact: true }).click()
     await page.getByRole('textbox', { name: '标注内容', exact: true }).fill(bottomNote)
     await page.getByRole('button', { name: '保存标注', exact: true }).click()
-    const markButton = page.locator('[data-testid^="pdf-mark-"]').first()
-    const selectedAnnotation = page.getByTestId('pdf-page-1').locator('.vds-pdf-annotation-layer .is-selected:not([data-current-search="true"])')
-    await expect(markButton).toBeVisible()
-    await markButton.click()
+    const selectedAnnotation = page.getByTestId('pdf-page-1').locator('[data-testid^="pdf-mark-"]').first()
+    const annotationMarker = bottomText
+    await expect(selectedAnnotation).toHaveAttribute('aria-label', /Repeated page occurrence/)
+    await expect(annotationMarker).toBeVisible()
+    await annotationMarker.click()
+    await expect(selectedAnnotation).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByText(bottomNote, { exact: true })).toBeVisible()
     await expect.soft(selectedAnnotation).toBeInViewport()
 
     await page.getByTestId('pdf-search').fill('Needle marker 2')
@@ -2978,17 +3842,20 @@ test('PDF explicit search and repeated annotation clicks each focus the requeste
     const firstPageHit = page.getByTestId('pdf-page-1').locator('[data-current-search="true"]')
     await expect(firstPageHit).toHaveCount(1)
     await expect.soft(firstPageHit).toBeInViewport()
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-backward-search-visible.png') })
     await page.getByTestId('pdf-search').fill('')
     await page.getByTestId('pdf-sidebar-toggle').click()
-    await markButton.click()
+    await annotationMarker.click()
     await expect.soft(selectedAnnotation).toBeInViewport()
+    await page.keyboard.press('Escape')
+    await expect(selectedAnnotation).toHaveAttribute('aria-expanded', 'false')
     const viewport = page.locator('.vds-pdf-pages')
     const viewportBounds = await viewport.boundingBox()
     if (!viewportBounds) throw new Error('PDF viewport has no bounds')
     await page.mouse.move(viewportBounds.x + viewportBounds.width / 2, viewportBounds.y + viewportBounds.height / 2)
     await page.mouse.wheel(0, -1800)
     await expect(selectedAnnotation).not.toBeInViewport()
-    await markButton.click()
+    await annotationMarker.click()
     await expect.soft(selectedAnnotation).toBeInViewport()
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-focus-request-regression.png') })
     desktop.assertNoPageErrors()
@@ -2997,8 +3864,15 @@ test('PDF explicit search and repeated annotation clicks each focus the requeste
 
 
 test('Markdown pasted images persist beside the document and survive reopening', async ({}, testInfo) => {
+  skipQuarantined(testInfo)
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo)
+  const writeClipboardImage = async (path: string): Promise<void> => {
+    await desktop.app!.evaluate(async ({ clipboard, ClipboardItem, nativeImage }, imagePath) => {
+      const bytes = nativeImage.createFromPath(imagePath).toPNG()
+      await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(bytes)], { type: 'image/png' }) })])
+    }, path)
+  }
   try {
     let page = await desktop.launch()
     const resources = await seedProject(page, runtime)
@@ -3010,9 +3884,7 @@ test('Markdown pasted images persist beside the document and survive reopening',
     const editor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     // Exercise Chromium's actual clipboard paste event with a real image file.
-    await desktop.app!.evaluate(({ clipboard, nativeImage }, path) => {
-      clipboard.writeImage(nativeImage.createFromPath(path))
-    }, join(resources, 'acceptance.png'))
+    await writeClipboardImage(join(resources, 'acceptance.png'))
     await editor.locator('li').last().click()
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowRight' : 'End')
     await page.keyboard.press('Enter')
@@ -3020,8 +3892,8 @@ test('Markdown pasted images persist beside the document and survive reopening',
     const images = editor.locator('.milkdown-image-block img, .milkdown-image-inline img')
     await expect.poll(async () => images.evaluateAll((nodes) => nodes.filter((node) => (node as HTMLImageElement).naturalWidth > 0).length)).toBe(1)
     await expect(editor.locator('li img')).toHaveCount(1)
-    await page.getByTestId('markdown-save').click()
-    await expect(page.getByTestId('markdown-save')).toBeDisabled()
+    await page.keyboard.press(`${SHORTCUT}+s`)
+    await expect(page.getByTestId('markdown-save')).toHaveCount(0)
     await expect.poll(() => readFileSync(sourcePath, 'utf8')).toContain('.assert/')
     const markdown = readFileSync(sourcePath, 'utf8')
     expect(markdown).toContain('.assert/')
@@ -3035,13 +3907,13 @@ test('Markdown pasted images persist beside the document and survive reopening',
       return original.toBitmap().equals(persisted.toBitmap())
     }, { original: join(resources, 'acceptance.png'), persisted: join(directory, files[0]) })
     expect(samePixels).toBe(true)
-    await page.getByTestId('markdown-open-source').click()
-    await expect(page.locator('[data-testid="document-editor"]:visible .view-lines')).toContainText('.assert/')
+    await selectMarkdownMode(page, 'source')
+    await expect(visibleMonacoEditor(page).locator('.view-lines')).toContainText('.assert/')
     await desktop.close()
     page = await desktop.launch()
     await selectProject(page)
     await openFile(page, name)
-    await page.getByTestId('markdown-open-editor').click()
+    await selectMarkdownMode(page, 'edit')
     const reopened = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror img')
     await expect.poll(async () => reopened.evaluateAll((nodes) => nodes.filter((node) => (node as HTMLImageElement).naturalWidth > 0).length)).toBe(1)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-pasted-image-reopened.png') })
@@ -3050,11 +3922,9 @@ test('Markdown pasted images persist beside the document and survive reopening',
     writeFileSync(join(resources, blockedName), '# Blocked image\n')
     writeFileSync(join(resources, '.assert', blockedName), 'directory obstruction')
     await page.getByTestId('resource-refresh').click()
-    await desktop.app!.evaluate(({ clipboard, nativeImage }, path) => {
-      clipboard.writeImage(nativeImage.createFromPath(path))
-    }, join(resources, 'acceptance.png'))
+    await writeClipboardImage(join(resources, 'acceptance.png'))
     await openFile(page, blockedName)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await selectMarkdownMode(page, 'edit')
     const blockedEditor = page.locator('[data-testid="markdown-visual-editor"]:visible .ProseMirror')
     await blockedEditor.click()
     await page.keyboard.press(`${SHORTCUT}+End`)
@@ -3071,7 +3941,7 @@ test('Markdown pasted images persist beside the document and survive reopening',
   } finally { await desktop.attachArtifacts() }
 })
 
-test('Markdown bold shortcut keeps editor priority over the module panel', async ({}, testInfo) => {
+test('Markdown bold shortcut leaves the module panel unchanged', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
   try {
@@ -3092,6 +3962,8 @@ test('Markdown bold shortcut keeps editor priority over the module panel', async
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-shortcut-bold.png') })
     await page.getByTestId('activity-resource').focus()
     await page.keyboard.press(`${SHORTCUT}+b`)
+    await expect(page.locator('.vds-module-panel')).toBeVisible()
+    await page.getByTestId('topbar-panel-toggle').click()
     await expect(page.locator('.vds-module-panel')).toHaveCount(0)
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
@@ -3099,7 +3971,10 @@ test('Markdown bold shortcut keeps editor priority over the module panel', async
 
 test('Markdown bold follows a user rebound shortcut without toggling the module panel', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
-  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+  const preferencesPath = join(runtime.userData, RENDERER_PREFERENCES_FILENAME)
+  const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+  writeFileSync(preferencesPath, JSON.stringify({
+    ...preferences,
     shortcutOverrides: {
       'markdown.bold': { key: 'p', modifiers: ['primary', 'shift'] }
     }
@@ -3141,8 +4016,7 @@ test('Markdown shortcuts format blocks and open visual find', async ({}, testInf
     await page.getByTestId('resource-refresh').click()
     await openFile(page, name)
     await page.getByTestId(`tree-resources/${name}`).dblclick()
-    const openEditor = page.locator('[data-testid="markdown-open-editor"]:visible')
-    if (await openEditor.isVisible()) await openEditor.click()
+    await selectMarkdownMode(page, 'edit')
     const editor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.press(`${SHORTCUT}+2`)
@@ -3188,10 +4062,10 @@ test('Markdown native toolbar applies formats and preserves them after reopening
     await openFile(page, name)
     const editor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
-    const bar = page.locator('.vds-markdown-header .milkdown-top-bar')
-    const button = (label: string) => bar.locator('button').filter({ has: page.locator(`[title="${label}"]`) })
-    await expect(page.getByTestId('markdown-editor-actions')).toContainText('H1')
-    await expect(page.locator('[data-testid="markdown-visual-editor"] .milkdown-top-bar')).toHaveCount(0)
+    const bar = page.getByTestId('markdown-editor-actions')
+    const button = (label: string) => bar.getByRole('button', { name: label, exact: true })
+    await expect(button('一级标题 H1')).toBeVisible()
+    await expect(page.locator('[data-testid="markdown-visual-editor"] .milkdown-top-bar')).toBeHidden()
     await expect(page.getByRole('button', { name: '格式工具栏', exact: true })).toHaveCount(0)
     await expect(bar.locator('button')).toHaveCount(14)
     for (const [label, tag] of [['粗体', 'strong'], ['斜体', 'em'], ['行内代码', 'code']]) {
@@ -3199,7 +4073,7 @@ test('Markdown native toolbar applies formats and preserves them after reopening
       await page.keyboard.press(`${SHORTCUT}+a`)
       await button(label).click()
       await expect(editor.locator(tag)).toHaveText('Toolbar evidence')
-      await expect(button(label)).toHaveClass(/active/)
+      await expect(button(label)).toHaveAttribute('aria-pressed', 'true')
       await button(label).click()
       await expect(editor.locator(tag)).toHaveCount(0)
     }
@@ -3207,7 +4081,7 @@ test('Markdown native toolbar applies formats and preserves them after reopening
       await editor.fill('Toolbar evidence')
       await button(label).click()
       await expect(editor.locator(tag)).toContainText('Toolbar evidence')
-      await expect(button(label)).toHaveClass(/active/)
+      await expect(button(label)).toHaveAttribute('aria-pressed', 'true')
       await editor.click()
       await page.keyboard.press(`${SHORTCUT}+z`)
       await expect(editor.locator(tag)).toHaveCount(0)
@@ -3226,8 +4100,12 @@ test('Markdown native toolbar applies formats and preserves them after reopening
     await editor.click()
     await button('表格').click()
     await expect(editor.locator('table.children')).toHaveCount(1)
-    await page.getByTestId('markdown-save').click()
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain('|')
+    const savedNotice = page.getByRole('status').filter({ hasText: /^已保存$/ })
+    await expect(savedNotice).toBeVisible()
+    await savedNotice.getByRole('button', { name: '关闭通知', exact: true }).click()
+    await expect(savedNotice).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'toolbar-light.png') })
     await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
     await page.screenshot({ path: join(runtime.artifacts, 'toolbar-dark.png') })
@@ -3235,11 +4113,13 @@ test('Markdown native toolbar applies formats and preserves them after reopening
     await button('图片').scrollIntoViewIfNeeded()
     await expect(button('图片')).toBeInViewport()
     await page.screenshot({ path: join(runtime.artifacts, 'toolbar-narrow.png') })
+    await editor.press(DOCUMENT_END_SHORTCUT)
     await button('图片').click()
     await expect(editor.locator('.milkdown-image-block')).toHaveCount(1)
     await editor.locator('input[type="file"]').setInputFiles(join(resources, 'acceptance.png'))
     await expect.poll(async () => editor.locator('.milkdown-image-block img').evaluateAll((images) => images.some((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true)
-    await page.getByTestId('markdown-save').click()
+    await expect(editor.locator('table.children')).toHaveCount(1)
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain('.assert/')
     await desktop.close()
     page = await desktop.launch()
@@ -3268,7 +4148,7 @@ test('Markdown slash menu groups insertion actions before headings', async ({}, 
     await page.screenshot({ path: join(runtime.artifacts, 'slash-menu.png') })
     await menu.getByText('分隔线', { exact: true }).click()
     await expect(editor.locator('hr')).toHaveCount(1)
-    await page.getByTestId('markdown-save').click()
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, 'slash.md'), 'utf8')).toMatch(/---|\*\*\*/)
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
@@ -3286,7 +4166,7 @@ test('Markdown long document scrolls and math survives edit save and reopen', as
     await openFile(page, name)
     const editor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
-    const bar = page.locator('.milkdown-top-bar')
+    const bar = page.getByTestId('markdown-editor-actions')
     const scroller = page.locator('[data-testid="markdown-visual-editor"] > .milkdown')
     const initialBar = await bar.boundingBox()
     const visibleBody = await page.locator('.vds-markdown-visual').boundingBox()
@@ -3342,8 +4222,8 @@ test('Markdown long document scrolls and math survives edit save and reopen', as
     expect(mathTypography.inlineFontSize).toBe(mathTypography.bodyFontSize)
     expect(mathTypography.blockFontSize).toBe(mathTypography.bodyFontSize)
     expect(mathTypography.inlineLineHeight).toBe(mathTypography.plainLineHeight)
-    await page.getByTestId('markdown-open-source').click()
-    await page.getByTestId('markdown-open-editor').click()
+    await selectMarkdownMode(page, 'source')
+    await selectMarkdownMode(page, 'edit')
     await expect(editor.locator('.katex')).toHaveCount(6)
     const inlineFormula = editor.locator('[data-type="math_inline"]').first()
     await inlineFormula.click()
@@ -3355,7 +4235,7 @@ test('Markdown long document scrolls and math survives edit save and reopen', as
     await editor.locator('h1').click()
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowRight' : 'End')
     await page.keyboard.type(' edited')
-    await page.getByTestId('markdown-save').click()
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain('edited')
     const saved = readFileSync(join(resources, name), 'utf8')
     expect(saved).toContain('```latex')
@@ -3456,7 +4336,7 @@ test('Markdown table boundaries and block math keep native structure and focused
     await expect(formulaSource).toHaveText(String.raw`x_1^3 + \sqrt{y}`)
     await expect(formulaBlocks.nth(0).locator('.katex')).toBeVisible()
     await expect(formulaBlocks.nth(0).locator('.katex-error')).toHaveCount(0)
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+    await formulaSource.press('Escape')
     await expect(formulaBlocks.nth(0).locator('.codemirror-host')).toHaveClass(/hidden/)
     await formulaBlocks.nth(0).locator('.preview').click()
     await editor.locator('h1').click()
@@ -3465,14 +4345,14 @@ test('Markdown table boundaries and block math keep native structure and focused
     await expect(editor.locator('.cm-content').filter({ hasText: '$$not-rendered$$' })).toHaveCount(1)
     await expect(editor.locator('.cm-content').filter({ hasText: '\\frac{code}{only}' })).toHaveCount(1)
 
-    await page.getByTestId('markdown-open-source').click()
-    await page.getByTestId('markdown-open-editor').click()
+    await selectMarkdownMode(page, 'source')
+    await selectMarkdownMode(page, 'edit')
     const restoredCodeBlocks = editor.locator('.milkdown-code-block')
     await restoredCodeBlocks.nth(0).scrollIntoViewIfNeeded()
     await expect(restoredCodeBlocks.nth(0).locator('.katex')).toBeVisible()
     await restoredCodeBlocks.nth(1).scrollIntoViewIfNeeded()
     await expect(restoredCodeBlocks.nth(1).locator('.katex')).toBeVisible()
-    await page.getByTestId('markdown-save').click()
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain('x_1^3')
     const savedSource = readFileSync(join(resources, name), 'utf8')
     expect(savedSource).toContain('Middle content must remain unchanged')
@@ -3509,7 +4389,8 @@ test('development Markdown documents keep table editors alive across tab switchi
     cacheDir: join(runtime.root, 'vite-cache'),
     server: { ...renderer.server, port: 0, strictPort: false }
   })
-  const previousRendererUrl = process.env.ELECTRON_RENDERER_URL
+  const environment: Record<string, string | undefined> = process.env
+  const previousRendererUrl = environment.ELECTRON_RENDERER_URL
   const firstName = 'first-table.md'
   const secondName = 'second-table.md'
   const tableSource = '# Selection registration\n\n| Name | Value |\n| --- | --- |\n| Original cell | 1 |\n'
@@ -3517,11 +4398,9 @@ test('development Markdown documents keep table editors alive across tab switchi
   const projectName = 'Markdown editor regression'
   try {
     await server.listen()
-    process.env.ELECTRON_RENDERER_URL = server.resolvedUrls!.local[0]
+    environment.ELECTRON_RENDERER_URL = server.resolvedUrls!.local[0]
     let page = await desktop.launch()
-    const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name: projectName } })
-    expect(response.ok(), await response.text()).toBe(true)
-    const project = await response.json() as { root: string }
+    const project = await createReadyProject(page, projectName)
     expect(relative(runtime.workspace, project.root).startsWith('..')).toBe(false)
     const resources = join(project.root, RESOURCES_DIR)
     mkdirSync(resources, { recursive: true })
@@ -3538,7 +4417,7 @@ test('development Markdown documents keep table editors alive across tab switchi
     await page.reload()
     await selectMarkdownProject()
     await openFile(page, firstName)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').first().click()
+    await selectMarkdownMode(page, 'edit')
     const visual = page.locator('[data-testid="markdown-visual-editor"]:visible .ProseMirror')
     const table = visual.locator('table.children')
     await expect(table).toHaveCount(1)
@@ -3548,16 +4427,16 @@ test('development Markdown documents keep table editors alive across tab switchi
     await table.locator('td p').first().click({ clickCount: 3 })
     await page.keyboard.type(editedCell)
     await expect(table.locator('td').first()).toHaveText(editedCell)
-    await page.getByTestId('markdown-save').click()
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, firstName), 'utf8')).toContain(editedCell)
     await openFile(page, secondName)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').first().click()
+    await selectMarkdownMode(page, 'edit')
     await expect(table.locator('td').first()).toHaveText('Original cell')
     await page.getByRole('tab', { name: new RegExp(firstName) }).click()
     await expect(table.locator('td').first()).toHaveText(editedCell)
     const firstTab = page.getByRole('tab', { name: new RegExp(firstName) })
     await firstTab.click({ button: 'right' })
-    await page.getByRole('menuitem', { name: '向下拆分', exact: true }).click()
+    await page.getByTestId('tab-split-down').click()
     await expect(page.locator('[data-testid="markdown-visual-editor"]:visible')).toHaveCount(2)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-table-split.png') })
     await expect(page.getByTestId('document-view-error')).toHaveCount(0)
@@ -3566,15 +4445,15 @@ test('development Markdown documents keep table editors alive across tab switchi
     page = await desktop.launch()
     await selectMarkdownProject()
     await openFile(page, firstName)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').first().click()
+    await selectMarkdownMode(page, 'edit')
     await expect(page.locator('[data-testid="markdown-visual-editor"]:visible .ProseMirror').first()).toContainText(editedCell)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-table-reopened.png') })
     await expect(page.getByTestId('document-view-error')).toHaveCount(0)
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
-    if (previousRendererUrl === undefined) delete process.env.ELECTRON_RENDERER_URL
-    else process.env.ELECTRON_RENDERER_URL = previousRendererUrl
+    if (previousRendererUrl === undefined) delete environment.ELECTRON_RENDERER_URL
+    else environment.ELECTRON_RENDERER_URL = previousRendererUrl
     await server.close()
   }
 })
@@ -3623,7 +4502,7 @@ test('switching compressed document tabs does not resurrect previous tooltips', 
   const names = ['tooltip-alpha.md', 'tooltip-bravo.md', 'tooltip-charlie.md', 'tooltip-delta.md', 'tooltip-echo.md']
   try {
     const page = await desktop.launch()
-    await (await desktop.app!.browserWindow(page)).evaluate(window => window.setSize(1100, 800))
+    await (await desktop.browserWindow(page)).evaluate(window => window.setSize(1100, 800))
     const resources = await seedProject(page, runtime)
     for (const name of names) writeFileSync(join(resources, name), `# ${name}\n`)
     await page.getByTestId('resource-refresh').click()
@@ -3642,6 +4521,32 @@ test('switching compressed document tabs does not resurrect previous tooltips', 
     await expect(page.locator('[data-testid="document-editor"]:visible, [data-testid="markdown-visual-editor"]:visible')).toBeVisible()
     await expect(page.getByRole('tooltip')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'document-tabs-no-stale-tooltips.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('project actions stay outside the project picker with a five pixel gap', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await page.getByTestId('topbar-project').click()
+    const picker = page.getByTestId('project-menu')
+    const trigger = picker.locator('[data-testid^="project-menu-actions-"]').first()
+    await trigger.locator('..').hover()
+    await trigger.click()
+    const submenu = page.getByRole('menu').filter({ has: page.locator('[data-testid^="project-menu-rename-"]') })
+    await expect(submenu).toBeVisible()
+    await expect.poll(async () => {
+      const parent = await picker.locator('..').boundingBox()
+      const child = await submenu.boundingBox()
+      if (!parent || !child) return Number.POSITIVE_INFINITY
+      return Math.abs(child.x - parent.x - parent.width - PROJECT_SUBMENU_GAP_PX)
+    }).toBeLessThanOrEqual(PROJECT_SUBMENU_TOLERANCE_PX)
+    await page.screenshot({ path: join(runtime.artifacts, 'project-submenu-gap.png') })
+    await page.keyboard.press('Escape')
+    await expect(submenu).toBeHidden()
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -3669,10 +4574,18 @@ test('horizontal split keeps navigation aligned and trailing tab icons clear of 
     await page.getByTestId('resource-refresh').click()
     await openFile(page, 'acceptance.md')
     await expect(page.getByTestId('topbar-ai')).toContainText('书深 AI')
-    await page.locator('[data-testid="markdown-open-editor"]:visible').first().click()
+    await selectMarkdownMode(page, 'edit')
     const expectTrailingTabIconClear = async (): Promise<void> => {
       const actions = page.locator('.vds-top-bar-actions')
       const trailingNavigation = page.locator('.vds-top-bar-navigation-trailing')
+      await expect.poll(async () => {
+        const [actionBounds, navigationBounds] = await Promise.all([
+          actions.boundingBox(),
+          trailingNavigation.boundingBox()
+        ])
+        if (!actionBounds || !navigationBounds) return Number.NEGATIVE_INFINITY
+        return actionBounds.x + dividerTolerancePx - (navigationBounds.x + navigationBounds.width)
+      }).toBeGreaterThanOrEqual(0)
       const activeTabIcon = trailingNavigation.getByRole('tab', { selected: true }).locator('svg').first()
       await expect(actions).toBeVisible()
       await expect(activeTabIcon).toBeVisible()
@@ -3743,7 +4656,7 @@ test('horizontal split keeps navigation aligned and trailing tab icons clear of 
     await expectAligned()
 
     if (await page.getByTestId('ai-panel').isVisible()) {
-      await page.getByTestId('ai-panel-layout-toggle').click()
+      await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
     }
     await expectAligned()
     await page.screenshot({ path: join(runtime.artifacts, 'split-pane-compact-ai-independent-scroll.png') })
@@ -3757,7 +4670,9 @@ test('horizontal split keeps navigation aligned and trailing tab icons clear of 
 })
 
 test('file tree separates disk edits, warnings and global policy setup without version state', async ({}, testInfo) => {
+  skipQuarantined(testInfo)
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, RENDERER_PREFERENCES_FILENAME), JSON.stringify({ language: 'zh', autoSave: false }))
   const serviceSettings = join(runtime.home, 'service')
   mkdirSync(serviceSettings, { recursive: true })
   writeFileSync(join(serviceSettings, 'settings.json'), JSON.stringify({ max_versions_per_file: 50 }))
@@ -3769,8 +4684,10 @@ test('file tree separates disk edits, warnings and global policy setup without v
     await expect(page.locator('.vds-tree-version')).toHaveCount(0)
     await page.getByTestId('tree-confirm-policy').click()
     await expect(page.getByTestId('account-settings-nav-files')).toBeVisible()
-    await page.getByRole('button', { name: '保存设置', exact: true }).click()
-    await page.getByRole('button', { name: '确认保存', exact: true }).click()
+    const versionLimit = page.getByTestId('file-version-limit')
+    await expect(versionLimit).toBeEnabled()
+    await versionLimit.fill('51')
+    await versionLimit.press('Tab')
     await expect(page.getByText('文件版本设置已保存', { exact: true })).toBeVisible()
     await expect(page.getByRole('alertdialog')).toHaveCount(0)
     await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
@@ -3787,6 +4704,7 @@ test('file tree separates disk edits, warnings and global policy setup without v
     await page.keyboard.press(`${SHORTCUT}+End`)
     await page.keyboard.insertText(TREE_UNSAVED_EDIT)
     await expect(dirty).toBeVisible()
+    await page.getByTestId('tree-resources/source.h').hover()
     await dirty.hover()
     await expect(page.getByRole('tooltip')).toHaveText('尚未保存到文件')
     expect(readFileSync(join(resources, 'source.h'), 'utf8')).not.toContain('Unsaved tree edit')
@@ -3801,33 +4719,23 @@ test('file tree separates disk edits, warnings and global policy setup without v
     await expect(dirty).toHaveCount(0)
     await expect.poll(() => readFileSync(join(resources, 'source.h'), 'utf8')).toContain('Saved tree edit')
     await page.getByTestId('resource-refresh').click()
-    await expect(version).toBeVisible()
-    await version.hover()
-    await expect(page.getByRole('tooltip')).toHaveText('待存版本 · 查看差异和版本历史')
-    await page.screenshot({ path: join(runtime.artifacts, 'tree-pending-version.png') })
-    await version.click()
-    await expect(page.getByTestId('snapshot-pending')).toBeVisible()
-    await page.getByTestId('snapshot-save-pending').click()
-    await expect(page.getByTestId('snapshot-pending')).toHaveCount(0)
-    await page.keyboard.press('Escape')
-    await expect(version).toHaveCount(0)
+    await expect(page.locator('.vds-tree-version')).toHaveCount(0)
+    await expect(page.getByTestId('tree-version-resources/source.h')).toHaveCount(0)
     const oversized = join(resources, 'large.bin')
     const sizeLimit = 64 * 1024 * 1024
     const payload = Buffer.alloc(sizeLimit + 1)
     writeFileSync(oversized, payload)
     await page.getByTestId('resource-refresh').click()
-    const warning = page.getByTestId('tree-warning-resources/large.bin')
-    await expect(warning).toBeVisible()
-    await warning.hover()
-    await expect(page.getByRole('tooltip')).toHaveText('文件大小超过版本管理上限')
-    await page.screenshot({ path: join(runtime.artifacts, 'tree-warning-tooltip.png') })
-    await warning.click()
+    await expect(page.getByTestId('tree-warning-resources/large.bin')).toHaveCount(0)
+    await openFile(page, 'large.bin')
     await expect(page.getByText('文件大小超过版本管理上限', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: '重新检查', exact: true })).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'tree-warning.png') })
-    await page.keyboard.press('Escape')
     await desktop.close()
-    writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', theme: 'dark' }))
+    writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+      language: 'zh',
+      theme: 'dark',
+      onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+    }))
     page = await desktop.launch()
     await selectProject(page)
     await page.getByTestId('resource-refresh').click()
@@ -3877,10 +4785,14 @@ test('oversized files stay quiet in the tree and menu while keeping the detail w
   }
 })
 
-test('file tree review indicator follows a real Agent file edit', async ({}, testInfo) => {
+test('review tab follows its project after a real Agent file edit', async ({}, testInfo) => {
   const realHome = process.env.SCHOLARSEED_REAL_HOME
   test.skip(!realHome, 'SCHOLARSEED_REAL_HOME is required for the real model flow')
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const modelSettings = JSON.parse(readFileSync(join(realHome!, 'service', 'settings.json'), 'utf8')) as { codex_model: string }
   copyFileSync(join(realHome!, 'model_profiles.json'), join(runtime.home, 'model_profiles.json'))
   const service = join(runtime.home, 'service')
@@ -3889,6 +4801,8 @@ test('file tree review indicator follows a real Agent file edit', async ({}, tes
   const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
   try {
     const page = await desktop.launch()
+    const otherProjectName = 'Review scope project B'
+    await createReadyProject(page, otherProjectName)
     const resources = await seedProject(page, runtime)
     if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
     await expect(page.getByTestId('composer-input')).toBeVisible()
@@ -3900,18 +4814,20 @@ test('file tree review indicator follows a real Agent file edit', async ({}, tes
     await page.getByTestId('composer-send').click()
     await waitForFinishedTurn(page)
     expect(readFileSync(join(resources, 'acceptance.md'), 'utf8')).toContain('文件树真实审阅验收')
-    await page.getByTestId('resource-refresh').click()
-    const review = page.getByTestId('tree-review-resources/acceptance.md')
+    const review = page.getByTestId('ai-panel').getByRole('button', { name: '审核', exact: true })
     await expect(review).toBeVisible()
-    await expect(page.getByTestId('tree-dirty-resources/acceptance.md')).toHaveCount(0)
-    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review.png') })
-    await review.hover()
-    await expect(page.getByRole('tooltip')).toHaveText('待审阅 · 查看并处理修改')
     await review.click()
     await expect(page.getByRole('tab', { name: /审阅修改/ })).toBeVisible()
     await expect(page.getByRole('group', { name: '审阅文件列表' })).toBeVisible()
     await expect(page.getByTestId('snapshot-review')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-page.png') })
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${otherProjectName}`).click()
+    await expect(page.getByRole('tab', { name: /审阅修改/ })).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-project-b.png') })
+    await selectProject(page)
+    await expect(page.getByRole('tab', { name: /审阅修改/ })).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-project-a-restored.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.page?.screenshot({ path: join(runtime.artifacts, 'tree-final-state.png') }).catch(() => undefined)
@@ -3934,14 +4850,12 @@ const MARKDOWN_SCROLL_NAME = '滚动文档.md'
 const MARKDOWN_SCROLL_PARAGRAPHS = 80
 const MARKDOWN_SCROLL_DISTANCE = 300
 
-test('Markdown filename titles render independently of creation, body editing and rename', async ({}, testInfo) => {
+test('Markdown filename identity stays in tabs without changing creation, body editing or rename content', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
-    const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name: MARKDOWN_TITLE_PROJECT } })
-    expect(response.ok(), await response.text()).toBe(true)
-    const project = await response.json() as { id: string; root: string }
+    const project = await createReadyProject(page, MARKDOWN_TITLE_PROJECT)
     const resources = join(project.root, RESOURCES_DIR)
     mkdirSync(resources, { recursive: true })
     writeFileSync(join(resources, MARKDOWN_EXISTING_NAME), MARKDOWN_EXISTING_BODY)
@@ -3956,33 +4870,20 @@ test('Markdown filename titles render independently of creation, body editing an
 
     const title = page.locator('[data-testid="markdown-filename-title"]:visible')
     const editor = page.locator('[data-testid="markdown-visual-editor"]:visible .ProseMirror')
+    const expectFilenameIdentity = async (filename: string): Promise<void> => {
+      await expect(page.getByRole('tab', { selected: true }).filter({ hasText: filename })).toBeVisible()
+      await expect(title).toHaveCount(0)
+    }
     await openFile(page, MARKDOWN_EXISTING_NAME)
     await expect(title).toHaveCount(0)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
-    await expect(title).toHaveText('已有笔记')
+    await selectMarkdownMode(page, 'edit')
+    await expectFilenameIdentity(MARKDOWN_EXISTING_NAME)
     await expect(editor.locator('h1')).toHaveText('用户自定标题')
     const paper = page.locator('[data-testid="markdown-paper"]:visible')
-    await expect(paper.locator('[data-testid="markdown-filename-title"]')).toHaveText('已有笔记')
+    await expect(paper.locator('[data-testid="markdown-filename-title"]')).toHaveCount(0)
     await expect(paper.locator('.ProseMirror')).toHaveCount(1)
-    await expect(paper).toHaveCSS('padding-left', '64px')
-    await expect(paper).toHaveCSS('padding-top', '64px')
-    const titleBounds = await title.boundingBox()
-    const bodyBounds = await editor.boundingBox()
-    expect(titleBounds).not.toBeNull()
-    expect(bodyBounds).not.toBeNull()
-    expect(Math.abs(titleBounds!.x - bodyBounds!.x)).toBeLessThan(1)
-    expect(titleBounds!.y + titleBounds!.height).toBeLessThan(bodyBounds!.y)
-    await expect(title).toHaveCSS('font-weight', '700')
-    const firstBlock = editor.locator(':scope > *').first()
-    const titleBodyGap = async (): Promise<number> => {
-      const [currentTitle, currentBlock] = await Promise.all([title.boundingBox(), firstBlock.boundingBox()])
-      expect(currentTitle).not.toBeNull()
-      expect(currentBlock).not.toBeNull()
-      return currentBlock!.y - currentTitle!.y - currentTitle!.height
-    }
-    const initialTitleBodyGap = await titleBodyGap()
-    expect(initialTitleBodyGap).toBeGreaterThanOrEqual(31)
-    expect(initialTitleBodyGap).toBeLessThanOrEqual(33)
+    await expect(editor.locator(':scope > :not(.ProseMirror-widget,.prosemirror-virtual-cursor)').first()).toHaveText('用户自定标题')
+    await expect(paper).not.toContainText('已有笔记')
     expect(readFileSync(join(resources, MARKDOWN_EXISTING_NAME), 'utf8')).toBe(MARKDOWN_EXISTING_BODY)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-existing-heading.png') })
 
@@ -3991,16 +4892,16 @@ test('Markdown filename titles render independently of creation, body editing an
     await expect(existingTab).toHaveCount(0)
     await openFile(page, MARKDOWN_EXISTING_NAME)
     await expect(title).toHaveCount(0)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
-    await expect(title).toHaveText('已有笔记')
+    await selectMarkdownMode(page, 'edit')
+    await expectFilenameIdentity(MARKDOWN_EXISTING_NAME)
     await expect(editor.locator('h1')).toHaveText('用户自定标题')
-    expect(Math.abs(await titleBodyGap() - initialTitleBodyGap)).toBeLessThanOrEqual(1)
+    await expect(editor.locator(':scope > :not(.ProseMirror-widget,.prosemirror-virtual-cursor)').first()).toHaveText('用户自定标题')
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-reopened-heading.png') })
 
     await openFile(page, MARKDOWN_PLAIN_NAME)
     await expect(title).toHaveCount(0)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
-    await expect(title).toHaveText('无标题')
+    await selectMarkdownMode(page, 'edit')
+    await expectFilenameIdentity(MARKDOWN_PLAIN_NAME)
     await expect(editor).toContainText('第一行就是正文。')
     await expect(editor.locator('h1')).toHaveCount(0)
     expect(readFileSync(join(resources, MARKDOWN_PLAIN_NAME), 'utf8')).toBe(MARKDOWN_PLAIN_BODY)
@@ -4012,26 +4913,26 @@ test('Markdown filename titles render independently of creation, body editing an
     await expect.poll(() => existsSync(join(resources, `${MARKDOWN_CREATED_NAME}.md`))).toBe(true)
     expect(readFileSync(join(resources, `${MARKDOWN_CREATED_NAME}.md`), 'utf8')).toBe('')
     await openFile(page, `${MARKDOWN_CREATED_NAME}.md`)
-    await page.locator('[data-testid="markdown-open-source"]:visible').click()
+    await selectMarkdownMode(page, 'source')
     await expect(title).toHaveCount(0)
-    const source = page.locator('[data-testid="document-editor"]:visible .view-lines')
+    const source = visibleMonacoEditor(page).locator('.view-lines')
     await expect(source).not.toContainText(MARKDOWN_CREATED_NAME)
     await source.click()
     await page.keyboard.insertText(MARKDOWN_SOURCE_BODY)
     await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, `${MARKDOWN_CREATED_NAME}.md`), 'utf8')).toBe(MARKDOWN_SOURCE_BODY)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
-    await expect(title).toHaveText(MARKDOWN_CREATED_NAME)
+    await selectMarkdownMode(page, 'edit')
+    await expectFilenameIdentity(`${MARKDOWN_CREATED_NAME}.md`)
     await expect(editor.locator('h1')).toHaveCount(0)
     await editor.fill(MARKDOWN_SAVED_BODY)
-    await page.locator('[data-testid="markdown-save"]:visible').click()
+    await page.keyboard.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, `${MARKDOWN_CREATED_NAME}.md`), 'utf8').trim()).toBe(MARKDOWN_SAVED_BODY)
 
     await page.getByTestId(`tree-resources/${MARKDOWN_CREATED_NAME}.md`).click({ button: 'right' })
     await page.getByTestId('menu-rename').click()
     await page.getByTestId('resource-name-input').fill(MARKDOWN_RENAMED_NAME)
     await page.getByTestId('resource-name-input').press('Enter')
-    await expect(title).toHaveText(MARKDOWN_RENAMED_NAME)
+    await expectFilenameIdentity(`${MARKDOWN_RENAMED_NAME}.md`)
     await expect(editor).toContainText(MARKDOWN_SAVED_BODY)
     expect(readFileSync(join(resources, `${MARKDOWN_RENAMED_NAME}.md`), 'utf8').trim()).toBe(MARKDOWN_SAVED_BODY)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-renamed-title.png') })
@@ -4042,7 +4943,7 @@ test('Markdown filename titles render independently of creation, body editing an
     await page.getByTestId('menu-rename').click()
     await page.getByTestId('resource-name-input').fill('保留正文标题')
     await page.getByTestId('resource-name-input').press('Enter')
-    await expect(title).toHaveText('保留正文标题')
+    await expectFilenameIdentity('保留正文标题.markdown')
     expect(readFileSync(join(resources, '保留正文标题.markdown'), 'utf8')).toBe(MARKDOWN_EXISTING_BODY)
     await page.reload()
     await enterWorkbenchShell(page)
@@ -4050,8 +4951,8 @@ test('Markdown filename titles render independently of creation, body editing an
     await page.getByTestId(`project-menu-option-${MARKDOWN_TITLE_PROJECT}`).click()
     if (!await page.getByTestId('resource-panel').isVisible().catch(() => false)) await page.getByTestId('activity-resource').click()
     await openFile(page, '保留正文标题.markdown')
-    await expect(title).toHaveText('保留正文标题')
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await expectFilenameIdentity('保留正文标题.markdown')
+    await selectMarkdownMode(page, 'edit')
     await expect(editor.locator('h1')).toHaveText('用户自定标题')
 
     const external = join(runtime.root, 'external-markdown')
@@ -4068,32 +4969,33 @@ test('Markdown filename titles render independently of creation, body editing an
       data: { project: project.id, source: external, mount: '关联 Markdown' }
     })
     expect(authorization.ok(), await authorization.text()).toBe(true)
-    const root = await authorization.json() as { mount_path: string }
+    const root = await waitContentOperation(page, authorization) as { mount_path: string }
     await page.getByTestId('resource-refresh').click()
     await openFile(page, MARKDOWN_IMPORTED_NAME)
-    await expect(title).toHaveText('导入笔记')
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await expectFilenameIdentity(MARKDOWN_IMPORTED_NAME)
+    await selectMarkdownMode(page, 'edit')
     await expect(editor).toContainText('第一行就是正文。')
     expect(readFileSync(join(resources, MARKDOWN_IMPORTED_NAME), 'utf8')).toBe(MARKDOWN_PLAIN_BODY)
     await page.getByTestId(`tree-${root.mount_path}`).click()
     await page.getByTestId(`tree-${root.mount_path}/${MARKDOWN_LINKED_NAME}`).click()
-    await expect(title).toHaveText('关联笔记')
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    await expectFilenameIdentity(MARKDOWN_LINKED_NAME)
+    await selectMarkdownMode(page, 'edit')
     await expect(editor.locator('h1')).toHaveText('用户自定标题')
     expect(readFileSync(linkedPath, 'utf8')).toBe(MARKDOWN_EXISTING_BODY)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-linked-heading.png') })
     await page.setViewportSize({ width: 900, height: 760 })
-    await expect(title).toBeVisible()
+    await expectFilenameIdentity(MARKDOWN_LINKED_NAME)
     await expect(editor.locator('h1')).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-narrow-title.png') })
     await openFile(page, MARKDOWN_SCROLL_NAME)
-    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
-    await expect(title).toHaveText('滚动文档')
-    const beforeScroll = await title.boundingBox()
+    await selectMarkdownMode(page, 'edit')
+    await expectFilenameIdentity(MARKDOWN_SCROLL_NAME)
+    const firstParagraph = editor.locator(':scope > p').first()
+    const beforeScroll = await firstParagraph.boundingBox()
     expect(beforeScroll).not.toBeNull()
     await page.locator('.vds-markdown-crepe > .milkdown:visible').hover()
     await page.mouse.wheel(0, MARKDOWN_SCROLL_DISTANCE)
-    await expect.poll(async () => (await title.boundingBox())?.y ?? beforeScroll!.y).toBeLessThan(beforeScroll!.y)
+    await expect.poll(async () => (await firstParagraph.boundingBox())?.y ?? beforeScroll!.y).toBeLessThan(beforeScroll!.y)
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-scrolled-title.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }

@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import state as search_state  # noqa: E402
 import ranking  # noqa: E402
 import search_policy  # noqa: E402
+import publication_window  # noqa: E402
 
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -526,6 +527,17 @@ def run_round(args):
     current = search_state.read_state(args.session)
     if current is None:
         raise ValueError("session is not initialized; run state.py init first")
+    window = current.get("publication_window") or {}
+    date_filter = {"checked_records": 0, "out_of_range": 0, "unverified_date": 0}
+
+    def eligible_records(records):
+        eligible, counts = publication_window.filter_papers(records, window)
+        if window:
+            date_filter["checked_records"] += len(records)
+            for key, count in counts.items():
+                date_filter[key] += count
+        return eligible
+
     plan, policy = _apply_policy(plan, queries, current)
     auto_config = _auto_citation_config(plan)
     explicit_citation_ids = plan.get("citation_ids", [])
@@ -619,7 +631,7 @@ def run_round(args):
                 successful_query_keys.append(entry["key"])
                 papers.extend(
                     _paper_with_provenance(paper, entry["key"])
-                    for paper in result.get("papers", [])
+                    for paper in eligible_records(result.get("papers", []))
                 )
 
     auto_citation = None
@@ -657,6 +669,7 @@ def run_round(args):
         citation_papers, citation_raw, citation_keys = _citation_search(
             citation_ids, citation_limit, args.timeout,
         )
+        citation_papers = eligible_records(citation_papers)
         citation_papers_for_view = citation_papers
         papers.extend(citation_papers)
         raw_results.extend(citation_raw)
@@ -698,6 +711,8 @@ def run_round(args):
             "do not run a separate citation-only plan"
         )
         raw_document["auto_citation"] = auto_citation
+    if window:
+        raw_document["publication_date_filter"] = date_filter
     search_state._atomic_json_write(raw_path, raw_document)
 
     # Preserve full current-run records only in memory. The persistent pool is
@@ -721,6 +736,10 @@ def run_round(args):
     persisted = search_state.record_round(args.session, state_payload)
     if persisted.get("error"):
         return persisted, 1
+    if window:
+        updated = search_state.read_state(args.session)
+        updated["retrieval_date_filter"] = date_filter
+        search_state.write_state(args.session, updated)
 
     output = {
         **persisted,
@@ -738,6 +757,8 @@ def run_round(args):
     }
     if auto_citation is not None:
         output["auto_citation"] = auto_citation
+    if window:
+        output["publication_date_filter"] = date_filter
     if getattr(args, "retain_papers_in_memory", False):
         output["_in_memory_papers"] = list(in_memory_pool.values())
     budget_after = search_state.budget_status(args.session)

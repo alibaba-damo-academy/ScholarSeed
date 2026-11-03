@@ -8,20 +8,30 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from scholarseed_runtime.contract import CapabilitySet, OpenSessionRequest, RuntimeBinding
+from scholarseed_runtime.contract import (
+    CapabilitySet,
+    CommandState,
+    OpenSessionRequest,
+    RuntimeBinding,
+)
+from scholarseed_runtime.contract.provider import RuntimeOpenNotAppliedError
 from scholarseed_runtime.contract.resource import (
+    RESOURCE_HOST_CONFIGURATION_CONFLICT,
     RESOURCE_WAIT_TIMEOUT,
     ResourcePolicy,
+    ResourcePurpose,
     ResourceReceipt,
     ResourceRequest,
     ResourceState,
 )
+from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
 from scholarseed_runtime.contract.session import RuntimeActivitySnapshot
 from service.chat.persistence.catalog import OpenState, SessionCatalogStore, SessionPrincipal
 from service.chat.runtime.activation import (
     RESOURCE_RESERVATION_INVALID,
+    RESOURCE_WAIT_BLOCKED,
     SESSION_ACTIVATION_CLOSED,
     SESSION_OPEN_UNKNOWN,
     ActivationPlan,
@@ -32,7 +42,9 @@ from service.chat.runtime.composition import LiveSessionService
 from service.chat.runtime.timing import ActivationStage, ActivationTiming, TimingStatus
 from service.chat.service.completions import CompletionBridge
 from service.chat.service.models import ModelService, SessionModelUnavailableError
+from service.platform.activity import Activities
 from service.settings.connections import ModelProfileStore, personal_model_key
+from service.settings.credentials import CredentialState
 
 RUNTIME_ID = "codex"
 TEST_DEADLINE = 2_000_000_000.0
@@ -79,7 +91,9 @@ class AttachmentFixture:
         self.idle = idle
 
     async def activity(self) -> RuntimeActivitySnapshot:
-        return RuntimeActivitySnapshot("generation", 1, 0, self.idle)
+        return RuntimeActivitySnapshot(
+            "generation", 1, 0, self.idle, execution_tree_complete=self.idle
+        )
 
 
 class ProductFixture:
@@ -90,6 +104,8 @@ class ProductFixture:
         self.activation_lock = asyncio.Lock()
         self.runtime_session = None
         self.runtime_binding = None
+        self.replacement_proof = None
+        self.waiting_request_id = ""
         self.runtime_driver = None
         self.running = False
         self.waiting_resources = False
@@ -102,6 +118,8 @@ class ProductFixture:
         self._active = False
         self.attachment_generation = 0
         self.measurements = []
+        self.suspend_blockers: tuple[str, ...] = ()
+        self.subscribers = []
 
     def activation_timing(self, request_id: str) -> ActivationTiming:
         return ActivationTiming(request_id, self.measurements.append)
@@ -112,15 +130,19 @@ class ProductFixture:
     def trace_resource(self, *_args: object) -> None:
         return None
 
-    async def suspend_runtime(self) -> bool:
+    async def suspend_runtime(self, *, require_unsubscribed: bool = False) -> bool:
         async with self.lifecycle_lock:
+            if require_unsubscribed and self.subscribers:
+                return False
+            if self.suspend_blockers:
+                return False
             if self.runtime_session is None or not (await self.runtime_session.activity()).idle:
                 return False
             self.suspensions += 1
             self.runtime_session = None
             return True
 
-    def attach_gateway(self, session: object, *, resumed: bool) -> object:
+    def attach_gateway(self, session: object, *, resumed: bool, activities: Activities) -> object:
         self.runtime_session = session
         self.runtime_binding = session.binding
         return SimpleNamespace(start=lambda: None)
@@ -152,7 +174,9 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             self.attached.append(plan.revision)
             live.runtime_session = AttachmentFixture()
 
+        self.activities = Activities()
         self.activation = SessionActivation(
+            activities=self.activities,
             build=lambda live: ActivationPlan(
                 self.provider,
                 OpenSessionRequest(live.id, Path("/workspace")),
@@ -170,12 +194,191 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.activation.aclose()
 
+    async def test_turn_refresh_releases_dormant_attachment_before_admission(self) -> None:
+        self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertEqual(self.live.suspensions, 1)
+        self.assertIsNot(self.live.runtime_session, previous)
+        self.assertEqual(len(self.provider.requests), 1)
+        self.assertIs(self.provider.requests[0].purpose, ResourcePurpose.TURN)
+
+    async def test_host_conflict_is_explicit_and_does_not_reclaim_existing_sessions(self) -> None:
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        self.provider.reserve = AsyncMock(
+            return_value=ResourceReceipt(
+                "conflict",
+                "rejected",
+                ResourceState.REJECTED,
+                safe_error=RESOURCE_HOST_CONFIGURATION_CONFLICT,
+            )
+        )
+        self.activation._reclaim = AsyncMock()
+        with self.assertRaises(SessionActivationError) as caught:
+            await self.activation.acquire(
+                self.provider,
+                ResourceRequest(
+                    "conflict",
+                    ResourcePurpose.SESSION,
+                    TEST_DEADLINE,
+                    OpenSessionRequest("other", Path("/other")),
+                ),
+            )
+        self.assertEqual(caught.exception.safe_error, RESOURCE_HOST_CONFIGURATION_CONFLICT)
+        self.assertIs(self.live.runtime_session, previous)
+        self.activation._reclaim.assert_not_awaited()
+        self.assertEqual(self.provider.cancelled, ["rejected"])
+
+    async def test_sandbox_rejection_preserves_safe_code_and_releases_reservation(self) -> None:
+        for waiting in (False, True):
+            for code in sorted(SANDBOX_STARTUP_ERRORS):
+                with self.subTest(waiting=waiting, code=code):
+                    provider = AdmissionFixture()
+                    rejected = ResourceReceipt(
+                        "sandbox-request",
+                        "sandbox-reservation",
+                        ResourceState.REJECTED,
+                        safe_error=code,
+                    )
+                    provider.reserve = AsyncMock(
+                        return_value=(
+                            ResourceReceipt(
+                                "sandbox-request",
+                                "sandbox-reservation",
+                                ResourceState.WAITING,
+                                deadline=TEST_DEADLINE,
+                            )
+                            if waiting
+                            else rejected
+                        )
+                    )
+                    provider.wait_resource = AsyncMock(return_value=rejected)
+                    self.activation._reclaim = AsyncMock()
+                    with self.assertRaises(SessionActivationError) as caught:
+                        await self.activation.acquire(
+                            provider,
+                            ResourceRequest(
+                                "sandbox-request",
+                                ResourcePurpose.TURN,
+                                TEST_DEADLINE,
+                                OpenSessionRequest("session", Path("/workspace")),
+                            ),
+                        )
+                    self.assertEqual(caught.exception.safe_error, code)
+                    self.assertEqual(provider.reserve.await_count, 1)
+                    self.assertEqual(provider.wait_resource.await_count, int(waiting))
+                    self.assertEqual(provider.cancelled, ["sandbox-reservation"])
+
+    async def test_turn_refresh_policy_does_not_refresh_session_inspection(self) -> None:
+        self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        await self.activation.ensure_active(self.live, purpose=ResourcePurpose.SESSION)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.live.suspensions, 0)
+        self.assertEqual(self.provider.requests, [])
+
+    async def test_default_turn_policy_preserves_attachment(self) -> None:
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.live.suspensions, 0)
+
+    async def test_turn_refresh_never_restarts_running_attachment(self) -> None:
+        self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        self.live.running = True
+        await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.live.suspensions, 0)
+
+    async def test_turn_refresh_blocker_does_not_fall_back_to_old_attachment(self) -> None:
+        self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        self.live.suspend_blockers = ("pending_hil",)
+        with self.assertRaises(SessionActivationError):
+            await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.provider.requests, [])
+
+    async def test_cancelled_turn_refresh_does_not_admit_new_execution(self) -> None:
+        self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        with patch.object(
+            self.activation, "wait_until_suspended", side_effect=asyncio.CancelledError
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.provider.requests, [])
+
+    async def test_reclaim_cancellation_waits_for_native_suspend_cleanup(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        self.live.runtime_session = AttachmentFixture()
+
+        async def suspend(*, require_unsubscribed=False):
+            entered.set()
+            await release.wait()
+            self.live.runtime_session = None
+            return True
+
+        self.live.suspend_runtime = suspend
+        task = asyncio.create_task(self.activation._reclaim(RUNTIME_ID, pressure=True))
+        try:
+            await asyncio.wait_for(entered.wait(), TEST_TIMEOUT)
+            generation = self.activities.begin()
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0.01)
+                self.assertFalse(task.done())
+                self.assertFalse(self.activities.seal(generation))
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertIsNone(self.live.runtime_session)
+        self.assertTrue(self.activities.seal(generation))
+
+    async def test_periodic_reclaim_defers_native_queries_until_maintenance_resumes(self) -> None:
+        queried = asyncio.Event()
+        self.live.runtime_session = AttachmentFixture(idle=False)
+
+        async def activity():
+            queried.set()
+            return RuntimeActivitySnapshot("generation", 1, 0, False)
+
+        self.live.runtime_session.activity = AsyncMock(side_effect=activity)
+        generation = self.activities.begin()
+        with patch("service.chat.runtime.activation.RESOURCE_SWEEP_INTERVAL_SECONDS", 0.01):
+            await self.activation.start()
+            await asyncio.sleep(0.05)
+            self.live.runtime_session.activity.assert_not_awaited()
+            self.assertTrue(self.activities.seal(generation))
+            self.activities.resume(generation)
+            await asyncio.wait_for(queried.wait(), TEST_TIMEOUT)
+            await self.activation.aclose()
+        self.assertEqual(self.activities.snapshot().counts, {})
+
     async def test_activation_spans_share_request_and_hot_path_does_not_fake_stages(self) -> None:
         await self.activation.ensure_active(self.live, request_id="cold-request")
         samples = self.live.measurements
         root = next(sample for sample in samples if sample.stage == ActivationStage.TOTAL)
         stages = {sample.stage for sample in samples}
-        self.assertTrue(set(ActivationStage).issubset(stages))
+        expected_stages = {
+            ActivationStage.TOTAL,
+            ActivationStage.LOCK_WAIT,
+            ActivationStage.LIFECYCLE_LOCK_WAIT,
+            ActivationStage.SKILLS,
+            ActivationStage.PLAN,
+            ActivationStage.ADMISSION,
+            ActivationStage.ATTACH,
+        }
+        self.assertEqual(stages, expected_stages)
         self.assertTrue(all(sample.request_id == "cold-request" for sample in samples))
         self.assertTrue(all(sample.activation_id == root.activation_id for sample in samples))
         self.assertTrue(all(sample.status is TimingStatus.OK for sample in samples))
@@ -277,6 +480,13 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
                 await self.activation.wait_until_suspended(self.live, deadline=1.0)
         self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_TIMEOUT)
 
+    async def test_quiescence_wait_fails_fast_when_runtime_reports_blockers(self) -> None:
+        self.live.runtime_session = AttachmentFixture(idle=False)
+        self.live.suspend_blockers = ("native_background_terminal_active",)
+        with self.assertRaises(SessionActivationError) as caught:
+            await self.activation.wait_until_suspended(self.live)
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
+
     async def test_termination_owner_can_restore_binding_without_reopening_other_admission(
         self,
     ) -> None:
@@ -324,8 +534,18 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(idle.suspensions, 1)
         self.assertEqual(busy.suspensions, 0)
 
+    async def test_subscribed_attachment_is_not_automatically_reclaimed(self) -> None:
+        self.live.runtime_session = AttachmentFixture()
+        self.live.subscribers.append(asyncio.Queue())
+        await self.activation._reclaim(RUNTIME_ID, pressure=True)
+        self.assertEqual(self.live.suspensions, 0)
+        self.live.subscribers.clear()
+        await self.activation._reclaim(RUNTIME_ID, pressure=True)
+        self.assertEqual(self.live.suspensions, 1)
+
     async def test_operation_pins_attachment_until_awaited_body_exits(self) -> None:
         service = object.__new__(LiveSessionService)
+        service._activities = self.activities
         service.activation = self.activation
         service._catalog = SimpleNamespace(runtime_binding=lambda _session_id: None)
         async with service.operation(self.live) as session:
@@ -360,6 +580,15 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
         failure = SessionActivationError("secret-token-or-private-provider-response")
         self.assertEqual(failure.safe_error, RESOURCE_RESERVATION_INVALID)
 
+    def test_sandbox_failure_codes_require_an_exact_public_code(self) -> None:
+        for code in sorted(SANDBOX_STARTUP_ERRORS):
+            with self.subTest(code=code):
+                self.assertEqual(SessionActivationError(code).safe_error, code)
+                for invalid in (f"private-{code}", f"{code}:private-response"):
+                    self.assertEqual(
+                        SessionActivationError(invalid).safe_error, RESOURCE_RESERVATION_INVALID
+                    )
+
     def test_logical_model_selection_checks_owner_without_registering_a_bridge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             profiles = ModelProfileStore(Path(temporary) / "profiles.json")
@@ -374,16 +603,180 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             model_key = personal_model_key(profile["id"], "personal-model")
             before = profiles.path.read_bytes()
             bridge = CompletionBridge("http://127.0.0.1:8770")
+            subscription_status = Mock(return_value={"state": CredentialState.CONNECTED.value})
             models = ModelCatalogFixture(
-                SimpleNamespace(runtime_model=lambda: model_key), bridge, profiles=profiles
+                SimpleNamespace(runtime_model=lambda: model_key),
+                bridge,
+                profiles=profiles,
+                activities=self.activities,
+                subscriptions=SimpleNamespace(status=subscription_status),
             )
             self.assertEqual(models.selected_model_key(model_key, user_id="owner"), model_key)
             self.assertEqual(models.selected_model_key(user_id="owner"), model_key)
+            subscription_status.assert_called_with("owner", profile["id"])
             for actor in ("", "other"):
                 with self.assertRaises(SessionModelUnavailableError):
                     models.selected_model_key(model_key, user_id=actor)
+            subscription_status.return_value = {"state": CredentialState.DISCONNECTED.value}
+            with self.assertRaises(SessionModelUnavailableError):
+                models.selected_model_key(model_key, user_id="owner")
             self.assertEqual(bridge.registration_count(), 0)
             self.assertEqual(profiles.path.read_bytes(), before)
+
+    def opening_fixture(self, temporary: str):
+        catalog = SessionCatalogStore(Path(temporary) / "catalog.sqlite3")
+        catalog.allocate(
+            self.live.id,
+            SessionPrincipal("owner"),
+            runtime_id=RUNTIME_ID,
+            runtime_workdir=temporary,
+            project_path=None,
+            output_root=temporary,
+            model_id="model",
+        )
+        service = object.__new__(LiveSessionService)
+        service._activities = self.activities
+        service._uncertain_attachments = {}
+        service._logger = logging.getLogger(__name__)
+        service._catalog = catalog
+        service._models = SimpleNamespace(release_session=lambda _session_id: None)
+        return service, catalog
+
+    async def test_proven_not_applied_open_can_retry_without_replacing_product_session(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service, catalog = self.opening_fixture(temporary)
+            queued = catalog.enqueue_message(
+                self.live.id, "original-message", {"content": "retry me"}
+            )
+            binding = RuntimeBinding(
+                product_session_id=self.live.id,
+                runtime_id=RUNTIME_ID,
+                adapter_version="fixture",
+                runtime_version="fixture",
+                protocol_version="fixture",
+                protocol_schema_hash="fixture",
+                opaque_session_ref="retried-thread",
+                capabilities=CapabilitySet(),
+            )
+            opened = SimpleNamespace(binding=binding, detach=AsyncMock())
+            failed = RuntimeOpenNotAppliedError("1")
+            runtime = self.provider
+            runtime.open = AsyncMock(side_effect=[failed, opened])
+            plan = ActivationPlan(
+                runtime, OpenSessionRequest(self.live.id, Path(temporary)), ("model", "ask")
+            )
+            self.activation._build = lambda _live: plan
+            self.activation._revision = lambda _live: plan.revision
+            self.activation._attach = service._attach_runtime
+            with self.assertRaises(RuntimeOpenNotAppliedError):
+                await self.activation.ensure_active(self.live, request_id="original-message")
+            reopened = SessionCatalogStore(catalog.database)
+            self.assertEqual(reopened.activation(self.live.id).open_state, OpenState.NEVER_STARTED)
+            failed_attempt = reopened.activation(self.live.id).open_attempt_id
+            self.assertTrue(failed_attempt)
+            self.assertEqual(service._uncertain_attachments, {})
+            self.assertEqual(
+                catalog.enqueue_message(self.live.id, "original-message", {"content": "retry me"}),
+                queued,
+            )
+            await self.activation.ensure_active(self.live, request_id="original-message")
+            self.assertEqual(runtime.open.await_count, 2)
+            self.assertEqual(
+                [call.args[0].reservation_id for call in runtime.open.await_args_list], ["1", "2"]
+            )
+            self.assertNotEqual(runtime.requests[0].request_id, runtime.requests[1].request_id)
+            self.assertEqual(reopened.runtime_binding(self.live.id), binding)
+            self.assertNotEqual(reopened.activation(self.live.id).open_attempt_id, failed_attempt)
+            self.assertEqual(reopened.activation(self.live.id).open_state, OpenState.UNSUBMITTED)
+            self.assertFalse(reopened.reset_open_not_applied(self.live.id, failed_attempt))
+
+    async def test_unrelated_negative_proof_does_not_clear_open_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service, catalog = self.opening_fixture(temporary)
+            runtime = SimpleNamespace(
+                open=AsyncMock(side_effect=RuntimeOpenNotAppliedError("other-reservation"))
+            )
+            plan = ActivationPlan(
+                runtime, OpenSessionRequest(self.live.id, Path(temporary)), ("model", "ask")
+            )
+            with self.assertRaises(RuntimeOpenNotAppliedError):
+                await service._attach_runtime(self.live, plan, "reservation")
+            self.assertEqual(catalog.activation(self.live.id).open_state, OpenState.OPEN_UNKNOWN)
+            self.assertTrue(service._uncertain_attachments)
+            self.assertFalse(
+                catalog.reset_open_not_applied(
+                    self.live.id, catalog.activation(self.live.id).open_attempt_id
+                )
+            )
+
+    async def test_negative_proof_after_native_binding_never_resets_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service, catalog = self.opening_fixture(temporary)
+            binding = RuntimeBinding(
+                product_session_id=self.live.id,
+                runtime_id=RUNTIME_ID,
+                adapter_version="fixture",
+                runtime_version="fixture",
+                protocol_version="fixture",
+                protocol_schema_hash="fixture",
+                opaque_session_ref="existing-thread",
+                capabilities=CapabilitySet(),
+            )
+            opened = SimpleNamespace(binding=binding, detach=AsyncMock())
+            self.live.hydrate_runtime_history = AsyncMock(
+                side_effect=RuntimeOpenNotAppliedError("reservation")
+            )
+            self.live.release_attachment_activity = Mock()
+            runtime = SimpleNamespace(open=AsyncMock(return_value=opened))
+            plan = ActivationPlan(
+                runtime, OpenSessionRequest(self.live.id, Path(temporary)), ("model", "ask")
+            )
+            with patch.object(
+                catalog, "reset_open_not_applied", wraps=catalog.reset_open_not_applied
+            ) as reset:
+                with self.assertRaises(RuntimeOpenNotAppliedError):
+                    await service._attach_runtime(self.live, plan, "reservation")
+                reset.assert_not_called()
+            self.assertEqual(catalog.runtime_binding(self.live.id), binding)
+            self.assertEqual(catalog.activation(self.live.id).open_state, OpenState.UNSUBMITTED)
+            self.assertFalse(
+                catalog.reset_open_not_applied(
+                    self.live.id, catalog.activation(self.live.id).open_attempt_id
+                )
+            )
+            opened.detach.assert_awaited_once()
+
+    async def test_open_reset_is_attempt_scoped_and_does_not_clear_newer_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _service, catalog = self.opening_fixture(temporary)
+            self.assertIsNotNone(catalog.begin_open(self.live.id, "first"))
+            self.assertFalse(catalog.reset_open_not_applied(self.live.id, "other"))
+            self.assertTrue(catalog.reset_open_not_applied(self.live.id, "first"))
+            self.assertIsNotNone(catalog.begin_open(self.live.id, "second"))
+            self.assertFalse(catalog.reset_open_not_applied(self.live.id, "first"))
+            self.assertEqual(catalog.activation(self.live.id).open_state, OpenState.OPENING)
+            self.assertTrue(catalog.mark_open_unknown(self.live.id, "second"))
+            self.assertFalse(catalog.reset_open_not_applied(self.live.id, "second"))
+
+    async def test_failed_negative_proof_commit_retains_opening_fence(self) -> None:
+        for failure in (None, OSError("database unavailable")):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                service, catalog = self.opening_fixture(temporary)
+                runtime = SimpleNamespace(
+                    open=AsyncMock(side_effect=RuntimeOpenNotAppliedError("reservation"))
+                )
+                plan = ActivationPlan(
+                    runtime, OpenSessionRequest(self.live.id, Path(temporary)), ("model", "ask")
+                )
+                with patch.object(
+                    catalog, "reset_open_not_applied", return_value=False, side_effect=failure
+                ):
+                    with self.assertRaises(SessionActivationError if failure is None else OSError):
+                        await service._attach_runtime(self.live, plan, "reservation")
+                self.assertEqual(catalog.activation(self.live.id).open_state, OpenState.OPENING)
+                self.assertTrue(service._uncertain_attachments)
 
     async def test_first_open_failure_is_fenced_in_file_backed_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -398,6 +791,9 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
                 model_id="model",
             )
             service = object.__new__(LiveSessionService)
+            service._activities = self.activities
+            service._uncertain_attachments = {}
+            service._logger = logging.getLogger(__name__)
             service._catalog = catalog
             service._models = SimpleNamespace(release_session=lambda _session_id: None)
 
@@ -418,6 +814,32 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(SessionActivationError) as failure:
                 service._activation_plan(self.live)
             self.assertEqual(failure.exception.safe_error, SESSION_OPEN_UNKNOWN)
+
+            generation = self.activities.begin()
+            self.assertFalse(self.activities.seal(generation))
+            service.activation = SimpleNamespace(aclose=AsyncMock())
+            service.reconfiguration = SimpleNamespace(aclose=AsyncMock())
+            service._one_shot_tasks = {}
+            service._one_shot_drivers = {}
+            service._one_shot_close_failures = {}
+            service._readiness_task = None
+            service._skill_inventory_refresh = {}
+            shutdown = AsyncMock(return_value=SimpleNamespace(state=CommandState.ACCEPTED))
+            service._gateway = SimpleNamespace(
+                catalog=SimpleNamespace(runtime_ids=lambda: (RUNTIME_ID,)),
+                provider=lambda _runtime_id: SimpleNamespace(shutdown=shutdown),
+            )
+            with self.assertRaisesRegex(RuntimeError, "shutdown was not confirmed"):
+                await service.aclose()
+            self.assertFalse(self.activities.seal(generation))
+            shutdown.side_effect = OSError("native stop failed")
+            with self.assertRaises(OSError):
+                await service.aclose()
+            self.assertFalse(self.activities.seal(generation))
+            shutdown.side_effect = None
+            shutdown.return_value = SimpleNamespace(state=CommandState.APPLIED)
+            await service.aclose()
+            self.assertTrue(self.activities.seal(generation))
 
     async def test_native_open_binding_and_attachment_generation_commit_together(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -442,6 +864,8 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
                 capabilities=CapabilitySet(),
             )
             service = object.__new__(LiveSessionService)
+            service._activities = self.activities
+            service._uncertain_attachments = {}
             service._catalog = catalog
             service._models = SimpleNamespace(release_session=lambda _session_id: None)
 
@@ -460,7 +884,7 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
                 "reservation",
             )
             reopened = SessionCatalogStore(catalog.database)
-            self.assertEqual(reopened.activation(self.live.id).open_state, OpenState.BOUND)
+            self.assertEqual(reopened.activation(self.live.id).open_state.value, "unsubmitted")
             self.assertEqual(reopened.activation(self.live.id).generation, 1)
             self.assertEqual(self.live.attachment_generation, 1)
             self.assertEqual(reopened.runtime_binding(self.live.id), binding)

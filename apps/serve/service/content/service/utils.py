@@ -27,6 +27,22 @@ NAME_TOO_LONG = "name_too_long"
 WINDOWS_FILENAME_EXCED_RANGE = 206
 WINDOWS_PATH_NOT_FOUND = 3
 WINDOWS_MAX_PATH = 260
+WRITE_DENIED_ERRORS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+
+
+def writable(parent: DirectoryHandle, name: str) -> bool:
+    """Probe native write access without creating, truncating or changing permissions."""
+
+    try:
+        descriptor = parent.open(name, os.O_WRONLY | NOFOLLOW | NONBLOCK)
+    except OSError as error:
+        if error.errno in WRITE_DENIED_ERRORS:
+            return False
+        raise
+    try:
+        return stat.S_ISREG(os.fstat(descriptor).st_mode)
+    finally:
+        os.close(descriptor)
 
 
 def name_length_error(error: OSError, path: Path | None = None) -> ContentError | None:
@@ -44,10 +60,7 @@ def name_length_error(error: OSError, path: Path | None = None) -> ContentError 
         path is not None
         and (
             windows_error == WINDOWS_PATH_NOT_FOUND
-            or (
-                windows_error is None
-                and error.errno == WINDOWS_PATH_NOT_FOUND
-            )
+            or (windows_error is None and error.errno == WINDOWS_PATH_NOT_FOUND)
         )
         and len(str(path)) >= WINDOWS_MAX_PATH
     )
@@ -60,9 +73,7 @@ def name_length_error(error: OSError, path: Path | None = None) -> ContentError 
     return None
 
 
-def filesystem_error(
-    error: OSError, fallback: str, path: Path | None = None
-) -> ContentError:
+def filesystem_error(error: OSError, fallback: str, path: Path | None = None) -> ContentError:
     """Preserve actionable length failures without imposing a filesystem limit."""
     return name_length_error(error, path) or ContentError(fallback)
 

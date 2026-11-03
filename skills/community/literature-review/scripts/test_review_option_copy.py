@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from citation_styles import style_ids
 from publication import publication_options
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +20,7 @@ class ReviewOptionCopyTest(unittest.TestCase):
         ]
         styles = {
             sid: {"minimum_ready": 2, "entries": 2, "metadata_risk": "PaperHub internal detail"}
-            for sid in ("numeric", "author_year", "ieee", "acm")
+            for sid in style_ids()
         }
         for language in ("CHINESE", "ENGLISH"):
             with self.subTest(language=language), tempfile.TemporaryDirectory() as folder:
@@ -42,7 +43,7 @@ class ReviewOptionCopyTest(unittest.TestCase):
                 self.assertEqual(
                     options["templates"][0]["title"], options["format_labels"]["latex_pdf"]
                 )
-                self.assertEqual(len(options["citation_styles"]), 4)
+                self.assertEqual(len(options["citation_styles"]), len(style_ids()))
                 visible = [options["format_labels"][key] for key in options["formats"]]
                 visible += [row["label"] for row in options["citation_styles"]]
                 self.assertFalse(
@@ -52,12 +53,8 @@ class ReviewOptionCopyTest(unittest.TestCase):
                     )
                 )
                 self.assertEqual(
-                    options["citation_styles"][2]["label"],
-                    (
-                        "IEEE 编号条目（含卷期页），条目信息可能存在不完整。"
-                        if language == "CHINESE"
-                        else "IEEE numbered references (including volume, issue, and pages); some entry details may be incomplete."
-                    ),
+                    next(row["label"] for row in options["citation_styles"] if row["id"] == "ieee"),
+                    ("IEEE 编号条目" if language == "CHINESE" else "IEEE numbered references"),
                 )
                 self.assertNotIn("metadata_risk", options["citation_styles"][2]["metadata"])
 

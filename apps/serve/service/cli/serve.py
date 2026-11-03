@@ -13,32 +13,38 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import threading
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
 import httpx
 import uvicorn
+from fastapi import FastAPI
 
 from scholarseed_runtime.contract.resource import RESOURCE_LIFECYCLE_LOGGER
 
 # 书深运行时根默认值必须在 import damoagent 之前落地: Agent 层的路径常量在 import 时
 # 即按 .scholarseed 求值。这是 composition root 的既定例外, 故此处 import 顺序被显式豁免。
 from service.brand import apply_runtime_defaults  # noqa: E402
+from service.cli.utils import startup_checkpoint
 from service.trust import apply_system_trust_store  # noqa: E402
 
+startup_checkpoint("serve.dependencies_ready")
 apply_runtime_defaults()
 # 同理属于组合根例外: 注入是替换 ssl.SSLContext, 只有早于第一条出站 TLS 连接才生效。
 apply_system_trust_store()
+startup_checkpoint("serve.defaults_ready")
 
 from service.bootstrap import (  # noqa: E402
     PRODUCT_ALL,
     PRODUCT_CHOICES,
     create_app,
-    resolve_workspace_root,
 )
+
+startup_checkpoint("serve.bootstrap_imported")
 from service.chat.constants import (  # noqa: E402
     PRODUCT_EVENT_HIL_REQUESTED,
     PRODUCT_EVENT_MESSAGE_DELTA,
@@ -48,14 +54,12 @@ from service.chat.constants import (  # noqa: E402
     PRODUCT_EVENT_TURN_FAILED,
     PRODUCT_EVENT_TURN_INTERRUPTED,
 )
-from service.identity.persistence.users import has_users  # noqa: E402
+from service.chat.runtime.selection import RuntimeDiscovery  # noqa: E402
 from service.identity.service.account import ACCOUNT_BASE_URL_ENV, ACCOUNT_MODE  # noqa: E402
 from service.identity.service.policy import (  # noqa: E402
     AUTH_MODE_AUTO,
     AUTH_MODE_CHOICES,
-    AUTH_MODE_ENFORCED,
     AUTH_MODE_OFF,
-    enabled_for_mode,
 )
 from service.identity.utils import (  # noqa: E402
     OWNERSHIP_AXIS_CHOICES,
@@ -63,32 +67,48 @@ from service.identity.utils import (  # noqa: E402
     OWNERSHIP_AXIS_ENV,
     resolve_ownership_axis,
 )
-from service.paths import CONFIG_PATH  # noqa: E402
 from service.paths import SERVICE_BRIDGE_DIR, SERVICE_CASES_DIR  # noqa: E402
-from service.platform.bridge import INTERNAL_BASE_URL_ENV  # noqa: E402
+from service.platform.activity import Activities, ActivityDomain  # noqa: E402
 from service.platform.executables import (  # noqa: E402
     SKILL_PYTHON_COMMAND,
     SKILL_PYTHON_PROBE_ARGUMENTS,
+    SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
     command_directories,
     probe_command,
     resolve_command,
 )
+from service.platform.parent_control import ParentControl  # noqa: E402
+from service.platform.server import ProductServer  # noqa: E402
+from service.platform.shutdown import DEFAULT_SHUTDOWN_SECONDS  # noqa: E402
+from service.platform.startup import startup_phase  # noqa: E402
+from service.platform.toolchain import ToolchainReadiness  # noqa: E402
+from service.platform.vocabulary import INTERNAL_BASE_URL_ENV  # noqa: E402
 
-CONFIG_SEED_ENV = "SCHOLARSEED_CONFIG_SEED_PATH"
+startup_checkpoint("serve.imports_ready")
 
 
-def _ensure_skill_python_path() -> None:
-    """Prefer a working product Skill Python launcher over installed trampolines."""
-
-    launcher = next(
+def _find_skill_python_launcher() -> Path | None:
+    return next(
         (
             candidate
             for directory in command_directories()
             if (candidate := resolve_command(SKILL_PYTHON_COMMAND, directory)) is not None
-            and probe_command(candidate, SKILL_PYTHON_PROBE_ARGUMENTS)
+            and probe_command(
+                candidate,
+                SKILL_PYTHON_PROBE_ARGUMENTS,
+                timeout_seconds=SKILL_PYTHON_PROBE_TIMEOUT_SECONDS,
+            )
         ),
         None,
     )
+
+
+async def _ensure_skill_python_path(activities: Activities) -> None:
+    with startup_phase("entry.skill_python"):
+        launcher = await activities.finish(
+            ActivityDomain.STARTUP,
+            lambda: activities.to_thread(ActivityDomain.STARTUP, _find_skill_python_launcher),
+        )
     if launcher is None:
         return
     directory = str(launcher.parent)
@@ -102,14 +122,26 @@ def _ensure_skill_python_path() -> None:
     os.environ["PATH"] = os.pathsep.join((directory, *entries))
 
 
-# 出厂种子只交付「连接形状」, 凭据一律不落进用户配置。出厂曾内嵌一把全体客户端共用的
-# 网关调用方 key, 首启动原样拷进每个 ~/.scholarseed/config.json —— 那把 key 不识别人、
-# 不能按用户吊销, 用量也归不到账。模型调用的凭据现在是登录用户的 access JWT (bridge
-# 每次调用现取, 见 service/chat/service/completions.py)。剥离动作放在这里而不是只清空
-# 种子文件: 种子是打包资产, 谁都可能再塞一把进去, 落盘这一步才是唯一的必经关口。
-SEEDED_CREDENTIAL_FIELDS = ("api_key",)
+def _prepare_startup(app: FastAPI, skill_python: ToolchainReadiness | None = None) -> None:
+    previous_lifespan = app.router.lifespan_context
 
-CONFIG_FILE_MODE = 0o600
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        runtime = application.state.runtime_service
+        runtime.schedule_readiness()
+        try:
+            if skill_python is None:
+                await _ensure_skill_python_path(application.state.activities)
+            else:
+                with startup_phase("entry.skill_python_receipt"):
+                    await skill_python.wait()
+            async with previous_lifespan(application):
+                yield
+        finally:
+            await runtime.stop_readiness()
+
+    app.router.lifespan_context = lifespan
+
 
 AUTH_MODE_ENV = "SCHOLARSEED_AUTH_MODE"
 SERVER_LOG_LEVEL_CHOICES = ("critical", "error", "warning", "info", "debug", "trace")
@@ -161,6 +193,7 @@ def _configure_resource_logging(log_level: str) -> None:
         )
     # basicConfig keeps existing hosting handlers and leaves the root level unchanged.
     logging.basicConfig()
+    logging.getLogger("service.platform.shutdown").setLevel(logging.INFO)
 
 
 TRACEBACK_MARKER = "Traceback (most recent call last):"
@@ -187,60 +220,12 @@ def _is_shutdown_cancellation(record: logging.LogRecord) -> bool:
     return exc_name == asyncio.CancelledError.__name__
 
 
-def seed_user_config(*, source: Path | None = None, target: Path = CONFIG_PATH) -> bool:
-    """Create a missing user config from the packaged desktop seed exactly once.
-
-    凭据字段在落盘前剥离: 见 ``SEEDED_CREDENTIAL_FIELDS``。
-    """
-    if source is None:
-        source_value = os.environ.get(CONFIG_SEED_ENV, "").strip()
-        if not source_value:
-            return False
-        raw_source = Path(source_value).expanduser()
-    else:
-        raw_source = source
-    if raw_source.resolve() == target.resolve():
-        return False
-    if target.exists():
-        return False
-    if not raw_source.is_file():
-        raise RuntimeError(f"default config does not exist: {raw_source}")
-    payload = raw_source.read_bytes()
-    try:
-        parsed = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"default config is not valid JSON: {raw_source}") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError(f"default config must be a JSON object: {raw_source}")
-    dropped = [name for name in SEEDED_CREDENTIAL_FIELDS if parsed.pop(name, None) is not None]
-    payload = (json.dumps(parsed, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="wb", dir=target.parent, prefix=f"{target.name}.", delete=False
-    ) as config_file:
-        config_file.write(payload)
-        staged = Path(config_file.name)
-    try:
-        staged.chmod(CONFIG_FILE_MODE)
-        staged.replace(target)
-    finally:
-        if staged.exists():
-            staged.unlink()
-    print(f"[scholarseed serve] initialized packaged config: {target}", file=sys.stderr)
-    if dropped:
-        print(
-            "[scholarseed serve] dropped packaged credential fields: " + ", ".join(dropped),
-            file=sys.stderr,
-        )
-    return True
-
-
 def serve_main(argv: Optional[List[str]] = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
-    _ensure_skill_python_path()
     if argv and argv[0] == "client":
         return _client_main(argv[1:])
 
+    arguments_started = time.monotonic()
     ap = argparse.ArgumentParser(prog="scholarseed-serve")
     ap.add_argument(
         "--host", default="127.0.0.1"
@@ -248,6 +233,25 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--cases-root", default=str(SERVICE_CASES_DIR))
     ap.add_argument("--renderer-dist", default="")
+    ap.add_argument("--office-root", default="")
+    ap.add_argument(
+        "--shutdown-timeout-seconds",
+        type=float,
+        default=DEFAULT_SHUTDOWN_SECONDS,
+        help="total product shutdown budget shared by HTTP and resource owners",
+    )
+    ap.add_argument(
+        "--parent-control",
+        action="store_true",
+        help="accept a private launcher bootstrap through inherited stdin",
+    )
+    ap.add_argument(
+        "--parent-stdin",
+        action="store_true",
+        help="stop normally when the owning launcher's stdin pipe closes",
+    )
+    ap.add_argument("--await-toolchain", action="store_true")
+    ap.add_argument("--await-skill-python", action="store_true")
     ap.add_argument(
         "--product",
         choices=PRODUCT_CHOICES,
@@ -283,6 +287,10 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         "--no-auth", action="store_true", help="强制关闭认证 (等价 --auth-mode off)"
     )
     args = ap.parse_args(argv)
+    if args.await_toolchain and not (args.parent_control and args.parent_stdin):
+        ap.error("--await-toolchain requires private parent control and parent stdin")
+    if args.await_skill_python and not (args.parent_control and args.parent_stdin):
+        ap.error("--await-skill-python requires private parent control and parent stdin")
     log_level = _server_log_level(args.log_level)
     # Uvicorn configures only its own loggers. Keep product diagnostics visible
     # without enabling third-party HTTP logs, whose URLs can contain credentials.
@@ -290,6 +298,11 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
     logging.getLogger(SERVICE_LOGGER_NAMESPACE).setLevel(SERVICE_LOG_LEVELS[log_level])
     logging.getLogger(CODEX_LOGGER_NAMESPACE).setLevel(SERVICE_LOG_LEVELS[log_level])
     _configure_resource_logging(log_level)
+    logging.getLogger(SERVICE_LOGGER_NAMESPACE).info(
+        "startup_phase phase=entry.arguments event=finished pid=%s elapsed_seconds=%.6f",
+        os.getpid(),
+        time.monotonic() - arguments_started,
+    )
 
     # ── 解析 auth_mode (优先级: --auth-mode > --auth/--no-auth > SCHOLARSEED_AUTH_MODE > auto) ──
     if args.auth_mode is not None:
@@ -309,18 +322,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         os.environ.get(OWNERSHIP_AXIS_ENV, ""),
     )
 
-    seed_user_config()
     dist = Path(args.renderer_dist) if args.renderer_dist else None
-    # 工作区根只由组合根解析 (proposal 47 §6.4): 这里再算一遍会与 create_app 漂移,
-    # 于是日志打印的工作区与 content 实际用的根不是同一个目录。
-    workspace = resolve_workspace_root(None)
-    print(
-        f"[scholarseed serve] http://{args.host}:{args.port}  "
-        f"workspace={workspace}  renderer={'dist' if dist else 'none'}",
-        file=sys.stderr,
-    )
-    # ── auth_mode → auth_enabled 映射（与运行期切换共用同一决议函数）──
-    auth_enabled = enabled_for_mode(auth_mode, has_users())
     # 选了账号线却没给账号服务地址: 每个账号令牌都会验不过, 表现成"登录成功但立刻 401"。
     # 这里必须吵出来, 不能静默降级成别的模式。
     if auth_mode == ACCOUNT_MODE and not os.environ.get(ACCOUNT_BASE_URL_ENV, "").strip():
@@ -329,17 +331,34 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
             " — 账号服务令牌一律验不过",
             file=sys.stderr,
         )
+    # Launcher execution belongs to the local server, after argument/policy
+    # validation. Help, usage errors and the HTTP-only client must not probe it.
+    with startup_phase("entry.runtime_discovery"):
+        runtime_discovery = RuntimeDiscovery.discover()
     bridge_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     os.environ[INTERNAL_BASE_URL_ENV] = f"http://{bridge_host}:{args.port}"
     app = create_app(
-        workspace,
+        None,
         cases_root=Path(args.cases_root),
         product=args.product,
         renderer_dist=str(dist) if dist else "",
-        auth=auth_enabled,
+        office_root=args.office_root,
         auth_mode=auth_mode,
         ownership_axis=ownership_axis,
         local_bridge_root=SERVICE_BRIDGE_DIR,
+        runtime_discovery=runtime_discovery,
+    )
+    if args.await_toolchain:
+        app.state.runtime_service.toolchain.defer()
+    skill_python = ToolchainReadiness() if args.await_skill_python else None
+    if skill_python is not None:
+        skill_python.defer()
+    _prepare_startup(app, skill_python)
+    auth_enabled = app.state.auth_enabled
+    print(
+        f"[scholarseed serve] http://{args.host}:{args.port}  "
+        f"workspace={app.state.workspace}  renderer={'dist' if dist else 'none'}",
+        file=sys.stderr,
     )
     print(
         f"[scholarseed serve] auth_mode={auth_mode} auth={'on' if auth_enabled else 'off'} "
@@ -364,10 +383,29 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
             return not _is_shutdown_cancellation(record)
 
     logging.getLogger("uvicorn.error").addFilter(_LifespanCancelFilter())
-    try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level=log_level)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        return 0
+    ProductServer(
+        uvicorn.Config(app, host=args.host, port=args.port, log_level=log_level),
+        app.state.activities,
+        domains=app.state.storage_domains,
+        parent_stdin=args.parent_stdin,
+        shutdown_seconds=args.shutdown_timeout_seconds,
+        close_model_streams=app.state.completion_bridge.close,
+        parent_control=(
+            ParentControl(
+                app.state.activities,
+                interrupt_running=app.state.session_service.interrupt_running_for_update,
+                drain_attachments=app.state.runtime_service.drain_for_update,
+                prepare_update=app.state.session_service.prepare_for_update_shutdown,
+                resume_update=app.state.session_service.resume_after_update_shutdown,
+                toolchain_complete=(
+                    app.state.runtime_service.toolchain.complete if args.await_toolchain else None
+                ),
+                skill_python_complete=skill_python.complete if skill_python is not None else None,
+            )
+            if args.parent_control
+            else None
+        ),
+    ).run()
     return 0
 
 

@@ -1,8 +1,8 @@
 # Assemble the frozen TeX Live asset that Desktop packaging ships under
 # resources/backend/texlive/ on Windows.
 #
-# This recipe is the ONLY place that talks to a TeX Live mirror. Desktop
-# packaging stays offline and consumes the committed archive plus its .sha256
+# This recipe and its kpathsea source helper talk to TeX Live mirrors. Desktop
+# packaging consumes the reviewed archive plus its .sha256
 # sidecar, exactly like scripts/vendor/python-build-standalone.
 #
 # Windows-specific considerations (relative to build.sh):
@@ -16,10 +16,18 @@
 #   - Archive members use backslash-free paths (bsdtar / System32\tar.exe
 #     normalizes), so the same extraction code works on both platforms.
 #
-# Usage: scripts\vendor\texlive\build-windows.ps1 [-WorkDir DIR] [-SkipOracle]
+# Usage: see README.md for the shared-library and engine toolchain inputs.
 [CmdletBinding()]
 param(
     [string]$WorkDir = "",
+    [Parameter(Mandatory=$true)][string]$VcRoot,
+    [Parameter(Mandatory=$true)][string]$WindowsSdkRoot,
+    [Parameter(Mandatory=$true)][string]$SourceCache,
+    [Parameter(Mandatory=$true)][string]$EngineSourceArchive,
+    [Parameter(Mandatory=$true)][string]$EngineSourceSha256,
+    [Parameter(Mandatory=$true)][string]$EngineVcRoot,
+    [Parameter(Mandatory=$true)][string]$EngineSdkRoot,
+    [Parameter(Mandatory=$true)][string]$EngineUcrtRoot,
     [switch]$SkipOracle
 )
 
@@ -32,7 +40,7 @@ $INSTALLER_SHA256 = "15a2a023ff9137b127ce65fc3987d00ca3246d0d50dbf8fab12d1a9c9bd
 $REPOSITORY = "https://mirrors.aliyun.com/CTAN/systems/texlive/tlnet"
 $INSTALLER_URL = "$($REPOSITORY -replace '/tlnet$','/tlnet')/install-tl-windows.exe"
 $SCHEME = "scheme-basic"
-$ARCHIVE_NAME = "texlive-$TEXLIVE_VERSION-windows.tar.gz"
+$ARCHIVE_NAME = "texlive-$TEXLIVE_VERSION-windows-r3.tar.gz"
 
 # Frozen package set. `bm` is deliberately absent: it is not a TeX Live package
 # name (bm.sty already ships in scheme-basic) and tlmgr rejects it.
@@ -71,6 +79,15 @@ $REPO = (Resolve-Path "$VENDOR_DIR/../../..").Path
 if (-not $WorkDir) {
     $WorkDir = Join-Path $env:TEMP "texlive-vendor-$(Get-Random)"
 }
+# Resolve caller-relative inputs before Push-Location changes the process location.
+$WorkDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir)
+$SourceCache = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SourceCache)
+$VcRoot = (Resolve-Path -LiteralPath $VcRoot).Path
+$WindowsSdkRoot = (Resolve-Path -LiteralPath $WindowsSdkRoot).Path
+$EngineSourceArchive = (Resolve-Path -LiteralPath $EngineSourceArchive).Path
+$EngineVcRoot = (Resolve-Path -LiteralPath $EngineVcRoot).Path
+$EngineSdkRoot = (Resolve-Path -LiteralPath $EngineSdkRoot).Path
+$EngineUcrtRoot = (Resolve-Path -LiteralPath $EngineUcrtRoot).Path
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 Write-Host "[texlive] work directory: $WorkDir"
 
@@ -139,6 +156,27 @@ tlpdbopt_post_code 1
     if ($LASTEXITCODE -ne 0) {
         throw "[texlive] tlmgr install failed with exit code $LASTEXITCODE"
     }
+
+    # Rebuild the shared native library before invoking any format/oracle tool.
+    # The input DLL digest and ABI must match the reviewed upstream build.
+    $nativeWork = Join-Path $WorkDir 'kpathsea'
+    & "$VENDOR_DIR/kpathsea.ps1" -WorkDir $nativeWork -VcRoot $VcRoot `
+        -WindowsSdkRoot $WindowsSdkRoot -SourceCache $SourceCache `
+        -ReferenceDll "$binDir/kpathsealibw64.dll"
+    Copy-Item -LiteralPath "$nativeWork/kpathsealibw64.dll" -Destination $binDir
+    $sourceDir = Join-Path $treeDir 'source'
+    New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
+    Copy-Item -LiteralPath "$nativeWork/kpathsea-source.tar.gz" -Destination $sourceDir
+
+    # XeTeX/pdfTeX embed a separate static kpathsea; replacing the shared DLL
+    # alone leaves the sandbox startup failure in both engines.
+    $engineWork = Join-Path $WorkDir 'engines'
+    & "$VENDOR_DIR/engines.ps1" -SourceArchive $EngineSourceArchive `
+        -SourceSha256 $EngineSourceSha256 -WorkDir $engineWork `
+        -VcRoot $EngineVcRoot -SdkRoot $EngineSdkRoot -UcrtRoot $EngineUcrtRoot `
+        -ReferenceBin $binDir
+    Copy-Item -LiteralPath "$engineWork/out/xetex.dll","$engineWork/out/pdftex.dll" -Destination $binDir
+    Copy-Item -LiteralPath $EngineSourceArchive -Destination "$sourceDir/engines-source.tar.gz"
 
     # ── 4. prune ──────────────────────────────────────────────────────────────
     Write-Host "[texlive] pruning unused binaries and fonts"

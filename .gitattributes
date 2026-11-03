@@ -4,9 +4,21 @@
 # markdown stays text. Large runtime assets are downloaded from reviewed OSS
 # URLs and verified by their manifests; they are not tracked through Git LFS.
 apps/desktop/src/renderer/public/office/** -text
-apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md text
+# Preserve the already-reviewed Windows Office component bytes on every host.
+apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md -text
 *.pdf binary
-apps/desktop/resources/notices/*.txt -text
+# Keep nested notice evidence byte-exact on Windows; root metadata stays LF.
+apps/desktop/resources/notices/** -text
 apps/desktop/resources/notices/*.json text eol=lf
 apps/desktop/resources/notices/*.md text eol=lf
-wiki/design/assets/mermaid.min.js binary
+
+# These source bytes participate directly in reviewed content identities.
+skills/community/** -text
+skills/community/*/.scholarseed-package.json text eol=lf
+apps/desktop/scripts/cd/bytecode.py text eol=lf
+uv.lock text eol=lf
+apps/desktop/scripts/cd/legacy-files.json text eol=lf
+apps/desktop/updater/cmd/setup/legacy-files.json text eol=lf
+
+# Preserve literal CRLF test fixtures in source strings.
+apps/desktop/scripts/cd/__tests__/verification.test.cjs -text

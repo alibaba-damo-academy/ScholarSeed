@@ -4,14 +4,22 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from io import BytesIO
+from math import isfinite
 
-from service.platform.citations import CitationDocument, PdfIndexPort, PdfVisualRegion
+from service.platform.citations import (
+    PDF_FIGURE,
+    PDF_TEXT_RETAIN,
+    CitationDocument,
+    PdfIndexPort,
+    PdfVisualRegion,
+)
 from service.platform.pdf import PdfRect, pdf_page_layout, render_pdf_page
 from service.workbench.service.extraction import EXTRACTOR_VERSION
 
 REGION_SCHEMA_VERSION = 1
 REGION_COORDINATE_SPACE = "pdfjs_normalized"
 REGION_CROP_SCALE = 2.0
+CLIENT_GEOMETRY_REASON = "pdfjs_owned_geometry"
 
 
 def manifest(
@@ -40,8 +48,29 @@ def manifest(
 
 
 def region(
-    indexes: PdfIndexPort, document: CitationDocument, page_number: int, region_id: str
+    indexes: PdfIndexPort,
+    document: CitationDocument,
+    page_number: int,
+    region_id: str,
+    quad: list[float] | None = None,
 ) -> PdfVisualRegion:
+    if quad is not None:
+        if (
+            len(quad) != 4
+            or not all(isfinite(value) and 0 <= value <= 1 for value in quad)
+            or quad[0] >= quad[2]
+            or quad[1] >= quad[3]
+            or not 1 <= page_number <= indexes.page_count(document)
+        ):
+            raise ValueError("pdf_region_invalid")
+        return PdfVisualRegion(
+            region_id,
+            PDF_FIGURE,
+            CLIENT_GEOMETRY_REASON,
+            PDF_TEXT_RETAIN,
+            page_number,
+            (quad[0], quad[1], quad[2], quad[3]),
+        )
     for page in indexes.pages(document, page_number, page_number):
         for candidate in page.regions:
             if candidate.region_id == region_id:

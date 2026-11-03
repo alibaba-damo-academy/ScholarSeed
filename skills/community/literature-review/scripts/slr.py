@@ -31,11 +31,13 @@ import time
 import re
 from main_view import emit
 from datetime import date
+from functools import partial
 from pathlib import Path
 import review_timeout
 from task_contract import json_input
 from platform_io import run_stream
 from platform_runtime import runtime_info, utf8_env
+from citation_styles import style_ids
 
 TERMINAL_STATUSES = ("SUCCESS", "PARTIAL_SUCCESS", "FAILED")
 
@@ -750,7 +752,7 @@ def cmd_doctor(args) -> int:
         command += ["--profile", args.profile]
     if args.no_network:
         command.append("--no-network")
-    if args.as_json:
+    if args.json:
         command.append("--json")
     if getattr(args,'workspace',None):
         command += ['--workspace',args.workspace]
@@ -829,7 +831,13 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile", choices=slr_paths.PROFILES)
     ap.add_argument('--legacy-help', action='store_true', help='show compatibility interfaces and exit')
-    sub = ap.add_subparsers(dest="command", required=not legacy_help)
+    output = argparse.ArgumentParser(add_help=False)
+    output.add_argument('--json', action='store_true',
+                        help='request JSON output (already the default for command reports)')
+    output.add_argument('--full', action='store_true',
+                        help='return complete diagnostic JSON instead of the main view')
+    sub = ap.add_subparsers(dest="command", required=not legacy_help,
+                           parser_class=partial(argparse.ArgumentParser, parents=[output]))
 
     workflow = sub.add_parser('workflow', help='advance existing stages to a main-agent decision boundary')
     workflow.add_argument('phase', choices=['evidence', 'publish'])
@@ -839,7 +847,6 @@ def main() -> int:
 
     doctor = sub.add_parser("doctor", help="check the environment")
     doctor.add_argument("--no-network", action="store_true")
-    doctor.add_argument("--json", action="store_true", dest="as_json")
     doctor.add_argument("--workspace", help="inspect an existing workspace runtime binding")
     doctor.set_defaults(func=cmd_doctor)
 
@@ -909,21 +916,18 @@ def main() -> int:
         default=[],
         metavar='"TITLE[@first|@last|@after:OTHER]"',
     )
-    outline.add_argument("--json", action="store_true")
     outline.set_defaults(func=cmd_outline)
 
     templates = sub.add_parser("templates", help="query the installed LaTeX templates")
     templates.add_argument("action", nargs="?", default="list",
                            choices=("list", "cite", "check", "resolve"))
     templates.add_argument("name", nargs="?")
-    templates.add_argument("--json", action="store_true")
     templates.set_defaults(func=cmd_templates)
 
     citations = sub.add_parser("citations", help="show examples or audit corpus metadata")
     citations.add_argument("action", choices=("examples", "audit"))
     citations.add_argument("--workspace")
-    citations.add_argument("--style", choices=("numeric", "author_year", "ieee", "acm"))
-    citations.add_argument("--json", action="store_true")
+    citations.add_argument("--style", choices=style_ids())
     citations.set_defaults(func=cmd_citations)
 
     figures = sub.add_parser("figures", help="validate and realise a completed figure plan")
@@ -944,7 +948,7 @@ def main() -> int:
     manuscript.set_defaults(func=cmd_manuscript)
 
     writing = sub.add_parser("writing", help="configure the task and record actual publication decisions")
-    writing.add_argument("action", choices=("configure", "approve", "review-start","review-status","review-wait","review-response","review-timeout",
+    writing.add_argument("action", choices=("configure", "approve", "review-complete", "review-start","review-status","review-wait","review-response","review-timeout",
                                           "corpus", "context", "draft", "produce", "review", "apply"),
                         metavar=None if legacy_help else '{configure,approve,review-start,review-status,review-wait,review-response,review-timeout}')
     writing.add_argument("--workspace")
@@ -978,8 +982,6 @@ def main() -> int:
     for parser in (writing,outline,evidence,figures,papers):
         parser.add_argument('--describe-input',action='store_true',
                             help='print input fields and valid examples without calling models or changing files')
-    for parser in sub.choices.values():
-        parser.add_argument('--full', action='store_true', help='return complete diagnostic JSON instead of the main view')
     if not legacy_help:
         hidden = {'resume', 'compile', 'finalize'}
         # Preserve explicit compatibility calls; argparse has no public method

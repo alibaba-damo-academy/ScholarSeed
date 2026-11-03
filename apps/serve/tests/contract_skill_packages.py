@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -70,14 +72,28 @@ def fixture_zip(extra: dict[str, bytes] | None = None, *, directories: bool = Fa
 
 
 class PackageContracts(unittest.TestCase):
+    def test_precise_search_manifest_matches_registered_dependencies(self) -> None:
+        skills_root = Path(__file__).resolve().parents[3] / "skills"
+        registry = json.loads((skills_root / "registry.json").read_text())
+        manifest = json.loads(
+            (skills_root / "community" / "precise-literature-search" / PACKAGE_MANIFEST).read_text()
+        )
+        self.assertEqual(
+            manifest["dependencies"], registry["dependencies"]["precise-literature-search"]
+        )
+
     def test_payload_and_modes_survive_hub_style_zip(self) -> None:
         package = read_package(fixture_zip(directories=True))
         self.assertEqual(package.files["scripts/run"].mode, EXECUTABLE_MODE)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "skill"
             extract_package(package, root)
-            self.assertEqual((root / "scripts/run").stat().st_mode & 0o777, EXECUTABLE_MODE)
-            self.assertEqual((root / "SKILL.md").stat().st_mode & 0o777, FILE_MODE)
+            for relative, expected in (("scripts/run", EXECUTABLE_MODE), ("SKILL.md", FILE_MODE)):
+                mode = (root / relative).stat().st_mode
+                if os.name == "nt":
+                    self.assertTrue(mode & stat.S_IWRITE)
+                else:
+                    self.assertEqual(mode & 0o777, expected)
             with self.assertRaises(FileExistsError):
                 extract_package(package, root)
 

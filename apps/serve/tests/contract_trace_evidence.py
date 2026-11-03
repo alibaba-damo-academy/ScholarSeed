@@ -22,14 +22,24 @@ from damoatrace.recording.writer import EvidenceWriter
 from scholarseed_runtime.contract.event import DeliveryClass, RuntimeEvent, RuntimeEventKind
 from service.chat.constants import (
     PRODUCT_EVENT_HIL_REQUESTED,
+    PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+    PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
     PRODUCT_EVENT_TURN_INTERRUPTED,
     PRODUCT_EVENT_TURN_UNKNOWN,
 )
-from service.chat.persistence.events import ProductEventRecord
-from service.chat.runtime.evidence import SessionTrace
+from service.chat.persistence.catalog import SessionCatalogStore
+from service.chat.persistence.events import ProductEventRecord, ProductEventStore
+from service.chat.runtime.capture import SessionCapture
+from service.chat.runtime.evidence import (
+    TRACE_PERMISSION_AUTO_APPROVAL,
+    TRACE_PERMISSION_STRICT_REVIEW,
+    TRACE_PRODUCT_EVENT_PREFIX,
+    SessionTrace,
+)
 from service.chat.runtime.timing import ActivationStage, ActivationTiming
+from service.chat.service.recording import RecordingPolicy, RecordingService
 
 SESSION = "evidence-contract"
 RUNTIME = "codex"
@@ -51,6 +61,37 @@ class TraceEvidenceContract(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.trace = SessionTrace(SESSION, self.root, runtime_id=RUNTIME, trace_dir=self.root)
         self.addCleanup(self.trace.close)
+
+    def test_batch_keeps_records_and_propagates_flush_failure(self) -> None:
+        with self.trace.batch():
+            self.runtime(RuntimeEventKind.TOOL_PROGRESS, "one", {"output": "one"})
+            self.runtime(RuntimeEventKind.TOOL_PROGRESS, "two", {"output": "two"})
+        with patch.object(EvidenceWriter, "_append_many", side_effect=OSError("full")):
+            with self.assertRaises(OSError):
+                with self.trace.batch():
+                    self.runtime(RuntimeEventKind.TOOL_PROGRESS, "three", {"output": "three"})
+        self.assertEqual(self.trace._failure_count, 1)
+
+    def test_batch_does_not_reclassify_business_body_failure(self) -> None:
+        failure = OSError("business persistence failed")
+        with self.assertRaises(OSError) as raised:
+            with self.trace.batch():
+                raise failure
+        self.assertIs(raised.exception, failure)
+
+    def test_capture_batch_checks_consent_once_and_rechecks_after_exit(self) -> None:
+        catalog = SessionCatalogStore(self.root / "consent.sqlite3")
+        policies = RecordingService(catalog, ProductEventStore(self.root / "consent.sqlite3"))
+        capture = SessionCapture(SESSION, self.trace.path, policies)
+        self.addCleanup(capture.close)
+        capture.frozen = RecordingPolicy(mode="detailed")
+        with patch.object(policies, "current", return_value=capture.frozen) as current:
+            with capture.batch():
+                for _ in range(64):
+                    self.assertTrue(capture.allowed())
+            self.assertEqual(current.call_count, 1)
+        with patch.object(policies, "current", return_value=RecordingPolicy()):
+            self.assertFalse(capture.allowed())
 
     def product(self, kind: str, turn: str, payload: dict | None = None) -> None:
         self.trace.product_event(
@@ -304,6 +345,80 @@ class TraceEvidenceContract(unittest.TestCase):
         errors = json.loads(result.stdout)["rows"]
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["span_id"], rows[-1]["span_id"])
+
+    def test_machine_approval_is_queryable_as_its_own_trace_event(self) -> None:
+        self.product(
+            PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+            "approval-turn",
+            {
+                "activity_id": "activity-1",
+                "activity_type": "approval_review",
+                "category": "mode",
+                "details": {
+                    "action": {"type": "command", "command": PRIVATE_CONTENT},
+                    "action_type": "command",
+                    "target_item_id": "item-command-1",
+                    "risk_level": "low",
+                    "user_authorization": "medium",
+                    "rationale": PRIVATE_CONTENT,
+                    "decision_source": "agent",
+                    "review_duration_ms": 1200,
+                },
+                "status": "approved",
+                "success": True,
+            },
+        )
+        rows = [row for row in self.events() if row["name"] == TRACE_PERMISSION_AUTO_APPROVAL]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["kind"], "mode.transition")
+        self.assertEqual(row["attributes"]["activity_id"], "activity-1")
+        self.assertEqual(row["attributes"]["activity_type"], "approval_review")
+        self.assertEqual(row["attributes"]["approval_status"], "approved")
+        self.assertEqual(row["attributes"]["risk_level"], "low")
+        self.assertEqual(row["attributes"]["decision_source"], "agent")
+        self.assertEqual(row["attributes"]["action_type"], "command")
+        self.assertEqual(row["attributes"]["target_item_id"], "item-command-1")
+        self.assertEqual(row["attributes"]["user_authorization"], "medium")
+        self.assertEqual(row["attributes"]["review_duration_ms"], 1200)
+        # The command and the reviewer's rationale stay on the content path, not in attributes.
+        self.assertNotIn(PRIVATE_CONTENT, json.dumps(row))
+
+    def test_strict_review_escalation_is_queryable_as_its_own_trace_event(self) -> None:
+        self.product(
+            PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+            "strict-turn",
+            {
+                "activity_id": "activity-3",
+                "activity_type": "approval_strict_review",
+                "category": "mode",
+                "details": {"started_at_ms": 1_700_000_000_000},
+                "status": "strict_review_required",
+                "success": True,
+            },
+        )
+        rows = [row for row in self.events() if row["name"] == TRACE_PERMISSION_STRICT_REVIEW]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["kind"], "mode.transition")
+        self.assertEqual(row["attributes"]["activity_id"], "activity-3")
+        self.assertEqual(row["attributes"]["activity_type"], "approval_strict_review")
+        self.assertEqual(row["attributes"]["approval_status"], "strict_review_required")
+
+    def test_other_native_activities_keep_the_generic_product_event_name(self) -> None:
+        self.product(
+            PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+            "plan-turn",
+            {"activity_id": "activity-2", "activity_type": "plan", "status": "inProgress"},
+        )
+        rows = self.events()
+        self.assertEqual(
+            [row["name"] for row in rows],
+            [f"{TRACE_PRODUCT_EVENT_PREFIX}.{PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED}"],
+        )
+        self.assertEqual(
+            rows[0]["attributes"]["product_event_kind"], PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED
+        )
 
     def test_runtime_extension_keeps_safe_kind_and_method_only(self) -> None:
         self.runtime(

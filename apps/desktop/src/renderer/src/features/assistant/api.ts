@@ -3,7 +3,11 @@ import type { AssistantFailure } from '../../contracts/assistant'
 import type { ContextLabelFallback } from '../../contracts/assistant'
 /** HTTP client owned by the Assistant feature. */
 import type { TFunction } from 'i18next'
-import type { CitationResolution } from '../../contracts/citations'
+import {
+  artifactCitationUrl,
+  savedCitationUrl,
+  type CitationResolution,
+} from '../../contracts/citations.ts'
 import { sseData } from '../../sse.ts'
 
 import type {
@@ -26,13 +30,9 @@ import type {
   AssistantSelectionActionResult,
   AssistantSelectionStreamOptions,
   AssistantSelectionEvent,
-  AssistantTranslationTarget
+  AssistantTranslationTarget,
 } from '../../contracts/assistant'
-import type {
-  ResourceLocationRef,
-  ResourceMutation,
-  ResourceNode
-} from '../../contracts/resources'
+import type { ResourceLocationRef, ResourceMutation, ResourceNode } from '../../contracts/resources'
 
 const SESSION_REFERENCE_PREVIEW_FAILED = 'assistant_session_preview_failed'
 const CITATION_UNVERIFIABLE_CODES = new Set([
@@ -40,12 +40,17 @@ const CITATION_UNVERIFIABLE_CODES = new Set([
   'citation_answer_unavailable',
   'citation_evidence_unavailable',
   'citation_link_invalid',
-  'citation_snapshot_unavailable'
+  'citation_snapshot_unavailable',
 ])
 const SELECTION_ACTION_ROUTE = '/api/workbench/selection/actions'
 const SSE_MEDIA_TYPE = 'text/event-stream'
 const SELECTION_STREAM_ERROR = 'selection_stream_incomplete'
-const SELECTION_ACTIVITY_TYPES = new Set(['accepted', 'started', 'output_delta', 'output_completed'])
+const SELECTION_ACTIVITY_TYPES = new Set([
+  'accepted',
+  'started',
+  'output_delta',
+  'output_completed',
+])
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
 
 export interface SessionReferenceMessage {
@@ -93,13 +98,20 @@ export async function fetchSessionReferencePreview(
   const query = new URLSearchParams({ source_id: sourceId })
   if (cursor) query.set('cursor', cursor)
   const response = await fetch(
-    `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}`
-      + `/context/${encodeURIComponent(snapshotId)}/session-preview?${query.toString()}`,
+    `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}` +
+      `/context/${encodeURIComponent(snapshotId)}/session-preview?${query.toString()}`,
     { credentials: 'include' }
   )
-  const payload = await response.json().catch(() => null) as SessionReferencePreview | { detail?: string } | null
+  const payload = (await response.json().catch(() => null)) as
+    SessionReferencePreview | { detail?: string } | null
   if (!response.ok || !payload || typeof payload !== 'object' || !('messages' in payload)) {
-    if (payload && typeof payload === 'object' && 'detail' in payload && typeof payload.detail === 'string' && payload.detail) {
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      'detail' in payload &&
+      typeof payload.detail === 'string' &&
+      payload.detail
+    ) {
       throw new Error(payload.detail)
     }
     throw new SessionReferencePreviewError()
@@ -107,7 +119,9 @@ export async function fetchSessionReferencePreview(
   return payload
 }
 
-export async function listArtifactLibraryLinks(sessionId: string): Promise<ArtifactLibraryLinksResult> {
+export async function listArtifactLibraryLinks(
+  sessionId: string
+): Promise<ArtifactLibraryLinksResult> {
   const resources = await listArtifactResourceLinks(sessionId)
   if (!resources.ok) return resources
   try {
@@ -116,7 +130,7 @@ export async function listArtifactLibraryLinks(sessionId: string): Promise<Artif
       { credentials: 'include' }
     )
     if (!response.ok) return { ok: false, error: `http_${response.status}` }
-    const payload = await response.json() as { links: ArtifactLiteratureLink[] }
+    const payload = (await response.json()) as { links: ArtifactLiteratureLink[] }
     if (!Array.isArray(payload.links)) return { ok: false, error: 'invalid_response' }
     return { ok: true, links: [...resources.links, ...payload.links] }
   } catch {
@@ -124,14 +138,16 @@ export async function listArtifactLibraryLinks(sessionId: string): Promise<Artif
   }
 }
 
-export async function listArtifactResourceLinks(sessionId: string): Promise<ArtifactResourceLinksResult> {
+export async function listArtifactResourceLinks(
+  sessionId: string
+): Promise<ArtifactResourceLinksResult> {
   try {
     const response = await fetch(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/resources/links`,
       { credentials: 'include' }
     )
     if (!response.ok) return { ok: false, error: `http_${response.status}` }
-    const payload = await response.json() as { links: ArtifactResourceLink[] }
+    const payload = (await response.json()) as { links: ArtifactResourceLink[] }
     if (!Array.isArray(payload.links)) return { ok: false, error: 'invalid_response' }
     return { ok: true, links: payload.links }
   } catch {
@@ -139,23 +155,55 @@ export async function listArtifactResourceLinks(sessionId: string): Promise<Arti
   }
 }
 
-export async function resolveCitation(sessionId: string, answerId: string, answerRevision: string, start: number, end: number, handle = ''): Promise<CitationResolution> {
-  const response = await fetch(`${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/answers/${encodeURIComponent(answerId)}/citation`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answer_revision: answerRevision, start_utf16: start, end_utf16: end, handle })
-  })
+export async function resolveCitation(
+  sessionId: string,
+  answerId: string,
+  answerRevision: string,
+  start: number,
+  end: number,
+  handle = ''
+): Promise<CitationResolution> {
+  const response = await fetch(
+    `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/answers/${encodeURIComponent(answerId)}/citation`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        answer_revision: answerRevision,
+        start_utf16: start,
+        end_utf16: end,
+        handle,
+      }),
+    }
+  )
   const payload = await response.json()
   if (!response.ok) {
-    if (payload && typeof payload === 'object' && typeof payload.detail === 'string') throw new CitationResolveError(payload.detail)
+    if (payload && typeof payload === 'object' && typeof payload.detail === 'string')
+      throw new CitationResolveError(payload.detail)
     throw new AssistantRequestError()
   }
   return payload as CitationResolution
 }
 
 export function citationPreviewUrl(source: CitationResolution): string {
-  if (!source.answer_session_id || !source.answer_id || !source.answer_revision || source.presentation.page == null) return ''
+  if (source.artifact_citation && source.presentation.page != null) {
+    return `${base()}${artifactCitationUrl(source.artifact_citation, 'preview', source.presentation.page)}`
+  }
+  if (source.saved_citation && source.presentation.page != null) {
+    return `${base()}${savedCitationUrl(source.saved_citation, 'preview', source.presentation.page)}`
+  }
+  if (
+    !source.answer_session_id ||
+    !source.answer_id ||
+    !source.answer_revision ||
+    source.presentation.page == null
+  )
+    return ''
   const root = `${base()}/api/assistant/sessions/${encodeURIComponent(source.answer_session_id)}/answers/${encodeURIComponent(source.answer_id)}/citations/${encodeURIComponent(source.handle)}/preview`
-  const query = new URLSearchParams({ answer_revision: source.answer_revision, page: String(source.presentation.page) })
+  const query = new URLSearchParams({
+    answer_revision: source.answer_revision,
+    page: String(source.presentation.page),
+  })
   return `${root}?${query.toString()}`
 }
 
@@ -174,7 +222,7 @@ function toResourceNode(node: ResourceFolderNode): ResourceNode {
     name: node.name,
     kind: node.kind,
     count: node.count ?? undefined,
-    children: node.children?.map(toResourceNode)
+    children: node.children?.map(toResourceNode),
   }
 }
 
@@ -219,7 +267,7 @@ const RESOURCE_FILE_KIND_LABELS: Record<string, string> = {
   pdf: 'pdf',
   txt: 'text',
   xls: 'table',
-  xlsx: 'table'
+  xlsx: 'table',
 }
 
 const LITERATURE_CONTEXT_CANDIDATE_PAGE_SIZE = 200
@@ -227,7 +275,7 @@ const DEFAULT_RESOURCE_FILE_KIND_LABEL = 'file'
 const RESOURCE_CANDIDATE_DEPTH = 1
 
 function resourceFileKindLabel(name: string): string {
-  const extension = name.includes('.') ? name.split('.').pop()?.toLocaleLowerCase() ?? '' : ''
+  const extension = name.includes('.') ? (name.split('.').pop()?.toLocaleLowerCase() ?? '') : ''
   return RESOURCE_FILE_KIND_LABELS[extension] ?? DEFAULT_RESOURCE_FILE_KIND_LABEL
 }
 
@@ -248,10 +296,12 @@ export interface AnswerAnnotationApiResult extends AssistantFailure {
 }
 
 interface AnnotationErrorPayload {
-  detail?: string | {
-    error?: string
-    latest?: AssistantContextSelection | AnswerAnnotation
-  }
+  detail?:
+    | string
+    | {
+        error?: string
+        latest?: AssistantContextSelection | AnswerAnnotation
+      }
 }
 
 function annotationError(
@@ -261,14 +311,12 @@ function annotationError(
   const detail = payload?.detail
   const latest = typeof detail === 'object' ? detail.latest : undefined
   return {
-    error: typeof detail === 'string' ? detail : detail?.error ?? `http_${status}`,
-    ...(
-      latest && 'refs' in latest
-        ? { latest }
-        : latest && 'annotation_id' in latest
-          ? { latestAnnotation: latest }
-          : {}
-    )
+    error: typeof detail === 'string' ? detail : (detail?.error ?? `http_${status}`),
+    ...(latest && 'refs' in latest
+      ? { latest }
+      : latest && 'annotation_id' in latest
+        ? { latestAnnotation: latest }
+        : {}),
   }
 }
 
@@ -293,19 +341,17 @@ export async function createAnswerAnnotation(
 ): Promise<AnswerAnnotationApiResult> {
   try {
     const response = await fetch(
-      `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}`
-        + `/answers/${encodeURIComponent(answerId)}/annotations`,
+      `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}` +
+        `/answers/${encodeURIComponent(answerId)}/annotations`,
       {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       }
     )
     const payload = (await response.json().catch(() => null)) as
-      | AnswerAnnotationMutation
-      | AnnotationErrorPayload
-      | null
+      AnswerAnnotationMutation | AnnotationErrorPayload | null
     if (!response.ok || !payload || !('annotation' in payload)) {
       return { ok: false, ...annotationError(response.status, payload as AnnotationErrorPayload) }
     }
@@ -322,19 +368,17 @@ export async function updateAnswerAnnotation(
 ): Promise<AnswerAnnotationApiResult> {
   try {
     const response = await fetch(
-      `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}`
-        + `/annotations/${encodeURIComponent(annotationId)}`,
+      `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}` +
+        `/annotations/${encodeURIComponent(annotationId)}`,
       {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       }
     )
     const payload = (await response.json().catch(() => null)) as
-      | AnswerAnnotationMutation
-      | AnnotationErrorPayload
-      | null
+      AnswerAnnotationMutation | AnnotationErrorPayload | null
     if (!response.ok || !payload || !('annotation' in payload)) {
       return { ok: false, ...annotationError(response.status, payload as AnnotationErrorPayload) }
     }
@@ -352,19 +396,17 @@ async function deleteAnswerAnnotationRequest(
 ): Promise<AnswerAnnotationApiResult> {
   try {
     const response = await fetch(
-      `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}`
-        + `/annotations/${encodeURIComponent(annotationId)}${suffix}`,
+      `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}` +
+        `/annotations/${encodeURIComponent(annotationId)}${suffix}`,
       {
         method: 'DELETE',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       }
     )
     const payload = (await response.json().catch(() => null)) as
-      | AssistantContextSelection
-      | AnnotationErrorPayload
-      | null
+      AssistantContextSelection | AnnotationErrorPayload | null
     if (!response.ok || !payload || !('session_id' in payload)) {
       return { ok: false, ...annotationError(response.status, payload as AnnotationErrorPayload) }
     }
@@ -380,7 +422,7 @@ export async function removeAnswerAnnotationContext(
   expectedContextRevision: number
 ): Promise<AnswerAnnotationApiResult> {
   return deleteAnswerAnnotationRequest(sessionId, annotationId, '/context', {
-    expected_context_revision: expectedContextRevision
+    expected_context_revision: expectedContextRevision,
   })
 }
 
@@ -392,7 +434,7 @@ export async function deleteAnswerAnnotation(
 ): Promise<AnswerAnnotationApiResult> {
   return deleteAnswerAnnotationRequest(sessionId, annotationId, '', {
     expected_annotation_revision: expectedAnnotationRevision,
-    expected_context_revision: expectedContextRevision
+    expected_context_revision: expectedContextRevision,
   })
 }
 
@@ -407,13 +449,11 @@ export async function deleteAnswerAnnotations(
         method: 'DELETE',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       }
     )
     const payload = (await response.json().catch(() => null)) as
-      | AssistantContextSelection
-      | AnnotationErrorPayload
-      | null
+      AssistantContextSelection | AnnotationErrorPayload | null
     if (!response.ok || !payload || !('session_id' in payload)) {
       return { ok: false, ...annotationError(response.status, payload as AnnotationErrorPayload) }
     }
@@ -490,20 +530,29 @@ export async function importArtifactToLiterature(
   sessionId: string,
   artifactId: string,
   expectedSha256?: string,
-  collection = ''
+  collectionId = ''
 ): Promise<ArtifactLiteratureImportResult> {
   try {
     const response = await fetch(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/literature/import`,
       {
-        method: 'POST', credentials: 'include',
+        method: 'POST',
+        credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ artifact_id: artifactId, expected_sha256: expectedSha256, collection })
+        body: JSON.stringify({
+          artifact_id: artifactId,
+          expected_sha256: expectedSha256,
+          collection_id: collectionId,
+        }),
       }
     )
-    const payload = await response.json() as Exclude<ArtifactLiteratureImportResult, { ok: false }> & { detail?: string }
+    const payload = (await response.json()) as Exclude<
+      ArtifactLiteratureImportResult,
+      { ok: false }
+    > & { detail?: string }
     if (!response.ok) return { ok: false, error: payload.detail ?? `http_${response.status}` }
-    if (!Array.isArray(payload.item_ids) || !payload.operation_id) return { ok: false, error: 'invalid_response' }
+    if (!Array.isArray(payload.item_ids) || !payload.operation_id)
+      return { ok: false, error: 'invalid_response' }
     return { ...payload, ok: true }
   } catch {
     return { ok: false, error: 'network_error' }
@@ -536,33 +585,33 @@ export async function patchAssistantContext(
         method: 'PATCH',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(patch)
+        body: JSON.stringify(patch),
       }
     )
     const payload = (await response.json().catch(() => null)) as
       | AssistantContextSelection
       | {
-          detail?: {
-            error?: string
-            latest?: AssistantContextSelection
-          } | string
+          detail?:
+            | {
+                error?: string
+                latest?: AssistantContextSelection
+              }
+            | string
         }
       | null
     if (!response.ok) {
       const detail = payload && 'detail' in payload ? payload.detail : undefined
       return {
         ok: false,
-        error: typeof detail === 'string'
-          ? detail
-          : detail?.error ?? `http_${response.status}`,
-        latest: typeof detail === 'object' ? detail.latest : undefined
+        error: typeof detail === 'string' ? detail : (detail?.error ?? `http_${response.status}`),
+        latest: typeof detail === 'object' ? detail.latest : undefined,
       }
     }
     return { ok: true, context: payload as AssistantContextSelection }
   } catch (error) {
     return {
       ok: false,
-      ...assistantRequestFailure(error)
+      ...assistantRequestFailure(error),
     }
   }
 }
@@ -586,12 +635,13 @@ async function postAssistantResource(
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       }
     )
-    const payload = (await response.json().catch(() => null)) as
-      | { detail?: string; node?: AssistantResourceNodePayload }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string
+      node?: AssistantResourceNodePayload
+    } | null
     if (!response.ok) {
       return { ok: false, error: payload?.detail ?? `http_${response.status}` }
     }
@@ -599,7 +649,7 @@ async function postAssistantResource(
   } catch (error) {
     return {
       ok: false,
-      ...assistantRequestFailure(error)
+      ...assistantRequestFailure(error),
     }
   }
 }
@@ -636,27 +686,25 @@ async function postInvocation(
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     })
     const payload = (await response.json().catch(() => null)) as
-      | AssistantInvocationResult
-      | { detail?: string }
-      | null
+      AssistantInvocationResult | { detail?: string } | null
     if (payload && 'invocation_id' in payload) {
       return {
         ok: payload.status === 'completed',
         invocation: payload,
-        error: payload.error?.code
+        error: payload.error?.code,
       }
     }
     return {
       ok: false,
-      error: payload?.detail ?? `http_${response.status}`
+      error: payload?.detail ?? `http_${response.status}`,
     }
   } catch (error) {
     return {
       ok: false,
-      ...assistantRequestFailure(error)
+      ...assistantRequestFailure(error),
     }
   }
 }
@@ -673,7 +721,7 @@ export const createResourceFromAssistant = (
   if (options.location) {
     body.location = {
       parent: options.location.parent.trim(),
-      name: options.location.name.trim()
+      name: options.location.name.trim(),
     }
   }
   return postAssistantResource(sessionId, 'create', body)
@@ -697,7 +745,7 @@ export function saveAnswerSelectionToResource(
     `## ${t('excerptTemplate.excerpt')}`,
     '',
     input.selectedMarkdown,
-    ''
+    '',
   ].join('\n')
   return createResourceFromAssistant(input.sessionId, title, content, {
     projectId: input.projectId,
@@ -707,8 +755,8 @@ export function saveAnswerSelectionToResource(
       answer_revision: input.answerRevision,
       start_utf16: input.startUtf16,
       end_utf16: input.endUtf16,
-      selected_text_hash: input.selectedTextHash
-    }
+      selected_text_hash: input.selectedTextHash,
+    },
   })
 }
 
@@ -723,7 +771,7 @@ export const importArtifactToResources = (
   if (options.location) {
     body.location = {
       parent: options.location.parent.trim(),
-      name: options.location.name.trim()
+      name: options.location.name.trim(),
     }
   }
   return postAssistantResource(sessionId, 'import', body)
@@ -734,11 +782,12 @@ export const importAttachmentToResources = (
   projectId: string,
   referenceId: string,
   location: ResourceLocationRef
-): Promise<AssistantResourceMutation> => postAssistantResource(sessionId, 'attachment', {
-  project_id: projectId,
-  reference_id: referenceId,
-  location: { parent: location.parent.trim(), name: location.name.trim() }
-})
+): Promise<AssistantResourceMutation> =>
+  postAssistantResource(sessionId, 'attachment', {
+    project_id: projectId,
+    reference_id: referenceId,
+    location: { parent: location.parent.trim(), name: location.name.trim() },
+  })
 
 export function startAssistantInvocation(
   body: StartOneShotRequest
@@ -760,7 +809,10 @@ export async function startAssistantSelectionAction(
     const response = await fetch(`${base()}${SELECTION_ACTION_ROUTE}`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'content-type': 'application/json', ...(stream ? { Accept: SSE_MEDIA_TYPE } : {}) },
+      headers: {
+        'content-type': 'application/json',
+        ...(stream ? { Accept: SSE_MEDIA_TYPE } : {}),
+      },
       signal: stream?.signal,
       body: JSON.stringify({
         action: body.action,
@@ -773,12 +825,12 @@ export async function startAssistantSelectionAction(
           source_revision: body.source_revision,
           locator_kind: body.selection.locator.kind,
           selected_text_hash: body.selection.selected_text_hash,
-          locator: body.selection.locator
+          locator: body.selection.locator,
         },
         ...(body.draft ? { draft: body.draft } : {}),
         question: body.question ?? '',
-        target_language: body.target_language ?? ''
-      })
+        target_language: body.target_language ?? '',
+      }),
     })
     if (stream && response.ok) {
       if (!response.body || !response.headers.get('content-type')?.includes(SSE_MEDIA_TYPE)) {
@@ -792,16 +844,26 @@ export async function startAssistantSelectionAction(
         }
         if (event?.type === 'result') {
           const result = event.result as AssistantSelectionActionResult
-          if (!result || typeof result.output !== 'string' || !result.invocation_id
-            || result.client_attempt_id !== body.client_attempt_id
-            || result.action !== body.action || (invocationId && result.invocation_id !== invocationId)) {
+          if (
+            !result ||
+            typeof result.output !== 'string' ||
+            !result.invocation_id ||
+            result.client_attempt_id !== body.client_attempt_id ||
+            result.action !== body.action ||
+            (invocationId && result.invocation_id !== invocationId)
+          ) {
             return { ok: false, error: SELECTION_STREAM_ERROR }
           }
           return { ok: true, result }
         }
-        if (!SELECTION_ACTIVITY_TYPES.has(event?.type) || typeof event.invocation_id !== 'string'
-          || !event.invocation_id || typeof event.text !== 'string' || typeof event.item_id !== 'string'
-          || (invocationId && event.invocation_id !== invocationId)) {
+        if (
+          !SELECTION_ACTIVITY_TYPES.has(event?.type) ||
+          typeof event.invocation_id !== 'string' ||
+          !event.invocation_id ||
+          typeof event.text !== 'string' ||
+          typeof event.item_id !== 'string' ||
+          (invocationId && event.invocation_id !== invocationId)
+        ) {
           return { ok: false, error: SELECTION_STREAM_ERROR }
         }
         invocationId = event.invocation_id
@@ -809,32 +871,35 @@ export async function startAssistantSelectionAction(
       }
       return { ok: false, error: SELECTION_STREAM_ERROR }
     }
-    const payload = await response.json().catch(() => null) as
-      | AssistantSelectionActionResult
-      | { detail?: string }
-      | null
+    const payload = (await response.json().catch(() => null)) as
+      AssistantSelectionActionResult | { detail?: string } | null
     if (!response.ok || !payload || !('invocation_id' in payload)) {
       return {
         ok: false,
-        error: payload && 'detail' in payload
-          ? payload.detail ?? `http_${response.status}`
-          : `http_${response.status}`
+        error:
+          payload && 'detail' in payload
+            ? (payload.detail ?? `http_${response.status}`)
+            : `http_${response.status}`,
       }
     }
     return { ok: true, result: payload }
   } catch (error) {
     return {
       ok: false,
-      ...assistantRequestFailure(error)
+      ...assistantRequestFailure(error),
     }
   }
 }
 
 export async function stopAssistantSelection(invocationId: string): Promise<boolean> {
   try {
-    const response = await fetch(`${base()}${SELECTION_ACTION_ROUTE}/${encodeURIComponent(invocationId)}/interrupt`, {
-      method: 'POST', credentials: 'include'
-    })
+    const response = await fetch(
+      `${base()}${SELECTION_ACTION_ROUTE}/${encodeURIComponent(invocationId)}/interrupt`,
+      {
+        method: 'POST',
+        credentials: 'include',
+      }
+    )
     return response.ok && (await response.json()).accepted === true
   } catch {
     return false
@@ -855,7 +920,7 @@ export async function fetchResourceCandidatePage(
   if (offset > 0) params.set('offset', String(offset))
   try {
     const response = await fetch(`${base()}/api/resource/tree?${params.toString()}`, {
-      credentials: 'include'
+      credentials: 'include',
     })
     if (!response.ok) return null
     const payload = (await response.json()) as ResourceFolderTreeResponse
@@ -865,13 +930,15 @@ export async function fetchResourceCandidatePage(
       items: nodes.map((node) => ({
         kind: node.kind === 'dir' ? ('dir' as const) : ('file' as const),
         source_id: node.path,
+        ...(node.kind === 'file' ? { project_id: projectId } : {}),
         label: node.name,
         hint: node.kind === 'dir' ? 'folder' : resourceFileKindLabel(node.name),
+        ...(node.kind === 'dir' ? { child_count: node.count ?? 0 } : {}),
         retention: 'next_turn' as const,
-        origin: 'explicit' as const
+        origin: 'explicit' as const,
       })),
-      nextOffset: nodes.length > 0 && nextOffset < (payload.total ?? nextOffset)
-        ? nextOffset : null
+      nextOffset:
+        nodes.length > 0 && nextOffset < (payload.total ?? nextOffset) ? nextOffset : null,
     }
   } catch {
     return null
@@ -887,7 +954,7 @@ function resourceContextQuery(query: string): { path: string; term: string } {
   const relativePath = slash >= 0 ? normalized.slice(0, slash) : ''
   return {
     path: relativePath,
-    term: slash >= 0 ? normalized.slice(slash + 1) : normalized
+    term: slash >= 0 ? normalized.slice(slash + 1) : normalized,
   }
 }
 
@@ -929,21 +996,31 @@ export async function fetchResourceCandidates(
     if (cursor) params.set('cursor', cursor)
     try {
       const response = await fetch(`${base()}/api/resource/candidates?${params.toString()}`, {
-        credentials: 'include'
+        credentials: 'include',
       })
       if (!response.ok) return []
       const payload = (await response.json()) as ResourceContextResponse
-      items.push(...(payload.items ?? [])
-        .filter((item) => !normalized || item.path.slice(item.path.lastIndexOf('/') + 1).toLocaleLowerCase().includes(normalized))
-        .map((item) => ({
-          kind: 'file' as const,
-          source_id: item.path,
-          label: item.path.slice(item.path.lastIndexOf('/') + 1),
-          hint: item.path,
-          created_at: item.created_at,
-          retention: 'next_turn' as const,
-          origin: 'explicit' as const
-        })))
+      items.push(
+        ...(payload.items ?? [])
+          .filter(
+            (item) =>
+              !normalized ||
+              item.path
+                .slice(item.path.lastIndexOf('/') + 1)
+                .toLocaleLowerCase()
+                .includes(normalized)
+          )
+          .map((item) => ({
+            kind: 'file' as const,
+            source_id: item.path,
+            project_id: projectId,
+            label: item.path.slice(item.path.lastIndexOf('/') + 1),
+            hint: item.path,
+            created_at: item.created_at,
+            retention: 'next_turn' as const,
+            origin: 'explicit' as const,
+          }))
+      )
       cursor = payload.next_cursor ?? null
     } catch {
       return []
@@ -957,7 +1034,7 @@ export async function fetchResourceDirectoryTree(projectId: string): Promise<Res
   const params = new URLSearchParams({ project: projectId })
   try {
     const response = await fetch(`${base()}/api/resource/tree?${params.toString()}`, {
-      credentials: 'include'
+      credentials: 'include',
     })
     if (!response.ok) return []
     const payload = (await response.json()) as ResourceFolderTreeResponse
@@ -968,49 +1045,94 @@ export async function fetchResourceDirectoryTree(projectId: string): Promise<Res
 }
 
 /** 文献库条目候选；只消费文献域公开 HTTP 契约，不读取其 Feature Store。 */
+interface LiteratureBrowseCollection {
+  id: string
+  name: string
+  parent_id: string | null
+}
+
+export async function fetchLiteratureBrowseCollections(
+  projectId: string | null
+): Promise<LiteratureBrowseCollection[] | null> {
+  const params = new URLSearchParams()
+  if (projectId) params.set('project_id', projectId)
+  try {
+    const response = await fetch(`${base()}/api/v1/collections?${params.toString()}`, {
+      credentials: 'include',
+    })
+    return response.ok ? ((await response.json()) as LiteratureBrowseCollection[]) : null
+  } catch {
+    return null
+  }
+}
+
+interface LiteratureCandidateScope {
+  collectionId?: string
+  ungrouped?: boolean
+}
+
+async function queryLiteratureCandidates(
+  projectId: string | null,
+  query: string,
+  scope?: LiteratureCandidateScope
+): Promise<AssistantContextCandidate[] | null> {
+  const items: AssistantContextCandidate[] = []
+  let page = 1
+  let nextCursor: string | null
+  do {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(LITERATURE_CONTEXT_CANDIDATE_PAGE_SIZE),
+    })
+    if (projectId) params.set('project_id', projectId)
+    if (query.trim()) params.set('q', query.trim())
+    if (scope?.collectionId) params.set('collection_id', scope.collectionId)
+    if (scope?.ungrouped) params.set('without_collection', 'true')
+    try {
+      const response = await fetch(`${base()}/api/v1/literatures?${params.toString()}`, {
+        credentials: 'include',
+      })
+      if (!response.ok) return null
+      const payload = (await response.json()) as LiteratureContextResponse
+      items.push(
+        ...(payload.items ?? []).map((item) => {
+          const createdAt = Date.parse(item.created_at)
+          const openedAt = item.last_read_at ? Date.parse(item.last_read_at) : Number.NaN
+          return {
+            kind: 'literature' as const,
+            source_id: item.id,
+            label: item.title.trim() || item.id,
+            hint: [item.creators_display, item.year ? String(item.year) : item.publication_display]
+              .filter(Boolean)
+              .join(' · '),
+            ...(Number.isFinite(createdAt) ? { created_at: createdAt / 1000 } : {}),
+            ...(Number.isFinite(openedAt) ? { opened_at: openedAt / 1000 } : {}),
+            retention: 'next_turn' as const,
+            origin: 'explicit' as const,
+          }
+        })
+      )
+      nextCursor = payload.next_cursor ?? null
+      page += 1
+    } catch {
+      return null
+    }
+  } while (nextCursor)
+  return items
+}
+
 export async function fetchLiteratureCandidates(
   projectId: string | null,
   query: string
 ): Promise<AssistantContextCandidate[]> {
-  const items: AssistantContextCandidate[] = []
-  let page = 1
-  let nextCursor: string | null = null
-  do {
-    const params = new URLSearchParams({
-      page: String(page),
-      page_size: String(LITERATURE_CONTEXT_CANDIDATE_PAGE_SIZE)
-    })
-    if (projectId) params.set('project_id', projectId)
-    if (query.trim()) params.set('q', query.trim())
-    try {
-      const response = await fetch(`${base()}/api/v1/literatures?${params.toString()}`, {
-        credentials: 'include'
-      })
-      if (!response.ok) return []
-      const payload = (await response.json()) as LiteratureContextResponse
-      items.push(...(payload.items ?? []).map((item) => {
-        const createdAt = Date.parse(item.created_at)
-        const openedAt = item.last_read_at ? Date.parse(item.last_read_at) : Number.NaN
-        return {
-          kind: 'literature' as const,
-          source_id: item.id,
-          label: item.title.trim() || item.id,
-          hint: [item.creators_display, item.year ? String(item.year) : item.publication_display]
-            .filter(Boolean)
-            .join(' · '),
-          ...(Number.isFinite(createdAt) ? { created_at: createdAt / 1000 } : {}),
-          ...(Number.isFinite(openedAt) ? { opened_at: openedAt / 1000 } : {}),
-          retention: 'next_turn' as const,
-          origin: 'explicit' as const
-        }
-      }))
-      nextCursor = payload.next_cursor ?? null
-      page += 1
-    } catch {
-      return []
-    }
-  } while (nextCursor)
-  return items
+  return (await queryLiteratureCandidates(projectId, query)) ?? []
+}
+
+export async function fetchLiteratureBrowseCandidates(
+  projectId: string | null,
+  scope: LiteratureCandidateScope
+): Promise<AssistantContextCandidate[] | null> {
+  return queryLiteratureCandidates(projectId, '', scope)
 }
 
 export async function getAssistantInvocation(
@@ -1021,16 +1143,27 @@ export async function getAssistantInvocation(
       `${base()}/api/assistant/invocations/${encodeURIComponent(invocationId)}`,
       { credentials: 'include' }
     )
-    return response.ok ? (await response.json()) as AssistantInvocationResult : null
+    return response.ok ? ((await response.json()) as AssistantInvocationResult) : null
   } catch {
     return null
   }
 }
 
-export async function citationSources(sessionId: string, answerId: string, revision: string, range?: { start: number; end: number }): Promise<{ count: number; sources: CitationResolution[] }> {
+export async function citationSources(
+  sessionId: string,
+  answerId: string,
+  revision: string,
+  range?: { start: number; end: number }
+): Promise<{ count: number; sources: CitationResolution[] }> {
   const params = new URLSearchParams({ answer_revision: revision })
-  if (range) { params.set('start_utf16', String(range.start)); params.set('end_utf16', String(range.end)) }
-  const response = await fetch(`${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/answers/${encodeURIComponent(answerId)}/sources?${params}`, { credentials: 'include' })
+  if (range) {
+    params.set('start_utf16', String(range.start))
+    params.set('end_utf16', String(range.end))
+  }
+  const response = await fetch(
+    `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/answers/${encodeURIComponent(answerId)}/sources?${params}`,
+    { credentials: 'include' }
+  )
   if (!response.ok) throw new Error('citation_sources_unavailable')
   return response.json()
 }

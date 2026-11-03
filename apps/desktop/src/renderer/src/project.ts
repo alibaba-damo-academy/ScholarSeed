@@ -11,6 +11,10 @@ export interface ProjectSummary {
   activityAt: number
 }
 
+export function isProjectAvailable(project: Project): boolean {
+  return project.available !== false
+}
+
 export function projectSummary(project: Project, sessions: SessionNode[]): ProjectSummary {
   const owned = sessions.filter((session) => session.projectPath === project.path)
   const sessionActivity = owned.reduce(
@@ -19,29 +23,37 @@ export function projectSummary(project: Project, sessions: SessionNode[]): Proje
   )
   return {
     chats: owned.length,
-    activityAt: Math.max(project.updated_at ?? 0, project.added_at ?? 0, sessionActivity)
+    activityAt: Math.max(project.updated_at ?? 0, project.added_at ?? 0, sessionActivity),
   }
 }
 
 export function filterProjects(projects: Project[], query: string): Project[] {
   const keyword = query.trim().toLocaleLowerCase()
   if (!keyword) return projects
-  return projects.filter((project) => (
-    project.name.toLocaleLowerCase().includes(keyword)
-    || project.path.toLocaleLowerCase().includes(keyword)
-  ))
+  return projects.filter(
+    (project) =>
+      project.name.toLocaleLowerCase().includes(keyword) ||
+      project.path.toLocaleLowerCase().includes(keyword)
+  )
 }
 
-export function projectTimeLabel(timestamp: number, t: TFunction<'project'>, format: ReturnType<typeof createFormatters>, now = Date.now() / 1_000): string {
+export function projectTimeLabel(
+  timestamp: number,
+  t: TFunction<'project'>,
+  format: ReturnType<typeof createFormatters>,
+  now = Date.now() / 1_000
+): string {
   if (!timestamp) return ''
   const seconds = Math.max(0, now - timestamp)
   if (seconds < HOUR_SECONDS) return t('cards.withinHour')
-  if (seconds < DAY_SECONDS) return t('cards.hoursAgo', { total: Math.floor(seconds / HOUR_SECONDS) })
+  if (seconds < DAY_SECONDS)
+    return t('cards.hoursAgo', { total: Math.floor(seconds / HOUR_SECONDS) })
   if (seconds < DAY_SECONDS * 2) return t('cards.yesterday')
-  if (seconds < DAY_SECONDS * 30) return t('cards.daysAgo', { total: Math.floor(seconds / DAY_SECONDS) })
+  if (seconds < DAY_SECONDS * 30)
+    return t('cards.daysAgo', { total: Math.floor(seconds / DAY_SECONDS) })
   return format.date(timestamp * 1_000, {
     month: 'numeric',
-    day: 'numeric'
+    day: 'numeric',
   })
 }
 
@@ -53,11 +65,17 @@ export function projectModifiedLabel(timestamp: number): string {
   if (!timestamp) return '—'
   const date = new Date(timestamp * 1_000)
   const pad = (value: number): string => String(value).padStart(2, '0')
-  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} `
-    + `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return (
+    `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  )
 }
 
 export function projectFileLabel(project: Project, t: TFunction<'project'>): string {
-  if (project.file_count == null) return project.available === false ? t('cards.unavailable') : t('cards.unknownFiles')
-  return t(project.file_count_capped ? 'cards.cappedFiles' : 'cards.files', { total: project.file_count })
+  if (!isProjectAvailable(project)) return t('cards.unavailable')
+  if (project.file_count === undefined || project.file_count === null)
+    return t('cards.unknownFiles')
+  return t(project.file_count_capped ? 'cards.cappedFiles' : 'cards.files', {
+    total: project.file_count,
+  })
 }

@@ -1,3 +1,4 @@
+import { createReadyProject } from '../projects'
 // project.ts — infrastructure awaiting first consumer.
 // TODO(e2e): buildProject / buildScenario / loadScenario currently have no spec
 // consumers (verified by `grep -rn 'buildProject\|buildScenario\|loadScenario' e2e/*.spec.ts`).
@@ -6,7 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
 import { expect, type Page } from '@playwright/test'
-import { apiBase, enterWorkbenchShell } from '../electron'
+import { enterWorkbenchShell } from '../electron'
 import type { RuntimePaths } from '../runtime'
 
 const ACTION_TIMEOUT_MS = 15_000
@@ -73,12 +74,6 @@ export interface ProjectHandle {
   resources: string
 }
 
-interface ProjectPayload {
-  id: string
-  name: string
-  root: string
-}
-
 /** target 必须严格落在 root 内部（相对路径非空、不越级、不是绝对路径）。 */
 function escapesRoot(root: string, target: string): boolean {
   const inside = relative(root, target)
@@ -134,11 +129,7 @@ export async function buildProject(
     throw new Error('buildProject: project settings seeding is not supported yet; omit descriptor.settings')
   }
   page.setDefaultTimeout(ACTION_TIMEOUT_MS)
-  const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, {
-    data: { name: descriptor.name }
-  })
-  expect(response.ok(), await response.text()).toBe(true)
-  const project = (await response.json()) as ProjectPayload
+  const project = await createReadyProject(page, descriptor.name)
   expect(relative(runtime.workspace, project.root).startsWith('..')).toBe(false)
   const resources = join(project.root, RESOURCES_DIRNAME)
   mkdirSync(resources, { recursive: true })

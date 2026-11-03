@@ -1,29 +1,28 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type {
-  AgentInvocationArtifact,
-  AgentInvocationEvent,
-  AgentInvocationRequest
-} from '../../contracts/invocation.ts'
+import type { AgentInvocationArtifact, AgentInvocationEvent } from '../../contracts/invocation.ts'
 import {
-  BROWSER_SEARCH_ARTIFACT_PATH,
-  BROWSER_SEARCH_OUTPUT_SCHEMA_ID,
+  AUTOMATIC_BROWSER_SEARCH_ARTIFACT_PATH,
+  AUTOMATIC_OFFICIAL_SEARCH_ARTIFACT_PATH,
+  FALLBACK_SEARCH_PROFILE,
   WEB_SEARCH_CANDIDATES_OUTPUT_SCHEMA_ID,
-  WEB_SEARCH_INTERRUPTED_CODE
 } from './search.ts'
-import {
-  BROWSER_SEARCH_MODE,
-  OFFICIAL_SEARCH_MODE,
-  WEB_SEARCH_CANDIDATES_MODE
-} from './state.ts'
-import { runWebSearchRoute } from './driver.ts'
+import { projectWebSearch, verifiedWebSearchCandidates } from './search.ts'
+import { BROWSER_SEARCH_MODE, OFFICIAL_SEARCH_MODE, WEB_SEARCH_CANDIDATES_MODE } from './state.ts'
+import { runWebSearchRoute, type WebSearchAttemptObserver } from './driver.ts'
 
 const API_BASE = 'http://service.test'
-const TEST_QUERY = 'test query'
-const CREATED_AT = 1_788_800_000
+const QUERY = 'test query'
+const FALLBACK_ROUTE = '/api/resource/web-search/fallback'
 
-function invocationEvent(
+interface ResourceFallbackRequest {
+  query: string
+  limit: number
+  native_available: boolean
+}
+
+function event(
   invocationId: string,
   seq: number,
   type: string,
@@ -35,814 +34,686 @@ function invocationEvent(
     invocation_id: invocationId,
     seq,
     type,
-    turn_id: type === 'invocation.started' ? '' : `${invocationId}-turn`,
+    turn_id: `${invocationId}-turn`,
     item_id: itemId,
     data,
-    created_at: CREATED_AT + seq
+    created_at: 1_788_800_000 + seq,
   }
 }
 
-function sseResponse(events: AgentInvocationEvent[]): Response {
-  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
-  return new Response(body, {
-    status: 200,
-    headers: { 'content-type': 'text/event-stream; charset=utf-8' }
-  })
-}
-
-function nativeResultText(): string {
-  return [
-    '<scholarseed_web_search_results>',
-    nativePlainJsonResultText(),
-    '</scholarseed_web_search_results>'
-  ].join('\n')
-}
-
-function nativePlainJsonResultText(): string {
-  return JSON.stringify({
-    schema: WEB_SEARCH_CANDIDATES_OUTPUT_SCHEMA_ID,
-    status: 'empty',
-    provider: WEB_SEARCH_CANDIDATES_MODE,
-    query: TEST_QUERY,
-    candidates: [],
-    error: null
-  })
-}
-
-function nativeCompleted(
-  includeExecutionEvidence = true,
-  resultText = nativeResultText()
-): AgentInvocationEvent[] {
-  const events = [
-    invocationEvent('native-invocation', 1, 'invocation.started', {
-      skill: { id: 'builtin:web-search', name: 'web-search', profile: 'native' }
-    }),
-    invocationEvent('native-invocation', 2, 'plan.updated', {
-      todos: [{ content: '动态搜索测试候选', status: 'in_progress' }]
-    })
-  ]
-  if (includeExecutionEvidence) {
-    events.push(
-      invocationEvent(
-        'native-invocation',
-        3,
-        'web_search.completed',
-        { query: TEST_QUERY, result_count: 0 },
-        'native-search'
-      )
-    )
+function artifact(path: string, id: string): AgentInvocationArtifact {
+  return {
+    artifact_id: id,
+    relative_path: path,
+    role: 'final',
+    mime_type: 'application/json',
+    size_bytes: 128,
+    sha256: 'a'.repeat(64),
   }
-  events.push(invocationEvent(
-    'native-invocation',
-    events.length + 1,
-    'result.completed',
-    { text: resultText, artifacts: [] }
-  ))
-  return events
 }
 
-const BROWSER_ARTIFACT: AgentInvocationArtifact = {
-  artifact_id: 'browser-artifact',
-  relative_path: BROWSER_SEARCH_ARTIFACT_PATH,
-  role: 'final',
-  mime_type: 'application/json',
-  size_bytes: 128,
-  sha256: 'a'.repeat(64)
-}
-const OFFICIAL_ARTIFACT: AgentInvocationArtifact = {
-  ...BROWSER_ARTIFACT,
-  artifact_id: 'official-artifact'
+const officialArtifact = artifact(AUTOMATIC_OFFICIAL_SEARCH_ARTIFACT_PATH, 'official-artifact')
+const browserArtifact = artifact(AUTOMATIC_BROWSER_SEARCH_ARTIFACT_PATH, 'browser-artifact')
+
+function automaticStarted(): AgentInvocationEvent {
+  return event('automatic-invocation', 1, 'invocation.started', {
+    skill: { id: 'builtin:web-search', profile: 'fallback' },
+    execution: { permission_mode: 'bypassPermissions' },
+  })
 }
 
-function officialCompleted(): AgentInvocationEvent[] {
-  return [
-    invocationEvent('official-invocation', 1, 'invocation.started', {
-      skill: { id: 'builtin:web-search', name: 'web-search', profile: 'official' },
-      execution: {
-        permission_mode: 'safe_auto',
-        network_access: true,
-        web_search: false
-      }
-    }),
-    invocationEvent(
-      'official-invocation',
-      2,
-      'artifact.published',
-      OFFICIAL_ARTIFACT as unknown as Record<string, unknown>,
-      'official-search'
-    ),
-    invocationEvent('official-invocation', 3, 'result.completed', {
-      text: 'Official search completed.',
-      artifacts: [OFFICIAL_ARTIFACT]
-    })
-  ]
-}
-
-function browserCompleted(): AgentInvocationEvent[] {
-  return [
-    invocationEvent('browser-invocation', 1, 'invocation.started', {
-      skill: { id: 'builtin:web-search', name: 'web-search', profile: 'browser' },
-      execution: {
-        permission_mode: 'bypassPermissions',
-        network_access: true,
-        web_search: false
-      }
-    }),
-    invocationEvent(
-      'browser-invocation',
-      2,
-      'artifact.published',
-      BROWSER_ARTIFACT as unknown as Record<string, unknown>,
-      'browser-search'
-    ),
-    invocationEvent('browser-invocation', 3, 'result.completed', {
-      text: 'Browser search completed.',
-      artifacts: [BROWSER_ARTIFACT]
-    })
-  ]
-}
-
-function browserResultText(
-  status: 'empty' | 'failed' = 'empty',
-  error: { code: string; message: string } | null = null
-): string {
+function officialResult(status: 'empty' | 'unavailable' = 'empty'): string {
   return JSON.stringify({
-    schema: BROWSER_SEARCH_OUTPUT_SCHEMA_ID,
+    schema: 'scholarseed.web_search.v1',
     status,
+    provider: OFFICIAL_SEARCH_MODE,
+    query: QUERY,
+    candidates: [],
+    started_at: '2026-09-08T06:30:00.000Z',
+    completed_at: '2026-09-08T06:30:01.000Z',
+    duration_ms: 1000,
+    error: status === 'empty' ? null : { code: 'credential_unavailable', message: 'missing' },
+  })
+}
+
+function browserResult(): string {
+  return JSON.stringify({
+    schema: 'scholarseed.web_search.v1',
+    status: 'empty',
     provider: BROWSER_SEARCH_MODE,
-    query: TEST_QUERY,
+    query: QUERY,
     engine: 'bing',
     browser: 'chrome',
     started_at: '2026-09-08T06:30:00.000Z',
     completed_at: '2026-09-08T06:30:01.000Z',
     duration_ms: 1000,
     candidates: [],
-    error
+    error: null,
   })
 }
 
-function officialResultText(
-  status: 'empty' | 'unavailable' | 'failed' = 'empty',
-  error: { code: string; message: string } | null = null,
-  diagnostics: Record<string, unknown> | null = null
-): string {
-  return JSON.stringify({
-    schema: BROWSER_SEARCH_OUTPUT_SCHEMA_ID,
-    status,
-    provider: OFFICIAL_SEARCH_MODE,
-    query: TEST_QUERY,
-    started_at: '2026-09-08T06:30:00.000Z',
-    completed_at: '2026-09-08T06:30:01.000Z',
-    duration_ms: 1000,
+function nativeResult(): string {
+  return `<scholarseed_web_search_results>${JSON.stringify({
+    schema: WEB_SEARCH_CANDIDATES_OUTPUT_SCHEMA_ID,
+    status: 'empty',
+    provider: WEB_SEARCH_CANDIDATES_MODE,
+    query: QUERY,
     candidates: [],
-    error,
-    diagnostics
+    error: null,
+  })}</scholarseed_web_search_results>`
+}
+
+function response(events: AgentInvocationEvent[]): Response {
+  return new Response(events.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(''), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
   })
 }
 
-async function withInvocationResponses(
-  responses: Array<AgentInvocationEvent[] | { status: number; detail: string }>,
-  run: (requests: AgentInvocationRequest[]) => Promise<void>,
-  artifactTexts: Record<string, string> = {
-    'browser-artifact': browserResultText(),
-    'official-artifact': officialResultText()
-  }
-): Promise<void> {
+async function runWithEvents(
+  events: AgentInvocationEvent[],
+  artifacts: Record<string, string | (() => Promise<string>)> = {},
+  directResult = officialResult('unavailable'),
+  capabilities = { web_search: true, ready: true, skills: true },
+  signal = new AbortController().signal,
+  observer: WebSearchAttemptObserver = () => undefined,
+  stream?: ReadableStream<Uint8Array>
+): Promise<{
+  requests: ResourceFallbackRequest[]
+  result: Awaited<ReturnType<typeof runWebSearchRoute>>
+}> {
   const originalWindow = globalThis.window
   const originalFetch = globalThis.fetch
-  const requests: AgentInvocationRequest[] = []
-  let invocationIndex = 0
+  const requests: ResourceFallbackRequest[] = []
   globalThis.window = {
     scholarseed: { getApiBase: () => API_BASE },
-    dispatchEvent: () => true
+    dispatchEvent: () => true,
   } as unknown as Window & typeof globalThis
   globalThis.fetch = async (input, init) => {
     const url = String(input)
+    if (url.endsWith('/api/resource/web-search')) {
+      if (signal.aborted) throw new DOMException('cancelled', 'AbortError')
+      assert.equal(init?.signal, signal)
+      const value = JSON.parse(directResult)
+      return new Response(JSON.stringify({ ...value, search_id: 'official-search' }), {
+        status: 200,
+      })
+    }
     if (init?.method === 'POST') {
-      requests.push(JSON.parse(String(init.body)) as AgentInvocationRequest)
-      const response = responses[invocationIndex]
-      invocationIndex += 1
-      assert.ok(response, `missing Invocation response for ${url}`)
-      return Array.isArray(response)
-        ? sseResponse(response)
-        : Response.json({ detail: response.detail }, { status: response.status })
+      assert.equal(url, API_BASE + FALLBACK_ROUTE)
+      requests.push(JSON.parse(String(init.body)) as ResourceFallbackRequest)
+      return stream
+        ? new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+        : response(events)
     }
     const artifactId = url.split('/').at(-1) ?? ''
-    const artifactText = artifactTexts[artifactId]
-    assert.ok(artifactText, `missing artifact response for ${url}`)
-    return new Response(artifactText, { status: 200 })
+    assert.ok(artifacts[artifactId], `missing artifact ${artifactId}`)
+    const artifactText = artifacts[artifactId]
+    return new Response(typeof artifactText === 'function' ? await artifactText() : artifactText, {
+      status: 200,
+    })
   }
   try {
-    await run(requests)
+    const result = await runWebSearchRoute(QUERY, capabilities, observer, signal)
+    return { requests, result }
   } finally {
     globalThis.window = originalWindow
     globalThis.fetch = originalFetch
   }
 }
 
-async function withConsoleWarnings(
-  run: (warnings: string[]) => Promise<void>
-): Promise<void> {
-  const originalWarn = console.warn
-  const warnings: string[] = []
-  console.warn = (...values: unknown[]) => {
-    warnings.push(values.map(String).join(' '))
-  }
-  try {
-    await run(warnings)
-  } finally {
-    console.warn = originalWarn
-  }
-}
-
-function webSearchWarning(warning: string): Record<string, unknown> {
-  const prefix = '[web-search] '
-  assert.ok(warning.startsWith(prefix))
-  return JSON.parse(warning.slice(prefix.length)) as Record<string, unknown>
-}
-
-function webSearchWarningFor(
-  warnings: readonly string[],
-  event: string
-): Record<string, unknown> {
-  const diagnostics = warnings.map(webSearchWarning)
-  const diagnostic = diagnostics.find((candidate) => candidate.event === event)
-  assert.ok(diagnostic, `missing ${event} diagnostic`)
-  return diagnostic
-}
-
-test('automatic route accepts a verified empty official API result without fallback', async () => {
-  await withInvocationResponses([officialCompleted()], async (requests) => {
-    const updates: string[] = []
-    const result = await runWebSearchRoute(
-      TEST_QUERY,
-      { web_search: true },
-      (attempt) => updates.push(`${attempt.mode}:${attempt.status}`),
-      new AbortController().signal
-    )
-
-    assert.equal(result.ok, true)
-    if (result.ok) assert.equal(result.resolvedMode, OFFICIAL_SEARCH_MODE)
-    assert.deepEqual(result.attempts.map((attempt) => attempt.mode), [OFFICIAL_SEARCH_MODE])
-    assert.equal(result.attempts[0]?.status, 'completed')
-    assert.deepEqual(result.attempts[0]?.invocationEvents.map((event) => event.type), [
-      'invocation.started',
+test('official empty result does not create an Invocation or require a model', async () => {
+  const events = [
+    automaticStarted(),
+    event(
+      'automatic-invocation',
+      2,
       'artifact.published',
-      'result.completed'
-    ])
+      officialArtifact as unknown as Record<string, unknown>
+    ),
+    event('automatic-invocation', 3, 'result.completed', {
+      artifacts: [officialArtifact],
+      text: 'done',
+    }),
+  ]
+  const { requests, result } = await runWithEvents(events, {}, officialResult(), {
+    web_search: false,
+    ready: false,
+    skills: false,
+  })
+  assert.equal(result.ok, true)
+  if (result.ok) assert.equal(result.resolvedMode, OFFICIAL_SEARCH_MODE)
+  assert.equal(requests.length, 0)
+  assert.equal(result.attempts[0]?.invocationId, undefined)
+  assert.equal(result.attempts[0]?.officialSearchId, 'official-search')
+})
+
+test('automatic route falls back to native in the same Invocation', async () => {
+  const events = [
+    automaticStarted(),
+    event(
+      'automatic-invocation',
+      2,
+      'web_search.completed',
+      { query: QUERY, result_count: 0 },
+      'native-search'
+    ),
+    event('automatic-invocation', 3, 'result.completed', { text: nativeResult(), artifacts: [] }),
+  ]
+  const { requests, result } = await runWithEvents(events)
+  assert.equal(result.ok, true)
+  if (result.ok) assert.equal(result.resolvedMode, WEB_SEARCH_CANDIDATES_MODE)
+  assert.equal(requests.length, 1)
+  assert.deepEqual(requests[0], { query: QUERY, limit: 20, native_available: true })
+  assert.deepEqual(
+    result.attempts.map((attempt) => attempt.invocationId),
+    [undefined, 'automatic-invocation']
+  )
+  const attempt = result.attempts.at(-1)!
+  assert.equal(
+    projectWebSearch(
+      attempt.invocationEvents,
+      attempt.mode,
+      attempt.resultText,
+      QUERY,
+      attempt.artifactPath,
+      attempt.officialSearchId,
+      attempt.invocationProfile
+    ).executionEvidenceFound,
+    true
+  )
+})
+
+test('automatic route reads browser fallback from its immutable artifact path', async () => {
+  const events = [
+    automaticStarted(),
+    event(
+      'automatic-invocation',
+      2,
+      'web_search.completed',
+      { query: QUERY, result_count: 0 },
+      'native-search'
+    ),
+    event(
+      'automatic-invocation',
+      3,
+      'artifact.published',
+      browserArtifact as unknown as Record<string, unknown>
+    ),
+    event('automatic-invocation', 4, 'result.completed', {
+      artifacts: [browserArtifact],
+      text: 'done',
+    }),
+  ]
+  const { requests, result } = await runWithEvents(events, {
+    'browser-artifact': browserResult(),
+  })
+  assert.equal(result.ok, true)
+  if (result.ok) assert.equal(result.resolvedMode, BROWSER_SEARCH_MODE)
+  assert.equal(requests.length, 1)
+  if (result.ok) {
+    assert.equal(result.attempts.at(-1)?.artifactPath, AUTOMATIC_BROWSER_SEARCH_ARTIFACT_PATH)
+    const attempt = result.attempts.at(-1)!
     assert.equal(
-      Object.values(result.attempts[0]?.eventObservedAt ?? {}).every(Number.isFinite),
+      projectWebSearch(
+        attempt.invocationEvents,
+        attempt.mode,
+        attempt.resultText,
+        QUERY,
+        attempt.artifactPath,
+        attempt.officialSearchId,
+        attempt.invocationProfile
+      ).executionEvidenceFound,
       true
     )
-    assert.deepEqual(requests.map((request) => request.skill?.id), [
-      'builtin:web-search'
-    ])
-    assert.ok(updates.includes(`${OFFICIAL_SEARCH_MODE}:completed`))
-  })
-})
-
-test('automatic route accepts native plain JSON after the official API fails', async () => {
-  await withInvocationResponses([
-    { status: 503, detail: 'official_api_request_failed' },
-    nativeCompleted(true, nativePlainJsonResultText())
-  ], async (requests) => {
-    const result = await runWebSearchRoute(
-      TEST_QUERY,
-      { web_search: true },
-      () => undefined,
-      new AbortController().signal
-    )
-
-    assert.equal(result.ok, true)
-    if (result.ok) assert.equal(result.resolvedMode, WEB_SEARCH_CANDIDATES_MODE)
-    assert.deepEqual(result.attempts.map((attempt) => attempt.mode), [
-      OFFICIAL_SEARCH_MODE,
-      WEB_SEARCH_CANDIDATES_MODE
-    ])
-    assert.equal(result.attempts[1]?.status, 'completed')
-    assert.deepEqual(requests.map((request) => request.skill?.profile), ['official', 'native'])
-  })
-})
-
-test('automatic route stops on a successful official API result before native and browser fallback', async () => {
-  await withInvocationResponses([
-    officialCompleted()
-  ], async (requests) => {
-    const result = await runWebSearchRoute(
-      TEST_QUERY,
-      { web_search: true },
-      () => undefined,
-      new AbortController().signal
-    )
-
-    assert.equal(result.ok, true)
-    if (result.ok) assert.equal(result.resolvedMode, OFFICIAL_SEARCH_MODE)
-    assert.deepEqual(requests.map((request) => request.skill?.profile), ['official'])
-    assert.deepEqual(result.attempts.map((attempt) => attempt.mode), [
-      OFFICIAL_SEARCH_MODE
-    ])
-  })
-})
-
-test('automatic route uses native Web Search when the official credential is unavailable', async () => {
-  await withInvocationResponses(
-    [officialCompleted(), nativeCompleted()],
-    async (requests) => {
-      const result = await runWebSearchRoute(
-        TEST_QUERY,
-        { web_search: true },
-        () => undefined,
-        new AbortController().signal
-      )
-
-      assert.equal(result.ok, true)
-      if (result.ok) assert.equal(result.resolvedMode, WEB_SEARCH_CANDIDATES_MODE)
-      assert.deepEqual(result.attempts.map((attempt) => [attempt.mode, attempt.status]), [
-        [OFFICIAL_SEARCH_MODE, 'failed'],
-        [WEB_SEARCH_CANDIDATES_MODE, 'completed']
-      ])
-      assert.equal(result.attempts[0]?.errorCode, 'credential_unavailable')
-      assert.deepEqual(requests.map((request) => request.skill?.profile), ['official', 'native'])
-    },
-    {
-      'browser-artifact': browserResultText(),
-      'official-artifact': officialResultText('unavailable', {
-        code: 'credential_unavailable',
-        message: 'SCHOLARSEED_API_KEY is not available for official search.'
-      })
-    }
-  )
-})
-
-test('automatic route logs safe upstream diagnostics from an official API failure', async () => {
-  await withConsoleWarnings(async (warnings) => {
-    await withInvocationResponses(
-      [officialCompleted(), nativeCompleted()],
-      async () => {
-        const result = await runWebSearchRoute(
-          TEST_QUERY,
-          { web_search: true },
-          () => undefined,
-          new AbortController().signal
-        )
-
-        assert.equal(result.ok, true)
-        if (result.ok) assert.equal(result.resolvedMode, WEB_SEARCH_CANDIDATES_MODE)
-      },
-      {
-        'browser-artifact': browserResultText(),
-        'official-artifact': officialResultText(
-          'failed',
-          {
-            code: 'official_api_response_invalid',
-            message: 'The official search API returned an invalid response.'
-          },
-          {
-            phase: 'response',
-            upstream_http_status: 503,
-            error_type: 'HTTPException',
-            response_bytes: 321,
-            response_oversized: false,
-            ignored_detail: TEST_QUERY
-          }
-        )
-      }
-    )
-
-    assert.equal(warnings.length, 1)
-    const diagnostic = webSearchWarningFor(warnings, 'official_web_search_attempt')
-    assert.equal(diagnostic.failure_phase, 'response')
-    assert.equal(diagnostic.upstream_http_status, 503)
-    assert.equal(diagnostic.upstream_error_type, 'HTTPException')
-    assert.equal(diagnostic.upstream_response_bytes, 321)
-    assert.equal(diagnostic.upstream_response_oversized, false)
-    assert.equal(diagnostic.will_fallback, true)
-    assert.equal(diagnostic.next_mode, WEB_SEARCH_CANDIDATES_MODE)
-    assert.equal(warnings.some((warning) => warning.includes(TEST_QUERY)), false)
-  })
-})
-
-test('automatic route tries official, skips native capability, then runs browser Skill', async () => {
-  await withInvocationResponses([
-    { status: 422, detail: 'official_api_unavailable' },
-    browserCompleted()
-  ], async (requests) => {
-    const result = await runWebSearchRoute(
-      TEST_QUERY,
-      { web_search: false },
-      () => undefined,
-      new AbortController().signal
-    )
-
-    assert.equal(result.ok, true)
-    if (result.ok) assert.equal(result.resolvedMode, BROWSER_SEARCH_MODE)
-    assert.deepEqual(result.attempts.map((attempt) => [attempt.mode, attempt.status]), [
-      [OFFICIAL_SEARCH_MODE, 'failed'],
-      [WEB_SEARCH_CANDIDATES_MODE, 'unavailable'],
-      [BROWSER_SEARCH_MODE, 'completed']
-    ])
-    assert.deepEqual(requests.map((request) => request.skill?.profile), ['official', 'browser'])
-  })
-})
-
-test('automatic route falls back when native terminal output lacks execution evidence', async () => {
-  await withConsoleWarnings(async (warnings) => {
-    await withInvocationResponses(
-      [
-        { status: 422, detail: 'official_api_unavailable' },
-        nativeCompleted(false),
-        browserCompleted()
-      ],
-      async (requests) => {
-        const result = await runWebSearchRoute(
-          TEST_QUERY,
-          { web_search: true },
-          () => undefined,
-          new AbortController().signal
-        )
-
-        assert.equal(result.ok, true)
-        if (result.ok) assert.equal(result.resolvedMode, BROWSER_SEARCH_MODE)
-        assert.deepEqual(result.attempts.map((attempt) => [attempt.mode, attempt.status]), [
-          [OFFICIAL_SEARCH_MODE, 'failed'],
-          [WEB_SEARCH_CANDIDATES_MODE, 'failed'],
-          [BROWSER_SEARCH_MODE, 'completed']
-        ])
-        assert.equal(result.attempts[1]?.errorCode, 'web_search_output_missing')
-        assert.deepEqual(
-          [...new Set(result.attempts[1]?.invocationEvents.map((event) => event.invocation_id))],
-          ['native-invocation']
-        )
-        assert.deepEqual(
-          [...new Set(result.attempts[2]?.invocationEvents.map((event) => event.invocation_id))],
-          ['browser-invocation']
-        )
-        assert.deepEqual(requests.map((request) => request.skill?.id), [
-          'builtin:web-search',
-          'builtin:web-search',
-          'builtin:web-search'
-        ])
-      }
-    )
-
-    assert.equal(warnings.length, 2)
-    const diagnostic = webSearchWarningFor(warnings, 'native_web_search_failed')
-    assert.deepEqual(diagnostic, {
-      event: 'native_web_search_failed',
-      stage: 'evidence_contract',
-      mode: WEB_SEARCH_CANDIDATES_MODE,
-      invocation_id: 'native-invocation',
-      status: 'failed',
-      error_code: 'web_search_output_missing',
-      error_code_redacted: false,
-      http_status: 200,
-      will_fallback: true,
-      expected_output_schema: WEB_SEARCH_CANDIDATES_OUTPUT_SCHEMA_ID,
-      validation_issues: ['web_search_completed_missing'],
-      execution_evidence_found: false,
-      structured_output_found: true,
-      candidate_count: 0,
-      result_text_present: true,
-      result_text_length: nativeResultText().length,
-      event_types: ['invocation.started', 'plan.updated', 'result.completed']
-    })
-    assert.equal(warnings.some((warning) => warning.includes(TEST_QUERY)), false)
-  })
-})
-
-test('automatic route logs the exact contract reason when native output markers are missing', async () => {
-  const unmarkedText = [
-    '```json',
-    nativePlainJsonResultText(),
-    '```'
-  ].join('\n')
-  await withConsoleWarnings(async (warnings) => {
-    await withInvocationResponses(
-      [
-        { status: 422, detail: 'official_api_unavailable' },
-        nativeCompleted(true, unmarkedText),
-        browserCompleted()
-      ],
-      async () => {
-        const result = await runWebSearchRoute(
-          TEST_QUERY,
-          { web_search: true },
-          () => undefined,
-          new AbortController().signal
-        )
-
-        assert.equal(result.ok, true)
-        if (result.ok) assert.equal(result.resolvedMode, BROWSER_SEARCH_MODE)
-      }
-    )
-
-    assert.equal(warnings.length, 2)
-    const diagnostic = webSearchWarningFor(warnings, 'native_web_search_failed')
-    assert.deepEqual(diagnostic.validation_issues, ['result_begin_marker_missing'])
-    assert.equal(diagnostic.execution_evidence_found, true)
-    assert.equal(diagnostic.structured_output_found, false)
-    assert.equal(diagnostic.will_fallback, true)
-    assert.equal(diagnostic.result_text_present, true)
-    assert.equal(diagnostic.result_text_length, unmarkedText.length)
-    assert.equal(warnings.some((warning) => warning.includes(unmarkedText)), false)
-    assert.equal(warnings.some((warning) => warning.includes(TEST_QUERY)), false)
-  })
-})
-
-test('automatic route falls back when native is unavailable after the official API fails', async () => {
-  await withInvocationResponses(
-    [
-      { status: 422, detail: 'official_api_unavailable' },
-      { status: 422, detail: 'invocation_skill_unavailable' },
-      browserCompleted()
-    ],
-    async (requests) => {
-      const result = await runWebSearchRoute(
-        TEST_QUERY,
-        { web_search: true },
-        () => undefined,
-        new AbortController().signal
-      )
-
-      assert.equal(result.ok, true)
-      if (result.ok) assert.equal(result.resolvedMode, BROWSER_SEARCH_MODE)
-      assert.deepEqual(requests.map((request) => request.skill?.id), [
-        'builtin:web-search',
-        'builtin:web-search',
-        'builtin:web-search'
-      ])
-    }
-  )
-})
-
-test('automatic route falls through all providers after an Invocation service outage', async () => {
-  await withInvocationResponses(
-    [
-      { status: 503, detail: 'invocation_service_unavailable' },
-      { status: 503, detail: 'invocation_service_unavailable' },
-      { status: 503, detail: 'invocation_service_unavailable' }
-    ],
-    async (requests) => {
-      const result = await runWebSearchRoute(
-        TEST_QUERY,
-        { web_search: true },
-        () => undefined,
-        new AbortController().signal
-      )
-
-      assert.equal(result.ok, false)
-      assert.equal(requests.length, 3)
-      assert.equal(result.attempts[0]?.errorCode, 'invocation_service_unavailable')
-      assert.equal(result.attempts[0]?.httpStatus, 503)
-      assert.deepEqual(requests.map((request) => request.skill?.profile), [
-        'official',
-        'native',
-        'browser'
-      ])
-    }
-  )
-})
-
-test('automatic route falls through all providers after an authentication failure', async () => {
-  await withInvocationResponses(
-    [
-      { status: 401, detail: 'authentication_required' },
-      { status: 401, detail: 'authentication_required' },
-      { status: 401, detail: 'authentication_required' }
-    ],
-    async (requests) => {
-      const result = await runWebSearchRoute(
-        TEST_QUERY,
-        { web_search: true },
-        () => undefined,
-        new AbortController().signal
-      )
-
-      assert.equal(result.ok, false)
-      assert.equal(requests.length, 3)
-      assert.deepEqual(requests.map((request) => request.skill?.profile), [
-        'official',
-        'native',
-        'browser'
-      ])
-    }
-  )
-})
-
-test('automatic route falls through after a confirmed provider failure', async () => {
-  const providerError = 'The model provider allocation quota is exhausted.'
-  const providerFailed = [
-    invocationEvent('native-invocation', 1, 'invocation.started'),
-    invocationEvent('native-invocation', 2, 'invocation.failed', {
-      error: providerError
-    })
-  ]
-  await withConsoleWarnings(async (warnings) => {
-    await withInvocationResponses([
-      { status: 503, detail: 'official_api_request_failed' },
-      providerFailed,
-      { status: 503, detail: 'browser_launch_failed' }
-    ], async (requests) => {
-      const result = await runWebSearchRoute(
-        TEST_QUERY,
-        { web_search: true },
-        () => undefined,
-        new AbortController().signal
-      )
-
-      assert.equal(result.ok, false)
-      assert.equal(requests.length, 3)
-    })
-
-    assert.equal(warnings.length, 2)
-    const officialDiagnostic = webSearchWarningFor(
-      warnings,
-      'official_web_search_attempt'
-    )
-    assert.deepEqual(officialDiagnostic, {
-      event: 'official_web_search_attempt',
-      stage: 'invocation',
-      mode: OFFICIAL_SEARCH_MODE,
-      invocation_id: null,
-      status: 'failed',
-      error_code: 'official_api_request_failed',
-      error_code_redacted: false,
-      invocation_http_status: 503,
-      will_fallback: true,
-      next_mode: WEB_SEARCH_CANDIDATES_MODE,
-      query_length: TEST_QUERY.length,
-      failure_phase: null,
-      upstream_http_status: null,
-      upstream_error_type: null,
-      upstream_response_bytes: null,
-      upstream_response_oversized: null,
-      expected_output_schema: BROWSER_SEARCH_OUTPUT_SCHEMA_ID,
-      validation_issues: [],
-      execution_evidence_found: null,
-      structured_output_found: null,
-      candidate_count: 0,
-      result_text_present: false,
-      result_text_length: 0,
-      event_types: []
-    })
-    const nativeDiagnostic = webSearchWarningFor(warnings, 'native_web_search_failed')
-    assert.equal(nativeDiagnostic.error_code, 'unclassified_failure')
-    assert.equal(nativeDiagnostic.error_code_redacted, true)
-    assert.equal(warnings.some((warning) => warning.includes(providerError)), false)
-    assert.equal(warnings.some((warning) => warning.includes(TEST_QUERY)), false)
-  })
-})
-
-test('automatic route does not replay an interrupted native search after official failure', async () => {
-  const interrupted = [
-    invocationEvent('native-invocation', 1, 'invocation.started'),
-    invocationEvent('native-invocation', 2, 'invocation.interrupted')
-  ]
-  await withInvocationResponses([
-    { status: 503, detail: 'official_api_request_failed' },
-    interrupted
-  ], async (requests) => {
-    const result = await runWebSearchRoute(
-      TEST_QUERY,
-      { web_search: true },
-      () => undefined,
-      new AbortController().signal
-    )
-
-    assert.equal(result.ok, false)
-    if (!result.ok) assert.equal(result.status, 'interrupted')
-    assert.deepEqual(result.attempts.map((attempt) => [attempt.mode, attempt.status]), [
-      [OFFICIAL_SEARCH_MODE, 'failed'],
-      [WEB_SEARCH_CANDIDATES_MODE, 'interrupted']
-    ])
-    assert.equal(requests.length, 2)
-  })
-})
-
-for (const scenario of [
-  {
-    name: 'unknown terminal',
-    events: [
-      invocationEvent('native-invocation', 1, 'invocation.started'),
-      invocationEvent('native-invocation', 2, 'invocation.unknown')
-    ]
-  },
-  {
-    name: 'invalid event stream',
-    events: [
-      invocationEvent('native-invocation', 1, 'invocation.started'),
-      invocationEvent('native-invocation', 3, 'result.completed')
-    ]
-  },
-  {
-    name: 'unsupported interaction',
-    events: [
-      invocationEvent('native-invocation', 1, 'invocation.started'),
-      invocationEvent('native-invocation', 2, 'interaction.required', {
-        request_id: 'approval-1'
-      })
-    ]
   }
-]) {
-  test(`automatic route does not replay after ${scenario.name}`, async () => {
-    await withInvocationResponses([
-      { status: 503, detail: 'official_api_request_failed' },
-      scenario.events
-    ], async (requests) => {
-      const result = await runWebSearchRoute(
-        TEST_QUERY,
-        { web_search: true },
-        () => undefined,
-        new AbortController().signal
-      )
+})
 
-      assert.equal(result.ok, false)
-      assert.equal(requests.length, 2)
-    })
+test('official success projects candidates with real HTTP identity and no Agent events', async () => {
+  const value = {
+    ...JSON.parse(officialResult()),
+    status: 'completed',
+    candidates: [
+      { title: 'Page', url: 'https://example.com/page', description: 'Search candidate' },
+    ],
+  }
+  const { requests, result } = await runWithEvents([], {}, JSON.stringify(value))
+  assert.equal(requests.length, 0)
+  assert.equal(result.ok, true)
+  const attempt = result.attempts[0]!
+  const projection = projectWebSearch(
+    [],
+    attempt.mode,
+    attempt.resultText,
+    QUERY,
+    undefined,
+    attempt.officialSearchId
+  )
+  assert.equal(verifiedWebSearchCandidates(projection).length, 1)
+})
+
+test('unavailable native capability starts browser in one fallback Invocation', async () => {
+  const events = [
+    automaticStarted(),
+    event(
+      'automatic-invocation',
+      2,
+      'artifact.published',
+      browserArtifact as unknown as Record<string, unknown>
+    ),
+    event('automatic-invocation', 3, 'result.completed', {
+      artifacts: [browserArtifact],
+      text: 'done',
+    }),
+  ]
+  const { requests, result } = await runWithEvents(
+    events,
+    { 'browser-artifact': browserResult() },
+    officialResult('unavailable'),
+    { web_search: false, ready: true, skills: true }
+  )
+  assert.equal(result.ok, true)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0]?.native_available, false)
+})
+
+test('cancelled direct search never starts a fallback Invocation', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const { requests, result } = await runWithEvents(
+    [],
+    {},
+    officialResult(),
+    { web_search: true, ready: true, skills: true },
+    controller.signal
+  )
+  assert.equal(requests.length, 0)
+  assert.equal(result.status, 'interrupted')
+})
+
+test('model unavailability only blocks fallback, not the official attempt', async () => {
+  const { requests, result } = await runWithEvents([], {}, officialResult('unavailable'), {
+    web_search: false,
+    ready: false,
+    skills: false,
+  })
+  assert.equal(requests.length, 0)
+  assert.equal(result.ok, false)
+})
+
+function browserReady(sequence = 3, patch: Record<string, unknown> = {}): AgentInvocationEvent {
+  return event('automatic-invocation', sequence, 'result.ready', {
+    text: browserResult(),
+    provider: BROWSER_SEARCH_MODE,
+    artifacts: [browserArtifact],
+    completion_reason: 'result_contract_satisfied',
+    ...patch,
   })
 }
 
-test('automatic route checks cancellation before starting native fallback', async () => {
-  const controller = new AbortController()
-  await withInvocationResponses([
-    { status: 503, detail: 'official_api_request_failed' }
-  ], async (requests) => {
-    const result = await runWebSearchRoute(
-      TEST_QUERY,
-      { web_search: true },
-      (attempt) => {
-        if (attempt.status === 'failed') controller.abort()
-      },
-      controller.signal
-    )
-
-    assert.equal(result.ok, false)
-    if (!result.ok) {
-      assert.equal(result.status, 'interrupted')
-      assert.equal(result.error, WEB_SEARCH_INTERRUPTED_CODE)
-    }
-    assert.equal(requests.length, 1)
-  })
-})
-
-test('automatic route preserves both failures when fallback also fails', async () => {
-  const nativeFailed = [
-    invocationEvent('native-invocation', 1, 'invocation.started'),
-    invocationEvent('native-invocation', 2, 'invocation.failed', {
-      error: 'runtime_web_search_capability_unavailable'
-    })
-  ]
-  const browserFailed = [
-    invocationEvent('browser-invocation', 1, 'invocation.started'),
-    invocationEvent('browser-invocation', 2, 'invocation.failed', {
-      error: 'browser_launch_failed'
-    })
-  ]
-  await withInvocationResponses([
-    { status: 503, detail: 'official_api_request_failed' },
-    nativeFailed,
-    browserFailed
-  ], async () => {
-    const result = await runWebSearchRoute(
-      TEST_QUERY,
-      { web_search: true },
-      () => undefined,
-      new AbortController().signal
-    )
-
-    assert.equal(result.ok, false)
-    if (!result.ok) assert.equal(result.status, 'failed')
-    assert.deepEqual(result.attempts.map((attempt) => [attempt.mode, attempt.status]), [
-      [OFFICIAL_SEARCH_MODE, 'failed'],
-      [WEB_SEARCH_CANDIDATES_MODE, 'failed'],
-      [BROWSER_SEARCH_MODE, 'failed']
-    ])
-    assert.equal(result.error, 'browser_launch_failed')
-  })
-})
-
-test('automatic route preserves the browser artifact failure code', async () => {
-  await withInvocationResponses(
-    [{ status: 422, detail: 'official_api_unavailable' }, browserCompleted()],
-    async () => {
-      const result = await runWebSearchRoute(
-        TEST_QUERY,
-        { web_search: false },
-        () => undefined,
-        new AbortController().signal
-      )
-
-      assert.equal(result.ok, false)
-      assert.equal(result.attempts[2]?.status, 'failed')
-      assert.equal(result.attempts[2]?.errorCode, 'browser_launch_failed')
-      assert.equal(result.error, 'browser_launch_failed')
-    },
+test('browser result readiness accepts inherited executable modes without requesting elevation', async () => {
+  const candidates = [
     {
-      'browser-artifact': browserResultText('failed', {
-        code: 'browser_launch_failed',
-        message: 'raw browser error'
+      title: 'Public result',
+      url: 'https://example.com/result',
+      description: 'Real candidate shape',
+    },
+  ]
+  const text = JSON.stringify({
+    ...JSON.parse(browserResult()),
+    status: 'completed',
+    browser: 'embedded',
+    candidates,
+  })
+  for (const permissionMode of ['ask', 'safe_auto', 'bypassPermissions']) {
+    const started = automaticStarted()
+    started.data.execution = { permission_mode: permissionMode }
+    const events = [
+      started,
+      event(
+        'automatic-invocation',
+        2,
+        'artifact.published',
+        browserArtifact as unknown as Record<string, unknown>
+      ),
+      browserReady(3, { text }),
+      event('automatic-invocation', 4, 'result.completed', {
+        text,
+        artifacts: [browserArtifact],
+        runtime_outcome: 'interrupted',
+        completion_reason: 'result_contract_satisfied',
       }),
-      'official-artifact': officialResultText()
+    ]
+    const { result, requests } = await runWithEvents(events, { 'browser-artifact': text })
+    assert.equal(result.ok, true, permissionMode)
+    const attempt = result.attempts.at(-1)!
+    assert.ok(attempt.resultReadyAt, permissionMode)
+    const projection = projectWebSearch(
+      attempt.invocationEvents,
+      attempt.mode,
+      attempt.resultText,
+      QUERY,
+      attempt.artifactPath,
+      attempt.officialSearchId,
+      attempt.invocationProfile
+    )
+    assert.equal(verifiedWebSearchCandidates(projection).length, candidates.length, permissionMode)
+    assert.deepEqual(requests, [{ query: QUERY, limit: 20, native_available: true }])
+  }
+})
+
+test('browser result readiness still rejects read-only, missing and unknown execution modes', async () => {
+  for (const permissionMode of ['read_only', 'read-only', 'unknown', undefined]) {
+    const started = automaticStarted()
+    started.data.execution = permissionMode === undefined ? {} : { permission_mode: permissionMode }
+    const events = [
+      started,
+      event(
+        'automatic-invocation',
+        2,
+        'artifact.published',
+        browserArtifact as unknown as Record<string, unknown>
+      ),
+      browserReady(),
+      event('automatic-invocation', 4, 'result.completed', {
+        text: browserResult(),
+        artifacts: [browserArtifact],
+      }),
+    ]
+    const { result } = await runWithEvents(events, { 'browser-artifact': browserResult() })
+    assert.equal(result.ok, false, String(permissionMode))
+    assert.equal(result.attempts.at(-1)?.resultReadyAt, undefined)
+  }
+})
+
+test('resource browser fallback retains real candidates without snippets through ready and terminal', async () => {
+  const text = JSON.stringify({
+    ...JSON.parse(browserResult()),
+    status: 'completed',
+    candidates: [
+      { title: 'Paper without snippet', url: 'https://example.com/paper', description: '' },
+    ],
+  })
+  const events = [
+    automaticStarted(),
+    event(
+      'automatic-invocation',
+      2,
+      'artifact.published',
+      browserArtifact as unknown as Record<string, unknown>
+    ),
+    browserReady(3, { text }),
+    event('automatic-invocation', 4, 'result.completed', {
+      text,
+      artifacts: [browserArtifact],
+      runtime_outcome: 'interrupted',
+      completion_reason: 'result_contract_satisfied',
+    }),
+  ]
+  let readyCandidates = 0
+  const { result } = await runWithEvents(
+    events,
+    { 'browser-artifact': text },
+    officialResult('unavailable'),
+    { web_search: false, ready: true, skills: true },
+    new AbortController().signal,
+    (attempt) => {
+      if (!attempt.resultReadyAt) return
+      const projection = projectWebSearch(
+        attempt.invocationEvents,
+        attempt.mode,
+        attempt.resultText,
+        QUERY,
+        attempt.artifactPath,
+        attempt.officialSearchId,
+        attempt.invocationProfile
+      )
+      const candidates = verifiedWebSearchCandidates(projection)
+      assert.equal(candidates.length, 1)
+      assert.equal(candidates[0]?.description, '')
+      assert.equal(candidates[0]?.title, 'Paper without snippet')
+      readyCandidates += 1
     }
   )
+  assert.equal(result.ok, true)
+  assert.ok(readyCandidates > 0)
+})
+
+test('optional snippets are restricted to resource browser fallback and retain title and URL checks', () => {
+  const candidates = [
+    { title: 'Paper without snippet', url: 'https://example.com/paper', description: '' },
+    { title: '', url: 'https://example.com/empty-title', description: '' },
+    { title: 'Invalid URL', url: 'javascript:void(0)', description: '' },
+    { title: 'Invalid description', url: 'https://example.com/missing', description: null },
+  ]
+  for (const mode of [BROWSER_SEARCH_MODE, OFFICIAL_SEARCH_MODE] as const) {
+    const text = JSON.stringify({
+      ...JSON.parse(browserResult()),
+      provider: mode,
+      status: 'completed',
+      candidates,
+    })
+    for (const profile of [undefined, 'automatic', FALLBACK_SEARCH_PROFILE]) {
+      const projection = projectWebSearch([], mode, text, QUERY, undefined, undefined, profile)
+      assert.equal(
+        projection.candidates.length,
+        mode === BROWSER_SEARCH_MODE && profile === FALLBACK_SEARCH_PROFILE ? 1 : 0
+      )
+    }
+  }
+})
+
+test('validated browser results become ready before terminal cleanup and remain running', async () => {
+  const channel = new TransformStream<Uint8Array, Uint8Array>()
+  const writer = channel.writable.getWriter()
+  let reportReady: () => void = () => undefined
+  const ready = new Promise<void>((resolve) => {
+    reportReady = resolve
+  })
+  let settled = false
+  const running = runWithEvents(
+    [],
+    { 'browser-artifact': browserResult() },
+    officialResult('unavailable'),
+    { web_search: false, ready: true, skills: true },
+    new AbortController().signal,
+    (attempt) => {
+      if (attempt.resultReadyAt === undefined || attempt.status === 'completed') return
+      assert.equal(attempt.status, 'running')
+      assert.equal(attempt.mode, BROWSER_SEARCH_MODE)
+      assert.equal(attempt.completedAt, undefined)
+      assert.equal(attempt.resultText, browserResult())
+      reportReady()
+    },
+    channel.readable
+  ).then((result) => {
+    settled = true
+    return result
+  })
+  const send = async (value: AgentInvocationEvent): Promise<void> => {
+    await writer.write(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`))
+  }
+  await send(automaticStarted())
+  await send(
+    event(
+      'automatic-invocation',
+      2,
+      'artifact.published',
+      browserArtifact as unknown as Record<string, unknown>
+    )
+  )
+  await send(browserReady())
+  await ready
+  assert.equal(settled, false)
+  await send(
+    event('automatic-invocation', 4, 'result.completed', {
+      text: browserResult(),
+      artifacts: [browserArtifact],
+      runtime_outcome: 'interrupted',
+      completion_reason: 'result_contract_satisfied',
+    })
+  )
+  await writer.close()
+  const { result } = await running
+  assert.equal(result.ok, true)
+  assert.ok(result.attempts.at(-1)?.resultReadyAt)
+})
+
+test('cleanup failure after ready remains a visible failure with verified results retained', async () => {
+  const events = [
+    automaticStarted(),
+    event(
+      'automatic-invocation',
+      2,
+      'artifact.published',
+      browserArtifact as unknown as Record<string, unknown>
+    ),
+    browserReady(),
+    event('automatic-invocation', 4, 'invocation.unknown', { error: 'cleanup_failed' }),
+  ]
+  const { result } = await runWithEvents(events)
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 'unknown')
+  assert.equal(result.attempts.at(-1)?.resultText, browserResult())
+  assert.ok(result.attempts.at(-1)?.resultReadyAt)
+})
+
+test('ready rejects mismatched query, publication digest and profile', async () => {
+  for (const mismatch of ['query', 'digest', 'profile']) {
+    const started = automaticStarted()
+    if (mismatch === 'profile')
+      started.data.skill = { id: 'builtin:web-search', profile: 'automatic' }
+    const ready = browserReady(
+      3,
+      mismatch === 'query'
+        ? { text: JSON.stringify({ ...JSON.parse(browserResult()), query: 'another query' }) }
+        : mismatch === 'digest'
+          ? { artifacts: [{ ...browserArtifact, sha256: 'b'.repeat(64) }] }
+          : {}
+    )
+    let earlyResults = 0
+    const { result } = await runWithEvents(
+      [
+        started,
+        event(
+          'automatic-invocation',
+          2,
+          'artifact.published',
+          browserArtifact as unknown as Record<string, unknown>
+        ),
+        ready,
+        event('automatic-invocation', 4, 'invocation.failed', { error: 'invalid_result' }),
+      ],
+      {},
+      officialResult('unavailable'),
+      { web_search: false, ready: true, skills: true },
+      new AbortController().signal,
+      (attempt) => {
+        if (attempt.resultReadyAt !== undefined) earlyResults += 1
+      }
+    )
+    assert.equal(earlyResults, 0, mismatch)
+    assert.equal(result.ok, false)
+  }
+})
+
+test('aborting after ready does not emit late execution updates', async () => {
+  const controller = new AbortController()
+  let lateUpdates = 0
+  let sawReady = false
+  const { result } = await runWithEvents(
+    [
+      automaticStarted(),
+      event(
+        'automatic-invocation',
+        2,
+        'artifact.published',
+        browserArtifact as unknown as Record<string, unknown>
+      ),
+      browserReady(),
+      event('automatic-invocation', 4, 'result.completed', {
+        text: browserResult(),
+        artifacts: [browserArtifact],
+      }),
+    ],
+    {},
+    officialResult('unavailable'),
+    { web_search: false, ready: true, skills: true },
+    controller.signal,
+    (attempt) => {
+      if (controller.signal.aborted) lateUpdates += 1
+      if (attempt.resultReadyAt !== undefined) {
+        sawReady = true
+        controller.abort()
+      }
+    }
+  )
+  assert.equal(sawReady, true)
+  assert.equal(lateUpdates, 0)
+  assert.equal(result.status, 'interrupted')
+})
+
+test('ready downloads its published artifact when inline text is absent and reuses that immutable result', async () => {
+  let downloads = 0
+  let sawEarly = false
+  const { result } = await runWithEvents(
+    [
+      automaticStarted(),
+      event(
+        'automatic-invocation',
+        2,
+        'artifact.published',
+        browserArtifact as unknown as Record<string, unknown>
+      ),
+      browserReady(3, { text: undefined }),
+      event('automatic-invocation', 4, 'result.completed', { artifacts: [browserArtifact] }),
+    ],
+    {
+      'browser-artifact': async () => {
+        downloads += 1
+        return browserResult()
+      },
+    },
+    officialResult('unavailable'),
+    { web_search: false, ready: true, skills: true },
+    new AbortController().signal,
+    (attempt) => {
+      if (attempt.status === 'running' && attempt.resultReadyAt !== undefined) sawEarly = true
+    }
+  )
+  assert.equal(result.ok, true)
+  assert.equal(sawEarly, true)
+  assert.equal(downloads, 1)
+})
+
+test('aborting during a ready-artifact download cannot publish a stale result', async () => {
+  const controller = new AbortController()
+  let readyUpdates = 0
+  const { result } = await runWithEvents(
+    [
+      automaticStarted(),
+      event(
+        'automatic-invocation',
+        2,
+        'artifact.published',
+        browserArtifact as unknown as Record<string, unknown>
+      ),
+      browserReady(3, { text: undefined }),
+      event('automatic-invocation', 4, 'result.completed', { artifacts: [browserArtifact] }),
+    ],
+    {
+      'browser-artifact': async () => {
+        controller.abort()
+        return browserResult()
+      },
+    },
+    officialResult('unavailable'),
+    { web_search: false, ready: true, skills: true },
+    controller.signal,
+    (attempt) => {
+      if (attempt.resultReadyAt !== undefined) readyUpdates += 1
+    }
+  )
+  assert.equal(result.status, 'interrupted')
+  assert.equal(readyUpdates, 0)
 })

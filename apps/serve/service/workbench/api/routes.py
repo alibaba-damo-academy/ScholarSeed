@@ -204,7 +204,10 @@ def register_workbench_routes(app: FastAPI) -> None:
             )
             versioning = admission.capability(snapshot.project_id, path) if admission else None
             capabilities = replace(
-                capabilities, can_version=bool(versioning and versioning.can_version)
+                capabilities,
+                can_version=bool(versioning and versioning.can_version),
+                can_edit=capabilities.can_edit and snapshot.writable,
+                can_save=capabilities.can_save and snapshot.writable,
             )
         try:
             binding = content.identify(project or "", path) if viewer.value == "pdf" else None
@@ -324,10 +327,11 @@ def register_workbench_routes(app: FastAPI) -> None:
         project: str = Query(...),
         revision: str = Query(...),
         page: int = Query(..., ge=1),
+        quad: list[float] | None = Query(default=None),
     ) -> Response:
         try:
             document = project_pdf_document(_content(request), project, path, revision)
-            selected = resolve_region(_pdf_indexes(request), document, page, region_id)
+            selected = resolve_region(_pdf_indexes(request), document, page, region_id, quad)
             return Response(crop_region(document.payload, selected), media_type="image/png")
         except ContentError as exc:
             raise _fail(exc) from exc

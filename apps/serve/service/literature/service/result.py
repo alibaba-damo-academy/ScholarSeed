@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Mapping, cast
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from service.literature.persistence.files import read_scoped_file, scoped_parent, scoped_relative
+from service.literature.service.fulltexts import PAPER_REF_PREFIX
 
 SEARCH_CARD = "literature-search"
 SEARCH_VERSION: Literal["1.0"] = "1.0"
@@ -21,11 +22,18 @@ LEGACY_LITERATURE_REVIEW_ORIGIN: Literal["slr-codex"] = "slr-codex"
 AGENTIC_SEARCH_ORIGIN: Literal["agentic-search"] = "agentic-search"
 LITERATURE_REVIEW_ORIGINS = frozenset({LITERATURE_REVIEW_ORIGIN, LEGACY_LITERATURE_REVIEW_ORIGIN})
 SEARCH_FILE_BYTES = 8 * 1024 * 1024
+DOWNLOAD_MANIFEST_FILE = "downloads/manifest.json"
+MANAGED_STORAGE = "managed"
+DOWNLOADED_STATUS = "downloaded"
+FULLTEXT_UNVERIFIED = "literature_result_fulltext_unverified"
 SEARCH_CARD_PAPERS = 3
 SEARCH_STATUS_PAPERS = 20
 SEARCH_MAX_PAPERS = 1000
 SEARCH_TEXT = 2000
 SEARCH_SHORT = 256
+SEARCH_AUTHORS = 20
+SEARCH_REASONS = 10
+SEARCH_SOURCES = 20
 SEARCH_STATE_FILE = "state.json"
 SEARCH_INTENT_FILE = "intent.json"
 SEARCH_SELECTION_FILE = "selection.json"
@@ -83,17 +91,17 @@ class SearchRecord(BaseModel):
 class SearchPaper(SearchRecord):
     id: str = Field(min_length=1, max_length=SEARCH_SHORT)
     title: str = Field(min_length=1, max_length=SEARCH_TEXT)
-    authors: list[str] = Field(default_factory=list, max_length=20)
+    authors: list[str] = Field(default_factory=list, max_length=SEARCH_AUTHORS)
     year: int | None = None
     venue: str | None = None
     doi: str | None = None
     url: str | None = None
     abstract: str | None = None
-    reasons: list[str] = Field(default_factory=list, max_length=10)
+    reasons: list[str] = Field(default_factory=list, max_length=SEARCH_REASONS)
     tier: int | None = Field(default=None, ge=1)
     citation_count: int | None = Field(default=None, ge=0)
     access: Literal["yes", "no", "unknown"] = "unknown"
-    sources: list[str] = Field(default_factory=list, max_length=20)
+    sources: list[str] = Field(default_factory=list, max_length=SEARCH_SOURCES)
     decision: Literal["included", "excluded", "candidate"] = "candidate"
     decision_reason: str | None = None
     fulltext: Literal["fulltext", "abstract", "unknown"] = "unknown"
@@ -112,6 +120,13 @@ class SearchPaper(SearchRecord):
         ):
             raise ValueError("literature_result_url_invalid")
         return value
+
+
+class SearchPaperDetail(SearchPaper):
+    title: str = Field(min_length=1)
+    authors: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
 
 
 class SearchSource(SearchRecord):
@@ -154,16 +169,27 @@ def validate_search_card(value: Any) -> dict[str, Any]:
     return SearchResult.model_validate(value).model_dump(mode="json")
 
 
+def search_card_slot(value: Mapping[str, Any]) -> str:
+    card = SearchResult.model_validate(value)
+    return json.dumps([card.session_id, card.origin, card.run_id, card.round])
+
+
 def _count(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
-def _text(value: Any, limit: int = SEARCH_TEXT) -> str:
+def _text(value: Any, limit: int | None = SEARCH_TEXT) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
-def _strings(value: Any, limit: int = 20) -> list[str]:
-    return [_text(item) for item in value[:limit] if _text(item)] if isinstance(value, list) else []
+def _strings(
+    value: Any, limit: int | None = SEARCH_AUTHORS, *, text_limit: int | None = SEARCH_TEXT
+) -> list[str]:
+    return (
+        [_text(item, text_limit) for item in value[:limit] if _text(item, text_limit)]
+        if isinstance(value, list)
+        else []
+    )
 
 
 def _object(root: Path, path: str) -> dict:
@@ -231,12 +257,11 @@ class PreparedSearchResult:
 
     @property
     def authorization_refs(self) -> tuple[str, ...]:
+        # The challenge scope is exactly the shown candidate set: the selection digest
+        # travels in the decision values (subset derivation), never in the ledger scope.
         if not self.authorization_sources or not self.selection_sha256:
             return ()
-        return (
-            *(source.ref_id for source in self.authorization_sources),
-            f"{AUTHORIZATION_ARTIFACT_PREFIX}{self.selection_sha256}",
-        )
+        return tuple(source.ref_id for source in self.authorization_sources)
 
 
 @dataclass(frozen=True)
@@ -251,13 +276,60 @@ class PreparedFinalDelivery:
     artifacts: tuple[PreparedDeliveryArtifact, ...]
 
 
-def prepare_final_delivery(workdir: Path, run: str) -> PreparedFinalDelivery:
+@dataclass(frozen=True)
+class AuthorizedFulltext:
+    """What serve itself vouches for: the granted refs and the bytes it holds."""
+
+    refs: tuple[str, ...] = ()
+    revisions: Mapping[str, str] = field(default_factory=dict)
+
+
+def verify_download_manifest(workdir: Path, root: str, authorized: AuthorizedFulltext) -> None:
+    """Refuse delivery when a run claims full texts this turn never granted.
+
+    The manifest is shaped by the skill from host-relayed bridge responses and from
+    its own downloader, so it is input rather than evidence: every downloaded entry
+    must name a paper inside the granted scope whatever storage holds the bytes, and
+    managed entries must additionally match serve's own object map revision
+    (proposal 116 G1). Runs that never downloaded have no manifest.
+    """
+
+    try:
+        payload = read_scoped_file(
+            workdir, scoped_relative(root, DOWNLOAD_MANIFEST_FILE), SEARCH_FILE_BYTES
+        )
+    except OSError:
+        return
+    manifest = json.loads(payload)
+    papers = manifest.get("papers") if isinstance(manifest, dict) else None
+    if not isinstance(papers, list):
+        raise ValueError(FULLTEXT_UNVERIFIED)
+    for entry in papers:
+        if not isinstance(entry, dict) or entry.get("status") != DOWNLOADED_STATUS:
+            continue
+        paper_id = entry.get("paper_id")
+        if not isinstance(paper_id, str) or PAPER_REF_PREFIX + paper_id not in authorized.refs:
+            raise ValueError(FULLTEXT_UNVERIFIED)
+        if entry.get("storage") != MANAGED_STORAGE:
+            continue
+        if (
+            not isinstance(entry.get("ref"), str)
+            or entry["ref"] not in authorized.refs
+            or authorized.revisions.get(paper_id) != entry.get("revision")
+        ):
+            raise ValueError(FULLTEXT_UNVERIFIED)
+
+
+def prepare_final_delivery(
+    workdir: Path, run: str, *, authorized: AuthorizedFulltext
+) -> PreparedFinalDelivery:
     """Bind terminal skill outputs to immutable product publication inputs."""
 
     root = _relative(run)
     state = _object(workdir, scoped_relative(root, SEARCH_STATE_FILE))
     if state.get("status") != FINAL_DELIVERY_STATUS:
         raise ValueError("literature_result_run_incomplete")
+    verify_download_manifest(workdir, root, authorized)
     paths = state.get("paths")
     if not isinstance(paths, dict):
         raise ValueError("literature_result_paths_missing")
@@ -275,34 +347,54 @@ def prepare_final_delivery(workdir: Path, run: str) -> PreparedFinalDelivery:
     return PreparedFinalDelivery(tuple(artifacts))
 
 
-def project_papers(raw_papers: list[dict]) -> list[SearchPaper]:
+def project_papers(raw_papers: list[dict], *, complete: bool = False) -> list[SearchPaper]:
+    paper_type = SearchPaperDetail if complete else SearchPaper
+    text_limit = None if complete else SEARCH_TEXT
+    short_limit = None if complete else SEARCH_SHORT
     papers = []
     identities = set()
     for raw in raw_papers:
         if not isinstance(raw, dict) or raw.get("is_placeholder") is not False:
             raise ValueError("literature_result_invalid_paper")
         relevance = raw.get("relevance") or {}
-        reasons = _strings(relevance.get("reasons"), 10) if isinstance(relevance, dict) else []
+        reasons = (
+            _strings(
+                relevance.get("reasons"),
+                None if complete else SEARCH_REASONS,
+                text_limit=text_limit,
+            )
+            if isinstance(relevance, dict)
+            else []
+        )
         identity = _text(raw.get("id"), SEARCH_SHORT)
-        title = _text(raw.get("title"))
+        title = _text(raw.get("title"), text_limit)
         if not identity or not title:
             raise ValueError("literature_result_invalid_paper")
-        paper = SearchPaper(
+        paper = paper_type(
             id=identity,
             title=title,
-            authors=_strings(raw.get("authors")),
+            authors=_strings(
+                raw.get("authors"), None if complete else SEARCH_AUTHORS, text_limit=text_limit
+            ),
             year=raw.get("year"),
-            venue=_text(raw.get("venue")) or None,
-            doi=_text(raw.get("doi"), SEARCH_SHORT) or None,
+            venue=_text(raw.get("venue"), text_limit) or None,
+            doi=_text(raw.get("doi"), short_limit) or None,
             url=raw.get("url"),
-            abstract=_text(raw.get("abstract") or raw.get("abstract_summary")) or None,
+            abstract=_text(raw.get("abstract") or raw.get("abstract_summary"), text_limit) or None,
             reasons=reasons,
             tier=_count(raw.get("tier")),
             citation_count=_count(raw.get("citation_count")),
             access=raw.get("open_access", "unknown"),
             sources=list(
                 dict.fromkeys(
-                    [_text(raw.get("source"), SEARCH_SHORT), *_strings(raw.get("also_found_by"))]
+                    [
+                        _text(raw.get("source"), short_limit),
+                        *_strings(
+                            raw.get("also_found_by"),
+                            None if complete else SEARCH_SOURCES,
+                            text_limit=text_limit,
+                        ),
+                    ]
                 )
             ),
         )

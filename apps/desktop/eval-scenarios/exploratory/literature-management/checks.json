@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "directionId": "LIT-MGMT-01",
+  "checks": [
+    {
+      "id": "LIT-IMPORT-PDF",
+      "pointIds": [
+        "LIT-IMPORT-PDF-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-JOIN-PROJECT",
+      "pointIds": [
+        "LIT-JOIN-PROJECT-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-ADD-ATTACHMENT",
+      "pointIds": [
+        "LIT-ADD-ATTACHMENT-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-SEARCH-SAVE",
+      "pointIds": [
+        "LIT-SEARCH-SAVE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-IMPORT-ZOTERO",
+      "pointIds": [
+        "LIT-IMPORT-ZOTERO-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-IMPORT-DOI",
+      "pointIds": [
+        "LIT-IMPORT-ID-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-IMPORT-ARXIV",
+      "pointIds": [
+        "LIT-IMPORT-ID-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-IMPORT-BIB",
+      "pointIds": [
+        "LIT-IMPORT-BIB-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-IMPORT-RIS",
+      "pointIds": [
+        "LIT-IMPORT-BIB-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-LIST-SEARCH",
+      "pointIds": [
+        "LIT-LIST-SEARCH-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-CREATE-COLLECTION",
+      "pointIds": [
+        "LIT-CREATE-COLLECTION-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-JOIN-COLLECTION",
+      "pointIds": [
+        "LIT-JOIN-COLLECTION-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-EDIT-META",
+      "pointIds": [
+        "LIT-EDIT-META-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-NOTE",
+      "pointIds": [
+        "LIT-NOTE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-TAG-FILTER",
+      "pointIds": [
+        "LIT-TAG-FILTER-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

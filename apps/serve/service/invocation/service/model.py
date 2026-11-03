@@ -22,9 +22,13 @@ class InvocationSandbox(str, Enum):
     DANGER_FULL_ACCESS = "danger-full-access"
 
 
+class InvocationSearchMode(str, Enum):
+    OPTIONAL = "optional"
+
+
 @dataclass(frozen=True)
 class InvocationExecution:
-    web_search: bool = True
+    web_search: bool | InvocationSearchMode = True
     sandbox: InvocationSandbox = InvocationSandbox.WORKSPACE_WRITE
     network_access: bool = True
     reasoning_effort: str | None = DEFAULT_INVOCATION_REASONING_EFFORT

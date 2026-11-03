@@ -33,6 +33,7 @@ import duckdb
 
 import damoatrace.recording.records as _rec
 from damoatrace.cli.output import (
+    EXIT_ERROR,
     EXIT_NOTFOUND,
     EXIT_OK,
     EXIT_USAGE,
@@ -44,6 +45,7 @@ from damoatrace.data.store import TraceStore, is_consumption_usage_event
 from damoatrace.data.usage import _run_summary
 from damoatrace.evidence.digest import digest as digest_text
 from damoatrace.paths import APP_LOG_DIR, METRICS_DIR, TRACE_DIR, ensure_home
+from damoatrace.recording.content import UnsupportedContentVersion
 from damoatrace.recording.diagnostics import verify_diagnostic_directory
 from damoatrace.search.fts import FtsSearch
 from damoatrace.utils import _parse_since, _parse_ts, _percentile
@@ -1842,6 +1844,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         rc = args.fn(args)
     except BrokenPipeError:
         return EXIT_OK
+    except (OSError, UnicodeError, UnsupportedContentVersion) as error:
+        _diag(f"Trace query failed ({type(error).__name__}): {error}")
+        return EXIT_ERROR
     _diag(f"[{args.cmd}] {int((time.time() - t0) * 1000)}ms")
     return rc
 

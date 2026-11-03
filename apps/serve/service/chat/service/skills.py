@@ -35,11 +35,13 @@ class SkillService:
     async def inventory(
         self,
         *,
+        user_id: str,
         force_reload: bool = False,
         process_environment: Mapping[str, str] | None = None,
     ) -> SkillInventory:
         return await self._runtime.skill_inventory(
             cwd=self.cwd,
+            user_id=user_id,
             executable=self._settings.runtime_executable(),
             process_environment=process_environment,
             force_reload=force_reload,
@@ -53,6 +55,7 @@ class SkillService:
         user_id: str = "",
     ) -> dict[str, Any]:
         inventory = await self.inventory(
+            user_id=user_id,
             force_reload=force_reload,
             process_environment=process_environment,
         )
@@ -80,9 +83,10 @@ class SkillService:
         self,
         name: str,
         *,
+        user_id: str,
         process_environment: Mapping[str, str] | None = None,
     ) -> str | None:
-        inventory = await self.inventory(process_environment=process_environment)
+        inventory = await self.inventory(user_id=user_id, process_environment=process_environment)
         skill = self._catalog.find(inventory, load_skill_state(), name)
         if skill is None:
             return None

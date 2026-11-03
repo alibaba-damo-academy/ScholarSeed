@@ -8,8 +8,8 @@
     {
       "mode": 420,
       "path": "README.md",
-      "sha256": "bfa7ab2a1d859ca30142166f3822bf842943cb8c8cce21182be829936a095fa1",
-      "size": 10306
+      "sha256": "ddbde53313f9290ccb2dfadf65f9a4fb3f7d9bd3cf4367217e11962c1215367a",
+      "size": 11473
     },
     {
       "mode": 420,
@@ -20,8 +20,8 @@
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "840ee73c0a2b4ce8824003a9bcc0a2876d4fb213cbf557a3408dd68fea52c0b8",
-      "size": 10086
+      "sha256": "afafef20d22571ab4e171ce10315eb01e9affaff79f454fd01e29ed1c7ef6bf3",
+      "size": 17035
     },
     {
       "mode": 420,
@@ -38,8 +38,8 @@
     {
       "mode": 493,
       "path": "tools/appserver_quick.py",
-      "sha256": "5939af35cbf5a38d0e9a5de255b7150333b84059e8646683cb9892e85a00a934",
-      "size": 40415
+      "sha256": "992c09269c608e3ccc34f6da947f8e01a7d0adc393b436c57dad28f46bc89f24",
+      "size": 44466
     },
     {
       "mode": 420,
@@ -55,6 +55,12 @@
     },
     {
       "mode": 420,
+      "path": "tools/external_metadata.py",
+      "sha256": "452395f1826406cba24333cac9f6012e07219881e7e9a914841b040e5bb1e6f0",
+      "size": 14952
+    },
+    {
+      "mode": 420,
       "path": "tools/install_codex.py",
       "sha256": "4bd018fbb24d8c16111fc97314c9279dc60fa0c4aa3646aebfeac2e34274eca6",
       "size": 6149
@@ -64,6 +70,12 @@
       "path": "tools/localconf.py",
       "sha256": "ccc36f63dc529833a1d1763efee20dc57085bdef29113200fd17972221e9b0ae",
       "size": 4392
+    },
+    {
+      "mode": 420,
+      "path": "tools/paper_identity.py",
+      "sha256": "65eab7ffec915a84fd9fd501b28970d07396aa33f7c1498599ac039c8cbd25d5",
+      "size": 3488
     },
     {
       "mode": 420,
@@ -79,15 +91,27 @@
     },
     {
       "mode": 420,
+      "path": "tools/publication_window.py",
+      "sha256": "058396478bce99106afe775b92946e6a09822028781d525495e21b33b7902513",
+      "size": 6272
+    },
+    {
+      "mode": 420,
+      "path": "tools/query_syntax.py",
+      "sha256": "302b9069a7db036502d7db594dd0332dc0a9fe11906c04fe51b73425ca3f251c",
+      "size": 1757
+    },
+    {
+      "mode": 420,
       "path": "tools/quick_finalize.py",
-      "sha256": "415691386e0b9ab019d6ebe3c8785b1989728228d3202aaae47bbcaba012ecc1",
-      "size": 14549
+      "sha256": "c940b415b562a6cad6398f2fed1b6c19aab94e4f2d8094bfd36455ef0b2c8543",
+      "size": 15493
     },
     {
       "mode": 420,
       "path": "tools/quick_search.py",
-      "sha256": "ea17852673c5130d74033140541f33b61825cfde8e7292380e75af8f4ee3dba2",
-      "size": 8497
+      "sha256": "b619db37968110ed4ee21ed3632f366dc48f55ad2c468aa6f4ea82f6a9c393b8",
+      "size": 16964
     },
     {
       "mode": 420,
@@ -116,8 +140,8 @@
     {
       "mode": 420,
       "path": "tools/search_round.py",
-      "sha256": "54324dfd47cf8e1afcf8b73b0385cfc5401e2903edf222808fa946766d67bfeb",
-      "size": 30207
+      "sha256": "5c7f37d00b53035cba10bbb2fa1e83080d6e327c9f1fc99595b690cffe7fd65a",
+      "size": 31094
     },
     {
       "mode": 420,
@@ -131,6 +155,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "840ee73c0a2b4ce8824003a9bcc0a2876d4fb213cbf557a3408dd68fea52c0b8",
+  "source_document_sha256": "afafef20d22571ab4e171ce10315eb01e9affaff79f454fd01e29ed1c7ef6bf3",
   "version": "1.2.0"
 }

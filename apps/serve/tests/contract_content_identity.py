@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ from service.content.domain.model import (
     LITERATURE_ROOT_RELATIVE,
     MANAGED_LITERATURE_ROOT_RELATIVE,
     MANAGED_RESOURCES_ROOT_RELATIVE,
+    PROJECT_RECOVERY_PENDING,
     RESOURCES_ROOT_RELATIVE,
     ContentError,
     resolve_root,
@@ -39,6 +41,7 @@ from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
 from service.platform import storage
+from service.platform.activity import Activities
 from service.platform.content import AssetState, ContentPort, ProjectLayout, RootKind
 
 PASS = 0
@@ -71,7 +74,7 @@ def main() -> int:
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_legacy(((legacy, "旧项目"),))
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
 
     identity_boundaries = (
         SQLITE_MAX_INTEGER,
@@ -194,13 +197,13 @@ def main() -> int:
     project_id = created.id
     check("project_id 是 26 位 ULID", len(project_id) == naming.ULID_LENGTH)
     check(
-        "目录名 = 日期-shortid-slug, shortid 取 ULID 尾部",
-        before.split("-")[1] == project_id[-naming.SHORTID_LENGTH :],
+        "新目录名由项目名生成，身份仍独立保存",
+        before == naming.slugify("我的 研究/项目 2026"),
         before,
     )
     check(
-        "目录名日期段是创建当天",
-        before.startswith(time.strftime(naming.DATE_FORMAT)),
+        "同名目录使用后缀，不覆盖已存在项目",
+        Path(content.preview_project_directory("我的 研究/项目 2026")).name == f"{before}-2",
         before,
     )
     check(
@@ -247,6 +250,61 @@ def main() -> int:
 
     # ---- 落盘 ----
     reopened = ProjectRegistry(str(workspace), ContentCatalog(root / "content.sqlite3"))
+    unavailable_registry = ProjectRegistry(
+        str(workspace), catalog, unavailable_roots=frozenset({str(directory)})
+    )
+    unavailable_content = ContentService(unavailable_registry, catalog, activities=Activities())
+    check(
+        "启动判定不可用的项目即使原路径现存也不会自动恢复文件权限",
+        directory.is_dir()
+        and not unavailable_registry.resolve(project_id).available
+        and not unavailable_registry.for_path(str(directory)).available
+        and not next(
+            row for row in unavailable_registry.projects() if row.id == project_id
+        ).available,
+    )
+    unavailable_error = ""
+    try:
+        unavailable_content.write_text(project_id, "unavailable-write.txt", "must not write")
+    except ContentError as error:
+        unavailable_error = error.code
+    check(
+        "不可用项目的真实文件写入被拒绝且内容未创建",
+        unavailable_error == "root_unavailable"
+        and not (directory / "unavailable-write.txt").exists(),
+    )
+    with (
+        patch.object(Path, "is_dir", side_effect=AssertionError("unqualified directory stat")),
+        patch.object(
+            Path, "iterdir", side_effect=AssertionError("unqualified directory inventory")
+        ),
+    ):
+        check(
+            "不可用项目迁移规划不访问重现目录",
+            unavailable_content.migration_plan(project_id).blocked == "root_unavailable",
+        )
+    for label, operation in (
+        ("migrate_project", lambda: unavailable_content.migrate_project(project_id)),
+        ("writable_roots", lambda: unavailable_content.writable_roots(project_id)),
+        (
+            "plan_root_authorization",
+            lambda: unavailable_content.plan_root_authorization(
+                project_id, str(directory), "blocked"
+            ),
+        ),
+        (
+            "assert_import_roots_linkable",
+            lambda: unavailable_content.assert_import_roots_linkable(project_id, (str(directory),)),
+        ),
+    ):
+        rejected = ""
+        try:
+            operation()
+        except ContentError as error:
+            rejected = error.code
+        check(
+            f"不可用项目不能迁移或获得写根权限 ({label})", rejected == "root_unavailable", rejected
+        )
     check(
         "身份跨进程重启仍在 (落 content.sqlite3, 不是进程内状态)",
         {entry.id for entry in reopened.projects()} == {entry.id for entry in content.projects()},
@@ -259,6 +317,87 @@ def main() -> int:
         "归档态也落了盘",
         reopened.resolve(project_id).archived_at is not None,
     )
+
+    # Recovery failure blocks only the affected instance/project, preserving all identities.
+    isolated_registry = ProjectRegistry(str(workspace), catalog)
+    isolated = ContentService(isolated_registry, catalog, activities=Activities())
+    with patch.object(Path, "is_dir", side_effect=PermissionError("inaccessible project")):
+        isolated.block_project(project_id, "project_recovery_failed")
+    blocked = isolated.project(project_id)
+    check(
+        "恢复失败保留项目身份与诊断原因",
+        blocked.id == project_id
+        and not blocked.available
+        and blocked.unavailable_reason == "project_recovery_failed",
+    )
+    check(
+        "项目隔离状态在列表中一致可见",
+        next(row for row in isolated.projects() if row.id == project_id) == blocked,
+    )
+    for label, operation in (
+        ("read", lambda: isolated.read_text(project_id, ".scholarseed/state.json")),
+        ("write", lambda: isolated.write_text(project_id, "blocked-write.txt", "forbidden")),
+        ("resolve", lambda: isolated.resolve(project_id, "blocked-write.txt")),
+    ):
+        rejected = ""
+        try:
+            operation()
+        except ContentError as error:
+            rejected = error.code
+        check(f"隔离项目拒绝业务IO ({label})", rejected == "root_unavailable", rejected)
+    check("隔离项目不创建文件", not (directory / "blocked-write.txt").exists())
+    healthy = isolated.project()
+    isolated.write_text(healthy.id, "healthy-after-block.txt", "healthy")
+    check(
+        "其他项目仍可执行实际文件读写",
+        isolated.read_text(healthy.id, "healthy-after-block.txt") == "healthy",
+    )
+    check(
+        "隔离状态属于应用实例，不改写持久登记",
+        content.project(project_id).available and reopened.resolve(project_id).available,
+    )
+
+    pending = ContentService(
+        ProjectRegistry(str(workspace), catalog), catalog, activities=Activities()
+    )
+    pending.set_recovery_state(project_id, PROJECT_RECOVERY_PENDING)
+    check(
+        "恢复待处理项目保留登记并阻止普通访问",
+        not pending.project(project_id).available
+        and pending.project(project_id).unavailable_reason == PROJECT_RECOVERY_PENDING,
+    )
+    check("待恢复项目不阻塞其他项目", pending.project(healthy.id).available)
+    with pending.recovery(project_id):
+        pending.write_text(project_id, "recovery-only.txt", "recovered")
+        check(
+            "专用恢复上下文允许对应项目操作",
+            pending.read_text(project_id, "recovery-only.txt") == "recovered",
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            check(
+                "恢复授权不泄漏到并发用户请求",
+                not executor.submit(lambda: pending.project(project_id).available).result(),
+            )
+        pending.set_recovery_state(healthy.id, PROJECT_RECOVERY_PENDING)
+        check("恢复上下文不绕过其他项目pending", not pending.project(healthy.id).available)
+        pending.set_recovery_state(project_id, "project_recovery_failed")
+        check("恢复上下文不能绕过失败状态", not pending.project(project_id).available)
+    check("恢复上下文退出后没有访问权限残留", not pending.project(project_id).available)
+    pending.set_recovery_state(project_id, None)
+    check(
+        "恢复成功只解除对应项目pending",
+        pending.project(project_id).available and not pending.project(healthy.id).available,
+    )
+    with isolated.recovery(project_id), unavailable_content.recovery(project_id):
+        check(
+            "恢复上下文不能绕过显式失败或不可用目录",
+            not isolated.project(project_id).available
+            and not unavailable_content.project(project_id).available,
+        )
+    before_ids = {row.id for row in pending.projects()}
+    pending.set_recovery_state("planned-unregistered", PROJECT_RECOVERY_PENDING)
+    pending.block_project("planned-unregistered", "project_recovery_failed")
+    check("计划项目恢复状态不会创建持久登记", {row.id for row in pending.projects()} == before_ids)
 
     # ---- write_text 按确定路径写, 不走同名避让 ----
     content.write_text(project_id, ".scholarseed/state.json", "{}")
@@ -274,12 +413,21 @@ def main() -> int:
     content.write_text(project_id, observed_path, "unchanged bytes")
     original = content.identify(project_id, observed_path)
     database = content.resolve(project_id, PROJECT_DB_RELATIVE)
+    remounted_device = _encode_file_identity(
+        Path(content.resolve(project_id, observed_path)).stat().st_dev + 1
+    )
     with transaction(database) as connection:
-        connection.execute(f"UPDATE {ASSET_TABLE} SET device = device + 1")
+        connection.execute(
+            f"UPDATE {ASSET_TABLE} SET device = ? WHERE asset_id = ?",
+            (remounted_device, original.asset.asset_id),
+        )
     rebound = content.identify(project_id, observed_path)
     check("挂载设备号变化保留相同文件身份", rebound.asset.asset_id == original.asset.asset_id)
     with transaction(database) as connection:
-        connection.execute(f"UPDATE {ASSET_TABLE} SET device = device + 1, sha256 = 'different'")
+        connection.execute(
+            f"UPDATE {ASSET_TABLE} SET device = ?, sha256 = 'different' WHERE asset_id = ?",
+            (remounted_device, original.asset.asset_id),
+        )
     rejected = False
     try:
         content.identify(project_id, observed_path)
@@ -327,10 +475,13 @@ def main() -> int:
     ):
         prepared = content.prepare_bytes(project_id, "resources", "managed-remount.md", b"managed")
         managed = content.materialize(prepared)
+    remounted_device = _encode_file_identity(
+        Path(content.resolve(project_id, managed.path)).stat().st_dev + 1
+    )
     with transaction(database) as connection:
         connection.execute(
-            f"UPDATE {ASSET_TABLE} SET device = device + 1 WHERE asset_id = ?",
-            (managed.asset_id,),
+            f"UPDATE {ASSET_TABLE} SET device = ? WHERE asset_id = ?",
+            (remounted_device, managed.asset_id),
         )
     rebound = content.identify(project_id, managed.path)
     check(
@@ -338,8 +489,8 @@ def main() -> int:
     )
     with transaction(database) as connection:
         connection.execute(
-            f"UPDATE {ASSET_TABLE} SET device = device + 1, creation_marker = ? WHERE asset_id = ?",
-            ("wrong-marker", managed.asset_id),
+            f"UPDATE {ASSET_TABLE} SET device = ?, creation_marker = ? WHERE asset_id = ?",
+            (remounted_device, "wrong-marker", managed.asset_id),
         )
     rejected = False
     try:
@@ -347,6 +498,21 @@ def main() -> int:
     except ContentError:
         rejected = True
     check("managed 标记不匹配时禁止自动认领", rejected)
+
+    corrupt_path = "resources/corrupt-device.txt"
+    content.write_text(project_id, corrupt_path, "unchanged bytes")
+    corrupt = content.identify(project_id, corrupt_path)
+    with transaction(database) as connection:
+        connection.execute(
+            f"UPDATE {ASSET_TABLE} SET device = ? WHERE asset_id = ?",
+            ("invalid-device", corrupt.asset.asset_id),
+        )
+    rejected = False
+    try:
+        content.identify(project_id, corrupt_path)
+    except ContentError:
+        rejected = True
+    check("损坏的设备号编码仍拒绝识别", rejected)
 
     print(f"\ncontract_content_identity: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0

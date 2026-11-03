@@ -11,6 +11,7 @@ from typing import Any
 
 from download_access import download_access
 from io_utils import atomic_write_json, read_json, utc_now
+from post_open_gate import paper_arxiv_id
 from run_state import read_state
 from validate_json import ContractError, validate_data
 
@@ -32,41 +33,14 @@ def resolve_under_run(run_dir: Path, value: str, label: str) -> Path:
     return require_under_run(run_dir, run_dir / relative, label)
 
 
-def normalize_arxiv_id(value: Any) -> str | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    lowered = normalized.casefold()
-    if lowered.startswith("arxiv:"):
-        normalized = normalized.split(":", 1)[1].strip()
-    else:
-        for prefix in (
-            "https://arxiv.org/abs/", "http://arxiv.org/abs/",
-            "https://arxiv.org/pdf/", "http://arxiv.org/pdf/",
-        ):
-            if lowered.startswith(prefix):
-                normalized = normalized[len(prefix):]
-                break
-    if normalized.casefold().endswith(".pdf"):
-        normalized = normalized[:-4]
-    if not normalized or len(normalized) > 120 or any(char.isspace() for char in normalized):
-        return None
-    return normalized
+def paper_doi(paper: dict[str, Any]) -> str | None:
+    doi = str(paper.get("doi") or "").strip()
+    return doi or None
 
 
-def paper_arxiv_id(paper: dict[str, Any]) -> str | None:
-    for key in ("arxiv_id", "arxivId"):
-        normalized = normalize_arxiv_id(paper.get(key))
-        if normalized:
-            return normalized
-    external = paper.get("external_ids") or paper.get("externalIds")
-    if isinstance(external, dict):
-        for key, value in external.items():
-            if str(key).casefold() in {"arxiv", "arxiv_id", "arxivid"}:
-                normalized = normalize_arxiv_id(value)
-                if normalized:
-                    return normalized
-    return None
+def paper_is_acquirable(paper: dict[str, Any]) -> bool:
+    """Whether serve has an identifier leg it can fetch this paper by (arXiv or DOI)."""
+    return paper_arxiv_id(paper) is not None or paper_doi(paper) is not None
 
 
 def route_selection(
@@ -82,18 +56,18 @@ def route_selection(
     missing = [str(paper_id) for paper_id in selected if str(paper_id) not in papers_by_id]
     if missing:
         raise ValueError(f"selected paper ID(s) are missing from metadata: {', '.join(missing)}")
-    arxiv_ids = [
+    managed_ids = [
         str(paper_id)
         for paper_id in selected
         if selection.get("download_open") is True
-        and paper_arxiv_id(papers_by_id[str(paper_id)]) is not None
+        and paper_is_acquirable(papers_by_id[str(paper_id)])
     ]
-    if arxiv_ids:
+    if managed_ids:
         return ({
             "next_action": "run_open_download",
             "selected_count": len(selected),
-            "arxiv_candidate_count": len(arxiv_ids),
-            "arxiv_candidate_ids": arxiv_ids,
+            "managed_candidate_count": len(managed_ids),
+            "managed_candidate_ids": managed_ids,
             "manifest_written": False,
         }, None)
 
@@ -102,11 +76,11 @@ def route_selection(
         paper = papers_by_id[str(paper_id)]
         if selection.get("download_open") is True:
             message = (
-                "The arXiv route handles only arXiv-backed papers; this non-arXiv record "
-                "was not downloaded."
+                "No arXiv or DOI identifier is available for this record, so the product "
+                "could not be asked to acquire it."
             )
         else:
-            message = "The arXiv route was not selected by the user."
+            message = "The managed acquisition route was not selected by the user."
         items.append({
             "paper_id": str(paper_id),
             "title": str(paper.get("title") or "Untitled"),
@@ -131,15 +105,15 @@ def route_selection(
             "skipped": len(selected),
         },
         "warnings": [
-            "The local preflight found no selected arXiv-backed candidates; "
-            "the networked open-download adapter was not started."
+            "The local preflight found no selected paper serve could acquire by arXiv id or "
+            "DOI; the acquisition-recording adapter was not started."
         ],
     }
     return ({
         "next_action": "post_open_gate",
         "selected_count": len(selected),
-        "arxiv_candidate_count": 0,
-        "arxiv_candidate_ids": [],
+        "managed_candidate_count": 0,
+        "managed_candidate_ids": [],
         "manifest_written": True,
     }, manifest)
 

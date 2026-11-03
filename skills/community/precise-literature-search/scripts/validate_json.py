@@ -564,6 +564,9 @@ def validate_selection(data: Any) -> None:
         raise ContractError("selected_paper_ids must be an array")
     if obj["confirmed_by_user"] is not True:
         raise ContractError("confirmed_by_user must be true before downloading")
+    decision_source = obj.get("decision_source")
+    if decision_source is not None and decision_source not in {"user_explicit", "auto_delegated"}:
+        raise ContractError("decision_source must be user_explicit or auto_delegated")
     paid_confirmation = obj.get("paid_download_confirmation")
     if paid_confirmation not in {None, "included_in_selection", "separate"}:
         raise ContractError(
@@ -592,6 +595,21 @@ def validate_manifest(data: Any) -> None:
             raise ContractError(f"papers[{index}].status is invalid: {item['status']}")
         if item["status"] == "downloaded" and item["verified_exists"] is not True:
             raise ContractError(f"papers[{index}] claims downloaded without verified_exists=true")
+        storage = item.get("storage")
+        if storage is not None and storage not in {"managed", "run"}:
+            raise ContractError(f"papers[{index}].storage must be managed, run, or null")
+        if storage == "managed":
+            ref = item.get("ref")
+            if item["status"] == "downloaded":
+                if not isinstance(ref, str) or not ref.startswith("paper:"):
+                    raise ContractError(f"papers[{index}] is managed without a paper: ref")
+                _nonempty_string(item.get("revision"), f"papers[{index}].revision")
+                if item["file_path"] is not None:
+                    raise ContractError(
+                        f"papers[{index}] is managed and must not keep a run-directory copy"
+                    )
+            elif ref is not None:
+                raise ContractError(f"papers[{index}] keeps a managed ref without a download")
     _object(obj["summary"], "download manifest summary")
     adapter = obj.get("adapter")
     if isinstance(adapter, dict) and adapter.get("mode") == "interactive":
@@ -637,6 +655,11 @@ def validate_reading_outcome(data: Any) -> None:
             raise ContractError("reading outcome status must be readable or unreadable")
         if p["status"] == "unreadable":
             _nonempty_string(p["reason"], "unreadable paper reason")
+        if p["status"] == "readable" and p["file_path"] is None:
+            raise ContractError("readable paper must name the run-contained evidence it used")
+        storage = p.get("storage")
+        if storage is not None and storage not in {"managed", "run"}:
+            raise ContractError("reading outcome storage must be managed, run, or null")
 
 
 def validate_run_state(data: Any) -> None:

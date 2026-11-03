@@ -22,41 +22,47 @@ import workspace_entry
 
 
 class CurrentSurfaceTest(unittest.TestCase):
-    def test_bound_launcher_activates_the_current_product_task(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            workspace = root / 'survey'
-            workspace.mkdir()
-            skill = root / 'skills/literature-review'
-            bridge = root / 'scholarseed-bridge'
-            context = {'SCHOLARSEED_BRIDGE_TOKEN': 'token',
-                       'SCHOLARSEED_BRIDGE_SESSION': 'session',
-                       'SCHOLARSEED_BRIDGE_SOCKET': 'socket'}
-            with patch.dict(os.environ, context), \
-                 patch('workspace_entry.Path.cwd', return_value=root), \
-                 patch('workspace_entry.shutil.which', return_value=str(bridge)), \
-                 patch('workspace_entry.subprocess.run', return_value=SimpleNamespace(returncode=0)) as command:
-                workspace_entry._activate(workspace, {'skill': str(skill), 'version': '1.2.0'}, skill, '1.2.0')
-            args = command.call_args.args[0]
-            self.assertEqual(args[:4], [str(bridge), 'task', 'activate', '--json'])
-            payload = json.loads(args[4])
-            self.assertEqual(payload['task_type'], 'literature_review')
-            self.assertEqual(payload['workspace'], 'survey')
-            self.assertTrue(payload['run_id'].startswith('slr-'))
+    def test_init_accepts_explicit_json_without_changing_default_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'survey'
+            report = json.loads(self.cli('init', '--workspace', str(workspace),
+                                         '--intent', 'Review scientific agents', '--json'))
+            self.assertEqual(report['status'], 'SUCCESS')
+            self.assertTrue((workspace / '.slr-binding.json').is_file())
+            self.assertTrue((workspace / '01_input/writing_request.json').is_file())
 
-    def test_bound_launcher_activates_before_dispatch(self):
+    def test_every_subcommand_accepts_shared_output_options(self):
+        commands = ('workflow', 'doctor', 'info', 'stages', 'import-search', 'run',
+                    'resume', 'compile', 'init', 'evidence', 'outline', 'templates',
+                    'citations', 'figures', 'manuscript', 'writing', 'finalize',
+                    'status', 'papers')
+        for command in commands:
+            with self.subTest(command=command):
+                help_text = self.cli(command, '--json', '--full', '--help')
+                self.assertIn('--json', help_text)
+                self.assertIn('--full', help_text)
+
+    def test_unknown_output_flag_still_fails_without_creating_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'survey'
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/slr.py'),
+                                     'init', '--workspace', str(workspace), '--unknown-output'],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('unrecognized arguments', result.stderr)
+            self.assertFalse(workspace.exists())
+
+    def test_bound_launcher_dispatches_without_bridge_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / 'survey'
             workspace.mkdir()
             binding = {'skill': str(ROOT), 'version': (ROOT / 'VERSION').read_text().strip()}
             (workspace / '.slr-binding.json').write_text(json.dumps(binding))
             with patch('workspace_entry.sys.argv', ['workspace_entry.py', str(workspace), 'info']), \
-                 patch('workspace_entry._activate') as activate, \
                  patch('workspace_entry.subprocess.call', return_value=0) as dispatch:
                 with self.assertRaises(SystemExit) as result:
                     workspace_entry.main()
                 self.assertEqual(result.exception.code, 0)
-            activate.assert_called_once_with(workspace.resolve(), binding, ROOT, binding['version'])
             dispatch.assert_called_once()
 
     def cli(self, *args):
@@ -117,6 +123,27 @@ class CurrentSurfaceTest(unittest.TestCase):
         self.assertTrue({'pypdfium2', 'pdfplumber', 'pypdf'} <= names)
         self.assertNotIn('pdftoppm', names)
         self.assertFalse({'jieba', 'pdftotext', 'pdfinfo'} & names)
+
+    def test_proxy_transport_probe_uses_bound_python_and_inherited_environment(self):
+        report = preflight.Report()
+        with patch('preflight.subprocess.run', return_value=SimpleNamespace(returncode=1, stdout='ImportError\n')) as run:
+            preflight.check_proxy_transport(report)
+        self.assertEqual(run.call_args.args[0][:2], [sys.executable, '-B'])
+        self.assertNotIn('env', run.call_args.kwargs)
+        self.assertIn('httpx.Client(trust_env=True)', run.call_args.args[0][-1])
+        self.assertIn('httpx.AsyncClient(trust_env=True)', run.call_args.args[0][-1])
+        self.assertEqual([item['name'] for item in report.blocking], ['bound HTTP proxy transport'])
+        self.assertEqual(report.blocking[0]['detail'], 'ImportError')
+
+        with patch('preflight.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='')):
+            report = preflight.Report()
+            preflight.check_proxy_transport(report)
+        self.assertFalse(report.blocking)
+
+        with patch('preflight.subprocess.run', side_effect=subprocess.TimeoutExpired('python', preflight.PROXY_PROBE_TIMEOUT_SECONDS)):
+            report = preflight.Report()
+            preflight.check_proxy_transport(report)
+        self.assertEqual(report.blocking[0]['detail'], 'TimeoutExpired')
 
     def test_download_outage_is_not_a_blocker_for_local_or_abstract_evidence(self):
         report = preflight.Report()

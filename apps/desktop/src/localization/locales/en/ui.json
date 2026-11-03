@@ -78,6 +78,16 @@
   "refresh": "Refresh",
   "retry": "Retry",
   "open": "Open",
+  "systemTrash": {
+    "darwin": "Trash",
+    "win32": "Recycle Bin",
+    "fallback": "trash"
+  },
+  "restoreAction": {
+    "darwin": "Put Back",
+    "win32": "Restore",
+    "fallback": "Restore"
+  },
   "avatar": {
     "label": "{{name}}’s avatar"
   },
@@ -85,9 +95,25 @@
   "delete": "Delete",
   "done": "Done",
   "navigationTabs": {
+    "all": "All tabs",
     "unsaved": "Unsaved"
   },
+  "message": {
+    "expand": "Show more",
+    "collapse": "Collapse",
+    "openFailed": "Unable to open the link. You can try it again."
+  },
   "markdown": {
+    "tableIncomplete": "The table format is incomplete. The original content is preserved without filling in values.",
+    "formula": "Formula",
+    "latex": "LaTeX",
+    "formulaFailed": "Formula parsing failed. The original LaTeX is preserved.",
+    "formulaValidation": "Successful rendering does not establish mathematical validity.",
+    "code": "Code",
+    "command": "Command",
+    "output": "Output",
+    "expandCode": "Expand all {{count}} lines",
+    "collapseCode": "Collapse code",
     "taskComplete": "Completed",
     "taskIncomplete": "Not completed",
     "image": "Image"

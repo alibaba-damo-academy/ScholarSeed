@@ -17,32 +17,55 @@ export interface FinalizationPage {
 }
 
 const ROUTE = '/api/resource/finalizations'
+const FINALIZATION_REASONS = {
+  read_failed: 'finalizations.reasons.readFailed',
+  terminal_snapshot_unavailable: 'finalizations.reasons.snapshotUnavailable',
+} as const
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
 
+export function finalizationReason(error: string) {
+  return Object.prototype.hasOwnProperty.call(FINALIZATION_REASONS, error)
+    ? FINALIZATION_REASONS[error as keyof typeof FINALIZATION_REASONS]
+    : ('finalizations.reasons.unknown' as const)
+}
+
 export async function fetchFinalizations(
-  project: string, sessionId: string, cursor?: string | null, signal?: AbortSignal
+  project: string,
+  sessionId: string,
+  cursor?: string | null,
+  signal?: AbortSignal
 ): Promise<FinalizationPage | null> {
   const query = new URLSearchParams({ project, session_id: sessionId })
   if (cursor) query.set('cursor', cursor)
   try {
     const response = await fetch(`${base()}${ROUTE}?${query}`, { credentials: 'include', signal })
     if (!response.ok) return null
-    return await response.json() as FinalizationPage
-  } catch { return null }
+    return (await response.json()) as FinalizationPage
+  } catch {
+    return null
+  }
 }
 
 export async function retryFinalization(
-  project: string, sessionId: string, turnId: string
+  project: string,
+  sessionId: string,
+  turnId: string
 ): Promise<{ ok: boolean; error?: string }> {
   const query = new URLSearchParams({ project, session_id: sessionId })
   try {
     const response = await fetch(`${base()}${ROUTE}/${encodeURIComponent(turnId)}/retry?${query}`, {
-      method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
     })
     if (response.ok) return { ok: true }
-    const payload = await response.json().catch(() => null) as { error?: { code?: string } } | null
+    const payload = (await response.json().catch(() => null)) as {
+      error?: { code?: string }
+    } | null
     return { ok: false, error: payload?.error?.code ?? 'archive_retry_failed' }
-  } catch { return { ok: false, error: 'archive_retry_unavailable' } }
+  } catch {
+    return { ok: false, error: 'archive_retry_unavailable' }
+  }
 }
 
 export function finalizationMessage(

@@ -1,0 +1,81 @@
+{
+  "dependencies": {
+    "executables": [
+      "scholarseed-skill-python"
+    ],
+    "skills": [
+      "agentic-search",
+      "pdf-evidence",
+      "project-literature"
+    ]
+  },
+  "files": [
+    {
+      "mode": 420,
+      "path": "SKILL.md",
+      "sha256": "3dd31a9db16506106bc571f82660d19d26c3e83f06db2c7b47e521693077b05c",
+      "size": 12871
+    },
+    {
+      "mode": 420,
+      "path": "SKILL.zh.md",
+      "sha256": "d09a2ad9c0d66ee76cc94f2ced7cb6d36cac6317e27f6028e6c21d1d0625e249",
+      "size": 10208
+    },
+    {
+      "mode": 420,
+      "path": "VERSION",
+      "sha256": "2df2bd7011e87351e2e3e296ddb7f2520270a76160f95b2d64b337167294f28c",
+      "size": 6
+    },
+    {
+      "mode": 420,
+      "path": "agents/openai.yaml",
+      "sha256": "490ee8747515f2940359f3b3ce47e9e2096c6fd41e01d16b96778c5d8ab5a7d1",
+      "size": 370
+    },
+    {
+      "mode": 420,
+      "path": "references/capability-handshake.md",
+      "sha256": "398531ce1c4c025724d384bbba1afbfb8d2d1e6982554a3b216d26b25bb250df",
+      "size": 4688
+    },
+    {
+      "mode": 420,
+      "path": "references/draft-preservation.md",
+      "sha256": "d298990f5d4f7583b0a8aeacfc0d54d548cd3c5cb289ac58721f1ced45e1df1b",
+      "size": 943
+    },
+    {
+      "mode": 420,
+      "path": "references/validation-contract.md",
+      "sha256": "38f8058d7f39cfd5e477b25d9ce4581a77addfbdc34f50255240bc32c04103a7",
+      "size": 1154
+    },
+    {
+      "mode": 420,
+      "path": "scripts/repair_latex_source.py",
+      "sha256": "40c8ea96836ef9f9b999652f86a29d386fc9060f9e1cacf0197582c22563f883",
+      "size": 4873
+    },
+    {
+      "mode": 420,
+      "path": "scripts/source_preflight.py",
+      "sha256": "a788b790a46e3b0f0efac530026a275946bb496e56ce7f42a7f76af2021114f9",
+      "size": 3841
+    },
+    {
+      "mode": 420,
+      "path": "scripts/validate_contract.py",
+      "sha256": "d8b05361e47f7651a40a36da404c5087d8373b79a078d7b4e979ee6fb30a0735",
+      "size": 9495
+    }
+  ],
+  "name": "design-research-validation",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "3dd31a9db16506106bc571f82660d19d26c3e83f06db2c7b47e521693077b05c",
+  "version": "1.0.9"
+}

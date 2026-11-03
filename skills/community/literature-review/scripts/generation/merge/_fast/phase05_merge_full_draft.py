@@ -163,6 +163,9 @@ def _citation_preamble(language: str, spec: dict) -> str:
     """Inject the resolved citation style into the language preamble."""
     base = PREAMBLE_ZH if language == "chinese" else PREAMBLE_EN
     base = base.replace("numbers,sort", spec["natbib_options"])
+    extra = CITATION_STYLES[spec['citation_style']].get('latex_preamble')
+    if extra and language != 'chinese':
+        base += '\n' + extra + '\n'
     return base.replace(
         "\\bibliographystyle{unsrtnat_scholarseed}",
         f"\\bibliographystyle{{{spec['bibliography_style']}}}",

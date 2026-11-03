@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "directionId": "LIT-READ-01",
+  "checks": [
+    {
+      "id": "LIT-DOCUMENT-TRANSLATE",
+      "pointIds": [
+        "LIT-PDF-DOCUMENT-TRANSLATE-01"
+      ],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "LIT-DOCUMENT-SUMMARY",
+      "pointIds": [
+        "LIT-PDF-SUMMARY-01"
+      ],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "LIT-PDF-OUTLINE",
+      "pointIds": [
+        "LIT-PDF-OUTLINE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-PDF-ANNOTATE",
+      "pointIds": [
+        "LIT-PDF-ANNOTATE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-PDF-ANNOTATION-LOCATE",
+      "pointIds": [
+        "LIT-PDF-ANNOTATION-LOCATE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

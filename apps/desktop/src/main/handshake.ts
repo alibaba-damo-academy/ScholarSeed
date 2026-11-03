@@ -15,10 +15,14 @@ import { join } from 'path'
 export const HANDSHAKE_SCHEMA_VERSION = '1'
 export const REQUEST_FILE = 'request.ini'
 export const READY_FILE = 'ready.ini'
+export const ELEVATION_FILE = 'elevation.ini'
 export const DECISION_FILE = 'decision.ini'
 export const INSTALL_SUBDIRNAME = 'install'
 export const READY_POLL_INTERVAL_MS = 200
 export const READY_TIMEOUT_MS = 30_000
+export const ELEVATION_TIMEOUT_MS = 120_000
+export const ELEVATION_REQUIRED = 'elevation-required'
+export const INSTALLER_READY = 'ready'
 /** NSIS 侧安装参数（$CMDLINE）。用 /NAME=value 形态，与 NSIS 惯用开关一致。 */
 export const UPDATE_ID_ARGUMENT_PREFIX = '/SCHOLARSEED_UPDATE_ID='
 /** spawn 安装器时传递已解析 home 与 nonce 的环境变量名。 */
@@ -42,7 +46,7 @@ export const REQUEST_KEYS = [
   'callerCreationHigh',
   'fromVersion',
   'toVersion',
-  'installDir'
+  'installDir',
 ] as const
 
 export const READY_KEYS = [
@@ -52,7 +56,7 @@ export const READY_KEYS = [
   'installerPid',
   'installerCreationLow',
   'installerCreationHigh',
-  'result'
+  'result',
 ] as const
 
 export const DECISION_KEYS = ['schemaVersion', 'updateId', 'nonce', 'decision'] as const
@@ -105,10 +109,10 @@ function isSignedInt32(value: string): boolean {
 }
 
 function assertSingleLine(value: string, key: string): void {
-  // eslint-disable-next-line no-control-regex
   if (/[\r\n]/.test(value)) throw new Error(`handshake value for ${key} contains a line break`)
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(value)) throw new Error(`handshake value for ${key} contains control characters`)
+  if (/[\u0000-\u001f\u007f]/.test(value))
+    throw new Error(`handshake value for ${key} contains control characters`)
 }
 
 export function serializeRecord(keys: readonly string[], values: Record<string, string>): string {
@@ -186,16 +190,58 @@ export function validateRequest(record: HandshakeRequest): boolean {
  * 「spawn 时拿到 env 的安装器进程」与主进程知道的共享秘密，防止别的进程往目录里
  * 丢一个 ready.ini 冒充握手对端。
  */
-export function validateReady(record: ReadyRecord, request: Pick<HandshakeRequest, 'updateId' | 'nonce'>): boolean {
+export function validateReady(
+  record: ReadyRecord,
+  request: Pick<HandshakeRequest, 'updateId' | 'nonce'>
+): boolean {
+  return validateInstallerRecord(record, request) && record.result === INSTALLER_READY
+}
+
+function validateInstallerRecord(
+  record: ReadyRecord,
+  request: Pick<HandshakeRequest, 'updateId' | 'nonce'>
+): boolean {
   return (
     record.schemaVersion === HANDSHAKE_SCHEMA_VERSION &&
     record.updateId === request.updateId &&
     record.nonce === request.nonce &&
     DECIMAL_PATTERN.test(record.installerPid) &&
     isSignedInt32(record.installerCreationLow) &&
-    isSignedInt32(record.installerCreationHigh) &&
-    record.result === 'ready'
+    isSignedInt32(record.installerCreationHigh)
   )
+}
+
+export type ReadyOutcome = 'ready' | 'timeout' | 'installer-exited' | 'invalid-ready'
+
+export class InstallerReadiness {
+  private deadline: number
+  private awaitingElevation = false
+
+  constructor(
+    private readonly request: Pick<HandshakeRequest, 'updateId' | 'nonce'>,
+    private readonly installerPid: number,
+    startedAt: number
+  ) {
+    this.deadline = startedAt + READY_TIMEOUT_MS
+  }
+
+  observe(record: ReadyRecord | null, now: number): ReadyOutcome | null {
+    if (now >= this.deadline) return 'timeout'
+    if (record === null) return null
+    if (
+      !validateInstallerRecord(record, this.request) ||
+      Number(record.installerPid) !== this.installerPid
+    ) {
+      return 'invalid-ready'
+    }
+    if (record.result === INSTALLER_READY) return 'ready'
+    if (record.result !== ELEVATION_REQUIRED) return 'invalid-ready'
+    if (!this.awaitingElevation) {
+      this.awaitingElevation = true
+      this.deadline = now + ELEVATION_TIMEOUT_MS
+    }
+    return null
+  }
 }
 
 export function parseReady(buffer: Buffer): ReadyRecord | null {
@@ -248,6 +294,7 @@ export function parseDecision(buffer: Buffer): DecisionRecord | null {
  * 这是防路径穿越的唯一闸（NSIS 侧有同样的校验义务）。
  */
 export function handshakeDirectory(baseDirectory: string, updateId: string): string {
-  if (!isValidUpdateId(updateId)) throw new Error('refusing to build a handshake path from an invalid updateId')
+  if (!isValidUpdateId(updateId))
+    throw new Error('refusing to build a handshake path from an invalid updateId')
   return join(baseDirectory, updateId)
 }

@@ -9,8 +9,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.content import ImportMode
 from service.platform.resources import ManagementState, RestorePolicy, VersionOrigin
 from service.resources.api.routes import register_resource_routes
@@ -33,7 +35,7 @@ class RepositoryContracts(unittest.TestCase):
         workspace.mkdir()
         catalog = ContentCatalog(self.root / "content.sqlite3")
         self.registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(self.registry, catalog)
+        self.content = ContentService(self.registry, catalog, activities=Activities())
         self.project = self.registry.create("Git资料")
         self.resources = Path(self.project.root) / "resources"
         self.repo = self.resources / "代码"
@@ -49,7 +51,9 @@ class RepositoryContracts(unittest.TestCase):
             formats,
             PdfRecordStore(self.content),
         )
-        self.supervisor = ResourceVersionSupervisor(self.content, self.versions, formats, settings)
+        self.supervisor = ResourceVersionSupervisor(
+            self.content, self.versions, formats, settings, activities=Activities()
+        )
         self.versions.bind_admission_policy(self.supervisor)
 
     def test_discovery_and_direct_mutations_exclude_git(self) -> None:
@@ -142,7 +146,19 @@ class RepositoryContracts(unittest.TestCase):
         subdirectory = external / "subset"
         subdirectory.mkdir()
         (subdirectory / "notes.md").write_text("subset", encoding="utf-8")
-        subset = self.content.authorize_root(self.project.id, str(subdirectory), "subset")
+        roots = self.content.external_roots(self.project.id)
+        with self.assertRaises(ContentError) as failure:
+            self.content.authorize_root(self.project.id, str(subdirectory), "subset")
+        self.assertEqual(failure.exception.code, "source_overlap")
+        self.assertEqual(self.content.external_roots(self.project.id), roots)
+        self.assertEqual((subdirectory / "notes.md").read_bytes(), b"subset")
+        boundary = self.root / "grant-boundary"
+        boundary.mkdir()
+        subprocess.run(["git", "init", str(boundary)], check=True, capture_output=True)
+        authorized_subset = boundary / "subset"
+        authorized_subset.mkdir()
+        (authorized_subset / "notes.md").write_text("subset", encoding="utf-8")
+        subset = self.content.authorize_root(self.project.id, str(authorized_subset), "isolated")
         subset_path = subset.mount_path + "/notes.md"
         self.assertIsNone(
             self.content.repository_roots(self.project.id, (subset_path,))[subset_path]
@@ -150,6 +166,28 @@ class RepositoryContracts(unittest.TestCase):
         self.supervisor.scan_project(self.project.id)
         self.assertEqual(self.versions.history(self.project.id, copied_path), ())
         self.assertEqual(self.versions.history(self.project.id, linked_path), ())
+
+    def test_repository_discovery_stops_at_the_authorized_root(self) -> None:
+        external = self.root / "external"
+        external.mkdir()
+        subprocess.run(["git", "init", str(external)], check=True, capture_output=True)
+        subdirectory = external / "subset"
+        subdirectory.mkdir()
+        (subdirectory / "notes.md").write_text("subset", encoding="utf-8")
+        subset = self.content.authorize_root(self.project.id, str(subdirectory), "subset")
+        subset_path = subset.mount_path + "/notes.md"
+        paths = (subset.mount_path, subset_path, subset.mount_path + "/missing.md")
+        self.assertEqual(
+            self.content.repository_roots(self.project.id, paths),
+            dict.fromkeys(paths),
+        )
+        self.assertTrue((external / ".git").is_dir())
+        self.assertEqual(len(self.content.external_roots(self.project.id)), 1)
+        subprocess.run(["git", "init", str(subdirectory)], check=True, capture_output=True)
+        self.assertEqual(
+            self.content.repository_roots(self.project.id, paths),
+            dict.fromkeys(paths, subset.mount_path),
+        )
 
     def test_restore_cannot_overwrite_git_file(self) -> None:
         shutil.rmtree(self.repo / ".git")

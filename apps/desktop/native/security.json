@@ -1,0 +1,261 @@
+{
+  "schema": 2,
+  "description": "Build-time Windows ACL policy. Statements are named objects; prefix expressions and @group.name references compile to a bounded IR, never evaluated as code.",
+  "principals": {
+    "system": {"sid": "S-1-5-18", "alias": "SY"},
+    "administrators": {"sid": "S-1-5-32-544", "alias": "BA"},
+    "trusted_installer": {"sid": "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"},
+    "owner_rights": {"sid": "S-1-3-4", "alias": "OW"},
+    "everyone": {"sid": "S-1-1-0", "alias": "WD"},
+    "authenticated_users": {"sid": "S-1-5-11", "alias": "AU"}
+  },
+  "profiles": {
+    "installation": {"current_user": true, "allow": ["system", "administrators", "trusted_installer"]},
+    "machine_authority": {"current_user": false, "allow": ["system", "administrators"]},
+    "tool_owner": {"current_user": true, "allow": ["system", "administrators"], "exclude_executor": true},
+    "tool_writer": {"current_user": true, "allow": ["system", "administrators"], "owner_alias": true},
+    "recovery_owner": {"current_user": true, "allow": ["system", "administrators"]},
+    "recovery_writer": {"current_user": true, "allow": ["system", "administrators"], "owner_alias": true},
+    "private_owner": {"current_user": true, "allow": [], "administrator_member": true},
+    "private_writer": {"current_user": true, "allow": ["system", "administrators"]},
+    "lease_state": {"current_user": true, "allow": ["system", "administrators", "trusted_installer"]},
+    "lease_grant": {"current_user": true, "allow": ["system", "administrators"]}
+  },
+  "mutex": {
+    "protected": true,
+    "aces": [
+      {"principal": "authenticated_users", "mask": "0x00120001"},
+      {"principal": "system", "mask": "0x001f0001"},
+      {"principal": "administrators", "mask": "0x001f0001"}
+    ]
+  },
+  "diagnostics": {
+    "schema": 1,
+    "event": "permission_rejected",
+    "additional_profiles": ["native_directory", "startup_mutex", "tool_access", "windows_api"],
+    "subjects": {"untrusted_owner": "owner", "foreign_writer": "writer", "execution_denied": "execution_token"},
+    "system_reasons": {"5": "os_access_denied", "1223": "authorization_cancelled", "1300": "privilege_not_held", "1314": "privilege_not_held"},
+    "stages": ["owner", "acl", "inspect", "binding", "grant", "lock", "setup", "recovery", "private"],
+    "reasons": [
+      "policy_denied",
+      "untrusted_owner",
+      "foreign_writer",
+      "execution_denied",
+      "invalid_descriptor",
+      "unsupported_ace",
+      "os_access_denied",
+      "os_error",
+      "coordination_failed",
+      "authorization_cancelled",
+      "privilege_not_held"
+    ]
+  },
+  "roles": {"content": 0, "ancestor": 1, "volume": 2, "runtime": 3},
+  "rights": {
+    "generic_read": {"value": "0x80000000", "description": "Windows GENERIC_READ bit."},
+    "generic_write": {"value": "0x40000000", "description": "Windows GENERIC_WRITE bit."},
+    "generic_execute": {"value": "0x20000000", "description": "Windows GENERIC_EXECUTE bit."},
+    "generic_all": {"value": "0x10000000", "description": "Windows GENERIC_ALL bit."},
+    "file_generic_read": {"value": "0x00120089", "description": "Expanded FILE_GENERIC_READ permissions."},
+    "file_generic_write": {"value": "0x00120116", "description": "Expanded FILE_GENERIC_WRITE permissions."},
+    "file_generic_execute": {"value": "0x001200a0", "description": "Expanded FILE_GENERIC_EXECUTE permissions."},
+    "file_all_access": {"value": "0x001f01ff", "description": "Expanded FILE_ALL_ACCESS permissions."},
+    "read_execute": {"value": "0x001200a9", "description": "Read and execute without mutation."},
+    "add_children": {"value": "0x00000006", "description": "Create sibling files/directories; not DELETE_CHILD."},
+    "volume_management": {
+      "value": "0x000d0110",
+      "description": "Root-only DELETE, WRITE_EA, WRITE_ATTRIBUTES, WRITE_DAC and WRITE_OWNER; excludes DELETE_CHILD."
+    }
+  },
+  "flags": {"object_inherit": "0x01", "container_inherit": "0x02", "no_propagate": "0x04", "inherit_only": "0x08"},
+  "scopes": {"self": 0, "child_file": 1, "child_directory": 2, "descendant_file": 3, "descendant_directory": 4, "count": 5},
+  "reasons": {"accepted": 0, "foreign_writer": 1, "execution_denied": 2},
+  "functions": [
+    {
+      "name": "owner",
+      "description": "A verified physical volume is an external management boundary. Other objects require an installation authority owner.",
+      "args": [{"name": "role", "type": "int"}, {"name": "trusted", "type": "bool"}],
+      "returns": "bool",
+      "body": [{"return": ["||", "trusted", ["==", "role", "@roles.volume"]]}]
+    },
+    {
+      "name": "mask",
+      "description": "Expand Windows generic permission bits before comparing access rights.",
+      "args": [{"name": "mask", "type": "u32"}],
+      "returns": "u32",
+      "body": [
+        {
+          "if": ["!=", ["&", "mask", "@rights.generic_read"], 0],
+          "then": [{"set": "mask", "value": ["|", ["&", "mask", ["~", "@rights.generic_read"]], "@rights.file_generic_read"]}]
+        },
+        {
+          "if": ["!=", ["&", "mask", "@rights.generic_write"], 0],
+          "then": [{"set": "mask", "value": ["|", ["&", "mask", ["~", "@rights.generic_write"]], "@rights.file_generic_write"]}]
+        },
+        {
+          "if": ["!=", ["&", "mask", "@rights.generic_execute"], 0],
+          "then": [{"set": "mask", "value": ["|", ["&", "mask", ["~", "@rights.generic_execute"]], "@rights.file_generic_execute"]}]
+        },
+        {
+          "if": ["!=", ["&", "mask", "@rights.generic_all"], 0],
+          "then": [{"set": "mask", "value": ["|", ["&", "mask", ["~", "@rights.generic_all"]], "@rights.file_all_access"]}]
+        },
+        {"return": "mask"}
+      ]
+    },
+    {
+      "name": "allowed",
+      "description": "Start with RX; ancestors may create siblings. Only real volume roots additionally allow root management.",
+      "args": [{"name": "role", "type": "int"}],
+      "returns": "u32",
+      "body": [
+        {"let": "value", "type": "u32", "value": "@rights.read_execute"},
+        {
+          "if": ["||", ["==", "role", "@roles.ancestor"], ["==", "role", "@roles.volume"]],
+          "then": [{"set": "value", "value": ["|", "value", "@rights.add_children"]}]
+        },
+        {
+          "if": ["==", "role", "@roles.volume"],
+          "then": [{"set": "value", "value": ["|", "value", "@rights.volume_management"]}]
+        },
+        {"return": "value"}
+      ]
+    },
+    {
+      "name": "applies",
+      "description": "Match an ACE to the object itself or, for runtime trees, its inherited file/directory scope.",
+      "args": [{"name": "flags", "type": "u32"}, {"name": "role", "type": "int"}, {"name": "scope", "type": "int"}],
+      "returns": "bool",
+      "body": [
+        {
+          "if": ["==", "scope", "@scopes.self"],
+          "then": [{"return": ["==", ["&", "flags", "@flags.inherit_only"], 0]}]
+        },
+        {
+          "if": ["!=", "role", "@roles.runtime"],
+          "then": [{"return": false}]
+        },
+        {
+          "if": ["&&", [">=", "scope", "@scopes.descendant_file"], ["!=", ["&", "flags", "@flags.no_propagate"], 0]],
+          "then": [{"return": false}]
+        },
+        {
+          "if": ["||", ["==", "scope", "@scopes.child_file"], ["==", "scope", "@scopes.descendant_file"]],
+          "then": [{"return": ["!=", ["&", "flags", "@flags.object_inherit"], 0]}]
+        },
+        {"return": ["!=", ["&", "flags", "@flags.container_inherit"], 0]}
+      ]
+    },
+    {
+      "name": "danger",
+      "description": "Reject untrusted mutation after subtracting earlier same-principal/Everyone denies in the same scope.",
+      "args": [
+        {"name": "entries", "type": "entries"},
+        {"name": "role", "type": "int"},
+        {"name": "index", "type": "int"},
+        {"name": "scope", "type": "int"}
+      ],
+      "returns": "u32",
+      "body": [
+        {
+          "if": [
+            "||",
+            ["||", ["entry", "index", "deny"], ["entry", "index", "trusted"]],
+            ["!", ["call", "applies", ["entry", "index", "flags"], "role", "scope"]]
+          ],
+          "then": [{"return": 0}]
+        },
+        {"let": "denied", "type": "u32", "value": 0},
+        {
+          "for": "j",
+          "from": 0,
+          "to": "index",
+          "do": [
+            {
+              "if": [
+                "&&",
+                [
+                  "&&",
+                  ["entry", "j", "deny"],
+                  ["||", ["==", ["entry", "j", "principal"], ["entry", "index", "principal"]], ["entry", "j", "universal"]]
+                ],
+                ["call", "applies", ["entry", "j", "flags"], "role", "scope"]
+              ],
+              "then": [{"set": "denied", "value": ["|", "denied", ["call", "mask", ["entry", "j", "mask"]]]}]
+            }
+          ]
+        },
+        {
+          "return": ["&", ["&", ["call", "mask", ["entry", "index", "mask"]], ["~", ["call", "allowed", "role"]]], ["~", "denied"]]
+        }
+      ]
+    },
+    {
+      "name": "blocked",
+      "description": "For execution, subtract earlier grants from a deny applicable to the initiating token.",
+      "args": [{"name": "entries", "type": "entries"}, {"name": "index", "type": "int"}, {"name": "scope", "type": "int"}],
+      "returns": "u32",
+      "body": [
+        {
+          "if": ["!", ["&&", ["entry", "index", "deny"], ["entry", "index", "deny_subject"]]],
+          "then": [{"return": 0}]
+        },
+        {"let": "granted", "type": "u32", "value": 0},
+        {
+          "for": "j",
+          "from": 0,
+          "to": "index",
+          "do": [
+            {
+              "if": [
+                "&&",
+                ["&&", ["!", ["entry", "j", "deny"]], ["entry", "j", "allow_subject"]],
+                ["call", "applies", ["entry", "j", "flags"], "@roles.runtime", "scope"]
+              ],
+              "then": [{"set": "granted", "value": ["|", "granted", ["call", "mask", ["entry", "j", "mask"]]]}]
+            }
+          ]
+        },
+        {"return": ["&", ["&", ["call", "mask", ["entry", "index", "mask"]], "@rights.read_execute"], ["~", "granted"]]}
+      ]
+    },
+    {
+      "name": "evaluate",
+      "description": "Scan ACEs in their original order across all five scopes; return the first write or execution risk.",
+      "args": [{"name": "entries", "type": "entries"}, {"name": "role", "type": "int"}, {"name": "execution", "type": "bool"}],
+      "returns": "result",
+      "body": [
+        {
+          "for": "i",
+          "from": 0,
+          "to": ["length"],
+          "do": [
+            {
+              "for": "scope",
+              "from": "@scopes.self",
+              "to": "@scopes.count",
+              "do": [
+                {"let": "dangerous", "type": "u32", "value": ["call", "danger", "entries", "role", "i", "scope"]},
+                {
+                  "if": ["!=", "dangerous", 0],
+                  "then": [{"return": ["result", "@reasons.foreign_writer", "i", "dangerous", "scope"]}]
+                },
+                {
+                  "if": ["&&", "execution", ["call", "applies", ["entry", "i", "flags"], "role", "scope"]],
+                  "then": [
+                    {"let": "denied", "type": "u32", "value": ["call", "blocked", "entries", "i", "scope"]},
+                    {
+                      "if": ["!=", "denied", 0],
+                      "then": [{"return": ["result", "@reasons.execution_denied", "i", "denied", "scope"]}]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {"return": ["result", "@reasons.accepted", -1, 0, "@scopes.self"]}
+      ]
+    }
+  ]
+}

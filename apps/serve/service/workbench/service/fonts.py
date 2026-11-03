@@ -10,6 +10,7 @@ from pdfminer.pdffont import PDFType1Font, Type1FontHeaderParser
 from pdfminer.pdfinterp import PDFResourceManager
 from pdfminer.psparser import PSEOF
 
+assert __package__ is not None
 GLYPH_REGISTRY = json.loads(read_text(__package__, "fonts.json", encoding="utf-8"))["glyphs"]
 FONT_ENCODING_KEY = "Encoding"
 

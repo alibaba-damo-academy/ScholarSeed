@@ -1,5 +1,21 @@
 # Vendored TeX Live for the packaged Desktop backend
 
+Development extracts the verified tree into `artifactCache()/texlive/<archive-sha256>`,
+independent of checkout depth. XeTeX stores native font filenames in XDV with a
+one-byte length; repository-local extraction could exceed 255 UTF-8 bytes and
+truncate a valid font path. The full checksum and receipt still identify the tree;
+concurrent checkouts reuse only a matching published receipt. Old checkout-local
+caches are left untouched and no longer selected.
+
+| Platform | Development extraction | Packaged extraction |
+| --- | --- | --- |
+| macOS | `~/.cache/scholarseed/artifacts/texlive/<sha256>` | Unchanged: application resources |
+| Windows | `%LOCALAPPDATA%/ScholarSeed/cache/artifacts/texlive/<sha256>` | Unchanged: provisioned component |
+
+The existing `SCHOLARSEED_ARTIFACT_CACHE` override applies on both platforms.
+Keep its resolved font paths within the XeTeX 255-byte limit. This cache relocation
+does not remove that upstream limit for unusually long user or installation paths.
+
 Desktop ships a pruned TeX Live tree in `resources/backend/texlive` so the
 bundled `literature-review` skill can compile Chinese (`xelatex` + `ctexart` +
 `xeCJK`) and English (`pdflatex` + the skill's `neurips_2026.sty`) survey PDFs
@@ -19,7 +35,7 @@ Current source:
 - CJK fontset: `fandol` (bundled, so Chinese output does not depend on the
   host's system fonts and is identical on macOS and Windows)
 - macOS archive: `texlive-2026-universal-darwin.tar.gz` (top-level member `texlive/`)
-- Windows archive: `texlive-2026-windows.tar.gz` (top-level member `texlive/`)
+- Windows archive: `texlive-2026-windows-r3.tar.gz` (top-level member `texlive/`)
 - archive URL, byte length and SHA-256: see `manifest.json`
 - archives are published as public-read OSS objects and are not stored in Git or Git LFS
 - macOS extracted tree: 306 MB; archive: 117 MB
@@ -42,7 +58,12 @@ scripts/vendor/texlive/build.sh --work /absolute/scratch/dir
 Windows (PowerShell 5.1+ or pwsh):
 
 ```powershell
-scripts\vendor\texlive\build-windows.ps1 -WorkDir C:\absolute\scratch\dir
+scripts\vendor\texlive\build-windows.ps1 -WorkDir C:\work\texlive-build `
+  -VcRoot C:\toolchains\vc10 -WindowsSdkRoot C:\toolchains\sdk71 `
+  -SourceCache C:\work\cache\texlive-source `
+  -EngineSourceArchive C:\work\engines-source.tar.gz -EngineSourceSha256 <sha256> `
+  -EngineVcRoot C:\toolchains\vc2019 -EngineSdkRoot C:\toolchains\sdk10 `
+  -EngineUcrtRoot C:\toolchains\ucrt
 ```
 
 The recipe needs network access (it is the only TeX Live download point in the
@@ -101,5 +122,128 @@ The order constraints documented above apply equally to Windows:
 
 The Windows tree is slightly larger than macOS (about 395 MB extracted, vs
 306 MB on macOS) because Windows binaries are PE format and the installer
-includes additional Windows-specific infrastructure. The compressed archive is
-expected to be in the 120-150 MB range.
+includes additional Windows-specific infrastructure. The r3 archive also includes the corresponding engine and kpathsea sources;
+its exact compressed size is recorded in `manifest.json`.
+
+### Sandboxed executable discovery
+
+The fix covers both the shared kpathsea library and the copies statically linked
+into XeTeX and pdfTeX. The shared library uses VC10 `/MD`; the engines use
+VS2019 `/MT`, Windows SDK 10 headers/libraries and the matching UCRT. The two
+builds apply the same source patch and preserve their separate CRT boundaries.
+
+The Windows source build applies `discovery.patch` to kpathsea 6.4.2.
+Upstream's MSVC executable discovery expands each ancestor using `FindFirstFile`;
+that requires directory-list access even when the complete executable is readable.
+The patch keeps the absolute directory returned by `SearchPath`, queries only the
+complete file to restore its long basename, and checks capacities before copying.
+The basename still selects the TeX format (`xelatex`, for example). Directory short
+names and junction spelling remain intact. The general `kpathsea_getlongpath`
+function, relative TeX filenames, sandbox policy and macOS binaries are unchanged.
+
+Windows reproduction additionally requires **VC10 RTM x64**, **Windows SDK 7.1**
+and Git on PATH. `kpathsea.json` pins the official 2026 source archive, selected
+Windows-generated configuration inputs from the official 2025 source archive,
+compiler/linker/manifest-tool digests, and original/patched source digests. It does
+not build the 2025 library: all shared implementation files come from 2026.
+The generated version macro is updated to 6.4.2; `EXEEXT` is defined in the
+header to avoid PowerShell-version-dependent native quote handling. Host
+`CL`, `_CL_` and `LINK` options are cleared for the build and then restored.
+Public structure layouts match;
+VC10 `/MD` preserves the upstream MSVCR100 ABI. Do not substitute MinGW or a newer
+CRT merely because its DLL exports have the same names.
+
+Prepare the engine sources on a POSIX host with Python 3.12+, Git, make and a
+C/C++ compiler. The cache must contain the two archives named and hashed in
+`kpathsea.json`:
+
+```bash
+python3 scripts/vendor/texlive/engines.py --cache /absolute/source-cache --work /absolute/new-work
+```
+
+This generates the 2026 Web2C C sources, verifies their locked hashes, selects
+the Windows configuration headers, and emits `engines-source.tar.gz`. Supplying
+`--generated <bootstrap/texk/web2c>` reuses generated C only after the same hash
+checks. No POSIX configuration header is carried into the Windows engine.
+Pass the resulting archive and its SHA-256 to the full Windows command above.
+`engines.ps1` verifies the compiler/linker/librarian and original engine/data DLL
+hashes, builds every static dependency from source, checks engine exports, and
+fails on any compilation or linkage error. Its work directory must be new.
+
+`EngineVcRoot` is the MSVC 14.29.30133 directory containing `bin/Hostx64/x64`,
+`include` and `lib/x64`. `EngineSdkRoot` contains SDK 10.0.19041.0
+`include/shared`, `include/um`, `include/winrt` and `lib/x64`;
+`EngineUcrtRoot` contains its matching `include` and `lib/x64`.
+
+The existing ICU 78.2 data DLL stays unchanged; only its verified single data
+export is imported. ICU implementation symbols are not re-exported by the
+engine. The Windows-specific fontconfig 2.15.0 and Expat 2.0.1 sources come from
+the locked Windows recipe, while the other engine dependencies use the 2026
+source archive. These are explicit source inputs, not reused prebuilt libraries.
+The prepared source archive, including licenses, patch and recipes, accompanies
+the frozen tree as `source/engines-source.tar.gz`.
+
+`VcRoot` must contain `bin/amd64`, `include` and `lib/amd64`; the compiler needs
+its official MSVCR100/MSVCP100 runtime DLLs. `WindowsSdkRoot` must contain
+`Include`, `Lib/x64` and `Bin/x64/mt.exe`. Microsoft's SDK 7.1 x64 ISO
+(`GRMSDKX_EN_DVD.iso`, SHA256
+`9f495e52f33d68125277cbca3565ce57904af7d506758a14691fa6e2479ad65c`)
+contains these components. The recipe does not install global tools or modify
+system PATH. The native work directory must be new; source-cache hits are always
+hash checked. Missing tools, changed upstream DLL, patch mismatch or ABI mismatch
+stop the build. This is intentionally not an unpatched fallback.
+
+The helper builds and embeds the DLL manifest, compares every export name/ordinal
+and imported library to the staged upstream DLL, and replaces only the build's
+staged library. `source/kpathsea-source.tar.gz` accompanies the frozen tree with the
+modified library sources, generated headers, LGPL license, patch and recipe.
+Publish these actual corresponding sources with the new binary, rather than
+pointing only to the unmodified upstream tarball.
+
+Before releasing, run the same commands inside the real Windows sandbox:
+`xelatex --version`, `kpsewhich ctexart.cls`, `kpsewhich xeCJK.sty`,
+`kpsewhich FandolSong-Regular.otf`, `kpsewhich -var-value=SELFAUTOPARENT`,
+and a Chinese XeLaTeX compilation. Cover AppData, spaces/Chinese, short directory
+and executable aliases, and junction paths; inspect the resulting PDF and a real
+Desktop AI conversation. ABI matching alone is not acceptance. UNC behavior is
+not established by local NTFS tests.
+
+The r3 vendor archive retains the previously frozen Windows macro packages, fonts
+and format files, replaces the three verified DLLs, and adds their corresponding
+source archives. It applies the same fontconfig normalization as the packaging
+consumer. This release was assembled from that frozen base rather than rerunning
+the network installer; native sandbox compilation verifies format compatibility.
+
+Vendor archives may be built locally and uploaded to a new public-read object.
+Verify anonymous readback before updating `manifest.json`. The Windows component
+revision `2026-r3` binds tree and ZIP digests measured using the packaged target
+Python and the CI component writer. CI consumes the vendor archive, populates the
+component registry on a cache miss, and produces the signed installer. Do not
+overwrite old vendor objects, component revisions or installed receipts.
+
+### Windows process encoding
+
+The frozen XeTeX entrypoints have no process manifest. On a Windows host whose
+ANSI code page cannot represent the project name, the native font discovery
+chain loses characters in `FONTCONFIG_FILE` and `XE_FC_CACHEDIR`. A valid directory
+then appears missing, and XeLaTeX can exit before generating a PDF. This also
+fails outside the sandbox; exit code 5 alone is not an ACL diagnosis.
+
+[`scripts/cd/texlive.cjs`](../../../apps/desktop/scripts/cd/texlive.cjs) embeds and
+reads back the UTF-8 process manifest in build-owned `xetex.exe` and `xelatex.exe`
+before component signing and inventory. It uses the existing PE library and
+build file acquisition boundary. Signed inputs, unknown manifests and linked
+files are refused; repeated normalization preserves bytes. Other PE sections
+and the macOS compiler behavior remain unchanged. The process-level mechanism
+is documented by [Microsoft](https://learn.microsoft.com/en-us/windows/apps/design/globalizing/use-utf8-code-page).
+
+This changes the Windows component revision and measured tree/ZIP bindings,
+without changing the reviewed upstream vendor archive. The build recipe key
+includes the normalizer and its locked dependency inputs. Session font caches
+remain under the admitted workspace, and sandbox/tool preflight stays enabled.
+Measure bindings from the complete normalized vendor tree, including empty
+directories, with the reproducible prefixed component writer. An installed tree
+can omit empty directories and therefore does not establish the archive binding.
+Only CI produces and publishes the signed component. A local compiler probe
+does not establish installed Desktop conversation acceptance; that requires
+the new CI package on the target Windows host.

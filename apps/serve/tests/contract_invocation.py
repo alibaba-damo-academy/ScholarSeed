@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,6 +19,7 @@ from scholarseed_runtime.contract import (
     CallbackAudience,
     CallbackKind,
     DeliveryClass,
+    PermissionIntent,
     RuntimeCallbackRequest,
     RuntimeCapabilityName,
     RuntimeEvent,
@@ -26,21 +29,27 @@ from scholarseed_runtime.contract import (
 from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome, RuntimeTurnResult
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.runtime.composition import OneShotRuntimeResult
+from service.chat.runtime.projection import (
+    ARTIFACT_PUBLISH_ACCESS_DENIED,
+    ARTIFACT_PUBLISH_IO_FAILED,
+)
 from service.invocation.api.routes import register_invocation_routes
 from service.invocation.api.schema import InvocationStartRequest
 from service.invocation.service.artifacts import ARTIFACT_MAX_BYTES
 from service.invocation.service.events import InvocationEventProjector
-from service.invocation.service.runtime import InvocationService, OneShotExecution
+from service.invocation.service.model import InvocationCommand, InvocationSkill
+from service.invocation.service.runtime import InvocationError, InvocationService, OneShotExecution
 from service.invocation.service.skills import (
     InvocationSkillError,
     InvocationSkillResolver,
     ResolvedSkill,
 )
 from service.paths import ONE_SHOT_WORKSPACE_DIRNAME
-from service.platform.bridge import (
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
+from service.platform.bridge import ArtifactPublishFailure
+from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
-    ArtifactPublishFailure,
 )
 
 OWNER_ID = "local"
@@ -124,8 +133,8 @@ class FakeRuntime:
         output.mkdir()
         final = output / "report.md"
         supporting = output / "notes.txt"
-        final.write_text(FINAL_CONTENT, encoding="utf-8")
-        supporting.write_text(SUPPORTING_CONTENT, encoding="utf-8")
+        final.write_text(FINAL_CONTENT, encoding="utf-8", newline="\n")
+        supporting.write_text(SUPPORTING_CONTENT, encoding="utf-8", newline="\n")
         await observer(
             bound(
                 event(
@@ -267,6 +276,47 @@ def frames(response_text: str) -> list[dict[str, Any]]:
 
 
 class InvocationContract(unittest.TestCase):
+    def test_parent_permission_is_inherited_without_network_or_approval_expansion(self) -> None:
+        async def scenario() -> None:
+            permission = PermissionIntent(
+                mode=RuntimePermissionMode.ASK,
+                network_domains=("example.com",),
+                local_sockets=(self.root / "bridge.sock",),
+                deny_read_roots=(self.root / "private",),
+            )
+            prepared = await self.service.prepare(
+                InvocationCommand(
+                    prompt="search", skill=InvocationSkill("builtin:web-search", "official")
+                ),
+                owner_id=OWNER_ID,
+                user_id=USER_ID,
+                permission=permission,
+            )
+            events = [event async for event in self.service.stream(prepared)]
+            self.assertTrue(events)
+            call = self.runtime.calls[-1]
+            self.assertEqual(call["permission"], permission)
+            self.assertEqual(call["permission_mode"], RuntimePermissionMode.ASK)
+            self.assertFalse(call["network_access"])
+
+        asyncio.run(scenario())
+
+    def test_full_access_profile_cannot_expand_parent_permission(self) -> None:
+        async def scenario() -> None:
+            self.skills.permission_mode = RuntimePermissionMode.BYPASS
+            with self.assertRaisesRegex(InvocationError, "invocation_permission_exceeds_parent"):
+                await self.service.prepare(
+                    InvocationCommand(
+                        prompt="search", skill=InvocationSkill("builtin:web-search", "browser")
+                    ),
+                    owner_id=OWNER_ID,
+                    user_id=USER_ID,
+                    permission=PermissionIntent(mode=RuntimePermissionMode.ASK),
+                )
+            self.assertEqual(self.runtime.calls, [])
+
+        asyncio.run(scenario())
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
@@ -276,12 +326,14 @@ class InvocationContract(unittest.TestCase):
         self.skills = FakeSkillResolver(manifest)
         runtime = FakeRuntime()
         self.root = root / "one-shots"
+        self.activities = Activities()
         self.service = InvocationService(
             runtime=runtime,
             settings=FakeSettings(),
             skills=self.skills,
             environment=environment,
             root=self.root,
+            activities=self.activities,
         )
         runtime.service = self.service
         app = FastAPI()
@@ -290,6 +342,37 @@ class InvocationContract(unittest.TestCase):
         register_invocation_routes(app)
         self.client = TestClient(app)
         self.runtime = runtime
+
+    def test_drain_rejects_prepare_before_creating_workspace(self) -> None:
+        async def scenario() -> None:
+            generation = self.activities.begin()
+            with self.assertRaises(MaintenanceActive):
+                await self.service.prepare(
+                    InvocationStartRequest(prompt="new task").command(),
+                    owner_id=OWNER_ID,
+                    user_id=USER_ID,
+                )
+            self.assertEqual(list(self.root.iterdir()), [])
+            self.assertTrue(self.activities.seal(generation))
+
+        asyncio.run(scenario())
+
+    def test_drain_between_prepare_and_stream_starts_no_execution(self) -> None:
+        async def scenario() -> None:
+            prepared = await self.service.prepare(
+                InvocationStartRequest(prompt="new task").command(),
+                owner_id=OWNER_ID,
+                user_id=USER_ID,
+            )
+            generation = self.activities.begin()
+            stream = self.service.stream(prepared)
+            with self.assertRaises(MaintenanceActive):
+                await anext(stream)
+            self.assertIsNone(self.service.bridge_caller(prepared.record.invocation_id))
+            self.assertEqual(self.runtime.calls, [])
+            self.assertTrue(self.activities.seal(generation))
+
+        asyncio.run(scenario())
 
     def tearDown(self) -> None:
         self.client.close()
@@ -341,7 +424,7 @@ class InvocationContract(unittest.TestCase):
         self.assertEqual(runtime_call["reasoning_effort"], "low")
         self.assertEqual(runtime_call["service_tier"], "fast")
         self.assertEqual(runtime_call["required_capabilities"], (RuntimeCapabilityName.WEB_SEARCH,))
-        self.assertTrue(runtime_call["instructions"])
+        self.assertTrue(runtime_call["developer_instructions"])
 
         artifact_id = finals[0]["artifact_id"]
         restarted_runtime = FakeRuntime()
@@ -351,6 +434,7 @@ class InvocationContract(unittest.TestCase):
             skills=self.skills,
             environment=environment,
             root=self.root,
+            activities=Activities(),
         )
         restarted_runtime.service = restarted_service
         self.client.app.state.invocations = restarted_service
@@ -387,8 +471,8 @@ class InvocationContract(unittest.TestCase):
 
         self.assertEqual((disabled.status_code, enabled.status_code), (200, 200))
         disabled_call, enabled_call = self.runtime.calls[-2:]
-        self.assertEqual(disabled_call["instructions"], "")
-        self.assertTrue(enabled_call["instructions"])
+        self.assertEqual(disabled_call["developer_instructions"], "")
+        self.assertTrue(enabled_call["developer_instructions"])
         self.assertFalse(frames(disabled.text)[0]["data"]["execution"]["developer_prompt"])
         self.assertTrue(frames(enabled.text)[0]["data"]["execution"]["developer_prompt"])
 
@@ -406,6 +490,7 @@ class InvocationContract(unittest.TestCase):
             skills=self.skills,
             environment=account_environment,
             root=self.root / "identity",
+            activities=Activities(),
         )
         runtime.service = service
 
@@ -501,6 +586,18 @@ class InvocationContract(unittest.TestCase):
         self.assertEqual(call["permission_mode"], RuntimePermissionMode.BYPASS)
         self.assertTrue(call["network_access"])
 
+    def test_optional_native_search_does_not_require_provider_support(self) -> None:
+        response = self.client.post(
+            "/api/agent/invocations",
+            headers={"Accept": "text/event-stream"},
+            json={"prompt": "fallback", "execution": {"web_search": "optional"}},
+        )
+        self.assertEqual(response.status_code, 200)
+        call = self.runtime.calls[-1]
+        self.assertEqual(call["required_capabilities"], ())
+        self.assertEqual(call["optional_capabilities"], (RuntimeCapabilityName.WEB_SEARCH,))
+        self.assertEqual(frames(response.text)[0]["data"]["execution"]["web_search"], "optional")
+
     def test_trusted_skill_policy_applies_full_access_and_audits_effective_execution(
         self,
     ) -> None:
@@ -547,7 +644,7 @@ class InvocationContract(unittest.TestCase):
             def __init__(self, row: dict[str, Any]) -> None:
                 self.row = row
 
-            def payloads(self, *_args):
+            def payloads(self, *_args, **_kwargs):
                 return [self.row]
 
         async def scenario() -> None:
@@ -587,7 +684,7 @@ class InvocationContract(unittest.TestCase):
                 return object()
 
         class Catalog:
-            def payloads(self, *_args):
+            def payloads(self, *_args, **_kwargs):
                 return [
                     {
                         "id": "builtin:web-search",
@@ -756,6 +853,7 @@ class InvocationContract(unittest.TestCase):
                 skills=self.skills,
                 environment=environment,
                 root=self.root / ("raises" if cancel_raises else "declines"),
+                activities=Activities(),
             )
             prepared = await service.prepare(
                 InvocationStartRequest(prompt="wait").command(),
@@ -802,15 +900,89 @@ class InvocationContract(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_cancelled_artifact_request_commits_before_execution_finishes(self) -> None:
+        async def scenario() -> None:
+            runtime = HilRuntime()
+            gate = Activities()
+            service = InvocationService(
+                runtime=runtime,
+                settings=FakeSettings(),
+                skills=self.skills,
+                environment=environment,
+                root=self.root / "publish",
+                activities=gate,
+            )
+            prepared = await service.prepare(
+                InvocationStartRequest(prompt="publish").command(),
+                owner_id=OWNER_ID,
+                user_id=OWNER_ID,
+            )
+            stream = service.stream(prepared)
+            async for row in stream:
+                if row and row["type"] == "interaction.required":
+                    break
+            execution = service.bridge_caller(prepared.record.invocation_id)
+            self.assertIsNotNone(execution)
+            (execution.workspace / "report.md").write_text("durable report", encoding="utf-8")
+            entered, release = threading.Event(), threading.Event()
+            publish = service._artifacts.publish
+
+            def delayed(*args, **kwargs):
+                entered.set()
+                if not release.wait(10):
+                    raise TimeoutError("publication was not released")
+                return publish(*args, **kwargs)
+
+            generation = gate.begin()
+            with patch.object(service._artifacts, "publish", delayed):
+                request = asyncio.create_task(
+                    execution.publish_artifact(
+                        "report.md",
+                        "final",
+                        turn_id="turn-hil",
+                    )
+                )
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 10))
+                    request.cancel()
+                    await asyncio.sleep(0)
+                    request.cancel()
+                    await asyncio.sleep(0)
+                    self.assertTrue(execution.artifact_lock.locked())
+                    self.assertFalse(gate.seal(generation))
+                finally:
+                    release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(request, 10)
+            self.assertEqual(len(execution.record.artifacts), 1)
+            await service.respond(
+                prepared.record.invocation_id,
+                owner_id=OWNER_ID,
+                request_id="hil-1",
+                decision="accept",
+                values={},
+            )
+            rows = [row async for row in stream if row]
+            self.assertEqual(rows[-1]["type"], "result.completed")
+            stored = service._metadata.read(execution.id, execution.workspace)
+            self.assertEqual(stored.artifacts, execution.record.artifacts)
+            self.assertTrue(gate.seal(generation))
+            with self.assertRaises(ArtifactPublishFailure):
+                await execution.publish_artifact("report.md", "final", turn_id="turn-hil")
+
+        asyncio.run(scenario())
+
     def test_hil_response_returns_to_the_active_runtime(self) -> None:
         async def scenario() -> None:
             runtime = HilRuntime()
+            gate = Activities()
             service = InvocationService(
                 runtime=runtime,
                 settings=FakeSettings(),
                 skills=self.skills,
                 environment=environment,
                 root=self.root / "hil",
+                activities=gate,
             )
             prepared = await service.prepare(
                 InvocationStartRequest(prompt="ask").command(),
@@ -823,6 +995,17 @@ class InvocationContract(unittest.TestCase):
                     continue
                 received.append(row)
                 if row["type"] == "interaction.required":
+                    generation = gate.begin()
+                    self.assertFalse(gate.seal(generation))
+                    self.assertFalse(
+                        await service.respond(
+                            prepared.record.invocation_id,
+                            owner_id="other-owner",
+                            request_id="hil-1",
+                            decision="accept",
+                            values={},
+                        )
+                    )
                     accepted = await service.respond(
                         prepared.record.invocation_id,
                         owner_id=OWNER_ID,
@@ -831,6 +1014,7 @@ class InvocationContract(unittest.TestCase):
                         values={"answer": "yes"},
                     )
                     self.assertTrue(accepted)
+            self.assertTrue(gate.seal(generation))
             self.assertEqual(received[-1]["type"], "result.completed")
             self.assertEqual(runtime.response.request_id, "hil-1")
             self.assertEqual(runtime.response.values["option_id"], "accept")
@@ -844,19 +1028,52 @@ class ScopedPublisher:
     bridge_token: str = "token-1"
     publication_turn_id: str = "turn-1"
     published: dict[str, Any] | None = None
+    failure_code: str = ""
 
     async def publish_artifact(self, path: str, role: str, *, turn_id: str) -> dict[str, Any]:
+        if self.failure_code:
+            raise ArtifactPublishFailure(self.failure_code)
         self.published = {"path": path, "role": role, "turn_id": turn_id}
         return self.published
 
 
 class InvocationBridgeContract(unittest.TestCase):
-    def test_artifact_route_accepts_an_authenticated_non_chat_scope(self) -> None:
-        publisher = ScopedPublisher()
+    def test_artifact_snapshot_failure_has_actionable_message(self) -> None:
+        publisher = ScopedPublisher(failure_code="artifact_snapshot_busy")
         app = FastAPI()
+        activities = Activities()
+        self.activities = activities
+        publisher.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(publisher.bridge_activity.close)
         register_artifact_routes(
             app,
             lambda scope_id: publisher if scope_id == publisher.id else None,
+            activities=activities,
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/internal/bridge/artifact/publish",
+                headers={
+                    BRIDGE_SESSION_HEADER: publisher.id,
+                    BRIDGE_TOKEN_HEADER: publisher.bridge_token,
+                },
+                json={"path": "report.md", "role": "final"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "artifact_snapshot_busy")
+        self.assertIn("retry publication", response.json()["message"])
+
+    def test_artifact_route_accepts_an_authenticated_non_chat_scope(self) -> None:
+        publisher = ScopedPublisher()
+        app = FastAPI()
+        activities = Activities()
+        self.activities = activities
+        publisher.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(publisher.bridge_activity.close)
+        register_artifact_routes(
+            app,
+            lambda scope_id: publisher if scope_id == publisher.id else None,
+            activities=activities,
         )
         client = TestClient(app)
         denied = client.post(
@@ -878,6 +1095,63 @@ class InvocationBridgeContract(unittest.TestCase):
             publisher.published,
             {"path": "report.md", "role": "final", "turn_id": "turn-1"},
         )
+
+    def test_artifact_route_accepts_explicit_stage_delivery(self) -> None:
+        publisher = ScopedPublisher()
+        activities = Activities()
+        publisher.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(publisher.bridge_activity.close)
+        app = FastAPI()
+        register_artifact_routes(
+            app,
+            lambda scope_id: publisher if scope_id == publisher.id else None,
+            activities=activities,
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/internal/bridge/artifact/publish",
+                headers={
+                    BRIDGE_SESSION_HEADER: publisher.id,
+                    BRIDGE_TOKEN_HEADER: publisher.bridge_token,
+                },
+                json={"path": "draft.md", "role": "intermediate"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(publisher.published["role"], "intermediate")
+
+    def test_artifact_route_maps_file_access_failures(self) -> None:
+        publisher = ScopedPublisher(failure_code=ARTIFACT_PUBLISH_ACCESS_DENIED)
+        app = FastAPI()
+        activities = Activities()
+        self.activities = activities
+        publisher.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(publisher.bridge_activity.close)
+        register_artifact_routes(
+            app,
+            lambda scope_id: publisher if scope_id == publisher.id else None,
+            activities=activities,
+        )
+        client = TestClient(app)
+        headers = {
+            BRIDGE_SESSION_HEADER: publisher.id,
+            BRIDGE_TOKEN_HEADER: publisher.bridge_token,
+        }
+        denied = client.post(
+            "/api/internal/bridge/artifact/publish",
+            headers=headers,
+            json={"path": "report.md", "role": "final"},
+        )
+        publisher.failure_code = ARTIFACT_PUBLISH_IO_FAILED
+        unavailable = client.post(
+            "/api/internal/bridge/artifact/publish",
+            headers=headers,
+            json={"path": "report.md", "role": "final"},
+        )
+        client.close()
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["error"], ARTIFACT_PUBLISH_ACCESS_DENIED)
+        self.assertEqual(unavailable.status_code, 503)
+        self.assertEqual(unavailable.json()["error"], ARTIFACT_PUBLISH_IO_FAILED)
 
 
 if __name__ == "__main__":

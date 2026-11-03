@@ -1,0 +1,1279 @@
+[
+  {
+    "id": "D4-CHAT-001",
+    "name": "完成真实单轮研究问题回答",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P0",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。有独占测试会话、可用模型与本次单轮调用授权。",
+    "steps": [
+      "在实际 AI 对话输入框发送：请给一名刚入门的研究者三步确定研究问题的计划，每步一句话，不检索外部资料。",
+      "等待该真实回合终态，读回原请求和完整回复并记录会话、回合身份。"
+    ],
+    "expected": [
+      "回合有可用完整答复，内容针对三步科研选题请求；空答复、仅状态恢复或模型自述不作为完成证据。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-TURN-01@1。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-TURN-01",
+    "revision": 1,
+    "directionIds": [
+      "CHAT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-TURN-01@1",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "真实对话是客户端最小核心业务闭环",
+    "checkIds": [
+      "CHAT-TURN",
+      "CHAT-QUALITY",
+      "CHAT-BOUNDARY"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-chat-turns",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/conversation-revision.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/conversation-first.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/conversation-revision.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/action-summary.json"
+    ]
+  },
+  {
+    "id": "D4-CHAT-002",
+    "name": "新建会话与原会话分离",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有一段专用历史会话并记录其身份；有本次新回合调用授权。",
+    "steps": [
+      "从侧栏实际新对话入口进入新会话。",
+      "发送一条独特的无敏感信息测试消息。",
+      "记录新会话身份并对照原历史会话。"
+    ],
+    "expected": [
+      "新会话身份不同，消息不混入原会话；原历史消息保持不变。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-NEW-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-NEW-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-NEW-01@3",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "对话核心使用路径，但首档真实回合可复用准备好的会话",
+    "checkIds": [
+      "CHAT-NEW"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-chat-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/skill-selected-draft.yaml"
+    ],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-CHAT-003",
+    "name": "重新打开历史会话读回消息",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有一段完成且可核对原始消息、回复和终态的专用历史会话。",
+    "steps": [
+      "先切换到其他界面或另一专用会话。",
+      "从历史会话列表重新打开目标会话。",
+      "对照其身份、原始用户消息、回复及终态。"
+    ],
+    "expected": [
+      "读回的是原目标会话，消息与终态完整且不串会话。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-HISTORY-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-HISTORY-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-HISTORY-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "对话持久性直接影响核心业务连续使用",
+    "checkIds": [
+      "CHAT-HISTORY"
+    ],
+    "evidenceRefs": [],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-CHAT-004",
+    "name": "按标题搜索正确历史会话",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有多个标题明显不同的专用测试会话；其中一个标题含唯一关键词。",
+    "steps": [
+      "使用侧栏实际会话搜索入口输入唯一标题关键词。",
+      "从结果打开目标会话。",
+      "核对会话身份和首条消息。"
+    ],
+    "expected": [
+      "搜索命中并打开目标会话，不误开标题近似的其他会话。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-SEARCH-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-SEARCH-01",
+    "revision": 4,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-SEARCH-01@4",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "找回已有研究任务是基本历史使用能力，不仅是展示便利。",
+    "checkIds": [
+      "CHAT-SEARCH"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-chat-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/skill-selected-draft.yaml"
+    ],
+    "priorityReview": {
+      "previousPriority": "P3",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "找回已有研究任务是基本历史使用能力，不仅是展示便利。"
+    },
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "execution asset mapping missing"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    },
+    "readiness": "manual_ready",
+    "assetGaps": []
+  },
+  {
+    "id": "D4-CHAT-005",
+    "name": "重命名会话标题持久读回",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P3",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有可重命名专用会话；记录原会话身份和消息。",
+    "steps": [
+      "从该会话实际操作菜单选择重命名。",
+      "保存唯一新标题。",
+      "切换后重新打开该会话。"
+    ],
+    "expected": [
+      "新标题持久显示，仍对应原会话身份及消息，不生成新会话。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-RENAME-01@2。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-RENAME-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-RENAME-01@2",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "会话整理便利功能，不影响核心回答和历史读回",
+    "checkIds": [],
+    "evidenceRefs": []
+  },
+  {
+    "id": "D4-CHAT-006",
+    "name": "同会话追问承接上下文并修订",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。首轮已形成含两个可核对要点的无敏感信息回答；同会话第二轮调用已获准。",
+    "steps": [
+      "不新建会话，发送追问：保持刚才的两个要点，改写为两条更简洁的建议。",
+      "等待第二轮终态，读回两轮用户请求与回复。"
+    ],
+    "expected": [
+      "第二轮正确承接首轮要点并执行简化要求，没有凭空更换主题或遗失关键上下文。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-FOLLOWUP-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-FOLLOWUP-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-FOLLOWUP-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "多轮上下文是核心对话质量，但不增加首档 30 分钟默认点位",
+    "checkIds": [
+      "CHAT-REVISION"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-chat-turns",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/screenshots/conversation-revision.png",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/conversation-first.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/conversation-revision.yaml",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/action-summary.json"
+    ],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-CHAT-007",
+    "name": "停止正在生成的模型回合",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。存在获准且正在运行的专用模型回合；停止入口可用。",
+    "steps": [
+      "在回合尚未结束时使用实际停止按钮。",
+      "观察回合状态及停止后输出变化，并记录对应回合身份。"
+    ],
+    "expected": [
+      "该回合进入停止终态；终态后不继续新增该回合输出，不以按钮恢复独自证明停止。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-CHAT-STOP局部来源；已观察结果；只补立即停止分支，不把第三个已完整生成120条的回合当被停止。未核完整后台终态，不称所有取消资源已释放。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "CHAT-STOP-01",
+    "revision": 4,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-stop",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "失控回合的用户控制能力直接影响核心对话可用性与费用",
+    "checkIds": [
+      "CHAT-STOP"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/193-stop-only-fill-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/194-stop-only-send-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/195-stop-now-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/196-stopped-terminal-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/023-stopped-task.png"
+    ],
+    "resultEvidenceStatus": "partial",
+    "observationScope": "E193–196/S23：第五个用户AI动作后立即点停止；UI明确助手回复已中断/用户主动停止、输入恢复、停止按钮消失 已观察结果；只补立即停止分支，不把第三个已完整生成120条的回合当被停止。未核完整后台终态，不称所有取消资源已释放",
+    "readiness": "manual_ready",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "observationSources": [
+      {
+        "localId": "BROAD-CHAT-STOP",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-stop",
+        "observationScope": "E193–196/S23：第五个用户AI动作后立即点停止；UI明确助手回复已中断/用户主动停止、输入恢复、停止按钮消失 已观察结果；只补立即停止分支，不把第三个已完整生成120条的回合当被停止。未核完整后台终态，不称所有取消资源已释放",
+        "resultEvidenceStatus": "partial"
+      }
+    ],
+    "assetGaps": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已观察结果；只补立即停止分支，不把第三个已完整生成120条的回合当被停止。未核完整后台终态，不称所有取消资源已释放"
+        ],
+        "caseRevision": 2
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-CHAT-008",
+    "name": "运行中再次发送保持队列顺序",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。有允许持久队列的专用会话和获准模型调用；第一轮正在运行。",
+    "steps": [
+      "第一轮运行中再次发送内容可区分的第二条消息。",
+      "观察可见队列项与消息身份。",
+      "等待前一轮结束，再观察第二条消息处理次序。"
+    ],
+    "expected": [
+      "第二条消息保留为可见队列项，并在前一轮之后按序处理，不静默丢失或提前并发串轮。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "2026-10-25纳入BROAD-CHAT-QUEUE局部来源；已交互但结果未知；没有有效排队证据，不能判排队通过或产品队列失败。保留需在真实运行中提交并关联排队身份的缺口；无自动模型重试。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "CHAT-QUEUE-01",
+    "revision": 4,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-QUEUE-01@4",
+    "observationStatus": "entry_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "复杂并发交互重要，但比单回合和停止控制更后置",
+    "checkIds": [
+      "CHAT-QUEUE"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/187-stop-probe-send-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/188-queue-probe-fill-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/190-queue-submit-receipt.txt"
+    ],
+    "resultEvidenceStatus": "insufficient",
+    "observationScope": "E187第三回合运行时E188填写第二条，但只有停止按钮；E190按Enter时前回合已完成48.8s，第四条作为普通后续回合回复ACK 已交互但结果未知；没有有效排队证据，不能判排队通过或产品队列失败。保留需在真实运行中提交并关联排队身份的缺口；无自动模型重试",
+    "readiness": "manual_ready",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "observationSources": [
+      {
+        "localId": "BROAD-CHAT-QUEUE",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-queue",
+        "observationScope": "E187第三回合运行时E188填写第二条，但只有停止按钮；E190按Enter时前回合已完成48.8s，第四条作为普通后续回合回复ACK 已交互但结果未知；没有有效排队证据，不能判排队通过或产品队列失败。保留需在真实运行中提交并关联排队身份的缺口；无自动模型重试",
+        "resultEvidenceStatus": "insufficient"
+      }
+    ],
+    "assetGaps": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已交互但结果未知；没有有效排队证据，不能判排队通过或产品队列失败。保留需在真实运行中提交并关联排队身份的缺口；无自动模型重试"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D4-CHAT-009",
+    "name": "切换模型后下一轮身份一致",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有两个实际可用且均获准调用的模型；当前会话支持切换且未在运行。",
+    "steps": [
+      "在实际模型选择器选择与当前不同的目标模型。",
+      "发起一个无敏感信息的短测试回合。",
+      "对照界面选中状态与该回合真实模型身份。"
+    ],
+    "expected": [
+      "下一回合确由目标模型执行，界面与执行模型身份一致，不以选中标签代替真实身份核验。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-MODEL-SWITCH-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-MODEL-SWITCH-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-MODEL-SWITCH-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "模型选择是核心对话控制能力，需以真实下轮身份核验",
+    "checkIds": [
+      "CHAT-MODEL-SWITCH"
+    ],
+    "evidenceRefs": [
+      "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md#obs-chat-entry",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/driver-observations.md",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/chat-original.json",
+      "tmp/llm-evaluation-explore/desktop-four-domains/20261022T071604Z-43ef6e72/evidence/action-summary.json"
+    ],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-CHAT-010",
+    "name": "添加本地附件并依据内容回答",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。准备一份可独立核对的无敏感信息文本文件；已获准读取该文件及模型调用。",
+    "steps": [
+      "从输入区实际添加文件入口附加本地测试文件。",
+      "核对本轮可见附件后，询问文件中一个可核事实。",
+      "等待回合完成并读回完整回复及附件关联证据。"
+    ],
+    "expected": [
+      "正确文件进入本轮输入，回答与其中事实一致；不把资料库引用当作本地附件证据。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；稳定点主用例",
+    "description": "复用稳定业务点 CHAT-LOCAL-FILE-01@3。本行为的主用例；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-LOCAL-FILE-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-LOCAL-FILE-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文件辅助问答是核心对话入口，与项目资料引用语义不同",
+    "checkIds": [
+      "CHAT-LOCAL-FILE"
+    ],
+    "evidenceRefs": [],
+    "caseRevision": 2,
+    "readiness": "manual_ready",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D4-CHAT-011",
+    "name": "含多轮消息的历史会话完整读回",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。已有三轮以上、各轮内容可区分的专用历史会话，记录每轮身份及消息。",
+    "steps": [
+      "切换到其他专用会话后重新打开该历史会话。",
+      "检查首轮、中间轮和末轮的消息次序。"
+    ],
+    "expected": [
+      "三处消息和终态均属于同一原会话，次序正确，未因重新打开丢失中间轮。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 CHAT-HISTORY-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-HISTORY-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-HISTORY-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "对话持久性直接影响核心业务连续使用；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [],
+    "caseRevision": 2,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "point revision synchronized only; variant requires explicit separate data and scope selection"
+    }
+  },
+  {
+    "id": "D4-CHAT-012",
+    "name": "追问调整表达但保持核心事实",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。同会话首轮回答已明确两个合成事实；新增追问与模型调用已获准。",
+    "steps": [
+      "在原会话追问：用一小段话重述刚才的内容，保留两个事实，不增加新的事实。",
+      "等待终态并对照首轮事实和新要求。"
+    ],
+    "expected": [
+      "第二轮保持原有两项事实，按新表达要求修订，不添加无依据事实。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 CHAT-FOLLOWUP-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-FOLLOWUP-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-FOLLOWUP-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "多轮上下文是核心对话质量，但不增加首档 30 分钟默认点位；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [],
+    "caseRevision": 2,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "point revision synchronized only; variant requires explicit separate data and scope selection"
+    }
+  },
+  {
+    "id": "D4-CHAT-013",
+    "name": "已有部分输出时停止回合",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。获准测试回合正在持续输出且已有可见正文；未到正常终态。",
+    "steps": [
+      "在部分正文可见时点击停止。",
+      "记录停止终态及之后同一回合的输出状态。"
+    ],
+    "expected": [
+      "停止前已有正文仍可读；进入停止终态后，该回合不再继续生成新增正文。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 CHAT-STOP-01@4。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-STOP-01",
+    "revision": 4,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-STOP-01@4",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "失控回合的用户控制能力直接影响核心对话可用性与费用；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [],
+    "caseRevision": 3,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "point revision synchronized only; variant requires explicit separate data and scope selection"
+    }
+  },
+  {
+    "id": "D4-CHAT-014",
+    "name": "同名本地附件依据所选文件回答",
+    "folder": "Desktop四业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "用例预期为探索候选，执行前核对目标平台、入口、隔离状态与对应动作授权。两个专用目录各有同名但正文不同的无敏感信息文件；仅授权选择其中一份并记录路径。",
+    "steps": [
+      "从本地添加文件入口选择指定目录内文件。",
+      "核对实际附件身份，询问两份正文中可区分的一项事实。",
+      "等待完整回复并核对依据。"
+    ],
+    "expected": [
+      "回答针对实际选中的文件，不根据相同文件名混入另一目录内容。"
+    ],
+    "tag": "探索用例；观察状态见observationStatus；数据或前提变体",
+    "description": "复用稳定业务点 CHAT-LOCAL-FILE-01@3。仅改变测试数据或前提，不提升点位等级；预期为待核候选，不代表获批需求、运行结果或覆盖通过。",
+    "businessPointId": "CHAT-LOCAL-FILE-01",
+    "revision": 3,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "catalog_case_variant",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-LOCAL-FILE-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "文件辅助问答是核心对话入口，与项目资料引用语义不同；此变体继承所属点优先级，不额外升级或纳入 P0。",
+    "checkIds": [],
+    "evidenceRefs": [],
+    "caseRevision": 2,
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "point revision synchronized only; variant requires explicit separate data and scope selection"
+    }
+  },
+  {
+    "id": "D6-CHAT-001",
+    "name": "从指定回复创建任务分支并保留原任务",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。自建任务已有可核对的完成回合，允许派生任务。",
+    "steps": [
+      "记录原会话和目标回复身份。",
+      "从该回复创建任务分支。",
+      "核对原任务与分支并存及分支复制的消息；记录精确分支session身份。"
+    ],
+    "expected": [
+      "分支对应指定回复，原任务不被改写；单轮观察不能证明多轮截断和后续模型回合正确。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "原任务与分支并存，分支含原用户消息和回复；原session edcdeeb73a1943dbb3ab2e4ab40ab13c，分支session及完整派生请求未冻结。 缺精确派生身份、原请求和独立Check，不猜分支ID。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "CHAT-BRANCH-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-BRANCH-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "可选任务谱系能力，建议P2。",
+    "checkIds": [
+      "CHAT-BRANCH"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/014-ai-marker-complete.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/015-task-branch.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/016-task-branch-requests.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/017-task-identities.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/009-ai-marker-complete.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/010-task-branch.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-CHAT-BRANCH",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "创建本轮任务分支；如需准备模型回合另核预算。",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺精确派生身份、原请求和独立Check，不猜分支ID。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-CHAT-002",
+    "name": "已完成任务归档后历史可读且输入只读",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。只操作本轮已完成任务；归档已获准，不含运行中或排队任务。",
+    "steps": [
+      "记录目标任务身份和原消息。",
+      "阅读确认并归档，等待真实列表变化。",
+      "展开已归档并打开同一任务，核对历史、输入和发送状态。"
+    ],
+    "expected": [
+      "任务从活动列表移出，归档历史可读且继续发送受限制；不证明运行中任务安全停止。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "归档计数0→1，分支从活动列表移除；历史可读且输入、发送、模型控件禁用。 缺独立Check及完整任务身份资产；运行中归档另测。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "CHAT-ARCHIVE-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-chat-archive",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "任务生命周期及防误继续执行，建议P1。",
+    "checkIds": [
+      "CHAT-ARCHIVE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/018-task-archived.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/019-task-archive-confirmed.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/020-task-archive-list.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/021-archived-task-readonly.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/011-task-archive-list.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/012-archived-task-readonly.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-CHAT-ARCHIVE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "只变更本轮任务归档状态，不删除未知会话。",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check及完整任务身份资产；运行中归档另测。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-CHAT-003",
+    "name": "恢复归档任务后原消息保留并可编辑",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。本轮任务已归档，恢复已获准。",
+    "steps": [
+      "按任务身份定位归档行并悬停显示恢复控件。",
+      "恢复后核对活动列表、归档计数和同一任务历史。",
+      "读取输入可编辑状态；不为证明输入恢复而自动发送额外模型请求。"
+    ],
+    "expected": [
+      "恢复同一任务与历史，输入可编辑；不把输入状态当作后续模型执行成功。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "计数1→0，分支回活动列表，INC1024-ALPHA/17仍在，输入可编辑；图013仍归档，仅图014证明恢复。 缺精确任务身份及独立Check；不使用误命名图013证明成功。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "CHAT-RESTORE-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-chat-restore",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "独立可恢复性终态，建议P1。",
+    "checkIds": [
+      "CHAT-RESTORE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/022-task-restored.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/023-task-restored-actual.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/014-task-restored-actual.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-CHAT-RESTORE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "只恢复本轮任务，不发额外模型请求。",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺精确任务身份及独立Check；不使用误命名图013证明成功。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-CHAT-004",
+    "name": "跨资料文献任务搜索并打开同身份对象",
+    "folder": "Desktop六业务域/AI对话/跨域搜索",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。当前项目有同一标记MD、已关联题录及任务；跨域用例归AI对话分片专项，不另建第七域。",
+    "steps": [
+      "在当前项目搜索合成标记。",
+      "逐域核对资料、文献和任务命中。",
+      "分别打开结果，核对正文、题录及消息身份；跨项目空对照单列缺口。"
+    ],
+    "expected": [
+      "结果按域呈现且点击打开对应对象与当前范围；不能由本项目命中推断跨项目隔离。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "2026-10-25纳入BROAD-SEARCH-CROSS局部来源；已观察结果：补原缺跨项目空对照及资源身份。此轮未逐一点击文献/任务搜索命中；原历史引用保留但不算本轮执行，不把局部补证说成完整用例通过。历史记录保留在observationSources及Git中，不追认完整用例通过。",
+    "businessPointId": "SEARCH-GLOBAL-01",
+    "revision": 4,
+    "directionIds": [
+      "SEARCH-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#SEARCH-GLOBAL-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "跨域效率及跳转身份，建议P2，复用已有SEARCH-GLOBAL-01。",
+    "checkIds": [
+      "SEARCH-RESOURCE",
+      "SEARCH-LITERATURE",
+      "SEARCH-SESSION"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/024-global-search-task-hits.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/025-search-open-original.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/026-global-search-resource-hits.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/027-search-resource-open.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/032-global-search-three-domains.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/033-search-literature-open.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/015-global-search-task-hits.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/016-global-search-resource-hits.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/017-search-resource-open.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/020-global-search-three-domains.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/021-search-literature-open.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/155-cross-domain-search-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/156-search-alpha-from-beta-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/157-search-beta-results-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/163-default-search-results-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/174-associated-search-result-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/164-open-searched-source-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/019-search-beta-zero.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/020-search-default-positive.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/021-search-three-domains.png"
+    ],
+    "caseRevision": 3,
+    "candidateLocalId": "INC-SEARCH-THREE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "搜索与读取，不调用模型或外部检索；准备数据另获授权。",
+    "assetGaps": [],
+    "resultEvidenceStatus": "partial",
+    "observationScope": "E155–157/S19：空BETA搜BROAD1024三域0；E163/S20默认项目资料3任务1；关联题录后E174/S21为3/1/1；E164真实打开指定原MD正文17 已观察结果：补原缺跨项目空对照及资源身份。此轮未逐一点击文献/任务搜索命中；原历史引用保留但不算本轮执行，不把局部补证说成完整用例通过",
+    "observationSources": [
+      {
+        "localId": "BROAD-SEARCH-CROSS",
+        "snapshotId": "20261024T131248Z-105872aa",
+        "sourceBuild": "202610241139",
+        "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-search-cross",
+        "observationScope": "E155–157/S19：空BETA搜BROAD1024三域0；E163/S20默认项目资料3任务1；关联题录后E174/S21为3/1/1；E164真实打开指定原MD正文17 已观察结果：补原缺跨项目空对照及资源身份。此轮未逐一点击文献/任务搜索命中；原历史引用保留但不算本轮执行，不把局部补证说成完整用例通过",
+        "resultEvidenceStatus": "partial"
+      }
+    ],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "已观察结果：补原缺跨项目空对照及资源身份。此轮未逐一点击文献/任务搜索命中；原历史引用保留但不算本轮执行，不把局部补证说成完整用例通过"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-CHAT-005",
+    "name": "真实对话交付可从多个入口打开的文件产物",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。获准模型预算及合成资料，只允许在任务目录生成产物。",
+    "steps": [
+      "显式要求生成指定文件并记录真实会话与回合身份。",
+      "核发布回执、产物ID、版本与实际文件，而非只认生成回复。",
+      "从对话卡及任务产物入口打开同身份文件；内容质量交独立Judge。"
+    ],
+    "expected": [
+      "发布与文件身份一致且真实可打开；事实、来源及语义质量独立判定。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-CHAT-ARTIFACT，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "CHAT-ARTIFACT-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-artifact",
+    "observationStatus": "observed",
+    "observationScope": "E093–099/102/108，S13/S14：第1次AI完成发布；artifact_id `d87b729de9c7a24442c9b5597bc4ab5993e25c28a08c39e1e3a497603b954049`；卡片打开实际正文，概览和项目任务产物可见。已观察结果",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "用户获得模型成果的核心交付链路P1。",
+    "checkIds": [
+      "CHAT-ARTIFACT"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/093-select-source-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/094-add-source-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/095-artifact-prompt-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/096-artifact-send-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/097-artifact-progress-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/098-artifact-result-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/099-open-artifact-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/102-task-overview-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/108-project-artifacts-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/013-artifact-open.png",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/014-project-artifacts.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-CHAT-ARTIFACT",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "mixed",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；1次用户AI、任务目录新文件；不把真实发布当语义通过；G0+产物版本/旧版不可变及B类评审",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "1次用户AI、任务目录新文件；不把真实发布当语义通过；G0+产物版本/旧版不可变及B类评审"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-CHAT-006",
+    "name": "将已发布任务产物保存为资料库副本",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。本轮已发布的合成产物及可写任务资料目录。",
+    "steps": [
+      "记录原产物身份与文件内容。",
+      "通过保存对话框选择目标资料目录并确认导入。",
+      "从资料库打开新增对象，核原产物仍在、正文及来源变换可追溯。"
+    ],
+    "expected": [
+      "原产物保留，资料副本可打开且正文与来源转换可解释；不预设逐字节相同。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-CHAT-ARTIFACT-IMPORT，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "CHAT-ARTIFACT-IMPORT-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-artifact-import",
+    "observationStatus": "observed",
+    "observationScope": "E104/106–107：正常保存对话框选资料根目录，资料列表出现新副本，原会话文件仍在；artifact-copy-result.json。已观察结果",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "模型成果进入后续资料工作流的核心闭环P1。",
+    "checkIds": [
+      "CHAT-ARTIFACT-IMPORT"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/104-artifact-import-real-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/106-confirm-artifact-import-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/107-files-after-import-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/artifact-copy-result.json"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-CHAT-ARTIFACT-IMPORT",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；写任务资料库；副本增加“书深 Agent 产物／依据”前言，哈希不同，不宣称字节相同；G0+来源前言规则及后续打开判据",
+    "assetGaps": [],
+    "evidenceCaveat": "本轮副本增加来源前言，哈希不同；原产物保留不等于字节相同，转换规则及后续打开仍须取证。",
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "写任务资料库；副本增加“书深 Agent 产物／依据”前言，哈希不同，不宣称字节相同；G0+来源前言规则及后续打开判据"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-CHAT-007",
+    "name": "新任务引用指定历史任务并据其回答",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。本轮合成历史任务含可区分事实；获准读取历史及模型预算。",
+    "steps": [
+      "新建任务，显式选择目标历史任务并核引用身份。",
+      "询问历史任务的产物及关键事实，不联网或读其他项目。",
+      "核真实history结果及回答来源；跨项目与冲突前提另测。"
+    ],
+    "expected": [
+      "回答依据明确引用的任务，并如实区分历史事实与未知；质量由独立Judge判断。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-CHAT-REFERENCE-TASK，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "CHAT-TASK-REF-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-reference-task",
+    "observationStatus": "observed",
+    "observationScope": "E177–185/S22：选旧任务，第二次AI读取 history，回复文件名、ALPHA、17和限制；session引用为 `40d94a50e42f4237862148161c15b05f`。已观察结果",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "跨任务承接知识及来源正确性属于核心P1。",
+    "checkIds": [
+      "CHAT-TASK-REF"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/177-new-task-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/178-reference-prior-menu-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/179-reference-task-options-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/180-reference-task-select-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/181-add-task-reference-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/182-prior-task-prompt-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/183-prior-task-send-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/184-prior-task-progress-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/185-task-reference-result-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/022-task-reference-result.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-CHAT-REFERENCE-TASK",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "B",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；1次用户AI，只读历史；多任务冲突和跨项目拒绝未做；G0+引用身份及B类评审",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "1次用户AI，只读历史；多任务冲突和跨项目拒绝未做；G0+引用身份及B类评审"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-CHAT-008",
+    "name": "引用指定文献题录并区分摘要与全文依据",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。项目已关联合成题录，摘要含可核事实；全文有无分别记录。",
+    "steps": [
+      "从真实选择器选指定题录，核ID及项目归属。",
+      "询问可由现有题录或摘要回答的问题。",
+      "核来源身份与回答，不能把缺PDF的题录当已读全文。"
+    ],
+    "expected": [
+      "不混用其他文献，并明确题录、摘要和全文的证据边界。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-CHAT-REFERENCE-LIT，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "CHAT-LIT-REF-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-reference-lit",
+    "observationStatus": "entry_observed",
+    "observationScope": "E033/091/179 菜单提供入口；已观察入口，未选文献或发模型。计划选 ALPHA 并核题录/摘要范围，不把无PDF题录当全文",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "研究回答来源身份和依据边界属于核心P1。",
+    "checkIds": [
+      "CHAT-LIT-REF"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/033-composer-plus-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/091-reference-menu-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/179-reference-task-options-receipt.txt"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-CHAT-REFERENCE-LIT",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "B",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；模型预算本轮未再使用；G0+选择器、绑定对象与B类判据",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "模型预算本轮未再使用；G0+选择器、绑定对象与B类判据"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-CHAT-009",
+    "name": "工作区多标签切换保持资料对象与状态",
+    "folder": "Desktop六业务域/AI对话",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。两个可区分的本轮资料或产物已打开。",
+    "steps": [
+      "核新标签页及各资料标签所关联的路径。",
+      "在资料、产物和对比面板间切换并核正文身份。",
+      "记录编辑状态；关闭未保存或跨项目保留策略没有依据时另列。"
+    ],
+    "expected": [
+      "切换时标签与对象对应，不丢失已保存内容；关闭和重开边界独立确认。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-WORKSPACE-TABS，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "CHAT-WORKSPACE-TABS-01",
+    "revision": 2,
+    "directionIds": [
+      "CHAT-FLOW-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#CHAT-WORKSPACE-TABS-01@2",
+    "observationStatus": "observed",
+    "observationScope": "E041/077/078/099/219：新建空标签、版本对比、原文件、产物及资源管理器分别有标签并可切换。已观察结果，只证明本轮切换",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "多文档基本工作流P2，不与全局搜索合并。",
+    "checkIds": [
+      "CHAT-WORKSPACE-TABS"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/041-new-tab-menu-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/077-preview-v3-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/078-return-file-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/099-open-artifact-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/219-resource-manager-receipt.txt"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-WORKSPACE-TABS",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；仅任务UI状态；关闭未保存、重开、跨项目标签保留策略未做；G0+状态保存边界",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "仅任务UI状态；关闭未保存、重开、跨项目标签保留策略未做；G0+状态保存边界"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  }
+]

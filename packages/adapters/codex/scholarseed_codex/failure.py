@@ -22,13 +22,29 @@ PROVIDER_MODEL_CONFIG_MESSAGE = "The endpoint does not support this model; check
 PROVIDER_UNAVAILABLE_MESSAGE = "The model provider is temporarily unavailable."
 PROVIDER_CONTENT_POLICY_MESSAGE = "The request did not pass content safety review."
 PROVIDER_CREDITS_MESSAGE = "The account credit balance is exhausted."
+PROVIDER_SUBSCRIPTION_CAPABILITY_MESSAGE = (
+    "The ChatGPT subscription connection does not support this request capability. "
+    "Use a compatible model source or start a task without that capability; "
+    "retrying unchanged will fail."
+)
 CODEX_QUOTA_EXCEEDED_MESSAGE = "Quota exceeded. Check your plan and billing details."
 
 _SSE_EVENT_ERROR = "event:error"
 _SSE_DATA_PREFIX = "data:"
 _HTTP_ERROR_PREFIX = re.compile(r"^unexpected status (\d{3})\b[^:]*:\s*", re.IGNORECASE)
+_RETRY_EXHAUSTED_STATUS = re.compile(
+    r"^exceeded retry limit, last status:\s*(\d{3})\b", re.IGNORECASE
+)
+_CODEX_ERROR_INFO_KEYS = ("codexErrorInfo", "codex_error_info")
+_HTTP_STATUS_KEYS = ("httpStatusCode", "http_status_code")
 _SSE_HTTP_STATUS = re.compile(r"^:HTTP_STATUS/(\d{3})\s*$", re.MULTILINE)
 _PROVIDER_ERROR_PREFIX = re.compile(r"^<(\d{3})>\s+([A-Za-z][A-Za-z0-9_.-]*)(?::|$)", re.IGNORECASE)
+# Codex 把流内终态失败压平成散文时套的包装（bug 87190842：``stream disconnected before
+# completion: <500> InternalError.Algo: …``）。_PROVIDER_ERROR_PREFIX 是前缀锚定的，不剥掉这层
+# 包装就取不到真实状态，瞬时 5xx 会塌成 codex_provider_failed + 「rejected the request」。
+_CODEX_STREAM_DISCONNECTED_PREFIX = re.compile(
+    r"^stream disconnected before completion:\s*", re.IGNORECASE
+)
 _CONTENT_POLICY_CODES = frozenset(
     {"content_safety_blocked", "content_policy_violation", "content_filter"}
 )
@@ -87,6 +103,7 @@ _UNAVAILABLE_CODES = frozenset(
     {
         "overloaded",
         "server_error",
+        "server_is_overloaded",
         "service_unavailable",
         "timeout",
     }
@@ -98,6 +115,11 @@ _CREDIT_CODES = frozenset(
         "credit_balance_exhausted",
     }
 )
+_SUBSCRIPTION_CAPABILITY_CODES = frozenset(
+    {
+        "subscription_sharing_unsupported_capability",
+    }
+)
 _TERMINAL_CODES = (
     _QUOTA_CODES
     | _AUTH_CODES
@@ -105,13 +127,25 @@ _TERMINAL_CODES = (
     | _MODEL_CONFIG_CODES
     | _CONTENT_POLICY_CODES
     | _CREDIT_CODES
+    | _SUBSCRIPTION_CAPABILITY_CODES
 )
 _CODE_BY_MESSAGE = {
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
     PROVIDER_CONTENT_POLICY_MESSAGE.casefold(): CONTENT_SAFETY_BLOCKED,
 }
-_CODE_BY_HTTP_STATUS = {
+# 瞬时 5xx 家族（与 serve ``rejections.TRANSIENT_PROVIDER_HTTP_STATUSES`` 同集合）统一归
+# server_error：只有 Codex 散文、没有结构化码时也能恢复「暂时不可用」语义。
+_TRANSIENT_HTTP_STATUSES = frozenset(
+    (
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.BAD_GATEWAY,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        HTTPStatus.GATEWAY_TIMEOUT,
+    )
+)
+_CODE_BY_HTTP_STATUS: dict[int, str] = {
     HTTPStatus.TOO_MANY_REQUESTS: "rate_limit_exceeded",
+    **dict.fromkeys(_TRANSIENT_HTTP_STATUSES, "server_error"),
 }
 _SAFE_MESSAGES = {
     **dict.fromkeys(_CONTENT_POLICY_CODES, PROVIDER_CONTENT_POLICY_MESSAGE),
@@ -122,6 +156,7 @@ _SAFE_MESSAGES = {
     **dict.fromkeys(_MODEL_CONFIG_CODES, PROVIDER_MODEL_CONFIG_MESSAGE),
     **dict.fromkeys(_UNAVAILABLE_CODES, PROVIDER_UNAVAILABLE_MESSAGE),
     **dict.fromkeys(_CREDIT_CODES, PROVIDER_CREDITS_MESSAGE),
+    **dict.fromkeys(_SUBSCRIPTION_CAPABILITY_CODES, PROVIDER_SUBSCRIPTION_CAPABILITY_MESSAGE),
 }
 
 
@@ -150,8 +185,10 @@ def provider_failure(value: Any) -> ProviderFailure:
     """Extract stable, redacted provider semantics from one native error value."""
 
     code, message = unpack_error(value)
-    http_status = _http_status(message)
-    sse_error = _sse_error(message) or _http_error(message)
+    # Codex 的散文包装挡住前缀锚定的状态/签名提取，先剥一层再解析（无包装时 sub 是 no-op）。
+    probe_text = _CODEX_STREAM_DISCONNECTED_PREFIX.sub("", message, count=1)
+    http_status = _native_http_status(value) or _http_status(probe_text)
+    sse_error = _sse_error(probe_text) or _http_error(probe_text)
     if sse_error is None and isinstance(value, Mapping):
         details = str(value.get("additionalDetails") or "")
         sse_error = _http_error(details)
@@ -164,7 +201,12 @@ def provider_failure(value: Any) -> ProviderFailure:
         code = _CODE_BY_MESSAGE.get(message.casefold(), "")
     if not code and http_status is not None:
         code = _CODE_BY_HTTP_STATUS.get(http_status, "")
-    code = _canonical_provider_code(code, message)
+    code = _canonical_provider_code(code, probe_text)
+    # Some providers use a generic request code even for rejected credentials.
+    # Preserve known auth identities (notably account recovery), but never let
+    # a generic body code hide the explicit HTTP authentication failure.
+    if http_status == HTTPStatus.UNAUTHORIZED and code.casefold() not in _AUTH_CODES:
+        code = "authentication_error"
     normalized = code.casefold()
     message = _safe_message(code)
     return ProviderFailure(
@@ -205,11 +247,32 @@ def _canonical_provider_code(code: str, message: str) -> str:
     return _CODE_BY_PROVIDER_SIGNATURE.get(signature, code)
 
 
+def _native_http_status(value: Any) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    nested = value.get("error")
+    envelopes = (nested, value) if isinstance(nested, Mapping) else (value,)
+    for envelope in envelopes:
+        for info_key in _CODEX_ERROR_INFO_KEYS:
+            info = envelope.get(info_key)
+            if not isinstance(info, Mapping):
+                continue
+            for details in info.values():
+                if not isinstance(details, Mapping):
+                    continue
+                for status_key in _HTTP_STATUS_KEYS:
+                    status = details.get(status_key)
+                    if type(status) is int and 400 <= status <= 599:
+                        return status
+    return None
+
+
 def _http_status(message: str) -> int | None:
     match = (
         _HTTP_ERROR_PREFIX.match(message)
         or _SSE_HTTP_STATUS.search(message)
         or _PROVIDER_ERROR_PREFIX.match(message)
+        or _RETRY_EXHAUSTED_STATUS.match(message)
     )
     if match is None:
         return None

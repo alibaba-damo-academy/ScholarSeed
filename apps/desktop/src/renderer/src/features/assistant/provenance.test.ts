@@ -30,9 +30,9 @@ test('only known session provenance translates; renamed, legacy and unknown labe
   const unknown = { ...marked, label_fallback: 'future_label' }
   const file = { ...marked, kind: 'file' }
   const original = JSON.stringify([marked, renamed, legacy, unknown, file])
-  assert.equal(referenceLabel(marked, t), '未命名对话')
+  assert.equal(referenceLabel(marked, t), '未命名任务')
   await locale.changeLanguage('en')
-  assert.equal(referenceLabel(marked, t), 'Untitled conversation')
+  assert.equal(referenceLabel(marked, t), 'Untitled task')
   for (const ref of [renamed, legacy, unknown, file]) assert.equal(referenceLabel(ref, t), '未命名对话')
   assert.equal(referenceLabel({ ...legacy, label: 'User / & <中英>' }, t), 'User / & <中英>')
   assert.equal(referenceLabel({ ...legacy, label: '' }, t), '')
@@ -47,7 +47,7 @@ test('history, confirmed queue and optimistic queue retain provenance without re
   const t = locale.getFixedT(null, 'assistant')
   const input = [{ type: 'text' as const, text: 'Question / & <中英>' }]
   const reference = { ...marked, ref_id: 'ref', source_id: 'source', state: 'ready' }
-  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 3, state: 'queued', input, assistant_references: [reference] })
+  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 3, state: 'queued', submission_mode: 'queued', input, assistant_references: [reference] })
   const optimistic = optimisticQueuedMessage([], 'optimistic', input, [reference])
   const history = projectHistory([{ kind: 'user', text: input[0].text, refs: [{ type: 'assistant_context', id: 'ref', title: marked.label, kind: 'session', label_fallback: marked.label_fallback, source_id: 'source', snapshot_id: 'snapshot' }] }])
   const message = history[0]
@@ -56,9 +56,9 @@ test('history, confirmed queue and optimistic queue retain provenance without re
   const restored = message.refs![0]
   const original = JSON.stringify([queue, optimistic, restored])
   await locale.changeLanguage('en')
-  assert.equal(referenceLabel(restored, t), 'Untitled conversation')
-  assert.equal(queuedReferenceLabel(queue.assistantReferences[0], t), 'Untitled conversation')
-  assert.equal(queuedReferenceSummary(input, optimistic.assistantReferences, t), 'Untitled conversation')
+  assert.equal(referenceLabel(restored, t), 'Untitled task')
+  assert.equal(queuedReferenceLabel(queue.assistantReferences[0], t), 'Untitled task')
+  assert.equal(queuedReferenceSummary(input, optimistic.assistantReferences, t), 'Untitled task')
   assert.equal(restored.sourceId, 'source')
   assert.equal(restored.snapshotId, 'snapshot')
   assert.equal(restored.title, '未命名对话')
@@ -76,10 +76,10 @@ test('failure whitelist retains only valid session metadata and stored feedback 
   const failure = { code: detail.code, issues: detail.issues }
   const message = turnAdmissionFeedback(failure)
   const serialized = JSON.stringify(message)
-  assert.ok(renderFeedback(locale, message).includes('未命名对话'))
+  assert.ok(renderFeedback(locale, message).includes('未命名任务'))
   await locale.changeLanguage('en')
-  assert.ok(renderFeedback(locale, message).includes('Untitled conversation'))
-  assert.ok(describeTurnAdmissionFailure(locale.getFixedT(null, 'components'), failure).includes('Untitled conversation'))
+  assert.ok(renderFeedback(locale, message).includes('Untitled task'))
+  assert.ok(describeTurnAdmissionFailure(locale.getFixedT(null, 'components'), failure).includes('Untitled task'))
   assert.equal(JSON.stringify(message), serialized)
   assert.equal(detail.issues![0].label, '未命名对话')
 })
@@ -90,7 +90,7 @@ test('preview empty titles retain the frozen title while current metadata contro
   const t = locale.getFixedT(null, 'assistant')
   const reference = { kind: 'session', title: '未命名对话', label_fallback: 'untitled_session' }
   assert.equal(previewReferenceLabel(reference, { title: '' }, t), '未命名对话')
-  assert.equal(previewReferenceLabel(reference, { title: '', label_fallback: 'untitled_session' }, t), 'Untitled conversation')
+  assert.equal(previewReferenceLabel(reference, { title: '', label_fallback: 'untitled_session' }, t), 'Untitled task')
   assert.equal(previewReferenceLabel(reference, { title: '未命名对话', label_fallback: null }, t), '未命名对话')
   assert.equal(previewReferenceLabel(reference, { title: 'Renamed / & <中英>', label_fallback: null }, t), 'Renamed / & <中英>')
 })
@@ -110,7 +110,7 @@ test('live user events preserve provenance and reconcile the same optimistic mes
   assert.equal(item.itemId, 'user-item')
   assert.equal(item.text, 'Original question')
   assert.equal(item.refs![0].title, '未命名对话')
-  assert.equal(referenceLabel(item.refs![0], t), 'Untitled conversation')
+  assert.equal(referenceLabel(item.refs![0], t), 'Untitled task')
   const cleared = await serviceErrorDetail(new Response(JSON.stringify({ issues: [{ ...marked, ref_id: 'r', reason: 'source_missing', state: 'missing', label_fallback: null }] })))
   assert.equal(cleared.issues![0].label_fallback, null)
 })
@@ -146,7 +146,7 @@ test('selection metadata survives queued and live/history projections without ch
   const anchor = { locator: { kind: 'writer', start: 1, end: 2 }, preview_text: '原选区 / & <text>' }
   const input = [{ type: 'text' as const, text: '原问题' }]
   const reference = { kind: 'selection', ref_id: 'ref', label: '原组合 · 划词', selection_source_label: '', anchor }
-  const queued = queuedMessageFromPayload({ queued_message_id: 'q', enqueue_seq: 2, state: 'queued', input, assistant_references: [reference] })
+  const queued = queuedMessageFromPayload({ queued_message_id: 'q', enqueue_seq: 2, state: 'queued', submission_mode: 'queued', input, assistant_references: [reference] })
   const optimistic = optimisticQueuedMessage([], 'q', input, [reference])
   assert.deepEqual(queued.assistantReferences, optimistic.assistantReferences)
   assert.equal(queuedReferenceSummary(input, queued.assistantReferences, t), ' · Selection')
@@ -191,7 +191,7 @@ test('new-session reference provenance remains distinct through candidates, hist
   const source = { kind: 'session' as const, label: '新对话', label_fallback: 'new_session' as const }
   const candidate = { kind: 'session' as const, source_id: 'new-session', label: source.label, labelFallback: 'newSession' as const, origin: 'explicit' as const }
   const input = [{ type: 'text' as const, text: 'Keep canonical names / & <中英>' }]
-  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 1, state: 'queued', input, assistant_references: [source] })
+  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 1, state: 'queued', submission_mode: 'queued', input, assistant_references: [source] })
   const history = projectHistory([{ kind: 'user', text: input[0].text, refs: [{ type: 'assistant_context', id: 'ref', title: source.label, kind: 'session', label_fallback: source.label_fallback }] }])
   const message = history[0]
   assert.equal(message.kind, 'user')
@@ -203,16 +203,16 @@ test('new-session reference provenance remains distinct through candidates, hist
   const failure = { code: detail.code, issues: detail.issues }
   const feedback = turnAdmissionFeedback(failure)
   const original = JSON.stringify([candidate, queue, restored, feedback])
-  assert.equal(referenceLabel(source, t), '新对话')
+  assert.equal(referenceLabel(source, t), '新任务')
   await locale.changeLanguage('en')
-  assert.equal(candidateLabel(candidate, t), 'New conversation')
-  assert.equal(referenceLabel(restored, t), 'New conversation')
-  assert.equal(queuedReferenceLabel(queue.assistantReferences[0], t), 'New conversation')
-  assert.equal(previewReferenceLabel(restored, { title: '新对话', label_fallback: 'new_session' }, t), 'New conversation')
+  assert.equal(candidateLabel(candidate, t), 'New task')
+  assert.equal(referenceLabel(restored, t), 'New task')
+  assert.equal(queuedReferenceLabel(queue.assistantReferences[0], t), 'New task')
+  assert.equal(previewReferenceLabel(restored, { title: '新对话', label_fallback: 'new_session' }, t), 'New task')
   assert.equal(previewReferenceLabel(restored, { title: '新对话', label_fallback: null }, t), '新对话')
-  assert.equal(referenceLabel(marked, t), 'Untitled conversation')
-  assert.ok(renderFeedback(locale, feedback).includes('New conversation'))
-  assert.ok(describeTurnAdmissionFailure(locale.getFixedT(null, 'components'), failure).includes('New conversation'))
+  assert.equal(referenceLabel(marked, t), 'Untitled task')
+  assert.ok(renderFeedback(locale, feedback).includes('New task'))
+  assert.ok(describeTurnAdmissionFailure(locale.getFixedT(null, 'components'), failure).includes('New task'))
   assert.equal(detail.issues![1].label_fallback, undefined)
   assert.equal(contextLabelFallback('literature', 'new_session'), null)
   assert.equal(JSON.stringify([candidate, queue, restored, feedback]), original)

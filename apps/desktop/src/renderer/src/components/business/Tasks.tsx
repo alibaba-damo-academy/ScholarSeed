@@ -1,47 +1,61 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { useStartup } from '../../app/connection'
+import { STARTUP_PHASE } from '../../../../startup'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { BrushCleaning } from 'lucide-react'
+import { IconFont } from '../primitive/Iconfont'
 
 import {
   taskDetailText,
   taskErrorText,
-  type TaskSourceContribution
+  type TaskSourceContribution,
 } from '../../contracts/features'
 import {
+  isActiveProductTask,
   taskProgressPresentation,
   taskTitleText,
-  type ProductTask
+  type ProductTask,
 } from '../../contracts/tasks'
 import { useApp } from '../../store'
-import { Button, ProgressBar, ScrollArea, Tag, type TagTone } from '../ui'
+import {
+  Button,
+  EllipsisText,
+  IconButton,
+  ProgressBar,
+  ScrollArea,
+  Tag,
+  Tooltip,
+  type TagTone,
+} from '../ui'
 
 import { TaskCenterContext, useTaskCenter, type TaskCenterValue } from './taskCenterContext'
+import { TaskFeed } from './taskfeed'
+import { clearCompletedMessages, visibleTaskMessages } from './taskcenter/presentation'
 
 const TASK_FALLBACK_POLL_INTERVAL_MS = 15_000
-
+const TIMESTAMP_MILLISECONDS_PER_SECOND = 1000
+const MESSAGE_DATE_FORMATTER = new Intl.DateTimeFormat('en', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+})
 
 export function TaskCenterProvider({
   children,
-  sources
+  sources,
 }: {
   children: React.ReactNode
   sources: readonly TaskSourceContribution[]
 }): React.JSX.Element {
   const [tasks, setTasks] = useState<ProductTask[]>([])
   const [open, setOpen] = useState(false)
-  const [disconnected, setDisconnected] = useState<Set<string>>(() => new Set())
-  const tasksRef = useRef<ProductTask[]>([])
-  const watchers = useRef<Map<string, () => void>>(new Map())
-  const pendingTerminals = useRef<Map<string, { task: ProductTask; announce: boolean }>>(new Map())
-  const finalizing = useRef(false)
-  const initialSyncStarted = useRef(false)
-  const initialSyncCompleted = useRef(false)
+  const [clearingCompleted, setClearingCompleted] = useState(false)
+  const clearingRef = useRef(false)
   const { state, act } = useApp()
+  const startup = useStartup()
   const { t } = useTranslation('tasks')
   const errorText = useCallback(
     (task: ProductTask): string => taskErrorText(task, sources, t),
@@ -51,107 +65,40 @@ export function TaskCenterProvider({
     (task: ProductTask): string => taskDetailText(task, sources, t),
     [sources, t]
   )
-
-  const replaceTask = useCallback((task: ProductTask): void => {
-    const next = [
-      task,
-      ...tasksRef.current.filter(
-        (candidate) => candidate.id !== task.id || candidate.sourceId !== task.sourceId
-      )
-    ].sort((left, right) => right.updatedAt - left.updatedAt)
-    tasksRef.current = next
-    setTasks(next)
-  }, [])
-
-  const finalizePending = useCallback(async (): Promise<void> => {
-    if (finalizing.current) return
-    finalizing.current = true
-    try {
-      while (pendingTerminals.current.size > 0) {
-        const batch = new Map(pendingTerminals.current)
-        let refreshed = false
-        try {
-          refreshed = await act.reloadResourceTree()
-        } catch {
-          refreshed = false
-        }
-        if (!refreshed) break
-        const resolved = new Map<string, { task: ProductTask; announce: boolean }>()
-        for (const [key, entry] of batch) {
-          const pending = pendingTerminals.current.get(key)
-          if (pending?.task.eventSeq !== entry.task.eventSeq) continue
-          pendingTerminals.current.delete(key)
-          resolved.set(key, entry)
-        }
-        const next = tasksRef.current
-          .map((current) => resolved.get(`${current.sourceId}:${current.id}`)?.task ?? current)
-          .sort((left, right) => right.updatedAt - left.updatedAt)
-        tasksRef.current = next
-        setTasks(next)
-        for (const { task, announce } of resolved.values()) {
-          if (!announce) continue
-          act.noticeResource(
-            task.status === 'completed' ? 'ok' : 'error',
-            task.status === 'completed'
-              ? {
-                  namespace: 'tasks',
-                  key: 'feedback.completed',
-                  name: task.title,
-                  detail: detailText(task) || undefined
-                }
-              : {
-                  namespace: 'tasks',
-                  key: 'feedback.incomplete',
-                  name: task.title,
-                  detail: errorText(task) || undefined
-                }
-          )
-        }
-      }
-    } finally {
-      finalizing.current = false
-    }
-  }, [act, detailText, errorText])
-
-  const finalize = useCallback(
-    (task: ProductTask, announce: boolean): void => {
-      const key = `${task.sourceId}:${task.id}`
-      pendingTerminals.current.set(key, { task, announce })
-      replaceTask({
-        ...task,
-        status: 'settling',
-        phase: 'refreshing',
-        detail: ''
-      })
-      void finalizePending()
+  const failures = useCallback(
+    (task: ProductTask) =>
+      sources.find((source) => source.id === task.sourceId)?.present(task, t).failures ?? [],
+    [sources, t]
+  )
+  const failureDetail = useCallback(
+    (task: ProductTask): string => {
+      const sourceFailures = failures(task)
+      const first = sourceFailures[0]
+      const reason = first
+        ? t('failure', { name: first.name, reason: first.reason })
+        : errorText(task) || t('feedback.reasonUnavailable')
+      const remaining = sourceFailures.length - 1
+      return [
+        reason,
+        detailText(task),
+        remaining > 0 ? t('feedback.moreFailures', { count: remaining }) : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
     },
-    [finalizePending, replaceTask]
+    [detailText, errorText, failures, t]
   )
 
-  const acceptTask = useCallback(
-    (task: ProductTask, announce: boolean): void => {
-      const key = `${task.sourceId}:${task.id}`
-      const previous = tasksRef.current.find(
-        (candidate) => `${candidate.sourceId}:${candidate.id}` === key
-      )
-      if (previous && task.eventSeq < previous.eventSeq) return
-      const becameTerminal =
-        announce &&
-        previous?.status !== task.status &&
-        (task.status === 'completed' ||
-          task.status === 'partial' ||
-          task.status === 'failed' ||
-          task.status === 'cancelled')
-      if (
-        becameTerminal &&
-        (task.status === 'completed' || task.status === 'partial') &&
-        task.projectId === state.homeSelectedProjectId
-      ) {
-        finalize(task, true)
-        return
-      }
-      replaceTask(task)
-      if (!becameTerminal) return
+  const announceRef = useRef<(task: ProductTask) => void>(() => undefined)
+  announceRef.current = (task) => {
+    if (task.status === 'completed') {
+      act.noticeResource('ok', {
+        namespace: 'tasks',
+        key: 'feedback.completed',
+        name: task.title,
+        detail: detailText(task) || undefined,
+      })
+    } else {
       act.noticeResource(
         task.status === 'cancelled' ? 'ok' : 'error',
         task.status === 'cancelled'
@@ -160,199 +107,217 @@ export function TaskCenterProvider({
               namespace: 'tasks',
               key: 'feedback.incomplete',
               name: task.title,
-              detail: errorText(task) || undefined
+              detail: failureDetail(task),
+              openTaskCenter: true,
             }
       )
-    },
-    [act, errorText, finalize, replaceTask, state.homeSelectedProjectId]
+    }
+  }
+  const feed = useMemo(
+    () => new TaskFeed(sources, setTasks, (task) => announceRef.current(task)),
+    [sources]
   )
 
-  const refresh = useCallback(async (announce = true): Promise<void> => {
-    const settled = await Promise.allSettled(sources.map((source) => source.list()))
-    const snapshots = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
-    if (!initialSyncCompleted.current && !announce) {
-      const next = snapshots.sort((left, right) => right.updatedAt - left.updatedAt)
-      tasksRef.current = next
-      setTasks(next)
-      next
-        .filter(
-          (task) =>
-            (task.status === 'completed' || task.status === 'partial') &&
-            task.projectId === state.homeSelectedProjectId
-        )
-        .forEach((task) => finalize(task, false))
-    } else {
-      snapshots.forEach((task) => acceptTask(task, announce))
+  useEffect(() => {
+    if (startup.phase !== STARTUP_PHASE.ready) return
+    feed.start()
+    const timer = window.setInterval(() => {
+      if (feed.needsRefresh()) void feed.refresh()
+    }, TASK_FALLBACK_POLL_INTERVAL_MS)
+    return () => {
+      window.clearInterval(timer)
+      feed.stop()
     }
-    if (pendingTerminals.current.size > 0) void finalizePending()
-    initialSyncCompleted.current = true
-  }, [acceptTask, finalize, finalizePending, sources, state.homeSelectedProjectId])
+  }, [feed, startup.generation, startup.phase])
 
   useEffect(() => {
-    if (initialSyncStarted.current) return
-    initialSyncStarted.current = true
-    void refresh(false)
-  }, [refresh])
+    if (open && startup.phase === STARTUP_PHASE.ready) void feed.refresh()
+  }, [open, feed, startup.phase])
 
   useEffect(() => {
-    if (open) void refresh()
-  }, [open, refresh])
-
-  useEffect(() => {
-    const onFocus = (): void => void refresh()
+    if (startup.phase !== STARTUP_PHASE.ready) return
+    const onFocus = (): void => {
+      void feed.refresh()
+    }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [refresh])
-
-  useEffect(() => {
-    const unsubscribers = sources.flatMap((source) =>
-      source.subscribe
-        ? [
-            source.subscribe((task) => {
-              acceptTask(task, true)
-              void refresh()
-            })
-          ]
-        : []
-    )
-    return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
-  }, [acceptTask, refresh, sources])
-
-  useEffect(() => {
-    const activeKeys = new Set<string>()
-    for (const task of tasks) {
-      if (task.status !== 'queued' && task.status !== 'running') continue
-      const key = `${task.sourceId}:${task.id}`
-      activeKeys.add(key)
-      if (watchers.current.has(key)) continue
-      const source = sources.find((candidate) => candidate.id === task.sourceId)
-      if (!source?.watch) continue
-      const stop = source.watch(task, {
-        onTask: (updated) => acceptTask(updated, true),
-        onConnectionChange: (connected) => {
-          setDisconnected((current) => {
-            const next = new Set(current)
-            if (connected) next.delete(key)
-            else next.add(key)
-            return next
-          })
-        }
-      })
-      watchers.current.set(key, stop)
-    }
-    for (const [key, stop] of watchers.current) {
-      if (activeKeys.has(key)) continue
-      stop()
-      watchers.current.delete(key)
-    }
-  }, [acceptTask, sources, tasks])
-
-  useEffect(() => {
-    if (!open || disconnected.size === 0) return
-    const timer = window.setInterval(() => void refresh(), TASK_FALLBACK_POLL_INTERVAL_MS)
-    return () => window.clearInterval(timer)
-  }, [disconnected, open, refresh])
-
-  useEffect(
-    () => () => {
-      watchers.current.forEach((stop) => stop())
-      watchers.current.clear()
-    },
-    []
-  )
-
-  const mutate = useCallback(
-    async (task: ProductTask, action: 'cancel' | 'retry'): Promise<void> => {
-      const source = sources.find((candidate) => candidate.id === task.sourceId)
-      if (!source) return
-      const updated = await source[action](task.id)
-      acceptTask(updated, true)
-    },
-    [acceptTask, sources]
-  )
+  }, [feed, startup.phase])
 
   const value = useMemo<TaskCenterValue>(
     () => ({
-      activeCount: tasks.filter(
-        (task) => task.status === 'queued' || task.status === 'running' || task.status === 'settling'
-      ).length,
-      tasks,
+      activeCount: tasks.filter(isActiveProductTask).length,
+      tasks: visibleTaskMessages(tasks, state.taskMessageDismissals),
       open,
       setOpen,
-      cancel: (task) => mutate(task, 'cancel'),
-      retry: (task) => mutate(task, 'retry'),
-      errorText
+      clearingCompleted,
+      clearCompleted: async () => {
+        if (clearingRef.current) return
+        clearingRef.current = true
+        setClearingCompleted(true)
+        try {
+          await act.clearTaskMessages(clearCompletedMessages(tasks, state.taskMessageDismissals))
+        } finally {
+          clearingRef.current = false
+          setClearingCompleted(false)
+        }
+      },
+      cancel: (task) => feed.mutate(task, 'cancel'),
+      retry: (task) => feed.mutate(task, 'retry'),
+      errorText,
+      failures,
     }),
-    [errorText, mutate, open, tasks]
+    [act, clearingCompleted, errorText, failures, feed, open, state.taskMessageDismissals, tasks]
   )
 
   return <TaskCenterContext.Provider value={value}>{children}</TaskCenterContext.Provider>
 }
 
-
 const STATUS_TONES = {
   queued: 'neutral',
   running: 'warning',
-  settling: 'warning',
-  completed: 'brand',
+  completed: 'success',
   partial: 'warning',
   failed: 'danger',
-  cancelled: 'neutral'
+  cancelled: 'neutral',
 } as const satisfies Record<ProductTask['status'], TagTone>
 
 const STATUS_MESSAGE_KEYS = {
   queued: 'status.queued',
   running: 'status.running',
-  settling: 'status.settling',
   completed: 'status.completed',
   partial: 'status.partial',
   failed: 'status.failed',
-  cancelled: 'status.cancelled'
+  cancelled: 'status.cancelled',
 } as const
 
 export function TaskCenter(): React.JSX.Element {
   const { t } = useTranslation('tasks')
   const { t: uiText } = useTranslation('ui')
-  const { tasks, cancel, retry, errorText } = useTaskCenter()
+  const { tasks, cancel, retry, clearCompleted, clearingCompleted } = useTaskCenter()
+  const hasCompleted = tasks.some((task) => task.status === 'completed')
   return (
     <section
-      className="w-full min-w-0 overflow-hidden"
+      className="flex w-full min-w-0 flex-col gap-[var(--vds-space-3)] overflow-hidden p-[var(--vds-space-4)]"
       aria-label={t('center.title')}
       data-testid="task-center"
     >
-      <div className="border-b border-[var(--vds-divider-default)] px-4 py-3">
-        <h2 className="m-0 text-[14px] font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
+      <div className="flex items-center justify-between gap-[var(--vds-space-3)]">
+        <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
           {t('center.title')}
         </h2>
-        <p className="m-0 mt-1 text-[11px] text-[var(--vds-text-secondary)]">
-          {t('center.description')}
-        </p>
+        {tasks.length > 0 && (
+          <Tooltip
+            content={t('center.clearCompleted')}
+            contentClassName="!z-[var(--vds-z-update-entry-tooltip)]"
+            side="bottom"
+            portalled
+          >
+            <IconButton
+              variant="ghostIcon"
+              size="sm"
+              label={t('center.clearCompleted')}
+              title={undefined}
+              icon={<BrushCleaning strokeWidth={1.5} />}
+              disabled={!hasCompleted || clearingCompleted}
+              loading={clearingCompleted}
+              onClick={() => void clearCompleted()}
+              data-testid="task-center-clear-completed"
+            />
+          </Tooltip>
+        )}
       </div>
-      <ScrollArea className="max-h-[420px]">
+      <ScrollArea className="min-w-0 max-h-[var(--vds-message-center-list-height)]">
         {tasks.length === 0 ? (
           <div className="px-4 py-8 text-center text-[12px] text-[var(--vds-text-secondary)]">
             {t('center.empty')}
           </div>
         ) : (
-          <div className="grid gap-2 p-3">
+          <div className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-2)]">
             {tasks.map((task) => {
-              const active =
-                task.status === 'queued' || task.status === 'running' || task.status === 'settling'
+              const active = isActiveProductTask(task)
               const canCancel = task.status === 'queued' || task.status === 'running'
-              const canRetry = task.status === 'failed' || task.status === 'partial' || task.status === 'cancelled'
+              const canRetry =
+                task.status === 'failed' || task.status === 'partial' || task.status === 'cancelled'
               const progress = taskProgressPresentation(task, t)
+              const title =
+                typeof task.title === 'string' ? taskTitleText(task.title, t) : t(task.title.key)
+              const files =
+                task.sourceNames.length > 0
+                  ? task.sourceNames
+                  : task.outcome.results.map((result) => result.name)
+              const createdAt = new Date(task.createdAt * TIMESTAMP_MILLISECONDS_PER_SECOND)
+              const dateParts = Object.fromEntries(
+                MESSAGE_DATE_FORMATTER.formatToParts(createdAt).map((part) => [
+                  part.type,
+                  part.value,
+                ])
+              )
+              const createdAtText = `${dateParts.year}-${dateParts.month}-${dateParts.day} ${dateParts.hour}:${dateParts.minute}`
               return (
                 <article
                   key={`${task.sourceId}:${task.id}`}
-                  className="min-w-0 overflow-hidden rounded-[10px] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-3"
+                  className="min-w-0 overflow-hidden rounded-[var(--vds-radius-4)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)]"
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-[12.5px] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
-                        {taskTitleText(task.title, t)}
-                      </div>
+                    <div className="min-w-0 flex-1">
+                      <EllipsisText
+                        tooltip={title}
+                        tooltipContentClassName="!z-[var(--vds-z-update-entry-tooltip)]"
+                        tooltipPortalled
+                        tabIndex={0}
+                        className="truncate text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]"
+                      >
+                        {title}
+                      </EllipsisText>
                     </div>
-                    <Tag className="shrink-0" size="small" tone={STATUS_TONES[task.status]}>{t(STATUS_MESSAGE_KEYS[task.status])}</Tag>
+                    <Tag className="shrink-0" size="small" tone={STATUS_TONES[task.status]}>
+                      {t(STATUS_MESSAGE_KEYS[task.status])}
+                    </Tag>
+                  </div>
+                  <div className="mt-[var(--vds-message-center-content-gap)] grid min-w-0 grid-cols-1 gap-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
+                    {files.length > 0 ? (
+                      files.map((name, index) => (
+                        <EllipsisText
+                          key={`${index}:${name}`}
+                          tooltip={name}
+                          tooltipContentClassName="!z-[var(--vds-z-update-entry-tooltip)]"
+                          tooltipPortalled
+                          tabIndex={0}
+                          data-testid="task-source-name"
+                        >
+                          {name}
+                        </EllipsisText>
+                      ))
+                    ) : (
+                      <p className="m-0">{t('center.noFiles')}</p>
+                    )}
+                    <div className="flex flex-wrap items-center justify-between gap-[var(--vds-space-1)]">
+                      <time dateTime={createdAt.toISOString()}>{createdAtText}</time>
+                      {canCancel || canRetry ? (
+                        <div className="flex gap-[var(--vds-space-2)]">
+                          {canCancel ? (
+                            <Button size="sm" variant="outline" onClick={() => void cancel(task)}>
+                              {uiText('cancel')}
+                            </Button>
+                          ) : null}
+                          {canRetry ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              icon={
+                                <IconFont
+                                  type="icon-line-operation-refresh"
+                                  className="text-[var(--vds-icon-outline-default)]"
+                                />
+                              }
+                              onClick={() => void retry(task)}
+                            >
+                              {uiText('retry')}
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                   {active ? (
                     <ProgressBar
@@ -361,25 +326,6 @@ export function TaskCenter(): React.JSX.Element {
                       label={progress.label}
                       value={progress.value}
                     />
-                  ) : null}
-                  {task.error ? (
-                    <p className="m-0 mt-2 text-[11px] text-[var(--vds-error-text-primary)]">
-                      {errorText(task)}
-                    </p>
-                  ) : null}
-                  {canCancel || canRetry ? (
-                    <div className="mt-3 flex justify-end gap-2">
-                      {canCancel ? (
-                        <Button size="sm" variant="outline" onClick={() => void cancel(task)}>
-                          {uiText('cancel')}
-                        </Button>
-                      ) : null}
-                      {canRetry ? (
-                        <Button size="sm" variant="outline" onClick={() => void retry(task)}>
-                          {uiText('retry')}
-                        </Button>
-                      ) : null}
-                    </div>
                   ) : null}
                 </article>
               )

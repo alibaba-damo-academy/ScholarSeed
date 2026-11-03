@@ -1,13 +1,23 @@
 ---
 name: agentic-search
 description: Tiered academic paper discovery for quick search-bar lookup, balanced interactive research, or maximum-quality multi-round retrieval. Infer hidden entities, search PaperHub with keyword/title/citation paths, optionally use public web evidence, and return a precision-first tiered metadata set. Use for natural-language research needs that ask to find relevant papers, including requests with a time budget or speed/quality preference.
-version: "1.1.0"
+description_zh: "分档发现学术论文：支持搜索框快速查找、均衡的交互式研究，以及质量优先的多轮检索。推断查询中的隐含实体，通过 PaperHub 的关键词、标题和引用路径检索，按需补充公网证据，并返回以精准度优先、按档位组织的论文元数据。适用于用自然语言查找相关论文的需求，包括指定时间预算或速度与质量偏好的请求。"
+version: "1.1.8"
 ---
 
 # Agentic Literature Search
 
 Return relevant papers in `metadata.json`. Do not generate a narrative report
 unless the user explicitly asks for one.
+
+For a standalone conversation search, after producing real non-empty `metadata.json`, publish the result with
+`scholarseed-bridge literature result --json '{"run":"RESULT_DIR","checkpoint":"metadata","skill":"agentic-search"}'`,
+replacing RESULT_DIR with the session-relative result directory. This displays the host's
+conversation component and the host's full-result actions; it does not authorize full-text access.
+The dedicated search-bar invocation owns its result tab and does not need this conversation call.
+When invoked by another research Skill, leave publication to that parent's checkpoint
+(for example research-idea-partner's candidates or literature-review's retrieval); do not publish twice.
+Never invent papers to obtain a card; report an empty or blocked search as such.
 
 ## Select one mode
 
@@ -48,11 +58,10 @@ Balanced graph.
 5. Route every public-web lookup through the separately installed `$web-search`
    skill; never call the runtime Web Search tool directly from this skill. The
    host owns the provider route required by that skill: the `official` profile
-   (`provider: official-api`) first, the `native` profile (`provider:
+   (`provider: official-api`) first, then the `native` profile (`provider:
    codex-native`) only after a structured unavailable/failed result or artifact
-   publication failure, then the `browser` profile (`provider:
-   visible-browser`) only when the runtime permits full access. For official
-   and browser, require a delivered `web-search-result.json` artifact, gate on
+   publication failure. Never use the `automatic` or `browser` profile. For
+   official, require a delivered `web-search-result.json` artifact, gate on
    `schema: scholarseed.web_search.v1`, and decide the search outcome from its
    `status`, not the provider process exit code. `completed` and `empty` are
    terminal successes; `unavailable`, `failed`, and `action_required` are not
@@ -74,10 +83,9 @@ strict native envelope: `schema` = `scholarseed.web_search.v1`; `status` =
 `completed` or `empty`; `provider` = `codex-native`; `query` exactly matches the
 requested query; `candidates` contains at most 20 exact
 `{title,url,description}` objects; and `error` is null. If native Web Search
-cannot return that envelope, continue to the browser profile. Across all three
-providers, consume only the common candidate core. Accept provider extension
-keys and do not reject a visible-browser candidate solely because its
-`description` is empty; `title` and a direct HTTP(S) `url` are load-bearing.
+cannot return that envelope, stop the public-web leg with a capability error.
+Across both providers, consume only the common candidate core and accept
+provider extension keys.
 
 ## PaperHub-unavailable fallback
 
@@ -133,7 +141,7 @@ titles from the full clue bundle. Make one logical `$web-search` batch with
 three complementary queries, even when the surface topic is explicit; its
 purpose is to resolve concrete paper titles. Run the three explicit skill
 invocations concurrently when the host supports it, and follow the skill's
-`official-api` → `codex-native` → `visible-browser` route for each query:
+`official-api` → `codex-native` route for each query:
 
 1. the full rare clue bundle plus `paper`;
 2. the central comparison/relationship plus `original study paper`;

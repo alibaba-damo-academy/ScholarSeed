@@ -7,10 +7,13 @@ from typing import Awaitable, Callable, Mapping
 
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
-from scholarseed_runtime.contract.history import MessagePhase, TurnStatus
+from scholarseed_runtime.contract.history import TurnStatus
 from scholarseed_runtime.contract.incident import RuntimeIncident
+from scholarseed_runtime.contract.inventory import SkillPolicy
 
 CODEX_DEFAULT_TURN_TIMEOUT_SECONDS = 12 * 60 * 60
+CODEX_REASONING_SUMMARY_CONFIG = "model_reasoning_summary"
+CODEX_REASONING_SUMMARY_AUTO = "auto"
 
 
 class CodexApprovalReviewer(str, Enum):
@@ -49,6 +52,7 @@ class CodexSessionEventKind(str, Enum):
     ASSISTANT_DELTA = "assistant_delta"
     ASSISTANT_COMPLETED = "assistant_completed"
     REASONING_DELTA = "reasoning_delta"
+    REASONING_COMPLETED = "reasoning_completed"
     TOOL_STARTED = "tool_started"
     TOOL_PROGRESS = "tool_progress"
     TOOL_COMPLETED = "tool_completed"
@@ -62,6 +66,7 @@ class CodexSessionEventKind(str, Enum):
     SKILL_COMPLETED = "skill_completed"
     NATIVE_ACTIVITY_STARTED = "native_activity_started"
     NATIVE_ACTIVITY_COMPLETED = "native_activity_completed"
+    SUBAGENT_ACTIVITY = "subagent_activity"
     FILE_CHANGED = "file_changed"
     PLAN_UPDATED = "plan_updated"
     PLAN_DELTA = "plan_delta"
@@ -93,6 +98,13 @@ class CodexRuntimeIdentity:
     client_title: str = ""
     client_version: str = ""
     service_name: str = ""
+
+
+CODEX_MANAGED_IDENTITY = CodexRuntimeIdentity(
+    client_name="scholarseed_desktop",
+    client_title="书深",
+    service_name="scholarseed",
+)
 
 
 @dataclass(frozen=True)
@@ -179,13 +191,15 @@ class CodexSessionOpenRequest:
     runtime_id: str
     cwd: Path
     resume_session_id: str = ""
+    fork_session_id: str = ""
+    fork_turn_id: str = ""
     model: str = ""
     model_provider: str = ""
     thread_config: Mapping[str, JsonValue] = field(default_factory=dict)
     process_environment: Mapping[str, str] = field(default_factory=dict)
     remove_environment: tuple[str, ...] = ()
     launch_arguments: tuple[CodexRuntimeLaunchArgument, ...] = ()
-    authentication_required: bool | None = None
+    provider_configuration: Mapping[str, JsonValue] = field(default_factory=dict, repr=False)
     sandbox: str = ""
     permissions_profile: str = ""
     approval_policy: str = ""
@@ -205,7 +219,11 @@ class CodexSessionOpenRequest:
     network_access: bool = False
     created_at: str | None = None
     ephemeral: bool = False
+    skill_policy: SkillPolicy = SkillPolicy.INHERIT
+    execution_scope: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
+    process_sharing_scope: str = field(default="", repr=False)
+    launch_cwd: Path | None = None
 
 
 CodexSessionEventObserver = Callable[[CodexSessionEvent], Awaitable[None] | None]

@@ -24,6 +24,9 @@ import type {
 
 /** 后端返回的树节点（字段与 service/resources 的资产契约 对齐）。 */
 interface ResourceNodePayload {
+  source?: 'imported' | 'created' | 'linked' | null
+  file_type?: string
+  updated_at?: number
   path: string
   name: string
   kind: 'file' | 'dir'
@@ -45,6 +48,7 @@ interface ResourceNodePayload {
 
 interface ResourceTreePayload {
   root: string
+  resource_root: string
   nodes: ResourceNodePayload[]
   /** 这一层的条目总数与本页起点。 */
   total: number
@@ -96,6 +100,7 @@ export interface ResourceImportResolution {
 export interface ResourceAgentOrigin {
   sourceKind: 'answer' | 'artifact'
   sessionId: string
+  sessionDeleted: boolean
   turnId: string | null
   itemId: string | null
   sourceRange?: { unit: string; start: number; end: number } | null
@@ -262,6 +267,17 @@ export interface ResourceReviewBatchDecision {
   pending_revision: number
   action: ResourceReviewAction
   expected_disk_revision: string | null
+  revised_content?: Uint8Array
+}
+
+const REVIEW_BASE64_CHUNK_SIZE = 8192
+
+function reviewContentBase64(content: Uint8Array): string {
+  const chunks: string[] = []
+  for (let offset = 0; offset < content.length; offset += REVIEW_BASE64_CHUNK_SIZE) {
+    chunks.push(String.fromCharCode(...content.subarray(offset, offset + REVIEW_BASE64_CHUNK_SIZE)))
+  }
+  return btoa(chunks.join(''))
 }
 
 export interface ResourceReviewBatchResult {
@@ -341,24 +357,6 @@ export async function fetchResourceReviewBatchForPath(
   return null
 }
 
-export async function hasDirtyReviewEditor(
-  projectId: string,
-  projectPath: string,
-  hasChanges: (project: string, fileId: string, paths: readonly string[]) => boolean
-): Promise<boolean> {
-  const pages = await Promise.all([
-    fetchResourceReviewBatches(projectId, 'open'),
-    fetchResourceReviewBatches(projectId, 'applying'),
-    fetchResourceReviewBatches(projectId, 'failed')
-  ])
-  return pages.some((page) => page?.items.some((batch) => (
-    batch.members.some((member) => (
-      member.state !== 'completed'
-      && hasChanges(projectPath, member.file_id, [member.path])
-    ))
-  )) === true)
-}
-
 export async function fetchReviewMemberContent(
   project: string, batchId: string, fileId: string, side: 'base' | 'candidate' | 'current'
 ): Promise<Uint8Array | null> {
@@ -401,7 +399,10 @@ export async function decideResourceReviewBatch(
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ decisions: decisions.map((decision) => ({ ...decision })) })
+        body: JSON.stringify({ decisions: decisions.map((decision) => ({
+          ...decision,
+          revised_content: decision.revised_content ? reviewContentBase64(decision.revised_content) : undefined
+        })) })
       }
     )
     const payload = await response.json().catch(() => null) as Omit<ResourceReviewBatchMutation, 'ok'> | null
@@ -503,6 +504,7 @@ export interface ResourceVersion {
   state: 'present' | 'tombstone'
   path: string
   origin: string
+  review_backup?: boolean
   created_at_ms: number
   session_id?: string | null
   turn_id?: string | null
@@ -942,6 +944,9 @@ function toNode(
 ): ResourceNode {
   return {
     path: payload.path,
+    source: payload.source,
+    fileType: payload.file_type,
+    updatedAt: payload.updated_at,
     name: payload.name,
     kind: payload.kind,
     count: payload.count ?? undefined,
@@ -977,6 +982,7 @@ export async function fetchResourceAgentOrigin(
     const payload = await response.json() as {
       source_kind: 'answer' | 'artifact'
       session_id: string
+      session_deleted?: boolean
       turn_id: string | null
       item_id: string | null
       source_range?: ResourceAgentOrigin['sourceRange']
@@ -985,6 +991,7 @@ export async function fetchResourceAgentOrigin(
     return {
       sourceKind: payload.source_kind,
       sessionId: payload.session_id,
+      sessionDeleted: payload.session_deleted === true,
       turnId: payload.turn_id,
       itemId: payload.item_id,
       ...(payload.source_range ? { sourceRange: payload.source_range } : {})
@@ -1025,11 +1032,25 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<Re
  * 失败返回 null（而不是空数组）——空数组会被 UI 当作「项目里确实没有资料」，
  * 与「请求失败」是两种不同状态，必须区分，否则用户看不出是网络问题。
  */
+export async function fetchResourceListing(project: string): Promise<ResourceNode[] | null> {
+  try {
+    const response = await fetch(`${base()}/api/resource/list?${new URLSearchParams({ project })}`, {
+      credentials: 'include', cache: 'no-store'
+    })
+    if (!response.ok) return null
+    const payload = await response.json() as { items: ResourceNodePayload[]; linked_roots?: ResourceTreePayload['linked_roots'] }
+    const roots = toLinkRoots(payload.linked_roots)
+    return payload.items.map((item) => toNode(item, roots))
+  } catch {
+    return null
+  }
+}
+
 export async function fetchResourceTree(
   project?: string | null,
   path?: string,
   offset = 0
-): Promise<{ root: string; nodes: ResourceNode[]; total: number; offset: number } | null> {
+): Promise<{ root: string; resourceRoot: string; nodes: ResourceNode[]; total: number; offset: number } | null> {
   const params = new URLSearchParams()
   if (project) params.set('project', project)
   if (path) params.set('path', path)
@@ -1045,6 +1066,7 @@ export async function fetchResourceTree(
     const linkedRoots = toLinkRoots(payload.linked_roots)
     return {
       root: payload.root,
+      resourceRoot: payload.resource_root,
       nodes: payload.nodes.map((node) => toNode(node, linkedRoots)),
       total: payload.total ?? payload.nodes.length,
       offset: payload.offset ?? 0

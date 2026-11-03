@@ -27,6 +27,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.roots import OWNED_ROOT_CONFLICT
 from service.content.service.tree import DEFAULT_MAX_DEPTH, PAGE_SIZE
+from service.platform.activity import Activities
 from service.platform.content import AssetOrigin, AssetTree, RootKind
 from service.resources.api.routes import register_resource_routes
 
@@ -91,7 +92,7 @@ def _scene() -> tuple[ContentService, str, Path, Path]:
     catalog = ContentCatalog(root / "content.sqlite3")
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     project = content.create_project("深度测试")
     resources = Path(project.root) / MANAGED_RESOURCES_ROOT_RELATIVE
     (resources / "本地" / "一层" / "二层").mkdir(parents=True)
@@ -492,7 +493,7 @@ def test_registered_artifact_roots_are_separate_and_portable() -> None:
         workspace.mkdir()
         catalog = ContentCatalog(base / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         legacy_path = workspace / "legacy"
         legacy_path.mkdir()
         projects = (registry.adopt(legacy_path), content.create_project("managed"))
@@ -507,6 +508,20 @@ def test_registered_artifact_roots_are_separate_and_portable() -> None:
             (target / "report.md").write_text("unique-artifact-content", encoding="utf-8")
             resource_root = content.root(project.id, RootKind.RESOURCES)
             content.create_bytes(project.id, resource_root.path, "input.md", b"resource-content")
+            app = FastAPI()
+            app.state.content = content
+            register_resource_routes(app)
+            response = TestClient(app).get("/api/resource/tree", params={"project": project.id})
+            check(
+                f"{label} 资源树提供权威资源根前缀且保留项目根",
+                response.status_code == 200
+                and response.json()["resource_root"] == resource_root.path
+                and response.json()["root"] == project.root,
+            )
+            check(
+                f"{label} 资源根只读解析与写入根一致",
+                content.root_relative(project.id, RootKind.RESOURCES) == resource_root.path,
+            )
             check(
                 f"{label} 登记根可重复打开",
                 content.root(project.id, RootKind.ARTIFACTS) == artifact_root,
@@ -534,7 +549,7 @@ def test_registered_artifact_roots_are_separate_and_portable() -> None:
                 f"{label} 资料搜索不命中产物内容",
                 content.search(project.id, "unique-artifact-content").hits == (),
             )
-            reopened = ContentService(registry, catalog)
+            reopened = ContentService(registry, catalog, activities=Activities())
             check(
                 f"{label} 重开保留根登记",
                 reopened.root(project.id, RootKind.ARTIFACTS) == artifact_root,
@@ -565,7 +580,7 @@ def test_existing_artifacts_directory_is_not_claimed_or_hidden() -> None:
         catalog = ContentCatalog(base / "catalog.sqlite3")
         registry = ProjectRegistry(str(base), catalog)
         project = registry.adopt(project_path)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         check(
             "已有用户产物同名目录拒绝认领",
             code_of(lambda: content.root(project.id, RootKind.ARTIFACTS)) == OWNED_ROOT_CONFLICT,
@@ -578,9 +593,50 @@ def test_existing_artifacts_directory_is_not_claimed_or_hidden() -> None:
         )
 
 
+def test_resource_tree_root_metadata_does_not_recreate_missing_directory() -> None:
+    with tempfile.TemporaryDirectory(prefix="content-root-metadata-") as temporary:
+        base = Path(temporary).resolve()
+        catalog = ContentCatalog(base / "catalog.sqlite3")
+        content = ContentService(
+            ProjectRegistry(str(base), catalog), catalog, activities=Activities()
+        )
+        project = content.create_project("missing-resource-root")
+        relative = content.root_relative(project.id, RootKind.RESOURCES)
+        target = Path(content.resolve(project.id, relative))
+        target.rmdir()
+        app = FastAPI()
+        app.state.content = content
+        register_resource_routes(app)
+        response = TestClient(app).get("/api/resource/tree", params={"project": project.id})
+        check(
+            "资料树根元数据不重新创建用户删除的资源根",
+            response.status_code == 200
+            and response.json()["resource_root"] == relative
+            and not target.exists(),
+        )
+
+
+def test_file_update_time_projection() -> None:
+    content, project_id, resources, _ = _scene()
+    target = resources / "更新.md"
+    target.write_text("content", encoding="utf-8")
+    app = FastAPI()
+    app.state.content = content
+    register_resource_routes(app)
+    response = TestClient(app).get("/api/resource/tree", params={"project": project_id})
+    check(
+        "文件更新时间来自实际文件",
+        payload_at(response.json()["nodes"], "更新.md")["updated_at"] == target.stat().st_mtime,
+    )
+    check(
+        "目录没有文件更新时间", payload_at(response.json()["nodes"], "本地")["updated_at"] is None
+    )
+
+
 def main() -> int:
     print("content tree paging contract (depth + single-level are both paging)")
     test_depth_limit_reports_how_much_it_skipped()
+    test_file_update_time_projection()
     test_subtree_continues_past_the_depth_limit()
     test_single_level_is_paged_not_truncated()
     test_mounts_are_not_lost_to_paging()
@@ -591,6 +647,7 @@ def main() -> int:
     test_http_count_enumerates_every_resource_file_once()
     test_registered_artifact_roots_are_separate_and_portable()
     test_existing_artifacts_directory_is_not_claimed_or_hidden()
+    test_resource_tree_root_metadata_does_not_recreate_missing_directory()
     print(f"\ncontract_content_tree: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
 

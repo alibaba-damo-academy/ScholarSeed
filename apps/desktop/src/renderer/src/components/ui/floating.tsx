@@ -15,7 +15,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type MutableRefObject,
   type ReactNode,
-  type RefObject
+  type RefObject,
 } from 'react'
 
 import { cx } from './utils'
@@ -24,6 +24,8 @@ import { inFocusScope, visibleContent } from './focus'
 export interface OpenRootProps {
   children?: ReactNode
   defaultOpen?: boolean
+  dismissOnEscape?: boolean
+  dismissOnOutsidePointerDown?: boolean
   onOpenChange?: (open: boolean) => void
   open?: boolean
 }
@@ -38,7 +40,7 @@ export interface OpenContextValue {
   setPosition: (position: FloatingPosition | null) => void
 }
 
-type FloatingPosition =
+export type FloatingPosition =
   | { kind: 'point'; x: number; y: number }
   | { bottom: number; kind: 'anchor'; left: number; top: number; width: number }
 
@@ -59,7 +61,9 @@ const CLIPPING_OVERFLOW_VALUES = new Set(['auto', 'clip', 'hidden', 'scroll'])
 
 function elementClipsContent(element: Element): boolean {
   const style = getComputedStyle(element)
-  return CLIPPING_OVERFLOW_VALUES.has(style.overflowX) || CLIPPING_OVERFLOW_VALUES.has(style.overflowY)
+  return (
+    CLIPPING_OVERFLOW_VALUES.has(style.overflowX) || CLIPPING_OVERFLOW_VALUES.has(style.overflowY)
+  )
 }
 
 function clampFloatingLeft(rawLeft: number, contentWidth: number, viewportWidth: number): number {
@@ -84,11 +88,12 @@ function anchorAlignedLeft(
   viewportWidth: number,
   align: FloatingAlign = 'start'
 ): number {
-  const alignedLeft = align === 'end'
-    ? position.left + position.width - contentWidth
-    : align === 'center'
-      ? position.left + (position.width - contentWidth) / 2
-      : position.left
+  const alignedLeft =
+    align === 'end'
+      ? position.left + position.width - contentWidth
+      : align === 'center'
+        ? position.left + (position.width - contentWidth) / 2
+        : position.left
   const fitsAligned =
     alignedLeft >= FLOATING_VIEWPORT_PADDING &&
     alignedLeft + contentWidth <= viewportWidth - FLOATING_VIEWPORT_PADDING
@@ -103,11 +108,12 @@ function anchorAlignedTop(
   viewportHeight: number,
   align: FloatingAlign = 'start'
 ): number {
-  const alignedTop = align === 'end'
-    ? position.bottom - contentHeight
-    : align === 'center'
-      ? position.top + (position.bottom - position.top - contentHeight) / 2
-      : position.top
+  const alignedTop =
+    align === 'end'
+      ? position.bottom - contentHeight
+      : align === 'center'
+        ? position.top + (position.bottom - position.top - contentHeight) / 2
+        : position.top
   const fitsAligned =
     alignedTop >= FLOATING_VIEWPORT_PADDING &&
     alignedTop + contentHeight <= viewportHeight - FLOATING_VIEWPORT_PADDING
@@ -129,38 +135,41 @@ function floatingPositionStyle(
     return {
       left,
       position: 'fixed',
-      top: clampFloatingTop(position.y, contentSize.height, viewportHeight)
+      top: clampFloatingTop(position.y, contentSize.height, viewportHeight),
     }
   }
 
   // left/right 侧：主轴贴在锚点左/右缘外侧，交叉轴（垂直）由 align 决定。
   // 显式指定的 side 一律只做视口夹取、不翻转，与 top/bottom 的既有口径一致。
   if (side === 'left' || side === 'right') {
-    const rawLeft = side === 'right'
-      ? position.left + position.width + FLOATING_OFFSET
-      : position.left - contentSize.width - FLOATING_OFFSET
+    const rawLeft =
+      side === 'right'
+        ? position.left + position.width + FLOATING_OFFSET
+        : position.left - contentSize.width - FLOATING_OFFSET
     return {
       left: clampFloatingLeft(rawLeft, contentSize.width, viewportWidth),
       position: 'fixed',
-      top: anchorAlignedTop(position, contentSize.height, viewportHeight, align)
+      top: anchorAlignedTop(position, contentSize.height, viewportHeight, align),
     }
   }
 
   const left = anchorAlignedLeft(position, contentSize.width, viewportWidth, align)
   const belowTop = position.bottom + FLOATING_OFFSET
   const aboveTop = position.top - contentSize.height - FLOATING_OFFSET
-  const fitsBelow =
-    belowTop + contentSize.height <= viewportHeight - FLOATING_VIEWPORT_PADDING
+  const fitsBelow = belowTop + contentSize.height <= viewportHeight - FLOATING_VIEWPORT_PADDING
   const fitsAbove = aboveTop >= FLOATING_VIEWPORT_PADDING
-  const rawTop = side === 'top'
-    ? aboveTop
-    : side === 'bottom'
-      ? belowTop
-      : fitsBelow || !fitsAbove ? belowTop : aboveTop
+  const rawTop =
+    side === 'top'
+      ? aboveTop
+      : side === 'bottom'
+        ? belowTop
+        : fitsBelow || !fitsAbove
+          ? belowTop
+          : aboveTop
   return {
-    left,
+    ...(align === 'end' ? { right: viewportWidth - left - contentSize.width } : { left }),
     position: 'fixed',
-    top: clampFloatingTop(rawTop, contentSize.height, viewportHeight)
+    top: clampFloatingTop(rawTop, contentSize.height, viewportHeight),
   }
 }
 
@@ -186,40 +195,93 @@ function anchorIntersectsVisibleArea(anchor: HTMLElement, rect: DOMRect): boolea
     }
   }
 
-  return rect.width > 0 && rect.height > 0 && rect.right > visibleLeft && rect.left < visibleRight &&
-    rect.bottom > visibleTop && rect.top < visibleBottom
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    rect.right > visibleLeft &&
+    rect.left < visibleRight &&
+    rect.bottom > visibleTop &&
+    rect.top < visibleBottom
+  )
 }
 
-export function createOpenContext(name: string, { dismissOutside = true }: { dismissOutside?: boolean } = {}): {
+export function createOpenContext(
+  name: string,
+  { dismissOutside = true }: { dismissOutside?: boolean } = {}
+): {
   Provider: (props: OpenRootProps) => JSX.Element
   useOpenContext: () => OpenContextValue
 } {
   const Context = createContext<OpenContextValue | null>(null)
 
-  function Provider({ children, defaultOpen = false, onOpenChange, open }: OpenRootProps): JSX.Element {
-    const anchorRef = useRef<HTMLElement>(null)
+  function Provider({
+    children,
+    defaultOpen = false,
+    dismissOnEscape = true,
+    dismissOnOutsidePointerDown = true,
+    onOpenChange,
+    open,
+  }: OpenRootProps): JSX.Element {
+    const anchorRef = useRef<HTMLElement | null>(null)
     const contentId = useId()
     const contentRef = useRef<HTMLDivElement>(null)
     const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen)
     const [position, setPosition] = useState<FloatingPosition | null>(null)
     const currentOpen = open ?? uncontrolledOpen
 
-    const setOpen = useCallback((nextOpen: boolean): void => {
-      if (open === undefined) {
-        setUncontrolledOpen(nextOpen)
-      }
-      onOpenChange?.(nextOpen)
-    }, [onOpenChange, open])
+    const setOpen = useCallback(
+      (nextOpen: boolean): void => {
+        if (open === undefined) {
+          setUncontrolledOpen(nextOpen)
+        }
+        onOpenChange?.(nextOpen)
+      },
+      [onOpenChange, open]
+    )
+
+    useLayoutEffect(() => {
+      if (!currentOpen || position) return
+      const anchor =
+        anchorRef.current ??
+        document.querySelector<HTMLElement>(`[aria-controls~="${CSS.escape(contentId)}"]`)
+      if (!anchor) return
+      anchorRef.current = anchor
+      const rect = anchor.getBoundingClientRect()
+      setPosition({
+        bottom: rect.bottom,
+        kind: 'anchor',
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+      })
+    }, [contentId, currentOpen, position])
 
     useEffect(() => {
       if (!currentOpen) return undefined
 
       openContents.add(contentRef)
       const handleKeyDown = (event: KeyboardEvent): void => {
-        if (event.defaultPrevented || event.key !== 'Escape' || !visibleContent(contentRef.current) || !inFocusScope(contentRef.current, document.activeElement) && document.activeElement?.getAttribute('aria-controls') !== contentId) return
+        if (
+          event.defaultPrevented ||
+          !dismissOnEscape ||
+          event.key !== 'Escape' ||
+          !visibleContent(contentRef.current) ||
+          (!inFocusScope(contentRef.current, document.activeElement) &&
+            document.activeElement?.getAttribute('aria-controls') !== contentId)
+        )
+          return
         const content = contentRef.current
-        if ([...openContents].some((ref) => ref !== contentRef && visibleContent(ref.current) &&
-          inFocusScope(content, ref.current) && inFocusScope(ref.current, document.activeElement))) return
+        if (
+          [...openContents].some(
+            (ref) =>
+              ref !== contentRef &&
+              visibleContent(ref.current) &&
+              inFocusScope(content, ref.current) &&
+              (inFocusScope(ref.current, document.activeElement) ||
+                document.activeElement?.getAttribute('aria-controls') === ref.current.id)
+          )
+        )
+          return
         event.preventDefault()
         setOpen(false)
       }
@@ -229,22 +291,38 @@ export function createOpenContext(name: string, { dismissOutside = true }: { dis
         openContents.delete(contentRef)
         document.removeEventListener('keydown', handleKeyDown)
       }
-    }, [currentOpen, setOpen])
+    }, [contentId, currentOpen, dismissOnEscape, setOpen])
 
     useEffect(() => {
       if (!currentOpen) return undefined
 
       const handlePointerDown = (event: PointerEvent): void => {
-        if (!dismissOutside) return
-        if (!visibleContent(contentRef.current) || inFocusScope(contentRef.current, event.target)) return
+        if (!dismissOutside || !dismissOnOutsidePointerDown) return
+        if (event.target instanceof Node && anchorRef.current?.contains(event.target)) return
+        if (!visibleContent(contentRef.current) || inFocusScope(contentRef.current, event.target))
+          return
         setOpen(false)
       }
 
       document.addEventListener('pointerdown', handlePointerDown)
       return () => document.removeEventListener('pointerdown', handlePointerDown)
-    }, [currentOpen, setOpen])
+    }, [currentOpen, dismissOnOutsidePointerDown, setOpen])
 
-    return <Context.Provider value={{ anchorRef, contentId, contentRef, open: currentOpen, position, setOpen, setPosition }}>{children}</Context.Provider>
+    return (
+      <Context.Provider
+        value={{
+          anchorRef,
+          contentId,
+          contentRef,
+          open: currentOpen,
+          position,
+          setOpen,
+          setPosition,
+        }}
+      >
+        {children}
+      </Context.Provider>
+    )
   }
 
   function useOpenContext(): OpenContextValue {
@@ -261,15 +339,16 @@ export function triggerProps(
   props: HTMLAttributes<HTMLElement> & { children?: ReactNode },
   eventName: 'onClick' | 'onContextMenu' | 'onMouseEnter'
 ): HTMLAttributes<HTMLElement> {
-  const hoverProps = eventName === 'onMouseEnter'
-    ? {
-        onMouseLeave: (event: ReactMouseEvent<HTMLElement>) => {
-          props.onMouseLeave?.(event)
-          if (event.defaultPrevented) return
-          context.setOpen(false)
+  const hoverProps =
+    eventName === 'onMouseEnter'
+      ? {
+          onMouseLeave: (event: ReactMouseEvent<HTMLElement>) => {
+            props.onMouseLeave?.(event)
+            if (event.defaultPrevented) return
+            context.setOpen(false)
+          },
         }
-      }
-    : undefined
+      : undefined
 
   return {
     ...props,
@@ -286,10 +365,16 @@ export function triggerProps(
       } else {
         context.anchorRef.current = event.currentTarget
         const rect = event.currentTarget.getBoundingClientRect()
-        context.setPosition({ bottom: rect.bottom, kind: 'anchor', left: rect.left, top: rect.top, width: rect.width })
+        context.setPosition({
+          bottom: rect.bottom,
+          kind: 'anchor',
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+        })
       }
       context.setOpen(eventName === 'onClick' ? !context.open : true)
-    }
+    },
   }
 }
 
@@ -308,17 +393,23 @@ export function renderTrigger(
       [eventName]: (event: ReactMouseEvent<HTMLElement>) => {
         child.props[eventName]?.(event)
         nextProps[eventName]?.(event as never)
-      }
+      },
     })
   }
-  return <button type="button" {...nextProps}>{children}</button>
+  return (
+    <button type="button" {...nextProps}>
+      {children}
+    </button>
+  )
 }
 
 function useTrackedFloatingStyle(
   context: OpenContextValue,
   active: boolean,
   side: FloatingSide,
-  align: FloatingAlign = 'start'
+  align: FloatingAlign = 'start',
+  sideBoundaryRef?: RefObject<HTMLElement | null>,
+  horizontalAnchorRef?: RefObject<HTMLElement | null>
 ): CSSProperties | undefined {
   const { anchorRef, contentRef, position, setOpen } = context
   const [floatingStyle, setFloatingStyle] = useState<CSSProperties | undefined>(undefined)
@@ -331,22 +422,73 @@ function useTrackedFloatingStyle(
 
     const update = (): void => {
       if (!contentRef.current) return
-      const anchorRect = position.kind === 'anchor' ? anchorRef.current?.getBoundingClientRect() : undefined
-      const currentPosition = anchorRect
-        ? { bottom: anchorRect.bottom, kind: 'anchor' as const, left: anchorRect.left, top: anchorRect.top, width: anchorRect.width }
+      const anchorRect =
+        position.kind === 'anchor' ? anchorRef.current?.getBoundingClientRect() : undefined
+      const triggerPosition = anchorRect
+        ? {
+            bottom: anchorRect.bottom,
+            kind: 'anchor' as const,
+            left: anchorRect.left,
+            top: anchorRect.top,
+            width: anchorRect.width,
+          }
         : position
-      setFloatingStyle(floatingPositionStyle(currentPosition, {
-        height: contentRef.current.offsetHeight,
-        width: contentRef.current.offsetWidth
-      }, side, align))
+      const horizontalAnchor = horizontalAnchorRef?.current?.getBoundingClientRect()
+      const currentPosition =
+        horizontalAnchor && triggerPosition.kind === 'anchor'
+          ? { ...triggerPosition, left: horizontalAnchor.left, width: horizontalAnchor.width }
+          : triggerPosition
+      const boundary = sideBoundaryRef?.current?.getBoundingClientRect()
+      const horizontal = side === 'left' || side === 'right'
+      const boundaryPosition =
+        boundary && horizontal && currentPosition.kind === 'anchor'
+          ? { ...currentPosition, left: boundary.left, width: boundary.width }
+          : currentPosition
+      const leftSpace = boundary ? boundary.left - FLOATING_VIEWPORT_PADDING - FLOATING_OFFSET : 0
+      const rightSpace = boundary
+        ? window.innerWidth - boundary.right - FLOATING_VIEWPORT_PADDING - FLOATING_OFFSET
+        : 0
+      const resolvedSide =
+        boundary && horizontal
+          ? (side === 'left' ? leftSpace : rightSpace) >= contentRef.current.offsetWidth
+            ? side
+            : leftSpace >= rightSpace
+              ? 'left'
+              : 'right'
+          : side
+      const maxWidth =
+        boundary && horizontal
+          ? Math.max(0, resolvedSide === 'left' ? leftSpace : rightSpace)
+          : undefined
+      const width =
+        maxWidth === undefined
+          ? contentRef.current.offsetWidth
+          : Math.min(contentRef.current.offsetWidth, maxWidth)
+      setFloatingStyle({
+        ...floatingPositionStyle(
+          boundaryPosition,
+          {
+            height: contentRef.current.offsetHeight,
+            width,
+          },
+          resolvedSide,
+          align
+        ),
+        ...(maxWidth === undefined ? {} : { maxWidth }),
+      })
     }
 
     const handleScroll = (event: Event): void => {
       const anchor = position.kind === 'anchor' ? anchorRef.current : null
       const anchorRect = anchor?.getBoundingClientRect()
       const scrollContainer = event.target instanceof Element ? event.target : null
-      if (anchor && anchorRect && scrollContainer?.contains(anchor) && elementClipsContent(scrollContainer) &&
-        !anchorIntersectsVisibleArea(anchor, anchorRect)) {
+      if (
+        anchor &&
+        anchorRect &&
+        scrollContainer?.contains(anchor) &&
+        elementClipsContent(scrollContainer) &&
+        !anchorIntersectsVisibleArea(anchor, anchorRect)
+      ) {
         setFloatingStyle(undefined)
         setOpen(false)
         return
@@ -360,12 +502,24 @@ function useTrackedFloatingStyle(
     const observer = new ResizeObserver(update)
     observer.observe(contentRef.current)
     if (anchorRef.current) observer.observe(anchorRef.current)
+    if (horizontalAnchorRef?.current) observer.observe(horizontalAnchorRef.current)
+    if (sideBoundaryRef?.current) observer.observe(sideBoundaryRef.current)
     return () => {
       window.removeEventListener('resize', update)
       window.removeEventListener('scroll', handleScroll, true)
       observer.disconnect()
     }
-  }, [active, align, anchorRef, contentRef, position, setOpen, side])
+  }, [
+    active,
+    align,
+    anchorRef,
+    contentRef,
+    horizontalAnchorRef,
+    position,
+    setOpen,
+    side,
+    sideBoundaryRef,
+  ])
 
   return floatingStyle
 }
@@ -374,16 +528,24 @@ export function useFloatingContentStyle(
   context: OpenContextValue,
   style?: CSSProperties,
   side: FloatingSide = 'auto',
-  align: FloatingAlign = 'start'
+  align: FloatingAlign = 'start',
+  horizontalAnchorRef?: RefObject<HTMLElement | null>
 ): CSSProperties | undefined {
   const { open, position } = context
-  const floatingStyle = useTrackedFloatingStyle(context, open, side, align)
+  const floatingStyle = useTrackedFloatingStyle(
+    context,
+    open,
+    side,
+    align,
+    undefined,
+    horizontalAnchorRef
+  )
 
-  if (!position) return style
+  if (!position) return { visibility: 'hidden', ...style }
   return {
     visibility: floatingStyle ? 'visible' : 'hidden',
     ...floatingStyle,
-    ...style
+    ...style,
   }
 }
 
@@ -392,15 +554,16 @@ export function useFloatingContentPosition(
   active: boolean,
   style?: CSSProperties,
   side: FloatingSide = 'auto',
-  align: FloatingAlign = 'start'
+  align: FloatingAlign = 'start',
+  sideBoundaryRef?: RefObject<HTMLElement | null>
 ): CSSProperties | undefined {
   const { position } = context
-  const floatingStyle = useTrackedFloatingStyle(context, active, side, align)
+  const floatingStyle = useTrackedFloatingStyle(context, active, side, align, sideBoundaryRef)
 
   if (!position) return style
   return {
     visibility: floatingStyle ? 'visible' : 'hidden',
     ...floatingStyle,
-    ...style
+    ...style,
   }
 }

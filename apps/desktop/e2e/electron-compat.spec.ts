@@ -28,7 +28,7 @@ function readWindowsCfHtml(): string {
 }
 
 test('CF_HTML parser validates UTF-8 byte offsets, line endings, and image counts', () => {
-  for (const lineEnding of ['\n', '\r\n']) {
+  for (const lineEnding of ['\n', '\r\n'] as const) {
     for (const imageCount of [0, 1, 2]) {
       const images = Array.from({ length: imageCount }, (_, index) => `<img src="data:image/png;base64,image-${index}" alt="截图 ${index + 1}">`).join('')
       const fragment = `<section><h1>反馈报告 😀</h1><p>中文正文</p>${images}</section>`
@@ -135,7 +135,7 @@ test('Office clipboard acquisition reads real Electron image and text payloads',
     const original = await desktop.app!.evaluate(async ({ clipboard, ClipboardItem, nativeImage }) => {
       const image = nativeImage.createFromBitmap(Buffer.from([0, 0, 255, 255]), { width: 1, height: 1 })
       const bytes = image.toPNG()
-      await clipboard.write([new ClipboardItem({ 'image/png': new Blob([bytes], { type: 'image/png' }) })])
+      await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(bytes)], { type: 'image/png' }) })])
       return Array.from(bytes)
     })
     const result = await page.evaluate(async () => {
@@ -182,9 +182,12 @@ test('rich feedback clipboard exposes HTML and a readable plain fallback to Chro
       return {
         types: items.flatMap(item => item.types),
         text: await clipboard.readText(),
-        html: await Promise.all(items.map(async item => item.types.includes('text/html')
-          ? (await item.getType('text/html')).text()
-          : ''))
+        html: await Promise.all(items.map(async item => {
+          if (!item.types.includes('text/html')) return ''
+          const content = await item.getType('text/html')
+          if (!(content instanceof Blob)) throw new Error('HTML clipboard entry must be a Blob')
+          return content.text()
+        }))
       }
     })
     expect(nativeClipboard.types).toContain('text/plain')

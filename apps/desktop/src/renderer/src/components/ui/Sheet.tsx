@@ -1,5 +1,5 @@
-import type { ButtonHTMLAttributes, HTMLAttributes, KeyboardEvent as ReactKeyboardEvent, ReactNode, RefObject } from 'react'
-import { Children, createContext, forwardRef, isValidElement, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
+import type { AnimationEvent as ReactAnimationEvent, ButtonHTMLAttributes, HTMLAttributes, KeyboardEvent as ReactKeyboardEvent, ReactNode, RefObject } from 'react'
+import { Children, createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import {
   buttonClassName,
@@ -22,7 +22,9 @@ interface SheetContextValue {
   contentRef: RefObject<HTMLDivElement>
   close: () => void
   descriptionId: string
+  finishClose: () => void
   open: boolean
+  present: boolean
   restoreFocusRef: RefObject<HTMLElement | null>
   setOpen: (open: boolean) => void
   titleId: string
@@ -81,31 +83,45 @@ export function Sheet({ children, onOpenChange, open }: SheetProps): JSX.Element
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
   const currentOpen = open ?? uncontrolledOpen
-  const setOpen = (nextOpen: boolean): void => {
+  const [present, setPresent] = useState(currentOpen)
+  const setOpen = useCallback((nextOpen: boolean): void => {
     if (open === undefined) setUncontrolledOpen(nextOpen)
     onOpenChange?.(nextOpen)
-  }
+  }, [onOpenChange, open])
   const context = useMemo<SheetContextValue>(
     () => ({
       contentRef,
       close: () => setOpen(false),
       descriptionId: `${generatedId}-description`,
+      finishClose: () => {
+        if (currentOpen) return
+        setPresent(false)
+      },
       open: currentOpen,
+      present,
       restoreFocusRef,
       setOpen,
       titleId: `${generatedId}-title`
     }),
-    [currentOpen, generatedId, setOpen]
+    [currentOpen, generatedId, present, setOpen]
   )
 
-  const wasOpenRef = useRef(currentOpen)
   useEffect(() => {
-    if (wasOpenRef.current && !currentOpen) {
+    if (currentOpen) {
+      setPresent(true)
+      return
+    }
+    if (present && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setPresent(false)
+    }
+  }, [currentOpen, present])
+
+  useEffect(() => {
+    if (!currentOpen && !present) {
       const target = restoreFocusRef.current
       if (target?.isConnected) target.focus({ preventScroll: true })
     }
-    wasOpenRef.current = currentOpen
-  }, [currentOpen, restoreFocusRef])
+  }, [currentOpen, present, restoreFocusRef])
 
   useEffect(() => {
     if (!currentOpen) return undefined
@@ -120,7 +136,7 @@ export function Sheet({ children, onOpenChange, open }: SheetProps): JSX.Element
     return () => document.removeEventListener('keydown', handleDocumentKeyDown)
   }, [currentOpen, setOpen])
 
-  const visibleChildren = currentOpen
+  const visibleChildren = currentOpen || present
     ? children
     : Children.map(children, (child) => (
       isValidElement(child) && (child.type === SheetTrigger || child.type === SheetPortal) ? child : null
@@ -131,7 +147,7 @@ export function Sheet({ children, onOpenChange, open }: SheetProps): JSX.Element
 
 export const SheetPortal = forwardRef<HTMLDivElement, SheetPortalProps>(({ className, ...props }, ref) => {
   const context = useSheetContext('SheetPortal')
-  if (!context.open) return null
+  if (!context.present) return null
   return <div className={cx(sheetPortalClassName, className)} ref={ref} {...props} />
 })
 
@@ -198,6 +214,7 @@ export const SheetContent = forwardRef<HTMLDivElement, SheetContentProps>(
       ariaModal,
       className,
       modal = false,
+      onAnimationEnd,
       onKeyDown,
       role = 'dialog',
       side = 'right',
@@ -219,6 +236,13 @@ export const SheetContent = forwardRef<HTMLDivElement, SheetContentProps>(
     const modalValue = ariaModal ?? modal
     useFocusScope(context.contentRef, context.open, modalValue, modalValue, context.restoreFocusRef)
 
+    const handleAnimationEnd = (event: ReactAnimationEvent<HTMLDivElement>): void => {
+      onAnimationEnd?.(event)
+      if (!event.defaultPrevented && event.currentTarget === event.target && !context.open) {
+        context.finishClose()
+      }
+    }
+
     return (
       <div
         aria-describedby={ariaDescribedBy ?? context.descriptionId}
@@ -234,6 +258,7 @@ export const SheetContent = forwardRef<HTMLDivElement, SheetContentProps>(
         }}
         role={role}
         tabIndex={tabIndex}
+        onAnimationEnd={handleAnimationEnd}
         onKeyDown={handleKeyDown}
         {...props}
       />

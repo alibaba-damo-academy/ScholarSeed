@@ -10,8 +10,8 @@ import threading
 import uuid
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PureWindowsPath
+from typing import Any, BinaryIO
 
 from service.chat.constants import (
     PRODUCT_EVENT_ARTIFACT_CHANGED,
@@ -36,12 +36,14 @@ from service.platform.content import (
     ContentPort,
     VerifiedArtifactContent,
 )
-from service.platform.files import guess_media_type
-from service.platform.storage import preserve_mode
+from service.platform.files import export_file_name, guess_media_type
+from service.platform.limits import DOCUMENT_PREVIEW_MAX_BYTES
+from service.platform.storage import NOFOLLOW, NONBLOCK, open_directory, preserve_mode
 from service.platform.workbench import DocumentFormatPort
 
 ARTIFACT_TEXT_MAX_BYTES = 512 * 1024
 ARTIFACT_RAW_MAX_BYTES = 16 * 1024 * 1024
+ARTIFACT_PREVIEW_MAX_BYTES = DOCUMENT_PREVIEW_MAX_BYTES
 ARTIFACT_HASH_CHUNK_BYTES = 64 * 1024
 ARTIFACT_EXPORT_MAX_BYTES = 128 * 1024 * 1024
 
@@ -51,6 +53,8 @@ ARTIFACT_INTEGRITY_MISMATCH = "session_artifact_integrity_mismatch"
 ARTIFACT_TOO_LARGE = "session_artifact_too_large"
 ARTIFACT_REVISION_CONFLICT = "session_artifact_revision_conflict"
 ARTIFACT_EDIT_UNAVAILABLE = "session_artifact_edit_unavailable"
+ARTIFACT_PATH_AMBIGUOUS = "session_artifact_path_ambiguous"
+ARTIFACT_PUBLICATION_REQUIRED = "session_artifact_publication_required"
 ARTIFACT_REVISION_PREFIX = "sha256:"
 ARTIFACT_EDIT_EVENT_KEY_PREFIX = "artifact-edit"
 HASH_BOUND_ARTIFACT_SOURCES = frozenset(
@@ -88,6 +92,15 @@ class ArtifactWriteReceipt:
 
     revision: str
     events: tuple[ProductEventRecord, ...]
+
+
+@dataclass(frozen=True)
+class ArtifactDocument:
+    body: bytes | BinaryIO
+    media_type: str
+    editable: bool
+    revision: str
+    size: int
 
 
 class ArtifactService:
@@ -152,7 +165,53 @@ class ArtifactService:
                 raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH)
         if expected_sha256 and sha256(raw).hexdigest() != expected_sha256:
             raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
-        return raw, Path(record.original_path).name
+        return raw, export_file_name(Path(record.original_path).name, record.mime_type, raw)
+
+    def published_artifact_id(
+        self,
+        session_id: str,
+        workdir: Path,
+        *,
+        artifact_id: str | None = None,
+        path: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> str:
+        if artifact_id is not None:
+            record = self._record(session_id, artifact_id)
+            if record.status is not ArtifactStatus.PUBLISHED:
+                raise ArtifactReadError(ARTIFACT_PUBLICATION_REQUIRED)
+            return artifact_id
+        if path is None:
+            raise ArtifactReadError(ARTIFACT_NOT_FOUND)
+        relative = Path(path.replace("\\", "/"))
+        if (
+            relative.is_absolute()
+            or PureWindowsPath(path).drive
+            or ".." in relative.parts
+            or "\x00" in path
+        ):
+            raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
+        root = workdir.resolve()
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root):
+            raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
+        candidates = tuple(
+            record
+            for record in current_artifact_records(self._artifacts.list_session(session_id))
+            if record.status is ArtifactStatus.PUBLISHED
+            and Path(record.canonical_path).resolve() == target
+        )
+        if not candidates:
+            raise ArtifactReadError(ARTIFACT_NOT_FOUND)
+        if expected_sha256 is not None:
+            candidates = tuple(
+                record for record in candidates if record.content_sha256 == expected_sha256
+            )
+            if not candidates:
+                raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
+        if len(candidates) != 1:
+            raise ArtifactReadError(ARTIFACT_PATH_AMBIGUOUS)
+        return artifact_identity(candidates[0])
 
     def export_document_bytes(
         self, session_id: str, artifact_id: str, expected_sha256: str | None = None
@@ -163,7 +222,7 @@ class ArtifactService:
             return self.export_bytes(session_id, artifact_id, expected_sha256)
         if expected_sha256 and sha256(draft).hexdigest() != expected_sha256:
             raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
-        return draft, Path(record.original_path).name
+        return draft, export_file_name(Path(record.original_path).name, record.mime_type, draft)
 
     def _record(self, session_id: str, artifact_id: str) -> SessionArtifactRecord:
         records = current_artifact_records(self._artifacts.list_session(session_id))
@@ -204,7 +263,55 @@ class ArtifactService:
     def read_document(self, session_id: str, artifact_id: str) -> tuple[bytes, str, bool, str]:
         record = self._record(session_id, artifact_id)
         content, _media_type = self.read_raw(session_id, artifact_id)
-        return content, _media_type, self._editable(record, content), self._revision(content)
+        editable = len(content) <= ARTIFACT_RAW_MAX_BYTES and self._editable(record, content)
+        return content, _media_type, editable, self._revision(content)
+
+    def open_document(self, session_id: str, artifact_id: str) -> ArtifactDocument:
+        record = self._record(session_id, artifact_id)
+        if record.status is ArtifactStatus.PUBLISHED:
+            content, media_type, editable, revision = self.read_document(session_id, artifact_id)
+            return ArtifactDocument(content, media_type, editable, revision, len(content))
+        record, target = self._path(session_id, artifact_id)
+        if target.stat().st_size <= ARTIFACT_RAW_MAX_BYTES:
+            content, media_type, editable, revision = self.read_document(session_id, artifact_id)
+            return ArtifactDocument(content, media_type, editable, revision, len(content))
+        directory = open_directory(target.parent, ())
+        try:
+            descriptor = directory.open(target.name, os.O_RDONLY | NOFOLLOW | NONBLOCK)
+        finally:
+            directory.close()
+        stream = os.fdopen(descriptor, "rb")
+        try:
+            identity = os.fstat(stream.fileno())
+            if not stat.S_ISREG(identity.st_mode):
+                raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
+            if identity.st_size > ARTIFACT_PREVIEW_MAX_BYTES:
+                raise ArtifactReadError(ARTIFACT_TOO_LARGE)
+            digest = sha256()
+            while chunk := stream.read(ARTIFACT_HASH_CHUNK_BYTES):
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+            if (identity.st_size, identity.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH)
+            if (
+                record.source_kind in HASH_BOUND_ARTIFACT_SOURCES
+                and record.content_sha256 != digest.hexdigest()
+            ):
+                raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH)
+            stream.seek(0)
+            media_type = (
+                record.mime_type or guess_media_type(target.name) or "application/octet-stream"
+            )
+            return ArtifactDocument(
+                stream,
+                media_type,
+                False,
+                f"{ARTIFACT_REVISION_PREFIX}{digest.hexdigest()}",
+                identity.st_size,
+            )
+        except BaseException:
+            stream.close()
+            raise
 
     def _write_lock(self, target: Path) -> threading.Lock:
         key = str(target)
@@ -350,11 +457,11 @@ class ArtifactService:
         if record.status is ArtifactStatus.PUBLISHED:
             draft = self._artifacts.draft(record.artifact_id)
             raw = draft if draft is not None else self._published_bytes(record)
-            if len(raw) > ARTIFACT_RAW_MAX_BYTES:
+            if len(raw) > ARTIFACT_PREVIEW_MAX_BYTES:
                 raise ArtifactReadError(ARTIFACT_TOO_LARGE)
             return raw, record.mime_type or "application/octet-stream"
         record, target = self._path(session_id, artifact_id)
-        if target.stat().st_size > ARTIFACT_RAW_MAX_BYTES:
+        if target.stat().st_size > ARTIFACT_PREVIEW_MAX_BYTES:
             raise ArtifactReadError(ARTIFACT_TOO_LARGE)
         guessed = guess_media_type(target.name)
         return target.read_bytes(), record.mime_type or guessed or "application/octet-stream"

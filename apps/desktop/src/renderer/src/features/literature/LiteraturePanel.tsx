@@ -6,22 +6,21 @@ import { useAccountAccess } from '../../components/business/access'
 import {
   ArrowRight,
   EllipsisVertical,
-  FileDown,
   Folder,
   FolderOpen,
   Link,
   LockKeyhole,
-  MonitorDown,
   Pencil,
   Search,
-  Trash
+  Trash,
 } from 'lucide-react'
 
 import type {
   LiteratureCounts,
+  LiteratureFacetPage,
   LiteratureFacets,
   LiteratureProject,
-  LiteratureTagFacet
+  LiteratureTagFacet,
 } from '../../contracts/literature'
 import {
   Alert,
@@ -63,7 +62,7 @@ import {
   semanticTagColorFor,
   Spinner,
   Tag,
-  Textarea
+  Textarea,
 } from '../../components/ui'
 import { Icon } from '../../icons'
 import { IconFont } from '../../components/primitive'
@@ -78,14 +77,13 @@ import {
   getLiteratureCounts,
   getLiteratureFacets,
   getLiteratureProjects,
-  getLiteratureTagFacets
+  getLiteratureTagFacets,
 } from './api'
 import { catalogue, useCatalogue } from './catalog'
 import { CollectionEditor, type CollectionEditTarget } from './Collection'
 import { IMPORT_SOURCES } from './imports'
+import { ImportSourceItem } from './ImportSourceItem'
 import { useSidebarBoolean, useSidebarSet } from './sidebarState'
-
-import './literature.css'
 
 const EMPTY_COUNTS: LiteratureCounts = {
   all: 0,
@@ -94,12 +92,18 @@ const EMPTY_COUNTS: LiteratureCounts = {
   unread: 0,
   without_fulltext: 0,
 }
+/** 有界 facet 维度的空值, 三个字段与 LiteratureFacetPage 一一对应。 */
+const emptyFacetPage = <T,>(): LiteratureFacetPage<T> => ({
+  total: 0,
+  entries: [],
+  truncated: false,
+})
 const EMPTY_FACETS: LiteratureFacets = {
   collections: [],
   tags: [],
-  item_types: [],
-  publications: [],
-  years: []
+  item_types: emptyFacetPage(),
+  publications: emptyFacetPage(),
+  years: emptyFacetPage(),
 }
 /**
  * 把 query 里已不在当前作用域标签云中的 tag_id 收敛掉。
@@ -119,12 +123,20 @@ function pruneStaleTags(visible: LiteratureTagFacet[]): void {
   if (next.length === current.length) return
   catalogue.filter({ tag_id: next.length > 0 ? next : undefined })
 }
-const PANEL_COLLAPSIBLE_CLASS_NAME =
-  'grid gap-2 border-0 bg-transparent p-0 shadow-none'
+const PANEL_COLLAPSIBLE_CLASS_NAME = 'grid gap-2 border-0 bg-transparent p-0 shadow-none'
 const PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME =
-  "!h-5 !min-h-0 !rounded-none !border-0 !bg-transparent !px-1 !py-0 flex flex-1 items-center justify-start gap-[var(--vds-space-2)] text-left [font-family:'PingFang_SC'] text-[14px] !font-[400] leading-5 tracking-normal !text-[var(--vds-text-10)] shadow-none transition-colors hover:!bg-transparent hover:!text-[var(--vds-text-10)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-ring)]"
+  "!h-[var(--vds-library-panel-collapsible-title-line-height)] !min-h-0 !rounded-none !border-0 !bg-transparent !px-[var(--vds-space-1)] !py-0 flex flex-1 items-center justify-start gap-[var(--vds-space-2)] text-left [font-family:'PingFang_SC'] text-[length:var(--vds-library-panel-collapsible-title-font-size)] !font-[var(--vds-fw-regular)] leading-[var(--vds-library-panel-collapsible-title-line-height)] tracking-[var(--vds-letter-spacing-normal)] !text-[var(--vds-text-10)] shadow-none transition-colors hover:!bg-transparent hover:!text-[var(--vds-text-10)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-ring)]"
 const PANEL_COLLAPSIBLE_ICON_CLASS_NAME =
   'inline-grid size-4 shrink-0 place-items-center text-[var(--vds-text-tertiary)] transition-transform duration-150 data-[state=closed]:-rotate-90'
+const LITERATURE_NAV_ROW_CLASS_NAME =
+  'lit-nav-row !h-[var(--vds-control-height-standard)] !min-h-[var(--vds-control-height-standard)] !w-full !justify-start !rounded-[var(--vds-radius-4)] !pr-[calc(var(--vds-space-2)+var(--vds-border-width-1))] !pl-[var(--vds-space-2)] !text-[length:var(--vds-font-body-lv2)] !text-[var(--vds-text-secondary)] [&.is-active]:!rounded-[var(--vds-radius-5)] [&.is-active]:!bg-[var(--vds-bg-gray-hover)] [&.is-active]:!font-[var(--vds-fw-semibold)] [&.is-active]:!text-[var(--vds-brand-text-primary)] [&.is-active_.lit-nav-name]:!font-[var(--vds-fw-medium)] [&.is-active_.lit-count]:!text-[var(--vds-brand-text-primary)]'
+const LITERATURE_TREE_NAV_ROW_CLASS_NAME = `${LITERATURE_NAV_ROW_CLASS_NAME} !flex-1 !min-w-0 !pl-[var(--vds-space-half)]`
+const LITERATURE_NAV_NAME_CLASS_NAME =
+  'lit-nav-name min-w-0 flex-1 text-left font-[var(--vds-fw-regular)]'
+const LITERATURE_COUNT_CLASS_NAME =
+  'lit-count text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]'
+const LITERATURE_SECTION_TRIGGER_CLASS_NAME =
+  "!h-[var(--vds-control-height-md)] !min-h-[var(--vds-control-height-md)] !rounded-none !border-0 !bg-transparent !px-[calc(var(--vds-space-1)+var(--vds-space-half)+var(--vds-border-width-1))] !py-0 flex flex-1 items-center justify-start gap-[var(--vds-space-2)] text-left [font-family:'PingFang_SC'] text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-medium)] leading-[var(--vds-control-label-line-height)] tracking-[var(--vds-letter-spacing-normal)] !text-[var(--vds-text-primary)] shadow-none transition-colors hover:!bg-transparent hover:!text-[var(--vds-text-primary)] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-ring)]"
 type PanelError = LiteratureErrorMessage
 
 type CreateTarget = {
@@ -149,20 +161,27 @@ export function LiteraturePanel(): React.JSX.Element {
   const { t } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const projectId = state.homeSelectedProjectId ?? undefined
-  const { query, reload, panelReload } = useCatalogue()
+  const { query, reload, panelReload, panel, scopedTags: cachedTags } = useCatalogue()
   const [joinFlash, setJoinFlash] = useState<CreatedCollectionNotice | null>(null)
-  useEffect(() => onJoinedCollectionCreated(notice => {
-    if (projectId && notice.projectId !== projectId) return
-    setLibraryOpen(true); setCollectionsOpen(true); setProjectsOpen(true)
-    if (notice.projectId) setExpandedProjects(current => new Set([...current, notice.projectId!]))
-    setExpandedCollections(current => new Set([...current, ...notice.ancestors]))
-    setJoinFlash(notice)
-  }), [projectId])
-  const [counts, setCounts] = useState(EMPTY_COUNTS)
-  const [facets, setFacets] = useState(EMPTY_FACETS)
+  useEffect(
+    () =>
+      onJoinedCollectionCreated((notice) => {
+        if (projectId && notice.projectId !== projectId) return
+        setLibraryOpen(true)
+        setCollectionsOpen(true)
+        setProjectsOpen(true)
+        if (notice.projectId)
+          setExpandedProjects((current) => new Set([...current, notice.projectId!]))
+        setExpandedCollections((current) => new Set([...current, ...notice.ancestors]))
+        setJoinFlash(notice)
+      }),
+    [projectId]
+  )
+  const [counts, setCounts] = useState(() => panel?.counts ?? EMPTY_COUNTS)
+  const [facets, setFacets] = useState(() => panel?.facets ?? EMPTY_FACETS)
   /** 标签云单独存一份 facet: facets.tags 是全量标签, 归打标签用, 计数不按分类收敛。 */
-  const [scopedTags, setScopedTags] = useState<LiteratureTagFacet[]>([])
-  const [projects, setProjects] = useState<LiteratureProject[]>([])
+  const [scopedTags, setScopedTags] = useState<LiteratureTagFacet[]>(() => cachedTags)
+  const [projects, setProjects] = useState<LiteratureProject[]>(() => panel?.projects ?? [])
   const [expandedProjects, setExpandedProjects] = useSidebarSet('projects')
   const [expandedCollections, setExpandedCollections] = useSidebarSet('collections')
   const [collectionsOpen, setCollectionsOpen] = useSidebarBoolean('collectionsOpen')
@@ -186,14 +205,14 @@ export function LiteraturePanel(): React.JSX.Element {
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [mutationError, setMutationError] = useState<PanelError | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(panel === null)
+  const [panelReadFailed, setPanelReadFailed] = useState(false)
+  const [tagReadFailed, setTagReadFailed] = useState(false)
   const [searchError, setSearchError] = useState<PanelError | null>(null)
   const [searching, setSearching] = useState(false)
-  const selectLiteratureScope = (
-    patch: Parameters<typeof catalogue.query>[0]
-  ): void => {
+  const selectLiteratureScope = (patch: Parameters<typeof catalogue.query>[0]): void => {
     act.activateTab('literature')
-    catalogue.query(patch)
+    catalogue.navigate(patch)
   }
   /**
    * 标签多选: 点一下加进过滤条件, 再点一下撤掉, 一个都不留就是不过滤。
@@ -205,25 +224,37 @@ export function LiteraturePanel(): React.JSX.Element {
   const toggleLiteratureTag = (id: string): void => {
     act.activateTab('literature')
     const current = query.tag_id ?? []
-    const next = current.includes(id)
-      ? current.filter((value) => value !== id)
-      : [...current, id]
+    const next = current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
     catalogue.filter({ tag_id: next.length > 0 ? next : undefined })
   }
 
   useEffect(() => {
+    setPanelReadFailed(false)
+    const cached = catalogue.getSnapshot().panel
+    setCounts(cached?.counts ?? EMPTY_COUNTS)
+    setFacets(cached?.facets ?? EMPTY_FACETS)
+    setProjects(cached?.projects ?? [])
+    if (catalogue.panelFresh()) return
     let active = true
-    setLoading(true)
+    if (catalogue.getSnapshot().panel === null) setLoading(true)
     Promise.all([
       getLiteratureCounts(projectId),
       getLiteratureFacets({ project_id: projectId }),
-      getLiteratureProjects()
+      getLiteratureProjects(),
     ])
       .then(([nextCounts, nextFacets, nextProjects]) => {
         if (!active) return
         setCounts(nextCounts)
         setFacets(nextFacets)
         setProjects(nextProjects.projects)
+        catalogue.panel({
+          counts: nextCounts,
+          facets: nextFacets,
+          projects: nextProjects.projects,
+        })
+      })
+      .catch(() => {
+        if (active) setPanelReadFailed(true)
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -247,22 +278,28 @@ export function LiteraturePanel(): React.JSX.Element {
    * 交集, 被选中的维度不能过滤自己的 facet; 而且每点一次标签就重取一遍纯属白跑)。
    */
   useEffect(() => {
+    setTagReadFailed(false)
+    if (catalogue.tagsFresh()) return
     let active = true
     getLiteratureTagFacets({
       collection_id: query.collection_id,
       project_id: query.project_id,
       recent: query.recent,
       without_collection: query.without_collection,
-      without_project: query.without_project
+      without_project: query.without_project,
     })
       .then((value) => {
         if (!active) return
         setScopedTags(value.tags)
+        catalogue.tags(value.tags)
         pruneStaleTags(value.tags)
       })
       .catch(() => {
         // 失败时清空而不是留着上一个作用域的标签: 挂着别处的计数比空着更误导。
-        if (active) setScopedTags([])
+        if (active) {
+          setScopedTags([])
+          setTagReadFailed(true)
+        }
       })
     return () => {
       active = false
@@ -274,17 +311,25 @@ export function LiteraturePanel(): React.JSX.Element {
     query.without_collection,
     query.without_project,
     reload,
-    panelReload
+    panelReload,
   ])
 
   useEffect(() => {
     if (!joinFlash) return
-    const visible = facets.collections.some(item => item.id === joinFlash.id)
-      || projects.some(project => project.collections.some(item => item.id === joinFlash.id))
+    const visible =
+      facets.collections.some((item) => item.id === joinFlash.id) ||
+      projects.some((project) => project.collections.some((item) => item.id === joinFlash.id))
     if (!visible) return
-    const frame = requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-join-collection="${CSS.escape(joinFlash.id)}"]`)?.scrollIntoView({ block: 'nearest' }))
+    const frame = requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLElement>(`[data-join-collection="${CSS.escape(joinFlash.id)}"]`)
+        ?.scrollIntoView({ block: 'nearest' })
+    )
     const timer = window.setTimeout(() => setJoinFlash(null), 1400)
-    return () => { cancelAnimationFrame(frame); clearTimeout(timer) }
+    return () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+    }
   }, [joinFlash, facets, projects])
 
   const scope = (
@@ -299,11 +344,11 @@ export function LiteraturePanel(): React.JSX.Element {
       data-sidebar-view={key}
       variant="ghost"
       size="sm"
-      className={`lit-nav-row hover:!bg-[var(--vds-bg-gray-hover)] hover:[&_.lit-count]:!text-[var(--vds-brand-bg-default)] [&.is-active]:!bg-[var(--vds-bg-gray-hover)] [&.is-active]:!text-[var(--vds-brand-text-primary)] [&.is-active_.lit-count]:!text-[var(--vds-brand-text-primary)]${active ? ' is-active' : ''}`}
+      className={`${LITERATURE_NAV_ROW_CLASS_NAME}${active ? ' is-active' : ''}`}
       onClick={() => selectLiteratureScope(patch)}
     >
-      <span className="lit-nav-name">{label}</span>
-      <span className="lit-count">{count}</span>
+      <span className={LITERATURE_NAV_NAME_CLASS_NAME}>{label}</span>
+      <span className={LITERATURE_COUNT_CLASS_NAME}>{count}</span>
     </Button>
   )
   const clear = {
@@ -314,7 +359,7 @@ export function LiteraturePanel(): React.JSX.Element {
     attachment: 'any' as const,
     collection_id: undefined,
     tag_id: undefined,
-    project_id: projectId
+    project_id: projectId,
   }
   const projectTree = useMemo(
     () =>
@@ -345,11 +390,7 @@ export function LiteraturePanel(): React.JSX.Element {
     })
   }
   const selectProject = (project: LiteratureProject): void => {
-    if (
-      project.collections.length > 0 &&
-      query.project_id === project.id &&
-      !query.collection_id
-    ) {
+    if (project.collections.length > 0 && query.project_id === project.id && !query.collection_id) {
       toggleProject(project.id)
     } else if (project.collections.length > 0) {
       setExpandedProjects((current) => new Set(current).add(project.id))
@@ -373,139 +414,175 @@ export function LiteraturePanel(): React.JSX.Element {
         query.project_id === (project?.id ?? projectId)
       return [
         <ContextMenu key={collection.id}>
-        <ContextMenuTrigger asChild>
-        <div
-          className={`lit-collection-row data-[join-flash=true]:ring-2 data-[join-flash=true]:ring-[var(--vds-brand-light-border)] data-[join-flash=true]:bg-[var(--vds-brand-light-bg-default)] group/collection relative ml-[var(--vds-space-4)] flex min-w-0 items-center rounded-[var(--vds-radius-4)] hover:bg-[var(--vds-bg-gray-hover)] focus-within:bg-[var(--vds-bg-gray-hover)]${active ? ' is-active bg-[var(--vds-bg-gray-hover)]' : ''}`}
-          key={collection.id}
-          data-testid={`literature-collection-${collection.id}`}
-          data-join-collection={collection.id}
-          data-join-flash={joinFlash?.id === collection.id || undefined}
-        >
-          {childCollections.length > 0 ? (
-            <IconButton
-              label={t(
-                expanded
-                  ? 'panel.collapseCollection'
-                  : 'panel.expandCollection',
-                { name: collection.name }
-              )}
-              size="sm"
-              variant="ghostIcon"
-              icon={
+          <ContextMenuTrigger asChild>
+            <div
+              className={`lit-collection-row data-[join-flash=true]:ring-2 data-[join-flash=true]:ring-[var(--vds-brand-light-border)] data-[join-flash=true]:bg-[var(--vds-brand-light-bg-default)] group/collection relative ml-[var(--vds-space-4)] flex min-w-0 items-center rounded-[var(--vds-radius-4)] hover:bg-[var(--vds-bg-gray-hover)] focus-within:bg-[var(--vds-bg-gray-hover)]${active ? ' is-active bg-[var(--vds-bg-gray-hover)]' : ''}`}
+              key={collection.id}
+              data-testid={`literature-collection-${collection.id}`}
+              data-join-collection={collection.id}
+              data-join-flash={joinFlash?.id === collection.id || undefined}
+            >
+              {childCollections.length > 0 ? (
+                <IconButton
+                  label={t(expanded ? 'panel.collapseCollection' : 'panel.expandCollection', {
+                    name: collection.name,
+                  })}
+                  size="sm"
+                  variant="ghostIcon"
+                  icon={
+                    <span
+                      aria-hidden="true"
+                      className={PANEL_COLLAPSIBLE_ICON_CLASS_NAME}
+                      data-state={expanded ? 'open' : 'closed'}
+                    >
+                      <Icon name="chevron-down" size={16} />
+                    </span>
+                  }
+                  onClick={() => toggleCollection(collection.id)}
+                />
+              ) : (
                 <span
                   aria-hidden="true"
-                  className={PANEL_COLLAPSIBLE_ICON_CLASS_NAME}
-                  data-state={expanded ? 'open' : 'closed'}
-                >
-                  <Icon name="chevron-down" size={16} />
-                </span>
-              }
-              onClick={() => toggleCollection(collection.id)}
-            />
-          ) : (
-            <span aria-hidden="true" className="lit-tree-spacer" />
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`lit-nav-row w-full !bg-transparent hover:!bg-transparent active:!bg-transparent [&.is-active]:!text-[var(--vds-brand-text-primary)] [&.is-active_.lit-count]:!text-[var(--vds-brand-text-primary)]${active ? ' is-active' : ''}`}
-            onClick={() =>
-              selectLiteratureScope({
-                ...clear,
-                project_id: project?.id ?? projectId,
-                collection_id: [collection.id]
-              })
-            }
-          >
-            {expanded && childCollections.length > 0 ? (
-              <FolderOpen size={14} />
-            ) : (
-              <Folder size={14} />
-            )}
-            <EllipsisText
-              tooltipPortalled
-              wrapperClassName="min-w-0 flex-1 text-left"
-            >
-              {collection.name}
-            </EllipsisText>
-          <span className="lit-count shrink-0 group-hover/collection:hidden group-focus-within/collection:hidden group-aria-expanded/collection:hidden">
-              {collection.count}
-            </span>
-          </Button>
-          <span className="lit-node-actions hidden flex-none gap-[calc(var(--vds-space-1)/2)] group-hover/collection:flex group-focus-within/collection:flex group-aria-expanded/collection:flex">
-            <DropdownMenuTrigger asChild>
-              <IconButton
-                label={t('panel.moreCollection', { name: collection.name })}
+                  className="lit-tree-spacer h-[var(--vds-control-height-sm)] w-[var(--vds-control-height-sm)] flex-none"
+                />
+              )}
+              <Button
+                variant="ghost"
                 size="sm"
-                variant="ghostIcon"
-                icon={<EllipsisVertical size={14} />}
-                onClick={(event) => event.stopPropagation()}
-              />
-            </DropdownMenuTrigger>
-            <IconButton
-              label={t('panel.newChild', { name: collection.name })}
-              size="sm"
-              variant="ghostIcon"
-              icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-              onClick={(event) => {
-                event.stopPropagation()
-                openCreate({
-                  kind: 'collection',
+                className={`${LITERATURE_TREE_NAV_ROW_CLASS_NAME} !bg-transparent hover:!bg-transparent active:!bg-transparent${active ? ' is-active' : ''}`}
+                onClick={() =>
+                  selectLiteratureScope({
+                    ...clear,
+                    project_id: project?.id ?? projectId,
+                    collection_id: [collection.id],
+                  })
+                }
+              >
+                {expanded && childCollections.length > 0 ? (
+                  <FolderOpen size={14} />
+                ) : (
+                  <Folder size={14} />
+                )}
+                <EllipsisText tooltipPortalled wrapperClassName="min-w-0 flex-1 text-left">
+                  {collection.name}
+                </EllipsisText>
+                <span
+                  className={`${LITERATURE_COUNT_CLASS_NAME} shrink-0 group-hover/collection:hidden group-focus-within/collection:hidden group-aria-expanded/collection:hidden`}
+                >
+                  {collection.count}
+                </span>
+              </Button>
+              <span className="lit-node-actions hidden flex-none gap-[calc(var(--vds-space-1)/2)] group-hover/collection:flex group-focus-within/collection:flex group-aria-expanded/collection:flex">
+                <DropdownMenuTrigger asChild>
+                  <IconButton
+                    label={t('panel.moreCollection', { name: collection.name })}
+                    size="sm"
+                    variant="ghostIcon"
+                    icon={<EllipsisVertical size={14} />}
+                    onClick={(event) => event.stopPropagation()}
+                  />
+                </DropdownMenuTrigger>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <IconButton
+                      label={t('panel.import')}
+                      size="sm"
+                      variant="ghostIcon"
+                      icon={
+                        <IconFont
+                          type="icon-line-operation-add"
+                          className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none"
+                        />
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                    />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="!z-[var(--vds-z-modal)] w-[var(--vds-library-import-menu-width)]">
+                    {IMPORT_SOURCES.map((source) => (
+                      <ImportSourceItem
+                        key={source.value}
+                        hint={source.hintKey ? t(source.hintKey) : undefined}
+                        icon={source.icon}
+                        label={t(source.labelKey)}
+                        onSelect={() => {
+                          act.activateTab('literature')
+                          catalogue.requestImport(source.value, {
+                            projectId: project?.id ?? projectId ?? '',
+                            collectionId: collection.id,
+                          })
+                        }}
+                      />
+                    ))}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        openCreate({
+                          kind: 'collection',
+                          projectId: project?.id ?? projectId,
+                          parentId: collection.id,
+                          parentName: collection.name,
+                        })
+                      }
+                    >
+                      <IconFont type="icon-line-operation-add" />
+                      {t('panel.createChild')}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </span>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem
+              onSelect={() =>
+                setEditTarget({
+                  ...collection,
                   projectId: project?.id ?? projectId,
-                  parentId: collection.id,
-                  parentName: collection.name
+                  mode: 'rename',
+                  collections,
                 })
-              }}
-            />
-          </span>
-        </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem onSelect={() => openCreate({
-            kind: 'collection', projectId: project?.id ?? projectId,
-            parentId: collection.id, parentName: collection.name
-          })}>
-            <IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />
-            {t('panel.createChild')}
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setEditTarget({
-            ...collection, projectId: project?.id ?? projectId, mode: 'rename', collections
-          })}>
-            <Pencil size={14} aria-hidden="true" />
-            {t('panel.renameCollection')}
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setEditTarget({
-            ...collection, projectId: project?.id ?? projectId, mode: 'move', collections
-          })}>
-            <Folder size={14} aria-hidden="true" />
-            {t('panel.moveCollection')}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem onSelect={() => setDeleteTarget({
-            kind: 'collection', id: collection.id, name: collection.name,
-            count: collection.count, projectId: project?.id ?? projectId
-          })}>
-            <Trash size={14} aria-hidden="true" />
-            {t('panel.deleteCollectionAction')}
-          </ContextMenuItem>
-        </ContextMenuContent>
+              }
+            >
+              <Pencil size={14} aria-hidden="true" />
+              {t('panel.renameCollection')}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() =>
+                setEditTarget({
+                  ...collection,
+                  projectId: project?.id ?? projectId,
+                  mode: 'move',
+                  collections,
+                })
+              }
+            >
+              <Folder size={14} aria-hidden="true" />
+              {t('panel.moveCollection')}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() =>
+                setDeleteTarget({
+                  kind: 'collection',
+                  id: collection.id,
+                  name: collection.name,
+                  count: collection.count,
+                  projectId: project?.id ?? projectId,
+                })
+              }
+            >
+              <Trash size={14} aria-hidden="true" />
+              {t('panel.deleteCollectionAction')}
+            </ContextMenuItem>
+          </ContextMenuContent>
         </ContextMenu>,
         ...(expanded
           ? [
-              <div
-                className="ml-[var(--vds-space-4)] min-w-0"
-                key={`${collection.id}-children`}
-              >
-                {collectionNodes(
-                  collections,
-                  byParent,
-                  project,
-                  collection.id,
-                  nextAncestors
-                )}
-              </div>
+              <div className="ml-[var(--vds-space-4)] min-w-0" key={`${collection.id}-children`}>
+                {collectionNodes(collections, byParent, project, collection.id, nextAncestors)}
+              </div>,
             ]
-          : [])
+          : []),
       ]
     })
   const visibleTags = scopedTags.filter((tag) =>
@@ -527,11 +604,7 @@ export function LiteraturePanel(): React.JSX.Element {
     setCreating(true)
     setCreateError(null)
     try {
-      await createLiteratureCollection(
-        name,
-        createTarget.projectId,
-        createTarget.parentId
-      )
+      await createLiteratureCollection(name, createTarget.projectId, createTarget.parentId)
       if (createTarget.projectId) {
         setExpandedProjects((current) => {
           const next = new Set(current)
@@ -551,9 +624,7 @@ export function LiteraturePanel(): React.JSX.Element {
     } catch (reason) {
       setCreateError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'panel.error.createFailed'
         )
@@ -575,9 +646,7 @@ export function LiteraturePanel(): React.JSX.Element {
     } catch (reason) {
       setTagCreateError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'panel.error.createFailed'
         )
@@ -592,24 +661,17 @@ export function LiteraturePanel(): React.JSX.Element {
     setMutationError(null)
     try {
       if (deleteTarget.kind === 'collection') {
-        await deleteLiteratureCollection(
-          deleteTarget.id,
-          deleteTarget.projectId
-        )
+        await deleteLiteratureCollection(deleteTarget.id, deleteTarget.projectId)
       } else {
         await deleteLiteratureTag(deleteTarget.id)
       }
       if (
-        (deleteTarget.kind === 'collection' &&
-          query.collection_id?.includes(deleteTarget.id)) ||
+        (deleteTarget.kind === 'collection' && query.collection_id?.includes(deleteTarget.id)) ||
         (deleteTarget.kind === 'tag' && query.tag_id?.includes(deleteTarget.id))
       ) {
         catalogue.query({
           ...clear,
-          project_id:
-            deleteTarget.kind === 'collection'
-              ? deleteTarget.projectId
-              : undefined
+          project_id: deleteTarget.kind === 'collection' ? deleteTarget.projectId : undefined,
         })
       }
       setDeleteTarget(null)
@@ -617,9 +679,7 @@ export function LiteraturePanel(): React.JSX.Element {
     } catch (reason) {
       setMutationError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'panel.error.deleteFailed'
         )
@@ -643,9 +703,7 @@ export function LiteraturePanel(): React.JSX.Element {
     } catch (reason) {
       setSearchError(
         literatureErrorMessage(
-          reason instanceof LiteratureApiError
-            ? reason.failure.code
-            : undefined,
+          reason instanceof LiteratureApiError ? reason.failure.code : undefined,
           reason instanceof Error ? reason.message : undefined,
           'panel.error.searchFailed'
         )
@@ -655,83 +713,99 @@ export function LiteraturePanel(): React.JSX.Element {
     }
   }
   return (
-    <aside className="lit-side gap-4" data-testid="literature-panel" data-ob="literature">
-      <h2 className="lit-library-title">
-        {t(projectId ? 'navigation.project' : 'navigation.overview')}
-      </h2>
-      <Collapsible
-        className={PANEL_COLLAPSIBLE_CLASS_NAME}
-        data-ob="literature-discovery"
-        open={discoveryOpen}
-        onOpenChange={setDiscoveryOpen}
-      >
-        <CollapsibleTrigger asChild>
-          <Button data-ob="literature-discovery-toggle" unstyled className={PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME}>
-            <span
-              aria-hidden="true"
-              className={PANEL_COLLAPSIBLE_ICON_CLASS_NAME}
-              data-state={discoveryOpen ? 'open' : 'closed'}
-            >
-              <Icon name="chevron-down" size={16} />
-            </span>
-            <span className="font-normal">{t('panel.discover')}</span>
-          </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="border-0 bg-transparent p-0 text-[var(--vds-text-secondary)] shadow-none">
-          <div data-testid="literature-search-box" className={`flex flex-col self-stretch gap-[var(--vds-space-2)] rounded-[var(--vds-radius-5)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] shadow-none focus-within:border-[var(--vds-brand-light-border)]${authenticated ? '' : ' !rounded-b-none'}`}>
-            <Textarea
-              unstyled
-              aria-label={t('panel.discover')}
-              className="min-h-[var(--vds-control-height-standard)] w-full resize-none border-0 bg-transparent p-0 font-[family-name:var(--vds-font-main)] text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] outline-none placeholder:text-[var(--vds-text-5)]"
-              placeholder={t('panel.searchPlaceholder')}
-              rows={2}
-              value={discovery}
-              onChange={(event) => setDiscovery(event.target.value)}
-              onKeyDown={(event) => {
-                if (
-                  event.key !== 'Enter' ||
-                  event.shiftKey ||
-                  event.nativeEvent.isComposing
-                )
-                  return
-                event.preventDefault()
-                void startSearch()
-              }}
-            />
-            <div className="flex shrink-0 justify-end">
-              <Button
-                aria-label={t('panel.search')}
-                className="!size-[var(--vds-control-height-sm)] !min-h-0 !min-w-[var(--vds-control-height-sm)] !p-0 [&_svg]:!size-[var(--vds-icon-7)] disabled:!bg-[var(--vds-brand-light-bg-default)] disabled:!text-[var(--vds-text-5)] disabled:!opacity-[var(--vds-opacity-full)]"
-                data-testid="literature-search-submit"
-                disabled={!authenticated || searching || !discovery.trim()}
-                icon={
-                  searching ? (
-                    <Spinner size="sm" />
-                  ) : (
-                    <ArrowRight size={14} strokeWidth={1.8} />
-                  )
-                }
-                size="sm"
-                onClick={() => void startSearch()}
-              />
-            </div>
-          </div>
-          {!authenticated && <div className="flex items-center gap-[var(--vds-space-2)] rounded-b-[var(--vds-radius-5)] border border-t-0 border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--vds-brand-text-primary)]" data-testid="literature-search-login">
-            <LockKeyhole className="size-[var(--vds-icon-7)] shrink-0" aria-hidden="true" />
-            <span className="min-w-0 flex-1">{t('panel.loginRequired')}</span>
-            <Button size="xs" className="shrink-0" onClick={() => set({ loginOpen: true })}>{t('panel.login')}</Button>
-          </div>}
-        </CollapsibleContent>
-      </Collapsible>
-      {discoveryOpen && searchError ? (
-        <Alert
-          className="m-[var(--vds-space-2)]"
-          tone="error"
-          title={t('panel.searchFailed')}
-          description={searchError.detail ?? t(searchError.key)}
-        />
+    <aside
+      className="lit-side box-border w-full h-full flex flex-none flex-col overflow-hidden px-[var(--vds-space-4)] pt-[var(--vds-space-5)] bg-[var(--vds-bg-gray-default)] text-[var(--vds-text-primary)] gap-[var(--vds-space-4)] [--lit-muted:var(--vds-text-tertiary)] [--lit-green:var(--vds-brand-bg-default)] [--lit-muted-bg:var(--vds-bg-gray-default)] [--lit-text:var(--vds-text-primary)] [--lit-line:var(--vds-border-default)]"
+      data-testid="literature-panel"
+      data-ob="literature"
+    >
+      {panelReadFailed || tagReadFailed ? (
+        <Alert tone="error" title={t('panel.readFailed')} />
       ) : null}
-      <div className="lit-side-scroll">
+      {/* 后续版本仍要使用，请不要删除 */}
+      <div className="hidden" data-testid="literature-discovery-reserved">
+        <h2 className="lit-library-title font-[var(--vds-font-serif)] text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">
+          {t(projectId ? 'navigation.project' : 'navigation.overview')}
+        </h2>
+        <Collapsible
+          className={PANEL_COLLAPSIBLE_CLASS_NAME}
+          data-ob="literature-discovery"
+          open={discoveryOpen}
+          onOpenChange={setDiscoveryOpen}
+        >
+          <CollapsibleTrigger asChild>
+            <Button
+              data-ob="literature-discovery-toggle"
+              unstyled
+              className={PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME}
+            >
+              <span
+                aria-hidden="true"
+                className={PANEL_COLLAPSIBLE_ICON_CLASS_NAME}
+                data-state={discoveryOpen ? 'open' : 'closed'}
+              >
+                <Icon name="chevron-down" size={16} />
+              </span>
+              <span className="font-normal">{t('panel.discover')}</span>
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="border-0 bg-transparent p-0 text-[var(--vds-text-secondary)] shadow-none">
+            <div
+              data-testid="literature-search-box"
+              className={`flex h-[76px] max-h-[280px] self-stretch items-start gap-2 rounded-[12px] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-3 shadow-none${authenticated ? '' : ' !rounded-b-none'}`}
+            >
+              <Textarea
+                unstyled
+                aria-label={t('panel.discover')}
+                className="min-h-0 flex-1 resize-none border-0 bg-transparent p-0 font-['PingFang_SC'] text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] leading-5 text-[var(--vds-text-primary)] outline-none placeholder:font-['PingFang_SC'] placeholder:text-[length:var(--vds-font-body-lv2)] placeholder:font-[var(--vds-fw-regular)] placeholder:text-[var(--vds-text-5)]"
+                placeholder={t('panel.searchPlaceholder')}
+                rows={2}
+                value={discovery}
+                onChange={(event) => setDiscovery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing)
+                    return
+                  event.preventDefault()
+                  void startSearch()
+                }}
+              />
+              <div className="flex h-full shrink-0 items-end">
+                <Button
+                  aria-label={t('panel.search')}
+                  className="!size-6 !min-h-0 !min-w-0 !p-0"
+                  data-testid="literature-search-submit"
+                  disabled={!authenticated || searching || !discovery.trim()}
+                  icon={
+                    searching ? <Spinner size="sm" /> : <ArrowRight size={14} strokeWidth={1.8} />
+                  }
+                  size="sm"
+                  onClick={() => void startSearch()}
+                />
+              </div>
+            </div>
+            {!authenticated && (
+              <div
+                className="flex items-center gap-[var(--vds-space-2)] rounded-b-[var(--vds-radius-5)] border border-t-0 border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--vds-brand-text-primary)]"
+                data-testid="literature-search-login"
+              >
+                <LockKeyhole className="size-[var(--vds-icon-7)] shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1">{t('panel.loginRequired')}</span>
+                <Button size="xs" className="shrink-0" onClick={() => set({ loginOpen: true })}>
+                  {t('panel.login')}
+                </Button>
+              </div>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
+        {discoveryOpen && searchError ? (
+          <Alert
+            className="m-[var(--vds-space-2)]"
+            tone="error"
+            title={t('panel.searchFailed')}
+            description={searchError.detail ?? t(searchError.key)}
+          />
+        ) : null}
+      </div>
+      <div className="lit-side-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-[var(--vds-space-4)]">
         <Collapsible
           className={PANEL_COLLAPSIBLE_CLASS_NAME}
           open={libraryOpen}
@@ -744,7 +818,9 @@ export function LiteraturePanel(): React.JSX.Element {
                 unstyled
                 aria-label={
                   libraryOpen
-                    ? t(projectId ? 'panel.collapseProjectLiterature' : 'panel.collapseMyLiterature')
+                    ? t(
+                        projectId ? 'panel.collapseProjectLiterature' : 'panel.collapseMyLiterature'
+                      )
                     : t(projectId ? 'panel.expandProjectLiterature' : 'panel.expandMyLiterature')
                 }
                 className={PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME}
@@ -767,10 +843,15 @@ export function LiteraturePanel(): React.JSX.Element {
                   size="sm"
                   variant="ghostIcon"
                   className="ml-auto"
-                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
+                  icon={
+                    <IconFont
+                      type="icon-line-operation-add"
+                      className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none"
+                    />
+                  }
                 />
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="!z-[var(--vds-z-modal)] w-52">
+              <DropdownMenuContent className="!z-[var(--vds-z-modal)] w-[var(--vds-library-import-menu-width)]">
                 {projectId ? (
                   <>
                     <DropdownMenuItem
@@ -786,42 +867,44 @@ export function LiteraturePanel(): React.JSX.Element {
                   </>
                 ) : null}
                 {IMPORT_SOURCES.map((source) => (
-                  <DropdownMenuItem
+                  <ImportSourceItem
                     key={source.value}
+                    hint={source.hintKey ? t(source.hintKey) : undefined}
+                    icon={source.icon}
+                    label={t(source.labelKey)}
                     onSelect={() => {
                       // 中区可能正被全文文档占着 (列表已卸载), 所以先把标签切回
                       // 列表, 再把导入意图交给 store 由列表消费; DOM 事件在这种
                       // 时候没有听者, 点了会静默失效。
                       act.activateTab('literature')
-                      catalogue.requestImport(source.value)
+                      catalogue.requestImport(
+                        source.value,
+                        projectId
+                          ? null
+                          : {
+                              projectId: '',
+                              collectionId: '',
+                            }
+                      )
                     }}
-                  >
-                    {source.icon === 'local-pdf' ? (
-                      <MonitorDown />
-                    ) : source.icon === 'bib-ris' ? (
-                      <FileDown />
-                    ) : (
-                      <IconFont type="icon-zotero" />
-                    )}
-                    {t(source.labelKey)}
-                  </DropdownMenuItem>
+                  />
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
           <CollapsibleContent className="border-0 bg-transparent p-0 text-[var(--vds-text-secondary)] shadow-none">
             {loading ? (
-              <div className="lit-side-loading">
+              <div className="grid place-items-center p-[var(--vds-space-5)]">
                 <Spinner aria-label={t('panel.loading')} />
               </div>
             ) : (
               <>
-                <div className="lit-nav ml-[var(--vds-space-6)]">
+                <div className="lit-nav flex flex-col gap-[var(--vds-space-half)] ml-[var(--vds-space-6)]">
                   {scope(
                     t('panel.all'),
                     counts.all,
                     clear,
-                      !query.without_collection &&
+                    !query.without_collection &&
                       !query.is_unread &&
                       !query.recent &&
                       query.attachment !== 'without_pdf' &&
@@ -840,21 +923,26 @@ export function LiteraturePanel(): React.JSX.Element {
                   {scope(
                     t('panel.unfiled'),
                     counts.without_collection,
-                    { ...clear, without_collection: true, without_project: projectId ? undefined : true },
+                    {
+                      ...clear,
+                      without_collection: true,
+                      without_project: projectId ? undefined : true,
+                    },
                     query.without_collection === true,
                     'unorganized'
                   )}
                 </div>
-                <div data-ob="literature-categories" className="lit-side-section ml-[var(--vds-space-6)] flex flex-col gap-2">
-                  <div className="lit-section-head">
+                <div
+                  data-ob="literature-categories"
+                  className="lit-side-section mt-[calc(var(--vds-space-3)+var(--vds-space-half))] ml-[var(--vds-space-6)] flex flex-col gap-[var(--vds-space-2)] border-t-0 pt-0"
+                >
+                  <div className="lit-section-head flex w-full items-center">
                     <Button
                       unstyled
                       aria-label={
-                        collectionsOpen
-                          ? t('panel.collapseCustom')
-                          : t('panel.expandCustom')
+                        collectionsOpen ? t('panel.collapseCustom') : t('panel.expandCustom')
                       }
-                      className={PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME}
+                      className={LITERATURE_SECTION_TRIGGER_CLASS_NAME}
                       onClick={() => setCollectionsOpen((value) => !value)}
                     >
                       <span
@@ -864,41 +952,35 @@ export function LiteraturePanel(): React.JSX.Element {
                       >
                         <Icon name="chevron-down" size={16} />
                       </span>
-                      <span>
-                        {t('panel.collections')}
-                      </span>
+                      <span>{t('panel.collections')}</span>
                     </Button>
                     <IconButton
                       label={
-                        projectId
-                          ? t('panel.newProjectCollection')
-                          : t('panel.newGlobalCollection')
+                        projectId ? t('panel.newProjectCollection') : t('panel.newGlobalCollection')
                       }
                       size="sm"
                       variant="ghostIcon"
-                      icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-                      onClick={() =>
-                        openCreate({ kind: 'collection', projectId })
+                      icon={
+                        <IconFont
+                          type="icon-line-operation-add"
+                          className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none"
+                        />
                       }
+                      onClick={() => openCreate({ kind: 'collection', projectId })}
                     />
                   </div>
                   {collectionsOpen && (
-                    <div className="lit-nav">
+                    <div className="lit-nav flex flex-col gap-[var(--vds-space-half)]">
                       {facets.collections.length === 0 ? (
-                        <div className="lit-side-empty">
-                          {projectId
-                            ? t('panel.noCollections')
-                            : t('panel.noCustom')}
+                        <div className="lit-side-empty ml-[var(--vds-space-4)] px-[var(--vds-space-3)] py-[calc(var(--vds-space-2)+var(--vds-space-half))] font-[var(--vds-fw-regular)] text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]">
+                          {projectId ? t('panel.noCollections') : t('panel.noCustom')}
                         </div>
                       ) : (
                         collectionNodes(
                           facets.collections,
                           facets.collections.reduce((tree, collection) => {
                             const parent = collection.parent_id ?? null
-                            tree.set(parent, [
-                              ...(tree.get(parent) ?? []),
-                              collection
-                            ])
+                            tree.set(parent, [...(tree.get(parent) ?? []), collection])
                             return tree
                           }, new Map<string | null, LiteratureProject['collections']>())
                         )
@@ -907,16 +989,17 @@ export function LiteraturePanel(): React.JSX.Element {
                   )}
                 </div>
                 {!projectId && projectTree.length > 0 && (
-                  <div data-ob="literature-project-categories" className="lit-side-section ml-[var(--vds-space-6)] flex flex-col gap-2">
-                    <div className="lit-section-head">
+                  <div
+                    data-ob="literature-project-categories"
+                    className="lit-side-section mt-[calc(var(--vds-space-3)+var(--vds-space-half))] ml-[var(--vds-space-6)] flex flex-col gap-[var(--vds-space-2)] border-t-0 pt-0"
+                  >
+                    <div className="lit-section-head flex w-full items-center">
                       <Button
                         unstyled
                         aria-label={
-                          projectsOpen
-                            ? t('panel.collapseProjects')
-                            : t('panel.expandProjects')
+                          projectsOpen ? t('panel.collapseProjects') : t('panel.expandProjects')
                         }
-                        className={PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME}
+                        className={LITERATURE_SECTION_TRIGGER_CLASS_NAME}
                         onClick={() => setProjectsOpen((value) => !value)}
                       >
                         <span
@@ -931,19 +1014,17 @@ export function LiteraturePanel(): React.JSX.Element {
                     </div>
                     {projectsOpen && (
                       <div
-                        className="lit-nav ml-[var(--vds-space-4)]"
+                        className="lit-nav ml-[var(--vds-space-4)] flex flex-col gap-[var(--vds-space-half)]"
                         data-testid="literature-project-tree"
                       >
                         {projectTree.length === 0 ? (
-                          <div className="lit-side-empty">
+                          <div className="lit-side-empty ml-[var(--vds-space-4)] px-[var(--vds-space-3)] py-[calc(var(--vds-space-2)+var(--vds-space-half))] font-[var(--vds-fw-regular)] text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]">
                             {t('panel.noProjects')}
                           </div>
                         ) : (
                           projectTree.flatMap(({ project, byParent }) => {
                             const expanded = expandedProjects.has(project.id)
-                            const active =
-                              query.project_id === project.id &&
-                              !query.collection_id
+                            const active = query.project_id === project.id && !query.collection_id
                             return [
                               <div
                                 className="lit-project-row group/project relative flex min-w-0 items-center"
@@ -952,9 +1033,7 @@ export function LiteraturePanel(): React.JSX.Element {
                               >
                                 <IconButton
                                   label={t(
-                                    expanded
-                                      ? 'panel.collapseProject'
-                                      : 'panel.expandProject',
+                                    expanded ? 'panel.collapseProject' : 'panel.expandProject',
                                     { name: project.name }
                                   )}
                                   disabled={project.collections.length === 0}
@@ -963,9 +1042,7 @@ export function LiteraturePanel(): React.JSX.Element {
                                   icon={
                                     <span
                                       aria-hidden="true"
-                                      className={
-                                        PANEL_COLLAPSIBLE_ICON_CLASS_NAME
-                                      }
+                                      className={PANEL_COLLAPSIBLE_ICON_CLASS_NAME}
                                       data-state={expanded ? 'open' : 'closed'}
                                     >
                                       <Icon name="chevron-down" size={16} />
@@ -976,43 +1053,71 @@ export function LiteraturePanel(): React.JSX.Element {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className={`lit-nav-row${active ? ' is-active active:!bg-[var(--vds-bg-gray-hover)]' : ' active:!bg-transparent'}`}
+                                  className={`${LITERATURE_TREE_NAV_ROW_CLASS_NAME}${active ? ' is-active' : ''}`}
                                   onClick={() => selectProject(project)}
                                 >
                                   <EllipsisText
                                     tooltipPortalled
-                                    wrapperClassName="lit-nav-name min-w-0"
+                                    wrapperClassName={`${LITERATURE_NAV_NAME_CLASS_NAME} min-w-0`}
                                   >
                                     {project.name}
                                   </EllipsisText>
-                                  <span className="lit-count transition-opacity group-hover/project:opacity-0 group-focus-within/project:opacity-0">
+                                  <span
+                                    className={`${LITERATURE_COUNT_CLASS_NAME} transition-opacity group-hover/project:opacity-0 group-focus-within/project:opacity-0`}
+                                  >
                                     {project.count}
                                   </span>
                                 </Button>
-                                <IconButton
-                                  className="pointer-events-none absolute right-0 opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:opacity-100"
-                                  label={t('panel.newInProject', {
-                                    name: project.name
-                                  })}
-                                  size="sm"
-                                  variant="ghostIcon"
-                                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-                                  onClick={() =>
-                                    openCreate({
-                                      kind: 'collection',
-                                      projectId: project.id,
-                                      parentName: project.name
-                                    })
-                                  }
-                                />
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <IconButton
+                                      className="pointer-events-none absolute right-0 opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:opacity-100"
+                                      label={t('panel.import')}
+                                      size="sm"
+                                      variant="ghostIcon"
+                                      icon={
+                                        <IconFont
+                                          type="icon-line-operation-add"
+                                          className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none"
+                                        />
+                                      }
+                                    />
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent className="!z-[var(--vds-z-modal)] w-[var(--vds-library-import-menu-width)]">
+                                    {IMPORT_SOURCES.map((source) => (
+                                      <ImportSourceItem
+                                        key={source.value}
+                                        hint={source.hintKey ? t(source.hintKey) : undefined}
+                                        icon={source.icon}
+                                        label={t(source.labelKey)}
+                                        onSelect={() => {
+                                          act.activateTab('literature')
+                                          catalogue.requestImport(source.value, {
+                                            projectId: project.id,
+                                            collectionId: '',
+                                          })
+                                        }}
+                                      />
+                                    ))}
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      onSelect={() =>
+                                        openCreate({
+                                          kind: 'collection',
+                                          projectId: project.id,
+                                          parentName: project.name,
+                                        })
+                                      }
+                                    >
+                                      <IconFont type="icon-line-operation-add" />
+                                      {t('panel.createCollection')}
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               </div>,
                               ...(expanded
-                                ? collectionNodes(
-                                    project.collections,
-                                    byParent,
-                                    project
-                                  )
-                                : [])
+                                ? collectionNodes(project.collections, byParent, project)
+                                : []),
                             ]
                           })
                         )}
@@ -1024,16 +1129,14 @@ export function LiteraturePanel(): React.JSX.Element {
             )}
           </CollapsibleContent>
         </Collapsible>
-        <div className="lit-side-section flex flex-col gap-2">
-          <div className="lit-section-head h-[var(--vds-control-height-sm)] shrink-0">
+        <div className="lit-side-section mt-[calc(var(--vds-space-3)+var(--vds-space-half))] flex flex-col gap-[var(--vds-space-2)] border-t-0 pt-0">
+          <div className="lit-section-head flex h-[var(--vds-control-height-sm)] w-full shrink-0 items-center">
             {tagSearchOpen ? (
               <>
                 <Button
                   unstyled
-                  aria-label={
-                    tagsOpen ? t('panel.collapseTags') : t('panel.expandTags')
-                  }
-                  className={`${PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME} !flex-none`}
+                  aria-label={tagsOpen ? t('panel.collapseTags') : t('panel.expandTags')}
+                  className={`${LITERATURE_SECTION_TRIGGER_CLASS_NAME} !flex-none`}
                   onClick={() => setTagsOpen((value) => !value)}
                 >
                   <span
@@ -1051,7 +1154,7 @@ export function LiteraturePanel(): React.JSX.Element {
                   placeholder={t('panel.searchTags')}
                   size="sm"
                   value={tagSearch}
-                  containerClassName="min-w-0 flex-1"
+                  containerClassName="ml-[var(--vds-space-2)] min-w-0 flex-1"
                   onChange={(event) => setTagSearch(event.target.value)}
                   onBlur={() => {
                     setTagSearchOpen(false)
@@ -1070,10 +1173,8 @@ export function LiteraturePanel(): React.JSX.Element {
               <>
                 <Button
                   unstyled
-                  aria-label={
-                    tagsOpen ? t('panel.collapseTags') : t('panel.expandTags')
-                  }
-                  className={PANEL_COLLAPSIBLE_TRIGGER_CLASS_NAME}
+                  aria-label={tagsOpen ? t('panel.collapseTags') : t('panel.expandTags')}
+                  className={LITERATURE_SECTION_TRIGGER_CLASS_NAME}
                   onClick={() => setTagsOpen((value) => !value)}
                 >
                   <span
@@ -1096,9 +1197,9 @@ export function LiteraturePanel(): React.JSX.Element {
             )}
           </div>
           {tagsOpen && (
-            <div className="lit-tags">
+            <div className="px-[var(--vds-library-tag-padding-inline)] py-[var(--vds-library-tag-padding-block)]">
               <div
-                className="lit-tag-cloud"
+                className="lit-tag-cloud flex flex-wrap gap-[var(--vds-library-tag-cloud-gap)] mt-[var(--vds-space-2)] data-[tag-filter=active]:[&>.vds-tag:not(.vds-tag--selected)]:opacity-[var(--vds-opacity-deemphasized)]"
                 data-tag-filter={query.tag_id?.length ? 'active' : undefined}
               >
                 {tagCreateOpen ? (
@@ -1108,7 +1209,7 @@ export function LiteraturePanel(): React.JSX.Element {
                       size="sm"
                       aria-label={t('panel.newTag')}
                       placeholder={t('panel.tagName')}
-                      className="!h-6 w-full min-w-0"
+                      className="!h-[var(--vds-library-tag-create-input-height)] w-full min-w-0"
                       disabled={tagCreating}
                       value={tagCreateName}
                       onBlur={() => {
@@ -1122,10 +1223,7 @@ export function LiteraturePanel(): React.JSX.Element {
                       }}
                       onChange={(event) => setTagCreateName(event.target.value)}
                       onKeyDown={(event) => {
-                        if (
-                          event.key === 'Enter' &&
-                          !event.nativeEvent.isComposing
-                        ) {
+                        if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
                           event.preventDefault()
                           void submitTagCreate()
                         } else if (event.key === 'Escape') {
@@ -1154,7 +1252,12 @@ export function LiteraturePanel(): React.JSX.Element {
                         label={t('panel.newTag')}
                         size="xs"
                         variant="ghostIcon"
-                        icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-6)] !text-[length:var(--vds-icon-6)] !leading-none" />}
+                        icon={
+                          <IconFont
+                            type="icon-line-operation-add"
+                            className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-6)] !text-[length:var(--vds-icon-6)] !leading-none"
+                          />
+                        }
                         onClick={() => {
                           setTagCreateOpen(true)
                           setTagCreateName('')
@@ -1174,7 +1277,12 @@ export function LiteraturePanel(): React.JSX.Element {
                         label={t('panel.newTag')}
                         size="xs"
                         variant="ghostIcon"
-                        icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-6)] !text-[length:var(--vds-icon-6)] !leading-none" />}
+                        icon={
+                          <IconFont
+                            type="icon-line-operation-add"
+                            className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-6)] !text-[length:var(--vds-icon-6)] !leading-none"
+                          />
+                        }
                         onClick={() => {
                           setTagCreateOpen(true)
                           setTagCreateName('')
@@ -1185,10 +1293,7 @@ export function LiteraturePanel(): React.JSX.Element {
                     {visibleTags.map((item) => (
                       <Tag
                         aria-pressed={activeTagIds.has(item.id)}
-                        color={
-                          semanticTagColor(item.color) ??
-                          semanticTagColorFor(item.id)
-                        }
+                        color={semanticTagColor(item.color) ?? semanticTagColorFor(item.id)}
                         className="cursor-pointer [&_.vds-tag__close]:pointer-events-none [&_.vds-tag__close]:opacity-0 hover:[&_.vds-tag__close]:pointer-events-auto hover:[&_.vds-tag__close]:opacity-100 focus:[&_.vds-tag__close]:pointer-events-auto focus:[&_.vds-tag__close]:opacity-100 focus-within:[&_.vds-tag__close]:pointer-events-auto focus-within:[&_.vds-tag__close]:opacity-100"
                         key={item.id}
                         role="button"
@@ -1208,7 +1313,7 @@ export function LiteraturePanel(): React.JSX.Element {
                             id: item.id,
                             name: item.name,
                             // 删除标签作用于全库，确认框必须报全库数量而不是当前项目内的数量。
-                            count: item.total
+                            count: item.total,
                           })
                         }
                       >
@@ -1222,12 +1327,14 @@ export function LiteraturePanel(): React.JSX.Element {
           )}
         </div>
       </div>
-      {editTarget ? <CollectionEditor
-        key={`${editTarget.id}:${editTarget.mode}`}
-        target={editTarget}
-        onClose={() => setEditTarget(null)}
-        onSaved={() => catalogue.reload()}
-      /> : null}
+      {editTarget ? (
+        <CollectionEditor
+          key={`${editTarget.id}:${editTarget.mode}`}
+          target={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => catalogue.reload()}
+        />
+      ) : null}
       <Dialog
         open={createTarget !== null}
         onOpenChange={(open) => {
@@ -1235,38 +1342,31 @@ export function LiteraturePanel(): React.JSX.Element {
         }}
       >
         <DialogPortal>
-          <DialogContent className="lit-create-dialog">
+          <DialogContent className="lit-create-dialog w-[var(--vds-library-create-dialog-width)]">
             <DialogHeader>
               <DialogTitle>
-                {t(
-                  createTarget?.parentId
-                    ? 'panel.createChild'
-                    : 'panel.createCollection'
-                )}
+                {t(createTarget?.parentId ? 'panel.createChild' : 'panel.createCollection')}
               </DialogTitle>
               <DialogDescription>
                 {createTarget?.parentName
                   ? t('panel.createIn', { name: createTarget.parentName })
-                  : t('panel.createDescription')}
+                  : t(projectId ? 'panel.createProjectDescription' : 'panel.createDescription')}
               </DialogDescription>
             </DialogHeader>
             <Input
               autoFocus
               disabled={creating}
               label={t('panel.name')}
+              labelClassName="text-[length:var(--vds-font-body-lv2)]"
               placeholder={t('panel.collectionName')}
               value={createName}
-              error={
-                createError
-                  ? (createError.detail ?? t(createError.key))
-                  : undefined
-              }
+              error={createError ? (createError.detail ?? t(createError.key)) : undefined}
               onChange={(event) => setCreateName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.nativeEvent.isComposing) void submitCreate()
               }}
             />
-            <DialogFooter>
+            <DialogFooter className="mt-[var(--vds-library-create-dialog-footer-margin-top)]">
               <Button variant="outline" disabled={creating} onClick={() => setCreateTarget(null)}>
                 {ui('cancel')}
               </Button>
@@ -1300,10 +1400,10 @@ export function LiteraturePanel(): React.JSX.Element {
               <AlertDialogDescription>
                 {deleteTarget?.kind === 'tag'
                   ? t('panel.deleteTagDescription', {
-                      count: deleteTarget.count
+                      count: deleteTarget.count,
                     })
                   : t('panel.deleteCollectionDescription', {
-                      count: deleteTarget?.count ?? 0
+                      count: deleteTarget?.count ?? 0,
                     })}
               </AlertDialogDescription>
             </AlertDialogHeader>

@@ -1,0 +1,7 @@
+interface:
+  display_name: "查找与管理技能"
+  short_description: "在技能市场中查找技能，并管理本地安装与启用状态"
+  default_prompt: "Use $find-skill to search the configured marketplace and manage selected local skills through the product bridge."
+
+policy:
+  allow_implicit_invocation: true

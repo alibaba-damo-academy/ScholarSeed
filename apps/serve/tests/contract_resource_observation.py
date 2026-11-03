@@ -7,14 +7,17 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from typing import Callable
 from unittest.mock import patch
 
 from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
+from service.content.service import identity
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
+from service.platform.activity import Activities, MaintenanceActive
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
 from service.resources.service.history import ResourceVersionService
@@ -70,7 +73,7 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         workspace.mkdir()
         catalog = ContentCatalog(self.root / "content.sqlite3")
         self.registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(self.registry, catalog)
+        self.content = ContentService(self.registry, catalog, activities=Activities())
         self.project = self.registry.create("观察项目")
         self.resources = Path(self.project.root) / "resources"
         self.path = "resources/notes.md"
@@ -86,9 +89,15 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
             annotations,
         )
         self.supervisor = ResourceVersionSupervisor(
-            self.content, self.versions, WorkbenchFormatPolicy(), settings
+            self.content,
+            self.versions,
+            WorkbenchFormatPolicy(),
+            settings,
+            activities=Activities(),
         )
-        deliveries = ResourceDeliveryService(self.content, self.versions, self.supervisor)
+        deliveries = ResourceDeliveryService(
+            self.content, self.versions, self.supervisor, activities=self.supervisor._activities
+        )
         self.supervisor.bind_preparation(
             ResourceActivation(
                 self.content,
@@ -105,9 +114,97 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         await self.supervisor.aclose()
         self.temporary.cleanup()
 
+    def relocation_with_concurrent_scan(self, action: str, *, directory: bool = False) -> None:
+        self.content.bind_resource_changes(self.supervisor)
+        if directory:
+            (self.resources / "subtree").mkdir()
+            self.path = "resources/subtree/notes.md"
+            self.target = Path(self.project.root) / self.path
+            self.target.write_bytes(b"initial\n")
+            self.supervisor.scan_project(self.project.id)
+        source = "resources/subtree" if directory else self.path
+        original_bytes = self.target.read_bytes()
+        before = self.versions.history(self.project.id, self.path)
+        self.assertEqual(len(before), 1)
+        original_id = before[0].file_id
+        destination = "resources/renamed" if directory else "resources/renamed.md"
+        if action == "move":
+            (self.resources / "folder").mkdir()
+            destination = "resources/folder/subtree" if directory else "resources/folder/notes.md"
+        file_destination = destination + "/notes.md" if directory else destination
+        moved = threading.Event()
+        scan_attempted = threading.Event()
+        scan_finished = threading.Event()
+        errors = []
+
+        def scan():
+            try:
+                if not moved.wait(WAIT_SECONDS):
+                    raise TimeoutError("filesystem relocation did not run")
+                scan_attempted.set()
+                self.supervisor._process(self.project.id, {self.path, destination}, True)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                scan_finished.set()
+
+        operation = identity.relocate
+
+        def pause_after_disk_move(*args, **kwargs):
+            result = operation(*args, **kwargs)
+            moved.set()
+            if not scan_attempted.wait(WAIT_SECONDS):
+                raise TimeoutError("observer did not attempt concurrent scan")
+            # Old code lets observation finish in this gap. The fixed path keeps
+            # the project writer until stable identity and annotations are moved.
+            scan_finished.wait(0.25)
+            return result
+
+        worker = threading.Thread(target=scan)
+        worker.start()
+        try:
+            with patch.object(identity, "relocate", pause_after_disk_move):
+                if action == "rename":
+                    result = self.content.rename(
+                        self.project.id, source, "renamed" if directory else "renamed.md"
+                    )
+                else:
+                    result = self.content.move(self.project.id, source, "resources/folder")
+        finally:
+            moved.set()
+            worker.join(WAIT_SECONDS)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(result.path, destination)
+        self.assertEqual((Path(self.project.root) / file_destination).read_bytes(), original_bytes)
+        self.assertFalse(self.target.exists())
+        after = self.versions.history(self.project.id, file_destination)
+        self.assertEqual([(v.file_id, v.id) for v in after], [(v.file_id, v.id) for v in before])
+        database = self.content.resolve(self.project.id, PROJECT_DB_RELATIVE)
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT file_id,current_path FROM resources_files WHERE file_id=? OR current_path=?",
+                    (original_id, file_destination),
+                ).fetchall(),
+                [(original_id, file_destination)],
+            )
+
+    async def test_rename_keeps_identity_during_concurrent_scan(self) -> None:
+        self.relocation_with_concurrent_scan("rename")
+
+    async def test_move_keeps_identity_during_concurrent_scan(self) -> None:
+        self.relocation_with_concurrent_scan("move")
+
+    async def test_directory_rename_keeps_identity_during_concurrent_scan(self) -> None:
+        self.relocation_with_concurrent_scan("rename", directory=True)
+
+    async def test_directory_move_keeps_identity_during_concurrent_scan(self) -> None:
+        self.relocation_with_concurrent_scan("move", directory=True)
+
     def observations(self) -> list[sqlite3.Row]:
         database = self.content.resolve(self.project.id, PROJECT_DB_RELATIVE)
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             connection.row_factory = sqlite3.Row
             return list(connection.execute("""SELECT o.*, f.current_path AS observed_path
                    FROM resources_observations o JOIN resources_files f USING(file_id)
@@ -153,8 +250,9 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         self.target.write_text("external without renderer\n", encoding="utf-8")
         revision = self.content.snapshot(self.project.id, self.path).revision
         await eventually(
-            lambda: self.versions.capability(self.project.id, self.path).working_revision
-            == revision
+            lambda: (
+                self.versions.capability(self.project.id, self.path).working_revision == revision
+            )
         )
         self.assertEqual(
             self.versions.capability(self.project.id, self.path).pending.origin.value, "external"
@@ -162,10 +260,12 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
         self.target.unlink()
         await eventually(
-            lambda: self.versions._store(self.project.id)
-            .working_snapshot(self.versions.history(self.project.id, self.path)[0].file_id)
-            .state.value
-            == "tombstone"
+            lambda: (
+                self.versions._store(self.project.id)
+                .working_snapshot(self.versions.history(self.project.id, self.path)[0].file_id)
+                .state.value
+                == "tombstone"
+            )
         )
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)
 
@@ -236,10 +336,12 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         (linked / "linked.md").write_text("linked external edit\n", encoding="utf-8")
         revision = self.content.snapshot(self.project.id, "resources/linked/linked.md").revision
         await eventually(
-            lambda: self.versions.capability(
-                self.project.id, "resources/linked/linked.md"
-            ).working_revision
-            == revision
+            lambda: (
+                self.versions.capability(
+                    self.project.id, "resources/linked/linked.md"
+                ).working_revision
+                == revision
+            )
         )
 
     async def test_shutdown_drains_the_real_worker_before_returning(self) -> None:
@@ -309,6 +411,44 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         self.target.write_text("ignored change\n", encoding="utf-8")
         self.assertFalse(self.supervisor.observe_path(self.project.id, self.path))
         self.assertEqual(self.observations(), [])
+
+    async def test_capability_keeps_execution_until_live_disk_identity_returns(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        original = self.versions.capability
+
+        def capability(project_id, path):
+            entered.set()
+            if not release.wait(WAIT_SECONDS):
+                raise TimeoutError("live capability release not signalled")
+            return original(project_id, path)
+
+        gate = self.supervisor._activities
+        with patch.object(self.versions, "capability", capability):
+            task = asyncio.create_task(
+                asyncio.to_thread(self.supervisor.capability, self.project.id, self.path)
+            )
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, WAIT_SECONDS))
+                generation = gate.begin()
+                self.assertFalse(gate.seal(generation))
+                with self.assertRaises(MaintenanceActive):
+                    self.supervisor.capability(self.project.id, self.path)
+            finally:
+                release.set()
+                result = await task
+        self.assertEqual(
+            result.disk_revision, self.content.snapshot(self.project.id, self.path).revision
+        )
+        self.assertTrue(gate.seal(generation))
+
+    async def test_ignored_capability_preserves_policy_without_live_capture(self) -> None:
+        self.settings.set_blacklist("notes.md\n")
+        with patch.object(
+            self.versions, "capability", side_effect=AssertionError("ignored file was captured")
+        ):
+            result = self.supervisor.capability(self.project.id, self.path)
+        self.assertFalse(result.can_version)
+        self.assertIsNone(result.disk_revision)
 
 
 if __name__ == "__main__":

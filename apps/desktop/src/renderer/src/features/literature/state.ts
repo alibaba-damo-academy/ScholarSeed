@@ -172,6 +172,11 @@ export const INITIAL_LITERATURE_STATE: LiteratureState = {
   loadState: "idle",
 };
 
+/** Start a clean literature projection when the selected project changes. */
+export function literatureStateForProjectSwitch(): LiteratureState {
+  return { ...INITIAL_LITERATURE_STATE };
+}
+
 /** 全文状态的中文标签。 */
 export const FULLTEXT_LABEL: Record<FulltextStatus, string> = {
   none: "未获取",

@@ -7,6 +7,13 @@
 
 @layer base {
   :root {
+    /* Spreadsheet selection follows the user's XLS reference (2026-10-15). */
+    --vds-spreadsheet-selection-border: #3399cc;
+    --vds-spreadsheet-selection-fill: rgb(51 153 204 / 25%);
+    --vds-spreadsheet-header-background: #eeeeee;
+    --vds-spreadsheet-header-border: #b3b3b3;
+    --vds-spreadsheet-header-selected: #3399cc;
+    --vds-spreadsheet-header-foreground: #ffffff;
     /* Paper highlighter: PDF pages keep a white canvas in both themes. */
     --vds-pdf-citation-highlight: #ffeb3b;
     /* Device skills: demo0827 styles/app.css .pref-* palette (MVP0.2 prototype). */
@@ -167,33 +174,10 @@
       rgba(59, 118, 252, 0.8) 69%,
       rgba(24, 152, 244, 0.8) 100%
     );
-    --vds-gradient-6: linear-gradient(
-      298deg,
-      #9643ef 0%,
-      #6855fc 29%,
-      #3b76fc 69%,
-      #1898f4 100%
-    );
-    --vds-gradient-7: linear-gradient(
-      298deg,
-      #8d39e8 0%,
-      #5a46f6 29%,
-      #414eff 69%,
-      #0888e4 100%
-    );
-    --vds-gradient-8: linear-gradient(
-      302deg,
-      #782bcb 0%,
-      #4534d0 25%,
-      #2e39d4 57%,
-      #0374c4 98%
-    );
-    --vds-gradient-9: linear-gradient(
-      113deg,
-      #c2c2c2 3%,
-      #0c0c0c 52%,
-      #c2c2c2 100%
-    );
+    --vds-gradient-6: linear-gradient(298deg, #9643ef 0%, #6855fc 29%, #3b76fc 69%, #1898f4 100%);
+    --vds-gradient-7: linear-gradient(298deg, #8d39e8 0%, #5a46f6 29%, #414eff 69%, #0888e4 100%);
+    --vds-gradient-8: linear-gradient(302deg, #782bcb 0%, #4534d0 25%, #2e39d4 57%, #0374c4 98%);
+    --vds-gradient-9: linear-gradient(113deg, #c2c2c2 3%, #0c0c0c 52%, #c2c2c2 100%);
     --vds-gradient-10: linear-gradient(110deg, #614dfd 2%, #06080d 36%);
 
     /* Semantic - Text (文本色) */
@@ -219,6 +203,7 @@
     --vds-bg-gray-light-default: #faf9f7;
     --vds-bg-gray-hover: #f4f1eb;
     --vds-bg-gray-active: #eae6dd;
+    --vds-connector-oauth-background: #f7f7f7;
     --vds-bg-component: #f6f3ee;
     --vds-bg-page: #f4f1eb;
 
@@ -361,17 +346,8 @@
       #2e39d4 57%,
       #0374c4 101%
     );
-    --vds-gradient-text-highlight-2: linear-gradient(
-      169deg,
-      #614dfd -26%,
-      #06080d 47%
-    );
-    --vds-gradient-text-loading: linear-gradient(
-      129deg,
-      #c2c2c2 8%,
-      #0c0c0c 54%,
-      #c2c2c2 100%
-    );
+    --vds-gradient-text-highlight-2: linear-gradient(169deg, #614dfd -26%, #06080d 47%);
+    --vds-gradient-text-loading: linear-gradient(129deg, #c2c2c2 8%, #0c0c0c 54%, #c2c2c2 100%);
 
     /* Constants (常量色) */
     --vds-static-white: #ffffff;
@@ -388,22 +364,14 @@
     --vds-bg-mask: rgba(0, 0, 0, 0.5);
     --vds-bg-white-hover-transparent: rgba(103, 73, 15, 0.04);
     --vds-bg-white-active-transparent: rgba(103, 73, 15, 0.08);
+    --vds-explorer-tree-active-bg: rgba(0, 0, 0, 0.06);
     --vds-bg-gray-default-transparent: rgba(103, 73, 15, 0.04);
     --vds-bg-gray-hover-transparent: rgba(103, 73, 15, 0.08);
     --vds-bg-gray-active-transparent: rgba(103, 73, 15, 0.14);
 
     /* Semantic - Brand gold (品牌绿→金渐变面：版本更新入口与更新卡) */
-    --vds-brand-gold-gradient: linear-gradient(
-      115deg,
-      #1e5a3a 0%,
-      #357a4f 46%,
-      #c2932c 100%
-    );
-    --vds-brand-gold-gradient-alert: linear-gradient(
-      115deg,
-      #7a5a28 0%,
-      #b4532e 100%
-    );
+    --vds-brand-gold-gradient: linear-gradient(115deg, #1e5a3a 0%, #357a4f 46%, #c2932c 100%);
+    --vds-brand-gold-gradient-alert: linear-gradient(115deg, #7a5a28 0%, #b4532e 100%);
     --vds-brand-gold-glow: radial-gradient(
       circle,
       rgba(255, 235, 180, 0.35),
@@ -417,11 +385,7 @@
        的蒙版组矩形）。稿子里还叠了一张被遮罩裁切的位图（资源 2@3x，MasterGo OSS 上的
        4096×2459 / 895KB PNG），体积与内容都未经审阅，暂不入库；这里只落地可精确取到的
        渐变层，暗色主题沿用同一支（与 brand-gold-* 的既有做法一致）。 */
-    --vds-update-notes-sheen: linear-gradient(
-      160deg,
-      rgba(216, 216, 216, 0) 33%,
-      #d7ffff28 81%
-    );
+    --vds-update-notes-sheen: linear-gradient(160deg, rgba(216, 216, 216, 0) 33%, #d7ffff28 81%);
 
     /* Semantic - Warm alert (暖色说明块：更新失败原因) */
     --vds-alert-warm-bg: #fbf1e6;
@@ -447,8 +411,7 @@
     --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.04);
     --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.06);
     --vds-shadow-pop-brand:
-      0px 12px 32px 0px rgba(30, 60, 40, 0.16),
-      0px 2px 8px 0px rgba(30, 60, 40, 0.08);
+      0px 12px 32px 0px rgba(30, 60, 40, 0.16), 0px 2px 8px 0px rgba(30, 60, 40, 0.08);
 
     /* Focus rings (focus) */
     --vds-focus-default: 0px 0px 0px 3px rgba(0, 0, 0, 0.06);
@@ -471,6 +434,7 @@
 
     /* Spacing — space-N = (4 * N) px */
     --vds-space-0: 0px;
+    --vds-space-half: 2px;
     --vds-space-1: 4px;
     --vds-space-2: 8px;
     --vds-space-3: 12px;
@@ -482,9 +446,13 @@
     --vds-space-8: 32px;
     --vds-space-9: 36px;
     --vds-space-10: 40px;
+    --vds-floating-conversation-width: 388px;
+    --vds-floating-composer-height: 56px;
+    --vds-floating-conversation-entry-size: 44px;
 
     /* Icon sizes — iconsize-N = (2 * N) px */
     --vds-icon-6: 12px;
+    --vds-icon-stroke-width: 1.5;
     --vds-icon-7: 14px;
     --vds-icon-8: 16px;
     --vds-icon-9: 18px;
@@ -492,15 +460,14 @@
 
     /* Font families */
     --vds-font-main:
-      'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-      'Helvetica Neue', Arial, 'Hiragino Sans GB', 'Microsoft YaHei',
-      'Noto Sans CJK SC', sans-serif;
+      'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+      'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
     --vds-font-code:
-      'Roboto Mono', 'Fira Code', 'SFMono-Regular', Menlo, Monaco, Consolas,
-      'Liberation Mono', 'Courier New', monospace;
+      'Roboto Mono', 'Fira Code', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono',
+      'Courier New', monospace;
     --vds-font-serif:
-      'Noto Serif SC', 'Source Han Serif CN', 'Noto Serif CJK SC', 'Songti SC',
-      STSong, 'SimSun', serif;
+      'Noto Serif SC', 'Source Han Serif CN', 'Noto Serif CJK SC', 'Songti SC', STSong, 'SimSun',
+      serif;
 
     /* Font sizes (size / line-height) */
     --vds-font-display-lv4: 28px;
@@ -519,6 +486,8 @@
     --vds-lh-subhead: 24px;
     --vds-font-body-lv2: 14px;
     --vds-lh-body-lv2: 22px;
+    --vds-resource-ai-line-height: 28px;
+    --vds-resource-ai-result-height: 200px;
     --vds-font-body-lv1: 12px;
     --vds-lh-body-lv1: 18px;
     --vds-font-caption: 10px;
@@ -537,6 +506,12 @@
   }
 
   :root[data-theme='dark'] {
+    --vds-spreadsheet-selection-border: #61b5e0;
+    --vds-spreadsheet-selection-fill: rgb(97 181 224 / 25%);
+    --vds-spreadsheet-header-background: #2c3035;
+    --vds-spreadsheet-header-border: #555b61;
+    --vds-spreadsheet-header-selected: #26749b;
+    --vds-spreadsheet-header-foreground: #ffffff;
     --vds-skills-page: #1e1c17;
     --vds-skills-panel: #24221c;
     --vds-skills-card: #2c2923;
@@ -573,6 +548,7 @@
     --vds-bg-gray-light-default: #242424;
     --vds-bg-gray-hover: #333333;
     --vds-bg-gray-active: #3d3d3d;
+    --vds-connector-oauth-background: var(--vds-bg-gray-default);
     --vds-bg-component: #252525;
     --vds-bg-page: #1f1f1f;
 
@@ -675,6 +651,7 @@
     --vds-bg-mask: rgba(0, 0, 0, 0.7);
     --vds-bg-white-hover-transparent: rgba(255, 255, 255, 0.04);
     --vds-bg-white-active-transparent: rgba(255, 255, 255, 0.08);
+    --vds-explorer-tree-active-bg: rgba(255, 255, 255, 0.08);
     --vds-bg-gray-default-transparent: rgba(255, 255, 255, 0.04);
     --vds-bg-gray-hover-transparent: rgba(255, 255, 255, 0.08);
     --vds-bg-gray-active-transparent: rgba(255, 255, 255, 0.12);
@@ -709,6 +686,12 @@
   /* Browser dark mode fallback: apply dark ds-tokens when JS hasn't hydrated yet */
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme]):not(.light) {
+      --vds-spreadsheet-selection-border: #61b5e0;
+      --vds-spreadsheet-selection-fill: rgb(97 181 224 / 25%);
+      --vds-spreadsheet-header-background: #2c3035;
+      --vds-spreadsheet-header-border: #555b61;
+      --vds-spreadsheet-header-selected: #26749b;
+      --vds-spreadsheet-header-foreground: #ffffff;
       --vds-skills-page: #1e1c17;
       --vds-skills-panel: #24221c;
       --vds-skills-card: #2c2923;
@@ -742,6 +725,7 @@
       --vds-bg-gray-light-default: #242424;
       --vds-bg-gray-hover: #333333;
       --vds-bg-gray-active: #3d3d3d;
+      --vds-connector-oauth-background: var(--vds-bg-gray-default);
       --vds-bg-component: #252525;
       --vds-bg-page: #1f1f1f;
 
@@ -835,6 +819,7 @@
       --vds-bg-mask: rgba(0, 0, 0, 0.7);
       --vds-bg-white-hover-transparent: rgba(255, 255, 255, 0.04);
       --vds-bg-white-active-transparent: rgba(255, 255, 255, 0.08);
+      --vds-explorer-tree-active-bg: rgba(255, 255, 255, 0.08);
       --vds-bg-gray-default-transparent: rgba(255, 255, 255, 0.04);
       --vds-bg-gray-hover-transparent: rgba(255, 255, 255, 0.08);
       --vds-bg-gray-active-transparent: rgba(255, 255, 255, 0.12);
@@ -857,8 +842,7 @@
       --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.15);
       --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.25);
       --vds-shadow-pop-brand:
-        0px 12px 32px 0px rgba(0, 0, 0, 0.45),
-        0px 2px 8px 0px rgba(0, 0, 0, 0.3);
+        0px 12px 32px 0px rgba(0, 0, 0, 0.45), 0px 2px 8px 0px rgba(0, 0, 0, 0.3);
 
       /* Semantic - Warm alert */
       --vds-alert-warm-bg: #3a2a1c;

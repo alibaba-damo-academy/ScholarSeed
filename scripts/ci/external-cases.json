@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "reason": "real_model_config",
+  "cases": [
+{"project":"live","file":"assistant.spec.ts","title":"project sources, flat task references and pinned sections use real product navigation"},
+{"project":"live","file":"assistant.spec.ts","title":"dragged literature reads its uploaded primary PDF rather than another selected abstract"},
+{"project":"live","file":"assistant.spec.ts","title":"project files and directories drag into task context through the real product"},
+{"project":"live","file":"assistant.spec.ts","title":"dark project context copy and directory move keep their targets separate"},
+{"project":"live","file":"assistant.spec.ts","title":"project literature rows drag into the current task without claiming full text"},
+{"project":"live","file":"lifecycle.spec.ts","title":"deliverable classification, overview, archive, pin restoration and deletion preserve independent sources"},
+{"project":"live","file":"lifecycle.spec.ts","title":"real permission, running and stopped tasks agree across home and project while archiving cancels queued work"},
+{"project":"live","file":"lifecycle.spec.ts","title":"background task completion remains unread independently until each real conversation is viewed"},
+{"project":"live","file":"live.spec.ts","title":"recoverable provider gateway failure continues once with the real upstream and preserves the draft (http-503, light)"},
+{"project":"live","file":"live.spec.ts","title":"recoverable provider gateway failure continues once with the real upstream and preserves the draft (http-503, dark)"},
+{"project":"live","file":"live.spec.ts","title":"recoverable provider gateway failure continues once with the real upstream and preserves the draft (sse-cut, light)"},
+{"project":"live","file":"live.spec.ts","title":"recoverable provider gateway failure continues once with the real upstream and preserves the draft (sse-cut, dark)"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP auth projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP rate-limit projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP quota projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP credits projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP request projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP model-config projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP content-policy projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP overloaded projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP unavailable projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP unknown projects the expected failure surface"},
+{"project":"live","file":"live.spec.ts","title":"branches a completed middle turn into an independent task"},
+{"project":"live","file":"live.spec.ts","title":"feedback exports historical native roots and subagent rollouts from a real session"},
+    {
+      "project": "live",
+      "file": "browser-agent.spec.ts",
+      "title": "real Agent lists a page hosted inside the Desktop browser"
+    },
+    {
+      "project": "workbench",
+      "file": "composer-workbench.spec.ts",
+      "title": "composer pastes clipboard images through attachments without replacing its text draft"
+    },
+    {
+      "project": "live",
+      "file": "session-sync.live.spec.ts",
+      "title": "foreground recovery reconciles real completed plans and consumed queued turns"
+    },
+    {
+      "project": "workbench",
+      "file": "workbench.spec.ts",
+      "title": "literature PDF AI requests require configured models"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "AI polish remains a suggestion until replacement and explicit save"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "AI selection actions use isolated Codex turns without creating a product Session"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "Assistant context persists per Session and never leaks its model card into user history"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "Assistant resources and literature enter through the prototype queue and reach the real Agent"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "PDF accepts a second quote during a real reply and sends only that pending quote next"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "personal selection prompts reach real literature turns"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "personal selection prompts reach real resource turns"
+    },
+    {
+      "project": "live",
+      "file": "assistant.spec.ts",
+      "title": "project document tab and resource tree share one context and send real turns"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "a resume that gave up still retries when the session is selected again"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "activity summary shows running and completed duration copy"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "foreground errors clear when navigating away from the failed action"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "interrupted task continues with one click without replaying the old request"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "live reviewer switch routes subsequent native approvals through auto review"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "native session-scope permission remains reachable in the dock"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0 queues running messages, hides intervention, and keeps them after stop"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-11 defers a running model selection until the next turn"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-12 keeps a completed turn summary below its late activity after restart"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-13 renders native Codex subagent lifecycle as product activity"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-14 terminates the whole native runtime session separately from stopping a turn"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-2 sends a message through the real Agent session"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-3 persists Plan mode on the server before the first turn"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-4 resolves a real permission HIL and writes the requested file"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-5 restores the same persisted session after an Electron restart"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-6 returns to a running session from skills and projects without losing its state"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "P0-9 switches completed session permissions without losing the conversation"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "permission selection during a real approval hot switches and safely continues"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "rejects a real command permission without writing the target"
+    },
+    {
+      "project": "live",
+      "file": "live.spec.ts",
+      "title": "todo state follows an interrupted continuation and rejected permission"
+    },
+    {
+      "project": "live",
+      "file": "navigation-live.spec.ts",
+      "title": "真实对话退出重开后自动恢复会话与历史消息，无需重新选择会话"
+    },
+    {
+      "project": "smoke",
+      "file": "startup.spec.ts",
+      "title": "DeepSeek flash reasoning declarations save and survive catalog reload"
+    },
+    {
+      "project": "smoke",
+      "file": "startup.spec.ts",
+      "title": "ChatGPT subscription connection can be created in Desktop without CLI login"
+    },
+    {
+      "project": "smoke",
+      "file": "startup.spec.ts",
+      "title": "preset provider connects with only an API key and keeps custom configuration separate"
+    },
+    {
+      "project": "workbench",
+      "file": "office.spec.ts",
+      "title": "Calc whole-row translation keeps authoritative CSV selection evidence"
+    },
+    {
+      "project": "workbench",
+      "file": "office.spec.ts",
+      "title": "large Calc AI actions use authoritative cell content"
+    },
+    {
+      "project": "workbench",
+      "file": "workbench.spec.ts",
+      "title": "Markdown saved citation from a real answer opens its PDF evidence"
+    },
+    {
+      "project": "workbench",
+      "file": "workbench.spec.ts",
+      "title": "review tab follows its project after a real Agent file edit"
+    }
+  ]
+}

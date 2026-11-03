@@ -7,16 +7,21 @@ import {
   presentResourceImportTask,
   retryResourceImportTask,
   subscribeResourceImportTasks,
-  watchResourceImportTask
+  watchResourceImportTask,
 } from './imports'
 import { ResourceAgentOriginAction } from './Origin'
 import { ResourcePanel } from './ResourcePanel'
+import { ResourceListing } from './Listing'
+import { ResourceHistory } from './History'
+import { CreateDialog } from './Dialogs'
 import { WebSearchTab } from './WebSearchTab'
 import { ResourceFailure } from './Feedback'
 import { resourceErrorMessage } from './error'
+import { invalidateResourceProject } from './revision'
 
-const ReviewBatch = React.lazy(() => import('./ReviewBatch')
-  .then((module) => ({ default: module.ReviewBatch })))
+const ReviewBatch = React.lazy(() =>
+  import('./ReviewBatch').then((module) => ({ default: module.ReviewBatch }))
+)
 
 /**
  * 资料库 Feature 贡献声明（开发 2 拥有）。
@@ -27,6 +32,10 @@ const ReviewBatch = React.lazy(() => import('./ReviewBatch')
 export function resourcesFeature(): FeatureModule {
   return {
     id: 'resources',
+    globalSurfaces: [
+      { id: 'resource-history', render: () => <ResourceHistory /> },
+      { id: 'resource-create', render: () => <CreateDialog /> },
+    ],
     taskSources: [
       {
         id: 'resource-imports',
@@ -36,8 +45,9 @@ export function resourcesFeature(): FeatureModule {
         retry: retryResourceImportTask,
         present: presentResourceImportTask,
         watch: watchResourceImportTask,
-        subscribe: subscribeResourceImportTasks
-      }
+        subscribe: subscribeResourceImportTasks,
+        onTerminal: (task) => invalidateResourceProject(task.projectId),
+      },
     ],
     activityItems: [
       {
@@ -46,37 +56,37 @@ export function resourcesFeature(): FeatureModule {
         icon: 'inbox',
         order: 20,
         hiddenIn: ['literature'],
-        requiresProject: true
-      }
+        requiresProject: true,
+      },
     ],
     documentToolbarItems: [
       {
         id: 'resource-agent-origin',
-        render: ({ path, projectId, sourceKind }) => (
-          sourceKind === 'project' && projectId
-            ? <ResourceAgentOriginAction path={path} projectId={projectId} />
-            : null
-        )
-      }
+        render: ({ path, projectId, sourceKind }) =>
+          sourceKind === 'project' && projectId ? (
+            <ResourceAgentOriginAction path={path} projectId={projectId} />
+          ) : null,
+      },
     ],
     viewerPlugins: [
+      { kind: 'material-list', render: () => <ResourceListing /> },
       {
         kind: 'review',
         toolbar: 'viewer',
-        render: ({ tabId, path }) => <ReviewBatch tabId={tabId ?? path} />
+        render: ({ tabId, path }) => <ReviewBatch tabId={tabId ?? path} />,
       },
       {
         kind: 'web_search',
-        render: ({ tabId, path }) => <WebSearchTab tabId={tabId ?? path} />
-      }
+        render: ({ tabId, path }) => <WebSearchTab tabId={tabId ?? path} />,
+      },
     ],
     panels: [
       {
         key: 'resource-tree',
         title: (i18n) => i18n.getFixedT(null, 'resources')('panel.title'),
         slot: 'module',
-        render: () => <ResourcePanel />
-      }
-    ]
+        render: () => <ResourcePanel />,
+      },
+    ],
   }
 }

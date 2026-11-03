@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { resourceErrorMessage, resourceFailureDetail } from './error.ts'
+import { resourceErrorMessage } from './error.ts'
 import { readFileSync } from 'node:fs'
 import { createInstance } from 'i18next'
 
-test('known resource errors select stable messages and unknown diagnostics remain unchanged', () => {
+test('known resource errors select stable messages and unknown diagnostics use a fallback', () => {
   assert.deepEqual(resourceErrorMessage('invalid_name'), { key: 'operationError.invalid_name', detail: undefined })
   for (const code of ['vendor_failure: 原始诊断', 'toString', '__proto__']) {
-    assert.deepEqual(resourceErrorMessage(code), { key: 'operationError.unknown', detail: code })
+    assert.deepEqual(resourceErrorMessage(code), { key: 'operationError.unknown', detail: undefined })
   }
   assert.deepEqual(resourceErrorMessage(), { key: 'operationError.unknown', detail: undefined })
 })
@@ -31,13 +31,5 @@ test('import failure descriptors translate at display time and retain unknown di
     assert.deepEqual(descriptor, canonical)
     assert.equal(descriptor.detail, undefined)
   }
-  assert.deepEqual(resourceErrorMessage('vendor: 原始诊断 /tmp/原文'), { key: 'operationError.unknown', detail: 'vendor: 原始诊断 /tmp/原文' })
-})
-
-test('unknown suggestion failures keep codes with absent, duplicate, or distinct detail', () => {
-  assert.equal(resourceFailureDetail('vendor_code', ''), 'vendor_code')
-  assert.equal(resourceFailureDetail('vendor_code', 'vendor_code'), 'vendor_code')
-  assert.equal(resourceFailureDetail('vendor_code', '原始诊断 /tmp/文档'), 'vendor_code: 原始诊断 /tmp/文档')
-  assert.equal(resourceFailureDetail('', '原始诊断'), '原始诊断')
-  assert.equal(resourceFailureDetail('', ''), undefined)
+  assert.deepEqual(resourceErrorMessage('vendor: 原始诊断 /tmp/原文'), { key: 'operationError.unknown', detail: undefined })
 })

@@ -10,6 +10,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from service.platform.storage import filesystem_path
+
 CROSS_ORIGIN_OPENER_POLICY = "same-origin"
 CROSS_ORIGIN_EMBEDDER_POLICY = "require-corp"
 STATIC_MEDIA_TYPES = {
@@ -41,14 +43,19 @@ def register_cross_origin_isolation(app: FastAPI) -> None:
         return response
 
 
-def mount_renderer(app: FastAPI, renderer_dist: str = "") -> None:
+def mount_renderer(app: FastAPI, renderer_dist: str = "", office_root: str = "") -> None:
     """Mount renderer assets after every API route, preserving API precedence."""
-    dist = Path(renderer_dist) if renderer_dist else None
+    dist = filesystem_path(renderer_dist) if renderer_dist else None
     if dist is None or not (dist / "index.html").exists():
         return
     assets = dist / "assets"
     if assets.is_dir():
         app.mount("/assets", ProductStaticFiles(directory=str(assets)), name="assets")
+    office = filesystem_path(office_root) if office_root else dist / "office"
+    if office_root and not (office / "zeta-20250513" / "manifest.json").is_file():
+        raise ValueError("shared Office assets are unavailable")
+    if office.is_dir():
+        app.mount("/office", ProductStaticFiles(directory=str(office)), name="office")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):

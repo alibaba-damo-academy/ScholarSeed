@@ -1,3 +1,4 @@
+import type { PluginReference, PluginReport } from '../../plugins'
 import type { SessionTitleFallback } from './session'
 import type { ContextLabelFallback } from './contracts/assistant'
 import type { ForegroundMessage } from './contracts/feedback'
@@ -6,7 +7,8 @@ import type { ForegroundMessage } from './contracts/feedback'
 // the conversation, project, task and status surfaces (single source here).
 
 import type { PreferenceLanguage, PreferenceTheme } from '../../preferences'
-import type { LiteratureDocumentSource } from './contracts/workbench'
+import type { LiteratureDocumentSource, SessionFileSource } from './contracts/workbench'
+import type { ActiveDocument, SubmissionMode, TurnInputItem } from './api'
 
 /**
  * 外观与语言的取值以跨进程契约 `src/preferences.ts` 为单一来源（主进程要读同一份），
@@ -20,13 +22,6 @@ export type EvidencePriority = 'supported' | 'mixed' | 'limited' | 'unverified'
 
 /** PRD 2.1.1: manually edited conversation titles accept at most 150 characters. */
 export const SESSION_TITLE_MAX_LENGTH = 150
-
-/** Codex-style provisional title: normalized, truncated first user prompt. */
-export function promptSessionTitle(text: string): string {
-  const normalized = text.trim().replace(/\s+/g, ' ')
-  if (normalized.length <= SESSION_TITLE_MAX_LENGTH) return normalized
-  return `${normalized.slice(0, SESSION_TITLE_MAX_LENGTH - 1).trimEnd()}…`
-}
 
 /** A server-verified exact response span linked to a durable research claim. */
 export interface EvidenceAnnotation {
@@ -181,7 +176,7 @@ export interface FilePreviewTarget {
   renderKind?: 'markdown' | 'html' | 'text' | 'json' | 'code' | 'image'
   size?: number
   content?: string
-  source?: LiteratureDocumentSource
+  source?: LiteratureDocumentSource | SessionFileSource
 }
 
 export interface RuntimeReadiness {
@@ -249,6 +244,83 @@ export interface SessionArtifact {
   updated_at?: number
 }
 
+const DELIVERABLE_ARTIFACT_ROLES: ReadonlySet<SessionArtifact['role']> = new Set([
+  'final',
+  'intermediate',
+  'supporting',
+])
+
+export function artifactIsDeliverable(artifact: SessionArtifact): boolean {
+  return (
+    Boolean(artifact.publication_id) &&
+    DELIVERABLE_ARTIFACT_ROLES.has(artifact.role) &&
+    artifact.status !== 'deleted' &&
+    artifact.change !== 'delete'
+  )
+}
+
+export function artifactIsOutput(artifact: SessionArtifact): boolean {
+  return artifactIsDeliverable(artifact) && artifact.role !== 'intermediate'
+}
+
+export function overviewArtifacts(
+  artifacts: SessionArtifact[],
+  workdir?: string
+): {
+  outputs: SessionArtifact[]
+  process: Array<{ path: string; artifacts: SessionArtifact[] }>
+} {
+  const outputs: SessionArtifact[] = []
+  const directories = new Map<string, SessionArtifact[]>()
+  const current = new Map<string, SessionArtifact>()
+  for (const artifact of artifacts) {
+    if (artifact.status === 'deleted' || artifact.change === 'delete') continue
+    const key = artifact.absolute_path ?? artifact.path
+    const previous = current.get(key)
+    if (!previous || artifactIsDeliverable(artifact) || !artifactIsDeliverable(previous))
+      current.set(key, artifact)
+  }
+  for (const artifact of current.values()) {
+    if (artifactIsOutput(artifact)) {
+      outputs.push(artifact)
+      continue
+    }
+    const directoryPrefix = workdir?.replace(/\\/g, '/').replace(/\/$/, '')
+    const absolute = artifact.absolute_path?.replace(/\\/g, '/')
+    const displayPath =
+      directoryPrefix && absolute?.startsWith(`${directoryPrefix}/`)
+        ? absolute.slice(directoryPrefix.length + 1)
+        : artifact.path.replace(/\\/g, '/')
+    const segments = displayPath.split('/')
+    segments.pop()
+    const directory = segments.join('/')
+    const group = directories.get(directory) ?? []
+    group.push(artifact)
+    directories.set(directory, group)
+  }
+  return {
+    outputs,
+    process: [...directories].map(([path, items]) => ({ path, artifacts: items })),
+  }
+}
+
+export function submittedReferences(conversation: ConvItem[]): MessageReference[] {
+  const references = new Map<string, MessageReference>()
+  for (const item of conversation) {
+    if (item.kind !== 'user' || item.cancelled) continue
+    for (const reference of item.refs ?? []) {
+      if (reference.type === 'skill') continue
+      const identity = JSON.stringify([
+        reference.type,
+        reference.kind,
+        reference.sourceId ?? reference.path ?? reference.id,
+      ])
+      references.set(identity, reference)
+    }
+  }
+  return [...references.values()]
+}
+
 /**
  * Whether an artifact change means the resource library changed.
  *
@@ -305,6 +377,7 @@ export interface MessageReference {
   sourceRevision?: string | null
   estimate?: SkillDurationEstimate
   anchor?: {
+    documentId?: string
     previewText?: string
     locator?: Record<string, unknown>
   } | null
@@ -359,6 +432,19 @@ export interface WebSearchResult extends Record<string, unknown> {
   url?: string
 }
 
+export type SearchSource = {
+  url: string
+  title: string
+  search_kind: 'web' | 'paper'
+  search_id: string
+  origin?: 'tool_declared'
+}
+export type AnswerCoverage = {
+  status: 'pending' | 'reviewing' | 'reviewed' | 'partial' | 'unavailable' | 'interrupted'
+  unresolved?: string[]
+  unread_sources?: number
+}
+
 export type AnswerSource =
   | {
       number: number
@@ -368,13 +454,19 @@ export type AnswerSource =
       search_kind: 'web' | 'paper'
       search_id: string
       citation_urls: string[]
+      origin?: 'tool_declared'
+      evidence?: { origin: string }[]
+      reference_labels?: string[]
+      occurrences?: { start_utf16: number; end_utf16: number }[]
     }
   | { number: number; kind: 'receipt'; handle: string; citation_urls: string[] }
 
 export interface DisplayCardData {
+  component?: PluginReference
   cardId: string
   type: string
   content: Record<string, unknown>
+  presentationSource?: 'live' | 'history'
 }
 
 export interface ReviewReadyCard {
@@ -387,136 +479,283 @@ export interface ReviewReadyCard {
 
 export type NativeActivityCategory = 'collaboration' | 'media' | 'wait' | 'mode' | 'other'
 
+export interface SubagentProgress {
+  itemId: string
+  activity: string
+  phase: string
+  summary?: string
+  tool?: {
+    name: string
+    input?: unknown
+    output?: string
+    ok?: boolean
+    status?: string
+  }
+  startedAt?: number
+  completedAt?: number
+  observedAt: number
+  eventSeq: number
+}
+
 export type ApplicationRequestFailure = {
-  key: 'request.historyUnavailable' | 'request.timeout' | 'request.unavailable' | 'request.invalidRecovery' | 'request.failed' | 'request.authentication' | 'request.httpFailure' | 'retry.continueUnconfirmed'
+  key:
+    | 'request.historyUnavailable'
+    | 'request.timeout'
+    | 'request.unavailable'
+    | 'request.invalidRecovery'
+    | 'request.failed'
+    | 'request.authentication'
+    | 'request.httpFailure'
+    | 'retry.continueUnconfirmed'
   status?: number
   statusText?: string
   diagnostic?: string
 }
 
 export type RuntimeStatusMessage = (
-  | { key: 'runtime.closed' | 'context.compacting' | 'context.compacted' | 'artifactFailure.missing' | 'artifactFailure.changed' | 'artifactFailure.conflict' | 'artifactFailure.invalid' | 'resume.reconnected' | 'resume.reconnect' | 'resume.stopped' | 'runtime.retrying' | 'runtime.providerRetrying' | 'runtime.recovered' | 'runtime.recoveryFailed' | 'runtime.failed' | 'runtime.detected' | 'runtime.transportRetrying' | 'runtime.transportRecovered' }
+  | {
+      key:
+        | 'runtime.closed'
+        | 'context.compacting'
+        | 'context.compacted'
+        | 'artifactFailure.missing'
+        | 'artifactFailure.changed'
+        | 'artifactFailure.conflict'
+        | 'artifactFailure.invalid'
+        | 'resume.reconnected'
+        | 'resume.reconnect'
+        | 'resume.stopped'
+        | 'runtime.retrying'
+        | 'runtime.providerRetrying'
+        | 'runtime.recovered'
+        | 'runtime.recoveryFailed'
+        | 'runtime.failed'
+        | 'runtime.detected'
+        | 'runtime.transportRetrying'
+        | 'runtime.transportRecovered'
+    }
   | { key: 'runtime.retryingCount' | 'resume.retrying'; attempt: number; maximum: number }
 ) & { reason?: string | ApplicationRequestFailure }
 
-export type ConvItem = TurnOwned & (
-  | { kind: 'day'; text: string }
-  | { kind: 'prompt'; text: string } // gray task-prompt at the top of a (sub-)session stream
-  | { kind: 'reentry'; topic: string; sub: string; rows: [string, string, Cognitive?][] }
-  // refs = 该消息携带的 @ 引用资源 (proposal 13: 气泡上以 chips 展示, wire 前缀不进正文)
-  | { kind: 'user'; text: string; rewindAnchor?: number; steer?: boolean; steerLabel?: string; refs?: MessageReference[] }
-  | {
-      kind: 'interaction_reply'
-      requestId: string
-      questions: HilQuestion[]
-      answers: Record<string, string>
-    }
-  // who = 说话人 (team 群聊: 成员名; 空/undefined = lead/单 agent) → 多说话人气泡归属
-  | { kind: 'agent'; modelRun?: ModelRun; text: string; card?: ConvCard; who?: string; evidence?: EvidenceAnnotation[]; evidenceNotice?: string; answerSources?: AnswerSource[] }
-  | { kind: 'delivery'; delivery: DeliveryCard }
-  | { kind: 'artifact'; artifact: SessionArtifact }
-  | { kind: 'review'; review: ReviewReadyCard }
-  | { kind: 'display_card'; card: DisplayCardData }
-  | { kind: 'thinking'; text: string; commentary?: true }
-  | {
-      kind: 'status'
-      text: string | RuntimeStatusMessage
-      tone?: Cognitive
-      runtimeNotice?: { diagnostic?: string }
-      displayMessage?: ForegroundMessage
-      incidentId?: string
-      runtimeAction?: 'retry_session_resume'
-      actionSessionId?: string
-      /** Terminal live-only outcome that must survive a durable history refresh. */
-      retainOnHistoryRefresh?: boolean
-    }
-  | { kind: 'notice'; text: string; message?: { key: 'hil.invalidRequest' }; displayMessage?: ForegroundMessage; undoable?: boolean }
-  | {
-      kind: 'error'
-      applicationFailure?: ApplicationRequestFailure
-      failure?: { kind: 'quota' | 'credits' | 'rate_limit' | 'auth' | 'request' | 'model_config' | 'unavailable' | 'content_policy' | 'unknown'; fallback: 'frame' | 'runtime' | 'raw'; automaticRetryAttempts?: number }
-      title: string
-      message: string
-      action: string
-      turnUnknown?: { reason?: 'timeout' | 'transportLost' | 'processExit' | 'unconfirmed' }
-      incidentId?: string
-      runtimeAction?: 'confirm_turn_unknown' | 'continue_turn'
-      actionSessionId?: string
-      actionTurnId?: string
-      actionState?: 'idle' | 'submitting' | 'confirmed' | 'failed' | 'outcome_unknown'
-      actionError?: ForegroundMessage
-      actionErrorMessage?: ApplicationRequestFailure
-    }
-  | { kind: 'tool'; toolId: string; name: string; status: 'running' | 'done' | 'error' | 'cancelled'; input?: unknown; result?: string; who?: string }
-  | {
-      kind: 'web_search'
-      searchId: string
-      status: 'running' | 'done'
-      query: string
-      action: WebSearchAction
-      results: WebSearchResult[]
-      resultCount: number
-    }
-  | {
-      kind: 'paper_search'
-      searchId: string
-      status: 'running' | 'done'
-      query: string
-    }
-  | {
-      kind: 'skill'
-      skillId: string
-      name: string
-      path: string
-      status: 'running' | 'done' | 'error'
-      nativeStatus: string
-      estimate?: SkillDurationEstimate
-    }
-  | {
-      kind: 'native_activity'
-      activityId: string
-      activityType: string
-      category: NativeActivityCategory
-      status: 'running' | 'done' | 'error'
-      nativeStatus: string
-      details: Record<string, unknown>
-    }
-  | {
-      kind: 'hil'
-      requestId: string
-      hilKind: string
-      toolName?: string
-      title?: string
-      body?: string
-      questions?: HilQuestion[]
-      options?: HilOption[]
-      allowFreeText?: boolean
-      resolved?: string
-      resolvedMessage?: HilResolvedMessage
-      // question 卡已答内容 (key = q.name/header || question, value = 选项 label 逗号串或自由文本);
-      // 存进会话项而非组件 state, 使已答态在卡片上持久可见 (勾选/文本回显)。
-      answers?: Record<string, string>
-      // permission detail lifted from the POLICY_ASK metadata (native path) so the card can
-      // render a clean command block + scope-aware Allow instead of a raw `body` dump.
-      command?: string
-      toolInput?: Record<string, unknown>
-      workdir?: string
-      safetyTags?: string[]
-      reason?: string
-      suggestedPrefix?: string
-      prefixKind?: string // shell_prefix | file_dir | web_host
-      path?: string
-      diff?: string
-      networkTarget?: string
-      permissions?: Record<string, unknown>
-      decisionScope?: string
-      requestedAt?: number
-      hilState?: 'pending' | 'submitting' | 'failed' | 'resolved' | 'cancelled' | 'stale' | 'unknown'
-      submissionError?: string
-      submissionErrorMessage?: HilSubmissionMessage
-      submissionRequestFailure?: ApplicationRequestFailure
-    }
-)
+export type ConvItem = TurnOwned &
+  (
+    | { kind: 'day'; text: string }
+    | { kind: 'prompt'; text: string } // gray task-prompt at the top of a (sub-)session stream
+    | { kind: 'reentry'; topic: string; sub: string; rows: [string, string, Cognitive?][] }
+    // refs = 该消息携带的 @ 引用资源 (proposal 13: 气泡上以 chips 展示, wire 前缀不进正文)
+    | {
+        kind: 'user'
+        text: string
+        rewindAnchor?: number
+        steer?: boolean
+        steerLabel?: string
+        cancelled?: boolean
+        refs?: MessageReference[]
+      }
+    | {
+        kind: 'interaction_reply'
+        requestId: string
+        questions: HilQuestion[]
+        answers: Record<string, string>
+      }
+    // who = 说话人 (team 群聊: 成员名; 空/undefined = lead/单 agent) → 多说话人气泡归属
+    | {
+        kind: 'agent'
+        modelRun?: ModelRun
+        text: string
+        card?: ConvCard
+        who?: string
+        evidence?: EvidenceAnnotation[]
+        evidenceNotice?: string
+        answerSources?: AnswerSource[]
+        searchSources?: SearchSource[]
+        answerCoverage?: AnswerCoverage
+      }
+    | { kind: 'delivery'; delivery: DeliveryCard }
+    | { kind: 'artifact'; artifact: SessionArtifact }
+    | { kind: 'review'; review: ReviewReadyCard }
+    | { kind: 'display_card'; card: DisplayCardData }
+    | {
+        kind: 'thinking'
+        text: string
+        commentary?: true
+        completed?: boolean
+        summaryIndex?: number
+        reasoningSeq?: number
+      }
+    | {
+        kind: 'status'
+        text: string | RuntimeStatusMessage
+        tone?: Cognitive
+        runtimeNotice?: { diagnostic?: string }
+        displayMessage?: ForegroundMessage
+        incidentId?: string
+        turnBoundary?: true
+        bindingSeq?: number
+        runtimeAction?: 'retry_session_resume'
+        actionSessionId?: string
+        hideIcon?: boolean
+        /** Terminal live-only outcome that must survive a durable history refresh. */
+        retainOnHistoryRefresh?: boolean
+      }
+    | {
+        kind: 'notice'
+        text: string
+        message?: { key: 'hil.invalidRequest' }
+        displayMessage?: ForegroundMessage
+        undoable?: boolean
+      }
+    | {
+        kind: 'error'
+        applicationFailure?: ApplicationRequestFailure
+        failure?: {
+          kind:
+            | 'capability'
+            | 'quota'
+            | 'credits'
+            | 'rate_limit'
+            | 'auth'
+            | 'request'
+            | 'model_config'
+            | 'unavailable'
+            | 'overloaded'
+            | 'content_policy'
+            | 'unknown'
+          fallback: 'frame' | 'runtime' | 'raw'
+          authentication?: 'account' | 'model'
+          automaticRetryAttempts?: number
+        }
+        title: string
+        message: string
+        action: string
+        turnUnknown?: { reason?: 'timeout' | 'transportLost' | 'processExit' | 'unconfirmed' }
+        incidentId?: string
+        runtimeAction?: 'confirm_turn_unknown' | 'continue_turn'
+        actionSessionId?: string
+        actionTurnId?: string
+        actionState?: 'idle' | 'submitting' | 'confirmed' | 'failed' | 'outcome_unknown'
+        actionError?: ForegroundMessage
+        actionErrorMessage?: ApplicationRequestFailure
+      }
+    | {
+        kind: 'tool'
+        toolId: string
+        name: string
+        status: 'running' | 'done' | 'error' | 'cancelled'
+        input?: unknown
+        result?: string
+        exitCode?: number | null
+        who?: string
+      }
+    | {
+        kind: 'web_search'
+        searchId: string
+        status: 'running' | 'done'
+        query: string
+        action: WebSearchAction
+        results: WebSearchResult[]
+        resultCount?: number
+      }
+    | {
+        kind: 'paper_search'
+        searchId: string
+        status: 'running' | 'done'
+        query: string
+      }
+    | {
+        kind: 'skill'
+        skillId: string
+        name: string
+        path: string
+        status: 'running' | 'done' | 'error'
+        nativeStatus: string
+        estimate?: SkillDurationEstimate
+      }
+    | {
+        kind: 'native_activity'
+        activityId: string
+        activityType: string
+        category: NativeActivityCategory
+        status: 'running' | 'done' | 'error'
+        nativeStatus: string
+        details: Record<string, unknown>
+        progress?: SubagentProgress[]
+      }
+    | {
+        kind: 'hil'
+        sessionId?: string
+        requestId: string
+        hilKind: string
+        browserApproval?: {
+          tabId: string
+          proofId: string
+          targetInstanceId: string
+          targetGeneration: number
+          tabTitle?: string
+          tabUrl?: string
+          origin: string
+          sourceOrigin?: string | null
+          destinationUrl?: string
+          destinationOrigin?: string
+          preparedId?: string
+          snapshotId?: string
+          elementRef?: string
+          browserAction?: 'click' | 'fill' | 'submit'
+          element?: { role: string; name: string }
+          action: string
+          intent: string
+          expiresAt: number
+        }
+        browserHistoryApproval?: {
+          proofId: string
+          queryDigest: string
+          historyRevision: number
+          search: string
+          offset: number
+          limit: number
+          intent: string
+          expiresAt: number
+        }
+        toolName?: string
+        title?: string
+        body?: string
+        questions?: HilQuestion[]
+        options?: HilOption[]
+        allowFreeText?: boolean
+        resolved?: string
+        resolvedMessage?: HilResolvedMessage
+        // question 卡已答内容 (key = q.name/header || question, value = 选项 label 逗号串或自由文本);
+        // 存进会话项而非组件 state, 使已答态在卡片上持久可见 (勾选/文本回显)。
+        answers?: Record<string, string>
+        // permission detail lifted from the POLICY_ASK metadata (native path) so the card can
+        // render a clean command block + scope-aware Allow instead of a raw `body` dump.
+        command?: string
+        toolInput?: Record<string, unknown>
+        workdir?: string
+        safetyTags?: string[]
+        reason?: string
+        suggestedPrefix?: string
+        prefixKind?: string // shell_prefix | file_dir | web_host
+        path?: string
+        diff?: string
+        networkTarget?: string
+        permissions?: Record<string, unknown>
+        decisionScope?: string
+        requestedAt?: number
+        resolvedAt?: number
+        hilState?:
+          'pending' | 'submitting' | 'failed' | 'resolved' | 'cancelled' | 'stale' | 'unknown'
+        lifetime?: 'turn' | 'session'
+        blocking?: boolean
+        submissionError?: string
+        submissionErrorMessage?: HilSubmissionMessage
+        submissionRequestFailure?: ApplicationRequestFailure
+      }
+  )
+
+export function isTurnBoundary(item: ConvItem): boolean {
+  return item.kind === 'user' || (item.kind === 'status' && item.turnBoundary === true)
+}
 
 /** Explicit application-owned display provenance; raw answers and diagnostics have no descriptor. */
 export type HilPermissionScope =
@@ -524,7 +763,21 @@ export type HilPermissionScope =
   | { kind: 'raw'; label: string }
 
 export type HilResolvedMessage =
-  | { kind: 'stale' | 'cancelled' | 'handled' | 'answered' | 'allowedOnce' | 'denied' }
+  | {
+      kind:
+        | 'stale'
+        | 'cancelled'
+        | 'handled'
+        | 'answered'
+        | 'allowedOnce'
+        | 'denied'
+        | 'browserExpired'
+        | 'browserInactive'
+        | 'browserUnknown'
+        | 'historyExpired'
+        | 'historyInactive'
+        | 'historyUnknown'
+    }
   | { kind: 'allowedScope'; scope: HilPermissionScope }
 
 export type HilSubmissionMessage = 'outcomeUnknown' | 'cancelUnconfirmed' | 'answerUnconfirmed'
@@ -535,11 +788,15 @@ export interface HilOption {
   description?: string
 }
 export interface HilQuestion {
+  installation?: PluginReport
+  component?: PluginReference
+  componentData?: Record<string, unknown>
   id?: string
   header?: string
   question: string
   options: { label: string; description?: string }[]
   multiSelect?: boolean
+  papers?: { id: string; label: string; description?: string }[]
 }
 
 /** one conversation thread = main session OR a parallel sub-session, each a real
@@ -556,13 +813,32 @@ export interface BgTask {
 }
 
 export const RELEASED_PLAN_SOURCE = 'released'
+export const PLAN_EXECUTION_TIMING_POLICY = 'leaf-execution-v1'
 
 /** 显式计划树或原生平铺快照中的一步；每次快照整列替换。 */
+export interface PlanSnapshotUI {
+  sequence: number
+  turnId?: string
+  timestamp: number
+  planId?: string
+  timingPolicy?: string
+  released: boolean
+  items: TodoItemUI[]
+}
+
 export interface TodoItemUI {
   content: string
+  kind?: 'group' | 'step'
   /** 进行时描述: status=in_progress 时展示这个 (CC activeForm), 否则展示 content */
   activeForm?: string | null
-  status: 'pending' | 'in_progress' | 'needs_confirmation' | 'completed' | 'partial' | 'blocked' | 'failed'
+  status:
+    | 'pending'
+    | 'in_progress'
+    | 'needs_confirmation'
+    | 'completed'
+    | 'partial'
+    | 'blocked'
+    | 'failed'
   /** 稳定 id (被 dependsOn 引用) */
   id?: string
   /** 显式计划层级；缺省为主阶段，不能由标题或 dependsOn 推断。 */
@@ -625,12 +901,22 @@ export interface Thread {
   lastSeq: number
   /** UI-visible activation state while the native runtime and durable history resume. */
   resumeState?: 'pending' | 'ready' | 'failed'
-  resumeMessage?: { key: 'resume.codex' | 'resume.agent' | 'resume.reconnect' } | { key: 'resume.retry'; attempt: number; maximum: number }
+  resumeServiceInstanceId?: string
+  recoveryBlocked?: boolean
+  recoveryIncidentId?: string | null
+  recoverySourceSeq?: number
+  recoveryPending?: boolean
+  resumeMessage?:
+    | { key: 'resume.codex' | 'resume.agent' | 'resume.reconnect' | 'resume.runtimeSwitchBlocked' }
+    | { key: 'resume.runtimeSwitch'; serviceInstanceId: string | null }
+    | { key: 'resume.retry'; attempt: number; maximum: number }
   running?: boolean
+  activeTurnId?: string | null
   /** The server has accepted an interrupt but has not released turn admission yet. */
   interrupting?: boolean
   /** Native runtime session was explicitly closed; history remains read-only. */
   terminated?: boolean
+  readOnly?: boolean
   queuedMessages?: QueuedMessage[]
   /** 本会话的后台任务生命周期态 (background_task_event 帧; StatusStrip 读 activeThread) — 每会话独立 */
   backgroundTasks?: Record<string, BgTask>
@@ -638,6 +924,7 @@ export interface Thread {
   todos?: TodoItemUI[]
   /** `todos` 全量快照所属 turn；null 表示当前没有计划。 */
   todoTurnId?: string | null
+  planSnapshots?: PlanSnapshotUI[]
   /** Terminal state is turn-scoped so a later plan cannot inherit an earlier turn failure. */
   turnOutcomes?: Record<string, TurnOutcome>
   /** Durable execution clock projected from product events for each turn. */
@@ -661,10 +948,11 @@ export interface QueuedMessage {
   enqueueSeq: number
   operationSeq?: number
   state: 'queued' | 'waiting_resources' | 'submitting' | 'failed' | 'outcome_unknown'
+  submissionMode: SubmissionMode
   deadline?: number
   purpose?: string
   text: string
-  input: import('./api').TurnInputItem[]
+  input: TurnInputItem[]
   assistantReferences: Array<{
     selection_source_label?: string | null
     label_fallback?: ContextLabelFallback
@@ -690,9 +978,12 @@ export interface QueuedMessage {
     }
   }>
   safeErrorCode?: string
+  safeErrorDetails?: Record<string, string>
   /** Local outbox rows have not yet been confirmed in the server queue. */
   serverPresent?: boolean
   assistantContextRevision?: number
+  activeDocument?: ActiveDocument
+  selectedLiteratureIds?: string[]
   /** Uncertainty correlation handle required by the turn confirm endpoint. */
   nativeTurnId?: string
 }

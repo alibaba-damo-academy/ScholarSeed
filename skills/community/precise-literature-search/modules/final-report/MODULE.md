@@ -22,7 +22,7 @@ or the honest zero-full-text report, before marking the run complete.
 - Treat `intent.json` as the question and scope source; preserve the original
   request and all interactive user-confirmed or auto-delegated changes.
 - Treat prior `review.json` feedback as refinement priorities, not evidence.
-- Ground scholarly claims in readable-paper content from `report.md` and
+- Ground scholarly claims in readable-paper content from `read_report.md` and
   `paper_summary.md`, including archived iterations.
 - Use a nonempty abstract from a selected, non-placeholder, unavailable paper
   only for a high-relevance reminder under the strict `[A#]` protocol in
@@ -30,6 +30,8 @@ or the honest zero-full-text report, before marking the run complete.
 - Do not cite an excluded, unreadable, metadata-only, or placeholder paper as
   full-text evidence.
 - Use numbered citations such as `[1]`, and end with `## 参考资料` or
-  `## References` containing one numbered entry for every cited paper.
+  `## References` containing one numbered entry for every cited paper. Separate
+  entries with blank lines or make every entry a Markdown list item.
 - Keep `[A#]` abstract alerts in their dedicated section immediately before the
-  final reference list; do not place them in the numbered full-text references.
+  final reference list, with a blank line between entries; do not place them in
+  the numbered full-text references.

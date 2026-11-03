@@ -10,17 +10,24 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import PurePath
-from typing import Any
+from typing import Any, Sequence
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from starlette.datastructures import UploadFile
+from starlette.responses import JSONResponse
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_503_SERVICE_UNAVAILABLE
 
+from service.chat.persistence.catalog import SessionAccessError, SessionPrincipal
 from service.content.domain.model import ContentError
+from service.identity.utils import request_owner_id
+from service.literature.api.papermeta import resolve_timeout_seconds
 from service.literature.domain.cards import CARD_MAX_BYTES
 from service.literature.domain.model import (
     IMPORT_COLLECTION_UNAVAILABLE,
+    IMPORT_CONFLICT,
     LIBRARY_INVALID,
+    MAX_BATCH_RECORDS,
     MAX_IMPORT_BYTES,
     NOTE_BODY_REQUIRED,
     NOTE_NOT_FOUND,
@@ -29,6 +36,11 @@ from service.literature.domain.model import (
     LiteratureError,
 )
 from service.literature.persistence.cards import PaperCards
+from service.literature.persistence.downloads import (
+    DOWNLOAD_ADMISSION_UNAVAILABLE,
+    DOWNLOAD_RECEIPT_INVALID,
+    download_literature_ids,
+)
 from service.literature.persistence.files import (
     LiteratureFileBatch,
     attachment_size,
@@ -37,7 +49,12 @@ from service.literature.persistence.files import (
     managed_object,
 )
 from service.literature.persistence.reading import AttachmentRecordCatalog
-from service.literature.persistence.store import LiteratureRepository
+from service.literature.persistence.store import (
+    TAXONOMY_ADD,
+    TAXONOMY_REMOVE,
+    LiteratureRepository,
+    PageProjection,
+)
 from service.literature.schema import (
     PDF_MEDIA_TYPE,
     AttachmentRole,
@@ -46,29 +63,31 @@ from service.literature.schema import (
     PublicationType,
     new_item_id,
 )
-from service.literature.service.arxiv import (
-    ARXIV_DOWNLOAD_FAILED,
-    ARXIV_INVALID,
-    ARXIV_INVALID_PDF,
-    ARXIV_NOT_FOUND,
-    ARXIV_TOO_LARGE,
-    ArxivDownloadError,
-)
+from service.literature.service.arxiv import ARXIV_INVALID, ArxivDownloadError
 from service.literature.service.attachment import (
+    ARXIV_ALREADY_ATTACHED,
     ATTACHMENT_INVALID,
     ATTACHMENT_TYPE_MISMATCH,
+    AttachmentConflictError,
     AttachmentFormatError,
+    attach_primary_pdf,
     forget_removed_indexes,
+    has_usable_primary,
     upload_format,
 )
-from service.literature.service.catalog import is_recent
+from service.literature.service.bibliography import (
+    INVALID_IDENTIFIER,
+    NETWORK_FAILED,
+    NOT_FOUND,
+    QUOTA_EXHAUSTED,
+    UPSTREAM_FAILED,
+    BibliographyError,
+    fetch_identifier_bibliography,
+)
+from service.literature.service.catalog import is_recent, to_bibtex
 from service.literature.service.extractor import InvalidPdfError, extract_pdf_metadata
 from service.literature.service.fulltext import (
-    DOI_DOWNLOAD_FAILED,
     DOI_INVALID,
-    DOI_NO_ACCESSIBLE_PDF,
-    DOI_NOT_FOUND,
-    DOI_TOO_LARGE,
     FULLTEXT_IDENTIFIER_MISSING,
     FulltextDownloadError,
     fetch_identifier_pdf,
@@ -77,7 +96,14 @@ from service.literature.service.importer import (
     LiteratureImportError,
     parse_import,
 )
-from service.literature.service.library import LiteratureService
+from service.literature.service.outcome import (
+    FULLTEXT_NO_ACCESS,
+    FULLTEXT_NOT_FOUND,
+    FULLTEXT_RATE_LIMITED,
+    FULLTEXT_TIMEOUT,
+    OUTCOME_STATUS,
+    PRECONDITION_STATUS,
+)
 from service.literature.service.zotero import (
     ZoteroImportError,
     import_zotero,
@@ -98,6 +124,11 @@ PROJECT_REQUIRED = "LITERATURE_PROJECT_REQUIRED"
 LITERATURE_NOT_FOUND = "LITERATURE_NOT_FOUND"
 LITERATURE_REFERENCED = "LITERATURE_REFERENCED_BY_PROJECTS"
 UNSUPPORTED_EXPORT_FORMAT = "UNSUPPORTED_EXPORT_FORMAT"
+EXPORT_TOO_MANY_ITEMS = "EXPORT_TOO_MANY_ITEMS"
+#: 导出条数上限, 与导入 (MAX_BATCH_RECORDS) 同一个口径。
+EXPORT_TOO_MANY_MESSAGE = f"一次最多导出 {MAX_BATCH_RECORDS} 条文献, 请分批导出"
+#: 每个 facet 维度最多回多少个条目; 超出只保留计数最大的一批, 并如实报 total/truncated。
+FACET_ENTRIES_LIMIT = 50
 TERMINAL_FAILED = "failed"
 TERMINAL_COMPLETED = "completed"
 RUNNING = "running"
@@ -113,7 +144,12 @@ AVAILABLE = "available"
 MISSING = "missing"
 NOTE_INVALID_STATUS = 422
 NOTE_CONFLICT_STATUS = 409
+#: 库文件本身坏了 / 导入撞了同一份身份 → 冲突; 其余库错误是不可用。
+LIBRARY_CONFLICT_STATUS = 409
+LIBRARY_UNAVAILABLE_STATUS = 503
 BIBTEX_FORMAT = "bibtex"
+#: 导出超限用 422: 请求本身语义清楚, 只是超出了单次批量上限, 不是服务端故障。
+EXPORT_LIMIT_STATUS = 422
 PDF_FIELD = "file"
 BIBLIOGRAPHY_FIELD = "files"
 PDF_INVALID = "PDF_INVALID"
@@ -123,25 +159,32 @@ BIBLIOGRAPHY_INVALID = "BIBLIOGRAPHY_INVALID"
 BIBLIOGRAPHY_FILE_REQUIRED = "BIBLIOGRAPHY_FILE_REQUIRED"
 BIBLIOGRAPHY_TOO_LARGE = "BIBLIOGRAPHY_TOO_LARGE"
 BIBLIOGRAPHY_ENTRY_INCOMPLETE = "BIBLIOGRAPHY_ENTRY_INCOMPLETE"
-ARXIV_ALREADY_ATTACHED = "ARXIV_ALREADY_ATTACHED"
+IDENTIFIER_FIELD = "identifier"
+PROJECT_FIELD = "project_id"
+COLLECTION_FIELD = "collection_id"
+#: 标识符导入没有上传文件名, 而准入腿按扩展名挑解析器, 所以给它一个 .bib 名字。
+IDENTIFIER_BIBLIOGRAPHY_NAME = "identifier.bib"
+IDENTIFIER_REQUIRED = "IDENTIFIER_REQUIRED"
+IDENTIFIER_ENTRY_INCOMPLETE = "IDENTIFIER_ENTRY_INCOMPLETE"
+#: 上传没有文件名时的附件展示名 (路由已经先挡掉空文件名, 这里只为类型收窄兜底)。
+ATTACHMENT_FALLBACK_NAME = "附件"
 BULK_ADD_TAGS = "add_tags"
 BULK_REMOVE_TAGS = "remove_tags"
 BULK_MARK_READ = "mark_read"
 BULK_LINK_PROJECT = "link_project"
 BULK_UNLINK_PROJECT = "unlink_project"
+# 获取全文区分未找到、无法访问、限流与超时，文案与前端 i18n 的
+# detail.fulltext* 逐字一致; 这份中文是给 API 消费方与日志看的, 渲染层用自己的双语 key。
+# 获取结果之外只剩前置校验问题, 它们不是「获取失败」, 各自保留可行动的提示。
 FULLTEXT_ERROR_MESSAGES = {
+    FULLTEXT_NOT_FOUND: "未找到全文",
+    FULLTEXT_NO_ACCESS: "无法访问",
+    FULLTEXT_RATE_LIMITED: "请求被限流",
+    FULLTEXT_TIMEOUT: "下载超时，请稍后重试",
     ARXIV_INVALID: "arXiv 标识无效",
-    ARXIV_NOT_FOUND: "arXiv 上没有该文献的可访问全文",
-    ARXIV_DOWNLOAD_FAILED: "无法从 arXiv 获取全文，请稍后重试",
-    ARXIV_TOO_LARGE: "arXiv 全文文件过大",
-    ARXIV_INVALID_PDF: "arXiv 返回的内容不是有效 PDF",
-    ARXIV_ALREADY_ATTACHED: "该文献已有主附件",
-    FULLTEXT_IDENTIFIER_MISSING: "请先补充 DOI 或 arXiv 标识",
     DOI_INVALID: "DOI 标识无效",
-    DOI_NOT_FOUND: "未找到该 DOI 对应的文献",
-    DOI_DOWNLOAD_FAILED: "网络异常，无法通过 DOI 获取全文，请稍后重试",
-    DOI_TOO_LARGE: "DOI 对应的全文文件过大",
-    DOI_NO_ACCESSIBLE_PDF: "该 DOI 未返回可访问的 PDF 全文，可从附件页签添加本地 PDF",
+    FULLTEXT_IDENTIFIER_MISSING: "请先补充 DOI 或 arXiv 标识",
+    ARXIV_ALREADY_ATTACHED: "该文献已有主附件",
 }
 EDITABLE_FIELDS = {
     "citation_key",
@@ -178,6 +221,16 @@ BIBLIOGRAPHY_ERROR_MESSAGES = {
     BIBLIOGRAPHY_TOO_LARGE: "导入文件总大小过大",
     BIBLIOGRAPHY_ENTRY_INCOMPLETE: "文件中存在缺少标题的条目",
 }
+#: 上游失败码沿用题录代理那一套 (PAPER_META_*), 渲染层因此能复用同一份分类与文案。
+IDENTIFIER_ERROR_MESSAGES = {
+    IDENTIFIER_REQUIRED: "请输入 ArXiv ID 或 DOI",
+    IDENTIFIER_ENTRY_INCOMPLETE: "上游题录缺少标题，无法导入",
+    INVALID_IDENTIFIER: "DOI 或 arXiv 编号无效",
+    NOT_FOUND: "上游没有这条标识符的题录",
+    QUOTA_EXHAUSTED: "元数据接口限流，请稍后重试",
+    NETWORK_FAILED: "元数据接口网络请求失败",
+    UPSTREAM_FAILED: "元数据接口请求失败或返回无效数据",
+}
 IMPORT_COLLECTION_MESSAGE = "分类已不可用，请刷新分类后重试"
 ZOTERO_ERROR_MESSAGES = {
     "ZOTERO_UNAVAILABLE": "无法连接 Zotero Desktop，请确认 Zotero 正在运行且已允许本机应用通信",
@@ -193,10 +246,11 @@ ZOTERO_ERROR_MESSAGES = {
 LOGGER = logging.getLogger(__name__)
 
 
-def _project_scope(request: Request, project_id: str) -> str:
+def project_scope(content: Any, project_id: str) -> str:
+    """Validate an explicit project target; an empty id means the overview scope."""
+
     if not project_id:
         return ""
-    content = getattr(request.app.state, "content", None)
     if content is None:
         raise HTTPException(status_code=503, detail="content_unavailable")
     try:
@@ -207,6 +261,10 @@ def _project_scope(request: Request, project_id: str) -> str:
     if ref.archived_at is not None:
         raise HTTPException(status_code=400, detail="unknown_project")
     return ref.id
+
+
+def _project_scope(request: Request, project_id: str) -> str:
+    return project_scope(getattr(request.app.state, "content", None), project_id)
 
 
 def _import_collection(project_id: str, collection_id: str) -> str:
@@ -236,6 +294,18 @@ def _pdf_error(status_code: int, code: str) -> HTTPException:
     )
 
 
+def _primary_conflict(code: str) -> HTTPException:
+    """已有可用主附件: 下载腿与上传腿报同一个码、同一份文案。
+
+    不变式由附件域 owner ``attach_primary_pdf`` 持有, 这里只负责把它折成产品 HTTP。
+    """
+
+    return HTTPException(
+        status_code=LIBRARY_CONFLICT_STATUS,
+        detail={"code": code, "message": FULLTEXT_ERROR_MESSAGES[code]},
+    )
+
+
 def _attachment_error(status_code: int, code: str) -> HTTPException:
     return HTTPException(
         status_code=status_code,
@@ -247,6 +317,13 @@ def _bibliography_error(status_code: int, code: str) -> HTTPException:
     return HTTPException(
         status_code=status_code,
         detail={"code": code, "message": BIBLIOGRAPHY_ERROR_MESSAGES[code]},
+    )
+
+
+def _identifier_error(status_code: int, code: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": IDENTIFIER_ERROR_MESSAGES[code]},
     )
 
 
@@ -330,6 +407,132 @@ def _tag_facet(entry: dict[str, Any]) -> dict[str, Any]:
     return {**_facet(entry), "total": entry.get("total", entry["count"])}
 
 
+def counts_payload(repository: LiteratureRepository, project_id: str) -> dict[str, int]:
+    items = repository.view(project_id).items
+    return {
+        "all": len(items),
+        "recent": sum(is_recent(item) for item in items),
+        "without_collection": repository.filtered_total(
+            project_id=project_id, without_collection=True, without_project=not bool(project_id)
+        ),
+        "unread": len(items),
+        "without_fulltext": sum(item.fulltext is FulltextStatus.NONE for item in items),
+    }
+
+
+def _bounded_facet(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """把一个 facet 维度收成 {total, entries, truncated}。
+
+    维度可能有几百个取值 (期刊尤其), 全量回给调用方既撑爆 AI 桥的 64 KiB 响应上限,
+    也让用户界面拿到一堆用不上的行。截断必须显式: ``total`` 是真实取值数,
+    ``truncated`` 告诉调用方 ``entries`` 只是计数最大的一批, 不是全貌。
+    """
+
+    return {
+        "total": len(entries),
+        "entries": entries[:FACET_ENTRIES_LIMIT],
+        "truncated": len(entries) > FACET_ENTRIES_LIMIT,
+    }
+
+
+def facets_payload(repository: LiteratureRepository, project_id: str) -> dict[str, Any]:
+    """侧栏 facet: 分类树与标签给全量, 聚合维度给有界视图。
+
+    分类树喂着界面的树控件、标签喂着打标签选择器, 少一行用户就点不到, 所以不截断;
+    年份/类型/期刊是统计维度, 走 ``_bounded_facet``。计数一律由 SQL 聚合出, 覆盖作用域
+    内的全部条目 —— 之前是在 Python 里遍历 ``repository.list()`` (带 LIMIT), 库超过一页
+    之后这三个维度只反映最新的一批条目。
+    """
+
+    counts = repository.facet_counts(project_id)
+    return {
+        "collections": [_facet(entry) for entry in repository.collections(project_id)],
+        "tags": [_tag_facet(entry) for entry in repository.tags(project_id)],
+        "item_types": _bounded_facet(
+            [
+                {"id": str(name), "name": str(name), "count": count}
+                for name, count in counts["item_types"]
+            ]
+        ),
+        "publications": _bounded_facet(
+            [
+                {"id": str(name), "name": str(name), "count": count}
+                for name, count in counts["publications"]
+            ]
+        ),
+        "years": _bounded_facet(
+            [{"value": int(year), "count": count} for year, count in counts["years"]]
+        ),
+    }
+
+
+def tag_facets_payload(
+    repository: LiteratureRepository,
+    *,
+    project_id: str,
+    collection_ids: tuple[str, ...],
+    without_collection: bool = False,
+    without_project: bool = False,
+    recent_only: bool = False,
+) -> dict[str, Any]:
+    entries = repository.scoped_tags(
+        project_id=project_id,
+        collection_ids=collection_ids,
+        without_collection=without_collection,
+        without_project=without_project,
+        recent_only=recent_only,
+    )
+    return {"tags": [_tag_facet(entry) for entry in entries]}
+
+
+def project_names(content: Any) -> dict[str, str]:
+    if content is None:
+        return {}
+    return {
+        project.id: project.name for project in content.projects() if project.archived_at is None
+    }
+
+
+def projects_payload(content: Any, repository: LiteratureRepository) -> dict[str, Any]:
+    if content is None:
+        raise HTTPException(status_code=503, detail="content_unavailable")
+    names = project_names(content)
+    navigation = repository.project_navigation(tuple(names))
+    try:
+        current = content.project().id
+    except ContentError:
+        current = ""
+    return {
+        "projects": [
+            {
+                "id": project_id,
+                "name": name,
+                "count": navigation[project_id]["count"],
+                "collections": [
+                    _facet(collection) for collection in navigation[project_id]["collections"]
+                ],
+            }
+            for project_id, name in names.items()
+        ],
+        "current": current if current in names else "",
+    }
+
+
+def summarize_items(
+    items: Sequence[LiteratureItem],
+    repository: LiteratureRepository,
+    names: dict[str, str],
+    project_id: str = "",
+) -> list[dict[str, Any]]:
+    """List projection shared by the product API and the bridge management plane."""
+
+    return _summaries(items, repository, names, project_id)
+
+
+def note_payload(note: Any) -> dict[str, Any]:
+    return _note_payload(note)
+
+
 def _availability(attachment: dict[str, Any]) -> str:
     """Report the attachment as the store really is, not as the row claims.
 
@@ -345,18 +548,47 @@ def _pdf_indexes(request: Request):
     return getattr(request.app.state, PDF_INDEX_STATE, None)
 
 
-def _summary(
-    item: LiteratureItem,
-    repository: LiteratureRepository,
-    project_names: dict[str, str],
-    project_id: str = "",
+def _attachment_payload(
+    attachment: dict[str, Any],
+    annotation_counts: dict[str, int],
+    literature_id: str,
 ) -> dict[str, Any]:
-    tags = {entry["name"]: entry for entry in repository.tags()}
-    global_item = repository.get(item.id)
-    global_collections = {entry["name"]: entry for entry in repository.collections()}
-    linked_project_collections = repository.project_collections(item.id, project_id)
-    attachments = repository.attachments(item.id)
-    annotation_counts = AttachmentRecordCatalog(repository.database).annotation_counts(item.id)
+    """一份附件的列表投影。可用性与大小各 stat 一次, 主附件复用同一份结果。"""
+
+    return {
+        "id": attachment["id"],
+        "name": attachment["name"],
+        "kind": attachment["kind"],
+        "availability": _availability(attachment),
+        "role": attachment["role"],
+        "media_type": attachment["media_type"],
+        "size": attachment_size(str(attachment["path"])),
+        "created_at": _iso(attachment["created_at"]),
+        "annotation_count": annotation_counts.get(attachment["id"], 0),
+        "record_target": RecordTarget(
+            RecordOwner.LITERATURE_ATTACHMENT, literature_id, attachment["id"]
+        ).response(),
+    }
+
+
+def _primary_payload(attachment: dict[str, Any]) -> dict[str, Any]:
+    """主附件载荷不带 created_at: 契约保持不变, 但不为它再 stat 一遍同一个文件。"""
+
+    return {key: value for key, value in attachment.items() if key != "created_at"}
+
+
+def _project_summary(
+    item: LiteratureItem,
+    projection: PageProjection,
+    annotation_counts: dict[str, int],
+    project_names: dict[str, str],
+) -> dict[str, Any]:
+    """纯拼装: 一行条目 + 整页读模型 → 列表载荷, 不再触发任何取数。"""
+
+    attachments = [
+        _attachment_payload(attachment, annotation_counts, item.id)
+        for attachment in projection.attachments.get(item.id, ())
+    ]
     primary = next(
         (
             attachment
@@ -391,54 +623,60 @@ def _summary(
         "last_read_at": None,
         "read_progress": 0.0,
         "is_unread": True,
-        "primary_attachment": (
-            {
-                "id": primary["id"],
-                "name": primary["name"],
-                "kind": primary["kind"],
-                "availability": _availability(primary),
-                "role": primary["role"],
-                "media_type": primary["media_type"],
-                "size": attachment_size(str(primary["path"])),
-                "annotation_count": annotation_counts.get(primary["id"], 0),
-                "record_target": RecordTarget(
-                    RecordOwner.LITERATURE_ATTACHMENT, item.id, primary["id"]
-                ).response(),
-            }
-            if primary
-            else None
-        ),
-        "attachments": [
-            {
-                "id": attachment["id"],
-                "name": attachment["name"],
-                "kind": attachment["kind"],
-                "availability": _availability(attachment),
-                "role": attachment["role"],
-                "media_type": attachment["media_type"],
-                "size": attachment_size(str(attachment["path"])),
-                "created_at": _iso(attachment["created_at"]),
-                "annotation_count": annotation_counts.get(attachment["id"], 0),
-                "record_target": RecordTarget(
-                    RecordOwner.LITERATURE_ATTACHMENT, item.id, attachment["id"]
-                ).response(),
-            }
-            for attachment in attachments
-        ],
+        "primary_attachment": None if primary is None else _primary_payload(primary),
+        "attachments": attachments,
         "collections": [
-            _facet(global_collections[name])
-            for name in (global_item.collections if global_item else ())
-            if name in global_collections
+            _facet(projection.collections[name])
+            for name in projection.global_collections.get(item.id, ())
+            if name in projection.collections
         ],
-        "project_collections": [_facet(collection) for collection in linked_project_collections],
-        "tags": [_facet(tags[name]) for name in item.tags if name in tags],
+        "project_collections": [
+            _facet(collection) for collection in projection.project_collections.get(item.id, ())
+        ],
+        "tags": [_facet(projection.tags[name]) for name in item.tags if name in projection.tags],
         "projects": [
             {"id": linked_id, "name": project_names[linked_id], "count": 1}
-            for linked_id in repository.projects(item.id)
+            for linked_id in projection.projects.get(item.id, ())
             if linked_id in project_names
         ],
         "version": item.version,
     }
+
+
+def _summaries(
+    items: Sequence[LiteratureItem],
+    repository: LiteratureRepository,
+    project_names: dict[str, str],
+    project_id: str = "",
+) -> list[dict[str, Any]]:
+    """把一页条目投影成列表载荷。
+
+    关联维度按页批量取一次 (`page_projection` + `annotation_counts_for`), 每行只做纯拼装。
+    逐行取数时 50 行要开约 350 个连接、跑 100 次聚合全扫, 是列表在 Windows 上秒级延迟的
+    直接来源; 按页取数把连接数压到个位数, 且成本不再随行数线性放大。
+    """
+
+    entries = tuple(items)
+    identifiers = tuple(item.id for item in entries)
+    projection = repository.page_projection(identifiers, project_id)
+    annotation_counts = AttachmentRecordCatalog(repository.database).annotation_counts_for(
+        identifiers
+    )
+    return [
+        _project_summary(item, projection, annotation_counts.get(item.id, {}), project_names)
+        for item in entries
+    ]
+
+
+def _summary(
+    item: LiteratureItem,
+    repository: LiteratureRepository,
+    project_names: dict[str, str],
+    project_id: str = "",
+) -> dict[str, Any]:
+    """单条投影 (详情 / 导入回执): 走与列表完全相同的批量路径, 不另写一份拼装。"""
+
+    return _summaries((item,), repository, project_names, project_id)[0]
 
 
 def _project_names(request: Request) -> dict[str, str]:
@@ -449,12 +687,7 @@ def _project_names(request: Request) -> dict[str, str]:
     关联即恢复。真正清理关联行只发生在永久删除 (forget 的清理钩子)。
     """
 
-    content = getattr(request.app.state, "content", None)
-    if content is None:
-        return {}
-    return {
-        project.id: project.name for project in content.projects() if project.archived_at is None
-    }
+    return project_names(getattr(request.app.state, "content", None))
 
 
 def _detail(
@@ -506,8 +739,132 @@ def _note_error(error: LiteratureError) -> HTTPException:
     return HTTPException(status_code=400, detail={"code": error.code})
 
 
+def fetch_arxiv_fulltext(item_id: str, pdf_indexes: Any = None) -> LiteratureItem:
+    """Download the identifier's primary PDF and attach it; product and bridge share this.
+
+    只有主附件才是全文: 补充材料 (role=supplementary) 不算, 主附件行还在但字节
+    已丢 (availability=missing) 时也要允许重新获取。判据与挂载都由附件域 owner
+    ``attach_primary_pdf`` 持有 (产品上传腿与 bridge 的 fulltext-attach 共用同一份),
+    这里只负责「先判再下载」: 已有可用主附件时提前 409, 不白跑一次外呼。
+    ``pdf_indexes`` 用于补挂时连带忘掉那条不可用旧行派生的全文索引。
+    """
+
+    repository = LiteratureRepository()
+    item = repository.get(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail={"code": LITERATURE_NOT_FOUND})
+    if has_usable_primary(item_id, repository):
+        raise _primary_conflict(ARXIV_ALREADY_ATTACHED)
+    try:
+        fulltext = fetch_identifier_pdf(item)
+    except (ArxivDownloadError, FulltextDownloadError) as error:
+        # 获取失败各有确定状态 (404 没找到 / 403 有但不给 / 429 限流 / 504 超时); 落到默认
+        # 分支的只可能是前置校验问题 (标识无效、缺标识), 一律 400。
+        status = OUTCOME_STATUS.get(error.code, PRECONDITION_STATUS)
+        raise HTTPException(
+            status_code=status,
+            detail={
+                "code": error.code,
+                "message": FULLTEXT_ERROR_MESSAGES[error.code],
+            },
+        ) from error
+    identifier = fulltext.arxiv or fulltext.doi or item_id
+    display_name = f"{identifier.replace('/', '_')}{PDF_SUFFIX}"
+    try:
+        attached = attach_primary_pdf(
+            item,
+            display_name,
+            fulltext.content,
+            repository=repository,
+            pdf_indexes=pdf_indexes,
+            # 下载顺带确认的标识要与附件行同一个批次落库。
+            items=(
+                replace(
+                    item,
+                    arxiv=fulltext.arxiv or item.arxiv,
+                    doi=fulltext.doi or item.doi,
+                    updated_at=datetime.now(UTC).timestamp(),
+                ),
+            ),
+        )
+    except AttachmentConflictError as error:
+        # 下载期间另一个入口挂上了主附件: 与提前判据同一个码, 只是晚了一步。
+        raise _primary_conflict(error.code) from error
+    return attached.item
+
+
+def purge_literatures(identifiers: tuple[str, ...], pdf_indexes: Any) -> list[str]:
+    """Delete items with their exclusive bytes and derived indexes; one entry point."""
+
+    repository = LiteratureRepository()
+    deleted: list[str] = []
+    for identifier in identifiers:
+        files = repository.attachment_files(identifier)
+        removed, _projects = repository.delete(identifier, True)
+        if removed:
+            # 附件随文献走: 行删掉之后, 它独占的文件与它派生的全文索引一起清。
+            delete_attachments(tuple(path for path, _revision in files))
+            forget_removed_indexes(pdf_indexes, tuple(revision for _path, revision in files))
+            deleted.append(identifier)
+    return deleted
+
+
+def purge_attachment(item_id: str, attachment_id: str, pdf_indexes: Any) -> str | None:
+    """Remove one attachment row plus its exclusive bytes and derived index."""
+
+    repository = LiteratureRepository()
+    deleted = repository.delete_attachment(item_id, attachment_id)
+    if deleted is None:
+        return None
+    delete_attachments((deleted.path,))
+    forget_removed_indexes(pdf_indexes, (deleted.revision,))
+    return attachment_id
+
+
+def _export_payload(
+    repository: LiteratureRepository, identifiers: tuple[str, ...]
+) -> dict[str, Any]:
+    """把一批 id 导出成 BibTeX; 超过单批上限直接报错, 绝不静默裁剪。
+
+    ``count`` 是「成功导出 N 条文献」的唯一依据, 必须是真正写进文本的条目数;
+    ``missing`` 如实报告请求里查不到的 id (通常已被别处删除), 调用方才能对得上账。
+    """
+
+    requested = tuple(dict.fromkeys(identifiers))
+    if len(requested) > MAX_BATCH_RECORDS:
+        raise HTTPException(
+            status_code=EXPORT_LIMIT_STATUS,
+            detail={
+                "code": EXPORT_TOO_MANY_ITEMS,
+                "message": EXPORT_TOO_MANY_MESSAGE,
+                "max": MAX_BATCH_RECORDS,
+                "requested": len(requested),
+            },
+        )
+    entries = repository.by_ids(requested)
+    return {
+        "bibtex": to_bibtex(entries),
+        "count": len(entries),
+        "requested": len(requested),
+        "missing": len(requested) - len(entries),
+    }
+
+
 def register_global_routes(app: FastAPI) -> None:
     """Register the catalogue API consumed by the refactored Desktop feature."""
+
+    # 仓储层用领域异常表达「库文件不可用」, 不由每个路由各自转 HTTP; 在这里统一
+    # 兜住, 泄漏出来的 LiteratureError 才有稳定状态码而不是 500。
+    @app.exception_handler(LiteratureError)
+    async def literature_error(request: Request, error: LiteratureError) -> JSONResponse:
+        return JSONResponse(
+            status_code=(
+                LIBRARY_CONFLICT_STATUS
+                if error.code in {LIBRARY_INVALID, IMPORT_CONFLICT}
+                else LIBRARY_UNAVAILABLE_STATUS
+            ),
+            content={"detail": error.code},
+        )
 
     tasks: dict[str, dict[str, Any]] = {}
     #: Zotero 导入意图 → 还在跑的任务 id。路由是同步的、跑在线程池里, 两个并发
@@ -556,8 +913,25 @@ def register_global_routes(app: FastAPI) -> None:
         order: str = "desc",
         page: int = DEFAULT_PAGE,
         page_size: int = DEFAULT_PAGE_SIZE,
+        download_session_id: str = "",
+        download_run: str = "",
+        exclude_paper_id: list[str] = Query(default=[]),
     ) -> dict[str, Any]:
         project_id = _project_scope(request, project_id)
+        batch_ids = None
+        if download_session_id or download_run or exclude_paper_id:
+            if not download_session_id or not download_run:
+                raise HTTPException(HTTP_400_BAD_REQUEST, DOWNLOAD_RECEIPT_INVALID)
+            catalog = getattr(request.app.state, "session_catalog", None)
+            if catalog is None:
+                raise HTTPException(HTTP_503_SERVICE_UNAVAILABLE, DOWNLOAD_ADMISSION_UNAVAILABLE)
+            try:
+                catalog.require(download_session_id, SessionPrincipal(request_owner_id(request)))
+            except SessionAccessError as exc:
+                raise HTTPException(HTTP_404_NOT_FOUND, DOWNLOAD_RECEIPT_INVALID) from exc
+            batch_ids = download_literature_ids(
+                download_session_id, download_run, project_id, tuple(exclude_paper_id)
+            )
         repository = LiteratureRepository()
         size = min(max(page_size, 1), MAX_PAGE_SIZE)
         current = max(page, DEFAULT_PAGE)
@@ -575,13 +949,15 @@ def register_global_routes(app: FastAPI) -> None:
             order=order,
             limit=size,
             offset=(current - 1) * size,
+            ids=batch_ids,
         )
         project_names = _project_names(request)
         return {
-            "items": [_summary(item, repository, project_names, project_id) for item in items],
+            "items": _summaries(items, repository, project_names, project_id),
             "page": current,
             "page_size": size,
             "total": repository.filtered_total(
+                ids=batch_ids,
                 q=q.strip(),
                 project_id=project_id,
                 collection_ids=collection_ids,
@@ -596,49 +972,12 @@ def register_global_routes(app: FastAPI) -> None:
     @app.get(f"{API_PREFIX}/literatures/counts")
     def counts(request: Request, project_id: str = "") -> dict[str, int]:
         project_id = _project_scope(request, project_id)
-        repository = LiteratureRepository()
-        items = repository.view(project_id).items
-        return {
-            "all": len(items),
-            "recent": sum(is_recent(item) for item in items),
-            "without_collection": repository.filtered_total(
-                project_id=project_id, without_collection=True, without_project=not bool(project_id)
-            ),
-            "unread": len(items),
-            "without_fulltext": sum(item.fulltext is FulltextStatus.NONE for item in items),
-        }
+        return counts_payload(LiteratureRepository(), project_id)
 
     @app.get(f"{API_PREFIX}/literatures/facets")
     def facets(request: Request, project_id: str = "") -> dict[str, Any]:
         project_id = _project_scope(request, project_id)
-        repository = LiteratureRepository()
-        items = repository.list(project_id=project_id)
-        years: dict[int, int] = {}
-        item_types: dict[str, int] = {}
-        publications: dict[str, int] = {}
-        for item in items:
-            if item.year is not None:
-                years[item.year] = years.get(item.year, 0) + 1
-            item_types[item.item_type] = item_types.get(item.item_type, 0) + 1
-            publication = item.venue or item.journal
-            if publication:
-                publications[publication] = publications.get(publication, 0) + 1
-        return {
-            "collections": [_facet(entry) for entry in repository.collections(project_id)],
-            "tags": [_tag_facet(entry) for entry in repository.tags(project_id)],
-            "item_types": [
-                {"id": name, "name": name, "count": count}
-                for name, count in sorted(item_types.items())
-            ],
-            "publications": [
-                {"id": name, "name": name, "count": count}
-                for name, count in sorted(publications.items())
-            ],
-            "years": [
-                {"value": year, "count": count}
-                for year, count in sorted(years.items(), reverse=True)
-            ],
-        }
+        return facets_payload(LiteratureRepository(), project_id)
 
     @app.get(f"{API_PREFIX}/literatures/tag-facets")
     def tag_facets(
@@ -659,41 +998,18 @@ def register_global_routes(app: FastAPI) -> None:
         """
 
         project_id = _project_scope(request, project_id)
-        entries = LiteratureRepository().scoped_tags(
+        return tag_facets_payload(
+            LiteratureRepository(),
             project_id=project_id,
             collection_ids=tuple(collection_id),
             without_collection=without_collection,
             without_project=without_project,
             recent_only=recent,
         )
-        return {"tags": [_tag_facet(entry) for entry in entries]}
 
     @app.get(f"{API_PREFIX}/literatures/projects")
     def projects(request: Request) -> dict[str, Any]:
-        content = getattr(request.app.state, "content", None)
-        if content is None:
-            raise HTTPException(status_code=503, detail="content_unavailable")
-        project_names = _project_names(request)
-        project_ids = tuple(project_names)
-        navigation = LiteratureRepository().project_navigation(project_ids)
-        try:
-            current = content.project().id
-        except ContentError:
-            current = ""
-        return {
-            "projects": [
-                {
-                    "id": project_id,
-                    "name": name,
-                    "count": navigation[project_id]["count"],
-                    "collections": [
-                        _facet(collection) for collection in navigation[project_id]["collections"]
-                    ],
-                }
-                for project_id, name in project_names.items()
-            ],
-            "current": current if current in project_names else "",
-        }
+        return projects_payload(getattr(request.app.state, "content", None), LiteratureRepository())
 
     @app.get(f"{API_PREFIX}/literatures/{{item_id}}")
     def detail(item_id: str, request: Request, project_id: str = "") -> dict[str, Any]:
@@ -765,79 +1081,8 @@ def register_global_routes(app: FastAPI) -> None:
 
     @app.post(f"{API_PREFIX}/literatures/{{item_id}}/attachments/arxiv")
     def download_arxiv_attachment(item_id: str, request: Request) -> dict[str, Any]:
-        repository = LiteratureRepository()
-        item = repository.get(item_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail={"code": LITERATURE_NOT_FOUND})
-        # 只有主附件才是全文: 补充材料 (role=supplementary) 不算, 主附件行还在但字节
-        # 已丢 (availability=missing) 时也要允许重新获取。口径与 fulltext 记账一致
-        # (store.add_attachment 仅在 role=PRIMARY 且 PDF 时置 READY)。
-        existing_primary = repository.primary_attachment(item_id)
-        if existing_primary is not None and is_available_attachment(existing_primary.path):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": ARXIV_ALREADY_ATTACHED,
-                    "message": FULLTEXT_ERROR_MESSAGES[ARXIV_ALREADY_ATTACHED],
-                },
-            )
-        try:
-            fulltext = fetch_identifier_pdf(item)
-        except (ArxivDownloadError, FulltextDownloadError) as error:
-            status = (
-                400
-                if error.code
-                in {
-                    ARXIV_INVALID,
-                    DOI_INVALID,
-                    FULLTEXT_IDENTIFIER_MISSING,
-                }
-                else 502
-            )
-            if error.code in {ARXIV_TOO_LARGE, DOI_TOO_LARGE}:
-                status = 413
-            elif error.code in {ARXIV_NOT_FOUND, DOI_NOT_FOUND, DOI_NO_ACCESSIBLE_PDF}:
-                status = 404
-            raise HTTPException(
-                status_code=status,
-                detail={
-                    "code": error.code,
-                    "message": FULLTEXT_ERROR_MESSAGES[error.code],
-                },
-            ) from error
-        identifier = fulltext.arxiv or fulltext.doi or item_id
-        display_name = f"{identifier.replace('/', '_')}{PDF_SUFFIX}"
-        published = managed_object(item_id, fulltext.content, PDF_SUFFIX)
-        with LiteratureFileBatch(SERVICE_LITERATURE_FILES_DIR) as batch:
-            path = batch.stage(published.name, fulltext.content)
-
-            def attach(items: tuple[LiteratureItem, ...]) -> tuple[LiteratureItem, ...]:
-                saved = repository.save_all(items)
-                # 附件行必须在批次提交内写: 落库失败时批次会回滚已搬过去的文件,
-                # 否则托管目录里会留下没有任何行指向的孤儿 PDF。
-                repository.add_attachment(
-                    item_id,
-                    display_name,
-                    path,
-                    PDF_KIND,
-                    revision=published.revision,
-                    role=AttachmentRole.PRIMARY,
-                    media_type=PDF_MEDIA_TYPE,
-                )
-                return saved
-
-            saved = batch.commit(
-                (
-                    replace(
-                        item,
-                        arxiv=fulltext.arxiv or item.arxiv,
-                        doi=fulltext.doi or item.doi,
-                        updated_at=datetime.now(UTC).timestamp(),
-                    ),
-                ),
-                saver=attach,
-            )[0]
-        return _detail(saved, repository, _project_names(request))
+        saved = fetch_arxiv_fulltext(item_id, _pdf_indexes(request))
+        return _detail(saved, LiteratureRepository(), _project_names(request))
 
     @app.post(f"{API_PREFIX}/literatures/{{item_id}}/attachments", status_code=201)
     async def upload_attachment(
@@ -865,27 +1110,32 @@ def register_global_routes(app: FastAPI) -> None:
                 raise _pdf_error(400, PDF_INVALID)
         finally:
             await upload.close()
+        if primary:
+            # 主附件走附件域 owner: 与 bridge 的 literature/fulltext-attach 共用同一条
+            # 不变式 —— 已有可用主附件就 409, 不留替换开关; 旧行不可用 (字节丢了) 才
+            # 允许补挂, 且旧行连带独占字节与派生索引一起清掉, 不降级成 missing 补充材料。
+            try:
+                attached = attach_primary_pdf(
+                    item,
+                    upload.filename or ATTACHMENT_FALLBACK_NAME,
+                    content,
+                    declared_media_type=upload.content_type or "",
+                    pdf_indexes=_pdf_indexes(request),
+                    repository=repository,
+                )
+            except AttachmentConflictError as error:
+                raise _primary_conflict(error.code) from error
+            except AttachmentFormatError as error:
+                raise _attachment_error(422, error.code) from error
+            return attached.attachment
         suffix = PurePath(upload.filename or "").suffix[:16]
         published = managed_object(item_id, content, suffix)
         with LiteratureFileBatch(SERVICE_LITERATURE_FILES_DIR) as batch:
             path = batch.stage(published.name, content)
-            if primary:
-                attachment = batch.commit_operation(
-                    lambda: repository.add_attachment(
-                        item_id,
-                        upload.filename or "附件",
-                        path,
-                        attachment_format.kind,
-                        revision=published.revision,
-                        role=AttachmentRole.PRIMARY,
-                        media_type=attachment_format.media_type,
-                    )
-                )
-                return attachment
             attachment = batch.commit_operation(
                 lambda: repository.add_attachment(
                     item_id,
-                    upload.filename or "附件",
+                    upload.filename or ATTACHMENT_FALLBACK_NAME,
                     path,
                     attachment_format.kind,
                     revision=published.revision,
@@ -964,15 +1214,13 @@ def register_global_routes(app: FastAPI) -> None:
         identifiers = tuple(str(value) for value in payload.get("literature_ids", ()))
         operation = str(payload.get("operation", ""))
         parameters = payload.get("parameters") or {}
-        literature = LiteratureService()
         repository = LiteratureRepository()
         failed: tuple[str, ...] = ()
-        if operation == BULK_ADD_TAGS:
-            for tag in parameters.get("tags", ()):
-                literature.add_tag(identifiers, str(tag))
-        elif operation == BULK_REMOVE_TAGS:
-            for tag in parameters.get("tags", ()):
-                literature.remove_tag(identifiers, str(tag))
+        if operation in {BULK_ADD_TAGS, BULK_REMOVE_TAGS}:
+            tags = tuple(str(tag) for tag in parameters.get("tags", ()))
+            action = TAXONOMY_ADD if operation == BULK_ADD_TAGS else TAXONOMY_REMOVE
+            identifiers, missing = repository.organize_tags(identifiers, tags, action)
+            failed = missing
         elif operation in {
             BULK_LINK_PROJECT,
             BULK_UNLINK_PROJECT,
@@ -988,7 +1236,7 @@ def register_global_routes(app: FastAPI) -> None:
                 )
             project_id = _project_scope(request, requested_project) if requested_project else ""
             if operation == BULK_LINK_PROJECT:
-                identifiers, failed = literature.link_project(
+                identifiers, failed = repository.link_project(
                     identifiers, project_id, collection_ids
                 )
             elif operation == BULK_UNLINK_PROJECT:
@@ -1009,18 +1257,8 @@ def register_global_routes(app: FastAPI) -> None:
 
     @app.post(f"{API_PREFIX}/literatures/bulk-delete")
     def bulk_delete(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        repository = LiteratureRepository()
         identifiers = tuple(str(value) for value in payload.get("literature_ids", ()))
-        for identifier in identifiers:
-            files = repository.attachment_files(identifier)
-            removed, _projects = repository.delete(identifier, True)
-            if removed:
-                # 附件随文献走: 行删掉之后, 它独占的文件与它派生的全文索引一起清。
-                delete_attachments(tuple(path for path, _revision in files))
-                forget_removed_indexes(
-                    _pdf_indexes(request), tuple(revision for _path, revision in files)
-                )
-        return {"deleted": list(identifiers)}
+        return {"deleted": purge_literatures(identifiers, _pdf_indexes(request))}
 
     @app.get(f"{API_PREFIX}/literatures/{{item_id}}/notes")
     def list_notes(item_id: str) -> dict[str, Any]:
@@ -1067,15 +1305,10 @@ def register_global_routes(app: FastAPI) -> None:
 
     @app.delete(f"{API_PREFIX}/literatures/{{item_id}}/attachments/{{attachment_id}}")
     def delete_attachment(item_id: str, attachment_id: str, request: Request) -> dict[str, Any]:
-        repository = LiteratureRepository()
-        deleted = repository.delete_attachment(item_id, attachment_id)
+        deleted = purge_attachment(item_id, attachment_id, _pdf_indexes(request))
         if deleted is None:
             raise HTTPException(status_code=404, detail={"code": LITERATURE_NOT_FOUND})
-        # 行、标注记录与条目全文状态在仓储事务里已经收敛; 这里收剩下的两样:
-        # 这条附件独占的物理文件, 以及由它这批字节派生的全文索引缓存。
-        delete_attachments((deleted.path,))
-        forget_removed_indexes(_pdf_indexes(request), (deleted.revision,))
-        return {"deleted": attachment_id}
+        return {"deleted": deleted}
 
     @app.post(f"{API_PREFIX}/imports", status_code=202)
     def create_import(
@@ -1243,7 +1476,7 @@ def register_global_routes(app: FastAPI) -> None:
                 # 同 arXiv 分支: 附件行与文件搬运要么一起成, 要么一起回滚。
                 repository.add_attachment(
                     saved[0].id,
-                    upload.filename or "附件",
+                    upload.filename or ATTACHMENT_FALLBACK_NAME,
                     path,
                     PDF_KIND,
                     revision=published.revision,
@@ -1298,9 +1531,47 @@ def register_global_routes(app: FastAPI) -> None:
                 detail={"code": error.code, "message": IMPORT_COLLECTION_MESSAGE},
             ) from error
         return {
-            "items": [_summary(item, repository, {}) for item in imported],
+            "items": _summaries(imported, repository, {}),
             "count": len(imported),
         }
+
+    @app.post(f"{API_PREFIX}/imports/identifier", status_code=201)
+    async def import_identifier(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """按一行 arXiv ID / DOI 建一条题录。
+
+        两条腿都是既有通路: 解析腿 ``service.bibliography`` 取回上游 BibTeX 原文,
+        落库腿把原文交给与 bib/ris 文件导入完全相同的 ``parse_import`` + ``save_all``,
+        所以准入、字段归一化与追加语义 (不判重, proposal 91) 天然一致。维度由
+        ``detect_kind`` 在服务端判定, 前端不复制标识符正则。
+        """
+
+        identifier = str(payload.get(IDENTIFIER_FIELD) or "").strip()
+        if not identifier:
+            raise _identifier_error(400, IDENTIFIER_REQUIRED)
+        # 落点与文件导入同一套受理期校验: 分类不可用要立刻 400, 而不是落库时才炸。
+        project_id = _project_scope(request, str(payload.get(PROJECT_FIELD) or ""))
+        collection_id = _import_collection(project_id, str(payload.get(COLLECTION_FIELD) or ""))
+        try:
+            text = await fetch_identifier_bibliography(
+                identifier, timeout=resolve_timeout_seconds()
+            )
+        except BibliographyError as error:
+            raise _identifier_error(error.status, error.code) from error
+        try:
+            outcome = parse_import(IDENTIFIER_BIBLIOGRAPHY_NAME, text.encode("utf-8"))
+        except LiteratureImportError as error:
+            raise _identifier_error(422, IDENTIFIER_ENTRY_INCOMPLETE) from error
+        repository = LiteratureRepository()
+        try:
+            imported = repository.save_all(
+                outcome.items, collection_id=collection_id, project_id=project_id
+            )
+        except LiteratureError as error:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": error.code, "message": IMPORT_COLLECTION_MESSAGE},
+            ) from error
+        return _summary(imported[0], repository, {})
 
     @app.get(f"{API_PREFIX}/tasks/{{task_id}}")
     def task(task_id: str) -> dict[str, Any]:
@@ -1314,8 +1585,12 @@ def register_global_routes(app: FastAPI) -> None:
         if payload.get("format", BIBTEX_FORMAT) != BIBTEX_FORMAT:
             raise HTTPException(status_code=400, detail={"code": UNSUPPORTED_EXPORT_FORMAT})
         identifiers = tuple(str(value) for value in payload.get("literature_ids", ()))
-        bibtex, count = LiteratureService().export_bibtex_counted(identifiers)
-        return {"bibtex": bibtex, "count": count}
+        return _export_payload(LiteratureRepository(), identifiers)
 
 
-__all__ = ["API_PREFIX", "register_global_routes"]
+__all__ = [
+    "API_PREFIX",
+    "LIBRARY_CONFLICT_STATUS",
+    "LIBRARY_UNAVAILABLE_STATUS",
+    "register_global_routes",
+]

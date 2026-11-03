@@ -6,8 +6,15 @@ import asyncio
 import os
 import re
 import shutil
+import tempfile
+from pathlib import Path
 from typing import Mapping
 
+from scholarseed_codex.command import CommandOutputLimitError, run_command
+from scholarseed_codex.environment import (
+    ENVIRONMENT_NAME_CASE_INSENSITIVE,
+    isolated_runtime_environment,
+)
 from scholarseed_codex.profile import (
     CODEX_ALLOW_DEVELOPMENT_VERSION_ENV,
     CODEX_ALLOW_UNTESTED_NEWER,
@@ -25,7 +32,6 @@ from scholarseed_codex.protocol.state import (
     CODEX_DEFAULT_BIN,
     CODEX_LAUNCH_ARGUMENT_INVALID_ERROR,
     CODEX_LAUNCH_ARGUMENT_MISSING_ERROR,
-    CODEX_LOGIN_ERROR,
     CODEX_PREFLIGHT_OUTPUT_LIMIT_BYTES,
     CODEX_PREFLIGHT_TIMEOUT_ERROR,
     CODEX_PREFLIGHT_TIMEOUT_SECONDS,
@@ -40,21 +46,29 @@ from scholarseed_codex.protocol.state import (
 )
 
 CODEX_VERSION_PATTERN = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)")
+VERSION_ARGUMENTS = ("--version",)
+VERSION_PROBE_PREFIX = "scholarseed-codex-version-"
 
 
 def discover_codex_executable(executable: str = "") -> str:
     """Resolve the executable exactly once without starting App Server."""
 
-    return str(shutil.which(executable or CODEX_DEFAULT_BIN) or "")
+    resolved = shutil.which(executable or CODEX_DEFAULT_BIN)
+    # Freeze a relative explicit executable before the version probe changes cwd.
+    return os.path.abspath(resolved) if resolved else ""
 
 
 def _resolve_launch_arguments(
     arguments: tuple[CodexRuntimeLaunchArgument, ...],
     process_environment: Mapping[str, str],
-    remove_environment: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Resolve consumer-supplied options without owning their semantics."""
 
+    environment = (
+        {name.upper(): value for name, value in process_environment.items()}
+        if ENVIRONMENT_NAME_CASE_INSENSITIVE
+        else process_environment
+    )
     resolved: list[str] = []
     for argument in arguments:
         option = argument.option.strip()
@@ -64,16 +78,9 @@ def _resolve_launch_arguments(
             raise AppServerError(CODEX_LAUNCH_ARGUMENT_INVALID_ERROR)
         value = literal
         if environment_name:
-            value = str(
-                process_environment.get(
-                    environment_name,
-                    (
-                        ""
-                        if environment_name in remove_environment
-                        else os.environ.get(environment_name, "")
-                    ),
-                )
-            ).strip()
+            if ENVIRONMENT_NAME_CASE_INSENSITIVE:
+                environment_name = environment_name.upper()
+            value = str(environment.get(environment_name, "")).strip()
             if not value:
                 if argument.required:
                     raise AppServerError(CODEX_LAUNCH_ARGUMENT_MISSING_ERROR)
@@ -96,28 +103,47 @@ class CodexPreflightTimeout(Exception):
 
 
 async def _preflight_command(
-    executable: str, *args: str, process_environment: Mapping[str, str] | None = None
+    executable: str,
+    *args: str,
+    process_environment: Mapping[str, str] | None = None,
 ) -> tuple[int, str]:
-    process = await asyncio.create_subprocess_exec(
-        executable,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, **process_environment} if process_environment is not None else None,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=CODEX_PREFLIGHT_TIMEOUT_SECONDS,
-        )
+        if args == VERSION_ARGUMENTS:
+            # Version discovery must not initialize/migrate the persisted Provider
+            # home before candidate activation commits. No credentials, discovery
+            # roots, loader overrides or caller cwd cross this subprocess boundary.
+            # This is configuration isolation, not an OS sandbox or data-format proof.
+            temporary = tempfile.mkdtemp(prefix=VERSION_PROBE_PREFIX)
+            try:
+                home = Path(temporary).resolve()
+                environment = isolated_runtime_environment(home)
+                code, stdout, stderr = await run_command(
+                    executable,
+                    *args,
+                    timeout=CODEX_PREFLIGHT_TIMEOUT_SECONDS,
+                    environment=environment,
+                    cwd=home,
+                    output_limit=CODEX_PREFLIGHT_OUTPUT_LIMIT_BYTES,
+                )
+            finally:
+                shutil.rmtree(temporary)
+        else:
+            code, stdout, stderr = await run_command(
+                executable,
+                *args,
+                timeout=CODEX_PREFLIGHT_TIMEOUT_SECONDS,
+                environment=(
+                    {**os.environ, **process_environment}
+                    if process_environment is not None
+                    else None
+                ),
+                output_limit=CODEX_PREFLIGHT_OUTPUT_LIMIT_BYTES,
+            )
     except asyncio.TimeoutError as exc:
-        process.kill()
-        await process.wait()
-        # 早先这里 `return 1, ""`, 而调用方用 `code == 0` 判定登录 —— 超时于是被读成
-        # 「没登录」。抛出来, 让调用方能把「问不出来」和「确定没登录」分开表达。
+        # A timeout is unknown readiness, never proof of missing authentication.
         raise CodexPreflightTimeout(" ".join((executable, *args))) from exc
     output = (stdout or stderr)[:CODEX_PREFLIGHT_OUTPUT_LIMIT_BYTES]
-    return int(process.returncode or 0), output.decode("utf-8", errors="replace").strip()
+    return code, output.decode("utf-8", errors="replace").strip()
 
 
 def _timed_out_readiness(resolved: str, version: str = "") -> CodexRuntimeReadiness:
@@ -137,10 +163,9 @@ def _timed_out_readiness(resolved: str, version: str = "") -> CodexRuntimeReadin
 async def _probe_codex_cli_readiness(
     executable: str = "",
     *,
-    authentication_required: bool = True,
     process_environment: Mapping[str, str] | None = None,
 ) -> CodexRuntimeReadiness:
-    """Check executable compatibility and, only for native callers, login."""
+    """Check executable compatibility in an isolated, credential-free Home."""
 
     resolved = discover_codex_executable(executable)
     if not resolved:
@@ -152,7 +177,9 @@ async def _probe_codex_cli_readiness(
         )
     try:
         version_code, version_output = await _preflight_command(
-            resolved, "--version", process_environment=process_environment
+            resolved,
+            "--version",
+            process_environment=process_environment,
         )
     except CodexPreflightTimeout:
         return _timed_out_readiness(resolved)
@@ -164,7 +191,7 @@ async def _probe_codex_cli_readiness(
             executable=resolved,
             safe_error=CODEX_UNAVAILABLE_ERROR,
         )
-    except OSError:
+    except (OSError, CommandOutputLimitError):
         return CodexRuntimeReadiness(
             runtime_id=CODEX_RUNTIME_ID,
             status=CodexRuntimeStatus.ERROR,
@@ -220,53 +247,14 @@ async def _probe_codex_cli_readiness(
             version=version,
             safe_error=CODEX_VERSION_INCOMPATIBLE_ERROR,
         )
-    if not authentication_required:
-        return CodexRuntimeReadiness(
-            runtime_id=CODEX_RUNTIME_ID,
-            status=CodexRuntimeStatus.READY,
-            ready=True,
-            executable=resolved,
-            version=version,
-            authenticated=None,
-            process_state=CodexProcessState.STOPPED.value,
-            warning=CODEX_UNTESTED_VERSION_WARNING if newer_than_tested else "",
-        )
-    try:
-        login_code, _ = await _preflight_command(
-            resolved, "login", "status", process_environment=process_environment
-        )
-    except CodexPreflightTimeout:
-        # 核心修复点: 超时不能再落到下面的 `authenticated = login_code == 0`,
-        # 否则一个已登录的用户会在机器繁忙时被判成未登录。
-        return _timed_out_readiness(resolved, version)
-    except FileNotFoundError:
-        return CodexRuntimeReadiness(
-            runtime_id=CODEX_RUNTIME_ID,
-            status=CodexRuntimeStatus.UNAVAILABLE,
-            ready=False,
-            executable=resolved,
-            version=version,
-            safe_error=CODEX_UNAVAILABLE_ERROR,
-        )
-    except OSError:
-        return CodexRuntimeReadiness(
-            runtime_id=CODEX_RUNTIME_ID,
-            status=CodexRuntimeStatus.ERROR,
-            ready=False,
-            executable=resolved,
-            version=version,
-            safe_error=CODEX_LOGIN_ERROR,
-        )
-    authenticated = login_code == 0
     return CodexRuntimeReadiness(
         runtime_id=CODEX_RUNTIME_ID,
-        status=(CodexRuntimeStatus.READY if authenticated else CodexRuntimeStatus.UNAUTHENTICATED),
-        ready=authenticated,
+        status=CodexRuntimeStatus.READY,
+        ready=True,
         executable=resolved,
         version=version,
-        authenticated=authenticated,
+        authenticated=None,
         process_state=CodexProcessState.STOPPED.value,
-        safe_error="" if authenticated else CODEX_LOGIN_ERROR,
         warning=CODEX_UNTESTED_VERSION_WARNING if newer_than_tested else "",
     )
 

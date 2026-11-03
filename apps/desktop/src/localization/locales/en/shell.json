@@ -1,13 +1,25 @@
 {
   "navigation": {
     "projects": "Home",
-    "returnHome": "Back to home"
+    "returnHome": "Back to Project Center",
+    "skipToContent": "Skip to main content"
+  },
+  "errorBoundary": {
+    "title": "Something went wrong on this page",
+    "description": "ScholarSeed could not finish rendering the page, but your projects and local files remain safe.",
+    "notice": "The application cannot continue displaying this view",
+    "guidance": "Return to home, reload the page, or send an error report. The report includes this error's details and local diagnostic logs to help us investigate.",
+    "reload": "Reload",
+    "feedback": "Report error",
+    "feedbackSubmitted": "Report sent",
+    "feedbackFailedTitle": "Report could not be sent",
+    "feedbackFailed": "We could not send the error details. Check your connection and try again."
   },
   "chrome": {
     "projectOverview": "Home",
-    "literatureOverview": "Literature overview",
+    "literatureOverview": "Literature Center",
     "selectProject": "Select project",
-    "globalSearch": "Search project files, conversations, literature, and materials (⌘K)",
+    "globalSearch": "Search project files, tasks, literature, and materials (⌘K)",
     "search": "Search",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
@@ -16,8 +28,8 @@
     "aiAssistant": "AI assistant",
     "scholarseedAi": "ScholarSeed AI",
     "requiresProject": "{{label}} (select or create a project first)",
-    "taskCenter": "Task center",
-    "taskCenterCount": "Task center, {{count}} active",
+    "taskCenter": "Message center",
+    "taskCenterCount": "Message center, {{count}} active",
     "projectLiterature": "Project literature"
   },
   "tabs": {
@@ -26,9 +38,9 @@
   },
   "panels": {
     "resizeModule": "Resize module panel",
-    "resizeAssistant": "Resize AI conversation panel",
-    "openAssistant": "Expand AI conversation panel",
-    "closeAssistant": "Collapse AI conversation panel"
+    "resizeAssistant": "Resize AI task panel",
+    "openAssistant": "Expand AI task panel",
+    "closeAssistant": "Collapse AI task panel"
   },
   "projectMenu": {
     "empty": "No projects yet",
@@ -44,6 +56,10 @@
     "hint": "Follow the guidance below:",
     "runtimeNotReady": "Codex Runtime is not ready.",
     "submitNotReady": "The message submission entry point is not ready.",
+    "harnessLanding": "Headless harness prerequisite unmet: the first-launch landing is still open. Finish the first-launch chain (skip the landing, create a project, skip the beginner guide), or drive an isolated instance over CDP, then retry.",
+    "harnessLogin": "Headless harness prerequisite unmet: the login dialog is still open. Sign in or skip login to close it, then retry.",
+    "harnessGuide": "Headless harness prerequisite unmet: the beginner guide is still open. Skip the guide, then retry.",
+    "harnessNoProject": "Headless harness prerequisite unmet: no project exists yet, and the composer only mounts inside a project's AI panel. Create at least one project, then retry.",
     "reviewUnknown": "Could not confirm pending review status. Try again later.",
     "reviewUnsaved": "Review files have unsaved edits. Save or discard them before continuing.",
     "effortFailed": "Could not change reasoning effort. Try again.",
@@ -55,16 +71,16 @@
   },
   "search": {
     "project": {
-      "untitledSession": "Untitled conversation",
-      "placeholder": "Search files, conversations, literature, resources…",
+      "untitledSession": "Untitled task",
+      "placeholder": "Search files, tasks, literature, resources…",
       "filesPlaceholder": "Quick open a project file…",
-      "empty": "Enter keywords to search resources, literature, and conversations in this project.",
+      "empty": "Enter keywords to search resources, literature, and tasks in this project.",
       "loading": "Searching…"
     },
     "domain": {
       "resource": "Resources",
       "literature": "Literature",
-      "session": "Conversations"
+      "session": "Tasks"
     },
     "recent": {
       "title": "Recently opened",
@@ -93,12 +109,14 @@
     "reproduceHint": "Use the paper reproduction skill: break down algorithms, implement code, and validate a demo"
   },
   "workspaceLoading": {
+    "retrying": "The task list is temporarily unavailable. Your workspace remains usable while recovery runs automatically.",
+    "unavailable": "The task list returned unrecognized data. Your workspace remains usable; reload again later.",
     "signInTitle": "Sign in to continue",
-    "failedTitle": "Conversations could not be loaded",
+    "failedTitle": "Workspace data could not be loaded",
     "loadingTitle": "Loading workspace",
-    "signInDetail": "Sign in to load projects and conversations from the local service.",
-    "failedDetail": "The local service did not return the conversation list. You can retry now.",
-    "syncing": "Syncing projects and recent conversations…",
+    "signInDetail": "Sign in to load projects and tasks from the local service.",
+    "failedDetail": "The local service did not return the complete project or task catalog. Reload to try again.",
+    "syncing": "Syncing projects and recent tasks…",
     "connecting": "Connecting to the local service…",
     "signIn": "Sign in",
     "reload": "Reload"
@@ -108,16 +126,17 @@
     "waiting": "Your confirmation or input is needed",
     "done": "Task completed",
     "failed": "Task failed",
-    "abandoned": "Task stopped"
+    "abandoned": "Task stopped",
+    "openFailed": "Could not open the project or task for this notification. Reopen it from the project list."
   },
   "delete": {
-    "title": "Delete this conversation?",
-    "filesRetained": "Deleting a conversation keeps its local artifacts in the working directory.",
-    "irreversible": "Deleting <name/> cannot be undone.",
-    "running": "This conversation is running. Interrupt it before deleting it.",
+    "title": "Delete task",
+    "filesRetained": "Active and queued work will be stopped automatically before the task and all intermediate and output artifacts are permanently deleted. Original imported or referenced materials, literature, and independent library copies will be kept.",
+    "irreversible": "Are you sure you want to delete “<name/>”? The task and all its artifacts will be deleted. This cannot be undone.",
+    "stopFailed": "Could not confirm that all work has stopped. The task has not been deleted. Please try again later.",
     "failed": "Deletion failed: the backend did not confirm it. Check the serve logs.",
     "cancel": "Cancel",
-    "deleting": "Deleting…",
+    "deleting": "Stopping and deleting…",
     "confirm": "Delete"
   }
 }

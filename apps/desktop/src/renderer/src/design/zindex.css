@@ -12,6 +12,8 @@
   --vds-z-scroll-control: 8;
   --vds-z-session-confirm: 90;
   --vds-z-elevated: 10;
+  /* Markdown's editor-local slash menu preserves its established 12 layer. */
+  --vds-z-markdown-slash-menu: 12;
   /* 活动栏：要盖住同层 chrome（模块面板/标签栏，均为 elevated），因为它的账户菜单
      向右溢出栏宽；但必须留在浮层带之下 —— 浮层带从 60 起（composer 弹层、skills
      遮罩），全局搜索遮罩 80、设置遮罩 95。越过 60 就会把这些浮层压在活动栏下面。 */
@@ -20,13 +22,16 @@
      叠进面板的那段命中区会被头部层抢走指针事件；仍须留在浮层带 60 之下。 */
   --vds-z-sticky-header: 45;
   --vds-z-resize-handle: 46;
+  /* 非模态 AI 浮窗：要盖住工作区 chrome（sticky 头 45 / 拖拽条 46），但必须留在浮层带
+     之下 —— background-task 55、inline-flyout 60、sheet 61+、dialog 70+ 都压在它上面，
+     保证任何模态对话框与遮罩始终覆盖非模态浮窗。 */
+  --vds-z-floating-panel: 50;
   /* Full-page surfaces replace the conversation body but remain below sheets. */
   --vds-z-workspace-files: 35;
   --vds-z-background-task: 55;
   --vds-z-inline-flyout: 60;
-  /* 抽屉(Sheet/Drawer)必须盖住工作区拖拽条: AI 面板分隔条被抬到 inline-flyout
-     层(60), 因此 sheet 族整体上移到 60 之上; 仍留在 dialog 族(70/71)之下,
-     保证从抽屉内打开的弹窗/确认框继续覆盖抽屉。 */
+  /* 抽屉(Sheet/Drawer)位于 inline-flyout 层之上，且高于工作区拖拽条；
+     仍低于 dialog 族(70/71)，保证抽屉内弹窗和确认框继续覆盖抽屉。 */
   --vds-z-sheet-overlay: 61;
   --vds-z-sheet: 62;
   --vds-z-sheet-flyout: 63;
@@ -47,12 +52,19 @@
   --vds-z-header: 300;
   --vds-z-dropdown: 1000;
   --vds-z-popover: 1100;
+  --vds-z-preferences-language-menu: calc(var(--vds-z-popover) + 1);
   --vds-z-tooltip: 1200;
+  --vds-z-update-entry-panel: calc(var(--vds-z-tooltip) + 1);
+  --vds-z-update-entry-tooltip: calc(var(--vds-z-update-entry-panel) + 1);
   --vds-z-context-menu: 1300;
   --vds-z-overlay: 5000;
   --vds-z-modal: 6000;
   --vds-z-modal-nested-overlay: calc(var(--vds-z-modal) + 1);
   --vds-z-modal-nested: calc(var(--vds-z-modal-nested-overlay) + 1);
+  --vds-z-modal-interaction: calc(var(--vds-z-modal-nested) + 1);
+  --vds-z-modal-nested-flyout: calc(var(--vds-z-modal-nested) + 1);
+  --vds-z-update-confirmation-overlay: calc(var(--vds-z-modal-nested) + 1);
+  --vds-z-update-confirmation: calc(var(--vds-z-update-confirmation-overlay) + 1);
   --vds-z-notification: 8000;
   /* Loading blocks ordinary product interaction. Feedback recording is a diagnostic
      surface and must remain reachable above every product-owned global layer. */

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock, patch
+from uuid import uuid4
+
+from service.platform.activity import Activities
 
 _HOME = Path(tempfile.mkdtemp(prefix="serve-attachment-home-"))
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
@@ -17,14 +22,18 @@ os.environ["SCHOLARSEED_HOME"] = str(_HOME)
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from scholarseed_runtime.contract.command import RuntimeInventory  # noqa: E402 -- after isolation
-from scholarseed_runtime.contract.history import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
-    TurnStatus,
+from scholarseed_runtime.contract.command import (  # noqa: E402 -- after isolation
+    CommandReceipt,
+    CommandState,
+    RuntimeInventory,
 )
 from scholarseed_runtime.contract.input import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
     InputKind,
     TurnInput,
 )
+from scholarseed_runtime.contract.provider import RUNTIME_HOST_WARMUP_COMMAND  # noqa: E402
+from scholarseed_runtime.contract.resource import RESOURCE_HOST_BUSY  # noqa: E402
+from scholarseed_runtime.contract.session import RuntimeActivitySnapshot  # noqa: E402
 from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome, RuntimeTurnResult  # noqa: E402
 from service.capabilities.service.skills import SkillCatalog  # noqa: E402
 from service.chat.active import RUNTIME_ID  # noqa: E402
@@ -38,6 +47,12 @@ from service.chat.persistence.catalog import (  # noqa: E402
 from service.chat.persistence.events import ProductEventStore  # noqa: E402
 from service.chat.runtime.live import (  # noqa: E402 -- after SCHOLARSEED_HOME test isolation
     LiveSession,
+)
+from service.chat.runtime.reconfiguration import (  # noqa: E402
+    PREPARATION_INSTANCE_CHANGED,
+    RECONFIGURATION_INVALID,
+    RECONFIGURATION_STALE,
+    HostReconfiguration,
 )
 from service.chat.service.artifacts import ArtifactService  # noqa: E402
 from service.chat.service.events import EventService  # noqa: E402
@@ -70,6 +85,7 @@ class _Adapter:
     skill_control = None
     model_control = None
     mcp_control = None
+    resource_evidence = None
 
     def __init__(self, thread_id: str) -> None:
         self.session_id = thread_id
@@ -81,11 +97,19 @@ class _Adapter:
     async def inventory(self, request: Any) -> RuntimeInventory:
         return RuntimeInventory(revision="attachment-fixture", values={"skills": {"skills": []}})
 
+    async def activity(self) -> RuntimeActivitySnapshot:
+        return RuntimeActivitySnapshot("attachment-fixture", 0, 0, True)
+
     async def aclose(self) -> None:
         return None
 
+    async def activity(self) -> RuntimeActivitySnapshot:
+        return RuntimeActivitySnapshot("attachment-fixture", 0, 0, True)
+
 
 class _Driver:
+    projection_failed = False
+
     def __init__(self, adapter: _Adapter) -> None:
         self._adapter = adapter
 
@@ -147,6 +171,327 @@ def _live(
     return live, adapter
 
 
+def _preparation_contracts(
+    session_service: SessionService,
+    sessions: dict[str, LiveSession],
+    live: LiveSession,
+    event_service: EventService,
+    artifact_service: ArtifactService,
+) -> None:
+    activities = Activities()
+    manager = HostReconfiguration(
+        activities=activities,
+        drain=AsyncMock(return_value=()),
+        logger=logging.getLogger(__name__),
+    )
+    observed: list[tuple[str, dict[str, int]]] = []
+
+    async def warm(**_options):
+        observed.append(("warm", dict(activities.snapshot().counts)))
+        return CommandReceipt(RUNTIME_HOST_WARMUP_COMMAND, CommandState.APPLIED)
+
+    runtime = SimpleNamespace(
+        reconfiguration=manager,
+        reconfiguration_wait_seconds=1,
+        selected_model_key=Mock(side_effect=lambda model_id, **_options: model_id),
+        warm_host=AsyncMock(side_effect=warm),
+        reconfigure_host=AsyncMock(),
+    )
+    settings = SimpleNamespace(set_runtime_model=Mock(), runtime_model=lambda: live.model_id)
+    credentials = SimpleNamespace(environment=AsyncMock(return_value={"CONTRACT_ENV": "present"}))
+    app = FastAPI()
+    app.state.auth_enabled = False
+    app.state.ownership_axis = "machine"
+
+    @app.middleware("http")
+    async def actor_identity(request, call_next):
+        request.state.user_id = request.headers.get("x-contract-actor", "account-a")
+        return await call_next(request)
+
+    turns = TurnService(sessions, logging.getLogger(__name__), activities=activities)
+    mount_session_routes(
+        app,
+        sessions=session_service,
+        turns=turns,
+        events=event_service,
+        artifacts=artifact_service,
+        credentials=credentials,
+    )
+    with (
+        patch.object(session_service, "_runtime", runtime),
+        patch.object(session_service, "_activities", activities),
+        patch.object(session_service, "_settings", settings),
+        TestClient(app) as client,
+    ):
+        identity = str(uuid4())
+        intent = {
+            "request_id": identity,
+            "model_id": live.model_id,
+            "service_instance_id": activities.instance_id,
+            "persist_default": True,
+        }
+        accepted = client.post("/api/serve/runtime/prepare", json=intent)
+        client.portal.call(manager.wait, identity, None, "account-a")
+        status = client.get(f"/api/serve/runtime/prepare/{identity}")
+        check(
+            "HTTP preparation binds actor, instance, model and UUID and persists once",
+            accepted.status_code == 200
+            and status.status_code == 200
+            and status.json()["state"] == "applied"
+            and status.json()["model_id"] == live.model_id
+            and status.json()["service_instance_id"] == activities.instance_id
+            and runtime.warm_host.call_args.kwargs["user_id"] == "account-a"
+            and settings.set_runtime_model.call_args.args == (live.model_id,)
+            and observed == [("warm", {"resource": 1})],
+            status.text,
+        )
+        repeated = client.post("/api/serve/runtime/prepare", json=intent)
+        check(
+            "same preparation UUID is idempotent without repeating commit or warm",
+            repeated.json() == status.json()
+            and settings.set_runtime_model.call_count == 1
+            and runtime.warm_host.await_count == 1,
+            repeated.text,
+        )
+        for change, headers in (
+            ({"model_id": "another-model"}, {}),
+            ({"persist_default": False}, {}),
+            ({}, {"x-contract-actor": "account-b"}),
+        ):
+            rejected = client.post(
+                "/api/serve/runtime/prepare", json={**intent, **change}, headers=headers
+            )
+            check(
+                "HTTP preparation UUID rejects changed model, persistence or actor",
+                rejected.status_code == 409 and rejected.json()["error"] == RECONFIGURATION_STALE,
+                rejected.text,
+            )
+        inaccessible = client.get(
+            f"/api/serve/runtime/prepare/{identity}", headers={"x-contract-actor": "account-b"}
+        )
+        check(
+            "preparation status does not disclose another actor's operation",
+            inaccessible.status_code == 404,
+        )
+        for change, expected_status, expected_error in (
+            ({"request_id": "invalid"}, 409, RECONFIGURATION_INVALID),
+            ({"service_instance_id": "retired-instance"}, 409, PREPARATION_INSTANCE_CHANGED),
+            ({"persist_default": "false"}, 422, None),
+            ({"persist_default": 1}, 422, None),
+        ):
+            rejected = client.post("/api/serve/runtime/prepare", json={**intent, **change})
+            check(
+                "HTTP preparation rejects invalid UUID, instance and non-boolean persistence before effects",
+                rejected.status_code == expected_status
+                and (expected_error is None or rejected.json()["error"] == expected_error)
+                and settings.set_runtime_model.call_count == 1
+                and runtime.warm_host.await_count == 1,
+                rejected.text,
+            )
+        transient_identity = str(uuid4())
+        transient = client.post(
+            "/api/serve/runtime/prepare",
+            json={
+                "request_id": transient_identity,
+                "model_id": live.model_id,
+                "service_instance_id": activities.instance_id,
+            },
+        )
+        client.portal.call(manager.wait, transient_identity, None, "account-a")
+        check(
+            "preparation without persist_default remains compatible and never saves a default",
+            transient.status_code == 200 and settings.set_runtime_model.call_count == 1,
+            transient.text,
+        )
+
+        async def opened(body, owner, **options):
+            observed.append(("open", dict(activities.snapshot().counts)))
+            return {"ok": True, "body": body, "owner": owner.user_id, "options": options}, 200
+
+        with patch.object(session_service, "open", AsyncMock(side_effect=opened)) as open_port:
+            prepared_open = client.post(
+                "/api/serve/sessions/open",
+                json={
+                    "model_id": live.model_id,
+                    "prepare_runtime": True,
+                    "service_instance_id": activities.instance_id,
+                    "title": "prepared",
+                },
+            )
+            check(
+                "prepared open strips control metadata and opens only under RUNTIME admission",
+                prepared_open.status_code == 200
+                and prepared_open.json()["body"] == {"model_id": live.model_id, "title": "prepared"}
+                and prepared_open.json()["options"]
+                == {"actor_id": "account-a", "skill_environment": {"CONTRACT_ENV": "present"}}
+                and observed[-1] == ("open", {"runtime": 1}),
+                prepared_open.text,
+            )
+            legacy_open = client.post("/api/serve/sessions/open", json={"title": "legacy"})
+            check(
+                "legacy open without preparation fields retains its original admission",
+                legacy_open.status_code == 200
+                and legacy_open.json()["body"] == {"title": "legacy"}
+                and observed[-1] == ("open", {}),
+                legacy_open.text,
+            )
+            for invalid_body in (
+                {"prepare_runtime": "true"},
+                {"prepare_runtime": True, "service_instance_id": activities.instance_id},
+                {"prepare_runtime": True, "model_id": live.model_id},
+                {
+                    "prepare_runtime": True,
+                    "model_id": live.model_id,
+                    "service_instance_id": activities.instance_id,
+                    "resume_session_id": live.id,
+                },
+            ):
+                invalid_open = client.post("/api/serve/sessions/open", json=invalid_body)
+                check(
+                    "prepared open validates control fields and rejects resume before opening",
+                    invalid_open.status_code == 400 and open_port.await_count == 2,
+                    invalid_open.text,
+                )
+            before_open = open_port.await_count
+            runtime.warm_host.return_value = None
+            runtime.warm_host.side_effect = lambda **_options: CommandReceipt(
+                RUNTIME_HOST_WARMUP_COMMAND, CommandState.REJECTED, safe_error=RESOURCE_HOST_BUSY
+            )
+            failed_open = client.post(
+                "/api/serve/sessions/open",
+                json={
+                    "model_id": live.model_id,
+                    "prepare_runtime": True,
+                    "service_instance_id": activities.instance_id,
+                },
+            )
+            check(
+                "failed preparation returns 409 preparation_error without opening a session",
+                failed_open.status_code == 409
+                and failed_open.json().get("preparation_error") is True
+                and open_port.await_count == before_open,
+                failed_open.text,
+            )
+
+        async def align(_session_id, _actor_id):
+            observed.append(("align", dict(activities.snapshot().counts)))
+            return False
+
+        original_post = turns.post
+
+        async def post(session_id, body, **options):
+            observed.append(("post", dict(activities.snapshot().counts)))
+            return await original_post(session_id, body, **options)
+
+        with (
+            patch.object(session_service, "align_metering_identity", AsyncMock(side_effect=align)),
+            patch.object(turns, "post", AsyncMock(side_effect=post)) as post_port,
+        ):
+            before_queue = live.catalog.queued_messages(live.id)
+            failed_turn = client.post(
+                f"/api/serve/sessions/{live.id}/turns",
+                json={
+                    "input": [{"type": "text", "text": "not submitted"}],
+                    "client_user_message_id": "preparation-rejected",
+                    "expected_model_id": live.model_id,
+                    "service_instance_id": activities.instance_id,
+                },
+            )
+            check(
+                "failed turn preparation never invokes post or creates a failed queue entry",
+                failed_turn.status_code == 409
+                and failed_turn.json().get("preparation_error") is True
+                and post_port.await_count == 0
+                and live.catalog.queued_messages(live.id) == before_queue
+                and live.catalog.queued_message(live.id, "preparation-rejected") is None,
+                failed_turn.text,
+            )
+            runtime.warm_host.side_effect = warm
+            inferred_turn = client.post(
+                f"/api/serve/sessions/{live.id}/turns",
+                json={
+                    "input": [{"type": "text", "text": "restored continuation"}],
+                    "client_user_message_id": "restored-continuation",
+                    "wait": True,
+                },
+            )
+            check(
+                "ordinary restored sends infer the session target and cannot bypass preparation",
+                inferred_turn.status_code == 202
+                and post_port.call_args.kwargs
+                == {"side": False, "expected_model_id": live.model_id, "prepared_activity": True},
+                inferred_turn.text,
+            )
+            post_port.reset_mock()
+            for invalid_fields in (
+                {"expected_model_id": live.model_id, "service_instance_id": "retired-instance"},
+                {
+                    "expected_model_id": "another-model",
+                    "service_instance_id": activities.instance_id,
+                },
+                {"expected_model_id": 1, "service_instance_id": activities.instance_id},
+                {"expected_model_id": live.model_id, "service_instance_id": 1},
+            ):
+                invalid_turn = client.post(
+                    f"/api/serve/sessions/{live.id}/turns",
+                    json={
+                        "input": [{"type": "text", "text": "invalid preparation"}],
+                        "client_user_message_id": "invalid-preparation",
+                        **invalid_fields,
+                    },
+                )
+                check(
+                    "invalid prepared turn identity or types never reach post or durable queue",
+                    invalid_turn.status_code == 409
+                    and invalid_turn.json().get("preparation_error") is True
+                    and post_port.await_count == 0
+                    and live.catalog.queued_message(live.id, "invalid-preparation") is None,
+                    invalid_turn.text,
+                )
+            observed.clear()
+            prepared_turn = client.post(
+                f"/api/serve/sessions/{live.id}/turns",
+                json={
+                    "input": [{"type": "text", "text": "prepared turn"}],
+                    "wait": True,
+                    "expected_model_id": live.model_id,
+                    "service_instance_id": activities.instance_id,
+                },
+            )
+            check(
+                "prepared turn aligns and invokes real post within TURN admission without forwarding control fields",
+                prepared_turn.status_code == 202
+                and observed[:3]
+                == [("warm", {"resource": 1}), ("align", {"turn": 1}), ("post", {"turn": 1})]
+                and post_port.call_args.kwargs
+                == {"side": False, "expected_model_id": live.model_id, "prepared_activity": True}
+                and "expected_model_id" not in post_port.call_args.args[1]
+                and "service_instance_id" not in post_port.call_args.args[1],
+                f"{prepared_turn.text} {observed}",
+            )
+            observed.clear()
+            legacy_turn = client.post(
+                f"/api/serve/sessions/{live.id}/turns",
+                json={"input": [{"type": "text", "text": "legacy turn"}], "wait": True},
+            )
+            check(
+                "legacy turn uses the same preparation and TURN admission as explicit targets",
+                legacy_turn.status_code == 202
+                and observed
+                == [("warm", {"resource": 1}), ("align", {"turn": 1}), ("post", {"turn": 1})]
+                and post_port.call_args.kwargs
+                == {"side": False, "expected_model_id": live.model_id, "prepared_activity": True},
+                f"{legacy_turn.text} {observed}",
+            )
+            check(
+                "later readiness never replays either previously rejected message",
+                post_port.await_count == 2
+                and live.catalog.queued_message(live.id, "preparation-rejected") is None
+                and live.catalog.queued_message(live.id, "invalid-preparation") is None,
+            )
+        client.portal.call(manager.aclose)
+
+
 def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="serve-attachment-contract-")).resolve()
     database = _HOME / "catalog.sqlite3"
@@ -181,18 +526,32 @@ def main() -> int:
         logger=logger,
     )
     sessions = {live_a.id: live_a, live_b.id: live_b}
+    activities = Activities()
+    manager = HostReconfiguration(
+        activities=activities,
+        drain=AsyncMock(return_value=()),
+        logger=logger,
+    )
     session_service = SessionService(
         root,
         sessions,
+        activities=activities,
         access=catalog,
         events=events,
         runtime=SimpleNamespace(  # type: ignore[arg-type]
-            realign_metering_identity=lambda *_args, **_kwargs: False,
+            realign_metering_identity=AsyncMock(return_value=False),
+            reconfiguration=manager,
+            reconfiguration_wait_seconds=1,
+            selected_model_key=lambda model_id, **_kwargs: model_id,
+            warm_host=AsyncMock(
+                return_value=CommandReceipt(RUNTIME_HOST_WARMUP_COMMAND, CommandState.APPLIED)
+            ),
+            reconfigure_host=AsyncMock(),
         ),
         workspaces=SessionWorkspaceService(workspace_allows),
         artifacts=artifacts,
-        settings=SimpleNamespace(runtime_executable=lambda: "codex"),  # type: ignore[arg-type]
-        credentials=skill_credentials_from_env({}),
+        settings=SimpleNamespace(runtime_executable=lambda: "codex", runtime_model=lambda: ""),  # type: ignore[arg-type]
+        credentials=skill_credentials_from_env({}, activities=Activities()),
         logger=logger,
     )
     app = FastAPI()
@@ -228,10 +587,10 @@ def main() -> int:
     mount_session_routes(
         app,
         sessions=session_service,
-        turns=TurnService(sessions, logger),
+        turns=TurnService(sessions, logger, activities=activities),
         events=event_service,
         artifacts=ArtifactService(catalog, artifacts, events, WorkbenchFormatPolicy()),
-        credentials=skill_credentials_from_env({}),
+        credentials=skill_credentials_from_env({}, activities=Activities()),
     )
     client = TestClient(app)
 
@@ -250,6 +609,36 @@ def main() -> int:
         and attachment.get("media_type") == "image/png"
         and len(str(attachment.get("sha256") or "")) == 64,
         uploaded.text,
+    )
+
+    preview_path = str(attachment.get("relative_path") or "")
+    check(
+        "upload exposes a portable relative preview path without changing the native input path",
+        preview_path == attachment_path.relative_to(live_a.runtime_workdir).as_posix()
+        and attachment.get("path") == str(attachment_path),
+        uploaded.text,
+    )
+    preview = client.get(
+        "/api/serve/sessions/session-a/files/raw",
+        params={"path": preview_path or str(attachment_path)},
+    )
+    check(
+        "uploaded image can be previewed through the session file boundary",
+        preview.status_code == 200
+        and preview.content == attachment_path.read_bytes()
+        and preview.headers.get("content-type") == "image/png",
+        str(preview.status_code),
+    )
+    sent_preview = client.get(
+        "/api/serve/sessions/session-a/files/raw",
+        params={"path": str(attachment_path)},
+    )
+    check(
+        "sent image references retain preview access with their native absolute path",
+        sent_preview.status_code == 200
+        and sent_preview.content == image_bytes
+        and sent_preview.headers.get("content-type") == "image/png",
+        str(sent_preview.status_code),
     )
 
     accepted = client.post(
@@ -493,6 +882,13 @@ def main() -> int:
         traversal_path.name.endswith("-evidence.csv")
         and live_a.runtime_workdir in traversal_path.parents,
         str(traversal_path),
+    )
+    _preparation_contracts(
+        session_service,
+        sessions,
+        live_a,
+        event_service,
+        ArtifactService(catalog, artifacts, events, WorkbenchFormatPolicy()),
     )
     print(f"\ncontract_serve_attachments: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0

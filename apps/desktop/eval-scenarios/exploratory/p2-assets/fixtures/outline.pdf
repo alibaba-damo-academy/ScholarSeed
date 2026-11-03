@@ -1,0 +1,59 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 8 0 R /PageMode /UseOutlines >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [4 0 R 6 0 R] >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 132 >>
+stream
+BT /F1 14 Tf 50 760 Td 24 TL (P2-OUTLINE-FIRST) Tj
+T* (First section) Tj
+T* (This is the first page of a synthetic document.) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 131 >>
+stream
+BT /F1 14 Tf 50 760 Td 24 TL (P2-OUTLINE-SECOND) Tj
+T* (Second section) Tj
+T* (P2-ANNOTATE-TARGET belongs only to page two.) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Outlines /First 9 0 R /Last 10 0 R /Count 2 >>
+endobj
+9 0 obj
+<< /Title (First section) /Parent 8 0 R /Next 10 0 R /Dest [4 0 R /Fit] >>
+endobj
+10 0 obj
+<< /Title (Second section) /Parent 8 0 R /Prev 9 0 R /Dest [6 0 R /Fit] >>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000097 00000 n 
+0000000160 00000 n 
+0000000230 00000 n 
+0000000356 00000 n 
+0000000538 00000 n 
+0000000664 00000 n 
+0000000845 00000 n 
+0000000917 00000 n 
+0000001007 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+1098
+%%EOF

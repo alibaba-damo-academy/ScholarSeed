@@ -12,7 +12,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from damoatrace.paths import INDEX_FILENAME
+from damoatrace.paths import INDEX_FILENAME, TRACE_FILE_SUFFIX
+from damoatrace.recording.content import UnsupportedContentVersion
 from damoatrace.search.index import TraceIndex
 
 # ───────────────────────── FTS5 lazy-ingest 检索 (proposal 26 §5.3) ─────────────────────────
@@ -23,7 +24,7 @@ class FtsSearch:
 
     - 索引 upsert by event id → 整文件重灌幂等, 无需行级水位;
     - 水位 sidecar: TRACE_DIR/index_meta.json (索引/水位坏了整删重建);
-    - FTS5 不可用或失败 → available()=False, 调用方退回内存扫描。
+    - FTS5 不可用或源文件不存在时退回正本扫描；真实读取与版本错误明确传播。
     """
 
     def __init__(self, trace_dir: Path, db_path: Optional[Path] = None):
@@ -71,7 +72,9 @@ class FtsSearch:
                 idx.projection_reset = False
             files = 0
             events = 0
-            for p in sorted(self.trace_dir.glob("*.jsonl")):
+            for p in sorted(
+                path for path in self.trace_dir.iterdir() if path.match(f"*{TRACE_FILE_SUFFIX}")
+            ):
                 try:
                     st = p.stat()
                 except FileNotFoundError:
@@ -84,6 +87,8 @@ class FtsSearch:
                     events += idx.ingest_jsonl(p)
                     files += 1
                     meta[key] = {"size": st.st_size, "mtime": st.st_mtime}
+                except (UnsupportedContentVersion, OSError, UnicodeError):
+                    raise
                 except Exception:  # noqa: BLE001
                     continue
             if files:
@@ -91,12 +96,16 @@ class FtsSearch:
             return {"files": files, "events": events}
 
     def search(self, query: str, **kwargs: Any) -> Optional[List[Dict[str, Any]]]:
-        """FTS 检索 (kwargs 透传 TraceIndex.search)。不可用返 None (上层退内存扫描)。"""
+        """Unavailable/missing sources return None; I/O, decoding and version errors propagate."""
         idx = self._open()
         if idx is None:
             return None
         try:
             self.ensure_indexed()
             return idx.search(query, **kwargs)
+        except FileNotFoundError:
+            return None
+        except (UnsupportedContentVersion, OSError, UnicodeError):
+            raise
         except Exception:  # noqa: BLE001
             return None

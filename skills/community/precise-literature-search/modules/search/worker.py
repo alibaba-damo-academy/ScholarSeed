@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from copy import deepcopy
 from contextlib import contextmanager
 import hashlib
@@ -11,7 +12,6 @@ import math
 import os
 from pathlib import Path
 import re
-import shlex
 import sys
 
 SEARCH = Path(__file__).resolve().parent
@@ -20,8 +20,9 @@ sys.path.insert(0, str(SEARCH))
 sys.path.insert(0, str(SEARCH / "tools"))
 sys.path.insert(0, str(SEARCH.parents[1] / "scripts"))
 from io_utils import atomic_write_json, read_json
+from filesystem import canonical_path, error_details, filesystem_path, path_exists
 from validate_json import validate_data
-from platform_support import lock_file
+from platform_support import command_display, lock_file, posix_form
 from stage_guard import require_worker
 import selection_evidence as evidence
 from finalize import finalize_search
@@ -35,9 +36,9 @@ from tools.balance_policy import budget_status
 def artifact(root: Path, name: str | Path) -> Path:
     path = Path(name)
     path = path if path.is_absolute() else root / path
-    if not path.resolve().is_relative_to(root.resolve()):
+    if not canonical_path(path).is_relative_to(canonical_path(root)):
         raise ValueError("artifact must stay inside its round directory")
-    if path.is_symlink():
+    if filesystem_path(path).is_symlink():
         raise ValueError("artifact must not be a symbolic link")
     return path
 
@@ -46,16 +47,39 @@ def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+#: Snapshots are named by the worker and handed back to it verbatim, so the name is a
+#: contract identifier rather than a filesystem path: it keeps forward slashes on every
+#: platform, including the Windows command line that produced it.
+SNAPSHOT_DIRECTORY = "results"
+SNAPSHOT_STEM = "worker-output"
+SNAPSHOT_PATTERN = re.compile(rf"{SNAPSHOT_DIRECTORY}/{SNAPSHOT_STEM}-[0-9a-f]{{64}}\.json")
+
+
+def snapshot_name(result) -> str:
+    return f"{SNAPSHOT_DIRECTORY}/{SNAPSHOT_STEM}-{digest(result)}.json"
+
+
+def snapshot_identifier(name) -> str:
+    """Normalize and validate a snapshot name against the form the worker itself emits."""
+    identifier = posix_form(name) if name is not None else ""
+    if not SNAPSHOT_PATTERN.fullmatch(identifier):
+        raise ValueError(
+            f"read-output requires a worker output snapshot named {SNAPSHOT_DIRECTORY}/"
+            f"{SNAPSHOT_STEM}-<64 lowercase hex sha256>.json, relative to work; got {identifier!r}"
+        )
+    return identifier
+
+
 @contextmanager
 def transaction(work: Path):
-    if work.is_symlink() or work.name != "work":
+    if filesystem_path(work).is_symlink() or work.name != "work":
         raise ValueError("use the supplied round work directory")
-    work = work.resolve()
+    work = canonical_path(work)
     run = work.parents[2]
     require_worker(run, "search", verify_inputs=True)
     # Share the host transaction lock, without holding the lease lock across IO.
     lock = artifact(run, ".stage-operation.lock")
-    with lock.open("a+b") as handle:
+    with filesystem_path(lock).open("a+b") as handle:
         try:
             lock_file(handle, blocking=False)
         except OSError as exc:
@@ -76,14 +100,14 @@ def transaction(work: Path):
         for name in ("results", "reviews", "state.json", "pool.json", "query-log.json", "plan.json",
                      "balance-execution.json", "web-execution.json", "selection.json"):
             artifact(work, name)
-        for name in ("metadata.json", "report.md"):
+        for name in ("metadata.json", "search_report.md"):
             artifact(work.parent, name)
         yield request, dispatch
 
 
 def commands(work: Path) -> dict:
     base = [sys.executable, str(SEARCH / "worker.py")]
-    token = require_worker(work.resolve().parents[2], "search")["token"]
+    token = require_worker(canonical_path(work).parents[2], "search")["token"]
     result = {}
     for action, filename in (("context", None), ("overview", None), ("retrieve", "retrieval-decisions.json"),
                              ("cite", "citation-decisions.json"), ("select", "selection-decisions.json"),
@@ -91,7 +115,9 @@ def commands(work: Path) -> dict:
         argv = [*base, action, "--work-dir", str(work), "--token", token]
         if filename:
             argv += ["--input", filename]  # Resolved against work, not the caller's cwd.
-        result[action] = {"command": shlex.join(argv)}
+        # argv stays the source of truth so recovery can rebuild a command without
+        # re-parsing a rendered string; controls() strips it before it is emitted.
+        result[action] = {"argv": argv, "command": command_display(argv)}
     return result
 
 
@@ -105,6 +131,8 @@ CONTROL_DEFAULTS = {"status": "ok", "error": None, "phase_state": {}, "budget": 
 
 def controls(result, cursor=0):
     value = {key: deepcopy(result.get(key, default)) for key, default in CONTROL_DEFAULTS.items()}
+    for template in value["next_commands"].values():
+        template.pop("argv", None)  # argv drives rendering internally; only the command is emitted.
     if cursor:
         value["next_commands"] = {}  # Executable templates belong to the first page.
     return value
@@ -165,7 +193,7 @@ def record_page(work, result, cursor=0):
     header, records = record_layout(result)
     if not isinstance(cursor, int) or isinstance(cursor, bool) or not 0 <= cursor < len(records) + 1:
         raise ValueError("cursor is outside the saved snapshot")
-    name = f"results/worker-output-{digest(result)}.json"
+    name = snapshot_name(result)
     save_once(artifact(work, name), result)
     pools = [result[key].get("pool_size") for key in ("evidence_view", "citation_evidence_view")
              if isinstance(result.get(key), dict) and isinstance(result[key].get("pool_size"), int)]
@@ -183,12 +211,13 @@ def record_page(work, result, cursor=0):
                            "view": sum(item["view"] is not None for item in records),
                            "total": len(records), "page": end - start},
                 "cursor": cursor, "next_cursor": following,
-                "next_command": shlex.join([*base, "read-output", *scope, "--input", name,
-                                             "--cursor", str(following)]) if following is not None else None}
+                "next_command": command_display([*base, "read-output", *scope, "--input", name,
+                                                  "--cursor", str(following)]) if following is not None else None}
 
     page = page_at(start)
     if len(encoded(page).encode("utf-8")) + 1 > OUTPUT_BYTES:
-        command = shlex.join([*base, "context", *scope, "--evidence-only", "--limit", "1", "--abstract-chars", "0"])
+        command = command_display([*base, "context", *scope, "--evidence-only", "--limit", "1",
+                                   "--abstract-chars", "0"])
         raise ValueError(f"output metadata exceeds the bounded page; complete snapshot saved at {name}. "
                          f"Read focused evidence with: {command}")
     end = start
@@ -203,7 +232,7 @@ def record_page(work, result, cursor=0):
                 if identity:
                     args += ["--ids", identity]
                 raise ValueError(f"evidence record at cursor {cursor} exceeds the bounded page; "
-                                 f"complete snapshot saved at {name}. Request a focused summary with: {shlex.join(args)}. "
+                                 f"complete snapshot saved at {name}. Request a focused summary with: {command_display(args)}. "
                                  "The original evidence remains unchanged in the saved snapshot.")
             break
         end += 1
@@ -218,10 +247,9 @@ def display_result(work, result):
 
 def read_output(work, name, cursor=0):
     with transaction(work):
-        if name is None or not re.fullmatch(r"results/worker-output-[0-9a-f]{64}\.json", str(name)):
-            raise ValueError("read-output requires a worker output snapshot, relative to work")
-        result = read_json(artifact(work, name))
-        if str(name) != f"results/worker-output-{digest(result)}.json":
+        identifier = snapshot_identifier(name)
+        result = read_json(artifact(work, identifier))
+        if identifier != snapshot_name(result):
             raise ValueError("output snapshot content does not match its digest")
         return record_page(work, result, cursor)
 
@@ -230,16 +258,17 @@ def overview(work, request):
     """Title index of every eligible pool record; full evidence stays in context."""
     papers = evidence._pool(work)
     excluded = {str(value) for value in request["exclude_previous_ids"]}
-    plan = read_json(work / "plan.json") if (work / "plan.json").exists() else {}
+    plan = read_json(work / "plan.json") if path_exists(work / "plan.json") else {}
     concepts = plan.get("subtopics", [])
     ranked = sorted((paper for key, paper in papers.items() if key not in excluded),
                     key=lambda paper: (-pool_inspect._base_score(paper, concepts), str(paper["id"])))
     records = [{key: paper[key] for key in ("id", "title", "year") if key in paper} for paper in ranked]
+    inspection = command_display([*commands(work)["context"]["argv"], "--evidence-only", "--limit", "20",
+                                  "--abstract-chars", "4000"])
     # These are navigation records, not a substitute for reviewing source evidence.
     return {"evidence_view": {"pool_size": len(papers), "returned": len(records),
                               "view_type": "title_index", "candidates": records},
-            "inspection": {"command": commands(work)["context"]["command"] +
-                           " --evidence-only --limit 20 --abstract-chars 4000",
+            "inspection": {"command": inspection,
                            "append": "--ids followed by up to 20 IDs from this index"}}
 
 
@@ -264,7 +293,7 @@ def view(work, request, *, ids=None, limit=20, abstract_chars=700, audit=False):
     papers = evidence._pool(work)
     excluded = {str(value) for value in request["exclude_previous_ids"]}
     chosen = [p for key, p in papers.items() if key not in excluded and (not ids or key in ids)]
-    plan = read_json(work / "plan.json") if (work / "plan.json").exists() else {}
+    plan = read_json(work / "plan.json") if path_exists(work / "plan.json") else {}
     concepts = plan.get("subtopics", [])
     if audit:
         result = pool_inspect.build_provenance_audit(chosen, read_json(work / "query-log.json"),
@@ -428,7 +457,7 @@ def build_plan(request, dispatch, decisions, web_outcomes=()):
 
 
 def save_once(path, value):
-    if path.exists():
+    if path_exists(path):
         if read_json(path) != value:
             raise ValueError("cannot replace saved decisions or phase; resume without --input")
     else:
@@ -444,11 +473,11 @@ def retrieve(work, request, dispatch, decisions):
         plan, batch = build_plan(request, dispatch, decisions, web_outcomes)
         # Check all immutable files before writing any of them.
         for path, value in ((plan_path, plan), (batch_path, batch)):
-            if path.exists() and read_json(path) != value:
+            if path_exists(path) and read_json(path) != value:
                 raise ValueError("cannot replace saved plan or batch; resume without --input")
         save_once(plan_path, plan)
         save_once(batch_path, batch)
-    if not batch_path.exists():
+    if not path_exists(batch_path):
         raise ValueError("first retrieve needs --input with research decisions")
     plan = read_json(plan_path)
     current = read_json(work / "state.json")
@@ -466,7 +495,7 @@ def cite(work, decisions):
         plan = read_json(work / "plan.json")
         save_once(batch_path, {"phase": "citations", "iteration": 1, "finish_round": True,
                                "citation_ids": ids, "citation_limit": 30, "inspect_concepts": plan["subtopics"]})
-    if not batch_path.exists():
+    if not path_exists(batch_path):
         raise ValueError("first cite needs --input with citation_ids")
     return balance_search.run(argparse.Namespace(work_dir=work, batch=batch_path, timeout=180, workers=1))
 
@@ -523,7 +552,7 @@ def select(work, request, decisions):
     if any(d.get("status") == "execution_blocked" for d in current.get("source_details", {}).values()):
         raise ValueError("execution_blocked requires host environment handling, not scholarly finalization")
     plan_path = work / "plan.json"
-    plan = read_json(plan_path) if plan_path.exists() else None
+    plan = read_json(plan_path) if path_exists(plan_path) else None
     if plan is None:
         if selected or not budget_status(work)["should_finalize"]:
             raise ValueError("retrieve first; only an exhausted pre-plan budget permits an empty stop")
@@ -534,12 +563,12 @@ def select(work, request, decisions):
     current["subtopic_coverage"] = {topic: topic in covered for topic in (plan or {}).get("subtopics", [])}
     metadata = finalize_search(request, plan, current,
                                read_json(work / "pool.json"), selection,
-                               metadata_path=work.parent / "metadata.json", report_path=work.parent / "report.md")
+                               metadata_path=work.parent / "metadata.json", report_path=work.parent / "search_report.md")
     atomic_write_json(work / "selection.json", selection)
     atomic_write_json(work / "state.json", current)
     return {"status": metadata["status"], "selected_count": len(metadata["papers"]),
             "recommendation_count": len(metadata.get("related_recommendations", [])),
-            "metadata": str(work.parent / "metadata.json"), "report": str(work.parent / "report.md"),
+            "metadata": str(work.parent / "metadata.json"), "report": str(work.parent / "search_report.md"),
             "stop_reason": reason, "next_action": "host stage complete validates outputs and releases the lease"}
 
 
@@ -557,8 +586,8 @@ def _run(action, work, decisions=None, *, evidence_only=False, **view_options):
             current = read_json(work / "state.json")
             result = {"budget": budget_status(work),
                     "state": {key: current.get(key) for key in ("iteration", "max_iterations", "pool_size", "stop_reason", "subtopic_coverage")},
-                    "phase_progress": read_json(work / "balance-execution.json") if (work / "balance-execution.json").exists() else {},
-                    "plan_saved": (work / "plan.json").exists(),
+                    "phase_progress": read_json(work / "balance-execution.json") if path_exists(work / "balance-execution.json") else {},
+                    "plan_saved": path_exists(work / "plan.json"),
                     "web_registration": web_registration.summary(work, artifact=artifact),
                     **view(work, request, **view_options)}
             focused = (evidence_only or view_options.get("ids") or view_options.get("audit")
@@ -651,10 +680,12 @@ def main():
     except (ValueError, OSError, KeyError, TypeError) as exc:
         message = str(exc)
         guidance = getattr(exc, "worker_guidance", {})
+        details = getattr(exc, "details", None)
+        details = dict(details) if isinstance(details, Mapping) else {}
         failure = {"status": "error", **{key: value for key, value in guidance.items() if key in CONTROL_DEFAULTS},
                    "error": {"code": guidance.get("error_code", getattr(exc, "code", "invalid_input")),
                              "message": message[:1000], "message_truncated": len(message) > 1000,
-                             "details": getattr(exc, "details", {}),
+                             "details": {**details, **error_details(exc)},
                              "retryable": guidance.get("retryable", False),
                              "recovery_action": guidance.get("recovery_action"),
                              "recovery_command": guidance.get("recovery_command")}}
@@ -662,11 +693,12 @@ def main():
             with transaction(args.work_dir):
                 failure["budget"] = budget_status(args.work_dir)
                 output = encoded(record_page(args.work_dir, failure))
-        except (ValueError, OSError, KeyError, TypeError):
+        except (ValueError, OSError, KeyError, TypeError) as snapshot_error:
             # Authentication or invalid work paths must not expose state/commands.
             failure = {"status": "error", "error": {
                 "code": "worker_response_unavailable", "message": message[:1000],
-                "message_truncated": len(message) > 1000, "details": {},
+                "message_truncated": len(message) > 1000,
+                "details": {**error_details(exc), "snapshot_error": error_details(snapshot_error)},
                 "retryable": False, "recovery_action": None, "recovery_command": None}}
             output = encoded({**controls(failure), "snapshot": None, "metadata": {}, "records": [],
                               "counts": {"pool": None, "view": 0, "total": 0, "page": 0},

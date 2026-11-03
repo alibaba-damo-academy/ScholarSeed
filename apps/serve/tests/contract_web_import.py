@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.content import AssetKind, RootKind
 from service.platform.resources import DEFAULT_MAX_VERSIONS_PER_FILE, SnapshotState
 from service.resources.api.routes import register_resource_routes
@@ -27,7 +28,6 @@ from service.resources.service.delivery import ResourceDeliveryService, TurnOutc
 from service.resources.service.fetcher import (
     WEB_HTTP_STATUS,
     WEB_UNSAFE_URL,
-    FetchedImage,
     HtmlFetcher,
     PageFetchError,
     _FetchPolicy,
@@ -140,7 +140,7 @@ class WebImportContract(unittest.TestCase):
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
         self.project = registry.create("Web Import")
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.web_sources = ResourceWebSourceCatalog(self.content)
         settings = WebImportSettings()
         retention = ResourceRetentionService(self.content, settings)
@@ -156,11 +156,13 @@ class WebImportContract(unittest.TestCase):
             self.versions,
             WorkbenchFormatPolicy(),
             settings,
+            activities=Activities(),
         )
         self.deliveries = ResourceDeliveryService(
             self.content,
             self.versions,
             self.supervisor,
+            activities=self.supervisor._activities,
         )
         self.supervisor.bind_preparation(
             ResourceActivation(
@@ -355,6 +357,9 @@ class WebImportContract(unittest.TestCase):
 
     def test_agent_edit_after_web_import_still_requires_review(self) -> None:
         asyncio.run(self.deliveries.begin_turn("session", "edited-turn", self.project.root))
+        asyncio.run(
+            self.deliveries.bind_turn("session", "edited-turn", "vendor-turn", "generation")
+        )
         response = self.client.post(
             "/api/resource/web-import",
             json={
@@ -368,6 +373,11 @@ class WebImportContract(unittest.TestCase):
         absolute = Path(self.project.root) / path
         absolute.write_text("Agent changed the imported file\n", encoding="utf-8")
 
+        asyncio.run(
+            self.deliveries.record_change(
+                "session", "vendor-turn", str(absolute), "update", generation="generation"
+            )
+        )
         captured = asyncio.run(
             self.deliveries.finish_turn("session", "edited-turn", TurnOutcome.COMPLETED)
         )
@@ -376,6 +386,32 @@ class WebImportContract(unittest.TestCase):
         pending = self.versions.pending(self.project.id, captured.file_ids[0])
         self.assertIsNotNone(pending)
         self.assertEqual(pending.review.candidate.path, path)
+
+    def test_unattributed_edit_after_web_import_is_not_agent_review(self) -> None:
+        asyncio.run(self.deliveries.begin_turn("session", "edited-turn", self.project.root))
+        response = self.client.post(
+            "/api/resource/web-import",
+            json={
+                "project": self.project.id,
+                "query": SEARCH_QUERY,
+                "candidates": [{"title": "First", "url": SUCCESS_URL}],
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        path = response.json()["items"][0]["node"]["path"]
+        absolute = Path(self.project.root) / path
+        absolute.write_text("External change to the imported file\n", encoding="utf-8")
+
+        captured = asyncio.run(
+            self.deliveries.finish_turn("session", "edited-turn", TurnOutcome.COMPLETED)
+        )
+
+        self.assertEqual(captured.file_ids, ())
+        capability = self.versions.capability(self.project.id, path)
+        self.assertTrue(capability.pending is None or capability.pending.review is None)
+        self.assertEqual(
+            absolute.read_text(encoding="utf-8"), "External change to the imported file\n"
+        )
 
     def test_ordinary_markdown_has_no_web_origin(self) -> None:
         root = self.content.root(self.project.id, RootKind.RESOURCES)

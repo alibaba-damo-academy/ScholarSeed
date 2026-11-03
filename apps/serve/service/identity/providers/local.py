@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 
 from service.identity.providers.protocol import IdentityContext
 from service.identity.schema import CredentialsRequest
 from service.identity.utils import bearer_or_cookie
+from service.platform.activity import Activities, ActivityDomain
+from service.platform.http_activity import execution_admission
 
 
 class LocalAuthProvider:
@@ -33,22 +35,39 @@ class LocalAuthProvider:
             return None
         return {**user, "token": ctx.tokens.issue(str(user["user_id"]))}
 
-    def register_routes(self, app: FastAPI, ctx: IdentityContext) -> None:
-        @app.post("/api/auth/register")
-        def register(body: CredentialsRequest, request: Request) -> Dict[str, Any]:
+    def register_routes(
+        self, app: FastAPI, ctx: IdentityContext, *, activities: Activities
+    ) -> None:
+        router = APIRouter(
+            dependencies=[Depends(execution_admission(activities, ActivityDomain.CREDENTIAL))]
+        )
+
+        @router.post("/api/auth/register")
+        async def register(body: CredentialsRequest, request: Request) -> Dict[str, Any]:
             try:
-                return self.register(ctx, body.email, body.password, bearer_or_cookie(request))
+                return await activities.to_thread(
+                    ActivityDomain.CREDENTIAL,
+                    self.register,
+                    ctx,
+                    body.email,
+                    body.password,
+                    bearer_or_cookie(request),
+                )
             except PermissionError as exc:
                 raise HTTPException(401, str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
 
-        @app.post("/api/auth/login")
-        def login(body: CredentialsRequest) -> Dict[str, Any]:
-            payload = self.login(ctx, body.email, body.password)
+        @router.post("/api/auth/login")
+        async def login(body: CredentialsRequest) -> Dict[str, Any]:
+            payload = await activities.to_thread(
+                ActivityDomain.CREDENTIAL, self.login, ctx, body.email, body.password
+            )
             if payload is None:
                 raise HTTPException(401, "bad email or password")
             return payload
+
+        app.include_router(router)
 
 
 __all__ = ["LocalAuthProvider"]

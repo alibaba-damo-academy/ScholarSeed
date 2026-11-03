@@ -2,13 +2,19 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { LiteratureSummary } from '../../contracts/literature'
-import { openedLiteratureIconKind, openedLiteratureLabel } from './recent.ts'
+import {
+  openRecentLiterature,
+  openedLiteratureAttachment,
+  openedLiteratureIconKind,
+  openedLiteratureLabel
+} from './recent.ts'
 
 // 与 localization/format.ts 的 createFormatters 同形, 但保留显式 locale 以便逐语言断言。
 const formatters = (locale: string) => ({
   date: (value: Date | number, options?: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(locale, options).format(value),
   relative: (value: number, unit: Intl.RelativeTimeFormatUnit, options?: Intl.RelativeTimeFormatOptions) => new Intl.RelativeTimeFormat(locale, options).format(value, unit),
-  number: (value: number) => String(value)
+  number: (value: number) => String(value),
+  bytes: (value: number) => String(value)
 })
 
 const NOW = new Date(2026, 8, 16, 9, 0, 0)
@@ -64,6 +70,7 @@ const attachment = (
   availability,
   role: 'primary',
   media_type,
+  size: null,
   annotation_count: 0,
   record_target: { owner: 'literature_attachment', scope_id: 'lit', subject_id: 'att' }
 })
@@ -88,4 +95,54 @@ test('row icon kinds follow the primary attachment kind', () => {
     openedLiteratureIconKind(summary(attachment('pdf', 'paper.pdf', 'application/pdf', 'missing'))),
     'unknown'
   )
+})
+
+test('home recent rows keep only openable attachments', () => {
+  // 首页「最近打开」只列能点开的附件: 纯文献条目与文件已丢失的附件都不入选。
+  assert.equal(
+    openedLiteratureAttachment(summary(attachment('pdf', 'paper.pdf', 'application/pdf')))?.name,
+    'paper.pdf'
+  )
+  assert.equal(openedLiteratureAttachment(summary(null)), null)
+  assert.equal(
+    openedLiteratureAttachment(summary(attachment('pdf', 'paper.pdf', 'application/pdf', 'missing'))),
+    null
+  )
+})
+
+test('recent literature opens its attachment only after the item opens', async () => {
+  const calls: string[] = []
+  const actions = {
+    openLiteratureItem: async (id: string, projectId: string) => {
+      calls.push(`item:${id}:${projectId}`)
+      return true
+    },
+    openLiteratureAttachment: async (id: string, _attachmentId?: string, _page?: number, options?: { projectId?: string | null }) => {
+      calls.push(`attachment:${id}:${options?.projectId}`)
+      return true
+    }
+  }
+  assert.equal(await openRecentLiterature(actions, 'older-than-first-page'), 'opened')
+  assert.deepEqual(calls, ['item:older-than-first-page:', 'attachment:older-than-first-page:'])
+})
+
+test('recent literature does not open an attachment when its item is unavailable', async () => {
+  let attachmentRequested = false
+  const result = await openRecentLiterature({
+    openLiteratureItem: async () => false,
+    openLiteratureAttachment: async () => {
+      attachmentRequested = true
+      return true
+    }
+  }, 'deleted-item')
+  assert.equal(result, 'item_unavailable')
+  assert.equal(attachmentRequested, false)
+})
+
+test('recent literature reports an unavailable attachment', async () => {
+  const result = await openRecentLiterature({
+    openLiteratureItem: async () => true,
+    openLiteratureAttachment: async () => false
+  }, 'missing-attachment')
+  assert.equal(result, 'attachment_unavailable')
 })

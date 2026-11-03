@@ -32,6 +32,35 @@ The conclusion remains after the table.
 \end{document}'''
 
 class PaperSourceTest(unittest.TestCase):
+    def test_unresolved_table_environment_keeps_available_prose(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'paper.tex'
+            source.write_text(r'\documentclass{article}\begin{document}The method is supported. '
+                              r'\begin{table}The comparison remains available.\end{document}')
+            result = parse_source(source)
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn('The method is supported', result['sentences'])
+        self.assertEqual(result['fatal_warnings'], [])
+
+    def test_latex_float_without_caption_keeps_fulltext(self):
+        source_text = r'''\documentclass{article}
+\begin{document}
+The paragraph before the illustration remains evidence.
+\begin{figure}[t]
+\includegraphics{private-pixels.pdf}
+\end{figure}
+The paragraph after the illustration remains evidence.
+\end{document}'''
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'uncaptioned.tex'
+            source.write_text(source_text)
+            result = parse_source(source)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['fatal_warnings'], [])
+        self.assertIn('float without caption: figure', result['warnings'])
+        self.assertGreater(result['n_sentences'], 0)
+        self.assertIn('paragraph after the illustration', result['sentences'])
+
     def test_tex_and_archives_keep_captions_and_math_but_not_table_data(self):
         files={'main.tex':MAIN.encode(),'parts/method.tex':b'The method includes a calibration stage.'}
         for kind in ['tar','gzip','zip']:
@@ -97,14 +126,17 @@ class PaperSourceTest(unittest.TestCase):
             text=parse_source(source)['sentences']
             self.assertLess(text.index('Left second'),text.index('Right first'))
 
-    def test_pdf_unknown_table_layout_is_reported_not_claimed_clean(self):
+    def test_pdf_unknown_table_layout_keeps_text_for_card_extraction(self):
         with tempfile.TemporaryDirectory() as tmp:
             doc=pdf_fixture.open();page=doc.new_page()
             page.insert_text((50,100),'Table 1. A borderless layout that is not identified.')
             page.insert_text((50,150),'MethodA 77.9 1000 0.1')
+            page.insert_text((50,200),'The method uses a calibrated estimator.')
             source=Path(tmp)/'uncertain.pdf';doc.save(source);doc.close()
             result=parse_source(source)
-            self.assertEqual(result['status'],'partial')
+            self.assertEqual(result['status'],'ok')
+            self.assertEqual(result['fatal_warnings'], [])
+            self.assertIn('calibrated estimator', result['sentences'])
             self.assertTrue(any('unverified' in w for w in result['warnings']))
 
     def test_sentence_final_integer_stays_with_the_preceding_noun(self):

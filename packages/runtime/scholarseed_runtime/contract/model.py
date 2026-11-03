@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Protocol
 
+MODEL_CATALOG_UNAVAILABLE = "runtime_model_catalog_unavailable"
+
 
 class ModelConnectionMode(str, Enum):
     NATIVE = "native"
@@ -27,6 +29,18 @@ class ModelCapabilities:
     tool_protocol: ModelToolProtocol = ModelToolProtocol.PROVIDER_NATIVE
     input_modalities: tuple[str, ...] | None = None
     reasoning_efforts: tuple[str, ...] = ()
+    native_web_search: bool | None = None
+    native_agent_messages: bool | None = None
+
+
+@dataclass(frozen=True)
+class ModelCatalogEntry:
+    """One declared model in an execution-compatible product catalog."""
+
+    model_ref: str
+    capabilities: ModelCapabilities = ModelCapabilities()
+    context_window: int | None = None
+    approval_model_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,7 +59,7 @@ class ModelCredentialPort(Protocol):
 
 @dataclass(frozen=True)
 class ModelTransport:
-    mode: ModelConnectionMode = ModelConnectionMode.NATIVE
+    mode: ModelConnectionMode = ModelConnectionMode.REMOTE
     endpoint: str = ""
     wire_protocol: ModelWireProtocol = ModelWireProtocol.RESPONSES
     credential_ref: str = ""
@@ -55,6 +69,11 @@ class ModelTransport:
     # 故保留一次瞬时重连。具体配置键名与语义由 vendor adapter 落地，契约只携带预算值。
     stream_max_retries: int | None = None
     request_max_retries: int | None = None
+    # 必须绕过宿主系统代理的目标 host（产品按 endpoint 归属决定，空表示不干预）。
+    # 与重试预算同理：只有产品知道某个 endpoint 是它自己的本机内部通道。厂商客户端
+    # 默认继承系统代理且不豁免 loopback，不显式声明就会把内部请求交给代理、永远到不了
+    # 产品进程。契约只携带 host，具体键名与合并语义由 vendor adapter 落地。
+    proxy_bypass_hosts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,10 +101,14 @@ class ModelIntent:
     thinking: ModelThinking | None = None
     service_tier: str = ""
     capabilities: ModelCapabilities = ModelCapabilities()
+    catalog_models: tuple[ModelCatalogEntry, ...] = ()
+    approval_model_ref: str = ""
 
 
 __all__ = [
+    "MODEL_CATALOG_UNAVAILABLE",
     "ModelCapabilities",
+    "ModelCatalogEntry",
     "ModelToolProtocol",
     "ModelConnectionMode",
     "ModelCredential",

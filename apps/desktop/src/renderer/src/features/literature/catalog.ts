@@ -1,6 +1,20 @@
 import { useSyncExternalStore } from 'react'
 
-import type { LiteratureFacet, LiteratureProject, LiteratureQuery, LiteratureSummary } from '../../contracts/literature'
+import type {
+  LiteratureCounts,
+  LiteratureFacet,
+  LiteratureFacets,
+  LiteratureProject,
+  LiteratureQuery,
+  LiteratureSummary,
+  LiteratureTagFacet,
+} from '../../contracts/literature'
+
+interface LiteraturePanelSnapshot {
+  counts: LiteratureCounts
+  facets: LiteratureFacets
+  projects: LiteratureProject[]
+}
 
 interface CatalogueState {
   projectId: string | null
@@ -9,16 +23,29 @@ interface CatalogueState {
   focusedId: string | null
   focusedAttachmentId: string | null
   items: LiteratureSummary[]
+  itemsReady: boolean
+  itemsLoadedAt: number
+  panel: LiteraturePanelSnapshot | null
+  panelLoadedAt: number
+  scopedTags: LiteratureTagFacet[]
+  tagsLoadedAt: number
   reload: number
   panelReload: number
   importRequest: ImportRequest | null
 }
 
 /** 导入入口的请求令牌: 左侧面板发出, 列表挂载后消费。 */
-export interface ImportRequest { source: string; token: number }
+export interface ImportRequest {
+  source: string
+  token: number
+  destination: ImportDestination | null
+}
 
 /** 导入落点: 项目与分类必须成对, 因为分类本身是分作用域的。 */
-export interface ImportDestination { projectId: string; collectionId: string }
+export interface ImportDestination {
+  projectId: string
+  collectionId: string
+}
 
 const DEFAULT_QUERY: LiteratureQuery = { attachment: 'any', order: 'desc', sort: 'created_at' }
 
@@ -29,18 +56,49 @@ let state: CatalogueState = {
   focusedId: null,
   focusedAttachmentId: null,
   items: [],
+  itemsReady: false,
+  itemsLoadedAt: 0,
+  panel: null,
+  panelLoadedAt: 0,
+  scopedTags: [],
+  tagsLoadedAt: 0,
   reload: 0,
   panelReload: 0,
   importRequest: null,
 }
 const scopes = new Map<string | null, CatalogueState>()
 const listeners = new Set<() => void>()
+const CACHE_FRESHNESS_MS = 30_000
 const emit = (): void => listeners.forEach((listener) => listener())
-const update = (patch: Partial<CatalogueState>): void => { state = { ...state, ...patch }; emit() }
+const update = (patch: Partial<CatalogueState>): void => {
+  state = { ...state, ...patch }
+  emit()
+}
+const replaceQuery = (query: LiteratureQuery): void =>
+  update({
+    query: { ...DEFAULT_QUERY, project_id: state.projectId ?? undefined, ...query },
+    selected: [],
+    focusedId: null,
+    focusedAttachmentId: null,
+    items: [],
+    itemsReady: false,
+    itemsLoadedAt: 0,
+    reload: state.reload + 1,
+  })
 
 // 列表行/附件的「打开」只经过本模块的 focus 族方法；首页「最近打开」的 MRU
 // 由 store 注册 recorder 接收，避免 catalog 反向依赖 app store。
 let openRecorder: ((id: string) => void) | null = null
+let overviewCounts: LiteratureCounts | null = null
+let overviewCountsLoadedAt = 0
+
+/**
+ * 首页「全部文献」计数是跨作用域的一份独立缓存, 任何一次文献数据变更都要让它过期。
+ * 只清时间戳不清值: 首页照旧拿旧数字秒开, 再在后台刷新成真实值。
+ */
+const expireOverviewCounts = (): void => {
+  overviewCountsLoadedAt = 0
+}
 
 export function registerLiteratureOpenRecorder(recorder: ((id: string) => void) | null): void {
   openRecorder = recorder
@@ -52,34 +110,93 @@ const recordOpen = (id: string | null): void => {
 
 export function useCatalogue(): CatalogueState {
   return useSyncExternalStore(
-    (listener) => { listeners.add(listener); return () => listeners.delete(listener) },
-    () => state,
+    (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    () => state
   )
 }
 
 export const catalogue = {
   getSnapshot: (): CatalogueState => state,
+  selectedForTurn(projectId: string | null, visible: boolean): string[] {
+    return visible && state.projectId === projectId ? [...state.selected] : []
+  },
   scope(projectId: string | null): void {
     if (state.projectId === projectId) return
     scopes.set(state.projectId, state)
     const saved = scopes.get(projectId)
-    // 待消费的导入请求属于「此刻这个界面」, 不跟着作用域存档走。
-    update(saved ? { ...saved, importRequest: null, reload: state.reload + 1 } : {
-      projectId,
-      query: { ...DEFAULT_QUERY, project_id: projectId ?? undefined },
-      selected: [], focusedId: null, focusedAttachmentId: null, items: [], importRequest: null, reload: state.reload + 1, panelReload: state.panelReload + 1,
-    })
+    /*
+     * 存档只负责「秒开」, 不负责「免检」。
+     *
+     * 恢复时保留行与面板数据 (界面不闪空态), 但三份新鲜度时间戳一律清零: 文献可能
+     * 在别的作用域里被改过 —— 在全览里删除文献、把检索结果加入某个项目的文献库、
+     * 导入落地 —— 而 mutation 只失效它当时所在的那个作用域。留着旧时间戳等于把上一次
+     * 访问时的快照冻结成事实, 且消费者 effect 的 deps 不再变化, 过了新鲜期也不会自己
+     * 重新校验。
+     *
+     * 待消费的导入请求属于「此刻这个界面」, 不跟着作用域存档走。
+     */
+    update(
+      saved
+        ? {
+            ...saved,
+            importRequest: null,
+            itemsLoadedAt: 0,
+            panelLoadedAt: 0,
+            tagsLoadedAt: 0,
+            reload: state.reload + 1,
+          }
+        : {
+            projectId,
+            query: { ...DEFAULT_QUERY, project_id: projectId ?? undefined },
+            selected: [],
+            focusedId: null,
+            focusedAttachmentId: null,
+            items: [],
+            itemsReady: false,
+            itemsLoadedAt: 0,
+            panel: null,
+            panelLoadedAt: 0,
+            scopedTags: [],
+            tagsLoadedAt: 0,
+            importRequest: null,
+            reload: state.reload + 1,
+            panelReload: state.panelReload + 1,
+          }
+    )
   },
   query(patch: Partial<LiteratureQuery>): void {
     update({
       query: {
         ...state.query,
         ...patch,
-        ...(state.projectId ? { project_id: state.projectId } : {})
+        ...(state.projectId ? { project_id: state.projectId } : {}),
       },
       selected: [],
       focusedId: null,
-      focusedAttachmentId: null
+      focusedAttachmentId: null,
+      itemsLoadedAt: 0,
+      panelLoadedAt: 0,
+      tagsLoadedAt: 0,
+    })
+  },
+  navigate(patch: Partial<LiteratureQuery> = {}): void {
+    if (state.query.download_session_id) replaceQuery(patch)
+    else catalogue.query(patch)
+  },
+  downloads(
+    sessionId: string,
+    run: string,
+    projectId: string | null,
+    excludedPapers: string[]
+  ): void {
+    catalogue.scope(projectId)
+    replaceQuery({
+      download_session_id: sessionId,
+      download_run: run,
+      exclude_paper_id: [...excludedPapers],
     })
   },
   /**
@@ -98,8 +215,10 @@ export const catalogue = {
       query: {
         ...state.query,
         ...patch,
-        ...(state.projectId ? { project_id: state.projectId } : {})
-      }
+        ...(state.projectId ? { project_id: state.projectId } : {}),
+      },
+      itemsLoadedAt: 0,
+      tagsLoadedAt: 0,
     })
   },
   /**
@@ -108,49 +227,103 @@ export const catalogue = {
    * 拆成 query() + reload() 会让列表连拉两次, 只 query() 则计数停在旧值。
    */
   imported(patch: Partial<LiteratureQuery>): void {
+    expireOverviewCounts()
     update({
       query: {
         ...state.query,
         ...patch,
-        ...(state.projectId ? { project_id: state.projectId } : {})
+        ...(state.projectId ? { project_id: state.projectId } : {}),
       },
       selected: [],
       focusedId: null,
       focusedAttachmentId: null,
-      reload: state.reload + 1
+      itemsLoadedAt: 0,
+      panelLoadedAt: 0,
+      tagsLoadedAt: 0,
+      reload: state.reload + 1,
     })
   },
   /**
    * 请求一次导入。面板常驻而列表会随文档标签卸载, 所以不能靠 DOM 事件把意图递
    * 过去: 交给 store, 列表挂载后自己消费, 由面板负责把标签切回列表。
    */
-  requestImport(source: string): void {
-    update({ importRequest: { source, token: (state.importRequest?.token ?? 0) + 1 } })
+  requestImport(source: string, destination: ImportDestination | null = null): void {
+    update({ importRequest: { source, destination, token: (state.importRequest?.token ?? 0) + 1 } })
   },
   consumeImportRequest(): void {
     if (state.importRequest === null) return
     update({ importRequest: null })
   },
-  focus(focusedId: string | null): void { update({ focusedId, focusedAttachmentId: null }); recordOpen(focusedId) },
-  focusAttachment(focusedId: string, focusedAttachmentId: string): void { update({ focusedId, focusedAttachmentId }); recordOpen(focusedId) },
-  items(items: LiteratureSummary[]): void { update({ items }) },
+  focus(focusedId: string | null): void {
+    update({ focusedId, focusedAttachmentId: null })
+    recordOpen(focusedId)
+  },
+  focusAttachment(focusedId: string, focusedAttachmentId: string): void {
+    update({ focusedId, focusedAttachmentId })
+    recordOpen(focusedId)
+  },
+  items(items: LiteratureSummary[]): void {
+    update({ items, itemsReady: true, itemsLoadedAt: Date.now() })
+  },
+  itemsFresh(): boolean {
+    return state.itemsReady && Date.now() - state.itemsLoadedAt < CACHE_FRESHNESS_MS
+  },
+  panel(panel: LiteraturePanelSnapshot): void {
+    update({ panel, panelLoadedAt: Date.now() })
+  },
+  panelFresh(): boolean {
+    return state.panel !== null && Date.now() - state.panelLoadedAt < CACHE_FRESHNESS_MS
+  },
+  tags(tags: LiteratureTagFacet[]): void {
+    update({ scopedTags: tags, tagsLoadedAt: Date.now() })
+  },
+  tagsFresh(): boolean {
+    return Date.now() - state.tagsLoadedAt < CACHE_FRESHNESS_MS
+  },
+  overviewCounts(): LiteratureCounts | null {
+    return overviewCounts
+  },
+  overviewCountsFresh(): boolean {
+    return overviewCounts !== null && Date.now() - overviewCountsLoadedAt < CACHE_FRESHNESS_MS
+  },
+  cacheOverviewCounts(counts: LiteratureCounts): void {
+    overviewCounts = counts
+    overviewCountsLoadedAt = Date.now()
+  },
   select(id: string, checked: boolean): void {
     const values = new Set(state.selected)
-    if (checked) values.add(id); else values.delete(id)
+    if (checked) values.add(id)
+    else values.delete(id)
     update({ selected: [...values], focusedId: null, focusedAttachmentId: null })
   },
   selectAll(ids: string[], checked: boolean): void {
     update({
       selected: checked ? ids : [],
       focusedId: null,
-      focusedAttachmentId: null
+      focusedAttachmentId: null,
     })
   },
   clear(): void {
     update({ selected: [], focusedId: null, focusedAttachmentId: null })
   },
-  reload(): void { update({ reload: state.reload + 1 }) },
-  reloadPanel(): void { update({ panelReload: state.panelReload + 1 }) },
+  reload(): void {
+    // 首页计数与文献库面板取的是同一份数据, 只是缓存分开: 一起过期才不会各说各话。
+    expireOverviewCounts()
+    update({
+      reload: state.reload + 1,
+      itemsLoadedAt: 0,
+      panelLoadedAt: 0,
+      tagsLoadedAt: 0,
+    })
+  },
+  reloadPanel(): void {
+    expireOverviewCounts()
+    update({
+      panelReload: state.panelReload + 1,
+      panelLoadedAt: 0,
+      tagsLoadedAt: 0,
+    })
+  },
 }
 
 /**
@@ -170,7 +343,7 @@ export function importDestination(query: LiteratureQuery): ImportDestination {
  * 把落点解析成可读名字: 分类名 → 项目名 → 调用方给的作用域名。
  *
  * 「导入到哪」必须在按下导入之前就看得见, 否则落点成了导入完才揭晓的结果。分类是
- * 分作用域的, 因此既要在当前作用域的 facet 里找, 也要在项目树里找 (文献全览下选中
+ * 分作用域的, 因此既要在当前作用域的 facet 里找, 也要在项目树里找 (文献中心下选中
  * 的是某个项目的分类)。
  */
 export function importDestinationLabel(

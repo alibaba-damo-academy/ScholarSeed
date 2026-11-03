@@ -1,11 +1,30 @@
 """JSON normalization shared by Codex runtime boundary projections."""
 
+import os
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
 from scholarseed_runtime.contract import RuntimeValue
+
+WINDOWS_PLATFORM = "nt"
+WINDOWS_PATH_PREFIX = "\\\\?\\"
+WINDOWS_UNC_PREFIX = "\\\\"
+WINDOWS_EXTENDED_UNC = "UNC\\"
+
+
+def path_identity(path: Path) -> str:
+    """Compare native and host path spellings without changing protocol payloads."""
+    expanded = path.expanduser()
+    if os.name == WINDOWS_PLATFORM:
+        absolute = os.path.abspath(expanded)
+        if not absolute.startswith(WINDOWS_PATH_PREFIX):
+            if absolute.startswith(WINDOWS_UNC_PREFIX):
+                absolute = WINDOWS_EXTENDED_UNC + absolute[2:]
+            absolute = WINDOWS_PATH_PREFIX + absolute
+        expanded = Path(absolute)
+    return os.path.normcase(str(expanded.resolve()))
 
 
 def json_value(value: Any) -> RuntimeValue:

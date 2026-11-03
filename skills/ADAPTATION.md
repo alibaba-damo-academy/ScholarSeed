@@ -13,7 +13,7 @@
 
 ```text
 请按仓库 skills/ADAPTATION.md，把我提供的原始 <skill-name> 适配到书深。
-目标分支是 shushen_release/mvp_v0.2_open_source。
+目标分支按仓库根 `AGENTS.md` 的当前规定执行。
 
 先只读比较原始版本、目标分支现状及配套脚本，告诉我：
 1. 准备修改哪些文件和行为；
@@ -72,8 +72,7 @@ frontmatter 扩展，例如 `version`、`description_zh` 和已有 `metadata`；
 
 ## 3. 隔离修改并维护清单
 
-遵守根目录 `AGENTS.md`：从最新
-`origin/shushen_release/mvp_v0.2_open_source` 冻结提交，在 `feature/` 分支和独立
+遵守根目录 `AGENTS.md`：从其当前规定的最新远程目标分支冻结提交，在 `feature/` 分支和独立
 worktree 中修改。主 checkout 中用户已有的改动不得被切换、暂存或清理。
 
 修改 Skill 后按依赖顺序更新：

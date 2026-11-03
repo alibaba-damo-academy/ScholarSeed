@@ -38,7 +38,7 @@ export function PdfPanel({
   onToggleExpanded,
   testId,
   title,
-  toolbar
+  toolbar,
 }: PdfPanelProps): React.JSX.Element {
   const { t } = useTranslation('pdf')
   return (
@@ -47,13 +47,15 @@ export function PdfPanel({
       className={`vds-pdf-panel absolute inset-y-0 right-[var(--vds-layout-pdf-rail-width)] z-[var(--vds-z-surface-panel)] flex h-full min-w-0 flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-left)]${expanded ? ' left-0 max-w-none' : ' w-[var(--vds-layout-pdf-panel-width)] max-w-[calc(100%-var(--vds-layout-pdf-rail-width))]'}`}
       data-testid={testId}
     >
-      <header className="flex min-h-12 items-center justify-between gap-2 border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span aria-hidden="true" className="shrink-0">{icon}</span>
+      <header className="flex min-h-[var(--vds-workbench-header-height)] items-center justify-between gap-[var(--vds-space-2)] border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]">
+        <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
+          <span aria-hidden="true" className="shrink-0">
+            {icon}
+          </span>
           <strong className="truncate">{title}</strong>
           {headerAction}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-[var(--vds-space-1)]">
           <IconButton
             data-testid={`${testId}-toggle-size`}
             label={expanded ? t('reading.shrinkPanel') : t('reading.expandPanel')}
@@ -72,7 +74,9 @@ export function PdfPanel({
         </div>
       </header>
       {toolbar}
-      <div className={bodyClassName} data-testid={bodyTestId} ref={bodyRef}>{children}</div>
+      <div className={bodyClassName} data-testid={bodyTestId} ref={bodyRef}>
+        {children}
+      </div>
       {footer}
     </aside>
   )

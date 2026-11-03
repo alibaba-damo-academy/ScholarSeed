@@ -12,6 +12,9 @@ import test_native_pipeline as fixtures
 from evidence import build,read
 from task_contract import configure,atomic_json
 from operator_cli import configure_outline,figure_plan
+from chapter_pipeline import chapter_messages
+from manuscript_delta import REFINE_GUIDANCE
+from chapter_plan import ROLES
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -29,6 +32,19 @@ def description(operation,workspace=None):
 
 
 class RequestExampleTest(unittest.TestCase):
+    def test_literature_count_guidance_reaches_all_chapters_and_refinement(self):
+        prompts = [('refinement', REFINE_GUIDANCE)]
+        for role in sorted(ROLES):
+            for output_format in ('latex_pdf', 'markdown'):
+                for shared_tables in ([], [{'table_id': 'T1'}]):
+                    packet = {'chapter_kind': role, 'output_format': output_format,
+                              'shared_tables': shared_tables}
+                    prompts.append(((role, output_format, bool(shared_tables)),
+                                    chapter_messages(packet)[0]['content']))
+        for stage, prompt in prompts:
+            with self.subTest(stage=stage):
+                self.assertIn('Do not mention how many papers this review or any of its sections uses.', prompt)
+
     def fixture(self):
         f=fixtures.NativeTest();f.setUp();self.addCleanup(f.doCleanups)
         return f
@@ -62,23 +78,41 @@ class RequestExampleTest(unittest.TestCase):
         self.assertEqual(report['field'],'publication.template')
         self.assertFalse((f.ws/'04_outline/approval.json').exists())
 
-    def test_verbatim_sources_and_contiguous_rule_match_documentation(self):
-        from task_contract import validate_request
+    def test_verbatim_sources_and_similarity_rule_match_documentation(self):
+        from task_contract import validate_request,verbatim_matches
         from input_contracts import input_error
         data={'intent':'至少一张图，并包含一张比较表。',
               'user_instructions':'用中文写作。','user_requests':['正文限定三千字。'],
               'effective_requirements':'派生的新表述。'}
-        for quote in ('至少一张图','用中文写作','正文限定三千字'):
+        for quote in ('至少一张图','用中文写作','正文限定三千字','至少一张图并包含比较表'):
             value={**data,'constraints':[{'id':'c','kind':'other','value':'Actual requirement','verbatim':quote}]}
             self.assertEqual(validate_request(value)['constraints'][0]['verbatim'],quote)
-        for quote in ('至少一张图；一张比较表','至少 一张图','派生的新表述'):
+        for quote in ('增加实验和消融分析','派生的新表述'):
             with self.assertRaises(ValueError) as error:
                 validate_request({**data,'constraints':[{'id':'c','kind':'other','value':'Requirement','verbatim':quote}]})
             report=input_error('writing.configure',error.exception)
             self.assertEqual(report['field'],'constraints[0].verbatim')
             self.assertIn('user_requests[]',report['quote_sources'])
+            self.assertEqual(report['match_threshold'],0.6)
+        self.assertTrue(verbatim_matches('甲乙丙丁戊',['甲乙丙丁己']))
+        self.assertFalse(verbatim_matches('甲乙丙丁戊',['甲乙丙己庚']))
         shape_error=input_error('writing.configure',ValueError('constraints/0: expected id, kind, value, verbatim'))
         self.assertEqual(shape_error['field'],'constraints')
+
+    def test_configure_description_leads_with_valid_publication_and_verbatim_shapes(self):
+        interface=description('writing.configure')
+        self.assertEqual(interface['publication_example']['template'],'ctexart')
+        self.assertEqual(interface['fields']['publication']['template']['type'],'string')
+        self.assertIn('more than 60%',interface['fields']['constraints']['verbatim'])
+
+    def test_abstract_prompts_require_one_compact_paragraph_and_nonexpanding_refine(self):
+        from writing_prompt_guidance import MANUSCRIPT_WRITING_GUIDANCE
+        from manuscript_delta import REFINE_GUIDANCE
+        self.assertIn('one compact prose paragraph',MANUSCRIPT_WRITING_GUIDANCE)
+        self.assertIn('rather than a chapter-by-chapter roadmap',MANUSCRIPT_WRITING_GUIDANCE)
+        self.assertIn('Keep the abstract as one compact paragraph',REFINE_GUIDANCE)
+        self.assertIn('improve it without increasing',REFINE_GUIDANCE)
+        self.assertIn('its length',REFINE_GUIDANCE)
 
     def test_complete_outline_example_is_accepted(self):
         value=description('outline.configure')['examples'][0]

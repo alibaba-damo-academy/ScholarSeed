@@ -1,5 +1,7 @@
 {
   "preferences": {
+    "quitFailed": "Unable to quit safely",
+    "quitRecovery": "Settings saving or shutdown preparation did not complete. Quitting was cancelled. Retry any unsaved settings, then quit again.",
     "failed": "Settings could not finish syncing. Please retry.",
     "retry": "Retry"
   },
@@ -14,9 +16,13 @@
     "backendFailed": "ScholarSeed backend failed to start",
     "interfaceFailed": "ScholarSeed interface failed to load",
     "backendUnavailable": "ScholarSeed backend unavailable",
-    "applicationFailed": "ScholarSeed failed to start"
+    "applicationFailed": "ScholarSeed failed to start",
+    "storageUnavailable": "The data location configuration could not be read, so startup was stopped. Check the contents and access permissions of the file below, or restore a known-good backup, then retry."
   },
   "backendFailure": {
+    "browserPolicyMissing": "The connected service does not declare the required browser product policy. Restart with a matching product configuration.",
+    "browserPolicyInvalid": "The connected service declares an invalid browser product policy. features.browser must be a boolean.",
+    "browserPolicyMismatch": "The connected service and Desktop disagree on the browser product policy. Restart both with a matching product configuration.",
     "pythonMissing": "The Python executable required to start the local service was not found: {{path}}",
     "pythonInvalid": "The local service Python environment failed validation.",
     "startupFailed": "The local service failed to start.",

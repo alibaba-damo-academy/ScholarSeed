@@ -38,6 +38,7 @@ test('line counting stops after crossing the large editor threshold', () => {
 })
 
 test('code and oversized Markdown use the lightweight text state path', () => {
+  assert.equal(MARKDOWN_VISUAL_MAX_BYTES, 10 * 1024 * 1024)
   assert.equal(usesLightweightTextState('code', 4096), true)
   assert.equal(usesLightweightTextState('markdown', MARKDOWN_VISUAL_MAX_BYTES), false)
   assert.equal(usesLightweightTextState('markdown', MARKDOWN_VISUAL_MAX_BYTES + 1), true)

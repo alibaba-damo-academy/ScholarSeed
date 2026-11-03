@@ -20,6 +20,7 @@ from service.assistant.service.actions import CompiledAssistantAction
 from service.literature.api.analysis import register_analysis_routes
 from service.literature.service.analysis import ActionKind, AnalysisRequest, PreparedAnalysis
 from service.literature.service.figure import FigureActionService
+from service.platform.activity import Activities
 from service.platform.inference import (
     ModelInvocationEvent,
     ModelInvocationEventKind,
@@ -146,6 +147,7 @@ class FigureStreamContracts(unittest.IsolatedAsyncioTestCase):
         ):
             register_analysis_routes(
                 app,
+                activities=Activities(),
                 actions=actions,
                 tasks=tasks,
                 models=models,
@@ -182,6 +184,7 @@ class FigureStreamContracts(unittest.IsolatedAsyncioTestCase):
         with patch("service.literature.api.analysis.request_user_id", return_value="owner"):
             register_analysis_routes(
                 app,
+                activities=Activities(),
                 actions=Mock(),
                 tasks=tasks,
                 models=Mock(),

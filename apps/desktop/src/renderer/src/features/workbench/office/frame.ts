@@ -1,8 +1,11 @@
 import type { TFunction } from 'i18next'
 import { officeFailureLabels } from './failure'
+import { isOfficeFrameToken } from './transport'
 import zetaSource from 'zetajs/zeta.js?raw'
 
 import localFontsSource from './local-fonts.js?raw'
+import fontCacheSource from './fontcache.js?raw'
+import { OFFICE_FONT_CACHE_ENTRIES } from '../../../../../fonts'
 import localeSource from './locale.js?raw'
 import paletteSource from './palette.js?raw'
 import clipboardSource from './clipboard.js?raw'
@@ -24,11 +27,13 @@ export const ZETAOFFICE_ASSETS_BASE_URL = new URL(
   `/office/${ZETAOFFICE_BUILD_DIRECTORY}/`,
   window.location.origin
 ).href
-export const ZETAOFFICE_DEFAULT_FONTS = [{
-  family: 'Noto Sans CJK SC',
-  filename: 'NotoSansCJKsc-Regular.otf',
-  url: new URL(`/${ZETAOFFICE_DEFAULT_FONT_PATH}`, window.location.origin).href
-}] as const
+export const ZETAOFFICE_DEFAULT_FONTS = [
+  {
+    family: 'Noto Sans CJK SC',
+    filename: 'NotoSansCJKsc-Regular.otf',
+    url: new URL(`/${ZETAOFFICE_DEFAULT_FONT_PATH}`, window.location.origin).href,
+  },
+] as const
 
 export interface OfficeFrameDocument {
   html: string
@@ -40,8 +45,12 @@ function sourceUrl(source: string): string {
   return URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
 }
 
-export function officeFrameDocument(t: TFunction<'workbench'>, locale: string): OfficeFrameDocument {
-  const token = crypto.randomUUID()
+export function officeFrameDocument(
+  t: TFunction<'workbench'>,
+  locale: string,
+  token: string = crypto.randomUUID()
+): OfficeFrameDocument {
+  if (!isOfficeFrameToken(token)) throw new Error('Invalid Office frame token')
   const zetaUrl = sourceUrl(zetaSource)
   const docUrl = sourceUrl(docSource)
   const docxUrl = sourceUrl(docxSource)
@@ -54,6 +63,7 @@ export function officeFrameDocument(t: TFunction<'workbench'>, locale: string): 
   const embeddedUrl = sourceUrl(embeddedSource)
   const caretUrl = sourceUrl(caretSource)
   const localFontsUrl = sourceUrl(localFontsSource)
+  const fontCacheUrl = sourceUrl(fontCacheSource)
   const localeUrl = sourceUrl(localeSource)
   const paletteUrl = sourceUrl(paletteSource)
   const clipboardUrl = sourceUrl(clipboardSource)
@@ -82,10 +92,11 @@ export function officeFrameDocument(t: TFunction<'workbench'>, locale: string): 
       imageFailed: t('officeFrame.imageFailed'),
       operationFailed: t('officeError.operationFailed'),
       undoPolish: t('officeDocument.undoPolish'),
-      undoInsertImage: t('officeDocument.undoInsertImage')
+      undoInsertImage: t('officeDocument.undoInsertImage'),
     },
     assetsBaseUrl: ZETAOFFICE_ASSETS_BASE_URL,
     defaultFonts: ZETAOFFICE_DEFAULT_FONTS,
+    fontCacheEntries: OFFICE_FONT_CACHE_ENTRIES,
     token,
     zetaUrl,
     policyUrl,
@@ -98,7 +109,7 @@ export function officeFrameDocument(t: TFunction<'workbench'>, locale: string): 
     docUrl,
     docxUrl,
     selectionUrl,
-    threadUrl
+    threadUrl,
   }).replace(/</g, '\\u003c')
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -108,8 +119,8 @@ body{display:block}.canvas{position:relative;width:100%;height:100%}
 #loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:var(--office-background,Canvas);z-index:2}#loading[hidden]{display:none}#status[data-error=true]{color:#b42318}button{font:inherit;padding:4px 10px}
 #qtcanvas{display:block;width:100%;height:100%;border:0;padding:0;outline:0;visibility:hidden}
 </style></head><body>
-<div class="canvas"><div id="loading"><span id="status"></span><button id="retry" data-testid="office-fonts-retry" type="button" hidden></button></div><canvas id="qtcanvas" oncontextmenu="event.preventDefault()"></canvas></div>
-<script src="${localFontsUrl}"></script><script src="${localeUrl}"></script><script src="${clipboardUrl}"></script><script src="${autoscrollUrl}"></script><script src="${selectionUrl}"></script><script>
+<div class="canvas"><div id="loading"><span id="status"></span><button id="retry" data-testid="office-fonts-retry" type="button" hidden></button></div><canvas id="qtcanvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas></div>
+<script src="${localFontsUrl}"></script><script src="${fontCacheUrl}"></script><script src="${ZETAOFFICE_ASSETS_BASE_URL}fontcache.js"></script><script src="${localeUrl}"></script><script src="${clipboardUrl}"></script><script src="${autoscrollUrl}"></script><script src="${selectionUrl}"></script><script>
 'use strict';
 const config=${config};
 const canvas=document.getElementById('qtcanvas');
@@ -118,10 +129,11 @@ const status=document.getElementById('status');
 const retry=document.getElementById('retry');
 status.textContent=config.text.starting;retry.textContent=config.text.reload;
 let port, filename, processor, expectedDocumentKind, bytes, palette, editable=false, started=false, starting=false, disposed=false, searchVisible=false, documentKind='',bindingId='',bindingSequence=0,readyFrame=0,layoutPaintFrame=0,workerReady=false,layoutFinished=false,layoutPaintAcknowledged=false;
-let startupStartedAt=0,runtimeReadyAt=0,documentReadonlyReason='',viewportRequestSequence=0,layoutPaintRequestId=0;
+let startupStartedAt=0,runtimeReadyAt=0,startupFailed=false,documentReadonlyReason='',viewportRequestSequence=0,layoutPaintRequestId=0;
+let fontCacheSource;
 let selectionPoint,selectionAnchorPoint,selectionPointAt=0;
 let writer=false,selectionAutoscrollKind='',selectionDragging=false;
-let selectionAutoscrollRequestSequence=0,writerAutoscrollPendingRequest=0,writerAutoscrollCommitFrame=0,writerAutoscrollPaintFrame=0,writerAutoscrollPointerFrame=0,writerAutoscrollDirectionX=0,writerAutoscrollDirectionY=0,writerAutoscrollNextAt=0,writerAutoscrollSelectionY=0,writerAutoscrollTargetY=0,writerAutoscrollShouldScroll=false,writerAutoscrollEngaged=false;
+let selectionAutoscrollRequestSequence=0,writerAutoscrollPendingRequest=0,writerAutoscrollCommitFrame=0,writerAutoscrollPaintFrame=0,writerAutoscrollPointerFrame=0,writerAutoscrollDirectionX=0,writerAutoscrollDirectionY=0,writerAutoscrollNextAt=0,writerAutoscrollSelectionY=0,writerAutoscrollTargetY=0,writerAutoscrollEngaged=false;
 const selectionCommitCommand='selection_commit';
 const selectionDragCommand='selection_drag';
 const selectionAutoscrollCommand='selection_autoscroll';
@@ -130,15 +142,7 @@ const selectionAutoscrollCommitCommand='selection_autoscroll_commit';
 const selectionAutoscrollAppliedCommand='selection_autoscroll_applied';
 const primaryPointerButton=0;
 const hostDocument=parent.document;
-function resetSelectionAutoscroll(){cancelAnimationFrame(writerAutoscrollCommitFrame);cancelAnimationFrame(writerAutoscrollPaintFrame);cancelAnimationFrame(writerAutoscrollPointerFrame);writerAutoscrollPendingRequest=0;writerAutoscrollCommitFrame=0;writerAutoscrollPaintFrame=0;writerAutoscrollPointerFrame=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;writerAutoscrollNextAt=0;writerAutoscrollSelectionY=0;writerAutoscrollTargetY=0;writerAutoscrollShouldScroll=false;writerAutoscrollEngaged=false}
-function dispatchWriterLineScroll(directionY){
-  if(!directionY)return;
-  const bounds=canvas.getBoundingClientRect();
-  const inset=ScholarSeedOfficeAutoscroll.SCROLLBAR_ARROW_INSET_PX;
-  const clientX=bounds.right-inset;
-  const clientY=directionY>0?bounds.bottom-inset:bounds.top+inset;
-  for(const type of ['mousedown','mouseup','click'])canvas.dispatchEvent(new MouseEvent(type,{bubbles:true,button:primaryPointerButton,buttons:type==='mousedown'?1:0,cancelable:true,clientX,clientY,view:window}));
-}
+function resetSelectionAutoscroll(){cancelAnimationFrame(writerAutoscrollCommitFrame);cancelAnimationFrame(writerAutoscrollPaintFrame);cancelAnimationFrame(writerAutoscrollPointerFrame);writerAutoscrollPendingRequest=0;writerAutoscrollCommitFrame=0;writerAutoscrollPaintFrame=0;writerAutoscrollPointerFrame=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;writerAutoscrollNextAt=0;writerAutoscrollSelectionY=0;writerAutoscrollTargetY=0;writerAutoscrollEngaged=false}
 function finishWriterAutoscroll(requestId){
   if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
   writerAutoscrollPaintFrame=0;writerAutoscrollPendingRequest=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;
@@ -148,7 +152,6 @@ function commitWriterAutoscroll(requestId){
   if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
   writerAutoscrollCommitFrame=0;
   writerAutoscrollNextAt=performance.now()+ScholarSeedOfficeAutoscroll.SELECTION_LINE_INTERVAL_MS;
-  if(writerAutoscrollShouldScroll)dispatchWriterLineScroll(writerAutoscrollDirectionY);
   port?.postMessage({cmd:selectionAutoscrollCommitCommand,requestId});
 }
 function paintWriterAutoscroll(requestId){
@@ -163,7 +166,6 @@ function requestWriterAutoscroll(speed,shouldScroll){
     writerAutoscrollTargetY=writerAutoscrollSelectionY;writerAutoscrollEngaged=true;
   }
   writerAutoscrollDirectionX=Math.sign(speed.x);writerAutoscrollDirectionY=Math.sign(speed.y);
-  writerAutoscrollShouldScroll=shouldScroll;
   const requestId=++selectionAutoscrollRequestSequence;writerAutoscrollPendingRequest=requestId;
   port.postMessage({cmd:selectionAutoscrollCommand,requestId,x:writerAutoscrollDirectionX,y:writerAutoscrollDirectionY});
   return true;
@@ -205,17 +207,20 @@ const imageDirectory='/tmp/office/images/';
 let viewportResizeFrame=0;
 const viewportResizeCommand='resize_viewport';
 const viewportResizedCommand='viewport_resized';
-const csvQuoteCode=34;
-const csvUtf8EncodingCode=76;
 const documentReadyFrames=2;
-const csvSeparators=[[';',59],[',',44],['\\t',9],['|',124]];
 function post(type, detail={}){parent.postMessage({kind:'scholarseed-office-editor',token:config.token,type,...detail},'*')}
 function warmup(stage,detail={}){post('warmup',{stage,...detail})}
 function diagnostic(stage,detail={}){post('diagnostic',{detail:{stage,...detail}})}
+let fontRequestSequence=0;
+const fontRequests=new Map();
+function requestFontSource(type,detail={}){
+  if(disposed)return Promise.reject(new Error('Office frame disposed'));
+  return new Promise((resolve,reject)=>{const requestId=++fontRequestSequence;fontRequests.set(requestId,{resolve,reject});post(type,{requestId,...detail})})
+}
 function progress(message){status.textContent=message}
 function applyPalette(value){palette=value;document.documentElement.style.colorScheme=value.mode;document.documentElement.style.setProperty('--office-background',value.background);document.documentElement.style.setProperty('--office-foreground',value.foreground);port?.postMessage({cmd:'theme',palette})}
 function officeMessage(message){const code=String(message).replace(/^Error: /,'');return Object.prototype.hasOwnProperty.call(config.errors,code)?config.errors[code]:config.text.operationFailed+' '+String(message)}
-function fail(reason,error){const message=error||reason;status.textContent=officeMessage(message);status.dataset.error='true';loading.hidden=false;if(!runtimeReadyAt)warmup('error',{error:reason,detail:String(message)});post('unavailable',{reason})}
+function fail(reason,error){if(disposed)return;const message=error||reason;status.textContent=officeMessage(message);status.dataset.error='true';loading.hidden=false;diagnostic('unavailable',{reason,detail:String(message),bindingId});if(!runtimeReadyAt||reason.startsWith('runtime-'))warmup('error',{error:reason,detail:String(message)});post('unavailable',{reason,detail:String(message),bindingId})}
 ScholarSeedOfficeClipboard.install(navigator.clipboard,error=>diagnostic('clipboard-write-failed',{error:String(error)}));
 function resizeViewport(){viewportResizeFrame=0;if(port&&!disposed)port.postMessage({cmd:viewportResizeCommand,bindingId,requestId:++viewportRequestSequence})}
 function scheduleViewportResize(){cancelAnimationFrame(viewportResizeFrame);viewportResizeFrame=requestAnimationFrame(resizeViewport)}
@@ -239,18 +244,13 @@ function scheduleDocumentReady(){
   cancelAnimationFrame(readyFrame);readyFrame=0;
   revealDocument(readyBindingId,readySequence)
 }
-window.addEventListener('error',event=>fail('runtime-execution',event.message||config.text.runtimeError));
-window.addEventListener('unhandledrejection',event=>fail('runtime-execution',String(event.reason||config.text.startFailed)));
+window.addEventListener('error',event=>{startupFailed=true;fail('runtime-execution',event.message||config.text.runtimeError)});
+window.addEventListener('unhandledrejection',event=>{startupFailed=true;fail('runtime-execution',String(event.reason||config.text.startFailed))});
 function safeName(value){return (value.split(/[\\/]/).pop()||'document.docx').replace(/[^A-Za-z0-9._-]+/g,'_').slice(0,128)}
-function csvFilterOptions(){
-  if(!filename.toLowerCase().endsWith('.csv'))return undefined;
-  const header=new TextDecoder().decode(bytes.slice(0,8192)).split(/\\r?\\n/,1)[0]||'';
-  const separator=csvSeparators.map(([character,code])=>({code,count:header.split(character).length-1})).sort((a,b)=>b.count-a.count)[0];
-  return String((separator&&separator.count>0?separator.code:44))+','+csvQuoteCode+','+csvUtf8EncodingCode+',1,,0,true,true,true,false,false';
-}
-function upload(){if(!port||!bytes)return;filename=safeName(filename);try{FS.mkdir('/tmp/office')}catch(error){}FS.writeFile('/tmp/office/'+filename,bytes);port.postMessage({cmd:'upload',filename,processor,expectedDocumentKind,readOnly:!editable,csvOptions:csvFilterOptions(),bindingId})}
+function upload(){if(!runtimeReadyAt||!port||!bytes||disposed)return;filename=safeName(filename);try{FS.mkdir('/tmp/office')}catch(error){}FS.writeFile('/tmp/office/'+filename,bytes);port.postMessage({cmd:'upload',filename,processor,expectedDocumentKind,readOnly:!editable,bindingId})}
 var Module={canvas,uno_scripts:[config.zetaUrl,config.policyUrl,config.governanceUrl,config.protectionUrl,config.searchUrl,config.embeddedUrl,config.caretUrl,config.paletteUrl,config.docUrl,config.docxUrl,config.selectionUrl,config.threadUrl],locateFile(path,prefix){return(prefix||config.assetsBaseUrl)+path}};
 globalThis.Module=Module;
+Module.onAbort=error=>fail('runtime-initialization',String(error));
 Module.mainScriptUrlOrBlob=new Blob(['importScripts('+JSON.stringify(config.assetsBaseUrl+'soffice.js')+');'],{type:'text/javascript'});
 async function start(){
   if(started||starting||disposed)return;starting=true;startupStartedAt=performance.now();retry.hidden=true;delete status.dataset.error;
@@ -258,38 +258,85 @@ async function start(){
 }
 async function startRuntimeWithFonts(){
   if(started||disposed)return;
+  started=true;starting=false;
+  let installStartedAt=0;
+  let cacheOperation='await-fonts';
+  const cancelled=()=>disposed||startupFailed;
+  Module.onAbort=error=>{startupFailed=true;fail('runtime-initialization',String(error))};
+  const prepared=prepareFonts(cancelled);
+  void ScholarSeedFontCache.register(Module,{
+    getFs:()=>FS,isDisposed:cancelled,
+    onError:error=>diagnostic('font-cache-failed',{operation:cacheOperation,...ZetaLocalFonts.fontErrorDiagnostic(error),elapsedMs:performance.now()-startupStartedAt}),
+    prepare:async fs=>{
+      await prepared;if(cancelled())return;
+      cacheOperation='cache-read';
+      const {fingerprint,cache}=await fontCacheSource;if(cancelled())return;
+      const startedAt=performance.now();
+      if(cache){cacheOperation='cache-restore';ScholarSeedFontCache.restore(fs,cache);diagnostic('font-cache-hit',{durationMs:performance.now()-startedAt});return}
+      diagnostic('font-cache-miss');cacheOperation='cache-generate';
+      const generated=await ScholarSeedFontCache.generate(fs,config.fontCacheEntries,
+        ()=>OfficeFontCache({locateFile:path=>config.assetsBaseUrl+path}),cancelled);
+      if(!generated||cancelled())return;
+      cacheOperation='cache-restore-generated';ScholarSeedFontCache.restore(fs,generated);
+      diagnostic('font-cache-generated',{durationMs:performance.now()-startedAt,bytes:generated.files.reduce((sum,file)=>sum+file.bytes.length,0)});
+      void requestFontSource('font-cache-write-request',{fingerprint,cache:generated}).then(()=>diagnostic('font-cache-persisted')).catch(error=>diagnostic('font-cache-persist-failed',ZetaLocalFonts.fontErrorDiagnostic(error)));
+    }
+  });
+  void ZetaLocalFonts.registerFontsInPreRun(Module,prepared,{
+    isDisposed:cancelled,
+    getFs:()=>{installStartedAt=performance.now();diagnostic('font-install-start',{elapsedMs:installStartedAt-startupStartedAt});return FS},
+    onDiagnostic:detail=>diagnostic('font-operation-failed',{...detail,elapsedMs:performance.now()-startupStartedAt,wasmHeapBytes:Module.HEAPU8?.byteLength??null}),
+    onInstalled:()=>{diagnostic('font-installed',{durationMs:performance.now()-installStartedAt,elapsedMs:performance.now()-startupStartedAt});warmup('runtime')}
+  }).catch(error=>{
+    if(cancelled())return;startupFailed=true;retry.hidden=false;
+    const reason=error.failureReason||'font-read';
+    diagnostic('font-failed',{...ZetaLocalFonts.fontErrorDiagnostic(error),failure:reason,elapsedMs:performance.now()-startupStartedAt});
+    fail(reason,reason==='runtime-assets'?config.text.assetsFailed:String(error));
+  });
+  // Locale arguments must exist before soffice.js captures Module.arguments.
+  try{await ScholarSeedOfficeLocale.prepare(Module,config.assetsBaseUrl,config.locale)}catch(error){startupFailed=true;fail('runtime-assets',String(error));return}
+  if(disposed||startupFailed)return;
+  const scriptStartedAt=performance.now();
+  diagnostic('runtime-script-start',{elapsedMs:scriptStartedAt-startupStartedAt});
+  const script=document.createElement('script');script.src=config.assetsBaseUrl+'soffice.js';script.crossOrigin='anonymous';
+  script.onerror=()=>{startupFailed=true;fail('runtime-assets',config.text.assetsFailed)};
+  script.onload=()=>{
+    diagnostic('runtime-script-loaded',{durationMs:performance.now()-scriptStartedAt,elapsedMs:performance.now()-startupStartedAt});
+    if(disposed||startupFailed)return;
+    Module.uno_main.then(value=>{if(cancelled())return;port=value;port.onmessage=onThread}).catch(error=>{startupFailed=true;fail('runtime-initialization',String(error))});
+  };
+  document.body.appendChild(script);
+}
+async function prepareFonts(cancelled){
   let failureReason='runtime-assets';
   try{
     const defaultStartedAt=performance.now();
     const defaultFonts=await ZetaLocalFonts.readFontAssets(config.defaultFonts);
+    if(cancelled())return [];
     const defaultFontBytes=defaultFonts.reduce((sum,font)=>sum+font.bytes.byteLength,0);
     diagnostic('default-font-read',{configuredDefaultFontCount:config.defaultFonts.length,loadedDefaultFontCount:defaultFonts.length,defaultFontBytes,durationMs:performance.now()-defaultStartedAt});
     failureReason='font-catalog';
     let systemFonts=[];
     const metadataStartedAt=performance.now();
     let unavailable=0,loadedBytes=defaultFontBytes;
-    if(!('queryLocalFonts'in globalThis))throw new Error(config.text.fontsUnsupported);
     warmup('catalog');
-    const entries=ZetaLocalFonts.dedupeFontEntries(await globalThis.queryLocalFonts());
-    if(entries.length===0)throw new Error(config.text.fontsEmpty);
-    diagnostic('font-metadata',{availableFontCount:entries.length,durationMs:performance.now()-metadataStartedAt});
+    const {catalog}=await requestFontSource('font-catalog-request');
+    fontCacheSource=requestFontSource('font-cache-read-request',{fingerprint:catalog.fingerprint})
+      .then(({cache})=>({fingerprint:catalog.fingerprint,cache}))
+      .catch(error=>{diagnostic('font-cache-read-failed',ZetaLocalFonts.fontErrorDiagnostic(error));return{fingerprint:catalog.fingerprint,cache:null}});
+    if(cancelled())return [];
+    if(catalog.fonts.length===0)throw new Error(config.text.fontsEmpty);
+    diagnostic('font-metadata',{availableFontCount:catalog.faceCount,sourceFileCount:catalog.fonts.length,durationMs:performance.now()-metadataStartedAt});
     const readStartedAt=performance.now();failureReason='font-read';
-    systemFonts=await ZetaLocalFonts.readAllFontEntries(entries,(done,total,bytesRead)=>{loadedBytes=defaultFontBytes+bytesRead;progress(config.text.readingFonts.replace('{{done}}',String(done)).replace('{{total}}',String(total)));warmup('reading',{done,total,loadedBytes})},()=>{unavailable+=1});
-    diagnostic('font-read',{selectedFontCount:entries.length,loadedFontCount:systemFonts.length,unavailable,durationMs:performance.now()-readStartedAt});
+    systemFonts=await ZetaLocalFonts.readFontFiles(catalog.fonts,async id=>{if(cancelled())throw new Error('Office preparation cancelled');return(await requestFontSource('font-read-request',{id})).bytes},(done,total,bytesRead)=>{if(cancelled())return;loadedBytes=defaultFontBytes+bytesRead;progress(config.text.readingFonts.replace('{{done}}',String(done)).replace('{{total}}',String(total)));warmup('reading',{done,total,loadedBytes})},detail=>diagnostic('font-operation-failed',{...detail,elapsedMs:performance.now()-startupStartedAt}));
+    if(cancelled())return [];
+    diagnostic('font-read',{selectedFontCount:catalog.faceCount,loadedFontCount:systemFonts.length,duplicateFontCount:catalog.faceCount-systemFonts.length,readBytes:loadedBytes-defaultFontBytes,uniqueBytes:systemFonts.reduce((sum,font)=>sum+font.bytes.byteLength,0),unavailable,durationMs:performance.now()-readStartedAt});
     const prepared=[...defaultFonts,...systemFonts];
-    ZetaLocalFonts.registerFontsInPreRun(Module,prepared);
     const totalBytes=prepared.reduce((sum,font)=>sum+font.bytes.byteLength,0);
-    diagnostic('font-register',{defaultFontCount:defaultFonts.length,systemFontCount:systemFonts.length,loadedFontCount:prepared.length,totalBytes});
+    diagnostic('font-register',{defaultFontCount:defaultFonts.length,systemFontCount:systemFonts.length,loadedFontCount:prepared.length,totalBytes,elapsedMs:performance.now()-startupStartedAt});
     progress(config.text.loadingFonts.replace('{{fontTotal}}',String(prepared.length)).replace('{{size}}',(totalBytes/1048576).toFixed(1)));
-  }catch(error){starting=false;retry.hidden=false;diagnostic('font-failed',{error:String(error),failure:failureReason});fail(failureReason,failureReason==='runtime-assets'?config.text.assetsFailed:String(error));return}
-  started=true;starting=false;
-  warmup('runtime');
-  try{await ScholarSeedOfficeLocale.prepare(Module,config.assetsBaseUrl,config.locale)}catch(error){fail('runtime-assets',String(error));return}
-  progress(config.text.loading);
-  const script=document.createElement('script');script.src=config.assetsBaseUrl+'soffice.js';script.crossOrigin='anonymous';
-  script.onerror=()=>fail('runtime-assets',config.text.assetsFailed);
-  script.onload=()=>{progress(config.text.initializing);Module.uno_main.then(value=>{port=value;port.onmessage=onThread}).catch(error=>fail('runtime-initialization',String(error)))};
-  document.body.appendChild(script);
+    return prepared;
+  }catch(error){diagnostic('font-prepare-failed',{...ZetaLocalFonts.fontErrorDiagnostic(error),failure:failureReason,elapsedMs:performance.now()-startupStartedAt});throw Object.assign(new Error(String(error)),{failureReason})}
 }
 function onThread(event){
   const message=event.data;
@@ -328,6 +375,7 @@ function onThread(event){
   else if(message.cmd==='paste_failed')post('operation-rejected',{message:'office_paste_failed'})
   else if(message.cmd==='save_failed')post('save-failed',{message:message.message})
   else if(message.cmd==='policy_failed')fail('office-policy-failed',message.message)
+  else if(message.cmd==='document_failed'&&message.bindingId===bindingId)fail('document-load',message.detail||message.message)
   else if(message.cmd==='operation_rejected')post('operation-rejected',{message:message.message})
   else if(message.cmd==='image_request')post('image-request',{requestId:message.requestId,source:message.source})
   else if(message.cmd==='image_failed'){
@@ -336,10 +384,16 @@ function onThread(event){
     post('image-failed',{requestId:message.requestId})
   }
 }
+function disposeOfficeFrame(){
+  if(disposed)return;
+  disposed=true;for(const request of fontRequests.values())request.reject(new Error('Office frame disposed'));fontRequests.clear();cancelDocumentReady();hostDocument.removeEventListener('pointerup',finishSelectionDrag,true);document.removeEventListener('mousemove',suppressWriterEdgeMousemove,true);selectionAutoscroll.destroy();resetSelectionAutoscroll();port?.postMessage({cmd:'dispose'});port?.close()
+}
+window.addEventListener('pagehide',disposeOfficeFrame,{once:true});
 window.addEventListener('message',event=>{
   if(event.source!==parent||event.data?.kind!=='scholarseed-office-control'||event.data?.token!==config.token)return;
   const message=event.data;
-  if(message.type==='bind'){
+  if(message.type==='prepare')void start();
+  else if(message.type==='bind'){
     bindingId=String(message.bindingId||'');bindingSequence+=1;cancelDocumentReady();workerReady=false;layoutFinished=false;layoutPaintAcknowledged=false;layoutPaintRequestId=0;
     canvas.style.visibility='hidden';loading.hidden=false;status.textContent=config.text.loading;delete status.dataset.error;
     selectionAutoscroll.stop();resetSelectionAutoscroll();bytes=new Uint8Array(message.bytes);filename=message.filename;processor=message.processor;expectedDocumentKind=message.expectedDocumentKind;selectionAutoscrollKind=ScholarSeedOfficeSelection.autoscrollKind(filename)||'';selectionDragging=false;editable=Boolean(message.editable);if(started)upload();else void start()
@@ -348,6 +402,10 @@ window.addEventListener('message',event=>{
   else if(message.type==='font-permission-result'){
     if(message.granted)void startRuntimeWithFonts();
     else{starting=false;retry.hidden=false;fail('font-permission',config.text.permission)}
+  }
+  else if(message.type==='font-source-result'){
+    const request=fontRequests.get(message.requestId);if(!request)return;fontRequests.delete(message.requestId);
+    if(message.error)request.reject(new Error(message.error));else request.resolve(message);
   }
   else if(message.type==='retry-warmup')void start();
   else if(message.type==='save')port?.postMessage({cmd:'save'});
@@ -373,9 +431,9 @@ window.addEventListener('message',event=>{
     for(const path of serializedImagePaths){if(imagePaths.has(path)){FS.unlink(path);imagePaths.delete(path)}}
     serializedImagePaths=[];
   }
-  else if(message.type==='dispose'){disposed=true;cancelDocumentReady();hostDocument.removeEventListener('pointerup',finishSelectionDrag,true);document.removeEventListener('mousemove',suppressWriterEdgeMousemove,true);selectionAutoscroll.destroy();resetSelectionAutoscroll();port?.postMessage({cmd:'dispose'});port?.close()}
+  else if(message.type==='dispose')disposeOfficeFrame();
 });
-retry.addEventListener('click',()=>void start());
+retry.addEventListener('click',()=>{if(started)post('retry-request');else void start()});
 void start();
 window.addEventListener('focus',()=>post('focus'));
 document.addEventListener('pointerdown',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionAnchorPoint=selectionPoint;selectionPointAt=0;post('focus');if(documentKind===selectionAutoscrollKind&&event.isPrimary&&event.button===primaryPointerButton){selectionDragging=true;resetSelectionAutoscroll();diagnostic('selection-drag',{active:true,eventType:event.type});selectionAutoscroll.start(event);port?.postMessage({cmd:selectionDragCommand,active:true})}},true);
@@ -418,6 +476,9 @@ hostDocument.addEventListener('pointerup',finishSelectionDrag,true);
 document.addEventListener('keydown',event=>{
   if(searchVisible&&event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();post('office-search-close')}
 },true);
+document.addEventListener('keyup',event=>{
+  if(documentKind==='writer'&&(event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='a')port?.postMessage({cmd:selectionCommitCommand})
+},true);
 if(!globalThis.crossOriginIsolated)fail('cross-origin-isolation',config.text.isolation);
 else post('frame-ready');
 </script></body></html>`
@@ -437,10 +498,11 @@ else post('frame-ready');
       URL.revokeObjectURL(embeddedUrl)
       URL.revokeObjectURL(caretUrl)
       URL.revokeObjectURL(localFontsUrl)
+      URL.revokeObjectURL(fontCacheUrl)
       URL.revokeObjectURL(localeUrl)
       URL.revokeObjectURL(paletteUrl)
       URL.revokeObjectURL(clipboardUrl)
       URL.revokeObjectURL(autoscrollUrl)
-    }
+    },
   }
 }

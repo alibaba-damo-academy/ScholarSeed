@@ -28,11 +28,11 @@ ITEM_MESSAGE_ID_PREFIX = "item:"
 
 
 class ProductAnswerSource:
-    """Resolve completed final answers from the durable product event ledger.
+    """Resolve answer snapshots from the durable product event ledger.
 
     Historically this returned only the final agent answer. It now also
     resolves reasoning ("thinking") and tool-completed messages, so that any
-    part of a completed turn shown in the transcript can be annotated or
+    persisted text shown in the transcript can be annotated or
     excerpted using the same identity contract used for agent answers.
     """
 
@@ -77,7 +77,7 @@ class ProductAnswerSource:
             (event for event in timeline if event.kind == PRODUCT_EVENT_TURN_COMPLETED),
             None,
         )
-        if not deltas or completed is None:
+        if not deltas:
             return None
         markdown = str(deltas[-1].payload.get("delta") or "")
         if not markdown:
@@ -90,7 +90,7 @@ class ProductAnswerSource:
             vendor_item_id=anchor.vendor_item_id,
             markdown=markdown,
             revision=self._revision(markdown),
-            completed_at=completed.created_at,
+            completed_at=completed.created_at if completed is not None else None,
         )
 
     # -- New item:{vendor_item_id} lookup, supports agent/thinking/tool --
@@ -104,8 +104,6 @@ class ProductAnswerSource:
         first = events[0]
         turn_id = first.vendor_turn_id or ""
         completed = self._events.turn_completed(session_id, vendor_turn_id=turn_id)
-        if completed is None:
-            return None
         markdown = self._reconstruct_markdown(events)
         if not markdown:
             return None
@@ -117,7 +115,7 @@ class ProductAnswerSource:
             vendor_item_id=vendor_item_id,
             markdown=markdown,
             revision=self._revision(markdown),
-            completed_at=completed.created_at,
+            completed_at=completed.created_at if completed is not None else None,
         )
 
     @staticmethod

@@ -1,0 +1,8 @@
+{
+  "version": "44.3.0",
+  "filename": "electron-v44.3.0-win32-x64.zip",
+  "url": "https://github.com/electron/electron/releases/download/v44.3.0/electron-v44.3.0-win32-x64.zip",
+  "mirrors": ["https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/electron/electron-v44.3.0-win32-x64.zip"],
+  "bytes": 158149320,
+  "sha256": "26bf9a617d58d81772b3d68305d59ee48272969c15083c06db634a77358a8d9d"
+}

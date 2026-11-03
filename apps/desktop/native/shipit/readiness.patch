@@ -1,0 +1,53 @@
+--- a/Squirrel/SQRLUpdater.m
++++ b/Squirrel/SQRLUpdater.m
+@@ -8,6 +8,7 @@
+ 
+ #import "SQRLUpdater.h"
+ #import "handoff.h"
++#import "readinesswait.h"
+ #import "NSBundle+SQRLVersionExtensions.h"
+ #import "NSError+SQRLVerbosityExtensions.h"
+ #import "NSProcessInfo+SQRLVersionExtensions.h"
+@@ -460,7 +461,9 @@
+ 
+ 					return [self verifyAndPrepareUpdate:update fromBundle:updateBundle];
+ 				}]
+-				doError:^(id _) {
++				doError:^(NSError *error) {
++                    // A helper may still be copying or recovering this source.
++                    if ([error.userInfo[SSPreparationRetainsSourceKey] boolValue]) return;
+ 					cleanUp();
+ 				}];
+ 		}]
+@@ -814,8 +817,9 @@
+ 
+ - (RACSignal *)prepareUpdateForInstallation:(SQRLDownloadedUpdate *)update {
+ 	NSParameterAssert(update != nil);
+-
+-	return [[[[RACSignal
++    __block SQRLShipItRequest *preparedRequest = nil;
++
++	return [[SSRetainPreparationSourceOnError([[RACSignal
+ 		defer:^{
+ 			NSRunningApplication *currentApplication = NSRunningApplication.currentApplication;
+ 			NSURL *targetBundleURL = currentApplication.bundleURL.URLByResolvingSymlinksInPath;
+@@ -825,11 +829,16 @@
+ 			BOOL useUpdateBundleName = [appBundle.sqrl_executableName isEqual:targetBundleURL.lastPathComponent.stringByDeletingPathExtension];
+ 
+ 			SQRLShipItRequest *request = [[SQRLShipItRequest alloc] initWithUpdateBundleURL:update.bundle.bundleURL targetBundleURL:targetBundleURL bundleIdentifier:currentApplication.bundleIdentifier launchAfterInstallation:NO useUpdateBundleName:useUpdateBundleName];
+-			return SSSquirrelTiming(@"write-request", [request writeUsingURL:self.shipItStateURL], NO);
++			preparedRequest = request;
++            NSError *error = nil;
++            if (!SSReadinessRemove(request.updateBundleURL, &error)) return [RACSignal error:error];
++            return SSSquirrelTiming(@"write-request", [request writeUsingURL:self.shipItStateURL], NO);
+ 		}]
+ 		then:^{
+-			return SSSquirrelTiming(@"launch-helper", self.shipItLauncher, NO);
+-		}]
++			return [SSSquirrelTiming(@"launch-helper", self.shipItLauncher, NO) then:^{
++                return SSSquirrelTiming(@"prepare-candidate", SSReadinessWait(preparedRequest.updateBundleURL, preparedRequest.targetBundleURL, SSPreparationTimeout), NO);
++            }];
++		}])
+ 		sqrl_addTransactionWithName:NSLocalizedString(@"Preparing update", nil) description:NSLocalizedString(@"An update for %@ is being prepared. Interrupting the process could corrupt the application.", nil), NSRunningApplication.currentApplication.bundleIdentifier]
+ 		setNameWithFormat:@"%@ -prepareUpdateForInstallation: %@", self, update];
+ }

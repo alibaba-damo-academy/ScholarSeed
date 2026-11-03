@@ -1,8 +1,14 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
+import scholarseedLogoMark from '../../assets/logo.svg'
 import { releaseNoteLines, useUpdateState } from '../../features/updates/state'
-import { Divider, Spinner } from '../ui'
+import {
+  installationDuration,
+  installationStepText,
+  useInstallationClock,
+} from '../../features/updates/installation'
+import { Button, Divider, ProgressBar } from '../ui'
 import { UpdateMetadata } from './UpdateMetadata'
 
 // UpdateOverlay.tsx — 安装/重启期间的全屏遮罩。
@@ -17,43 +23,113 @@ const OVERLAY_CARD_CLASS_NAME =
   'grid max-h-full min-h-0 overflow-y-auto w-[min(100%,390px)] justify-items-center gap-[12px] rounded-[16px] border border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] p-[28px] text-center shadow-[var(--vds-shadow-2-center)]'
 const OVERLAY_TITLE_CLASS_NAME =
   'text-[16px] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]'
-const OVERLAY_TEXT_CLASS_NAME =
-  'text-[12px] leading-[1.6] text-[var(--vds-text-secondary)]'
-const OVERLAY_HINT_CLASS_NAME =
-  'text-[11px] leading-[1.6] text-[var(--vds-text-tertiary)]'
+const OVERLAY_TEXT_CLASS_NAME = 'text-[12px] leading-[1.6] text-[var(--vds-text-secondary)]'
+const OVERLAY_LOGO_CLASS_NAME =
+  'block size-[var(--vds-space-10)] rounded-[var(--vds-radius-5)] object-cover'
+const OVERLAY_PROGRESS_CLASS_NAME = 'w-full'
+const OVERLAY_CANCEL_CLASS_NAME = 'w-full'
 
 export function UpdateOverlay(): React.JSX.Element | null {
   const { t } = useTranslation('components')
   const state = useUpdateState()
   const notes = releaseNoteLines(state?.candidate?.release_notes)
   const phase = state?.phase
-  if (phase !== 'installing' && phase !== 'restarting') return null
+  const installation = state?.installation
+  const now = useInstallationClock(phase === 'installing')
+  if (phase !== 'installing' && phase !== 'restarting' && !state?.restartPending) return null
 
-  const label = phase === 'restarting' || state?.installStage === 'restarting'
-    ? t('update.restarting')
-    : state?.installStage === 'copying'
-      ? t('update.preparingApp')
-      : t('update.installing')
+  const restarting = phase === 'restarting' || state?.installStage === 'restarting'
+  const cancelling = installation?.cancelling === true
+  const cleaning = installation?.step === 'cleanup'
+  const label = cancelling
+    ? t('update.cancelling')
+    : restarting
+      ? t('update.restarting')
+      : state?.installStage === 'copying'
+        ? t('update.preparingApp')
+        : t('update.installing')
+  // 准备/拷贝阶段安装还在本进程里跑，取消能真的 abort；restarting 之后安装器已脱离本进程，
+  // 给取消按钮只会制造「点了却没反应」的假控件（bug 87253073：用户必须有可见的恢复路径）。
+  const cancellable = (phase === 'installing' || state?.restartPending) && !restarting && !cleaning
+  const description = cancelling
+    ? t('update.cancellingDescription')
+    : restarting
+      ? t('update.installDescription')
+      : cleaning
+        ? t('update.cleanupDescription')
+        : state?.restartPending && phase !== 'installing'
+          ? t('update.waitingForLatest')
+          : t('update.preparingDescription')
 
   return (
-    <div className={OVERLAY_CLASS_NAME} role="status" aria-live="polite" data-testid="update-overlay">
+    <div
+      className={OVERLAY_CLASS_NAME}
+      role="status"
+      aria-live="polite"
+      data-testid="update-overlay"
+    >
       <div className={OVERLAY_CARD_CLASS_NAME}>
-        <Spinner size="lg" />
+        <img className={OVERLAY_LOGO_CLASS_NAME} src={scholarseedLogoMark} alt="" aria-hidden />
         <span className={OVERLAY_TITLE_CLASS_NAME}>{label}</span>
         <span className={OVERLAY_TEXT_CLASS_NAME} data-testid="update-overlay-version">
           <UpdateMetadata candidate={state?.candidate} />
         </span>
-        <span className={OVERLAY_TEXT_CLASS_NAME}>{t('update.installDescription')}</span>
+        <span className={OVERLAY_TEXT_CLASS_NAME} data-testid="update-overlay-description">
+          {description}
+        </span>
+        {installation && (
+          <div className="grid w-full gap-[var(--vds-space-2)]">
+            <span className={OVERLAY_TEXT_CLASS_NAME} data-testid="update-overlay-step">
+              {installationStepText(installation, t)}
+            </span>
+            <span
+              className={OVERLAY_TEXT_CLASS_NAME}
+              data-testid="update-overlay-elapsed"
+              aria-live="off"
+            >
+              {t('update.installElapsed', {
+                step: installationDuration(now - installation.stepStartedAt),
+                total: installationDuration(now - installation.startedAt),
+              })}
+            </span>
+            {installation.timeoutMs !== undefined && (
+              <span className={OVERLAY_TEXT_CLASS_NAME} data-testid="update-overlay-limit">
+                {t('update.installLimit', { limit: installationDuration(installation.timeoutMs) })}
+              </span>
+            )}
+          </div>
+        )}
+        <ProgressBar
+          className={OVERLAY_PROGRESS_CLASS_NAME}
+          data-testid="update-overlay-progress"
+          indeterminate
+        />
+        {cancellable && (
+          <Button
+            className={OVERLAY_CANCEL_CLASS_NAME}
+            data-testid="update-overlay-cancel"
+            disabled={cancelling}
+            onClick={() => void window.scholarseed.cancelUpdate()}
+            variant="outline"
+          >
+            {cancelling ? t('update.cancelling') : t('update.cancelInstall')}
+          </Button>
+        )}
         <Divider />
         <div className="grid w-full min-h-0 gap-[var(--vds-space-3)] overflow-y-auto text-left">
           <span className={OVERLAY_TITLE_CLASS_NAME}>{t('update.notesTitle')}</span>
           {notes.length > 0 ? (
             <ul className="list-disc pl-[var(--vds-space-4)]" data-testid="update-overlay-notes">
-              {notes.map((note, index) => <li className={OVERLAY_TEXT_CLASS_NAME} key={index}>{note}</li>)}
+              {notes.map((note, index) => (
+                <li className={OVERLAY_TEXT_CLASS_NAME} key={index}>
+                  {note}
+                </li>
+              ))}
             </ul>
-          ) : <span className={OVERLAY_TEXT_CLASS_NAME}>{t('update.notesEmpty')}</span>}
+          ) : (
+            <span className={OVERLAY_TEXT_CLASS_NAME}>{t('update.notesEmpty')}</span>
+          )}
         </div>
-        <span className={OVERLAY_HINT_CLASS_NAME}>{t('update.installHint')}</span>
       </div>
     </div>
   )

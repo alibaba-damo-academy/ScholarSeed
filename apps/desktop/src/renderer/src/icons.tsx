@@ -579,12 +579,12 @@ export function fileIcon(fileName: string): IconName {
   return FILE_ICONS[fileName.slice(dot + 1).toLowerCase()] ?? 'doc'
 }
 
-export function Icon({ name, size = 16, sw = 1.6, fill, color }: { name: IconName; size?: number; sw?: number; fill?: string; color?: string }): React.JSX.Element {
+export function Icon({ name, size = 16, sw = 1.6, fill, color, className }: { name: IconName; size?: number; sw?: number; fill?: string; color?: string; className?: string }): React.JSX.Element {
   return (
     // 不传 color 时不写内联 style: 内联样式优先级高于任何外部 CSS,
     // 无条件写死会让父元素/类名上的 color 永久失效 (深色底图标改不动)。
     // 默认色改由 .vds-icon 类在 styles.css 里兜底, 外观不变但可被覆盖。
-    <svg width={size} height={size} viewBox="0 0 24 24" fill={fill ?? 'none'} stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden className="vds-icon" style={color ? { color } : undefined}>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={fill ?? 'none'} stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden className={className ? `vds-icon ${className}` : 'vds-icon'} style={color ? { color } : undefined}>
       {PATHS[name]}
     </svg>
   )

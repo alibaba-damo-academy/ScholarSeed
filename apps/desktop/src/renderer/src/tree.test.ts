@@ -8,9 +8,22 @@ import {
   renameSessionNode,
   searchSessionTitles,
   appendSessionChildren,
-  serveSessionNode
+  serveSessionNode,
 } from './tree.ts'
-import type { SessionNode, SessionStatus } from './model.ts'
+import type { SessionNode } from './model.ts'
+import type { ServeSession } from './api'
+
+it('catalog projection preserves terminal failures and pauses after reload', () => {
+  const row = { session_id: 'terminal', title: 'Task', mtime: 20 } as ServeSession
+  assert.equal(serveSessionNode({ ...row, last_turn_status: 'failed' }, {}, null).status, 'failed')
+  assert.equal(
+    serveSessionNode({ ...row, last_turn_status: 'interrupted' }, {}, null).status,
+    'abandon'
+  )
+  assert.equal(serveSessionNode({ ...row, recovery_blocked: true }, {}, null).status, 'abandon')
+  assert.equal(serveSessionNode({ ...row, last_turn_status: 'completed' }, {}, null).status, 'done')
+  assert.equal(serveSessionNode(row, { terminal: 20 }, null).status, 'dormant')
+})
 
 function makeNode(overrides: Partial<SessionNode> & { id: string }): SessionNode {
   return {
@@ -23,7 +36,7 @@ function makeNode(overrides: Partial<SessionNode> & { id: string }): SessionNode
     openable: overrides.openable ?? true,
     children: overrides.children,
     container: overrides.container,
-    ...overrides
+    ...overrides,
   }
 }
 
@@ -47,7 +60,7 @@ describe('sessionTone', () => {
 describe('findSessionNode', () => {
   const tree: SessionNode[] = [
     makeNode({ id: 'a' }),
-    makeNode({ id: 'b', children: [makeNode({ id: 'c' })] })
+    makeNode({ id: 'b', children: [makeNode({ id: 'c' })] }),
   ]
 
   it('finds top-level node', () => {
@@ -129,14 +142,17 @@ describe('searchSessionTitles', () => {
     makeNode({ id: 'c', title: 'Gamma', activityAt: 1000, container: true }),
     makeNode({ id: 'd', title: 'serve:internal', activityAt: 4000 }),
     makeNode({ id: 'e', title: '', activityAt: 5000 }),
-    makeNode({ id: 'f', title: 'Alpha Child', activityAt: 2500, children: [
-      makeNode({ id: 'g', title: 'Nested Alpha', activityAt: 3500 })
-    ]})
+    makeNode({
+      id: 'f',
+      title: 'Alpha Child',
+      activityAt: 2500,
+      children: [makeNode({ id: 'g', title: 'Nested Alpha', activityAt: 3500 })],
+    }),
   ]
 
   it('returns all openable non-container sessions when query is empty', () => {
     const result = searchSessionTitles(nodes, '')
-    const ids = result.map(n => n.id)
+    const ids = result.map((n) => n.id)
     assert.ok(ids.includes('a'))
     assert.ok(ids.includes('b'))
     assert.ok(!ids.includes('c'), 'container excluded')
@@ -148,7 +164,7 @@ describe('searchSessionTitles', () => {
   it('filters by case-insensitive query', () => {
     const result = searchSessionTitles(nodes, 'alpha')
     assert.equal(result.length, 3)
-    assert.ok(result.every(n => n.title.toLowerCase().includes('alpha')))
+    assert.ok(result.every((n) => n.title.toLowerCase().includes('alpha')))
   })
 
   it('sorts by activity descending', () => {
@@ -161,7 +177,7 @@ describe('searchSessionTitles', () => {
   it('de-duplicates by session id', () => {
     const dupes: SessionNode[] = [
       makeNode({ id: 'x', title: 'Dup', activityAt: 1000 }),
-      makeNode({ id: 'x', title: 'Dup Newer', activityAt: 2000 })
+      makeNode({ id: 'x', title: 'Dup Newer', activityAt: 2000 }),
     ]
     const result = searchSessionTitles(dupes, '')
     assert.equal(result.length, 1)
@@ -185,6 +201,34 @@ describe('appendSessionChildren', () => {
 })
 
 describe('serveSessionNode', () => {
+  it('preserves failed and interrupted outcomes regardless of read state', () => {
+    for (const [outcome, expected] of [
+      ['failed', 'failed'],
+      ['interrupted', 'abandon'],
+    ] as const) {
+      const session = {
+        session_id: 'terminal',
+        title: 'Terminal',
+        mtime: 10,
+        last_turn_status: outcome,
+      } as ServeSession
+      assert.equal(serveSessionNode(session, {}, null).status, expected)
+      assert.equal(serveSessionNode(session, { terminal: 10 }, 'terminal').status, expected)
+      assert.equal(serveSessionNode({ ...session, running: true }, {}, null).status, 'running')
+      assert.equal(serveSessionNode({ ...session, waiting: true }, {}, null).status, 'waiting')
+    }
+  })
+
+  it('preserves a confirmed failure while recovery cleanup is blocked', () => {
+    const session = {
+      session_id: 'blocked',
+      recovery_blocked: true,
+      last_turn_status: 'failed',
+      mtime: 10,
+    } as ServeSession
+    assert.equal(serveSessionNode(session, {}, null).status, 'failed')
+  })
+
   it('projects running session correctly', () => {
     const session = {
       session_id: 'abc12345',
@@ -194,8 +238,8 @@ describe('serveSessionNode', () => {
       created_at: 1000,
       mtime: 2000,
       runtime: { model_id: 'qwen-max' },
-      workdir: '/tmp/test'
-    } as any
+      workdir: '/tmp/test',
+    } as ServeSession
     const node = serveSessionNode(session, {}, null)
     assert.equal(node.id, 'abc12345')
     assert.equal(node.status, 'running')
@@ -211,8 +255,8 @@ describe('serveSessionNode', () => {
       running: false,
       waiting: false,
       created_at: 1000,
-      mtime: 3000
-    } as any
+      mtime: 3000,
+    } as ServeSession
     const node = serveSessionNode(session, { xyz98765: 2000 }, null)
     assert.equal(node.status, 'done')
   })
@@ -223,8 +267,8 @@ describe('serveSessionNode', () => {
       title: '',
       running: false,
       waiting: false,
-      created_at: 1000
-    } as any
+      created_at: 1000,
+    } as ServeSession
     const node = serveSessionNode(session, {}, null)
     assert.equal(node.title, 'abcdef12')
   })

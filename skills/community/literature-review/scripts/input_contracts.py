@@ -3,11 +3,14 @@ from pathlib import Path
 import copy
 import json
 import re
+from citation_styles import style_ids
+from task_contract import VERBATIM_MATCH_PERCENT, VERBATIM_MATCH_THRESHOLD
 
 ROOT=Path(__file__).resolve().parents[1]
+INTERNAL_ERROR_CODE = "INTERNAL_ERROR"
 OPERATIONS=('writing.configure','writing.approve','outline.configure',
             'figures.plan','evidence.build','papers.import-local',
-            'writing.review-start','writing.review-status','writing.review-wait','writing.review-response','writing.review-timeout')
+            'writing.review-complete','writing.review-start','writing.review-status','writing.review-wait','writing.review-response','writing.review-timeout')
 
 
 def examples(operation):
@@ -28,7 +31,7 @@ def describe_input(operation,workspace=None):
     publication={'format':['latex_pdf','markdown'],'template':{'type':'string','allowed':['ctexart','neurips'],
                  'example':'ctexart','value_note':'Pass the string itself, e.g. "template":"ctexart"; never {"type":"ctexart"}.',
                  'by_language':{'CHINESE':'ctexart','ENGLISH':'neurips'}},
-                 'citation_style':['numeric','author_year','ieee','acm']}
+                 'citation_style':list(style_ids())}
     asset={'required':['purpose','content_plan','caption_draft','paper_ids'],
            'purpose':'string: contribution to owning section','content_plan':'string: supported objects/relations or comparison scope',
            'caption_draft':'string: descriptive reader-facing content, no figure/table numbering prefix or drawing instructions',
@@ -57,7 +60,7 @@ def describe_input(operation,workspace=None):
           'publication':publication,'local_pdfs':{'type':'array of paths or per-file objects','allowed_file_fields':sorted(LOCAL_FILE_FIELDS)},
           'constraints':{'type':'array; replaces the entire current constraint list',
                          'required':['id','kind','value','verbatim'],'id':'unique nonempty string',
-                         'kind':sorted(KINDS),'verbatim':'string: an exact contiguous substring of intent, user_instructions, or one user_requests entry; no concatenation, paraphrasing, punctuation/whitespace changes, or quotation from effective_requirements',
+                         'kind':sorted(KINDS),'verbatim':f'string grounded in one original source: prefer a contiguous quote; a shortened or lightly normalized quote must preserve more than {VERBATIM_MATCH_PERCENT}% of its characters in order from intent, user_instructions, or one user_requests entry; effective_requirements is not a source',
                          'values':{'required_section / forbidden_section':{'title':'nonempty string','role':sorted(ROLES),'position':'first, last, any, after:<title>; role/position optional'},
                                    'figure_count / table_count / total_citations':'object with nonnegative min and/or max',
                                    'min_papers_per_section / min_paper_citations':'nonnegative integer',
@@ -65,15 +68,21 @@ def describe_input(operation,workspace=None):
                                    'excluded_topic / angle / other':'nonempty string'}}}
         assert set(fields)==REQUEST_FIELDS
         result.update(fields=fields,required=[],merge_policy='publication/retrieval merge immediate keys; other supplied fields replace; original intent/history must be preserved',
-                      verbatim_example={'source':'至少一张图，并包含一张比较表。',
-                                        'valid':['至少一张图','一张比较表','至少一张图，并包含一张比较表。'],
-                                        'invalid':'至少一张图；一张比较表',
-                                        'reason':'The invalid value joins noncontiguous spans with a punctuation mark absent from the source. Use separate constraints or one complete original span.'},
+                      publication_example={'format':'latex_pdf','template':'ctexart','citation_style':'numeric'},
+                      verbatim_example={'source':'结构按问题建模→单一方法→混合方法→挑战展望展开。',
+                                        'valid':['结构按问题建模→单一方法→混合方法→挑战展望展开。','问题建模→单一方法→混合方法→挑战展望'],
+                                        'invalid':'增加实验和消融分析',
+                                        'reason':f'Use one original source and retain more than {VERBATIM_MATCH_PERCENT}% ordered character coverage; do not quote derived effective_requirements.'},
                       strategy_note='whole is a legacy value; both values use the same native chapter/delta pipeline')
     elif operation.startswith('writing.review-'):
         fields={'packet_id':'actual current review-packet ID'}
         required=['packet_id']
-        if operation=='writing.review-start':
+        if operation=='writing.review-complete':
+            fields.update(snapshot_id='unchanged bridge snapshot identity', request_id='actual product HIL request ID',
+                          started_at='product start timestamp', deadline_at='product deadline or null',
+                          decision='unchanged product HIL decision; never fabricate an answer or timeout')
+            required=list(fields)
+        elif operation=='writing.review-start':
             fields.update(displayed='true only after showing the outline, publication settings and timeout notice',
                           message_id='optional actual host display message ID; omit if unavailable')
             required.append('displayed')
@@ -159,6 +168,10 @@ def describe_input(operation,workspace=None):
 def input_error(operation,error):
     """Keep errors small: only the named field/example plus a discovery command."""
     message=str(error)
+    if isinstance(error, KeyError):
+        return {'status': 'FAILED', 'code': INTERNAL_ERROR_CODE, 'message': message,
+                'error_type': type(error).__name__,
+                'next_action': 'Preserve the current input and publication settings. Stop and report this internal skill error; do not substitute another citation style.'}
     result={'status':'FAILED','code':'INPUT_INVALID','message':message}
     if hasattr(error,'report'):result.update(error.report())
     if isinstance(error,BlockingIOError):
@@ -177,7 +190,8 @@ def input_error(operation,error):
         if index:=re.search(r'constraints/(\d+)(?:/verbatim:|: verbatim\b)',message):
             result.update(field=f'constraints[{index[1]}].verbatim',
                           quote_sources=['intent','user_instructions','user_requests[]'],
-                          next_action='Copy one exact contiguous original span. For separated requirements, use separate constraints or quote the complete original passage; never join or rewrite fragments.')
+                          match_threshold=VERBATIM_MATCH_THRESHOLD,
+                          next_action=f'Ground the value in one original source. Prefer a direct quote; otherwise retain more than {VERBATIM_MATCH_PERCENT}% of its characters in order. Use separate constraints for unrelated requirements.')
         elif 'time_range' in message or 'year' in message:
             result.update(field='retrieval.time_range',example={'retrieval':{'time_range':{'start_year':2010,'end_year':2020}}})
         elif 'corpus' in message:

@@ -16,6 +16,7 @@ from scholarseed_runtime.contract import (
 )
 from service.chat.active import RUNTIME_ID
 from service.chat.constants import (
+    AUTOMATIC_RECOVERY_MESSAGE,
     PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
     PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
     PRODUCT_EVENT_TURN_COMPLETED,
@@ -33,8 +34,9 @@ from service.chat.persistence.artifacts import (
     artifact_identity,
     current_artifact_records,
 )
-from service.chat.persistence.catalog import QueuedMessageRecord
+from service.chat.persistence.catalog import QUEUE_PURPOSE_RECOVERY, QueuedMessageRecord
 from service.platform.bridge import ArtifactPublishFailure
+from service.platform.files import export_file_name
 
 PORTABLE_HISTORY_ROLES = frozenset(("user", "assistant"))
 
@@ -150,6 +152,7 @@ ARTIFACT_PUBLISH_PATH_INVALID = "artifact_publish_path_invalid"
 
 ARTIFACT_PUBLISH_FILE_NOT_FOUND = "artifact_publish_file_not_found"
 
+ARTIFACT_PUBLISH_ACCESS_DENIED = "artifact_publish_access_denied"
 ARTIFACT_PUBLISH_IO_FAILED = "artifact_publish_io_failed"
 
 
@@ -272,6 +275,7 @@ def runtime_payload(
 
 def artifact_payload(record: SessionArtifactRecord, *, change: str) -> dict[str, Any]:
     canonical = Path(record.canonical_path)
+    name = export_file_name(canonical.name, record.mime_type, b"")
     status = (
         ARTIFACT_STATUS_DELETED if change == ARTIFACT_CHANGE_DELETE else ARTIFACT_STATUS_AVAILABLE
     )
@@ -279,8 +283,8 @@ def artifact_payload(record: SessionArtifactRecord, *, change: str) -> dict[str,
         "artifact_id": artifact_identity(record),
         "path": record.original_path,
         "absolute_path": record.canonical_path,
-        "name": canonical.name,
-        "title": str(record.metadata.get("title") or canonical.name),
+        "name": name,
+        "title": str(record.metadata.get("title") or name),
         "publication_id": record.metadata.get("publication_id"),
         "media_type": record.mime_type,
         "size": record.size_bytes,
@@ -312,10 +316,16 @@ def queued_message_payload(record: QueuedMessageRecord) -> dict[str, Any]:
         "state": record.state.value,
         "deadline": record.deadline,
         "purpose": record.purpose,
-        "input": record.body.get("input", []),
+        "submission_mode": record.submission_mode.value,
+        "input": (
+            [{"type": "text", "text": AUTOMATIC_RECOVERY_MESSAGE}]
+            if record.purpose == QUEUE_PURPOSE_RECOVERY
+            else record.body.get("input", [])
+        ),
         "assistant_context_revision": record.body.get("assistant_context_revision"),
         "assistant_references": record.body.get(QUEUED_ASSISTANT_REFERENCES, []),
         "safe_error": record.safe_error,
+        "safe_error_details": record.safe_error_details,
         # The uncertainty correlation handle a human confirmation must present.
         "native_turn_id": record.native_turn_id,
         "created_at": record.created_at,

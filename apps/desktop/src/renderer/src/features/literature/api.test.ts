@@ -11,6 +11,7 @@ import {
   LiteratureApiError,
   linkLiteraturesToProject,
   listAllLiteratures,
+  literatureQueryKey,
   listLiteratureNotes,
   updateLiteratureNote
 } from './api.ts'
@@ -47,9 +48,12 @@ for (const projectId of [undefined, 'project-library']) {
         tag_id: ['tag-a'], sort: 'title', order: 'asc', page: 9, page_size: 1
       })
       assert.deepEqual(items, source)
-      assert.equal(requests.length, Math.max(1, Math.ceil(total / 50)))
+      // 200 是服务端 MAX_PAGE_SIZE: 整表加载必须一页取满, 否则 2000+ 条会退化成几十次
+      // 串行往返。调用方自己传的 page_size (上面是 1) 一律被覆盖, 这里连带钉住。
+      assert.equal(requests.length, Math.max(1, Math.ceil(total / 200)))
       for (const [index, request] of requests.entries()) {
         assert.equal(request.searchParams.get('page'), String(index + 1))
+        assert.equal(request.searchParams.get('page_size'), '200')
         assert.equal(request.searchParams.get('project_id'), projectId ?? null)
         assert.equal(request.searchParams.get('q'), 'research')
         assert.deepEqual(request.searchParams.getAll('collection_id'), ['collection-a', 'collection-b'])
@@ -250,10 +254,45 @@ test('request fallback keeps HTTP identity and leaves app wording to the descrip
       assert.ok(error instanceof LiteratureApiError)
       assert.equal(error.failure.code, 'VENDOR_ERROR')
       assert.equal(error.message, '原始诊断')
-      assert.deepEqual(literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'), { key: 'batch.loadFailed', detail: 'VENDOR_ERROR: 原始诊断' })
+      assert.deepEqual(literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'), { key: 'batch.loadFailed', detail: undefined })
       return true
     })
   } finally { globalThis.window = previousWindow; globalThis.fetch = previousFetch }
+})
+
+test('literature query identity follows content, not object identity', () => {
+  const recentScope = {
+    attachment: 'any' as const,
+    order: 'desc' as const,
+    sort: 'created_at' as const,
+    project_id: 'project-library',
+    recent: true,
+    page: 1,
+    page_size: 50
+  }
+  // catalog 每次 query()/filter() 都换一个新对象; 内容相同就必须是同一个身份,
+  // 否则列表 effect 会取消在飞请求再重拉一遍。
+  assert.equal(
+    literatureQueryKey(recentScope),
+    literatureQueryKey({ ...recentScope })
+  )
+  assert.equal(
+    literatureQueryKey(recentScope),
+    literatureQueryKey({
+      page_size: 50,
+      page: 1,
+      recent: true,
+      project_id: 'project-library',
+      sort: 'created_at',
+      order: 'desc',
+      attachment: 'any'
+    })
+  )
+  assert.notEqual(literatureQueryKey(recentScope), literatureQueryKey({ ...recentScope, recent: undefined }))
+  assert.notEqual(literatureQueryKey(recentScope), literatureQueryKey({ ...recentScope, page: 2 }))
+  // 与 url() 同一口径: 空值不参与身份, 数组展开成同名多值 (顺序不影响服务端语义)。
+  assert.equal(literatureQueryKey({ q: '', without_project: false, tag_id: undefined }), '')
+  assert.equal(literatureQueryKey({ tag_id: ['second', 'first'] }), literatureQueryKey({ tag_id: ['first', 'second'] }))
 })
 
 test('PDF upload network and malformed-success failures expose stable display codes', async () => {

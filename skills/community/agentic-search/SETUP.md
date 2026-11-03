@@ -61,7 +61,11 @@ profile 只能配置 session 环境，不能强制 Skill 在 prompt 中选择哪
 
 ## PaperHub
 
-无需配置时，工具使用仓库内 `tools/search_config.default.json` 的当前直连地址。覆盖优先级是：
+宿主需要在会话和子代理的沙箱中授权固定的 `scholarseed.damo.alibaba.com` 主机，
+并验证域名限制由宿主网络边界执行；Skill 不负责扩大网络权限。授权覆盖该主机的
+全部路径，不限于 `/paperhub`；自定义 `PAPERHUB_URL` 不会自动扩大白名单。
+
+无需配置时，工具使用仓库内 `tools/search_config.default.json` 的当前服务地址，并继承可用代理。覆盖优先级是：
 
 1. 环境变量（如 `PAPERHUB_URL`、`PAPERHUB_PROXY_MODE`）；
 2. `AGENTIC_SEARCH_CONFIG` 指向的 JSON；
@@ -75,14 +79,15 @@ profile 只能配置 session 环境，不能强制 Skill 在 prompt 中选择哪
 {
   "paperhub_url": "https://scholarseed.damo.alibaba.com/paperhub",
   "paperhub_proxy_mode": "auto",
-  "extra_no_proxy": ["scholarseed.damo.alibaba.com"],
+  "extra_no_proxy": [],
   "cache_dir": "",
   "cache_mode": "off",
   "cache_replay_timing": "instant"
 }
 ```
 
-自定义 endpoint 按用户配置保留。对官方 `scholarseed.damo.alibaba.com` 域名，配置文件或
+自定义 endpoint 按用户配置保留。旧用户配置若把官方域名写入 `extra_no_proxy`，也需移除，
+否则 Python 可能绕过宿主的受限网络代理。对官方 `scholarseed.damo.alibaba.com` 域名，配置文件或
 显式 `PAPERHUB_URL` 中的 `http://` 会被强制升级为 `https://`；localhost 与其他
 自定义/内网 URL 不会被改写。
 
@@ -114,11 +119,11 @@ export SCHOLARSEED_API_KEY="你的 PaperHub API key"
 
 | 场景 | `paperhub_url` | `paperhub_proxy_mode` | `extra_no_proxy` |
 |---|---|---|---|
-| 默认直连 | `https://scholarseed.damo.alibaba.com/paperhub` | `auto` 或 `direct` | 包含 `scholarseed.damo.alibaba.com` |
-| 必须走 HTTP 代理 | 同上 | `inherit` 或 `auto` | 移除 `scholarseed.damo.alibaba.com` |
+| 默认继承网络代理 | `https://scholarseed.damo.alibaba.com/paperhub` | `auto` | 不包含 `scholarseed.damo.alibaba.com` |
+| 明确直连 | 同上 | `direct` | 可包含 `scholarseed.damo.alibaba.com` |
 | SSH 隧道 | `http://localhost:18000` | `direct` | 包含 `localhost`、`127.0.0.1` |
 
-`extra_no_proxy` 会同时写入 `NO_PROXY` 与 `no_proxy`。因此仓库默认值会绕过代理直连当前域名；若公司网络要求 PaperHub 必须走代理，必须从用户配置中移除该域名。不要在仓库配置中提交代理密码。
+`extra_no_proxy` 会同时写入 `NO_PROXY` 与 `no_proxy`。默认值为空，以便宿主的受限网络出口执行域名策略；旧用户配置及外部环境变量也不能在此类宿主中为 PaperHub 设置代理绕行。需要直连时应显式选择 `direct`，但直连成功不能证明宿主白名单生效。不要在仓库配置中提交代理密码。
 
 ### SSH 隧道
 

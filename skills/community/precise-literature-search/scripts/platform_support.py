@@ -3,13 +3,25 @@ from __future__ import annotations
 
 import errno
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import shlex
 import stat
 import sys
 import time
 
 WINDOWS = os.name == "nt"
+
+
+def posix_form(name) -> str:
+    """POSIX form of a path-like identifier, independent of the host separator.
+
+    Skill contracts name artifacts with forward slashes, but a ``Path`` parsed from
+    the command line renders them back on Windows. A path already knows its own
+    separator semantics, so trust its flavour instead of re-parsing ``str(name)``:
+    re-parsing would apply the host's rules to another platform's separators.
+    """
+    path = name if isinstance(name, PurePath) else PurePath(str(name))
+    return path.as_posix()
 
 
 def lock_file(handle, *, blocking=True):

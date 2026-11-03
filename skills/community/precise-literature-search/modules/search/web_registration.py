@@ -6,6 +6,7 @@ import json
 from urllib.parse import urlsplit
 
 from io_utils import atomic_write_json, read_json, utc_now
+from filesystem import path_exists
 from normalize import DOCUMENT_TYPES, normalize_paper
 from tools import pool, state
 
@@ -71,14 +72,14 @@ def summary(work, *, artifact):
     result = {"accepted": 0, "pending": 0, "rejected": 0, "outcomes": [],
               "batch_count": 0, "query_count": 0, "accounting": "post_hoc"}
     ledger = artifact(work, "web-execution.json")
-    if not ledger.exists():
+    if not path_exists(ledger):
         return result
     batches = read_json(ledger)["batches"]
     result["batch_count"] = len(batches)
     identities = dict.fromkeys(identity for batch in batches for identity in batch["outcome_ids"])
     for identity in identities:
         path = artifact(work, f"results/web-{identity}.json")
-        if not path.exists():
+        if not path_exists(path):
             continue  # An interrupted registration is completed by resubmitting it.
         result["query_count"] += 1
         for item in read_json(path).get("registration", []):
@@ -91,7 +92,7 @@ def record(work, decisions, *, artifact):
     if decisions is None:
         raise ValueError("record-web requires --input with actual native web outcomes")
     ledger_path = artifact(work, "web-execution.json")
-    ledger = read_json(ledger_path) if ledger_path.exists() else {"schema_version": "1.0", "batches": []}
+    ledger = read_json(ledger_path) if path_exists(ledger_path) else {"schema_version": "1.0", "batches": []}
     items = decisions["queries"]
     if not isinstance(items, list) or not 1 <= len(items) <= 8:
         raise ValueError("record one to eight actual web query outcomes")
@@ -107,7 +108,7 @@ def record(work, decisions, *, artifact):
         if not isinstance(records, list) or len(records) > 20:
             raise ValueError("at most twenty evidenced records per web query")
         path = artifact(work, f"results/web-{identity}.json")
-        previous = read_json(path) if path.exists() else None
+        previous = read_json(path) if path_exists(path) else None
         if previous and observations(previous["raw_outcome"]) != observations(item):
             raise ValueError("saved Web outcome does not match its content digest")
         normalized, registration = [], []
@@ -133,7 +134,7 @@ def record(work, decisions, *, artifact):
     for path, value, attempt in prepared:
         # An append-only raw snapshot survives every later classification repair.
         raw_path = artifact(work, attempt)
-        if not raw_path.exists():
+        if not path_exists(raw_path):
             atomic_write_json(raw_path, value["raw_outcome"])
         elif read_json(raw_path) != value["raw_outcome"]:
             raise ValueError("saved Web attempt does not match its content digest")

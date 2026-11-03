@@ -5,8 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from scholarseed_codex.permission import sandbox_policy
-from scholarseed_codex.protocol.session import CodexSessionOpenRequest
+from scholarseed_codex.protocol.session import (
+    CODEX_REASONING_SUMMARY_CONFIG,
+    CodexSessionOpenRequest,
+)
 from scholarseed_codex.protocol.state import CODEX_DEFAULT_APPROVAL_POLICY, AppServerError
+from scholarseed_codex.utils import path_identity
 from scholarseed_runtime.contract.input import CollaborationMode, InputKind, TurnInput
 
 CODEX_LOCAL_FILE_CONTEXT = (
@@ -98,6 +102,8 @@ def start_parameters(
         params["approvalsReviewer"] = request.approval_reviewer.value
     if turn_input.model:
         params["model"] = turn_input.model
+    if summary := request.thread_config.get(CODEX_REASONING_SUMMARY_CONFIG):
+        params["summary"] = summary
     if turn_input.collaboration_mode == CollaborationMode.PLAN:
         model = model or request.model
         if not model:
@@ -115,7 +121,7 @@ def start_parameters(
 
 def skill_inputs(turn_input: TurnInput) -> dict[str, str]:
     return {
-        str(item.path.expanduser().resolve()): item.name
+        path_identity(item.path): item.name
         for item in turn_input.items
         if item.kind == InputKind.SKILL and item.path is not None and item.name
     }

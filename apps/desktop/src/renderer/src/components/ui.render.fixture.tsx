@@ -1,11 +1,13 @@
 import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
-import { Copy } from 'lucide-react'
+import { Check, Copy } from 'lucide-react'
+import { IconFont } from './primitive'
 import { createLocalization } from '../../../localization/engine'
 import { resources } from '../../../localization/resources'
 import aiThinking from '../assets/ai-thinking.gif'
 import { AnnotationSummary } from '../features/assistant/Notes'
+import { Motion } from '../shell/Motion'
 
 import '../styles.css'
 import {
@@ -15,6 +17,10 @@ import {
   AccordionTrigger,
   Alert,
   AlertDescription,
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogTrigger,
   AspectRatio,
   Avatar,
   Breadcrumb,
@@ -25,6 +31,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
   Button,
+  NavigationButton,
   Card,
   CardContent,
   CardDescription,
@@ -133,24 +140,31 @@ import {
   ToggleGroup,
   ToggleGroupItem,
   useToast,
-  type ToastData
+  type ToastData,
 } from './ui'
 
 function AnnotationSummaryDemo(): JSX.Element {
   const [annotations, setAnnotations] = useState([
     { id: 'first', previewText: '第一段原文', comment: '第一条注释' },
-    { id: 'second', previewText: '第二段原文', comment: '第二条注释' }
+    { id: 'second', previewText: '第二段原文', comment: '第二条注释' },
   ])
   return (
-    <section className="grid bg-[var(--vds-surface-raised)]" data-testid="render-annotation-workspace">
+    <section
+      className="grid bg-[var(--vds-surface-raised)]"
+      data-testid="render-annotation-workspace"
+    >
       <AnnotationSummary
         annotations={annotations}
         onClear={() => setAnnotations([])}
         onEdit={async (annotationId, comment) => {
-          setAnnotations(items => items.map(item => item.id === annotationId ? { ...item, comment } : item))
+          setAnnotations((items) =>
+            items.map((item) => (item.id === annotationId ? { ...item, comment } : item))
+          )
           return true
         }}
-        onRemove={annotationId => setAnnotations(items => items.filter(item => item.id !== annotationId))}
+        onRemove={(annotationId) =>
+          setAnnotations((items) => items.filter((item) => item.id !== annotationId))
+        }
       />
       <div className="bg-[var(--vds-other-overlay-2)]" data-testid="render-annotation-message">
         <AnnotationSummary annotations={annotations} testId="render-sent-annotation-summary" />
@@ -167,12 +181,16 @@ function ToastQueueDemo(): JSX.Element {
       data-testid="render-toast-add"
       onClick={() =>
         toast({
-          action: <Button size="sm" variant="secondary">查看</Button>,
+          action: (
+            <Button size="sm" variant="secondary">
+              查看
+            </Button>
+          ),
           description: '非受控队列会追加通知。',
           duration: false,
           id: 'queued-toast',
           title: '队列通知',
-          tone: 'success'
+          tone: 'success',
         })
       }
     >
@@ -192,9 +210,9 @@ function NavigationTabsScrollDemo(): JSX.Element {
         data-testid="render-navigation-tabs-scroll"
         onValueChange={setActiveTab}
         showOverview={false}
-        tabs={Array.from({ length: 7 }, (_, index) => ({
+        tabs={Array.from({ length: 12 }, (_, index) => ({
           id: `tab-${index + 1}`,
-          label: `Document ${index + 1}.md`
+          label: `Document ${index + 1}.md`,
         }))}
         value={activeTab}
       />
@@ -206,7 +224,7 @@ function NavigationTabsScrollDemo(): JSX.Element {
       </Button>
       <Button
         data-testid="render-navigation-tabs-activate-last"
-        onClick={() => setActiveTab('tab-7')}
+        onClick={() => setActiveTab('tab-12')}
       >
         激活末尾页签
       </Button>
@@ -214,7 +232,57 @@ function NavigationTabsScrollDemo(): JSX.Element {
   )
 }
 
+function NavigationTabsReorderDemo(): JSX.Element {
+  const [tabs, setTabs] = useState([
+    { id: 'first', label: 'First.md' },
+    { id: 'second', label: 'Second.md', dirty: true },
+    { id: 'third', label: 'Third.md' },
+    { id: 'locked', label: 'Locked.md' },
+  ])
+  const [value, setValue] = useState('second')
+  const [callbacks, setCallbacks] = useState(0)
+  const [dragEvents, setDragEvents] = useState(0)
+  const [dropEvents, setDropEvents] = useState(0)
+  return (
+    <section>
+      <NavigationTabs
+        data-testid="render-navigation-tabs-reorder"
+        tabs={tabs}
+        value={value}
+        onValueChange={setValue}
+        onClose={(id) => setTabs((current) => current.filter((tab) => tab.id !== id))}
+        onReorder={(ids) => {
+          setTabs((current) => ids.flatMap((id) => current.filter((tab) => tab.id === id)))
+          setCallbacks((count) => count + 1)
+        }}
+        getTabProps={(tab) => ({
+          draggable: tab.id === 'locked' ? false : undefined,
+          onDragStart: () => setDragEvents((count) => count + 1),
+          onDrop: () => setDropEvents((count) => count + 1),
+        })}
+      />
+      <output data-testid="render-navigation-reorders">{callbacks}</output>
+      <output data-testid="render-navigation-drag-events">{dragEvents}</output>
+      <output data-testid="render-navigation-drop-events">{dropEvents}</output>
+      <NavigationTabs
+        data-testid="render-navigation-tabs-reorder-other"
+        tabs={tabs}
+        showOverview={false}
+        onReorder={() => setCallbacks((count) => count + 1)}
+      />
+    </section>
+  )
+}
+
 function Fixture(): JSX.Element {
+  const [conversationWidth, setConversationWidth] = useState('360px')
+  const [morph, setMorph] = useState(false)
+  const [morphEntry, setMorphEntry] = useState(false)
+  const [morphOffset, setMorphOffset] = useState(0)
+  const [draggingMorph, setDraggingMorph] = useState(false)
+  const [motionClosed, setMotionClosed] = useState(false)
+  const [navigationClosed, setNavigationClosed] = useState(false)
+  const [conversationHostWidth, setConversationHostWidth] = useState(800)
   const [buttonClicks, setButtonClicks] = useState(0)
   const [accepted, setAccepted] = useState(false)
   const [enabled, setEnabled] = useState(false)
@@ -238,7 +306,9 @@ function Fixture(): JSX.Element {
   const [accordionKeyEvents, setAccordionKeyEvents] = useState(0)
   const [blockedAccordionKeyEvents, setBlockedAccordionKeyEvents] = useState(0)
   const [defaultToggleGroupValue, setDefaultToggleGroupValue] = useState<string | string[]>('')
-  const [invalidToggleGroupValue, setInvalidToggleGroupValue] = useState<string | string[]>('missing')
+  const [invalidToggleGroupValue, setInvalidToggleGroupValue] = useState<string | string[]>(
+    'missing'
+  )
   const [disabledToggleGroupValue, setDisabledToggleGroupValue] = useState<string | string[]>('')
   const [verticalToggleGroupValue, setVerticalToggleGroupValue] = useState<string | string[]>('top')
   const [sliderValue, setSliderValue] = useState(20)
@@ -259,23 +329,28 @@ function Fixture(): JSX.Element {
   const [resizableSizes, setResizableSizes] = useState([30, 70])
   const [clampedResizableSizes, setClampedResizableSizes] = useState([5, 95])
   const [disabledResizableSizes, setDisabledResizableSizes] = useState([45, 55])
+  const [resizeOffset, setResizeOffset] = useState(0)
   const [rightSplitWidth, setRightSplitWidth] = useState('403px')
   const [controlledToasts, setControlledToasts] = useState<ToastData[]>([
     {
-      action: <Button size="sm" variant="secondary">撤销</Button>,
+      action: (
+        <Button size="sm" variant="secondary">
+          撤销
+        </Button>
+      ),
       description: '受控列表由调用方维护。',
       duration: false,
       id: 'controlled-toast',
       title: '已保存',
-      tone: 'info'
+      tone: 'info',
     },
     {
       description: '错误通知使用 alert 语义。',
       duration: false,
       id: 'error-toast',
       title: '同步失败',
-      tone: 'error'
-    }
+      tone: 'error',
+    },
   ])
   const [autoToasts, setAutoToasts] = useState<ToastData[]>([])
   const [nestedControlledToasts, setNestedControlledToasts] = useState<ToastData[]>([
@@ -284,13 +359,15 @@ function Fixture(): JSX.Element {
       duration: false,
       id: 'shared-toast',
       title: '受控同 id',
-      tone: 'info'
-    }
+      tone: 'info',
+    },
   ])
   const [sheetOpen, setSheetOpen] = useState(false)
   const [sheetCloseCount, setSheetCloseCount] = useState(0)
   const [sheetOpenChanges, setSheetOpenChanges] = useState(0)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogActionDisabled, setDialogActionDisabled] = useState(false)
+  const [dialogActionRemoved, setDialogActionRemoved] = useState(false)
   const [dialogChildClicks, setDialogChildClicks] = useState(0)
   const [modalSheetOpen, setModalSheetOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -301,13 +378,32 @@ function Fixture(): JSX.Element {
   const [tooltipTemporarilyDisabled, setTooltipTemporarilyDisabled] = useState(false)
   const [navigationContextTab, setNavigationContextTab] = useState('')
   const scrollViewportRef = useRef<HTMLDivElement | null>(null)
+  const hoverBoundaryRef = useRef<HTMLDivElement | null>(null)
 
   return (
     <main>
+      <NavigationButton
+        className="w-[var(--vds-project-selector-width)]"
+        data-testid="render-navigation-button"
+        label="一个很长的项目名称用于验证省略与完整名称"
+        onClick={() => setButtonClicks((value) => value + 1)}
+      />
+      <NavigationButton disabled label="不可用项目" data-testid="render-navigation-disabled" />
+      <NavigationButton
+        label="蛋白质设计开放问题与真实长项目标题"
+        backLabel="返回项目中心"
+        onBack={() => setButtonClicks((value) => value + 1)}
+        onClick={() => setButtonClicks((value) => value + 10)}
+        data-testid="render-navigation-split"
+      />
       <Spinner size="sm" data-testid="render-spinner-default" />
       <Spinner imageSrc={aiThinking} size="sm" data-testid="render-spinner-image" />
       <Button loading data-testid="render-button-loading-default" />
-      <Button loading loadingIcon={<Spinner imageSrc={aiThinking} size="sm" />} data-testid="render-button-loading-image" />
+      <Button
+        loading
+        loadingIcon={<Spinner imageSrc={aiThinking} size="sm" />}
+        data-testid="render-button-loading-image"
+      />
       <Button
         data-testid="render-button"
         loading={buttonClicks > 0}
@@ -322,7 +418,11 @@ function Fixture(): JSX.Element {
       <EllipsisText className="max-w-[120px]" data-testid="render-ellipsis-long">
         这是一段一定会超过容器宽度并被省略的长标题
       </EllipsisText>
-      <EllipsisText className="max-w-[120px]" data-testid="render-ellipsis-scrollable" tooltipPortalled>
+      <EllipsisText
+        className="max-w-[120px]"
+        data-testid="render-ellipsis-scrollable"
+        tooltipPortalled
+      >
         {'作者一, 作者二, 作者三, 作者四, 作者五, '.repeat(40)}
       </EllipsisText>
 
@@ -330,17 +430,18 @@ function Fixture(): JSX.Element {
         data-testid="render-navigation-tabs"
         onValueChange={setNavigationValue}
         onContextMenuOpen={setNavigationContextTab}
-        renderContextMenu={(tab) => tab.id === 'beta'
-          ? (
+        onClose={setNavigationContextTab}
+        renderContextMenu={(tab) =>
+          tab.id === 'beta' ? (
             <ContextMenuContent data-testid="render-navigation-context-menu">
               <ContextMenuItem>{tab.label}</ContextMenuItem>
             </ContextMenuContent>
-          )
-          : null}
+          ) : null
+        }
         tabs={[
           { id: 'alpha', label: 'Alpha.md' },
           { dirty: true, id: 'beta', label: 'Beta.md' },
-          { id: 'gamma', label: 'Gamma.md' }
+          { id: 'gamma', label: 'Gamma.md' },
         ]}
         value={navigationValue}
       />
@@ -354,10 +455,16 @@ function Fixture(): JSX.Element {
       <NavigationTabs
         data-testid="render-navigation-tabs-long-label"
         showOverview={false}
-        tabs={[{ id: 'long', label: 'Multimodal Fusion and Vision-Language Models for Robot Learning.md' }]}
+        tabs={[
+          {
+            id: 'long',
+            label: 'Multimodal Fusion and Vision-Language Models for Robot Learning.md',
+          },
+        ]}
         value="long"
       />
       <NavigationTabsScrollDemo />
+      <NavigationTabsReorderDemo />
 
       <Card data-testid="render-card" variant="flat">
         原子卡片
@@ -373,12 +480,16 @@ function Fixture(): JSX.Element {
         </CardFooter>
       </Card>
       <FloatingToolbar
-        actions={(
+        actions={
           <>
-            <Button size="sm" variant="ghost">解读</Button>
-            <Button size="sm" variant="ghost">翻译</Button>
+            <Button size="sm" variant="ghost">
+              解读
+            </Button>
+            <Button size="sm" variant="ghost">
+              翻译
+            </Button>
           </>
-        )}
+        }
         data-testid="render-floating-toolbar"
         label="选区操作"
       />
@@ -392,6 +503,7 @@ function Fixture(): JSX.Element {
         data-i18n-placeholder="examples:input.placeholder"
         error="请输入有效名称"
         label="名称"
+        labelClassName="text-[length:var(--vds-font-body-lv2)]"
         placeholder="请输入名称"
         data-testid="render-input"
       />
@@ -459,6 +571,42 @@ function Fixture(): JSX.Element {
       />
       <output data-testid="render-checkbox-value">{accepted ? 'yes' : 'no'}</output>
       <Checkbox checked="mixed" data-testid="render-checkbox-mixed" label="部分选择" />
+      <Checkbox
+        checked={accepted}
+        data-testid="render-checkbox-content"
+        onCheckedChange={setAccepted}
+      >
+        <span>选项标题</span>
+        <span>选项描述</span>
+      </Checkbox>
+      <section
+        className="grid w-[var(--vds-conversation-content-width)] gap-[var(--vds-space-3)]"
+        data-testid="render-question-options"
+      >
+        <Radio
+          align="first-line"
+          checked
+          className="flex w-full gap-[var(--vds-space-2)]"
+          data-testid="render-question-option-radio"
+        >
+          <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
+            <span className="mr-[var(--vds-space-2)] font-medium">外置持久记忆系统</span>
+            跨会话、跨任务的外部记忆库：写入/压缩/检索/更新与遗忘机制（如 MemGPT、记忆增强 Agent
+            一类工作）
+          </span>
+        </Radio>
+        <Checkbox
+          align="first-line"
+          className="flex w-full gap-[var(--vds-space-2)]"
+          data-testid="render-question-option-checkbox"
+        >
+          <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
+            <span className="mr-[var(--vds-space-2)] font-medium">外置持久记忆系统</span>
+            跨会话、跨任务的外部记忆库：写入/压缩/检索/更新与遗忘机制（如 MemGPT、记忆增强 Agent
+            一类工作）
+          </span>
+        </Checkbox>
+      </section>
 
       <Radio
         checked={mode === 'auto'}
@@ -518,9 +666,19 @@ function Fixture(): JSX.Element {
         <AlertDescription data-testid="render-alert-full" truncate={false}>
           完整处置说明不能因提示区宽度不足而丢失。
         </AlertDescription>
-        <AlertDescription data-testid="render-alert-default">普通摘要保持默认两行。</AlertDescription>
+        <AlertDescription data-testid="render-alert-default">
+          普通摘要保持默认两行。
+        </AlertDescription>
       </Alert>
 
+      <Alert data-testid="render-alert-align-single" tone="warning">
+        <AlertDescription truncate={false}>文件将移到废纸篓。</AlertDescription>
+      </Alert>
+      <Alert data-testid="render-alert-align-multiple" tone="warning" style={{ width: 220 }}>
+        <AlertDescription truncate={false}>
+          这会同步影响你的本地文件：文件将被移到系统废纸篓，可以从废纸篓恢复。
+        </AlertDescription>
+      </Alert>
       <ProgressBar
         data-testid="render-progress"
         label="上传进度"
@@ -563,10 +721,41 @@ function Fixture(): JSX.Element {
         title="暂无项目"
       />
 
+      <EmptyState
+        variant="compact"
+        data-testid="render-empty-compact"
+        icon={<Copy size={24} />}
+        title="暂无内容"
+        description="没有匹配的结果"
+      />
+      <EmptyState
+        variant="compact"
+        data-testid="render-empty-compact-font"
+        icon={<IconFont type="line-operation-search" />}
+        title="暂无内容"
+      />
+      <EmptyState
+        variant="panel"
+        data-testid="render-empty-panel"
+        icon={<Copy />}
+        title="打开文件"
+        description="从左侧文件树中选择文件打开"
+      />
+
       <CopyButton data-testid="render-copy-button" feedbackDuration={50} value="copy-value">
         复制
       </CopyButton>
-      <CopyButton data-testid="render-copy-icon" iconOnly icon={<Copy size={14} />} size="xs" className="![--vds-icon-button-glyph:var(--vds-icon-7)]" variant="ghost" value="icon-copy-value" />
+      <CopyButton
+        data-testid="render-copy-icon"
+        iconOnly
+        icon={<Copy size={14} />}
+        copiedIcon={<Check size={14} />}
+        feedbackDuration={3000}
+        size="xs"
+        className="![--vds-icon-button-glyph:var(--vds-icon-7)]"
+        variant="ghost"
+        value="icon-copy-value"
+      />
       <CopyButton data-testid="render-copy-reject" value="reject-value">
         复制失败
       </CopyButton>
@@ -606,16 +795,51 @@ function Fixture(): JSX.Element {
         </TableBody>
       </Table>
 
-      <Pagination data-testid="render-pagination" page={page} pageCount={12} onPageChange={setPage} />
+      <Pagination
+        data-testid="render-pagination"
+        page={page}
+        pageCount={12}
+        onPageChange={setPage}
+      />
       <output data-testid="render-pagination-value">{page}</output>
-      <Pagination data-testid="render-pagination-disabled" disabled page={disabledPage} pageCount={4} onPageChange={setDisabledPage} />
+      <Pagination
+        data-testid="render-pagination-disabled"
+        disabled
+        page={disabledPage}
+        pageCount={4}
+        onPageChange={setDisabledPage}
+      />
       <output data-testid="render-pagination-disabled-value">{disabledPage}</output>
-      <Pagination data-testid="render-pagination-first" page={1} pageCount={3} onPageChange={() => undefined} />
-      <Pagination data-testid="render-pagination-last" page={3} pageCount={3} onPageChange={() => undefined} />
-      <Pagination data-testid="render-pagination-overflow" page={99} pageCount={3} onPageChange={() => undefined} />
-      <Pagination data-testid="render-pagination-underflow" page={-5} pageCount={3} onPageChange={() => undefined} />
+      <Pagination
+        data-testid="render-pagination-first"
+        page={1}
+        pageCount={3}
+        onPageChange={() => undefined}
+      />
+      <Pagination
+        data-testid="render-pagination-last"
+        page={3}
+        pageCount={3}
+        onPageChange={() => undefined}
+      />
+      <Pagination
+        data-testid="render-pagination-overflow"
+        page={99}
+        pageCount={3}
+        onPageChange={() => undefined}
+      />
+      <Pagination
+        data-testid="render-pagination-underflow"
+        page={-5}
+        pageCount={3}
+        onPageChange={() => undefined}
+      />
 
-      <AspectRatio data-testid="render-aspect-ratio" ratio={4 / 3} style={{ color: 'rgb(4, 5, 6)' }}>
+      <AspectRatio
+        data-testid="render-aspect-ratio"
+        ratio={4 / 3}
+        style={{ color: 'rgb(4, 5, 6)' }}
+      >
         <div data-testid="render-aspect-content">比例内容</div>
       </AspectRatio>
 
@@ -661,14 +885,22 @@ function Fixture(): JSX.Element {
 
       <Collapsible open={controlledOpen} onOpenChange={setControlledOpen}>
         <CollapsibleTrigger data-testid="render-collapsible-keyboard">键盘展开</CollapsibleTrigger>
-        <CollapsibleContent data-testid="render-collapsible-keyboard-content">键盘内容</CollapsibleContent>
+        <CollapsibleContent data-testid="render-collapsible-keyboard-content">
+          键盘内容
+        </CollapsibleContent>
       </Collapsible>
 
       <Collapsible disabled defaultOpen={false}>
-        <CollapsibleTrigger data-testid="render-collapsible-disabled-trigger">禁用展开</CollapsibleTrigger>
-        <CollapsibleContent data-testid="render-collapsible-disabled-content">禁用内容</CollapsibleContent>
+        <CollapsibleTrigger data-testid="render-collapsible-disabled-trigger">
+          禁用展开
+        </CollapsibleTrigger>
+        <CollapsibleContent data-testid="render-collapsible-disabled-content">
+          禁用内容
+        </CollapsibleContent>
       </Collapsible>
-      <output data-testid="render-collapsible-controlled-value">{controlledOpen ? 'open' : 'closed'}</output>
+      <output data-testid="render-collapsible-controlled-value">
+        {controlledOpen ? 'open' : 'closed'}
+      </output>
 
       <Collapsible animated>
         <CollapsibleTrigger data-testid="render-motion-trigger">展开过程</CollapsibleTrigger>
@@ -683,7 +915,9 @@ function Fixture(): JSX.Element {
         <TabsList aria-label="项目视图">
           <TabsTrigger value="overview">概览</TabsTrigger>
           <TabsTrigger value="tasks">任务</TabsTrigger>
-          <TabsTrigger disabled value="disabled">禁用</TabsTrigger>
+          <TabsTrigger disabled value="disabled">
+            禁用
+          </TabsTrigger>
           <TabsTrigger value="settings">设置</TabsTrigger>
         </TabsList>
         <TabsContent value="overview">概览面板</TabsContent>
@@ -713,14 +947,22 @@ function Fixture(): JSX.Element {
 
       <Tabs data-testid="render-tabs-all-disabled">
         <TabsList aria-label="全禁用页签">
-          <TabsTrigger disabled value="first-disabled">禁用一</TabsTrigger>
-          <TabsTrigger disabled value="second-disabled">禁用二</TabsTrigger>
+          <TabsTrigger disabled value="first-disabled">
+            禁用一
+          </TabsTrigger>
+          <TabsTrigger disabled value="second-disabled">
+            禁用二
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="first-disabled">禁用一面板</TabsContent>
         <TabsContent value="second-disabled">禁用二面板</TabsContent>
       </Tabs>
 
-      <Accordion data-testid="render-accordion" value={accordionValue} onValueChange={setAccordionValue}>
+      <Accordion
+        data-testid="render-accordion"
+        value={accordionValue}
+        onValueChange={setAccordionValue}
+      >
         <AccordionItem value="summary">
           <AccordionTrigger>摘要</AccordionTrigger>
           <AccordionContent>摘要内容</AccordionContent>
@@ -788,25 +1030,39 @@ function Fixture(): JSX.Element {
           <AccordionContent>阻止二内容</AccordionContent>
         </AccordionItem>
       </Accordion>
-      <output data-testid="render-accordion-keydown-prevented-events">{blockedAccordionKeyEvents}</output>
+      <output data-testid="render-accordion-keydown-prevented-events">
+        {blockedAccordionKeyEvents}
+      </output>
 
       <ScrollArea
         data-testid="render-scroll-area"
         orientation="both"
         shadow
         style={{ maxHeight: '80px', maxWidth: '160px' }}
-        viewportClassName="render-scroll-area-viewport"
+        viewportClassName="render-scroll-area-viewport max-h-10 min-h-0"
         viewportProps={{
           'aria-label': '滚动视口',
           'data-testid': 'render-scroll-area-viewport',
           role: 'region',
-          tabIndex: 0
+          tabIndex: 0,
         }}
         viewportRef={scrollViewportRef}
       >
-        <div style={{ width: '320px' }}>
+        <div style={{ width: '320px', height: '160px' }}>
           滚动内容滚动内容滚动内容滚动内容滚动内容滚动内容滚动内容滚动内容
         </div>
+      </ScrollArea>
+
+      <ScrollArea
+        overlay
+        shadow="auto"
+        orientation="both"
+        data-testid="render-overlay-scroll"
+        style={{ height: '80px', width: '160px' }}
+        viewportClassName="h-full"
+        viewportProps={{ 'aria-label': '覆盖式滚动视口', 'data-testid': 'render-overlay-viewport' }}
+      >
+        <div style={{ width: '320px', height: '240px' }}>覆盖式滚动内容</div>
       </ScrollArea>
 
       <Slider
@@ -930,13 +1186,21 @@ function Fixture(): JSX.Element {
         <CommandInput data-testid="render-command-input" placeholder="搜索命令" />
         <CommandList data-testid="render-command-list">
           <CommandGroup heading="项目">
-            <CommandItem value="open" onSelect={setCommandSelects}>打开项目</CommandItem>
-            <CommandItem keywords={['create']} value="new" onSelect={setCommandSelects}>新建项目</CommandItem>
+            <CommandItem value="open" onSelect={setCommandSelects}>
+              打开项目
+            </CommandItem>
+            <CommandItem keywords={['create']} value="new" onSelect={setCommandSelects}>
+              新建项目
+            </CommandItem>
           </CommandGroup>
           <CommandSeparator />
           <CommandGroup heading="视图">
-            <CommandItem value="list" onSelect={setCommandSelects}>切换列表</CommandItem>
-            <CommandItem disabled value="archive" onSelect={setCommandSelects}>归档视图</CommandItem>
+            <CommandItem value="list" onSelect={setCommandSelects}>
+              切换列表
+            </CommandItem>
+            <CommandItem disabled value="archive" onSelect={setCommandSelects}>
+              归档视图
+            </CommandItem>
           </CommandGroup>
           <CommandEmpty>没有匹配命令</CommandEmpty>
         </CommandList>
@@ -948,7 +1212,9 @@ function Fixture(): JSX.Element {
       <Command data-testid="render-command-default" defaultSearchValue="create" defaultValue="new">
         <CommandInput data-testid="render-command-default-input" placeholder="搜索默认" />
         <CommandList>
-          <CommandItem keywords={['create']} value="new">新建项目</CommandItem>
+          <CommandItem keywords={['create']} value="new">
+            新建项目
+          </CommandItem>
           <CommandItem value="open">打开项目</CommandItem>
           <CommandEmpty>空</CommandEmpty>
         </CommandList>
@@ -973,28 +1239,52 @@ function Fixture(): JSX.Element {
         sizes={resizableSizes}
         onSizesChange={setResizableSizes}
       >
-        <ResizablePanel aria-label="左侧" minSize={20}>左侧内容</ResizablePanel>
+        <ResizablePanel aria-label="左侧" minSize={20}>
+          左侧内容
+        </ResizablePanel>
         <ResizableHandle aria-label="调整左右面板" data-testid="render-resizable-handle" />
-        <ResizablePanel aria-label="右侧" minSize={20}>右侧内容</ResizablePanel>
+        <ResizablePanel aria-label="右侧" minSize={20}>
+          右侧内容
+        </ResizablePanel>
       </ResizablePanelGroup>
-      <output data-testid="render-resizable-sizes">{resizableSizes.map((size) => Math.round(size)).join(',')}</output>
+      <output data-testid="render-resizable-sizes">
+        {resizableSizes.map((size) => Math.round(size)).join(',')}
+      </output>
 
       <ResizablePanelGroup data-testid="render-resizable-default" defaultSizes={[25, 75]}>
-        <ResizablePanel aria-label="默认左侧" minSize={15}>默认左侧</ResizablePanel>
+        <ResizablePanel aria-label="默认左侧" minSize={15}>
+          默认左侧
+        </ResizablePanel>
         <ResizableHandle aria-label="调整默认面板" data-testid="render-resizable-default-handle" />
-        <ResizablePanel aria-label="默认右侧" minSize={15}>默认右侧</ResizablePanel>
+        <ResizablePanel aria-label="默认右侧" minSize={15}>
+          默认右侧
+        </ResizablePanel>
       </ResizablePanelGroup>
 
       <ResizablePanelGroup data-testid="render-resizable-panel-default">
-        <ResizablePanel aria-label="面板默认左侧" defaultSize={35} minSize={20}>面板默认左侧</ResizablePanel>
-        <ResizableHandle aria-label="调整面板默认尺寸" data-testid="render-resizable-panel-default-handle" />
-        <ResizablePanel aria-label="面板默认右侧" defaultSize={65} minSize={20}>面板默认右侧</ResizablePanel>
+        <ResizablePanel aria-label="面板默认左侧" defaultSize={35} minSize={20}>
+          面板默认左侧
+        </ResizablePanel>
+        <ResizableHandle
+          aria-label="调整面板默认尺寸"
+          data-testid="render-resizable-panel-default-handle"
+        />
+        <ResizablePanel aria-label="面板默认右侧" defaultSize={65} minSize={20}>
+          面板默认右侧
+        </ResizablePanel>
       </ResizablePanelGroup>
 
       <ResizablePanelGroup data-testid="render-resizable-default-clamped" defaultSizes={[5, 95]}>
-        <ResizablePanel aria-label="约束默认左侧" minSize={20}>约束默认左侧</ResizablePanel>
-        <ResizableHandle aria-label="调整约束默认尺寸" data-testid="render-resizable-default-clamped-handle" />
-        <ResizablePanel aria-label="约束默认右侧" maxSize={80} minSize={20}>约束默认右侧</ResizablePanel>
+        <ResizablePanel aria-label="约束默认左侧" minSize={20}>
+          约束默认左侧
+        </ResizablePanel>
+        <ResizableHandle
+          aria-label="调整约束默认尺寸"
+          data-testid="render-resizable-default-clamped-handle"
+        />
+        <ResizablePanel aria-label="约束默认右侧" maxSize={80} minSize={20}>
+          约束默认右侧
+        </ResizablePanel>
       </ResizablePanelGroup>
 
       <ResizablePanelGroup
@@ -1002,27 +1292,50 @@ function Fixture(): JSX.Element {
         sizes={clampedResizableSizes}
         onSizesChange={setClampedResizableSizes}
       >
-        <ResizablePanel aria-label="受控约束左侧" maxSize={70} minSize={20}>受控约束左侧</ResizablePanel>
-        <ResizableHandle aria-label="调整受控约束尺寸" data-testid="render-resizable-controlled-clamped-handle" />
-        <ResizablePanel aria-label="受控约束右侧" minSize={20}>受控约束右侧</ResizablePanel>
+        <ResizablePanel aria-label="受控约束左侧" maxSize={70} minSize={20}>
+          受控约束左侧
+        </ResizablePanel>
+        <ResizableHandle
+          aria-label="调整受控约束尺寸"
+          data-testid="render-resizable-controlled-clamped-handle"
+        />
+        <ResizablePanel aria-label="受控约束右侧" minSize={20}>
+          受控约束右侧
+        </ResizablePanel>
       </ResizablePanelGroup>
       <output data-testid="render-resizable-controlled-clamped-sizes">
         {clampedResizableSizes.map((size) => Math.round(size)).join(',')}
       </output>
 
-      <ResizablePanelGroup data-testid="render-resizable-vertical" defaultSizes={[60, 40]} direction="vertical">
+      <ResizablePanelGroup
+        data-testid="render-resizable-vertical"
+        defaultSizes={[60, 40]}
+        direction="vertical"
+      >
         <ResizablePanel aria-label="上方面板">上方内容</ResizablePanel>
         <ResizableHandle aria-label="调整上下区域" data-testid="render-resizable-vertical-handle" />
         <ResizablePanel aria-label="下方面板">下方内容</ResizablePanel>
       </ResizablePanelGroup>
 
+      <div className="relative h-[var(--vds-space-10)] w-[var(--vds-floating-conversation-width)]">
+        <ResizableHandle
+          aria-label="独立调整宽度"
+          appearance="invisible"
+          className="!absolute inset-y-0 left-1/2 !h-auto !w-[var(--vds-space-3)]"
+          data-testid="render-resizable-standalone"
+          onOffsetChange={setResizeOffset}
+        />
+      </div>
+      <output data-testid="render-resizable-offset">{resizeOffset}</output>
       <ResizablePanelGroup
         data-testid="render-resizable-disabled"
         disabled
         sizes={disabledResizableSizes}
         onSizesChange={setDisabledResizableSizes}
       >
-        <ResizablePanel aria-label="禁用左侧">禁用左侧</ResizablePanel>
+        <ResizablePanel aria-label="禁用左侧">
+          <Button data-testid="render-resizable-disabled-action">面板操作</Button>
+        </ResizablePanel>
         <ResizableHandle aria-label="禁用调整" data-testid="render-resizable-disabled-handle" />
         <ResizablePanel aria-label="禁用右侧">禁用右侧</ResizablePanel>
       </ResizablePanelGroup>
@@ -1043,8 +1356,142 @@ function Fixture(): JSX.Element {
         />
       </div>
       <output data-testid="render-resizable-right-width">{rightSplitWidth}</output>
+      <Button
+        data-testid="render-conversation-restore"
+        onClick={() => setConversationWidth('420px')}
+      >
+        Restore conversation width
+      </Button>
+      <Button data-testid="render-conversation-grow" onClick={() => setConversationHostWidth(1100)}>
+        Collapse navigation
+      </Button>
+      <Button data-testid="render-morph-toggle" onClick={() => setMorph((value) => !value)}>
+        Morph conversation
+      </Button>
+      <Button
+        data-testid="render-morph-drag"
+        onClick={() => {
+          setDraggingMorph((value) => !value)
+          setMorph((value) => !value)
+        }}
+      >
+        Drag conversation
+      </Button>
+      <Button
+        data-testid="render-morph-entry"
+        onClick={() => {
+          setMorphEntry((value) => !value)
+          setMorph((value) => !value)
+        }}
+      >
+        Minimize conversation
+      </Button>
+      <Button
+        data-testid="render-morph-position"
+        onClick={() => setMorphOffset((value) => (value <= 0 ? 100 : -100))}
+      >
+        Recalculate dock position
+      </Button>
+      <Button
+        data-testid="render-morph-drop"
+        onClick={() => {
+          setDraggingMorph(false)
+          setMorphOffset((value) => value + 100)
+        }}
+      >
+        Release at same dock
+      </Button>
+      <Motion
+        project="fixture"
+        revision={`${morph}:${morphEntry}`}
+        dragging={draggingMorph}
+        style={{ position: 'relative', width: 800, height: 180 }}
+      >
+        <div
+          data-workbench-motion="conversation"
+          data-testid="render-morph-surface"
+          data-workbench-motion-kind={morphEntry ? 'entry' : undefined}
+          style={{
+            position: 'absolute',
+            left: (morph ? 500 : 0) + morphOffset,
+            top: 0,
+            width: morph ? 64 : 300,
+            height: morph ? 64 : 160,
+          }}
+        >
+          <Input data-testid="render-morph-draft" aria-label="Conversation draft" />
+        </div>
+      </Motion>
+      <Button data-testid="render-split-toggle" onClick={() => setMotionClosed((value) => !value)}>
+        Toggle documents
+      </Button>
+      <Button
+        data-testid="render-navigation-toggle"
+        onClick={() => setNavigationClosed((value) => !value)}
+      >
+        Toggle navigation
+      </Button>
+      <div style={{ height: '200px', width: '800px' }}>
+        <ResizablePanel
+          animated
+          isLeftCollapsed={navigationClosed}
+          leftWidth="260px"
+          minLeftWidth={260}
+          minRightWidth={260}
+          data-testid="render-animated-navigation"
+          leftPanel={<Input data-testid="render-navigation-draft" aria-label="Navigation draft" />}
+          rightPanel={<div>Workspace</div>}
+        />
+      </div>
+      <div style={{ height: '200px', width: conversationHostWidth }}>
+        <ResizablePanel
+          animated
+          isCollapsed={motionClosed}
+          data-testid="render-conversation-split"
+          leftWidth={conversationWidth}
+          onWidthChangeEnd={setConversationWidth}
+          minLeftWidth={260}
+          minRightWidth={260}
+          maxLeftWidth={75}
+          leftPanel={<div>Conversation</div>}
+          rightPanel={<div>Documents</div>}
+        />
+      </div>
+      {(['left', 'right'] as const).flatMap((sizedPanel) =>
+        [false, true].map((reversed) => (
+          <div key={`${sizedPanel}-${reversed}`} style={{ height: '200px', width: '900px' }}>
+            <ResizablePanel
+              data-testid={`render-split-${sizedPanel}-${reversed}`}
+              reversed={reversed}
+              leftWidth="350px"
+              defaultRightWidth={sizedPanel === 'right' ? '350px' : undefined}
+              minLeftWidth={260}
+              minRightWidth={260}
+              maxLeftWidth={640}
+              maxRightWidth={75}
+              leftPanel={<div>逻辑左面板</div>}
+              rightPanel={<div>逻辑右面板</div>}
+            />
+          </div>
+        ))
+      )}
+      <div style={{ height: '200px', width: '900px' }}>
+        <ResizablePanel
+          data-testid="render-resizable-mixed-units"
+          defaultRightWidth="50%"
+          minLeftWidth={260}
+          minRightWidth={260}
+          maxRightWidth={75}
+          leftPanel={<div>Chat</div>}
+          rightPanel={<div data-testid="render-resizable-mixed-right">Workspace</div>}
+        />
+      </div>
 
-      <Toggle data-testid="render-toggle" pressed={togglePressed} onPressedChange={setTogglePressed}>
+      <Toggle
+        data-testid="render-toggle"
+        pressed={togglePressed}
+        onPressedChange={setTogglePressed}
+      >
         筛选
       </Toggle>
       <output data-testid="render-toggle-value">{togglePressed ? 'on' : 'off'}</output>
@@ -1084,7 +1531,9 @@ function Fixture(): JSX.Element {
       >
         <ToggleGroupItem value="list">列表</ToggleGroupItem>
         <ToggleGroupItem value="grid">网格</ToggleGroupItem>
-        <ToggleGroupItem disabled value="disabled">禁用视图</ToggleGroupItem>
+        <ToggleGroupItem disabled value="disabled">
+          禁用视图
+        </ToggleGroupItem>
         <ToggleGroupItem value="chart">图表</ToggleGroupItem>
       </ToggleGroup>
       <output data-testid="render-toggle-group-value">{toggleGroupValue}</output>
@@ -1141,10 +1590,16 @@ function Fixture(): JSX.Element {
         value={disabledToggleGroupValue}
         onValueChange={setDisabledToggleGroupValue}
       >
-        <ToggleGroupItem disabled value="disabled-a">禁用甲</ToggleGroupItem>
-        <ToggleGroupItem disabled value="disabled-b">禁用乙</ToggleGroupItem>
+        <ToggleGroupItem disabled value="disabled-a">
+          禁用甲
+        </ToggleGroupItem>
+        <ToggleGroupItem disabled value="disabled-b">
+          禁用乙
+        </ToggleGroupItem>
       </ToggleGroup>
-      <output data-testid="render-toggle-group-all-disabled-value">{disabledToggleGroupValue}</output>
+      <output data-testid="render-toggle-group-all-disabled-value">
+        {disabledToggleGroupValue}
+      </output>
 
       <ToggleGroup
         aria-label="垂直切换"
@@ -1165,15 +1620,22 @@ function Fixture(): JSX.Element {
         placement="top-left"
         style={{ position: 'static' }}
         toasts={controlledToasts}
-        onDismiss={(id) => setControlledToasts((toasts) => toasts.filter((toast) => toast.id !== id))}
+        onDismiss={(id) =>
+          setControlledToasts((toasts) => toasts.filter((toast) => toast.id !== id))
+        }
       />
       <output data-testid="render-toaster-controlled-count">{controlledToasts.length}</output>
 
-      <Toaster
-        aria-label="位置通知"
-        data-testid="render-toaster-position"
-        placement="top-right"
-      />
+      <div
+        data-vds-toast-viewport
+        style={{ position: 'relative', width: 320, transform: 'translateX(20px)' }}
+      >
+        <Toaster
+          aria-label="位置通知"
+          data-testid="render-toaster-position"
+          placement="top-right"
+        />
+      </div>
 
       <Toaster
         aria-label="自动通知"
@@ -1192,8 +1654,8 @@ function Fixture(): JSX.Element {
               duration: 40,
               id: 'auto-toast',
               title: '自动关闭',
-              tone: 'warning'
-            }
+              tone: 'warning',
+            },
           ])
         }
       >
@@ -1220,8 +1682,8 @@ function Fixture(): JSX.Element {
             duration: false,
             id: 'shared-toast',
             title: 'Provider 同 id',
-            tone: 'success'
-          }
+            tone: 'success',
+          },
         ]}
       >
         <Toaster
@@ -1236,10 +1698,14 @@ function Fixture(): JSX.Element {
           placement="bottom-right"
           style={{ position: 'static' }}
           toasts={nestedControlledToasts}
-          onDismiss={(id) => setNestedControlledToasts((toasts) => toasts.filter((toast) => toast.id !== id))}
+          onDismiss={(id) =>
+            setNestedControlledToasts((toasts) => toasts.filter((toast) => toast.id !== id))
+          }
         />
       </ToastProvider>
-      <output data-testid="render-toaster-nested-controlled-count">{nestedControlledToasts.length}</output>
+      <output data-testid="render-toaster-nested-controlled-count">
+        {nestedControlledToasts.length}
+      </output>
 
       <Toaster
         aria-label="无关闭受控通知"
@@ -1252,8 +1718,8 @@ function Fixture(): JSX.Element {
             duration: 40,
             id: 'readonly-toast',
             title: '只读通知',
-            tone: 'warning'
-          }
+            tone: 'warning',
+          },
         ]}
       />
 
@@ -1269,11 +1735,7 @@ function Fixture(): JSX.Element {
       >
         <SheetPortal>
           <SheetOverlay data-testid="render-sheet-overlay" />
-          <SheetContent
-            aria-label="项目详情"
-            data-testid="render-sheet-content"
-            side="right"
-          >
+          <SheetContent aria-label="项目详情" data-testid="render-sheet-content" side="right">
             <SheetHeader>
               <SheetTitle>项目详情</SheetTitle>
               <SheetDescription>展示右侧详情 UI 壳层。</SheetDescription>
@@ -1312,11 +1774,26 @@ function Fixture(): JSX.Element {
         </SheetPortal>
       </Sheet>
 
+      {[false, true].map((showCloseButton) => (
+        <AlertDialog key={String(showCloseButton)}>
+          <AlertDialogTrigger data-testid={`render-alert-open-${showCloseButton}`}>
+            打开确认
+          </AlertDialogTrigger>
+          <AlertDialogContent showCloseButton={showCloseButton || undefined} aria-label="确认操作">
+            <AlertDialogCancel>取消</AlertDialogCancel>
+          </AlertDialogContent>
+        </AlertDialog>
+      ))}
+
       <Button data-testid="render-dialog-open" onClick={() => setDialogOpen(true)}>
         打开弹窗
       </Button>
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent aria-label="属性合并弹窗" data-testid="render-dialog-content" hideCloseButton>
+        <DialogContent
+          aria-label="属性合并弹窗"
+          data-testid="render-dialog-content"
+          hideCloseButton
+        >
           <DialogClose asChild>
             <Button
               className="absolute right-3 top-3"
@@ -1328,8 +1805,26 @@ function Fixture(): JSX.Element {
             </Button>
           </DialogClose>
           <p>验证 asChild 合并属性。</p>
+          <DialogClose data-testid="render-dialog-cancel">取消</DialogClose>
+          <Button
+            data-testid="dialog-disable-focused-action"
+            disabled={dialogActionDisabled}
+            onClick={() => setDialogActionDisabled(true)}
+          >
+            禁用当前操作
+          </Button>
+          {!dialogActionRemoved && (
+            <Button
+              data-testid="dialog-remove-focused-action"
+              onClick={() => setDialogActionRemoved(true)}
+            >
+              移除当前操作
+            </Button>
+          )}
           <Dialog>
-            <DialogTrigger asChild><Button data-testid="nested-dialog-open">嵌套弹窗</Button></DialogTrigger>
+            <DialogTrigger asChild>
+              <Button data-testid="nested-dialog-open">嵌套弹窗</Button>
+            </DialogTrigger>
             <DialogContent aria-label="嵌套弹窗" data-testid="nested-dialog-content">
               <Button>嵌套操作</Button>
             </DialogContent>
@@ -1337,31 +1832,58 @@ function Fixture(): JSX.Element {
         </DialogContent>
       </Dialog>
       <Dialog modal={false}>
-        <DialogTrigger asChild><Button data-testid="nonmodal-dialog-open">非模态弹窗</Button></DialogTrigger>
-        <DialogContent data-testid="nonmodal-dialog-content" aria-label="非模态弹窗" hideCloseButton>
+        <DialogTrigger asChild>
+          <Button data-testid="nonmodal-dialog-open">非模态弹窗</Button>
+        </DialogTrigger>
+        <DialogContent
+          data-testid="nonmodal-dialog-content"
+          aria-label="非模态弹窗"
+          hideCloseButton
+        >
           <Button data-testid="nonmodal-dialog-action">操作</Button>
         </DialogContent>
       </Dialog>
       <Button data-testid="nonmodal-after">后续操作</Button>
-      {(['sm', 'md', 'lg'] as const).map(size => (
-        <IconButton key={size} size={size} data-testid={`square-icon-${size}`} label={`${size}图标操作`} icon="+" variant="ghost" />
+      {(['sm', 'md', 'lg'] as const).map((size) => (
+        <IconButton
+          key={size}
+          size={size}
+          data-testid={`square-icon-${size}`}
+          label={`${size}图标操作`}
+          icon="+"
+          variant="ghost"
+        />
       ))}
-      <IconButton size="lg" data-testid="square-icon-loading" label="加载图标操作" icon="+" loading />
+      <IconButton
+        size="lg"
+        data-testid="square-icon-loading"
+        label="加载图标操作"
+        icon="+"
+        loading
+      />
       <Select defaultValue="first" size="standard">
-        <SelectTrigger data-testid="keyboard-select" aria-label="键盘选择器"><SelectValue /></SelectTrigger>
-        <SelectContent data-testid="keyboard-options">
+        <SelectTrigger data-testid="keyboard-select" aria-label="键盘选择器">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="end" data-testid="keyboard-options">
           <SelectItem value="first">第一项</SelectItem>
-          <SelectItem value="disabled" disabled>禁用项</SelectItem>
+          <SelectItem value="disabled" disabled>
+            禁用项
+          </SelectItem>
           <SelectItem value="last">最后项</SelectItem>
         </SelectContent>
       </Select>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button data-testid="focus-menu-trigger">键盘菜单</Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild>
+          <Button data-testid="focus-menu-trigger">键盘菜单</Button>
+        </DropdownMenuTrigger>
         <DropdownMenuContent data-testid="focus-menu">
           <DropdownMenuItem data-testid="focus-menu-first">首项</DropdownMenuItem>
           <DropdownMenuItem disabled>禁用项</DropdownMenuItem>
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger data-testid="focus-menu-subtrigger">子菜单</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger data-testid="focus-menu-subtrigger">
+              子菜单
+            </DropdownMenuSubTrigger>
             <DropdownMenuSubContent data-testid="focus-menu-sub">
               <DropdownMenuItem>子菜单操作</DropdownMenuItem>
             </DropdownMenuSubContent>
@@ -1369,10 +1891,30 @@ function Fixture(): JSX.Element {
           <DropdownMenuItem data-testid="focus-menu-last">末项</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button data-testid="trapped-menu-trigger">Trapped menu</Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent trapFocus data-testid="trapped-menu">
+          <DropdownMenuItem data-testid="trapped-menu-first">First trapped action</DropdownMenuItem>
+          <DropdownMenuItem disabled>Disabled trapped action</DropdownMenuItem>
+          <DropdownMenuItem data-testid="trapped-menu-last">Last trapped action</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Popover>
-        <PopoverTrigger asChild><Button data-testid="focus-popover-trigger">焦点弹出层</Button></PopoverTrigger>
+        <PopoverTrigger asChild>
+          <Button data-testid="focus-popover-trigger">焦点弹出层</Button>
+        </PopoverTrigger>
         <PopoverContent data-testid="focus-popover-content">
           <Checkbox data-testid="focus-popover-checkbox" label="启用选项" />
+          <HoverCard>
+            <HoverCardTrigger asChild>
+              <Button data-testid="nested-hover-trigger">来源明细</Button>
+            </HoverCardTrigger>
+            <HoverCardContent data-testid="nested-hover-content">
+              <Button>打开来源</Button>
+            </HoverCardContent>
+          </HoverCard>
           <Button data-testid="focus-popover-last">末项</Button>
         </PopoverContent>
       </Popover>
@@ -1388,6 +1930,25 @@ function Fixture(): JSX.Element {
           >
             <div className="h-[100vh]">原文预览</div>
             <Button data-testid="viewport-hover-card-action">查看原文</Button>
+          </HoverCardContent>
+        </HoverCard>
+      </div>
+      <div
+        ref={hoverBoundaryRef}
+        data-testid="side-hover-boundary"
+        className="fixed right-2 top-1/2 w-80"
+      >
+        <HoverCard>
+          <HoverCardTrigger asChild>
+            <Button data-testid="side-hover-trigger">来源分类</Button>
+          </HoverCardTrigger>
+          <HoverCardContent
+            side="left"
+            sideBoundaryRef={hoverBoundaryRef}
+            data-testid="side-hover-content"
+            className="w-80"
+          >
+            <Button data-testid="side-hover-action">打开来源</Button>
           </HoverCardContent>
         </HoverCard>
       </div>
@@ -1433,7 +1994,12 @@ function Fixture(): JSX.Element {
       <output data-testid="render-drawer-open-value">{drawerOpen ? 'open' : 'closed'}</output>
       <output data-testid="render-drawer-close-count">{drawerCloseCount}</output>
 
-      <Tooltip data-i18n-content="examples:tooltip.content" data-testid="render-tooltip" content="保存当前配置" side="top">
+      <Tooltip
+        data-i18n-content="examples:tooltip.content"
+        data-testid="render-tooltip"
+        content="保存当前配置"
+        side="top"
+      >
         <Button>保存配置</Button>
       </Tooltip>
 
@@ -1458,7 +2024,9 @@ function Fixture(): JSX.Element {
         </TooltipTrigger>
         <TooltipContent>受控提示内容</TooltipContent>
       </Tooltip>
-      <output data-testid="render-tooltip-controlled-value">{tooltipOpen ? 'open' : 'closed'}</output>
+      <output data-testid="render-tooltip-controlled-value">
+        {tooltipOpen ? 'open' : 'closed'}
+      </output>
       <output data-testid="render-tooltip-controlled-changes">{tooltipOpenChangeCount}</output>
 
       <span id="tooltip-existing-help">已有说明</span>
@@ -1501,12 +2069,19 @@ function Fixture(): JSX.Element {
         </TooltipTrigger>
         <TooltipContent>非受控事件提示</TooltipContent>
       </Tooltip>
-      <output data-testid="render-tooltip-uncontrolled-changes">{tooltipUncontrolledOpenChanges}</output>
+      <output data-testid="render-tooltip-uncontrolled-changes">
+        {tooltipUncontrolledOpenChanges}
+      </output>
 
       <Tooltip data-testid="render-tooltip-disabled" content="禁用提示" disabled side="top">
         <Button>禁用说明</Button>
       </Tooltip>
-      <Tooltip data-testid="render-tooltip-toggle-disabled" content="动态禁用提示" disabled={tooltipTemporarilyDisabled} portalled>
+      <Tooltip
+        data-testid="render-tooltip-toggle-disabled"
+        content="动态禁用提示"
+        disabled={tooltipTemporarilyDisabled}
+        portalled
+      >
         <Button onClick={() => setTooltipTemporarilyDisabled(true)}>点击禁用提示</Button>
       </Tooltip>
       <Button onClick={() => setTooltipTemporarilyDisabled(false)}>重新启用提示</Button>
@@ -1515,4 +2090,8 @@ function Fixture(): JSX.Element {
 }
 
 const localization = createLocalization('zh', resources, { escapeValue: false })
-createRoot(document.getElementById('root')!).render(<I18nextProvider i18n={localization}><Fixture /></I18nextProvider>)
+createRoot(document.getElementById('root')!).render(
+  <I18nextProvider i18n={localization}>
+    <Fixture />
+  </I18nextProvider>
+)

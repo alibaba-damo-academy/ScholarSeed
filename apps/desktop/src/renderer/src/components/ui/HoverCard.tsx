@@ -7,9 +7,10 @@ import {
   type FocusEvent,
   type HTMLAttributes,
   type MouseEvent,
-  type ReactNode
+  type ReactNode,
+  type RefObject,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { Portal } from './portal'
 
 import { hoverCardContentClassName, popoverContentClassName } from './classes'
 import {
@@ -17,7 +18,7 @@ import {
   renderTrigger,
   useFloatingContentPosition,
   type FloatingSide,
-  type OpenRootProps
+  type OpenRootProps,
 } from './floating'
 import { cx } from './utils'
 
@@ -73,7 +74,9 @@ export function HoverCard({ children, ...props }: HoverCardProps): JSX.Element {
   )
 }
 
-export function HoverCardTrigger(props: HTMLAttributes<HTMLElement> & { asChild?: boolean; children?: ReactNode }): JSX.Element {
+export function HoverCardTrigger(
+  props: HTMLAttributes<HTMLElement> & { asChild?: boolean; children?: ReactNode }
+): JSX.Element {
   const context = hoverCardContext.useOpenContext()
   const { cancelClose, scheduleClose } = useHoverCardInteraction()
   const handleFocus = (event: FocusEvent<HTMLElement>): void => {
@@ -81,14 +84,24 @@ export function HoverCardTrigger(props: HTMLAttributes<HTMLElement> & { asChild?
     if (event.defaultPrevented) return
     cancelClose()
     const rect = event.currentTarget.getBoundingClientRect()
-    context.setPosition({ bottom: rect.bottom, kind: 'anchor', left: rect.left, top: rect.top, width: rect.width })
+    context.setPosition({
+      bottom: rect.bottom,
+      kind: 'anchor',
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+    })
     context.setOpen(true)
   }
   const handleBlur = (event: FocusEvent<HTMLElement>): void => {
     props.onBlur?.(event)
     if (event.defaultPrevented) return
     const nextTarget = event.relatedTarget as Node | null
-    if (nextTarget && (event.currentTarget.contains(nextTarget) || context.contentRef.current?.contains(nextTarget))) return
+    if (
+      nextTarget &&
+      (event.currentTarget.contains(nextTarget) || context.contentRef.current?.contains(nextTarget))
+    )
+      return
     scheduleClose()
   }
   const handleMouseEnter = (event: MouseEvent<HTMLElement>): void => {
@@ -102,25 +115,47 @@ export function HoverCardTrigger(props: HTMLAttributes<HTMLElement> & { asChild?
     event.preventDefault()
   }
 
-  return renderTrigger(context, {
-    ...props,
-    onBlur: handleBlur,
-    onFocus: handleFocus,
-    onMouseEnter: handleMouseEnter,
-    onMouseLeave: handleMouseLeave
-  }, 'onMouseEnter')
+  return renderTrigger(
+    context,
+    {
+      ...props,
+      onBlur: handleBlur,
+      onFocus: handleFocus,
+      onMouseEnter: handleMouseEnter,
+      onMouseLeave: handleMouseLeave,
+    },
+    'onMouseEnter'
+  )
 }
 
 export interface HoverCardContentProps extends HTMLAttributes<HTMLDivElement> {
   side?: FloatingSide
+  sideBoundaryRef?: RefObject<HTMLElement | null>
 }
 
-export function HoverCardContent({ className, onBlur, onFocus, onMouseEnter, onMouseLeave, side = 'auto', style, ...props }: HoverCardContentProps): JSX.Element | null {
+export function HoverCardContent({
+  className,
+  onBlur,
+  onFocus,
+  onMouseEnter,
+  onMouseLeave,
+  side = 'auto',
+  sideBoundaryRef,
+  style,
+  ...props
+}: HoverCardContentProps): JSX.Element | null {
   const context = hoverCardContext.useOpenContext()
   const { cancelClose, scheduleClose } = useHoverCardInteraction()
   const { contentId, contentRef, open } = context
   const [present, setPresent] = useState(open)
-  const positionedStyle = useFloatingContentPosition(context, present, style, side)
+  const positionedStyle = useFloatingContentPosition(
+    context,
+    present,
+    style,
+    side,
+    'start',
+    sideBoundaryRef
+  )
 
   useEffect(() => {
     if (open) {
@@ -143,7 +178,11 @@ export function HoverCardContent({ className, onBlur, onFocus, onMouseEnter, onM
       style={positionedStyle}
       onBlur={(event) => {
         onBlur?.(event)
-        if (event.defaultPrevented || event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        if (
+          event.defaultPrevented ||
+          event.currentTarget.contains(event.relatedTarget as Node | null)
+        )
+          return
         scheduleClose()
       }}
       onFocus={(event) => {
@@ -161,5 +200,5 @@ export function HoverCardContent({ className, onBlur, onFocus, onMouseEnter, onM
       {...props}
     />
   )
-  return createPortal(content, document.body)
+  return <Portal>{content}</Portal>
 }

@@ -78,6 +78,16 @@
   "refresh": "刷新",
   "retry": "重试",
   "open": "打开",
+  "systemTrash": {
+    "darwin": "废纸篓",
+    "win32": "回收站",
+    "fallback": "回收站"
+  },
+  "restoreAction": {
+    "darwin": "放回原处",
+    "win32": "还原",
+    "fallback": "还原"
+  },
   "avatar": {
     "label": "{{name}} 的头像"
   },
@@ -85,9 +95,25 @@
   "delete": "删除",
   "done": "完成",
   "navigationTabs": {
+    "all": "所有标签页",
     "unsaved": "未保存"
   },
+  "message": {
+    "expand": "展开更多",
+    "collapse": "收起",
+    "openFailed": "无法打开链接，请重试。"
+  },
   "markdown": {
+    "tableIncomplete": "表格格式不完整，已保留原始内容，未补填数值。",
+    "formula": "公式",
+    "latex": "LaTeX",
+    "formulaFailed": "公式解析失败，已保留原始 LaTeX。",
+    "formulaValidation": "渲染成功不代表数学验证通过。",
+    "code": "代码",
+    "command": "命令",
+    "output": "输出",
+    "expandCode": "展开全部 {{count}} 行",
+    "collapseCode": "收起代码",
     "taskComplete": "已完成",
     "taskIncomplete": "未完成",
     "image": "图片"

@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, Mapping
 
 from service.chat.constants import (
+    CANCELLED_MESSAGE_HISTORY_PREFIX,
     EVENT_BACKLOG_MAX,
     PRODUCT_EVENT_ANSWER_SOURCES,
     PRODUCT_EVENT_ARTIFACT_FAILED,
@@ -19,10 +20,18 @@ from service.chat.constants import (
     PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
     PRODUCT_EVENT_PAPER_SEARCH_COMPLETED,
     PRODUCT_EVENT_PAPER_SEARCH_STARTED,
+    PRODUCT_EVENT_PLAN_SNAPSHOT,
+    PRODUCT_EVENT_REASONING_COMPLETED,
     PRODUCT_EVENT_REASONING_DELTA,
     PRODUCT_EVENT_REVIEW_READY,
     PRODUCT_EVENT_SKILL_COMPLETED,
     PRODUCT_EVENT_SKILL_STARTED,
+    PRODUCT_EVENT_SUBAGENT_COMPLETED,
+    PRODUCT_EVENT_SUBAGENT_FAILED,
+    PRODUCT_EVENT_SUBAGENT_INTERRUPTED,
+    PRODUCT_EVENT_SUBAGENT_SPAWNED,
+    PRODUCT_EVENT_SUBAGENT_STARTED,
+    PRODUCT_EVENT_SUBAGENT_STATUS_CHANGED,
     PRODUCT_EVENT_TOOL_COMPLETED,
     PRODUCT_EVENT_TOOL_OUTPUT_DELTA,
     PRODUCT_EVENT_TOOL_STARTED,
@@ -43,11 +52,13 @@ from service.chat.constants import (
     SSE_REPLAY_FINISHED_EVENT,
     SSE_REPLAY_STARTED_EVENT,
     USER_MESSAGE_BINDING_BOUND,
+    USER_MESSAGE_BINDING_CANCELLED,
 )
 from service.chat.persistence.events import (
     MAXIMUM_REPLAY_LIMIT,
     ProductEventRecord,
     ProductEventStore,
+    cancelled_message_text,
 )
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.live import LiveSession
@@ -55,25 +66,34 @@ from service.platform.context import ASSISTANT_CONTEXT_MARKER
 
 SSE_DATA_PREFIX = "data: "
 SSE_FRAME_SUFFIX = "\n\n"
-SSE_HEARTBEAT_FRAME = ": keepalive\n\n"
+SSE_HEARTBEAT_FRAME = "event: heartbeat\ndata: {}\n\n"
 HISTORY_ACTIVITY_EVENT_KINDS = frozenset(
     {
         PRODUCT_EVENT_ANSWER_SOURCES,
         PRODUCT_EVENT_ARTIFACT_FAILED,
         PRODUCT_EVENT_TURN_FAILED,
+        PRODUCT_EVENT_TURN_INTERRUPTED,
         PRODUCT_EVENT_MESSAGE_DELTA,
         PRODUCT_EVENT_REASONING_DELTA,
+        PRODUCT_EVENT_REASONING_COMPLETED,
         PRODUCT_EVENT_TOOL_STARTED,
         PRODUCT_EVENT_TOOL_OUTPUT_DELTA,
         PRODUCT_EVENT_TOOL_COMPLETED,
         PRODUCT_EVENT_WEB_SEARCH_STARTED,
         PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
         PRODUCT_EVENT_PAPER_SEARCH_STARTED,
+        PRODUCT_EVENT_PLAN_SNAPSHOT,
         PRODUCT_EVENT_PAPER_SEARCH_COMPLETED,
         PRODUCT_EVENT_SKILL_STARTED,
         PRODUCT_EVENT_SKILL_COMPLETED,
         PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
         PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+        PRODUCT_EVENT_SUBAGENT_SPAWNED,
+        PRODUCT_EVENT_SUBAGENT_STARTED,
+        PRODUCT_EVENT_SUBAGENT_STATUS_CHANGED,
+        PRODUCT_EVENT_SUBAGENT_COMPLETED,
+        PRODUCT_EVENT_SUBAGENT_FAILED,
+        PRODUCT_EVENT_SUBAGENT_INTERRUPTED,
         PRODUCT_EVENT_DISPLAY_CARD,
         PRODUCT_EVENT_REVIEW_READY,
         PRODUCT_EVENT_HIL_REQUESTED,
@@ -232,11 +252,13 @@ class EventService:
         claimed: set[int] = set()
         messages = self._user_message_snapshot(session_id)
         turn_order = {
-            str(record.vendor_turn_id): index
+            str(record.vendor_turn_id or record.payload.get("client_turn_id") or ""): index
             for index, record in enumerate(messages)
             if record.vendor_turn_id
+            or str(record.payload.get("binding") or "") == USER_MESSAGE_BINDING_CANCELLED
         }
         for record in messages:
+            cancelled = str(record.payload.get("binding") or "") == USER_MESSAGE_BINDING_CANCELLED
             refs = record.payload.get("refs")
             references = (
                 [dict(ref) for ref in refs if isinstance(ref, Mapping)]
@@ -244,7 +266,11 @@ class EventService:
                 else []
             )
             text = str(record.payload.get("text") or "")
-            turn_id = str(record.vendor_turn_id or "")
+            turn_id = str(
+                record.vendor_turn_id
+                or (record.payload.get("client_turn_id") if cancelled else "")
+                or ""
+            )
             target = next(
                 (
                     row
@@ -257,19 +283,29 @@ class EventService:
                 None,
             )
             if target is None:
+                native_text = (
+                    CANCELLED_MESSAGE_HISTORY_PREFIX
+                    + json.dumps(cancelled_message_text(record.payload), ensure_ascii=False)
+                    if cancelled
+                    else text
+                )
                 target = next(
                     (
                         row
                         for row in decorated
                         if id(row) not in claimed
                         and self._is_user_turn(row)
-                        and str(row.get("text") or "") == text
+                        and str(row.get("text") or "") == native_text
                     ),
                     None,
                 )
             if target is not None:
                 target["text"] = text
                 target["refs"] = references
+                if cancelled:
+                    target["status"] = USER_MESSAGE_BINDING_CANCELLED
+                    target["turn_id"] = turn_id
+                    target["item_id"] = str(record.vendor_item_id or turn_id)
                 if record.payload.get("origin"):
                     target["origin"] = str(record.payload["origin"])
                 if record.payload.get("assistant_snapshot_id"):
@@ -284,9 +320,11 @@ class EventService:
                 "role": "user",
                 "text": text,
                 "turn_id": turn_id,
-                "item_id": str(record.vendor_item_id or ""),
+                "item_id": str(record.vendor_item_id or (turn_id if cancelled else "")),
                 "refs": references,
             }
+            if cancelled:
+                synthetic["status"] = USER_MESSAGE_BINDING_CANCELLED
             if record.payload.get("origin"):
                 synthetic["origin"] = str(record.payload["origin"])
             if record.payload.get("assistant_snapshot_id"):
@@ -382,7 +420,8 @@ class EventService:
         queue: asyncio.Queue[dict[str, Any]] | None = None
         if live is not None:
             queue = asyncio.Queue(maxsize=EVENT_BACKLOG_MAX)
-            live.subscribers.append(queue)
+            async with live.lifecycle_lock:
+                live.subscribers.append(queue)
         self._logger.info(
             SSE_CONNECTED_EVENT,
             extra={

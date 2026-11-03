@@ -1,0 +1,825 @@
+{
+  "schema": 1,
+  "electronVersion": "44.3.0",
+  "sources": [
+    {
+      "name": "squirrel",
+      "repository": "Squirrel/Squirrel.Mac",
+      "commit": "8d808803bc89ec0e2aa1450474856dfee3b00c6b",
+      "license": "LICENSE",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "6f240e244a105d6366bc898ac9c67460624c9052839d4b988c6dbe4c571008b3",
+          "bytes": 1073
+        },
+        {
+          "path": "Squirrel/NSBundle+SQRLVersionExtensions.h",
+          "sha256": "e7eac4b28ba3e6abfbb1aa1e0631ce786da2818441ac3572a1eb77e3a643b47f",
+          "bytes": 560
+        },
+        {
+          "path": "Squirrel/NSBundle+SQRLVersionExtensions.m",
+          "sha256": "1dcd6b814ea7732da076ab2a3e3399e3e6ba513650b190c719568e92a88a1967",
+          "bytes": 476
+        },
+        {
+          "path": "Squirrel/NSError+SQRLVerbosityExtensions.h",
+          "sha256": "d46db20f2a11fe2741766fdf81ca64dbc592342d8ee406b41541058dd208e4ba",
+          "bytes": 442
+        },
+        {
+          "path": "Squirrel/NSError+SQRLVerbosityExtensions.m",
+          "sha256": "57bc07a970fedc2f5849f0b03aba3df02980ce9cf49173bc74ab7bcb913a17fb",
+          "bytes": 1595
+        },
+        {
+          "path": "Squirrel/NSProcessInfo+SQRLVersionExtensions.h",
+          "sha256": "1f22ec7518586b5d9ce114044a029e71f1f5a64fc5d140e32bd5babba6f90dd4",
+          "bytes": 424
+        },
+        {
+          "path": "Squirrel/NSProcessInfo+SQRLVersionExtensions.m",
+          "sha256": "daa2158b4517ff90332a847d874375e1d60645592d70b0ae2f20df7abe61806e",
+          "bytes": 580
+        },
+        {
+          "path": "Squirrel/RACSignal+SQRLTransactionExtensions.h",
+          "sha256": "9511906add2a40641170fbed81a5aed17b8d959591751bbbaf58f737b75ab636",
+          "bytes": 1540
+        },
+        {
+          "path": "Squirrel/RACSignal+SQRLTransactionExtensions.m",
+          "sha256": "da6b562b4e887f3300ecc00751e24441884f6dccda9d21fa0ed019f17f829a6f",
+          "bytes": 4431
+        },
+        {
+          "path": "Squirrel/SQRLAuthorization.h",
+          "sha256": "5374985f1fa75f2ef89649927692315a8a7f8057ce1efa35da6058844d1ad79c",
+          "bytes": 684
+        },
+        {
+          "path": "Squirrel/SQRLAuthorization.m",
+          "sha256": "15925f6c3b0c6ef7fba352a6afc5dc7ee8849fe2cc9e7eea6231825566820217",
+          "bytes": 550
+        },
+        {
+          "path": "Squirrel/SQRLCodeSignature.h",
+          "sha256": "1864c3432f16def710459c8e05a05f7d3df07cd4d1554b1d2efee840a0a79178",
+          "bytes": 2504
+        },
+        {
+          "path": "Squirrel/SQRLCodeSignature.m",
+          "sha256": "b736da233ad38df9eafc5e6ab5887185eebea48e1d81081de384f6062531f84c",
+          "bytes": 5787
+        },
+        {
+          "path": "Squirrel/SQRLDirectoryManager.h",
+          "sha256": "98368480b3e2a0cb249165c5b1b1b56b46b8b2c23bca5f6cdd0bc72afa90aa4c",
+          "bytes": 1639
+        },
+        {
+          "path": "Squirrel/SQRLDirectoryManager.m",
+          "sha256": "68576f92ebe125ff369a30179d3f1224fe4f31c58a17e8a02dfdc2e46d7bd010",
+          "bytes": 4229
+        },
+        {
+          "path": "Squirrel/SQRLDownloadedUpdate.h",
+          "sha256": "b8fdb892dc4e0ca25cc427e404c1e15e8b1fb5624e043cf02d1bb8253dcda9f7",
+          "bytes": 963
+        },
+        {
+          "path": "Squirrel/SQRLDownloadedUpdate.m",
+          "sha256": "25a9e25c096395108f075f751d3a2618b1b998fe259ee77f9c7fc110085472e9",
+          "bytes": 872
+        },
+        {
+          "path": "Squirrel/SQRLInstaller+Private.h",
+          "sha256": "384053af3deeff6860f012fcc5fc99edd1bb71733c909ef513b8a5fc51b474c0",
+          "bytes": 476
+        },
+        {
+          "path": "Squirrel/SQRLInstaller.h",
+          "sha256": "0a19ff35d874f6945c48773d626c14edb2ea8914c2c8ec5129328c0a8ebeb7a4",
+          "bytes": 2800
+        },
+        {
+          "path": "Squirrel/SQRLInstaller.m",
+          "sha256": "5390002774c826805c9a51d56a000619398644fe042c30283d18918585d0934e",
+          "bytes": 33673
+        },
+        {
+          "path": "Squirrel/SQRLInstallerOwnedBundle.h",
+          "sha256": "9cff04a4470b1acf8844647855e98cbb38b05d85abd10b7b3617a89c7a674d94",
+          "bytes": 1389
+        },
+        {
+          "path": "Squirrel/SQRLInstallerOwnedBundle.m",
+          "sha256": "209941edec42e8413b7a2961a6e25c0e7cc2ebbf1f8f96bccbc992c3390752cf",
+          "bytes": 610
+        },
+        {
+          "path": "Squirrel/SQRLShipItLauncher.h",
+          "sha256": "7cca908c18ab96ccfb9e1ac66329704534049180ee7878eb0cb3b0745287e9de",
+          "bytes": 1015
+        },
+        {
+          "path": "Squirrel/SQRLShipItLauncher.m",
+          "sha256": "c0aeec1927beddacd89d8dcf774abbdd95a373054fe71f34ccc1393dd0936df8",
+          "bytes": 6560
+        },
+        {
+          "path": "Squirrel/SQRLShipItRequest.h",
+          "sha256": "64d0a4dd853fb75b3ff693abc4d489e93f9d269fea5c4d3e496b9591f5ed0426",
+          "bytes": 4407
+        },
+        {
+          "path": "Squirrel/SQRLShipItRequest.m",
+          "sha256": "d672634ab848b554c047e335cbc21ba0729069766c894c09a9bc0bb45afac152",
+          "bytes": 6732
+        },
+        {
+          "path": "Squirrel/SQRLTerminationListener.h",
+          "sha256": "3cd7e09ffb3f2c0ded7ae193df7b69d4ee71694575bcc9a1996c994dc1cf07b9",
+          "bytes": 994
+        },
+        {
+          "path": "Squirrel/SQRLTerminationListener.m",
+          "sha256": "59028b5697ebfe93253fb9741f1349cbc832bdc9f18683af9325d6d4e4d306a2",
+          "bytes": 2965
+        },
+        {
+          "path": "Squirrel/SQRLUpdate.h",
+          "sha256": "accf75ad3c6512ab9bf4870a997416828a95a8033b2b2978e8a3c257c4499c7e",
+          "bytes": 972
+        },
+        {
+          "path": "Squirrel/SQRLUpdate.m",
+          "sha256": "d8933768d9d09fad3c8a8c3759c430366282311362ca4cff30c5bc01657a2995",
+          "bytes": 5065
+        },
+        {
+          "path": "Squirrel/SQRLUpdater.h",
+          "sha256": "33af22761334a1b70fceb32cef7eb2f2c35f57b387b8740b88288f5b21b144f1",
+          "bytes": 8499
+        },
+        {
+          "path": "Squirrel/SQRLUpdater.m",
+          "sha256": "472b082b02de4b733271732f46a84ff5f3d4d492f4792d569764ee41e514e85d",
+          "bytes": 35873
+        },
+        {
+          "path": "Squirrel/SQRLZipArchiver.h",
+          "sha256": "b04e7356033cad3c54bba60c51de1c6f93b778edbda7e8331da377e6aa37ef0f",
+          "bytes": 1882
+        },
+        {
+          "path": "Squirrel/SQRLZipArchiver.m",
+          "sha256": "9fa1283e9b66d2295552534df5588dca5c4a5def58c06a6cb88e78fbf2ba0e99",
+          "bytes": 5785
+        },
+        {
+          "path": "Squirrel/ShipIt-main.m",
+          "sha256": "234f266aaba21547ae5e965888223192335fd713f9b974a99f596d55212b2706",
+          "bytes": 10570
+        },
+        {
+          "path": "Squirrel/Squirrel.h",
+          "sha256": "fe53b21fe7421736479864a822b7d3b446c293c83285c4baf7c6b92bffe83c96",
+          "bytes": 587
+        }
+      ]
+    },
+    {
+      "name": "reactive",
+      "repository": "ReactiveCocoa/ReactiveObjC",
+      "commit": "74ab5baccc6f7202c8ac69a8d1e152c29dc1ea76",
+      "license": "LICENSE.md",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "095fec1a3d6ad029fe0661fa6092a272d50af016b1771992e0bba9b2a73e7763",
+          "bytes": 1093
+        },
+        {
+          "path": "ReactiveObjC/MKAnnotationView+RACSignalSupport.h",
+          "sha256": "6f0d18bf405f086e6c635710c5852c8ca72a808efaf1c06b4e86b4687242d50d",
+          "bytes": 798
+        },
+        {
+          "path": "ReactiveObjC/NSArray+RACSequenceAdditions.h",
+          "sha256": "e0c620967cbf5168396ad6626743aac117e98f7782098d1bb69bd55c87328004",
+          "bytes": 592
+        },
+        {
+          "path": "ReactiveObjC/NSControl+RACCommandSupport.h",
+          "sha256": "376b8c26ddedc4f18d5b7057ab30ab48b2bcbb24b395accae5f27beaa2ea556d",
+          "bytes": 693
+        },
+        {
+          "path": "ReactiveObjC/NSControl+RACTextSignalSupport.h",
+          "sha256": "0f2027d185ecacb272dfbd99fca7c7949f7b618e2e68f89b9499dd2719f568a3",
+          "bytes": 650
+        },
+        {
+          "path": "ReactiveObjC/NSData+RACSupport.h",
+          "sha256": "99e62b3c1a2ad231586de0244a4d2036c150af82f17b0acfcd8b4ea7b3418142",
+          "bytes": 625
+        },
+        {
+          "path": "ReactiveObjC/NSDictionary+RACSequenceAdditions.h",
+          "sha256": "5d49d524ffa29c135a5ef3c03823bac53248c2db2dd722a4d3368fe6a62f0a04",
+          "bytes": 1183
+        },
+        {
+          "path": "ReactiveObjC/NSEnumerator+RACSequenceAdditions.h",
+          "sha256": "f4fb90c7a9c440e07a3c65531b712fbdb0260cd482f21c6c3fd039c27a98d1a3",
+          "bytes": 573
+        },
+        {
+          "path": "ReactiveObjC/NSFileHandle+RACSupport.h",
+          "sha256": "973581de60d0fe71699c62d79f7374de530f82e3c65023e4cc8d76d480f2aefe",
+          "bytes": 464
+        },
+        {
+          "path": "ReactiveObjC/NSIndexSet+RACSequenceAdditions.h",
+          "sha256": "b00e2ff921e5d01c7fc7e097f54df0f83794f75c4d28ac8d2d92ca5d7b40db62",
+          "bytes": 605
+        },
+        {
+          "path": "ReactiveObjC/NSInvocation+RACTypeParsing.h",
+          "sha256": "2462da5e8e420eb54005fff40741f080052c3b523cc758ea8fef8685ba3b4743",
+          "bytes": 1808
+        },
+        {
+          "path": "ReactiveObjC/NSNotificationCenter+RACSupport.h",
+          "sha256": "eede9016f2c2533fb402f1dff5fb4f2980b1249b9df0c5222f07951de055ae1d",
+          "bytes": 525
+        },
+        {
+          "path": "ReactiveObjC/NSObject+RACAppKitBindings.h",
+          "sha256": "9e0ea2748b50ffba254c945d2abd4075766933497e2a1897d535fed75dd68655",
+          "bytes": 1044
+        },
+        {
+          "path": "ReactiveObjC/NSObject+RACDeallocating.h",
+          "sha256": "2a416ae6d2dd79225e3505993e2c25fc68986713a41b3a1a93f5a72a0db30e35",
+          "bytes": 797
+        },
+        {
+          "path": "ReactiveObjC/NSObject+RACDescription.h",
+          "sha256": "fcafc9258d1c6d6e8ea8f6f3935b9e97862bde064de23a2c4f8ed24b34c42a34",
+          "bytes": 509
+        },
+        {
+          "path": "ReactiveObjC/NSObject+RACKVOWrapper.h",
+          "sha256": "bc97b0637be8ca25050f896b74f49d778802e99c6769e80a7654589cab609078",
+          "bytes": 1936
+        },
+        {
+          "path": "ReactiveObjC/NSObject+RACLifting.h",
+          "sha256": "f830e73e6b2bb89e5d7b9a211ddc77361b283e24a3b8152387942ed7a114e2cf",
+          "bytes": 1937
+        },
+        {
+          "path": "ReactiveObjC/NSObject+RACPropertySubscribing.h",
+          "sha256": "01b280b498f4a940e6ba0426950e30942c2c22820d3966dd10ce447f0dedf7ed",
+          "bytes": 4751
+        },
+        {
+          "path": "ReactiveObjC/NSObject+RACSelectorSignal.h",
+          "sha256": "fd90460bd85d39db7d9fab21e69324f39dba9a304dcfc7c9773f1361310eb046",
+          "bytes": 3778
+        },
+        {
+          "path": "ReactiveObjC/NSOrderedSet+RACSequenceAdditions.h",
+          "sha256": "1dfbea38e2d54efdbe88ddece6f8356dd8d0f8850644652c87645905ce6e7062",
+          "bytes": 602
+        },
+        {
+          "path": "ReactiveObjC/NSSet+RACSequenceAdditions.h",
+          "sha256": "ef313b8363da600f9e76cb1726da82a53be57e62458a77f13ca3cf3e6baeec7d",
+          "bytes": 588
+        },
+        {
+          "path": "ReactiveObjC/NSString+RACKeyPathUtilities.h",
+          "sha256": "9e1252c053a59cc82f557caff27c4d82d7aed4e72cbec0fa6eef7d9769604516",
+          "bytes": 989
+        },
+        {
+          "path": "ReactiveObjC/NSString+RACSequenceAdditions.h",
+          "sha256": "3d463ab12dbcd8a4134302569bdd6c7790ddfb770d1803dd4fb1e74f411a2167",
+          "bytes": 629
+        },
+        {
+          "path": "ReactiveObjC/NSString+RACSupport.h",
+          "sha256": "3b6094a02e4f62ace42645c8bc8e0978af2b52e7659618bad4dc8a5f192d23b1",
+          "bytes": 690
+        },
+        {
+          "path": "ReactiveObjC/NSText+RACSignalSupport.h",
+          "sha256": "89fc1f7542f66a59bf0cc29869ece1f79af05c92ed611ccd09565fb5c0e4265d",
+          "bytes": 482
+        },
+        {
+          "path": "ReactiveObjC/NSURLConnection+RACSupport.h",
+          "sha256": "9bc73e96f3edb393c2f5765ff62f74c1d05233ec4247286b251e43f18842392d",
+          "bytes": 893
+        },
+        {
+          "path": "ReactiveObjC/NSUserDefaults+RACSupport.h",
+          "sha256": "31c765181626f447569cab5149d93968b5f424b5e09545989cc843d14eff8c22",
+          "bytes": 864
+        },
+        {
+          "path": "ReactiveObjC/RACAnnotations.h",
+          "sha256": "d0fc5bba8cd7871242889bb31f94341349f4af880761deee6382e01ee48e58ae",
+          "bytes": 244
+        },
+        {
+          "path": "ReactiveObjC/RACArraySequence.h",
+          "sha256": "80f782d131220e82b3f6f47fc19d5db235ea5887194ce08ea461df888c85b3b7",
+          "bytes": 515
+        },
+        {
+          "path": "ReactiveObjC/RACBehaviorSubject.h",
+          "sha256": "3e0a3ca2c20b478dc1367ebe82cfef1d1ca3769ac977322edc07dca57a0db7ee",
+          "bytes": 602
+        },
+        {
+          "path": "ReactiveObjC/RACBlockTrampoline.h",
+          "sha256": "a16967e7820e28a04b4e19c189ca38e19682832a62706db4e6f81296f623b100",
+          "bytes": 946
+        },
+        {
+          "path": "ReactiveObjC/RACChannel.h",
+          "sha256": "31d4a9ec8cd1024053448026655c31e857d4ee12923aba440a2089befd700011",
+          "bytes": 2983
+        },
+        {
+          "path": "ReactiveObjC/RACCommand.h",
+          "sha256": "dcc66578eb06b56861e7bf2370d851ec9ad7ce101f9761ff48016e7da53be71b",
+          "bytes": 4870
+        },
+        {
+          "path": "ReactiveObjC/RACCompoundDisposable.h",
+          "sha256": "45573e29691e4e7739ce2b3773bf69e8eaba189c45cde5e727e710e3a1a79de1",
+          "bytes": 1769
+        },
+        {
+          "path": "ReactiveObjC/RACDelegateProxy.h",
+          "sha256": "3804764616dc030728837243781c2e85874e965d0cdd0858d47934c8f2431960",
+          "bytes": 878
+        },
+        {
+          "path": "ReactiveObjC/RACDisposable.h",
+          "sha256": "33d67d81ff49b3e41ebbe50f6155bd1982d8c7318fcba18120c101f2d74786f0",
+          "bytes": 988
+        },
+        {
+          "path": "ReactiveObjC/RACDynamicSequence.h",
+          "sha256": "f55dc6eeaacbf99deb9f8b8799a27eda69f21913e648c894a261c7e8345ad7dc",
+          "bytes": 705
+        },
+        {
+          "path": "ReactiveObjC/RACDynamicSignal.h",
+          "sha256": "313a865c6fc7a9666fd8e529761839448febdc08a7662f6da1ad29c72070d32d",
+          "bytes": 417
+        },
+        {
+          "path": "ReactiveObjC/RACEagerSequence.h",
+          "sha256": "48f4a097a220c1fbc912c96c414be972bd43944fb7f295483b234f45c3897e11",
+          "bytes": 283
+        },
+        {
+          "path": "ReactiveObjC/RACEmptySequence.h",
+          "sha256": "3fc3026bfa6c1027203a70ba9e4fd4b9740797aa79bcffbfd4e6c0d53e6c3b5e",
+          "bytes": 305
+        },
+        {
+          "path": "ReactiveObjC/RACEmptySignal.h",
+          "sha256": "e2a717f64025b4ec5fea65ddf7ff791e57e954ccf76ca617ea86c5d9f5c2c784",
+          "bytes": 385
+        },
+        {
+          "path": "ReactiveObjC/RACErrorSignal.h",
+          "sha256": "35161970ab1342bf68756c85b2cdf4cd5822d03cd3757b9f37e56d43cfdc5e23",
+          "bytes": 353
+        },
+        {
+          "path": "ReactiveObjC/RACEvent.h",
+          "sha256": "023ecba592be6c7eacb7565af51efe063d6db1a103862d764cc281d007b4b2af",
+          "bytes": 1761
+        },
+        {
+          "path": "ReactiveObjC/RACGroupedSignal.h",
+          "sha256": "b7ee2245977c65eb2a6c2e5120b5357b203e707414856d220b54cbcf887a60c6",
+          "bytes": 474
+        },
+        {
+          "path": "ReactiveObjC/RACImmediateScheduler.h",
+          "sha256": "bc5f9774a400bd4c4d35968e1c3ff7f82b7ab50e38f713d668c80051da3b4d75",
+          "bytes": 307
+        },
+        {
+          "path": "ReactiveObjC/RACIndexSetSequence.h",
+          "sha256": "559a4cb9753d1e6b4a2d6478175d071f388c00ea55167cd45064d6a81ae41696",
+          "bytes": 362
+        },
+        {
+          "path": "ReactiveObjC/RACKVOChannel.h",
+          "sha256": "ef2b910f81ce4abbde233db9d1f89b9a80fec40193c312dc99e33fc144e97138",
+          "bytes": 4604
+        },
+        {
+          "path": "ReactiveObjC/RACKVOProxy.h",
+          "sha256": "f6a7d6debaaabdefb7dfb9711b99e56492138ffac893e2a55e07bfbdcf267c4f",
+          "bytes": 1280
+        },
+        {
+          "path": "ReactiveObjC/RACKVOTrampoline.h",
+          "sha256": "e2b6a04e4f51dbfa063a7d84bd59a4d488f0f723bc4a948181d3063c533dfb70",
+          "bytes": 1141
+        },
+        {
+          "path": "ReactiveObjC/RACMulticastConnection+Private.h",
+          "sha256": "12ecf9fea93ae5b125940e75e881a1325d2ce76775f6e359aec53296d9662450",
+          "bytes": 385
+        },
+        {
+          "path": "ReactiveObjC/RACMulticastConnection.h",
+          "sha256": "5a8357d70a6f36e8bae009a3b122d1176757453af7e7dfd961108c636671ec4d",
+          "bytes": 1932
+        },
+        {
+          "path": "ReactiveObjC/RACPassthroughSubscriber.h",
+          "sha256": "7bdb5a54e148c24f6918e1c3e86594262b871f35ed287bf7195f9f6b3ce45b5c",
+          "bytes": 1001
+        },
+        {
+          "path": "ReactiveObjC/RACQueueScheduler+Subclass.h",
+          "sha256": "813d0fdf1efc1713b4b64cc1d3aa071ce4bb99bcf0dd27de772bafc894c2fe56",
+          "bytes": 1326
+        },
+        {
+          "path": "ReactiveObjC/RACQueueScheduler.h",
+          "sha256": "80d839690b3ddbc54404ac31f383358286d2f8945c2f47827f033be7ed506983",
+          "bytes": 568
+        },
+        {
+          "path": "ReactiveObjC/RACReplaySubject.h",
+          "sha256": "33c17242de647180fa9c44c0ff37d19171cf4bb1b97e1d31dcb1bff97711169e",
+          "bytes": 725
+        },
+        {
+          "path": "ReactiveObjC/RACReturnSignal.h",
+          "sha256": "540eda067e777772aa1fd2f3bcafe7836e0eb817f6ca96b249ec1874a12e4a2e",
+          "bytes": 419
+        },
+        {
+          "path": "ReactiveObjC/RACScheduler+Private.h",
+          "sha256": "797a6a718bed66024f0e9c14663cb17dcdaf228d2b64ff848db53902b503a879",
+          "bytes": 1071
+        },
+        {
+          "path": "ReactiveObjC/RACScheduler+Subclass.h",
+          "sha256": "0041c4150cb914154b676deda9a75db66c55d05ee9b48fc9b23d14f97b2c1d5e",
+          "bytes": 986
+        },
+        {
+          "path": "ReactiveObjC/RACScheduler.h",
+          "sha256": "34729b72c0b5fbdf7c125c5e87fa6e293762b9c6e44a280614480ef9dc761289",
+          "bytes": 6681
+        },
+        {
+          "path": "ReactiveObjC/RACScopedDisposable.h",
+          "sha256": "efdbc800d56295b823efa5bc44b6b6130949f4d169a5fdb05c38cbe8b0ba8872",
+          "bytes": 533
+        },
+        {
+          "path": "ReactiveObjC/RACSequence.h",
+          "sha256": "3816f6b1427707e242e145aeaaed179809e83396cc7ebb992c50d6d121aaf1b9",
+          "bytes": 18258
+        },
+        {
+          "path": "ReactiveObjC/RACSerialDisposable.h",
+          "sha256": "bd9176a498f3a8667a139a71311e5bfb8acfe90d0ae13fdda69ecf4ef98d47ee",
+          "bytes": 1708
+        },
+        {
+          "path": "ReactiveObjC/RACSignal+Operations.h",
+          "sha256": "7749f3801d63c0414ca1eabb2a83054decea545b22a39cd3ff551dd16d8679ef",
+          "bytes": 33926
+        },
+        {
+          "path": "ReactiveObjC/RACSignal.h",
+          "sha256": "309addf09a47b7f1fb04658795095683f5fd32c03a503d4772ef48d4dc51848a",
+          "bytes": 23482
+        },
+        {
+          "path": "ReactiveObjC/RACSignalSequence.h",
+          "sha256": "160cf8260a8e96e320d42a21b65294098c459618bc9dddc402f30d617fde5a6a",
+          "bytes": 465
+        },
+        {
+          "path": "ReactiveObjC/RACStream+Private.h",
+          "sha256": "7ed5f5babcc9ed43a0e88d856b015de28c3db3047b4f2bb62f9ce6a29cc6f77b",
+          "bytes": 627
+        },
+        {
+          "path": "ReactiveObjC/RACStream.h",
+          "sha256": "c6929c1feb14fb83ed54aee1ed77402b77c3b39ff41234301f190e88ab355f87",
+          "bytes": 14115
+        },
+        {
+          "path": "ReactiveObjC/RACStringSequence.h",
+          "sha256": "e6369e69182145dc1e914d95a97db2a305b0d29864b69890d83c93e72e9b9984",
+          "bytes": 532
+        },
+        {
+          "path": "ReactiveObjC/RACSubject.h",
+          "sha256": "87d2b5c8cd651112ad77af7c276ee34f82644b736954d9dc33b9b19aacfb87f4",
+          "bytes": 749
+        },
+        {
+          "path": "ReactiveObjC/RACSubscriber+Private.h",
+          "sha256": "f9a6f750a7f6901632b8ad9768b3ca51c946d03aebf19526219fadc506735423",
+          "bytes": 467
+        },
+        {
+          "path": "ReactiveObjC/RACSubscriber.h",
+          "sha256": "68aa1c01d6af90803f5bf14de7cd7e8c32da2f4c2f43baeaf4a007b9b731d4b1",
+          "bytes": 1733
+        },
+        {
+          "path": "ReactiveObjC/RACSubscriptingAssignmentTrampoline.h",
+          "sha256": "147e063a7ceb9be5d333c9218c6ea847c2638c735a2da165089fe15fdb7e0fcf",
+          "bytes": 2161
+        },
+        {
+          "path": "ReactiveObjC/RACSubscriptionScheduler.h",
+          "sha256": "b7f0141c32ea1a298b2ec79911761e9dd23db80ac75bc9135fd8e719623f2a57",
+          "bytes": 427
+        },
+        {
+          "path": "ReactiveObjC/RACTargetQueueScheduler.h",
+          "sha256": "0491bf68ec496029472a8ef1c29fec7bef92e06aa9ab079d9690aade42f29adb",
+          "bytes": 772
+        },
+        {
+          "path": "ReactiveObjC/RACTestScheduler.h",
+          "sha256": "c2233dacd59689afd261ec1c0dbce418e4bf7aff1e7de2b7ed86c13b14d5f452",
+          "bytes": 1347
+        },
+        {
+          "path": "ReactiveObjC/RACTuple.h",
+          "sha256": "7c283251fd68b0817552ec66e38807bc267f4487e1fece03fde46bd7b9565883",
+          "bytes": 9683
+        },
+        {
+          "path": "ReactiveObjC/RACTupleSequence.h",
+          "sha256": "731f3bed31f16b4675f828eaf8302ef8c4183199e59987d0674565ee05288c48",
+          "bytes": 521
+        },
+        {
+          "path": "ReactiveObjC/RACUnarySequence.h",
+          "sha256": "4778e26e1f0a18ce9b9cef4a39203c10c8da71d0e2da8b1d526dc48a40e151da",
+          "bytes": 335
+        },
+        {
+          "path": "ReactiveObjC/RACUnit.h",
+          "sha256": "e1d43f6ad32d7c9445d9f5e1550e46a65b9d758d6b16ccf0a013d8bea4bf9b17",
+          "bytes": 437
+        },
+        {
+          "path": "ReactiveObjC/RACValueTransformer.h",
+          "sha256": "ebdf383864b3846a9afe89036f65aad2572e05eaefb4862f89b26a06ac7afab9",
+          "bytes": 345
+        },
+        {
+          "path": "ReactiveObjC/ReactiveObjC.h",
+          "sha256": "cac4a7ac14abf00117ec8fec613b20adc96e37dfe81896544a7ffc9ad481f7a3",
+          "bytes": 4029
+        },
+        {
+          "path": "ReactiveObjC/UIActionSheet+RACSignalSupport.h",
+          "sha256": "e5176e08d4d804572cce254a7e79d8e59758ab7bc1a763e5fc13d90f5ecbe9c6",
+          "bytes": 1151
+        },
+        {
+          "path": "ReactiveObjC/UIAlertView+RACSignalSupport.h",
+          "sha256": "6b1c77a5251d337d2bd7bc1828ce688aed6fbe361ae765f6c7112dfb3e75b0f0",
+          "bytes": 1872
+        },
+        {
+          "path": "ReactiveObjC/UIBarButtonItem+RACCommandSupport.h",
+          "sha256": "e63d4fdb31c34fb4896a34b3c2e80d34109823a62dba3bdf9944358b6d02f403",
+          "bytes": 709
+        },
+        {
+          "path": "ReactiveObjC/UIButton+RACCommandSupport.h",
+          "sha256": "688bae7ca128076323ce40c45a7a1b55bf93b0dcbd0b1b0a7cbdcc0bee00530e",
+          "bytes": 624
+        },
+        {
+          "path": "ReactiveObjC/UICollectionReusableView+RACSignalSupport.h",
+          "sha256": "3ec088edffe14b3b455e02a5cf4bfabc4e684e33a5ddf0039f452666aa3a214c",
+          "bytes": 847
+        },
+        {
+          "path": "ReactiveObjC/UIControl+RACSignalSupport.h",
+          "sha256": "edb610f5f4dd414caa18a3d08478b6f6a9438127aa69f40c113d0ca7ed315c49",
+          "bytes": 546
+        },
+        {
+          "path": "ReactiveObjC/UIDatePicker+RACSignalSupport.h",
+          "sha256": "16aba443046d6009bfa7432ab53b1b08d210403baeb3b7b99ef8df3128c6b547",
+          "bytes": 731
+        },
+        {
+          "path": "ReactiveObjC/UIGestureRecognizer+RACSignalSupport.h",
+          "sha256": "1bd1e2ecb15be59458c8df749b532acafacc2b7cdd0423734790749f7cacb390",
+          "bytes": 466
+        },
+        {
+          "path": "ReactiveObjC/UIImagePickerController+RACSignalSupport.h",
+          "sha256": "97591ae80c9fcbce1effc1adb3313eba3995fee6909d783b12ca199b8b733b01",
+          "bytes": 1274
+        },
+        {
+          "path": "ReactiveObjC/UIRefreshControl+RACCommandSupport.h",
+          "sha256": "ec8e65cd5ab1f7cc002b1e8ecc4f42c2f3c6d26c42326f12149332c61b9e44b6",
+          "bytes": 717
+        },
+        {
+          "path": "ReactiveObjC/UISegmentedControl+RACSignalSupport.h",
+          "sha256": "1784a863f9c29b82d54a8dee24ba6168061fb988f2a29dffb4d65a21febc3a2b",
+          "bytes": 817
+        },
+        {
+          "path": "ReactiveObjC/UISlider+RACSignalSupport.h",
+          "sha256": "88ac39e947b04b99c65564fe645dae050b0857b2f7f9f7102881bbfb40b2ee02",
+          "bytes": 731
+        },
+        {
+          "path": "ReactiveObjC/UIStepper+RACSignalSupport.h",
+          "sha256": "3874ddf0874e10cf429be851aaed9e1c8eb9e91e74da439382929046b0f2e6c9",
+          "bytes": 733
+        },
+        {
+          "path": "ReactiveObjC/UISwitch+RACSignalSupport.h",
+          "sha256": "0b9411f91f496e39972bb5c9e81ae84945ffffd40c245d1c16eb6ff901033ddf",
+          "bytes": 641
+        },
+        {
+          "path": "ReactiveObjC/UITableViewCell+RACSignalSupport.h",
+          "sha256": "d27f03e52a3900f01a5392b34e6d4a1ffa66e9bb93365c4b667cb65fafb3c7e8",
+          "bytes": 789
+        },
+        {
+          "path": "ReactiveObjC/UITableViewHeaderFooterView+RACSignalSupport.h",
+          "sha256": "0fc412c4d102ee6826a474d36d02ab9c432d40c4a275945597d2b094e8318d70",
+          "bytes": 851
+        },
+        {
+          "path": "ReactiveObjC/UITextField+RACSignalSupport.h",
+          "sha256": "eb570abe97de6da442295b77e6e977c1deedcab338dc197c16fd2228d136fd3c",
+          "bytes": 921
+        },
+        {
+          "path": "ReactiveObjC/UITextView+RACSignalSupport.h",
+          "sha256": "6ed722027ea497392abb17a218caf1331ad32f0cb6039dfcb65a80f68eae2439",
+          "bytes": 1183
+        },
+        {
+          "path": "ReactiveObjC/extobjc/EXTKeyPathCoding.h",
+          "sha256": "efee6c6b9e3fa4ce81fa60c9cc4cb2b2f37f386ae932e8d4537a9e5e3f12fb32",
+          "bytes": 2388
+        },
+        {
+          "path": "ReactiveObjC/extobjc/EXTRuntimeExtensions.h",
+          "sha256": "31ce08c3327ecb817540a71f068158552e7e5cd32d83927210f6d04a17f33eed",
+          "bytes": 3488
+        },
+        {
+          "path": "ReactiveObjC/extobjc/EXTScope.h",
+          "sha256": "25c9bb832ca2f649cdbdabc3e074d5fa7aa9c644004e81aa1ab83413c149ae18",
+          "bytes": 4196
+        },
+        {
+          "path": "ReactiveObjC/extobjc/metamacros.h",
+          "sha256": "e34422e39029c76b1182830762292ebd1383bc6a9248bca973ead2bad56fe495",
+          "bytes": 30482
+        }
+      ]
+    },
+    {
+      "name": "mantle",
+      "repository": "Mantle/Mantle",
+      "commit": "2a8e2123a3931038179ee06105c9e6ec336b12ea",
+      "license": "LICENSE.md",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "285eede6f638adc9c352be7d66134611e5ea95044095a84de9867fb864e66eab",
+          "bytes": 2445
+        },
+        {
+          "path": "Mantle/MTLReflection.h",
+          "sha256": "92c75163531b0601e9c41b16e080bb7e961116484dda007c4b832f3420021467",
+          "bytes": 1237
+        },
+        {
+          "path": "Mantle/NSDictionary+MTLJSONKeyPath.h",
+          "sha256": "49e7f50824f12aba7b11daa97a2dbf251eb35de467059fcc621708f0aa56d642",
+          "bytes": 1003
+        },
+        {
+          "path": "Mantle/NSError+MTLModelException.h",
+          "sha256": "7b02a64ff09383b4f2fc1e749a0549f23c5193dd5d6b57563fc1e2d7fa2f7e3a",
+          "bytes": 613
+        },
+        {
+          "path": "Mantle/extobjc/include/MTLEXTKeyPathCoding.h",
+          "sha256": "1f81d1751e4d1b001ae25847103b398c0d5f25ceec6a093e64495853a0d81338",
+          "bytes": 3026
+        },
+        {
+          "path": "Mantle/extobjc/include/MTLEXTRuntimeExtensions.h",
+          "sha256": "ce53e25873e0af608876a9b28d261f191b3e5b34954c5c56cb628e69f048d187",
+          "bytes": 14209
+        },
+        {
+          "path": "Mantle/extobjc/include/MTLEXTScope.h",
+          "sha256": "e130566b84cd2fc0564f8df77320f92c7625527b209a5cacaef14cbee7d2a0c2",
+          "bytes": 4281
+        },
+        {
+          "path": "Mantle/extobjc/include/MTLMetamacros.h",
+          "sha256": "c2866e841c869695350d2446a17bdf14d4c69124afa1b2fb932db78cfcc40f16",
+          "bytes": 30544
+        },
+        {
+          "path": "Mantle/include/MTLJSONAdapter.h",
+          "sha256": "30be06f0f0ec78a1e3af00b58167ec27f515e5dec2839dbf393d01f958e9b750",
+          "bytes": 12620
+        },
+        {
+          "path": "Mantle/include/MTLModel+NSCoding.h",
+          "sha256": "4ccc6fdea27723396871597ea774b7fdc1c410e67d715ad0b1e7c33251d36ea0",
+          "bytes": 5692
+        },
+        {
+          "path": "Mantle/include/MTLModel.h",
+          "sha256": "bc764862fc21ee9e8fa32404203890a197ea22b49ad542bbe4d8c7a579bf7015",
+          "bytes": 7607
+        },
+        {
+          "path": "Mantle/include/MTLTransformerErrorHandling.h",
+          "sha256": "61979e66b7e971be5769adb89cd5ab7ce3ba9ccdf04ceccbf72caeff2d0265fc",
+          "bytes": 2559
+        },
+        {
+          "path": "Mantle/include/MTLValueTransformer.h",
+          "sha256": "9eda26e80b524172cf687d9e47c7f9e576bf1d0f19de3d04ce84caedc7b2b392",
+          "bytes": 2313
+        },
+        {
+          "path": "Mantle/include/Mantle.h",
+          "sha256": "028ac5875c6a2e1f2aa57421d9eff682f7acc3c091c7fb4cfb2e3ff7ce4ddfb2",
+          "bytes": 1390
+        },
+        {
+          "path": "Mantle/include/NSArray+MTLManipulationAdditions.h",
+          "sha256": "5a31391d4a7304f5de5423191d1e7f630a8f7294605e6958c20361556eb8c86d",
+          "bytes": 880
+        },
+        {
+          "path": "Mantle/include/NSDictionary+MTLManipulationAdditions.h",
+          "sha256": "2fd00de11ea5a2eea1eff9df4b0e6bc7a12c33d5e71201f40fcb951af4e47104",
+          "bytes": 1041
+        },
+        {
+          "path": "Mantle/include/NSDictionary+MTLMappingAdditions.h",
+          "sha256": "d97e4fcb4d98188d3fef041444aaf66f06c1206782083413c371657ba4af4285",
+          "bytes": 496
+        },
+        {
+          "path": "Mantle/include/NSObject+MTLComparisonAdditions.h",
+          "sha256": "aabfa226950840c3d6d3a81d191f7c9bc93818bd007686848c94d979b415e503",
+          "bytes": 407
+        },
+        {
+          "path": "Mantle/include/NSValueTransformer+MTLInversionAdditions.h",
+          "sha256": "8d8516caf12cc853ca0206906ccd87f1d1048c2e1dea58006f7d343bff0e177d",
+          "bytes": 559
+        },
+        {
+          "path": "Mantle/include/NSValueTransformer+MTLPredefinedTransformerAdditions.h",
+          "sha256": "21581a57ee50fe2c54233464b7420487b839c9bd56e524aa25a89644785c9be6",
+          "bytes": 6411
+        }
+      ]
+    }
+  ]
+}

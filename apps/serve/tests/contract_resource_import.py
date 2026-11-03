@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.resources import SnapshotState
 from service.resources.api.routes import register_resource_routes
 from service.resources.service.history import ResourceVersionService
@@ -64,12 +65,14 @@ def main() -> int:
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
         project = registry.create("导入项目")
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         settings = VersionSettings()
         formats = WorkbenchFormatPolicy()
         retention = ResourceRetentionService(content, settings)
         versions = ResourceVersionService(content, retention, formats, PdfRecordStore(content))
-        supervisor = ResourceVersionSupervisor(content, versions, formats, settings)
+        supervisor = ResourceVersionSupervisor(
+            content, versions, formats, settings, activities=Activities()
+        )
         content.bind_resource_changes(supervisor)
         importer = ResourceImportService(content, versions, supervisor)
         app = FastAPI()

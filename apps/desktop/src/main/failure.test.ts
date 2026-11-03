@@ -49,6 +49,18 @@ test('missing Python messages preserve both macOS and Windows paths verbatim', (
   }
 })
 
+test('browser readiness errors retain precise diagnostics with complete localized reasons', () => {
+  for (const code of ['browser_feature_policy_missing', 'browser_feature_policy_invalid', 'browser_feature_policy_mismatch']) {
+    const failure: BackendFailure = { kind: 'startupFailed', detail: `Error: ${code}` }
+    const chinese = backendFailureMessage(zh, failure, 'notReady')
+    const english = backendFailureMessage(en, failure, 'notReady')
+    assert.match(chinese, /浏览器产品策略/)
+    assert.match(english, /browser product policy/)
+    assert.ok(chinese.endsWith(failure.detail))
+    assert.ok(english.endsWith(failure.detail))
+  }
+})
+
 test('health timeout and startup versus recovery fallbacks use distinct localized reasons', () => {
   assert.equal(backendFailureMessage(zh, { kind: 'healthTimeout' }, 'notReady'), '本地服务健康检查超时。')
   assert.equal(backendFailureMessage(en, { kind: 'healthTimeout' }, 'recovering'), 'The local service health check timed out.')

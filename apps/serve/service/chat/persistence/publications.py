@@ -187,3 +187,25 @@ class PublicationStore:
                 "WHERE session_id = ?)",
                 (publication_id, session_id),
             )
+
+    def snapshot_shared(self, session_id: str, digest: str) -> bool:
+        with transaction(self.database) as connection:
+            rows = connection.execute(
+                f"SELECT content FROM {PUBLICATION_TABLE} WHERE session_id != ?", (session_id,)
+            )
+            return any(json.loads(row["content"])["sha256"] == digest for row in rows)
+
+    def remove_session(self, session_id: str) -> None:
+        with transaction(self.database) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"DELETE FROM {OUTBOX_TABLE} WHERE publication_id IN "
+                f"(SELECT publication_id FROM {PUBLICATION_TABLE} WHERE session_id = ?)",
+                (session_id,),
+            )
+            connection.execute(
+                f"DELETE FROM {DECLARATION_TABLE} WHERE session_id = ?", (session_id,)
+            )
+            connection.execute(
+                f"DELETE FROM {PUBLICATION_TABLE} WHERE session_id = ?", (session_id,)
+            )

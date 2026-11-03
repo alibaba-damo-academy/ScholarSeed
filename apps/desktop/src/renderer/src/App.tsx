@@ -1,75 +1,95 @@
+import { useStartup } from './app/connection'
+import { FeedbackRecovery } from './components/business/Feedback'
+import { STARTUP_PHASE } from '../../startup'
+import { useUpdateHealth } from './features/updates/health'
 import { Onboarding } from './contracts/onboarding'
 import { OnboardingHost } from './features/onboarding/Onboarding'
+import { StorageFirstLaunchDialog } from './components/business/StorageFirstLaunch'
 import { sessionDisplayTitle } from './session'
-import { feedback, renderFeedback } from './contracts/feedback'
+import { feedback, renderFeedback, type FeedbackDescriptor } from './contracts/feedback'
 import { taskTitleText } from './contracts/tasks'
+import { useTaskCenter } from './components/business/taskCenterContext'
 import React, { useEffect, useRef } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import { activeThread, AppState, MainView, useApp } from './store'
+import type { AppState, MainView } from './store'
+import { activeThread, useApp } from './store'
 import { useThemeEffect } from './theme'
+import { systemTrashKey } from './trash'
+import { openResourceTarget } from './navigation'
 import {
   deleteSession,
   getAuthMe,
   getAuthStatus,
+  getBackendHealth,
   getGlobalPermissionMode,
   getHealth,
+  getSharedRuntimeReconfiguration,
   listProjects,
-  type Project
+  type Project,
 } from './api'
-import { AccountLogoutResult } from './account'
+import type { AccountLogoutResult } from './account'
 import { useCreditsLowWarning } from './credits'
 import { logoutDesktopSession } from './logout'
 import { useLiveSession } from './live'
-import {
-  notificationIntents,
-  sessionStatusMap
-} from './attention'
-import type { SessionStatus } from './model'
+import { useAttentionLifecycle } from './features/assistant/attention'
+import { documentWorkspaces } from './features/workbench/workspace'
 import { AccountLogin } from './components/business/AccountLogin'
 import { Landing } from './components/business/Landing'
 import { WindowCloseDialog } from './shell/Close'
+import { BackgroundMenu } from './shell/Background'
 import { AccountPanel } from './components/business/AccountPanel'
+import { ArchiveDialog } from './components/business/Archive'
+import { SessionRenameDialog } from './components/business/SessionTitle'
 import { LanguageSwitchDialog } from './components/business/Preferences'
 import { ProjectForm } from './components/business/ProjectForm'
+import { ProjectManageDialogs } from './components/business/ProjectActions'
 import { Sidebar } from './components/business/Sidebar'
 import { UpdateOverlay } from './components/business/UpdateOverlay'
 import {
   Alert,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPortal,
+  AlertDialogTitle,
   AlertTitle,
   Button,
   Dialog,
   DialogContent,
-  useToast
+  useToast,
 } from './components/ui'
 import { Conversation } from './shell/ConversationSurface'
 import { Progress } from './components/primitive/Progress'
 import { WorkbenchShell } from './shell/WorkbenchShell'
-import {
-  LITERATURE_TAB,
-  OVERVIEW_TAB,
-  PROJECTS_TAB
-} from './features/workbench/tabs'
+import { LITERATURE_TAB, OVERVIEW_TAB, PROJECTS_TAB } from './features/workbench/tabs'
 import { INITIAL_AI_PANEL_STATE } from './features/assistant/state'
 import { INITIAL_LITERATURE_STATE } from './features/literature/state'
 import { INITIAL_RESOURCE_STATE } from './features/resources/state'
-import {
-  OFFICE_RUNTIME_ROOT_ID,
-  OfficeRuntimeProvider
-} from './features/workbench/office/runtime'
+import { OFFICE_RUNTIME_ROOT_ID, OfficeRuntimeProvider } from './features/workbench/office/runtime'
 import { featureRegistry } from './app/composition'
+import { ErrorBoundary } from './app/Error'
+import { projectBackendAvailability } from './runtime'
 
 /** 0.2 工作台视图：这些 mainView 走四区外壳，其余走 0.1 双栏。 */
 const WORKBENCH_VIEWS: MainView[] = [
+  'skills',
   'home',
+  'browser',
   'projects',
   'resource',
   'literature',
-  'writing'
+  'writing',
 ]
 
 /** 等 Composer 注册提交入口的轮询间隔与上限。 */
 const SUBMIT_ENTRY_POLL_MS = 60
 const SUBMIT_ENTRY_TIMEOUT_MS = 5_000
+const HEALTH_REFRESH_MS = 30_000
+const HEALTH_RETRY_MS = 1_500
 
 /**
  * 等待输入框挂载完成（`__scholarseedSubmitMessage` 由 Composer 在 effect 里注册）。
@@ -81,9 +101,31 @@ async function waitForSubmitEntry(): Promise<void> {
   const deadline = Date.now() + SUBMIT_ENTRY_TIMEOUT_MS
   while (Date.now() < deadline) {
     if (window.__scholarseedSubmitMessage) return
-    await new Promise((resolve) =>
-      window.setTimeout(resolve, SUBMIT_ENTRY_POLL_MS)
-    )
+    await new Promise((resolve) => window.setTimeout(resolve, SUBMIT_ENTRY_POLL_MS))
+  }
+}
+
+/** 无头 harness 的前提探针：首启链未走完时点名具体卡点，而不是报泛化的「提交入口未就绪」。 */
+type HarnessBlocker = 'landing' | 'login' | 'guide' | 'noProject'
+
+function harnessBlocker(state: AppState): HarnessBlocker | null {
+  if (document.querySelector('[data-testid="landing-skip"]')) return 'landing'
+  if (state.loginOpen) return 'login'
+  if (document.querySelector('.ob-dismiss, [data-ob="guide-next"]')) return 'guide'
+  if (state.projects.length === 0) return 'noProject'
+  return null
+}
+
+function harnessBlockerFeedback(blocker: HarnessBlocker): FeedbackDescriptor {
+  switch (blocker) {
+    case 'landing':
+      return feedback('shell', 'foreground.harnessLanding')
+    case 'login':
+      return feedback('shell', 'foreground.harnessLogin')
+    case 'guide':
+      return feedback('shell', 'foreground.harnessGuide')
+    case 'noProject':
+      return feedback('shell', 'foreground.harnessNoProject')
   }
 }
 
@@ -93,25 +135,25 @@ const MARKDOWN_TAB = {
   id: '笔记/湿度失效机理.md',
   kind: 'file' as const,
   title: '湿度失效机理.md',
-  closable: true
+  closable: true,
 }
 const TABLE_TAB = {
   id: '实验/实验数据.csv',
   kind: 'file' as const,
   title: '实验数据.csv',
-  closable: true
+  closable: true,
 }
 const CODE_TAB = {
   id: '实验/analyze.py',
   kind: 'file' as const,
   title: 'analyze.py',
-  closable: true
+  closable: true,
 }
 const DOCX_TAB = {
   id: '笔记/论文草稿.docx',
   kind: 'file' as const,
   title: '论文草稿.docx',
-  closable: true
+  closable: true,
 }
 
 // scene → state patch, used by the --shoot screenshot harness. Keys mirror the
@@ -139,7 +181,7 @@ function litBase(state: AppState): AppState['literature'] {
     noteDraft: '',
     tagDraft: '',
     aiSearchText: '',
-    notice: null
+    notice: null,
   }
 }
 
@@ -165,32 +207,30 @@ const SCENES: Record<string, ScenePatch> = {
     tabs: [OVERVIEW_TAB],
     activeTab: OVERVIEW_TAB.id,
     globalSearchOpen: false,
-    modulePanelOpen: true
+    modulePanelOpen: true,
   },
   projects: {
     mainView: 'projects',
     activeSession: null,
     tabs: [OVERVIEW_TAB, PROJECTS_TAB],
     activeTab: PROJECTS_TAB.id,
-    modulePanelOpen: true
+    modulePanelOpen: true,
   },
   'home-project-menu': (state) => ({
     mainView: 'conversation',
     homeProjectMenuOpen: true,
-    homeSelectedProjectId: state.projects[0]?.id ?? null
+    homeSelectedProjectId: state.projects[0]?.id ?? null,
   }),
   'project-new': { projectForm: { mode: 'create' } },
   'project-edit': (state) => {
     const target = state.projects[0]
-    return target
-      ? { projectForm: { mode: 'edit' as const, project: target } }
-      : {}
+    return target ? { projectForm: { mode: 'edit' as const, project: target } } : {}
   },
   'home-model-menu': { mainView: 'conversation', modelMenuOpen: true },
   'home-composer-filled': {
     mainView: 'conversation',
     composerText:
-      '帮我做一次钙钛矿湿度稳定性的文献综述：近三年，多库检索去重后读全文，按机理聚类并给出带 DOI 的出处。'
+      '帮我做一次钙钛矿湿度稳定性的文献综述：近三年，多库检索去重后读全文，按机理聚类并给出带 DOI 的出处。',
   },
   'home-at-plus-menu': { mainView: 'conversation', composerText: '@' },
   'workspace-menu': { mainView: 'conversation', wdMenuOpen: true },
@@ -209,76 +249,74 @@ const SCENES: Record<string, ScenePatch> = {
         title: '闲聊场景 · 顺手问天气',
         status: 'dormant',
         createdAt: 6,
-        timeLabel: '17:02'
+        timeLabel: '17:02',
       },
       {
         id: 'shot-lit-stability',
         title: '文献场景 · 钙钛矿湿度稳定性',
         status: 'waiting',
         createdAt: 5,
-        timeLabel: '16:47'
+        timeLabel: '16:47',
       },
       {
         id: 'shot-lit-flow',
         title: '文献场景 · 全流程',
         status: 'waiting',
         createdAt: 4,
-        timeLabel: '16:20'
+        timeLabel: '16:20',
       },
       {
         id: 'shot-daily-summary',
         title: '日常场景 · 读文档出结论',
         status: 'dormant',
         createdAt: 3,
-        timeLabel: '14:52'
+        timeLabel: '14:52',
       },
       {
         id: 'shot-aging-crosscheck',
         title: '老化表 × 论文保持率 · 交叉校验',
         status: 'dormant',
         createdAt: 2,
-        timeLabel: '昨天'
+        timeLabel: '昨天',
       },
       {
         id: 'shot-ocr',
         title: '论文复现 · Unlimited OCR W...',
         status: 'dormant',
         createdAt: 1,
-        timeLabel: '昨天'
+        timeLabel: '昨天',
       },
       {
         id: 'shot-idea',
         title: '想法生成 · 钙钛矿湿热稳定性',
         status: 'waiting',
         createdAt: 0,
-        timeLabel: '周日'
-      }
+        timeLabel: '周日',
+      },
     ],
     projects: state.projects.map((project) => project),
-    collapsedProjects: Object.fromEntries(
-      state.projects.map((project) => [project.path, true])
-    )
+    collapsedProjects: Object.fromEntries(state.projects.map((project) => [project.path, true])),
   }),
   'workspace-files': { mainView: 'conversation', workspaceFilesOpen: true },
   skills: { accountSettingsPage: 'skills' },
   'skills-collapsed': { accountSettingsPage: 'skills', sidebarOpen: false },
   'confirm-delete': {
-    confirmDelete: { label: 'Codex 会话', sessionId: 'demo-session' }
+    confirmDelete: { label: 'Codex 会话', sessionId: 'demo-session' },
   },
   settings: {
     accountSettingsPage: 'account',
     modelMenuOpen: false,
-    notifPanelOpen: false
+    notifPanelOpen: false,
   },
   'settings-models': {
     accountSettingsPage: 'models',
     modelMenuOpen: false,
-    notifPanelOpen: false
+    notifPanelOpen: false,
   },
   'settings-files': {
     accountSettingsPage: 'files',
     modelMenuOpen: false,
-    notifPanelOpen: false
+    notifPanelOpen: false,
   },
   // 暂时隐藏「键盘快捷键」页面时同步隐藏验收场景，恢复页面时一并恢复。
   // 'settings-shortcuts': {
@@ -289,18 +327,18 @@ const SCENES: Record<string, ScenePatch> = {
   'settings-developer': {
     accountSettingsPage: 'developer',
     modelMenuOpen: false,
-    notifPanelOpen: false
+    notifPanelOpen: false,
   },
   'settings-skills': {
     accountSettingsPage: 'skills',
     modelMenuOpen: false,
-    notifPanelOpen: false
+    notifPanelOpen: false,
   },
   // 「关于书深」的当前版本行随更新状态变化，验收要能直接拍到这一面。
   'settings-about': {
     accountSettingsPage: 'about',
     modelMenuOpen: false,
-    notifPanelOpen: false
+    notifPanelOpen: false,
   },
   // ===== MVP 0.2 工作台场景 =====
   // 切片重置统一由 SCENES.main 负责 (见上方 main), 因此每个场景只用写自己
@@ -308,7 +346,7 @@ const SCENES: Record<string, ScenePatch> = {
   resource: {
     mainView: 'resource',
     activeSession: null,
-    modulePanelOpen: true
+    modulePanelOpen: true,
   },
   // 未选择项目时的工作台内容。main 基线已把 resource 切片与标签回到 INITIAL，
   // 这里只需清掉项目选中，让总览标签落到品牌空态那一支。
@@ -317,22 +355,22 @@ const SCENES: Record<string, ScenePatch> = {
     activeSession: null,
     modulePanelOpen: true,
     homeSelectedProjectId: null,
-    homeProjectLocked: false
+    homeProjectLocked: false,
   },
   literature: {
     mainView: 'literature',
     activeSession: null,
     modulePanelOpen: true,
     tabs: [OVERVIEW_TAB, LITERATURE_TAB],
-    activeTab: LITERATURE_TAB.id
+    activeTab: LITERATURE_TAB.id,
   },
   'resource-import': {
     mainView: 'resource',
     activeSession: null,
     resource: {
       ...INITIAL_RESOURCE_STATE,
-      importDialog: { phase: 'select', targetDir: '' }
-    }
+      importDialog: { phase: 'select', targetDir: '' },
+    },
   },
   'resource-import-conflict': {
     mainView: 'resource',
@@ -354,7 +392,7 @@ const SCENES: Record<string, ScenePatch> = {
             targetKind: 'file',
             suggestedName: '实验记录 (2).md',
             expectedTargetRevision: 'sha256:existing',
-            canReplaceWithVersion: true
+            canReplaceWithVersion: true,
           },
           {
             sourceIndex: 1,
@@ -364,21 +402,21 @@ const SCENES: Record<string, ScenePatch> = {
             targetKind: 'dir',
             suggestedName: '原始数据 (2)',
             expectedTargetRevision: null,
-            canReplaceWithVersion: false
-          }
-        ]
-      }
-    }
+            canReplaceWithVersion: false,
+          },
+        ],
+      },
+    },
   },
   'ai-panel': {
     mainView: 'resource',
     activeSession: null,
-    aiPanel: { ...INITIAL_AI_PANEL_STATE, open: true }
+    aiPanel: { ...INITIAL_AI_PANEL_STATE, open: true },
   },
   'global-search': {
     mainView: 'resource',
     activeSession: null,
-    globalSearchOpen: true
+    globalSearchOpen: true,
   },
   writing: { mainView: 'writing', activeSession: null, modulePanelOpen: true },
   // 资料管理三个真实交互面 (右键菜单 / 删除确认 / 移动目标选择)。
@@ -404,10 +442,10 @@ const SCENES: Record<string, ScenePatch> = {
               name: node.name,
               kind: node.kind,
               x: 300,
-              y: 240
+              y: 240,
             }
-          : null
-      }
+          : null,
+      },
     }
   },
   'resource-delete': (state) => {
@@ -420,10 +458,8 @@ const SCENES: Record<string, ScenePatch> = {
         tree: state.resource.tree,
         root: state.resource.root,
         loadState: state.resource.loadState,
-        deleteConfirm: node
-          ? { path: node.path, name: node.name, kind: node.kind }
-          : null
-      }
+        deleteConfirm: node ? { path: node.path, name: node.name, kind: node.kind } : null,
+      },
     }
   },
   'resource-move': (state) => {
@@ -436,8 +472,8 @@ const SCENES: Record<string, ScenePatch> = {
         tree: state.resource.tree,
         root: state.resource.root,
         loadState: state.resource.loadState,
-        moveDialog: node ? { path: node.path, name: node.name } : null
-      }
+        moveDialog: node ? { path: node.path, name: node.name } : null,
+      },
     }
   },
   // 新建文档的就地输入态。
@@ -455,9 +491,9 @@ const SCENES: Record<string, ScenePatch> = {
         value: '研究笔记',
         suffix: '.md',
         error: null,
-        submitting: false
-      }
-    }
+        submitting: false,
+      },
+    },
   }),
   // 文献库导入菜单 (含两个显式「待实现」项)。
   'literature-import-menu': (state) => ({
@@ -465,13 +501,13 @@ const SCENES: Record<string, ScenePatch> = {
     activeSession: null,
     tabs: [OVERVIEW_TAB, LITERATURE_TAB],
     activeTab: LITERATURE_TAB.id,
-    literature: { ...litBase(state), importMenuOpen: true }
+    literature: { ...litBase(state), importMenuOpen: true },
   }),
   // 模块面板收起 (⌘B)。
   'panel-collapsed': {
     mainView: 'resource',
     activeSession: null,
-    modulePanelOpen: false
+    modulePanelOpen: false,
   },
   // 文献列表筛选态: 按年份倒序 + 勾选两条 (批量操作条可见)。
   // 勾选取真实条目 id, 因此必须从当前已拉到的 items 里取。
@@ -487,8 +523,8 @@ const SCENES: Record<string, ScenePatch> = {
       tagDraft: '待阅读',
       selected: Object.fromEntries(
         state.literature.items.slice(0, 2).map((item) => [item.id, true])
-      )
-    }
+      ),
+    },
   }),
   // 文献条目页速览 (基本信息 Tab)。
   'literature-detail': (state) => ({
@@ -501,8 +537,8 @@ const SCENES: Record<string, ScenePatch> = {
       importMenuOpen: false,
       selected: {},
       detailTab: 'basic' as const,
-      detailId: state.literature.items[0]?.id ?? null
-    }
+      detailId: state.literature.items[0]?.id ?? null,
+    },
   }),
   // 详情面板「笔记」Tab (原型 libdetail 三 Tab 之二)。
   'literature-notes': (state) => ({
@@ -516,8 +552,8 @@ const SCENES: Record<string, ScenePatch> = {
       selected: {},
       detailTab: 'notes' as const,
       noteDraft: '这篇的判据可直接引用到综述方法章节。',
-      detailId: state.literature.items[0]?.id ?? null
-    }
+      detailId: state.literature.items[0]?.id ?? null,
+    },
   }),
   // 侧栏新建分类输入框 (原型分类分组右上 + 按钮)。
   'literature-collection-new': (state) => ({
@@ -529,8 +565,8 @@ const SCENES: Record<string, ScenePatch> = {
       ...litBase(state),
       importMenuOpen: false,
       collectionsOpen: true,
-      collectionDraft: { mode: 'create' as const, target: '', value: '待阅读' }
-    }
+      collectionDraft: { mode: 'create' as const, target: '', value: '待阅读' },
+    },
   }),
   // 行右键上下文菜单 (原型 5 项)。
   'literature-row-menu': (state) => ({
@@ -544,8 +580,8 @@ const SCENES: Record<string, ScenePatch> = {
       detailId: null,
       rowMenu: state.literature.items[0]
         ? { id: state.literature.items[0].id, x: 700, y: 300 }
-        : null
-    }
+        : null,
+    },
   }),
   // 筛选下拉 (PDF 状态 + 四维排序)。
   'literature-filter': (state) => ({
@@ -553,7 +589,7 @@ const SCENES: Record<string, ScenePatch> = {
     activeSession: null,
     tabs: [OVERVIEW_TAB, LITERATURE_TAB],
     activeTab: LITERATURE_TAB.id,
-    literature: { ...litBase(state), importMenuOpen: false, filterOpen: true }
+    literature: { ...litBase(state), importMenuOpen: false, filterOpen: true },
   }),
   // AI 面板上下文 + 暂存引用队列 (PRD「上下文附加」「暂存引用」)。
   'ai-context': {
@@ -569,7 +605,7 @@ const SCENES: Record<string, ScenePatch> = {
           source_id: '笔记/湿度失效机理.md',
           label: '湿度失效机理.md',
           retention: 'session',
-          origin: 'explicit'
+          origin: 'explicit',
         },
         {
           ref_id: 'ref-literature-demo',
@@ -577,10 +613,10 @@ const SCENES: Record<string, ScenePatch> = {
           source_id: 'lit-1',
           label: 'Humidity-induced degradation pathways',
           retention: 'session',
-          origin: 'explicit'
-        }
-      ]
-    }
+          origin: 'explicit',
+        },
+      ],
+    },
   },
   // AI 历史对话浮层 (多会话管理)。
   // 浮层是 portal + 锚定触发器定位的, 只写 state 拍不到它; 展开那一下由 shoot
@@ -591,61 +627,55 @@ const SCENES: Record<string, ScenePatch> = {
     mainView: 'resource' as const,
     activeSession: null,
     homeSelectedProjectId: state.projects[0]?.id ?? null,
-    aiPanel: { ...INITIAL_AI_PANEL_STATE, open: true }
+    aiPanel: { ...INITIAL_AI_PANEL_STATE, open: true },
   }),
   // Markdown 双视图: 渲染态与源码态各拍一张 (开真实文件)。
   'markdown-render': {
     mainView: 'resource',
     activeSession: null,
     tabs: [OVERVIEW_TAB, MARKDOWN_TAB],
-    activeTab: MARKDOWN_TAB.id
+    activeTab: MARKDOWN_TAB.id,
   },
   // 表格预览 (真实 CSV 解析)。
   table: {
     mainView: 'resource',
     activeSession: null,
     tabs: [OVERVIEW_TAB, TABLE_TAB],
-    activeTab: TABLE_TAB.id
+    activeTab: TABLE_TAB.id,
   },
   // 代码预览 (真实文件 + 行号 + 行内待实现标注)。
   code: {
     mainView: 'resource',
     activeSession: null,
     tabs: [OVERVIEW_TAB, CODE_TAB],
-    activeTab: CODE_TAB.id
+    activeTab: CODE_TAB.id,
   },
   // DOCX 占位 (本期 C 档)。
   'docx-pending': {
     mainView: 'resource',
     activeSession: null,
     tabs: [OVERVIEW_TAB, DOCX_TAB],
-    activeTab: DOCX_TAB.id
+    activeTab: DOCX_TAB.id,
   },
   'theme-light': { theme: 'light', capGallery: null, activeSession: null },
   // Opens the newest real conversation in the sidebar so the 对话页 scene is
   // shot against a real transcript instead of invented content.
   'conversation-latest': (state) => {
-    const openable = state.sessions.filter(
-      (node) => !node.container && node.openable !== false
-    )
+    const openable = state.sessions.filter((node) => !node.container && node.openable !== false)
     const target = openable[openable.length - 1]
-    return target
-      ? { mainView: 'conversation' as const, activeSession: target.id }
-      : {}
+    return target ? { mainView: 'conversation' as const, activeSession: target.id } : {}
   },
   'conversation-collapsed': (state) => {
-    const openable = state.sessions.filter(
-      (node) => !node.container && node.openable !== false
-    )
+    const openable = state.sessions.filter((node) => !node.container && node.openable !== false)
     const target = openable[openable.length - 1]
     return target
       ? {
           mainView: 'conversation' as const,
           activeSession: target.id,
-          sidebarOpen: false
+          sidebarOpen: false,
         }
       : { sidebarOpen: false }
-  }
+  },
 }
 
 /**
@@ -656,7 +686,7 @@ const SCENES: Record<string, ScenePatch> = {
  */
 const ComponentsPage = React.lazy(() =>
   import('./components/examples').then((module) => ({
-    default: module.ComponentsPage
+    default: module.ComponentsPage,
   }))
 )
 
@@ -729,8 +759,7 @@ function AppRoot(): React.JSX.Element {
     const result = await logoutDesktopSession()
     // 与头像菜单的退出同源: 广播一次, 所有表面的身份一起回到未登录态。不跳转 ——
     // 登出结束的是账号态, 不该顺带把用户从当前界面上赶走。
-    if (result.ok)
-      window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
+    if (result.ok) window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
     return result
   }
 
@@ -752,12 +781,11 @@ function AppRoot(): React.JSX.Element {
 
   return (
     <>
-      <AppMain
-        onLogin={() => set({ loginOpen: true })}
-        onLogout={handleLogout}
-      />
+      <AppMain onLogin={() => set({ loginOpen: true })} onLogout={handleLogout} />
       <OnboardingHost blocked={landingOpen || state.loginOpen} />
+      <StorageFirstLaunchDialog />
       <WindowCloseDialog />
+      <BackgroundMenu />
       {state.loginOpen && !landingOpen && (
         <AccountLogin
           onAuthed={handleAuthed}
@@ -778,7 +806,7 @@ function AppRoot(): React.JSX.Element {
 
 function AppMain({
   onLogin,
-  onLogout
+  onLogout,
 }: {
   onLogin: () => void
   onLogout: () => Promise<AccountLogoutResult>
@@ -786,10 +814,8 @@ function AppMain({
   const { t } = useTranslation('shell')
   const { t: foundation } = useTranslation('foundation')
   const { t: accountText } = useTranslation('account')
-  const { t: assistantText } = useTranslation('assistant')
-  const { state, set, act } = useApp()
-  const observedStatuses = useRef<Record<string, SessionStatus>>({})
-  const notificationLedgerReady = useRef(false)
+  const { state, set, act, getSnapshot } = useApp()
+  useAttentionLifecycle()
   useThemeEffect(state.theme)
   useLiveSession()
 
@@ -798,56 +824,10 @@ function AppMain({
   }, [foundation])
 
   useEffect(() => {
-    if (notificationLedgerReady.current) {
-      const intents = notificationIntents(
-        observedStatuses.current,
-        state.sessions,
-        state.activeSession,
-        document.hasFocus()
-      )
-      for (const intent of intents) {
-        if (state.desktopNotifications) {
-          void window.scholarseed
-            .showNotification({
-              sessionId: intent.sessionId,
-              title:
-                sessionDisplayTitle(intent, assistantText) ||
-                t('notifications.title'),
-              body: t(intent.bodyKey)
-            })
-            .catch(() => undefined)
-        }
-        if (intent.terminal && state.soundAlerts) {
-          void window.scholarseed.playAlertSound().catch(() => undefined)
-        }
-      }
-    }
-    observedStatuses.current = sessionStatusMap(state.sessions)
-    notificationLedgerReady.current = true
-  }, [
-    state.activeSession,
-    state.desktopNotifications,
-    state.sessions,
-    state.soundAlerts,
-    t,
-    assistantText
-  ])
-
-  useEffect(
-    () =>
-      window.scholarseed.onNotificationClick((sessionId) => {
-        act.openSession(sessionId)
-      }),
-    [act]
-  )
-
-  useEffect(() => {
     window.__scholarseedLiveTurnStatus = () => {
       const thread = activeThread(state)
       const running =
-        thread.running === true ||
-        thread.status === 'running' ||
-        thread.status === 'waiting'
+        thread.running === true || thread.status === 'running' || thread.status === 'waiting'
       return {
         activeSession: state.activeSession,
         runtimeId: thread.runtimeId ?? null,
@@ -859,14 +839,10 @@ function AppMain({
         artifactCount: thread.artifacts?.length ?? 0,
         hilPending: thread.conversation.some(
           (item) =>
-            item.kind === 'hil' &&
-            (item.hilState === 'pending' || item.hilState === 'submitting')
+            item.kind === 'hil' && (item.hilState === 'pending' || item.hilState === 'submitting')
         ),
-        runtimeReadinessKnown: Boolean(
-          thread.readiness || state.runtimeReadiness
-        ),
-        runtimeReady:
-          thread.readiness?.ready ?? state.runtimeReadiness?.ready ?? false
+        runtimeReadinessKnown: Boolean(thread.readiness || state.runtimeReadiness),
+        runtimeReady: thread.readiness?.ready ?? state.runtimeReadiness?.ready ?? false,
       }
     }
     return () => {
@@ -889,42 +865,81 @@ function AppMain({
         }
         const submitted = await window.__scholarseedSubmitMessage?.(msg)
         if (submitted !== true) {
+          const blocker = harnessBlocker(state)
           set({
             petOverride: 'error',
             foregroundError:
               state.runtimeReadiness?.ready === false
-                ? state.runtimeReadiness.message ||
-                  feedback('shell', 'foreground.runtimeNotReady')
-                : feedback('shell', 'foreground.submitNotReady')
+                ? state.runtimeReadiness.message || feedback('shell', 'foreground.runtimeNotReady')
+                : blocker
+                  ? harnessBlockerFeedback(blocker)
+                  : feedback('shell', 'foreground.submitNotReady'),
           })
         }
       })()
     })
     return () => off?.()
-  }, [act, set, state.runtimeReadiness])
+  }, [act, set, state.runtimeReadiness, state.projects.length, state.loginOpen])
 
   // non-blocking backend health (shell renders seed data immediately). Poll fast
   // until the backend is ready, then a slow heartbeat so we don't hit /api/healthz
   // every 1.5s for the whole session.
+  const startup = useStartup()
   useEffect(() => {
     let stop = false
-    const poll = async (): Promise<void> => {
-      const h = await getHealth()
-      if (stop) return
-      const ready = Boolean(h?.ok)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    if (startup.phase !== STARTUP_PHASE.ready) {
       set({
-        backendReady: ready,
-        serviceInstanceId: h?.service_instance_id ?? null,
-        runtimeReadiness: h?.readiness ?? null,
-        runtimeCapabilities: h?.capabilities ?? null
+        backendReady: false,
+        workbenchReady: false,
+        serviceInstanceId: null,
+        runtimeReadiness: null,
+        runtimeCapabilities: null,
       })
-      setTimeout(poll, ready ? 30_000 : 1_500)
+      return
+    }
+    const poll = async (): Promise<void> => {
+      const h = await getBackendHealth()
+      if (stop) return
+      const current = getSnapshot()
+      const reconfiguration =
+        h === null && current.backendReady && current.workbenchReady && current.serviceInstanceId
+          ? await getSharedRuntimeReconfiguration().catch(() => null)
+          : null
+      if (stop) return
+      set((snapshot) => projectBackendAvailability(snapshot, h, reconfiguration))
+      timer = setTimeout(poll, h?.ok && h.workbench_ready ? HEALTH_REFRESH_MS : HEALTH_RETRY_MS)
     }
     void poll()
     return () => {
       stop = true
+      clearTimeout(timer)
     }
-  }, [set])
+  }, [set, getSnapshot, startup.generation, startup.phase])
+
+  useEffect(() => {
+    let stop = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    set({ runtimeReadiness: null, runtimeCapabilities: null })
+    if (startup.phase !== STARTUP_PHASE.ready || !state.backendReady || !state.serviceInstanceId)
+      return
+    const instance = state.serviceInstanceId
+    const poll = async (): Promise<void> => {
+      const health = await getHealth()
+      if (stop) return
+      const current = health?.service_instance_id === instance
+      set({
+        runtimeReadiness: current ? health.readiness : null,
+        runtimeCapabilities: current ? health.capabilities : null,
+      })
+      timer = setTimeout(poll, current ? HEALTH_REFRESH_MS : HEALTH_RETRY_MS)
+    }
+    void poll()
+    return () => {
+      stop = true
+      clearTimeout(timer)
+    }
+  }, [set, startup.generation, startup.phase, state.backendReady, state.serviceInstanceId])
 
   // Serve owns the durable default. Keep the safe local fallback until the
   // backend is ready, then hydrate it for every new conversation draft.
@@ -947,11 +962,14 @@ function AppMain({
       const patch = SCENES[scene]
       if (!patch) return
       // each scene is self-contained: reset to base ('main') then apply the delta
-      set((current) => {
-        const base = SCENES.main as Partial<AppState>
-        const delta = typeof patch === 'function' ? patch(current) : patch
-        return scene === 'main' ? delta : { ...base, ...delta }
-      })
+      set(
+        (current) => {
+          const base = SCENES.main as Partial<AppState>
+          const delta = typeof patch === 'function' ? patch(current) : patch
+          return scene === 'main' ? delta : { ...base, ...delta }
+        },
+        { action: 'host-scene' }
+      )
     })
     return () => off?.()
   }, [set])
@@ -976,7 +994,11 @@ function AppMain({
     }
   }, [])
 
-  const workspaceReady = state.workspaceLoadState === 'ready'
+  const workspaceReady = state.workspaceLoadState === 'ready' && state.navigationRestored
+  const homeAvailable =
+    state.navigationRestored && state.projectsLoaded && state.mainView === 'home'
+  const workspaceVisible = workspaceReady || homeAvailable
+  useUpdateHealth(workspaceReady && state.backendReady && state.runtimeReadiness !== null)
   const workspaceFailed = state.workspaceLoadState === 'error'
   const needsLogin = workspaceFailed && authRequired
   const retryWorkspaceLoad = (): void => {
@@ -1001,14 +1023,29 @@ function AppMain({
       : { label: t('workspaceLoading.reload'), run: retryWorkspaceLoad }
 
   return (
-    <OfficeRuntimeProvider>
+    <OfficeRuntimeProvider ready={workspaceReady && state.backendReady}>
       <div
-        className={`vds-app-shell${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
+        className={`vds-app-shell h-[var(--vds-app-shell-viewport-height)] min-h-[var(--vds-app-shell-viewport-height)] flex flex-col relative overflow-hidden bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] before:fixed before:inset-x-0 before:top-0 before:z-[var(--vds-app-shell-drag-region-z-index)] before:h-[var(--vds-app-shell-drag-region-height)] before:content-[''] before:[-webkit-app-region:drag]${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
       >
-        <div id={OFFICE_RUNTIME_ROOT_ID} className="vds-office-runtime-layer" />
+        <div
+          id={OFFICE_RUNTIME_ROOT_ID}
+          className="vds-office-runtime-layer pointer-events-none fixed inset-0 z-[var(--vds-z-content)]"
+        />
         {/* PRD 2.1.1: no full-width titlebar — the sidebar owns the window row
           and the account chrome, the composer owns the model pill. */}
-        {!workspaceReady ? (
+        {!workspaceVisible && workspaceFailed ? (
+          <FeedbackRecovery
+            title={workspaceTitle}
+            detail={workspaceDetail}
+            actionLabel={workspaceAction?.label}
+            onAction={workspaceAction?.run}
+            actions={
+              <Button disabled={!state.projectsLoaded} onClick={act.returnHome}>
+                {t('navigation.returnHome')}
+              </Button>
+            }
+          />
+        ) : !workspaceVisible ? (
           <Progress
             surface="screen"
             title={workspaceTitle}
@@ -1016,17 +1053,38 @@ function AppMain({
             error={workspaceFailed}
             actionLabel={workspaceAction?.label}
             onAction={workspaceAction?.run}
+            actions={
+              <Button disabled={!state.projectsLoaded} onClick={act.returnHome}>
+                {t('navigation.returnHome')}
+              </Button>
+            }
           />
         ) : (
-          <div className="vds-workspace-body h-full min-h-0 min-w-0 overflow-hidden">
-            {WORKBENCH_VIEWS.includes(state.mainView) ? (
-              <WorkbenchShell />
-            ) : (
-              <>
-                <Sidebar />
-                <Conversation key={state.activeSession ?? 'draft'} />
-              </>
+          <div className="vds-workspace-body flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+            {workspaceFailed && (
+              <Alert
+                tone="error"
+                title={workspaceTitle}
+                description={workspaceDetail}
+                action={
+                  <Button variant="secondary" onClick={workspaceAction?.run}>
+                    {workspaceAction?.label}
+                  </Button>
+                }
+              />
             )}
+            <div className="flex min-h-0 min-w-0 flex-1">
+              {WORKBENCH_VIEWS.includes(state.mainView) ? (
+                <WorkbenchShell />
+              ) : (
+                <>
+                  <Sidebar />
+                  <ErrorBoundary embedded key={state.activeSession ?? 'draft'}>
+                    <Conversation key={state.activeSession ?? 'draft'} />
+                  </ErrorBoundary>
+                </>
+              )}
+            </div>
           </div>
         )}
 
@@ -1047,6 +1105,8 @@ function AppMain({
                 <AccountPanel
                   embedded
                   page={state.accountSettingsPage}
+                  browserSettingsSection={state.browserSettingsSection}
+                  isBrowserSettingsCurrent={act.captureSettingsSurface()}
                   onPage={act.openSettings}
                   onClose={() => act.openSettings(null)}
                   onLogin={onLogin}
@@ -1063,7 +1123,13 @@ function AppMain({
 
         {workspaceReady && state.projectForm && <ProjectFormHost />}
 
+        {workspaceReady && <ProjectManageDialogs />}
+
         {workspaceReady && state.confirmDelete && <ConfirmDialog />}
+        {workspaceReady && state.sessionArchive && <ArchiveDialog />}
+        {workspaceReady && state.sessionRename?.mode === 'dialog' && (
+          <SessionRenameDialog key={state.sessionRename.sessionId} />
+        )}
 
         <LanguageSwitchDialog />
 
@@ -1099,7 +1165,7 @@ function ProjectFormHost(): React.JSX.Element {
         if (result) {
           set({
             projects: result.projects,
-            defaultWorkspacePath: result.default || state.defaultWorkspacePath
+            defaultWorkspacePath: result.default || state.defaultWorkspacePath,
           })
         }
         // 必须排在刷新之后: selectProject 靠最新列表判断是否跨项目并决定要不要重置会话。
@@ -1122,11 +1188,7 @@ function ForegroundError(): React.JSX.Element {
       className="absolute left-1/2 top-14 z-[95] w-[min(760px,calc(100%_-_48px))] -translate-x-1/2"
       data-testid="foreground-error"
     >
-      <Alert
-        closable
-        onClose={() => set({ foregroundError: null })}
-        tone="error"
-      >
+      <Alert closable onClose={() => set({ foregroundError: null })} tone="error">
         <div className="grid gap-[var(--vds-space-2)]">
           <AlertTitle>{t('foreground.title')}</AlertTitle>
           <div className="text-xs leading-5 text-[var(--vds-text-secondary)]">
@@ -1157,17 +1219,17 @@ function ForegroundNotice(): null {
     toast({
       tone: 'success',
       title: t('notice.completed'),
-      description: typeof message === 'object' && !('ns' in message)
-        ? skills('installed', { name: message.name })
-        : renderFeedback(i18n, message)
+      description:
+        typeof message === 'object' && !('ns' in message)
+          ? message.key === 'plugin.uiUpdated'
+            ? skills('plugin.uiUpdated')
+            : skills(message.key, { name: message.name })
+          : renderFeedback(i18n, message),
     })
     set({ foregroundNotice: null })
   }, [message, set, t, skills, i18n, toast])
   return null
 }
-
-/** 成功操作 Toast 的展示时间；错误提示保留到用户主动关闭。 */
-const RESOURCE_NOTICE_TIMEOUT_MS = 3200
 
 /**
  * 资料库操作反馈的全局 Toast 桥：notice 由任意视图写入（如 AI 会话导入资料
@@ -1177,9 +1239,11 @@ const RESOURCE_NOTICE_TIMEOUT_MS = 3200
 function ResourceNoticeToast(): null {
   const { t } = useTranslation('resources')
   const { t: uiText } = useTranslation('ui')
+  const trash = uiText(systemTrashKey())
   const { t: taskText } = useTranslation('tasks')
   const { state, set, act } = useApp()
   const { toast } = useToast()
+  const { setOpen: setTaskCenterOpen } = useTaskCenter()
   const notice = state.resource.notice
   // StrictMode 下 effect 会连跑两次，用已推送消息引用去重，避免 toast 重复弹出。
   const pushedRef = useRef<typeof notice>(null)
@@ -1187,66 +1251,85 @@ function ResourceNoticeToast(): null {
     if (!notice || pushedRef.current === notice) return
     pushedRef.current = notice
     toast({
-      action: notice.retryDraft ? (
-        <Button
-          data-testid="resource-notice-retry"
-          size="sm"
-          type="button"
-          variant="link"
-          onClick={act.retryResourceCreate}
-        >
-          {uiText('retry')}
-        </Button>
-      ) : notice.openTarget ? (
-        <Button
-          data-testid="resource-notice-open"
-          size="sm"
-          type="button"
-          variant="link"
-          onClick={() =>
-            void act.openResourceFile(
-              notice.openTarget!.path,
-              notice.openTarget!.projectId
-            )
-          }
-        >
-          {uiText('open')}
-        </Button>
-      ) : undefined,
+      dedupeKey: JSON.stringify([
+        'resource-notice',
+        notice.tone,
+        'namespace' in notice.text ? { ...notice.text, errorContent: undefined } : notice.text,
+      ]),
+      title:
+        'namespace' in notice.text && notice.text.key === 'feedback.incomplete'
+          ? taskText(notice.text.key, { name: taskTitleText(notice.text.name, taskText) })
+          : undefined,
+      action:
+        'namespace' in notice.text && notice.text.openTaskCenter ? (
+          <Button
+            data-testid="resource-notice-task-center"
+            size="sm"
+            type="button"
+            variant="link"
+            onClick={() => setTaskCenterOpen(true)}
+          >
+            {taskText('feedback.viewTaskCenter')}
+          </Button>
+        ) : notice.retryDraft ? (
+          <Button
+            data-testid="resource-notice-retry"
+            size="sm"
+            type="button"
+            variant="link"
+            onClick={act.retryResourceCreate}
+          >
+            {uiText('retry')}
+          </Button>
+        ) : notice.openTarget ? (
+          <Button
+            data-testid="resource-notice-open"
+            size="sm"
+            type="button"
+            variant="link"
+            onClick={() => openResourceTarget(act, notice.openTarget!)}
+          >
+            {uiText('open')}
+          </Button>
+        ) : undefined,
       description: (
         <>
-          {'namespace' in notice.text
-            ? taskText(notice.text.key, {
-                name: taskTitleText(notice.text.name, taskText)
-              })
-            : 'destination' in notice.text
-              ? t(notice.text.key, {
-                  name: notice.text.name,
-                  destination: notice.text.destination
+          {'namespace' in notice.text && notice.text.key === 'feedback.incomplete'
+            ? null
+            : 'namespace' in notice.text
+              ? taskText(notice.text.key, {
+                  name: taskTitleText(notice.text.name, taskText),
                 })
-              : 'count' in notice.text
-                ? 'name' in notice.text
-                  ? t(notice.text.key, {
-                      name: notice.text.name,
-                      count: notice.text.count
-                    })
-                  : t(notice.text.key, {
-                      count: notice.text.count
-                    })
-                : 'name' in notice.text
-                  ? t(notice.text.key, { name: notice.text.name })
-                  : t(notice.text.key)}
+              : 'destination' in notice.text
+                ? t(notice.text.key, {
+                    name: notice.text.name,
+                    destination: notice.text.destination,
+                    trash,
+                  })
+                : 'count' in notice.text
+                  ? 'name' in notice.text
+                    ? t(notice.text.key, {
+                        name: notice.text.name,
+                        count: notice.text.count,
+                        trash,
+                      })
+                    : t(notice.text.key, {
+                        count: notice.text.count,
+                        trash,
+                      })
+                  : 'name' in notice.text
+                    ? t(notice.text.key, { name: notice.text.name, trash })
+                    : t(notice.text.key, { trash })}
           {'namespace' in notice.text && notice.text.errorContent ? (
             <span> {notice.text.errorContent}</span>
           ) : null}
           {notice.text.detail && <span> {notice.text.detail}</span>}
         </>
       ),
-      duration: notice.tone === 'ok' ? RESOURCE_NOTICE_TIMEOUT_MS : false,
-      tone: notice.tone === 'ok' ? 'success' : 'error'
+      tone: notice.tone === 'ok' ? 'success' : 'error',
     })
     set((current) => ({ resource: { ...current.resource, notice: null } }))
-  }, [notice, set, toast, t, taskText, uiText, act])
+  }, [notice, set, toast, t, taskText, uiText, trash, act, setTaskCenterOpen])
   return null
 }
 
@@ -1266,11 +1349,14 @@ function ConfirmDialog(): React.JSX.Element {
   const { state, set, act } = useApp()
   const cd = state.confirmDelete!
   const [busy, setBusy] = React.useState(false)
-  const [err, setErr] = React.useState<
-    'delete.running' | 'delete.failed' | null
-  >(null)
+  const [err, setErr] = React.useState<'delete.stopFailed' | 'delete.failed' | null>(null)
+  const title = sessionDisplayTitle(
+    { title: cd.label, title_fallback: cd.title_fallback },
+    assistantText
+  )
 
   const onDelete = async (): Promise<void> => {
+    if (busy) return
     // sessionId 缺失 → 能力卡占位删除 (暂无端点), 仅关闭对话框。
     if (!cd.sessionId) {
       set({ confirmDelete: null })
@@ -1288,162 +1374,51 @@ function ConfirmDialog(): React.JSX.Element {
     const r = await deleteSession(cd.sessionId)
     setBusy(false)
     if (r.ok) {
+      documentWorkspaces.discardTaskDocuments(cd.sessionId)
       act.removeSession(cd.sessionId, cd.surface) // 从本地树/线程剔除 + 关对话框
       window.dispatchEvent(new Event('scholarseed:refresh-session-list'))
       return
     }
-    if (r.status === 409) setErr('delete.running')
+    if (r.status === 409) setErr('delete.stopFailed')
     else setErr('delete.failed')
   }
 
   return (
-    <div
-      style={{
-        position: 'absolute',
-        inset: 0,
-        zIndex: 90,
-        display: 'grid',
-        placeItems: 'center'
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) set({ confirmDelete: null })
       }}
     >
-      <div
-        onClick={() => !busy && set({ confirmDelete: null })}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          background: 'rgba(10,9,6,0.5)'
-        }}
-      />
-      <div
-        data-testid="session-delete-confirm"
-        style={{
-          position: 'relative',
-          width: 340,
-          background: 'var(--bg-2)',
-          border: '1px solid var(--border)',
-          borderRadius: 14,
-          padding: 20,
-          boxShadow: 'var(--shadow)',
-          animation: 'cardIn .2s ease both'
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 9,
-            marginBottom: 10
-          }}
-        >
-          <span
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: '50%',
-              display: 'grid',
-              placeItems: 'center',
-              background: 'var(--c-tension)',
-              color: '#fff',
-              fontSize: 13
-            }}
-          >
-            !
-          </span>
-          <span style={{ fontSize: 14, color: 'var(--text)' }}>
-            {t('delete.title')}
-          </span>
-        </div>
-        <div
-          style={{
-            fontSize: 12,
-            color: 'var(--text-2)',
-            lineHeight: 1.6,
-            marginBottom: err ? 10 : 16
-          }}
-        >
-          {cd.sessionId ? (
-            <>
-              <div>{t('delete.filesRetained')}</div>
-              <div style={{ marginTop: 6 }}>
-                <Trans
-                  t={t}
-                  ns="shell"
-                  i18nKey="delete.irreversible"
-                  components={{
-                    name: (
-                      <b style={{ color: 'var(--text)' }}>
-                        {sessionDisplayTitle(
-                          {
-                            title: cd.label,
-                            title_fallback: cd.title_fallback
-                          },
-                          assistantText
-                        )}
-                      </b>
-                    )
-                  }}
-                />
-              </div>
-            </>
-          ) : (
-            <>
+      <AlertDialogPortal>
+        <AlertDialogContent data-testid="session-delete-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('delete.title')}</AlertDialogTitle>
+            <AlertDialogDescription>
               <Trans
                 t={t}
                 ns="shell"
                 i18nKey="delete.irreversible"
-                components={{
-                  name: (
-                    <b style={{ color: 'var(--text)' }}>
-                      {sessionDisplayTitle(
-                        { title: cd.label, title_fallback: cd.title_fallback },
-                        assistantText
-                      )}
-                    </b>
-                  )
-                }}
+                components={{ name: <b>{title}</b> }}
               />
-            </>
-          )}
-        </div>
-        {err && (
-          <div
-            style={{
-              fontSize: 11.5,
-              color: 'var(--c-tension)',
-              lineHeight: 1.5,
-              marginBottom: 14
-            }}
-          >
-            {t(err)}
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9 }}>
-          <Button
-            unstyled
-            className="chip"
-            onClick={() => set({ confirmDelete: null })}
-            disabled={busy}
-          >
-            {t('delete.cancel')}
-          </Button>
-          <Button
-            unstyled
-            onClick={onDelete}
-            disabled={busy}
-            style={{
-              background: 'var(--c-tension)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 8,
-              padding: '6px 14px',
-              fontSize: 11.5,
-              opacity: busy ? 0.6 : 1
-            }}
-          >
-            {t(busy ? 'delete.deleting' : 'delete.confirm')}
-          </Button>
-        </div>
-      </div>
-    </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {err && <Alert tone="error" description={t(err)} />}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>{t('delete.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="danger"
+              disabled={busy}
+              onClick={(event) => {
+                event.preventDefault()
+                void onDelete()
+              }}
+            >
+              {t(busy ? 'delete.deleting' : 'delete.confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialogPortal>
+    </AlertDialog>
   )
 }

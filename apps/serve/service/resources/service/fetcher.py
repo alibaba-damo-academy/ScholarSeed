@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
+from html.parser import HTMLParser
 from typing import Protocol, runtime_checkable
 from urllib.parse import SplitResult, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
+from bs4 import UnicodeDammit
+
+from service.platform.citations import WebEvidencePage
 
 WEB_CONNECT_TIMEOUT_SECONDS = 5.0
 WEB_READ_TIMEOUT_SECONDS = 10.0
@@ -48,6 +55,14 @@ WEB_REDIRECT_INVALID = "web_redirect_invalid"
 WEB_RESPONSE_TOO_LARGE = "web_response_too_large"
 WEB_UNSUPPORTED_CONTENT_TYPE = "web_unsupported_content_type"
 WEB_SITE_ICON_NON_FALLBACK_ERRORS = frozenset({WEB_INVALID_URL, WEB_UNSAFE_URL})
+WEB_MAX_PAGE_BYTES = 1024 * 1024
+WEB_MAX_PAGE_CHARACTERS = 16000
+WEB_PAGE_TIMEOUT_SECONDS = 15.0
+WEB_HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+WEB_PAGE_TYPES = WEB_HTML_TYPES | {"text/plain", "application/json"}
+WEB_PAGE_ACCEPT = "text/html,application/xhtml+xml,text/plain,application/json"
+WEB_HIDDEN_TAGS = frozenset({"script", "style", "template", "noscript"})
+WEB_PAGE_ENCODING_INVALID = "web_page_encoding_invalid"
 
 
 class PageFetchError(RuntimeError):
@@ -75,6 +90,7 @@ class SiteIconFetcher(Protocol):
 
     def fetch_site_icon(self, url: str) -> FetchedImage:
         """Fetch a bounded raster icon for the HTTP(S) site containing `url`."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -101,6 +117,25 @@ class _FetchPolicy:
     accept: str
     allowed_content_types: frozenset[str]
     max_bytes: int
+
+
+class _PageText(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in WEB_HIDDEN_TAGS:
+            self.hidden.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.hidden and self.hidden[-1] == tag:
+            self.hidden.pop()
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden:
+            self.parts.append(data)
 
 
 WEB_SITE_ICON_FETCH_POLICY = _FetchPolicy(
@@ -150,6 +185,11 @@ def _public_addresses(
     except OSError as error:
         raise PageFetchError(WEB_DNS_FAILED) from error
 
+    return _checked_addresses(resolved)
+
+
+def _checked_addresses(resolved: list) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+
     addresses: dict[str, ipaddress.IPv4Address | ipaddress.IPv6Address] = {}
     for record in resolved:
         raw = str(record[4][0]).split("%", 1)[0]
@@ -167,7 +207,7 @@ def _public_addresses(
     return tuple(addresses.values())
 
 
-def _target(url: str) -> _Target:
+def _target(url: str, *, addresses: tuple | None = None) -> _Target:
     raw = str(url or "").strip()
     if not raw or any(ord(character) < 32 for character in raw):
         raise PageFetchError(WEB_INVALID_URL)
@@ -186,7 +226,7 @@ def _target(url: str) -> _Target:
         ascii_host = host.encode("idna").decode("ascii").lower()
     except UnicodeError as error:
         raise PageFetchError(WEB_INVALID_URL) from error
-    addresses = _public_addresses(ascii_host, port)
+    addresses = _public_addresses(ascii_host, port) if addresses is None else addresses
     return _Target(
         url=_normalized_url(parsed._replace(scheme=scheme), ascii_host, port),
         scheme=scheme,
@@ -212,8 +252,112 @@ def _host_header(target: _Target) -> str:
     return authority
 
 
+def _extract_page_text(response: _Response) -> str:
+    document = httpx.Response(response.status, headers=response.headers, content=response.payload)
+    if response.media_type in WEB_HTML_TYPES:
+        encoding = document.charset_encoding
+        decoded = UnicodeDammit(
+            response.payload,
+            known_definite_encodings=[encoding] if encoding else [],
+            is_html=True,
+        )
+        if decoded.unicode_markup is None or decoded.contains_replacement_characters:
+            raise PageFetchError(WEB_PAGE_ENCODING_INVALID)
+        parser = _PageText()
+        parser.feed(decoded.unicode_markup)
+        parser.close()
+        text = " ".join(parser.parts)
+    else:
+        text = document.text
+    return " ".join(text.split())[:WEB_MAX_PAGE_CHARACTERS]
+
+
 class HtmlFetcher:
     """不执行 JavaScript、固定公网 IP、逐跳校验重定向的 HTML 抓取器。"""
+
+    async def fetch_page(self, url: str) -> WebEvidencePage:
+        async with asyncio.timeout(WEB_PAGE_TIMEOUT_SECONDS):
+            source, final, response = await self._fetch_page(url)
+            content = await asyncio.to_thread(_extract_page_text, response)
+        return WebEvidencePage(
+            source,
+            final,
+            content,
+            sha256(response.payload).hexdigest(),
+            datetime.now(UTC).isoformat(),
+        )
+
+    async def _fetch_page(self, url: str) -> tuple[str, str, _Response]:
+        source = _target(url, addresses=()).url
+        current = source
+        loop = asyncio.get_running_loop()
+        async with httpx.AsyncClient(
+            follow_redirects=False, trust_env=False, timeout=WEB_READ_TIMEOUT_SECONDS
+        ) as client:
+            for redirect_count in range(WEB_MAX_REDIRECTS + 1):
+                target = _target(current, addresses=())
+                try:
+                    resolved = await loop.getaddrinfo(
+                        target.host, target.port, type=socket.SOCK_STREAM
+                    )
+                except OSError as error:
+                    raise PageFetchError(WEB_DNS_FAILED) from error
+                addresses = _checked_addresses(resolved)
+                last_error: Exception = PageFetchError(WEB_FETCH_FAILED)
+                redirect = ""
+                for address in addresses:
+                    try:
+                        client.cookies.clear()
+                        async with client.stream(
+                            "GET",
+                            _pinned_url(target, address),
+                            headers={
+                                "Accept": WEB_PAGE_ACCEPT,
+                                "Accept-Encoding": "identity",
+                                "Host": _host_header(target),
+                                "User-Agent": WEB_USER_AGENT,
+                            },
+                            extensions={"sni_hostname": target.host},
+                        ) as response:
+                            if response.status_code in WEB_REDIRECT_STATUSES:
+                                redirect = response.headers.get("location", "").strip()
+                                if not redirect:
+                                    raise PageFetchError(WEB_REDIRECT_INVALID)
+                                break
+                            if not response.is_success:
+                                raise PageFetchError(WEB_HTTP_STATUS)
+                            media_type = (
+                                response.headers.get("content-type", "")
+                                .split(";", 1)[0]
+                                .strip()
+                                .lower()
+                            )
+                            if media_type not in WEB_PAGE_TYPES:
+                                raise PageFetchError(WEB_UNSUPPORTED_CONTENT_TYPE)
+                            declared = response.headers.get("content-length", "")
+                            if declared.isdigit() and int(declared) > WEB_MAX_PAGE_BYTES:
+                                raise PageFetchError(WEB_RESPONSE_TOO_LARGE)
+                            content = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                if len(content) + len(chunk) > WEB_MAX_PAGE_BYTES:
+                                    raise PageFetchError(WEB_RESPONSE_TOO_LARGE)
+                                content.extend(chunk)
+                            return (
+                                source,
+                                target.url,
+                                _Response(
+                                    response.status_code,
+                                    dict(response.headers),
+                                    bytes(content),
+                                    media_type,
+                                ),
+                            )
+                    except httpx.RequestError as error:
+                        last_error = error
+                if not redirect:
+                    raise PageFetchError(WEB_FETCH_FAILED) from last_error
+                current = urljoin(target.url, redirect)
+        raise PageFetchError(WEB_TOO_MANY_REDIRECTS)
 
     def fetch_site_icon(self, url: str) -> FetchedImage:
         """Fetch a site icon through bounded direct and provider candidates."""

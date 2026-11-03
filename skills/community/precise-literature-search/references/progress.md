@@ -33,7 +33,7 @@ Recommended localized shape:
 [Search 2/12] Querying PaperHub | 42 seconds elapsed | 18 papers found
 [Download 2/10] Downloading title.pdf | 1 completed
 [Reading 3/8] Reading title.pdf | 2 completed
-[Action required] Complete login in the dedicated Chrome | Tell me when to continue
+[Action required] Complete login in the dedicated Chrome or Edge | Tell me when to continue
 ```
 
 The bundled renderer intentionally emits compact English lines so any host can
@@ -60,7 +60,7 @@ For an immediate user stop:
 ```bash
 scholarseed-skill-python "$SKILL_DIR/scripts/progress.py" --run-dir "$RUN_DIR" update \
   --stage download --activity "Waiting for login" --status action_required \
-  --action "Complete login in the dedicated Chrome, then tell the host to continue."
+  --action "Complete login in the dedicated Chrome or Edge, then tell the host to continue."
 ```
 
 Valid stages are `search`, `download`, `reading`, and `reporting`. Normal

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { assistantSourceAvailable, filterAssistantContextCandidates, isSessionContextCandidate, resolveAssistantProject } from './candidates.ts'
+import {
+  assistantSourceAvailable,
+  filterAssistantContextCandidates,
+  isSessionContextCandidate,
+  resolveAssistantProject
+} from './candidates.ts'
 
 test('project-only assistant sources are unavailable in global conversations', () => {
   assert.equal(assistantSourceAvailable({ requiresProject: true }, null), false)

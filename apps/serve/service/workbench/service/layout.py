@@ -376,8 +376,8 @@ def _formulas(page: Page, chars: list[dict], blocked: list[Region]) -> list[Regi
             )
         )
         if regions and close:
-            previous = regions[-1]
-            combined = union(previous.bounds, candidate.bounds)
+            previous_region = regions[-1]
+            combined = union(previous_region.bounds, candidate.bounds)
             regions[-1] = Region(combined, PDF_FORMULA, "formula_lines", PDF_TEXT_RETAIN)
         else:
             regions.append(Region(candidate.bounds, PDF_FORMULA, "formula_line", PDF_TEXT_RETAIN))
@@ -549,16 +549,19 @@ def _caption_figures(
                     figure_bounds[3],
                 )
             if figure_bounds[1] <= page.bbox[1] + REGION_PADDING:
-                labels = [
+                upper_labels = [
                     bounds_of(line)
                     for line in page.objects.get(TEXT_LINE, ())
                     if line["bottom"] < caption[1]
                     and _horizontal_overlap(bounds_of(line), figure_bounds) > 0
                 ]
-                if labels:
+                if upper_labels:
                     figure_bounds = (
                         figure_bounds[0],
-                        max(figure_bounds[1], min(label[1] for label in labels) - REGION_PADDING),
+                        max(
+                            figure_bounds[1],
+                            min(label[1] for label in upper_labels) - REGION_PADDING,
+                        ),
                         figure_bounds[2],
                         figure_bounds[3],
                     )

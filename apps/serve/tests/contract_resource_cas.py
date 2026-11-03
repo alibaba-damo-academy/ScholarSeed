@@ -18,7 +18,15 @@ from service.paths import (
     PROJECT_VERSIONS_DIRNAME,
     PROJECT_VERSIONS_RELATIVE,
 )
-from service.resources.persistence.objects import CasCorruptError, CasLayout, CasStore
+from service.platform.storage import filesystem_path
+from service.resources.persistence.objects import (
+    CasCorruptError,
+    CasEntryKind,
+    CasLayout,
+    CasStore,
+    GcEntry,
+    GcPlan,
+)
 
 PASS = 0
 FAIL = 0
@@ -217,6 +225,36 @@ def test_project_fence_rejects_an_offline_root() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_long_path_gc_preserves_live_objects_across_repeated_collections() -> None:
+    root = Path(tempfile.mkdtemp(prefix="resource-cas-long-"))
+    try:
+        project = root / ("project-" + "p" * 70) / ("nested-" + "n" * 70)
+        filesystem_path(project).mkdir(parents=True)
+        user_file = filesystem_path(project / "user-document.txt")
+        user_file.write_bytes(b"user data stays")
+        store = CasStore(project / PROJECT_VERSIONS_RELATIVE, project_root=project)
+        live = store.put(b"live version")
+        for index in range(10):
+            payload = f"expired version {index}".encode()
+            expired = store.put(payload)
+            entry = GcEntry(CasEntryKind.OBJECT, expired, f"{index:032x}")
+            trash = store._trash_path(entry)
+            assert len(str(trash)) > 260, trash
+            assert store.apply_gc(GcPlan((entry,), ())) == 0
+            assert expired not in store.inventory(CasEntryKind.OBJECT)
+            assert (trash / "payload").read_bytes() == payload
+            assert store.apply_gc(GcPlan((entry,), ())) == 0
+            assert store.apply_gc(GcPlan((), (entry,))) > 0
+            assert not trash.exists()
+            assert store.apply_gc(GcPlan((), (entry,))) == 0
+            with store.open(live) as stream:
+                assert stream.read() == b"live version"
+            assert user_file.read_bytes() == b"user data stays"
+        check("ten long-path GC cycles preserve live versions and user files", True)
+    finally:
+        shutil.rmtree(filesystem_path(root))
+
+
 def main() -> int:
     test_whole_roundtrip_and_canonical_identity()
     test_regular_files_remain_writable_through_durability_sync()
@@ -224,6 +262,7 @@ def main() -> int:
     test_chunked_roundtrip_reuse_and_corruption()
     test_chunked_stream_roundtrip_uses_bounded_reads()
     test_project_fence_rejects_an_offline_root()
+    test_long_path_gc_preserves_live_objects_across_repeated_collections()
     print(f"\ncontract_resource_cas: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
 

@@ -9,13 +9,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from io_utils import read_json
+from filesystem import canonical_path, path_exists
 from validate_json import validate_data
 from balance_policy import RetrievalBudgetExhausted, request_timeout as balance_timeout
 
 
 def require_search_worker(work_dir: Path) -> None:
     from stage_guard import require_worker
-    work = work_dir.resolve()
+    work = canonical_path(work_dir)
     if len(work.parents) > 2:
         require_worker(work.parents[2], "search")
 
@@ -23,7 +24,7 @@ def require_search_worker(work_dir: Path) -> None:
 def context(work_dir: Path) -> tuple[dict, dict, dict, str | None]:
     def optional(name, root=work_dir):
         path = root / name
-        return read_json(path) if path.exists() else {}
+        return read_json(path) if path_exists(path) else {}
     dispatch = optional("dispatch.json")
     plan = optional("plan.json")
     request = optional("request.json", work_dir.parent)
@@ -33,7 +34,7 @@ def context(work_dir: Path) -> tuple[dict, dict, dict, str | None]:
 
 def query_history(work_dir: Path) -> list[dict]:
     path = work_dir / "query-log.json"
-    if not path.exists():
+    if not path_exists(path):
         return []
     return [item for item in read_json(path).get("queries", [])
             if isinstance(item, dict) and item.get("status") != "execution_blocked"]
@@ -50,7 +51,7 @@ def consumed_queries(work_dir: Path) -> int:
 def request_timeout(work_dir: Path, timeout: float) -> float:
     request, plan, dispatch, profile = context(work_dir)
     state_path = work_dir / "state.json"
-    if profile is not None and state_path.exists():
+    if profile is not None and path_exists(state_path):
         state = read_json(state_path)
         if state.get("iteration", 0) >= state.get("max_iterations", 8):
             raise RetrievalBudgetExhausted("saved search iteration budget exhausted")

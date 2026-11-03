@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import unicodedata
 from dataclasses import asdict, dataclass
-from typing import Protocol
+from enum import Enum
+from typing import Callable, Protocol
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from playwright.sync_api import Page
@@ -16,17 +18,26 @@ BING_NAME = "bing"
 BING_LANDING_URL = "https://www.bing.com"
 BING_RESULT_PATH = "/search"
 BING_QUERY_INPUT_SELECTOR = "#sb_form_q"
-BING_FORM_SELECTOR = "#sb_form"
-BING_FORM_SUBMIT_SCRIPT = "form => form.submit()"
+BING_SEARCH_BUTTON_SELECTOR = "#search_icon"
 BING_LOAD_STATE = "domcontentloaded"
 BING_INPUT_WAIT_STATE = "visible"
 BING_RESULT_SELECTOR = "#b_results .b_algo"
+BING_CONTAINER_SELECTOR = "#b_results"
+BING_EMPTY_SELECTOR = "#b_results .b_no"
+BING_BUSY_SELECTOR = '[aria-busy="true"]'
 BING_LINK_SELECTORS = ("h2 a", "a.tilk")
 BING_RESULT_LINK_SELECTOR = ", ".join(
     f"{BING_RESULT_SELECTOR} {selector}" for selector in BING_LINK_SELECTORS
 )
 BING_SNIPPET_SELECTORS = (".b_caption p", "p.b_lineclamp2", ".b_snippet", "p")
+BING_RICH_SNIPPET_SELECTOR = '.b_caption [role="tabpanel"] .b_vList li span'
+BING_SNAPSHOT_SNIPPET_SELECTORS = (*BING_SNIPPET_SELECTORS, BING_RICH_SNIPPET_SELECTOR)
 BING_CHALLENGE_SELECTORS = ("#b_captcha", "iframe[src*='captcha']", "[id*='captcha']")
+BING_RESOURCE_WAIT_SELECTOR = ", ".join((BING_CONTAINER_SELECTOR, *BING_CHALLENGE_SELECTORS))
+BING_FORM_SUBMIT_SCRIPT = "input => input.form.submit()"
+RESOURCE_HOME_WAIT_MS = 1_000
+RESOURCE_RESULTS_WAIT_MS = 1_500
+RESULT_CONTAINER_WAIT_STATE = "attached"
 BING_SEARCH_PATHS = frozenset(
     {BING_RESULT_PATH, "/images/search", "/news/search", "/videos/search"}
 )
@@ -47,6 +58,51 @@ ELEMENT_TIMEOUT_MS = 2_000
 BODY_SAMPLE_CHARACTERS = 8_000
 RESULT_CARD_SCAN_MULTIPLIER = 3
 WHITESPACE = re.compile(r"\s+")
+DOCUMENT_COMPLETE = "complete"
+BING_SNAPSHOT_SCRIPT = """selectors => {
+    const visible = element => {
+        if (!element || !Array.from(element.getClientRects()).some(rect =>
+            rect.width > 0 && rect.height > 0)) return false;
+        for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+            const style = getComputedStyle(ancestor);
+            if (style.display === 'none' || style.visibility === 'hidden' ||
+                style.visibility === 'collapse' || Number(style.opacity) === 0 ||
+                ancestor.getAttribute('aria-hidden') === 'true') return false;
+        }
+        return true;
+    };
+    const first = (element, choices) => choices.flatMap(choice =>
+        Array.from(element.querySelectorAll(choice)))
+        .find(item => visible(item) && item.innerText?.trim());
+    const container = document.querySelector(selectors.container);
+    const rows = Array.from(document.querySelectorAll(selectors.cards)).map(card => {
+        const link = selectors.links.map(selector => card.querySelector(selector)).find(Boolean);
+        const snippet = first(card, selectors.snippets);
+        const skipped = Array.from(card.querySelectorAll(selectors.content)).some(element =>
+            element.checkVisibility && element.checkVisibility() &&
+            !element.checkVisibility({contentVisibilityAuto: true}));
+        return {
+            visible: visible(card), linkVisible: visible(link), skipped,
+            title: link?.innerText || '', href: link?.href || '',
+            description: snippet?.innerText || '',
+            rich: snippet?.matches(selectors.richSnippet) || false
+        };
+    });
+    const body = document.body?.innerText || '';
+    return {
+        documentId: performance.timeOrigin, url: location.href,
+        query: document.querySelector(selectors.input)?.value || '',
+        state: document.readyState, visible: visible(container),
+        busy: !!container && (Array.from(container.querySelectorAll(selectors.busy)).some(visible) ||
+            !!container.closest(selectors.busy)),
+        empty: Array.from(document.querySelectorAll(selectors.empty)).some(visible),
+        challenged: selectors.challenges.some(selector =>
+            Array.from(document.querySelectorAll(selector)).some(visible)) ||
+            selectors.markers.some(marker => body.slice(0, selectors.bodyLimit)
+                .toLowerCase().includes(marker)),
+        rows
+    };
+}"""
 
 
 @dataclass(frozen=True)
@@ -84,6 +140,56 @@ class Extraction:
     diagnostics: ExtractionDiagnostics
 
 
+@dataclass(frozen=True)
+class SearchSnapshot:
+    document_id: float
+    url: str
+    ready: bool
+    empty: bool
+    challenged: bool
+    signature: str
+    extraction: Extraction
+    readiness: tuple[tuple[str, object], ...] = ()
+    render_target: int | None = None
+
+
+class Submission(str, Enum):
+    BUTTON = "button"
+    FORM = "form"
+
+
+@dataclass(frozen=True)
+class SearchInteraction:
+    submission: Submission = Submission.BUTTON
+    home_wait_ms: int = 0
+    results_wait_ms: int = 0
+
+
+DEFAULT_INTERACTION = SearchInteraction()
+RESOURCE_INTERACTION = SearchInteraction(
+    Submission.FORM, RESOURCE_HOME_WAIT_MS, RESOURCE_RESULTS_WAIT_MS
+)
+
+
+def _click_search(page: Page, timeout_ms: int) -> None:
+    page.locator(BING_SEARCH_BUTTON_SELECTOR).click(timeout=timeout_ms)
+
+
+def _submit_search(page: Page, timeout_ms: int) -> None:
+    page.locator(BING_QUERY_INPUT_SELECTOR).evaluate(BING_FORM_SUBMIT_SCRIPT, timeout=timeout_ms)
+
+
+SUBMISSIONS = {Submission.BUTTON: _click_search, Submission.FORM: _submit_search}
+
+
+def _wait(page: Page, milliseconds: int, budget: Callable[[], int]) -> None:
+    if milliseconds:
+        if budget() < milliseconds:
+            raise PlaywrightTimeoutError("Insufficient search budget for provider readiness wait.")
+        page.wait_for_timeout(milliseconds)
+        budget()
+
+
 class SearchProvider(Protocol):
     """Provider contract used by the browser lifecycle."""
 
@@ -91,7 +197,19 @@ class SearchProvider(Protocol):
     result_selector: str
     result_link_selector: str
 
-    def search(self, page: Page, query: str, timeout_ms: int) -> None: ...
+    def search(
+        self,
+        page: Page,
+        query: str,
+        timeout_ms: int,
+        *,
+        remaining: Callable[[], int] | None = None,
+        interaction: SearchInteraction = DEFAULT_INTERACTION,
+    ) -> None: ...
+
+    def snapshot(self, page: Page, query: str, limit: int) -> SearchSnapshot: ...
+
+    def reveal(self, page: Page, target: int, timeout_ms: int) -> None: ...
 
     def matches_page(self, url: str, query: str) -> bool: ...
 
@@ -178,20 +296,138 @@ class BingProvider:
     result_selector = BING_RESULT_SELECTOR
     result_link_selector = BING_RESULT_LINK_SELECTOR
 
-    def search(self, page: Page, query: str, timeout_ms: int) -> None:
+    def search(
+        self,
+        page: Page,
+        query: str,
+        timeout_ms: int,
+        *,
+        remaining: Callable[[], int] | None = None,
+        interaction: SearchInteraction = DEFAULT_INTERACTION,
+    ) -> None:
+        budget = remaining or (lambda: timeout_ms)
         page.goto(
             BING_LANDING_URL,
             wait_until=BING_LOAD_STATE,
-            timeout=timeout_ms,
+            timeout=budget(),
         )
         query_input = page.locator(BING_QUERY_INPUT_SELECTOR)
-        query_input.wait_for(state=BING_INPUT_WAIT_STATE, timeout=timeout_ms)
-        query_input.fill(query)
-        page.locator(BING_FORM_SELECTOR).evaluate(BING_FORM_SUBMIT_SCRIPT)
+        query_input.wait_for(state=BING_INPUT_WAIT_STATE, timeout=budget())
+        _wait(page, interaction.home_wait_ms, budget)
+        if remaining is None:
+            query_input.fill(query)
+        else:
+            query_input.fill(query, timeout=budget())
+        SUBMISSIONS[interaction.submission](page, budget())
         page.wait_for_url(
             lambda url: self.matches_page(url, query),
             wait_until=BING_LOAD_STATE,
-            timeout=timeout_ms,
+            timeout=budget(),
+        )
+        if interaction.results_wait_ms:
+            page.locator(BING_RESOURCE_WAIT_SELECTOR).first.wait_for(
+                state=RESULT_CONTAINER_WAIT_STATE, timeout=budget()
+            )
+            if page.locator(BING_CONTAINER_SELECTOR).count():
+                _wait(page, interaction.results_wait_ms, budget)
+
+    def snapshot(self, page: Page, query: str, limit: int) -> SearchSnapshot:
+        raw = page.evaluate(
+            BING_SNAPSHOT_SCRIPT,
+            {
+                "container": BING_CONTAINER_SELECTOR,
+                "cards": BING_RESULT_SELECTOR,
+                "input": BING_QUERY_INPUT_SELECTOR,
+                "links": BING_LINK_SELECTORS,
+                "snippets": BING_SNAPSHOT_SNIPPET_SELECTORS,
+                "richSnippet": BING_RICH_SNIPPET_SELECTOR,
+                "content": ", ".join((*BING_LINK_SELECTORS, *BING_SNAPSHOT_SNIPPET_SELECTORS)),
+                "empty": BING_EMPTY_SELECTOR,
+                "busy": BING_BUSY_SELECTOR,
+                "challenges": BING_CHALLENGE_SELECTORS,
+                "markers": CHALLENGE_MARKERS,
+                "bodyLimit": BODY_SAMPLE_CHARACTERS,
+            },
+        )
+        candidates: list[Candidate] = []
+        seen: set[str] = set()
+        missing_links = invalid_candidates = duplicate_candidates = 0
+        visible_rows = [row for row in raw["rows"] if row["visible"]]
+        complete = bool(visible_rows)
+        for row in raw["rows"]:
+            if not row["visible"]:
+                continue
+            candidate = candidate_from_result(row["title"], row["href"], row["description"])
+            if not row["linkVisible"]:
+                complete = False
+            if not row["href"]:
+                missing_links += 1
+                complete = False
+            elif candidate is None:
+                invalid_candidates += 1
+                complete = False
+            elif candidate.url in seen:
+                duplicate_candidates += 1
+            else:
+                seen.add(candidate.url)
+                if len(candidates) < limit:
+                    candidates.append(candidate)
+        empty = raw["empty"] and not visible_rows
+        settled = (
+            self.matches_page(raw["url"], query)
+            and _normalized_query(raw["query"]) == _normalized_query(query)
+            and raw["state"] == DOCUMENT_COMPLETE
+            and raw["visible"]
+            and not raw["busy"]
+        )
+        ready = settled and (complete or empty)
+        skipped = [
+            index for index, row in enumerate(raw["rows"]) if row["visible"] and row["skipped"]
+        ]
+        stable = {**raw, "rows": visible_rows}
+        return SearchSnapshot(
+            document_id=raw["documentId"],
+            url=raw["url"],
+            ready=ready,
+            render_target=skipped[-1] if settled and skipped else None,
+            empty=empty,
+            challenged=raw["challenged"],
+            signature=json.dumps(stable, ensure_ascii=True, sort_keys=True),
+            readiness=tuple(
+                {
+                    "document_complete": raw["state"] == DOCUMENT_COMPLETE,
+                    "url_matches": self.matches_page(raw["url"], query),
+                    "input_matches": _normalized_query(raw["query"]) == _normalized_query(query),
+                    "container_visible": raw["visible"],
+                    "busy": raw["busy"],
+                    "visible_cards": len(visible_rows),
+                    "rich_snippets": sum(row["rich"] for row in visible_rows),
+                    "incomplete_descriptions": sum(
+                        not row["description"].strip() for row in visible_rows
+                    ),
+                    "incomplete_titles": tuple(
+                        row["title"] for row in visible_rows if not row["description"].strip()
+                    ),
+                    "invalid_candidates": invalid_candidates,
+                    "missing_links": missing_links,
+                }.items()
+            ),
+            extraction=Extraction(
+                tuple(candidates),
+                ExtractionDiagnostics(
+                    len(raw["rows"]),
+                    len(candidates),
+                    missing_links,
+                    0,
+                    invalid_candidates,
+                    duplicate_candidates,
+                ),
+            ),
+        )
+
+    def reveal(self, page: Page, target: int, timeout_ms: int) -> None:
+        page.locator(self.result_selector).nth(target).scroll_into_view_if_needed(
+            timeout=timeout_ms
         )
 
     def matches_page(self, url: str, query: str) -> bool:

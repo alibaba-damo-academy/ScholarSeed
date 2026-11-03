@@ -1,7 +1,7 @@
 # Search module
 
 Transform one immutable round request into contract-compatible `metadata.json`
-and its candidate-assessment `report.md`. All download, reading, report,
+and its candidate-assessment `search_report.md`. All download, reading, report,
 permission and outer-round review contracts remain shared.
 
 ## Mode dispatch

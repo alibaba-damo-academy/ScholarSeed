@@ -1,4 +1,5 @@
 import { documentDisplayTitle } from '../../delivery'
+import { openSystemPath } from '../../api'
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -7,8 +8,6 @@ import { History, Save } from 'lucide-react'
 import { featureRegistry } from '../../app/composition'
 import {
   Alert,
-  AlertDescription,
-  AlertTitle,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -27,15 +26,17 @@ import {
   IconButton,
   Tooltip,
   useToast,
-  type NavigationTabItem
+  type NavigationTabItem,
 } from '../../components/ui'
 import type { DocumentPanelContext, DocumentPanelContribution } from '../../contracts/features'
-import { Icon } from '../../icons'
+
 import { Pending } from '../../shell/Pending'
 import { resourceFileIcon } from '../resources/icons'
 import { selectedProject, useApp } from '../../store'
 import { subscribeFileEvents } from '../project/events'
 import {
+  DOCK_AREA_DIVIDER_SIZE,
+  DOCK_DIVIDER_SIZE,
   clampRatio,
   canPlaceTab,
   nodeTabCount,
@@ -43,13 +44,13 @@ import {
   type DockLeaf,
   type DockNode,
   type DockSplit,
-  type DropEdge
+  type DropEdge,
 } from './layout'
 import {
   DOCUMENT_TAB_MIME,
   DocumentNavigationTabs,
   type DocumentDropPreview,
-  useDocumentDrag
+  useDocumentDrag,
 } from './Dragging'
 import { shouldMountDocumentView } from './residency'
 import { DocumentPanelActions, DocumentPanelHost } from './Inspector'
@@ -57,29 +58,34 @@ import { DocumentTabMenu } from './Menu'
 import { documentPanelContext } from './panel'
 import { SelectionActionHost } from './Selection'
 import { DocumentExternalOpen } from './External'
-import {
-  preserveTextSelectionForContextMenu,
-  retainsDocumentSelection
-} from './focus'
+import { preserveTextSelectionForContextMenu, retainsDocumentSelection } from './focus'
 import { isMissingDocumentFailure } from './api'
 import { useOfficeRuntime } from './office/runtime'
 import { VersionHistory } from './VersionHistory'
+import { showUnsavedIndicator } from './utils'
 import {
   useDocumentWorkspace,
   useWorkspaceController,
   documentWorkspaces,
   type DocumentSession,
-  type DocumentTab
+  type DocumentTab,
 } from './workspace'
 
 const EDGE_RATIO = 0.24
 const PATH_SEPARATOR = '/'
-const MANAGEMENT_LABEL: Record<string, 'dock.ignored' | 'dock.oversized' | 'dock.unsupported' | 'dock.unavailable' | 'dock.migrationRequired'> = {
+const MANAGEMENT_LABEL: Record<
+  string,
+  | 'dock.ignored'
+  | 'dock.oversized'
+  | 'dock.unsupported'
+  | 'dock.unavailable'
+  | 'dock.migrationRequired'
+> = {
   migration_required: 'dock.migrationRequired',
   ignored: 'dock.ignored',
   oversized: 'dock.oversized',
   unsupported: 'dock.unsupported',
-  unavailable: 'dock.unavailable'
+  unavailable: 'dock.unavailable',
 }
 
 function dropEdge(event: React.DragEvent, element: HTMLElement): DropEdge {
@@ -104,12 +110,14 @@ function TabStrip({ leaf }: { leaf: DockLeaf }): React.JSX.Element {
     const session = tab ? state.sessions[tab.sessionId] : null
     if (!tab || !session) return []
     const ResourceIcon = resourceFileIcon(tab.title)
-    return [{
-      dirty: session.dirty,
-      icon: <ResourceIcon size={13} strokeWidth={1.8} />,
-      id: tab.id,
-      label: documentDisplayTitle(tab, conversation, t)
-    }]
+    return [
+      {
+        dirty: session.dirty,
+        icon: <ResourceIcon size={13} strokeWidth={1.8} />,
+        id: tab.id,
+        label: documentDisplayTitle(tab, conversation, t),
+      },
+    ]
   })
   return (
     <DocumentNavigationTabs
@@ -127,7 +135,7 @@ function TabStrip({ leaf }: { leaf: DockLeaf }): React.JSX.Element {
 }
 
 function DocumentToolbarActions({ session }: { session: DocumentSession }): React.JSX.Element {
-  const projectId = session.source.kind === 'project' ? session.source.project ?? null : null
+  const projectId = session.source.kind === 'project' ? (session.source.project ?? null) : null
   return (
     <>
       {featureRegistry.documentToolbarItems.map((item) => (
@@ -136,7 +144,7 @@ function DocumentToolbarActions({ session }: { session: DocumentSession }): Reac
             path: session.source.path,
             projectId,
             selection: session.selection,
-            sourceKind: session.source.kind
+            sourceKind: session.source.kind,
           })}
         </React.Fragment>
       ))}
@@ -144,21 +152,32 @@ function DocumentToolbarActions({ session }: { session: DocumentSession }): Reac
   )
 }
 
-function DocumentVersionActions({ session }: { session: DocumentSession }): React.JSX.Element | null {
+function DocumentVersionActions({
+  session,
+}: {
+  session: DocumentSession
+}): React.JSX.Element | null {
   const { t } = useTranslation('workbench')
   const [historyOpen, setHistoryOpen] = useState(false)
-  if (session.source.kind !== 'project') return null
+  if (
+    session.source.kind !== 'project' ||
+    (session.versioning?.management_state !== 'managed' &&
+      session.versioning?.management_state !== 'git')
+  )
+    return null
   return (
     <>
-      <Tooltip portalled content={t('history.trigger')}><IconButton
-        data-testid="document-version-history"
-        icon={<History />}
-        label={t('history.trigger')}
-        size="sm"
-        title={undefined}
-        variant="ghostIcon"
-        onClick={() => setHistoryOpen(true)}
-      /></Tooltip>
+      <Tooltip portalled content={t('history.trigger')}>
+        <IconButton
+          data-testid="document-version-history"
+          icon={<History />}
+          label={t('history.trigger')}
+          size="sm"
+          title={undefined}
+          variant="ghostIcon"
+          onClick={() => setHistoryOpen(true)}
+        />
+      </Tooltip>
       <VersionHistory session={session} open={historyOpen} onOpenChange={setHistoryOpen} />
     </>
   )
@@ -168,31 +187,35 @@ function DocumentToolbar({
   activePanelId,
   panels,
   session,
-  onPanelToggle
+  showBreadcrumb = true,
+  onPanelToggle,
 }: {
   activePanelId: string | null
   panels: DocumentPanelContribution[]
   session: DocumentSession
+  showBreadcrumb?: boolean
   onPanelToggle: (panelId: string) => void
 }): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { t: uiText } = useTranslation('ui')
+  const { state } = useApp()
   const workspace = useWorkspaceController()
   const pathParts = session.source.path.split(PATH_SEPARATOR).filter(Boolean)
   const fileName = pathParts.pop() ?? session.source.path
-  const parentPath = session.source.kind === 'literature'
-    ? t('dock.literatureRoot')
-    : pathParts.join(` ${PATH_SEPARATOR} `) || t('dock.resourceRoot')
+  const parentPath =
+    session.source.kind === 'literature'
+      ? t('dock.literatureRoot')
+      : pathParts.join(` ${PATH_SEPARATOR} `) || t('dock.resourceRoot')
   return (
-    <div className="vds-document-toolbar">
-      {session.source.kind !== 'literature' && (
+    <div className="vds-document-toolbar [&:not(:has(>:not(.vds-document-toolbar-spacer)))]:!hidden">
+      {showBreadcrumb && session.source.kind !== 'literature' && (
         <Breadcrumb
-          className="min-w-0 max-w-[min(52vw,560px)] text-[14px] leading-5"
+          className="min-w-0 max-w-[var(--vds-dock-result-max-width)] text-[14px] leading-5"
           label={t('dock.filePath')}
           title={session.source.path}
         >
           <BreadcrumbList className="flex-nowrap gap-2 overflow-hidden">
-            <BreadcrumbItem className="min-w-0 max-w-[45%] shrink overflow-hidden font-normal text-[var(--vds-text-placeholder)]">
+            <BreadcrumbItem className="min-w-0 max-w-[var(--vds-dock-breadcrumb-max-width)] shrink overflow-hidden font-normal text-[var(--vds-text-placeholder)]">
               <EllipsisText
                 tooltip={parentPath}
                 tooltipPortalled
@@ -218,22 +241,29 @@ function DocumentToolbar({
           </BreadcrumbList>
         </Breadcrumb>
       )}
-      {(session.saveState === 'saving' || session.saveState === 'conflict' || session.saveState === 'error') && (
+      {(session.saveState === 'saving' ||
+        session.saveState === 'conflict' ||
+        session.saveState === 'error') && (
         <span className={`is-${session.saveState}`}>
           {session.saveState === 'saving' && t('dock.saving')}
           {session.saveState === 'conflict' && t('dock.externalChange')}
           {session.saveState === 'error' && t('dock.saveFailed')}
         </span>
       )}
-      {session.versioning && session.versioning.management_state !== 'managed'
-        && session.versioning.management_state !== 'git' && (
-        <Badge tone="neutral">
-          {Object.prototype.hasOwnProperty.call(MANAGEMENT_LABEL, session.versioning.management_state)
-            ? t(MANAGEMENT_LABEL[session.versioning.management_state])
-            : t('dock.unavailable')}
-        </Badge>
-      )}
-      <div className="vds-document-toolbar-spacer" />
+      {session.capabilities.can_preview &&
+        session.versioning &&
+        session.versioning.management_state !== 'managed' &&
+        session.versioning.management_state !== 'git' && (
+          <Badge tone="neutral">
+            {Object.prototype.hasOwnProperty.call(
+              MANAGEMENT_LABEL,
+              session.versioning.management_state
+            )
+              ? t(MANAGEMENT_LABEL[session.versioning.management_state])
+              : t('dock.unavailable')}
+          </Badge>
+        )}
+      <div className="vds-document-toolbar-spacer flex-1" />
       <DocumentToolbarActions session={session} />
       <DocumentPanelActions
         activePanelId={activePanelId}
@@ -255,7 +285,12 @@ function DocumentToolbar({
               disabled={!session.dirty || session.saveState === 'saving'}
               onClick={() => void workspace.save(session.id)}
             />
-            {session.dirty && <BadgeDot className="pointer-events-none absolute right-0 top-0" data-testid="document-save-dirty" />}
+            {showUnsavedIndicator(session.dirty, state.autoSave) && (
+              <BadgeDot
+                className="pointer-events-none absolute right-0 top-0"
+                data-testid="document-save-dirty"
+              />
+            )}
           </span>
         </Tooltip>
       )}
@@ -274,29 +309,50 @@ function useMissingDocumentNotice(tab: DocumentTab, title: string, missing: bool
     toast({
       title: t('dock.missingTitle', { title }),
       description: t('dock.missingDescription'),
-      tone: 'error'
+      tone: 'error',
     })
     workspace.requestClose(tab.id)
   }, [missing, tab.id, title, t, toast, workspace])
 }
 
-function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): React.JSX.Element {
+export function DocumentView({
+  active,
+  tab,
+  showBreadcrumb = true,
+  modeControlHost,
+}: {
+  active: boolean
+  tab: DocumentTab
+  showBreadcrumb?: boolean
+  modeControlHost?: HTMLElement | null
+}): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { t: conversation } = useTranslation('conversation')
   const { t: uiText } = useTranslation('ui')
   const state = useDocumentWorkspace()
   const workspace = useWorkspaceController()
+  const { toast } = useToast()
   const [activePanelId, setActivePanelId] = useState<string | null>(null)
   const session = state.sessions[tab.sessionId]
-  const missing = Boolean(session?.loadState === 'error'
-    && session.loadFailure
-    && isMissingDocumentFailure(session.loadFailure))
+  const missing = Boolean(
+    session?.loadState === 'error' &&
+    session.loadFailure &&
+    isMissingDocumentFailure(session.loadFailure)
+  )
   useMissingDocumentNotice(tab, documentDisplayTitle(tab, conversation, t), missing)
   if (!session || session.loadState === 'loading') {
-    return <div className="vds-viewer-empty">{t('dock.loading', { title: documentDisplayTitle(tab, conversation, t) })}</div>
+    return (
+      <div className="vds-viewer-empty">
+        {t('dock.loading', { title: documentDisplayTitle(tab, conversation, t) })}
+      </div>
+    )
   }
   if (session.loadState === 'error') {
     const failure = session.loadFailure
+    const oversizedArtifact =
+      failure?.code === 'session_artifact_too_large' && session.source.kind === 'session-artifact'
+    const externalPath =
+      session.source.kind === 'session-artifact' ? session.source.absolutePath : undefined
     if (missing) {
       return (
         <div className="vds-viewer-empty" data-testid="document-missing">
@@ -307,20 +363,41 @@ function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): R
     return (
       <div className="vds-viewer-empty" data-testid="document-load-error">
         <Alert
-          action={failure?.retryable
-            ? (
-                <Button
-                  data-testid="document-load-retry"
-                  variant="outline"
-                  onClick={() => void workspace.retryLoad(session.id)}
-                >
-                  {uiText('retry')}
-                </Button>
-              )
-            : undefined}
-          description={failure
-            ? t('dock.loadFailureDetail', { message: failure.message, code: failure.code })
-            : t('dock.loadFailureUnknown')}
+          layout="stacked"
+          action={
+            oversizedArtifact && externalPath ? (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void openSystemPath(externalPath).then((result) => {
+                    if (!result.ok)
+                      toast({
+                        title: t('dock.openFailed'),
+                        description: result.error,
+                        tone: 'error',
+                      })
+                  })
+                }
+              >
+                {t('dock.openExternal')}
+              </Button>
+            ) : failure?.retryable ? (
+              <Button
+                data-testid="document-load-retry"
+                variant="outline"
+                onClick={() => void workspace.retryLoad(session.id)}
+              >
+                {uiText('retry')}
+              </Button>
+            ) : undefined
+          }
+          description={
+            oversizedArtifact
+              ? t('dock.artifactTooLarge')
+              : failure
+                ? t('dock.loadFailureDetail', { message: failure.message, code: failure.code })
+                : t('dock.loadFailureUnknown')
+          }
           title={t('dock.loadFailed', { title: documentDisplayTitle(tab, conversation, t) })}
           tone="error"
         />
@@ -337,52 +414,88 @@ function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): R
     setActivePanelId((current) => (current === panelId ? null : panelId))
   }
   return (
-    <div className={`vds-document-view${viewer?.toolbar === 'viewer' ? ' is-viewer-toolbar' : ''}`}>
+    <div
+      className={`has-[>.vds-document-toolbar>.vds-document-toolbar-spacer:only-child]:!grid-rows-[minmax(0,1fr)] vds-document-view${viewer?.toolbar === 'viewer' ? ' is-viewer-toolbar' : !showBreadcrumb ? ' !grid-rows-[auto_minmax(0,1fr)]' : ''}`}
+    >
       {viewer?.toolbar !== 'viewer' && (
         <DocumentToolbar
           activePanelId={activePanel?.id ?? null}
           panels={toolbarPanels}
           session={session}
+          showBreadcrumb={showBreadcrumb}
           onPanelToggle={togglePanel}
         />
       )}
       {session.saveState === 'conflict' && (
-        <Alert tone="warning" data-testid="document-save-conflict">
-          <AlertTitle>{t('dock.conflictTitle')}</AlertTitle>
-          <AlertDescription>{t('dock.conflictDescription')}</AlertDescription>
-          <div className="vds-version-actions">
-            <Button size="sm" variant="danger" data-testid="document-conflict-overwrite" onClick={() => void workspace.overwriteDisk(session.id)}>{t('dock.overwrite')}</Button>
-            <Button size="sm" variant="secondary" data-testid="document-conflict-discard" onClick={() => void workspace.discardMemory(session.id)}>{t('dock.discard')}</Button>
-            <Button size="sm" variant="secondary" data-testid="document-conflict-copy" onClick={() => void workspace.saveManagedCopy(session.id)}>{t('dock.saveAs')}</Button>
-          </div>
-        </Alert>
+        <Alert
+          action={
+            <div className="vds-version-actions">
+              <Button
+                size="sm"
+                variant="danger"
+                data-testid="document-conflict-overwrite"
+                onClick={() => void workspace.overwriteDisk(session.id)}
+              >
+                {t('dock.overwrite')}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                data-testid="document-conflict-discard"
+                onClick={() => void workspace.discardMemory(session.id)}
+              >
+                {t('dock.discard')}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                data-testid="document-conflict-copy"
+                onClick={() => void workspace.saveManagedCopy(session.id)}
+              >
+                {t('dock.saveAs')}
+              </Button>
+            </div>
+          }
+          data-testid="document-save-conflict"
+          description={t('dock.conflictDescription')}
+          layout="stacked"
+          title={t('dock.conflictTitle')}
+          tone="warning"
+        />
       )}
       <div className="vds-document-view-body flex">
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-          {session.deleted
-            ? <div className="vds-viewer-empty">{t('dock.deleted')}</div>
-            : viewer
-            ? viewer.render({
-                active,
-                path: session.source.path,
-                documentSessionId: session.id,
-                tabId: tab.id,
-                viewKind: tab.viewKind,
-                toolbarActions: (
-                  <>
-                    <DocumentToolbarActions session={session} />
-                    <DocumentVersionActions session={session} />
-                  </>
-                ),
-                documentPanels: {
-                  activePanelId: activePanel?.id ?? null,
-                  context: panelContext,
-                  panels: viewerPanels,
-                  toggle: togglePanel
-                },
-                contentKind: session.contentKind
-              })
-            : <Pending feature={t('viewer.unsupported')} owner={t('unavailable.workspace')} detail={session.viewer} />}
+          {session.deleted ? (
+            <div className="vds-viewer-empty">{t('dock.deleted')}</div>
+          ) : viewer ? (
+            viewer.render({
+              active,
+              path: session.source.path,
+              documentSessionId: session.id,
+              tabId: tab.id,
+              viewKind: tab.viewKind,
+              modeControlHost,
+              toolbarActions: (
+                <>
+                  <DocumentToolbarActions session={session} />
+                  <DocumentVersionActions session={session} />
+                </>
+              ),
+              documentPanels: {
+                activePanelId: activePanel?.id ?? null,
+                context: panelContext,
+                panels: viewerPanels,
+                toggle: togglePanel,
+              },
+              contentKind: session.contentKind,
+            })
+          ) : (
+            <Pending
+              feature={t('viewer.unsupported')}
+              owner={t('unavailable.workspace')}
+              detail={session.viewer}
+            />
+          )}
         </div>
         {activePanel && activePanel.placement !== 'viewer' && (
           <DocumentPanelHost
@@ -402,7 +515,7 @@ function LeafView({
   draggingTabId,
   onDragFinish,
   onDropTarget,
-  showTabs
+  showTabs,
 }: {
   area: DockArea
   leaf: DockLeaf
@@ -444,7 +557,7 @@ function LeafView({
           left: rect.left,
           top: contentTop,
           width: rect.width,
-          height: Math.max(0, rect.bottom - contentTop)
+          height: Math.max(0, rect.bottom - contentTop),
         })
       }}
       onDragLeave={(event) => {
@@ -459,29 +572,29 @@ function LeafView({
         if (tabId) void workspace.moveTab(tabId, area, leaf.id, edge)
       }}
     >
-      {showTabs && (
-        <TabStrip leaf={leaf} />
+      {showTabs && <TabStrip leaf={leaf} />}
+      {tab ? (
+        leaf.tabIds.map((tabId) => {
+          const candidate = state.tabs[tabId]
+          if (!candidate) return null
+          const session = state.sessions[candidate.sessionId]
+          const keepMounted = session
+            ? shouldMountDocumentView(candidate.id === tab.id, candidate.viewKind)
+            : false
+          if (!keepMounted && candidate.id !== tab.id) return null
+          return (
+            <div
+              key={candidate.id}
+              className="vds-document-view-slot"
+              hidden={candidate.id !== tab.id}
+            >
+              <DocumentView active={candidate.id === tab.id} tab={candidate} />
+            </div>
+          )
+        })
+      ) : (
+        <div className="vds-dock-empty">{t('dock.dropTab')}</div>
       )}
-      {tab
-        ? leaf.tabIds.map((tabId) => {
-            const candidate = state.tabs[tabId]
-            if (!candidate) return null
-            const session = state.sessions[candidate.sessionId]
-            const keepMounted = session
-              ? shouldMountDocumentView(candidate.id === tab.id, candidate.viewKind)
-              : false
-            if (!keepMounted && candidate.id !== tab.id) return null
-            return (
-              <div
-                key={candidate.id}
-                className="vds-document-view-slot"
-                hidden={candidate.id !== tab.id}
-              >
-                <DocumentView active={candidate.id === tab.id} tab={candidate} />
-              </div>
-            )
-          })
-        : <div className="vds-dock-empty">{t('dock.dropTab')}</div>}
     </section>
   )
 }
@@ -492,7 +605,7 @@ function SplitView({
   draggingTabId,
   onDragFinish,
   onDropTarget,
-  showTabs
+  showTabs,
 }: {
   area: DockArea
   showTabs: boolean
@@ -523,13 +636,33 @@ function SplitView({
   return (
     <div
       className={`vds-dock-split is-${split.direction}`}
-      style={split.direction === 'horizontal'
-        ? { gridTemplateColumns: `${split.ratio}fr 5px ${1 - split.ratio}fr` }
-        : { gridTemplateRows: `${split.ratio}fr 5px ${1 - split.ratio}fr` }}
+      style={
+        split.direction === 'horizontal'
+          ? {
+              gridTemplateColumns: `minmax(0, ${split.ratio}fr) ${DOCK_DIVIDER_SIZE}px minmax(0, ${1 - split.ratio}fr)`,
+            }
+          : {
+              gridTemplateRows: `minmax(0, ${split.ratio}fr) ${DOCK_DIVIDER_SIZE}px minmax(0, ${1 - split.ratio}fr)`,
+            }
+      }
     >
-      <NodeView area={area} node={split.first} draggingTabId={draggingTabId} onDragFinish={onDragFinish} onDropTarget={onDropTarget} showTabs={showTabs} />
+      <NodeView
+        area={area}
+        node={split.first}
+        draggingTabId={draggingTabId}
+        onDragFinish={onDragFinish}
+        onDropTarget={onDropTarget}
+        showTabs={showTabs}
+      />
       <div className="vds-dock-divider" onPointerDown={beginResize} />
-      <NodeView area={area} node={split.second} draggingTabId={draggingTabId} onDragFinish={onDragFinish} onDropTarget={onDropTarget} showTabs={showTabs || split.direction === 'vertical'} />
+      <NodeView
+        area={area}
+        node={split.second}
+        draggingTabId={draggingTabId}
+        onDragFinish={onDragFinish}
+        onDropTarget={onDropTarget}
+        showTabs={showTabs || split.direction === 'vertical'}
+      />
     </div>
   )
 }
@@ -540,7 +673,7 @@ function NodeView({
   draggingTabId,
   onDragFinish,
   onDropTarget,
-  showTabs
+  showTabs,
 }: {
   area: DockArea
   node: DockNode
@@ -549,16 +682,46 @@ function NodeView({
   onDropTarget: (target: DocumentDropPreview | null) => void
   showTabs: boolean
 }): React.JSX.Element {
-  return node.kind === 'leaf'
-    ? <LeafView area={area} leaf={node} draggingTabId={draggingTabId} onDragFinish={onDragFinish} onDropTarget={onDropTarget} showTabs={showTabs} />
-    : <SplitView area={area} split={node} showTabs={showTabs} draggingTabId={draggingTabId} onDragFinish={onDragFinish} onDropTarget={onDropTarget} />
+  return node.kind === 'leaf' ? (
+    <LeafView
+      area={area}
+      leaf={node}
+      draggingTabId={draggingTabId}
+      onDragFinish={onDragFinish}
+      onDropTarget={onDropTarget}
+      showTabs={showTabs}
+    />
+  ) : (
+    <SplitView
+      area={area}
+      split={node}
+      showTabs={showTabs}
+      draggingTabId={draggingTabId}
+      onDragFinish={onDragFinish}
+      onDropTarget={onDropTarget}
+    />
+  )
 }
 
 function dropPreviewStyle(target: DocumentDropPreview): React.CSSProperties {
-  if (target.edge === 'left') return { left: target.left, top: target.top, width: target.width / 2, height: target.height }
-  if (target.edge === 'right') return { left: target.left + target.width / 2, top: target.top, width: target.width / 2, height: target.height }
-  if (target.edge === 'top') return { left: target.left, top: target.top, width: target.width, height: target.height / 2 }
-  if (target.edge === 'bottom') return { left: target.left, top: target.top + target.height / 2, width: target.width, height: target.height / 2 }
+  if (target.edge === 'left')
+    return { left: target.left, top: target.top, width: target.width / 2, height: target.height }
+  if (target.edge === 'right')
+    return {
+      left: target.left + target.width / 2,
+      top: target.top,
+      width: target.width / 2,
+      height: target.height,
+    }
+  if (target.edge === 'top')
+    return { left: target.left, top: target.top, width: target.width, height: target.height / 2 }
+  if (target.edge === 'bottom')
+    return {
+      left: target.left,
+      top: target.top + target.height / 2,
+      width: target.width,
+      height: target.height / 2,
+    }
   return { left: target.left, top: target.top, width: target.width, height: target.height }
 }
 
@@ -571,6 +734,11 @@ export function DocumentDock(): React.JSX.Element {
   const drag = useDocumentDrag()
   const officeRuntime = useOfficeRuntime()
   const project = selectedProject(appState)?.id ?? ''
+  const dockRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    workspace.setAutoSave(appState.autoSave)
+  }, [appState.autoSave, workspace])
 
   useEffect(() => {
     if (!project) return undefined
@@ -599,23 +767,41 @@ export function DocumentDock(): React.JSX.Element {
       }
       window.getSelection()?.removeAllRanges()
     }
-    const dismissOutsideSelection = (event: Event): void => {
+    const saveOutsideDock = (event: Event): void => {
+      if (!appState.autoSave) return
+      const host = dockRef.current
+      if (
+        !host ||
+        (event.target instanceof Node && host.contains(event.target)) ||
+        retainsDocumentSelection(null, event.target)
+      )
+        return
+      void workspace.saveFocused()
+    }
+    const handleOutsideFocus = (event: FocusEvent): void => {
       if (retainsDocumentSelection(null, event.target)) return
       dismissSelection()
+      saveOutsideDock(event)
     }
-    const dismissOutsidePointer = (event: PointerEvent): void => {
-      if (preserveTextSelectionForContextMenu(event)) return
-      dismissOutsideSelection(event)
+    const handleOutsidePointer = (event: PointerEvent): void => {
+      if (!preserveTextSelectionForContextMenu(event)) {
+        if (!retainsDocumentSelection(null, event.target)) dismissSelection()
+      }
+      saveOutsideDock(event)
     }
-    document.addEventListener('focusin', dismissOutsideSelection, true)
-    document.addEventListener('pointerdown', dismissOutsidePointer, true)
-    window.addEventListener('blur', dismissSelection)
+    const handleWindowBlur = (event: FocusEvent): void => {
+      dismissSelection()
+      saveOutsideDock(event)
+    }
+    document.addEventListener('focusin', handleOutsideFocus, true)
+    document.addEventListener('pointerdown', handleOutsidePointer, true)
+    window.addEventListener('blur', handleWindowBlur)
     return () => {
-      document.removeEventListener('focusin', dismissOutsideSelection, true)
-      document.removeEventListener('pointerdown', dismissOutsidePointer, true)
-      window.removeEventListener('blur', dismissSelection)
+      document.removeEventListener('focusin', handleOutsideFocus, true)
+      document.removeEventListener('pointerdown', handleOutsidePointer, true)
+      window.removeEventListener('blur', handleWindowBlur)
     }
-  }, [workspace])
+  }, [appState.autoSave, workspace])
 
   const beginAreaResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault()
@@ -639,35 +825,39 @@ export function DocumentDock(): React.JSX.Element {
   if (visibleAreas.length === 0) visibleAreas.push('primary')
 
   return (
-    <div
-      className="vds-document-dock"
-      data-testid="document-dock"
-      onBlurCapture={(event) => {
-        if (!appState.autoSave) return
-        const host = event.currentTarget
-        const related = event.relatedTarget
-        if (related instanceof Node && host.contains(related)) return
-        queueMicrotask(() => {
-          const active = document.activeElement
-          if (document.hasFocus() && active instanceof Node && host.contains(active)) return
-          void workspace.saveFocused()
-        })
-      }}
-    >
+    <div className="vds-document-dock" data-testid="document-dock" ref={dockRef}>
       <SelectionActionHost />
       <div
         className="vds-document-areas"
-        style={visibleAreas.length === 2
-          ? { gridTemplateColumns: `${state.layout.areaRatio}fr 6px ${1 - state.layout.areaRatio}fr` }
-          : { gridTemplateColumns: 'minmax(0, 1fr)' }}
+        style={
+          visibleAreas.length === 2
+            ? {
+                gridTemplateColumns: `minmax(0, ${state.layout.areaRatio}fr) ${DOCK_AREA_DIVIDER_SIZE}px minmax(0, ${1 - state.layout.areaRatio}fr)`,
+              }
+            : { gridTemplateColumns: 'minmax(0, 1fr)' }
+        }
       >
         {/* Top navigation owns these tabs; the old conditional was:
             showTabs={visibleAreas.length > 1 || state.layout.areas[visibleAreas[0]].kind !== 'leaf'} */}
-        <NodeView area={visibleAreas[0]} node={state.layout.areas[visibleAreas[0]]} draggingTabId={drag.draggingTabId} onDragFinish={drag.finish} onDropTarget={drag.setPreview} showTabs={false} />
+        <NodeView
+          area={visibleAreas[0]}
+          node={state.layout.areas[visibleAreas[0]]}
+          draggingTabId={drag.draggingTabId}
+          onDragFinish={drag.finish}
+          onDropTarget={drag.setPreview}
+          showTabs={false}
+        />
         {visibleAreas.length === 2 && (
           <>
             <div className="vds-area-divider" onPointerDown={beginAreaResize} />
-            <NodeView area={visibleAreas[1]} node={state.layout.areas[visibleAreas[1]]} draggingTabId={drag.draggingTabId} onDragFinish={drag.finish} onDropTarget={drag.setPreview} showTabs={false} />
+            <NodeView
+              area={visibleAreas[1]}
+              node={state.layout.areas[visibleAreas[1]]}
+              draggingTabId={drag.draggingTabId}
+              onDragFinish={drag.finish}
+              onDropTarget={drag.setPreview}
+              showTabs={false}
+            />
           </>
         )}
       </div>
@@ -683,16 +873,30 @@ export function DocumentDock(): React.JSX.Element {
             <AlertDialogDescription>{t('dock.closeDescription')}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <Button variant="outline" data-testid="document-close-cancel" onClick={() => void workspace.resolveClose('cancel')}>{uiText('cancel')}</Button>
-            <Button variant="danger" data-testid="document-close-discard" onClick={() => void workspace.resolveClose('discard')}>{t('dock.discard')}</Button>
+            <Button
+              variant="outline"
+              data-testid="document-close-cancel"
+              onClick={() => void workspace.resolveClose('cancel')}
+            >
+              {uiText('cancel')}
+            </Button>
+            <Button
+              variant="danger"
+              data-testid="document-close-discard"
+              onClick={() => void workspace.resolveClose('discard')}
+            >
+              {t('dock.discard')}
+            </Button>
             <Button
               variant="primary"
               data-testid="document-close-save"
-              onClick={() => void workspace.resolveClose(
-                state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'conflict'
-                  ? 'overwrite'
-                  : 'save'
-              )}
+              onClick={() =>
+                void workspace.resolveClose(
+                  state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'conflict'
+                    ? 'overwrite'
+                    : 'save'
+                )
+              }
             >
               {state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'conflict'
                 ? t('dock.overwriteClose')
@@ -701,10 +905,11 @@ export function DocumentDock(): React.JSX.Element {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {drag.preview && createPortal(
-        <div className="vds-dock-drop-preview" style={dropPreviewStyle(drag.preview)} />,
-        document.body
-      )}
+      {drag.preview &&
+        createPortal(
+          <div className="vds-dock-drop-preview" style={dropPreviewStyle(drag.preview)} />,
+          document.body
+        )}
     </div>
   )
 }

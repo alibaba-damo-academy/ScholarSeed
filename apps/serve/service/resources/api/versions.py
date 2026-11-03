@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import re
 from dataclasses import asdict
 from enum import Enum
@@ -13,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from service.content.domain.model import ContentError
 from service.platform.resources import (
     GIT_VERSION_DISABLED_ERROR,
+    VERSION_MAX_BYTES,
     FileState,
     RestorePolicy,
     ReviewAction,
@@ -124,7 +127,7 @@ def _service(request: Request) -> ResourceVersionService:
 
 
 def _payload(value) -> dict:
-    return _json_value(asdict(value))
+    return {key: _json_value(member) for key, member in asdict(value).items()}
 
 
 def _json_value(value):
@@ -204,6 +207,7 @@ def _batch_decision(payload: object) -> ReviewBatchDecision:
     review_id = payload.get("review_id")
     revision = payload.get("pending_revision")
     expected = payload.get("expected_disk_revision")
+    revised_content = payload.get("revised_content")
     if (
         not isinstance(file_id, str)
         or not file_id
@@ -213,14 +217,29 @@ def _batch_decision(payload: object) -> ReviewBatchDecision:
         or revision < 1
         or "expected_disk_revision" not in payload
         or (expected is not None and not isinstance(expected, str))
+        or (revised_content is not None and not isinstance(revised_content, str))
     ):
+        raise ValueError("invalid_review_batch_request")
+    action = ReviewAction(str(payload.get("action") or ""))
+    if revised_content is not None and action is not ReviewAction.REVISE:
+        raise ValueError("invalid_review_batch_request")
+    try:
+        decoded = (
+            base64.b64decode(revised_content, validate=True)
+            if revised_content is not None
+            else None
+        )
+    except binascii.Error as exc:
+        raise ValueError("invalid_review_batch_request") from exc
+    if decoded is not None and len(decoded) > VERSION_MAX_BYTES:
         raise ValueError("invalid_review_batch_request")
     return ReviewBatchDecision(
         file_id,
         review_id,
         revision,
-        ReviewAction(str(payload.get("action") or "")),
+        action,
         expected,
+        decoded,
     )
 
 

@@ -3,22 +3,23 @@
 from __future__ import annotations
 
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from service.content.persistence.catalog import ContentCatalog
-from service.content.service.identity import ASSET_TABLE
+from service.content.service.identity import ASSET_TABLE, _encode_file_identity
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
+from service.platform.activity import Activities
 from service.platform.content import AssetKind, AssetState, ImportMode
 from service.platform.resources import (
     VERSION_MAX_BYTES,
     ManagementState,
     ProductMutationKind,
     SnapshotState,
-    VersionOrigin,
 )
 from service.resources.persistence.version import VersionStore
 from service.resources.service.history import ResourceVersionService
@@ -105,7 +106,7 @@ def main() -> int:
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         project = registry.create("扫描项目")
         resources = Path(project.root) / "resources"
         (resources / "code" / "generated").mkdir(parents=True)
@@ -169,6 +170,7 @@ def main() -> int:
             versions,
             WorkbenchFormatPolicy(),
             settings,
+            activities=Activities(),
         )
         with (
             patch.object(content, "scan_resources", side_effect=AssertionError),
@@ -393,9 +395,10 @@ def main() -> int:
         check(
             "create document persists target bytes before publishing initial v1",
             len(create_recovered) == 1
-            and (resources / "durable-create.md").read_bytes() == b"# durable-create\n"
+            and (resources / "durable-create.md").read_bytes() == b""
             and len(created_history) == 1
-            and created_history[0].sequence == 1,
+            and created_history[0].sequence == 1
+            and versions.read(project.id, created_history[0].id)[0] == b"",
         )
         remount_prepared = content.prepare_bytes(
             project.id,
@@ -423,10 +426,13 @@ def main() -> int:
         except RuntimeError:
             pass
         database = content.resolve(project.id, PROJECT_DB_RELATIVE)
+        remounted_device = _encode_file_identity(
+            Path(content.resolve(project.id, remount_path)).stat().st_dev + 1
+        )
         with transaction(database) as connection:
             updated = connection.execute(
-                f"UPDATE {ASSET_TABLE} SET device = device + 1 WHERE path = ?",
-                (remount_path,),
+                f"UPDATE {ASSET_TABLE} SET device = ? WHERE path = ?",
+                (remounted_device, remount_path),
             ).rowcount
         remount_recovered = versions.recover_working_mutations(project.id)
         check(
@@ -477,6 +483,7 @@ def main() -> int:
         content.write_text(project.id, "resources/copy-source.md", "copy source\n")
         copy_source = resources / "copy-source.md"
         copy_source.chmod(0o640)
+        copy_mode = stat.S_IMODE(copy_source.stat().st_mode)
         copy_failed = False
         try:
             with patch.object(
@@ -496,7 +503,7 @@ def main() -> int:
             and len(copied_recovered) == 1
             and (resources / "copy-source (2).md").read_text(encoding="utf-8") == "copy source\n"
             and len(copied_history) == 1
-            and copied_history[0].mode_bits == 0o640,
+            and copied_history[0].mode_bits == copy_mode,
         )
 
         content.create(project.id, "resources", "copy-tree", AssetKind.DIR)

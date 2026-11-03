@@ -13,27 +13,51 @@
     },
     {
       "mode": 420,
+      "path": ".scholarseed-plugin.json",
+      "sha256": "fbe02cf11caaea7598fecf2a0b90add42bd5de594c67f79f7605bb736cefa918",
+      "size": 1343
+    },
+    {
+      "mode": 420,
       "path": "README.md",
-      "sha256": "ef1ff88b66a3a84b60db9a6265bf4e7f9d6d3e663107a36439a8859d8407774e",
-      "size": 8831
+      "sha256": "cd25c2533e882f79bdff3667bc387f85121d9ae32235da76bf83557f1ddd9462",
+      "size": 9055
     },
     {
       "mode": 420,
       "path": "SETUP.md",
-      "sha256": "08ace99e0efe493f497a62042fa1e800869ea821d88171cb2fa598307dfa564e",
-      "size": 11319
+      "sha256": "328fe198bb07e9e33369f93672840bb91331ee880059309b0c2694eb41359bc1",
+      "size": 11937
     },
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "668bc90dbdbdf4315e4868705fd6acfa254251697ca70e70941a53da55a72322",
-      "size": 10731
+      "sha256": "beee7bb4149eb4c497de739e4e7e95bdb37c11598f43a6a336ba4785692c9684",
+      "size": 11799
     },
     {
       "mode": 420,
       "path": "agents/openai.yaml",
-      "sha256": "f516bd20ffa241626ed697874c27b2e32ae2b3b14866a9120bb0ca2e4d936e4a",
-      "size": 279
+      "sha256": "77216611a1478927dc5d42d1056a2ebfa5c505742bb28a199d23a6404c01b9ac",
+      "size": 364
+    },
+    {
+      "mode": 420,
+      "path": "components/details.json",
+      "sha256": "6986cfa9f0885d1233529062ed42183ec0a47eefabd066b7af5f8a0751137ecc",
+      "size": 6179
+    },
+    {
+      "mode": 420,
+      "path": "components/question.json",
+      "sha256": "5735dbe32002318f13c9ee99bd6f66a6e2089fc8c25e19b5c66e11fc46327652",
+      "size": 2621
+    },
+    {
+      "mode": 420,
+      "path": "components/results.json",
+      "sha256": "406412e298cfb04b08b215cbdfbed3303e70c314ba1979eb609a8bdc37c401d7",
+      "size": 7043
     },
     {
       "mode": 420,
@@ -68,8 +92,8 @@
     {
       "mode": 420,
       "path": "docs/PAPERHUB_WEB_SEARCH_PRODUCT_MIGRATION.md",
-      "sha256": "ddac700889f8fafeb23e20234d28ca1f1377e39f4d41aca4de2356f4e3b17d9b",
-      "size": 5600
+      "sha256": "5dd2af36bbd33080a6a7d0d040f5b3a8430ec42d9d62b87a84d8ba43b38d185e",
+      "size": 5604
     },
     {
       "mode": 420,
@@ -80,14 +104,14 @@
     {
       "mode": 420,
       "path": "references/balanced-quality-workflow.md",
-      "sha256": "15e07305e352a7218cbae80a1e36605d1bad64ad21add0a50e3afd091cd87c0f",
-      "size": 8003
+      "sha256": "e6dc98584b302ed9bad76f225721f1361ee13c3f10339cafc7712ea5a98133ae",
+      "size": 8070
     },
     {
       "mode": 420,
       "path": "references/c1-quality-workflow.md",
-      "sha256": "4ac21657658f320de5481acaafe6b1769abac8aad24bc477e0d52f5f286d5ca4",
-      "size": 7906
+      "sha256": "606103728cff277ed909e9296b8d7fb02701397d0de80d22ca8016563ce93c7e",
+      "size": 8008
     },
     {
       "mode": 420,
@@ -98,116 +122,116 @@
     {
       "mode": 420,
       "path": "tools/brave.py",
-      "sha256": "e6146adfa6e9a23f73cf8987d52c2393f299069dcd1907155edd1370aa62c39b",
-      "size": 5946
+      "sha256": "e3bed18f96820878a2c82e3f8389c3f4cc7c2d315ab4d35097c43d0aafa819c0",
+      "size": 5985
     },
     {
       "mode": 420,
       "path": "tools/cache.py",
-      "sha256": "db9b4dbfce74e83a3bc3ecf573107dcffdcdf5ec1679d8a3c55a49f80cdaffb4",
-      "size": 5307
+      "sha256": "6458d5fbbb879072d20fdb638cf78ab5fa26f446e08c753beee1f10c1bbf5b86",
+      "size": 5324
     },
     {
       "mode": 420,
       "path": "tools/dedup.py",
-      "sha256": "741df1b87609797db604432b6e9f421730de1b7331f082bff0d8d686011f14fb",
-      "size": 2205
+      "sha256": "e043601d0db74719d688ee01ea688d142e14405c6193c546c02f4934eda2719c",
+      "size": 2256
     },
     {
       "mode": 420,
       "path": "tools/doctor.py",
-      "sha256": "461f85cbd8f17ea72a4eafcbd43dc42c2cad81d75d7e8c0b6d2e2792db231f61",
-      "size": 4301
+      "sha256": "b59254b9703f9ef34884039a2c8a0ebda94d064379cf865ea0bae450b1b62af0",
+      "size": 4318
     },
     {
       "mode": 420,
       "path": "tools/finalize.py",
-      "sha256": "21ffb93c176d37b8919686ef63c96b97a6a4c85bf8614b566b8ef57f8037a9cc",
-      "size": 10352
+      "sha256": "529e3aa4b96abc4b58696a05c509b1050ee7254ca040c1d54c402603c3d21d15",
+      "size": 10369
     },
     {
       "mode": 420,
       "path": "tools/install_codex.py",
-      "sha256": "4400e6cce404b8cb7ac530e8990e381af137ced7bb396f1f8c1db13ce8deb227",
-      "size": 7416
+      "sha256": "bbf4165671876a8b08ee794652455153c314cb2f304d77cdf31a1047e684fbf3",
+      "size": 7467
     },
     {
       "mode": 420,
       "path": "tools/localconf.py",
-      "sha256": "9b393d26f0b3340e04c8b6217caa0e94c50778dfde053fe33400795349404c89",
-      "size": 4900
+      "sha256": "cdfdcf5f585c0a7e1ce1335594a64a788213bf68bf092e082c2fe3760bbb8c18",
+      "size": 4843
     },
     {
       "mode": 420,
       "path": "tools/paper_select.py",
-      "sha256": "e61c0567303af1ba9e19b8f38e6c47ecabbba5b3d7da0584f5c292a92b25a2f3",
-      "size": 7119
+      "sha256": "23383f1899afcb462816a3f4bc0b887c510183364bed67f974d60b21ee59629b",
+      "size": 7170
     },
     {
       "mode": 420,
       "path": "tools/paperhub.py",
-      "sha256": "e2ff1ffd5642567929d57a210a213a6433f56769f45c7bfb56998f724bd71ffe",
-      "size": 20642
+      "sha256": "7b3c41b9da53b94f9faf25c3c92d6f1fe184e4d762d43888d1029470a14aba9c",
+      "size": 20727
     },
     {
       "mode": 420,
       "path": "tools/pool_inspect.py",
-      "sha256": "3bba40d94a6443a0142226e5e6fd0f8d1a54602254b5453fb38ee8e992f3b606",
-      "size": 15832
+      "sha256": "fec0f8977d27b0ecce5f439c38d395cad345332cc259734d634b1db578d0025b",
+      "size": 15849
     },
     {
       "mode": 420,
       "path": "tools/quick_finalize.py",
-      "sha256": "098a34306fb1b3bb3c483b258b48ff740a908e8eb1e69c4a8bc8b2e2b555e57c",
-      "size": 10190
+      "sha256": "206738fee2e139a38176aeed7d2224f741fd9cc738922665e6138ae572096dd1",
+      "size": 10207
     },
     {
       "mode": 420,
       "path": "tools/quick_search.py",
-      "sha256": "cf26b0d54839a35a98e209fd25cf28b4c4ea1ea467c92049f1ae243166de5a7f",
-      "size": 5596
+      "sha256": "81a906dde05a5aeaad96d5d3d96d70eeec4428d6384528f9f270d288c4bcee92",
+      "size": 5613
     },
     {
       "mode": 420,
       "path": "tools/search_config.default.json",
-      "sha256": "2ad5c45ee6d5c7dbb0c13243131188f6099b5e901e7bb527f9d4aa876b45c14b",
-      "size": 546
+      "sha256": "26fb12f95d1e0864d040ee09f61674f7b373e79f8689d963b6b005c1ac6c68a5",
+      "size": 516
     },
     {
       "mode": 420,
       "path": "tools/search_config.example.json",
-      "sha256": "39ac6d29ffcde5ac5c75148bfc8680116365b71e9056839c0911c44633311966",
-      "size": 594
+      "sha256": "af5ec78c41a370e2895c5fbb1275c4d8a97ab99e458104398a69c0cb8766b938",
+      "size": 564
     },
     {
       "mode": 420,
       "path": "tools/search_policy.py",
-      "sha256": "dc1f4df982b4e7f655309dd27d8bd3381ef87356a8e75fa9465fd79a3936f305",
-      "size": 6697
+      "sha256": "05b8747fab6390dcccc792bda37fc3cfc1b713f1438435b3eb5622ff19dc46ca",
+      "size": 6714
     },
     {
       "mode": 420,
       "path": "tools/search_round.py",
-      "sha256": "96f7facd6921c2f22484fe309b62d887974c35f96ac8125e6713868c09ee4f84",
-      "size": 37823
+      "sha256": "c6809932711a57311d59992ae12b7f60aa554c90072973433ba9bf98fbc85627",
+      "size": 37840
     },
     {
       "mode": 420,
       "path": "tools/state.py",
-      "sha256": "6db329f1c32c29930449aaa218b42e3261ff78b13fd4cef2654df7b367772220",
-      "size": 14820
+      "sha256": "e94313ed031da019d0e64d522c5dd40214e314d10e469673b3d06ba4e2e82fc7",
+      "size": 15007
     },
     {
       "mode": 420,
       "path": "tools/tests/test_product_endpoints.py",
-      "sha256": "de4614810d8e0e7d9bf8740379f718db080ca3e0d394e7f9d8dcaede89d57a0d",
-      "size": 3075
+      "sha256": "876e7019e807d7b38355d2f67bab02e4938efcfdf12f286db93f2f9d09e06799",
+      "size": 4859
     },
     {
       "mode": 420,
       "path": "tools/web_fallback.py",
-      "sha256": "05c00342cfc395d960282d719927e3b956b890a5124ef69fa5b37af53b7cdb7f",
-      "size": 12666
+      "sha256": "104a9b993e3dca5a5b319b3822af86b4e3ee78e6edaa9a0dd584b0bee058144d",
+      "size": 12683
     }
   ],
   "name": "agentic-search",
@@ -215,6 +239,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "668bc90dbdbdf4315e4868705fd6acfa254251697ca70e70941a53da55a72322",
-  "version": "1.1.0"
+  "source_document_sha256": "beee7bb4149eb4c497de739e4e7e95bdb37c11598f43a6a336ba4785692c9684",
+  "version": "1.1.8"
 }

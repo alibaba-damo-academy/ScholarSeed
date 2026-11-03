@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from io_utils import read_json
+from filesystem import path_exists
 
 DEFAULT_BUDGET_SECONDS = 3600
 
@@ -29,7 +30,7 @@ class RetrievalBudgetExhausted(ValueError):
 
 def budget_status(work_dir: Path, now: float | None = None) -> dict:
     path = work_dir / "dispatch.json"
-    if not path.exists():
+    if not path_exists(path):
         return {"enabled": False}
     dispatch = read_json(path)
     if dispatch.get("profile") != "balance":

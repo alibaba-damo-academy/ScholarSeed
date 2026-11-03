@@ -51,6 +51,7 @@ htmlcov/
 .scholarseed/
 .shushen/
 .damoagent/
+apps/desktop/.package-lock
 .playwright-cli/
 playwright-report/
 test-results/
@@ -80,3 +81,4 @@ id_rsa*
 /.qoder/
 /.mcp.json
 /apps/serve/service/capabilities/skills/
+/apps/serve/service/capabilities/ui.zip

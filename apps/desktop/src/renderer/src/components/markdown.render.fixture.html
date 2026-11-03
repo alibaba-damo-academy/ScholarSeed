@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <title>Markdown Render Fixture</title>
-    <script type="module" src="./markdown.render.fixture.tsx"></script>
+    <script type="module">
+      import '../browser.ts'
+      await import('./markdown.render.fixture.tsx')
+    </script>
   </head>
-  <body><div id="root"></div></body>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

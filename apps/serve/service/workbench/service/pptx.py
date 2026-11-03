@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from io import BytesIO
-from typing import Any
+from typing import Any, cast
 from zipfile import BadZipFile
 
 from pptx import Presentation
+from pptx.shapes.autoshape import Shape
 
 from service.workbench.domain.slides import IMPRESS_LOCATOR_KIND, SlideSelectionError
 
@@ -65,7 +66,7 @@ class PptxSelectionProcessor:
         )
         if len(matching) != 1:
             raise SlideSelectionError("shape")
-        text = matching[0].text
+        text = cast(Shape, matching[0]).text
         if "start" not in locator and "end" not in locator:
             return text
         return _utf16_slice(text, _integer(locator, "start"), _integer(locator, "end"))
@@ -79,7 +80,7 @@ class PptxSelectionProcessor:
         max_chars: int,
     ) -> str:
         text = "\n".join(
-            shape.text
+            cast(Shape, shape).text
             for shape in _slide(payload, locator).shapes
             if getattr(shape, "has_text_frame", False)
         )

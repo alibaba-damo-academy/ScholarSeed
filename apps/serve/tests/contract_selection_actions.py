@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from service.assistant.persistence.invocations import AssistantInvocationStore
 from service.assistant.service.actions import AssistantActionService
+from service.platform.activity import Activities
 from service.platform.inference import (
     ModelInvocationRequest,
     ModelInvocationResult,
@@ -129,6 +130,7 @@ def client_for(
         evidence=provider,
         actions=AssistantActionService(
             AssistantInvocationStore(Path(temporary.name) / "actions.sqlite3"),
+            activities=Activities(),
             model=model,
         ),
         registry=default_selection_action_registry(),
@@ -177,6 +179,44 @@ class SelectionActionContract(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         return client_for(provider, model, temporary)
+
+    def test_selection_snapshot_captures_full_text_without_invoking_model(self) -> None:
+        provider = RecordingEvidenceProvider(verified_evidence())
+        model = RecordingModel(RuntimeError("snapshot must not invoke a model"))
+        reference = selection_reference()
+        response = self.client(provider, model).post(
+            "/api/workbench/selection/snapshot",
+            json={
+                "project_id": reference.project_id,
+                "source_id": reference.source_id,
+                "source_revision": text_hash("saved source"),
+                "locator_kind": reference.locator_kind,
+                "locator": dict(reference.locator),
+                "selected_text_hash": reference.selected_text_hash,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["snapshot_text"], SELECTED_TEXT)
+        self.assertFalse(model.calls)
+
+    def test_selection_snapshot_rejects_oversized_material_before_addition(self) -> None:
+        provider = RecordingEvidenceProvider(SelectionEvidenceError("selection_too_large"))
+        model = RecordingModel(RuntimeError("snapshot must not invoke a model"))
+        reference = selection_reference()
+        response = self.client(provider, model).post(
+            "/api/workbench/selection/snapshot",
+            json={
+                "project_id": reference.project_id,
+                "source_id": reference.source_id,
+                "source_revision": text_hash("saved source"),
+                "locator_kind": reference.locator_kind,
+                "locator": dict(reference.locator),
+                "selected_text_hash": reference.selected_text_hash,
+            },
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["detail"], "selection_too_large")
+        self.assertFalse(model.calls)
 
     def test_interpret_uses_verified_context_and_one_shot_model_boundary(self) -> None:
         provider = RecordingEvidenceProvider(verified_evidence())

@@ -1,0 +1,8 @@
+{
+  "scenarioId": "conversation-flow",
+  "version": "2026-10-20",
+  "provisional": true,
+  "metrics": {
+    "turnCount": { "min": 1, "max": 2 }
+  }
+}

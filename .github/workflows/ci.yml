@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: npm test
+    name: Public source build and distribution contracts
     runs-on: macos-latest
     timeout-minutes: 45
 
@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           lfs: true
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -42,8 +43,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
-      - name: Prepare Python environment
-        run: npm run prepare:python
+      - name: Build application and prepare Python
+        run: npm run ops -- --package-manager npm cd build local --stage app
 
-      - name: Run CI tests
-        run: npm test
+      - name: Run distribution contracts
+        run: node --test scripts/shared/__tests__/artifacts.test.cjs apps/desktop/scripts/cd/__tests__/build.test.cjs

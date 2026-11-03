@@ -7,8 +7,10 @@ import { $remark } from '@milkdown/kit/utils'
 const LITERAL_LATEX_LANGUAGE = 'latex-source'
 const LATEX_LANGUAGE = 'latex'
 
-export const codeLanguageLabel = (language: string, literalLatexLabel: string): string => language === LITERAL_LATEX_LANGUAGE ? literalLatexLabel : language
+export const codeLanguageLabel = (language: string, literalLatexLabel: string): string =>
+  language === LITERAL_LATEX_LANGUAGE ? literalLatexLabel : language
 const PROTECTED_NODES = new Set(['code', 'inlineCode', 'math', 'inlineMath', 'html'])
+const LINK_NODES = new Set(['link', 'linkReference'])
 interface SyntaxPoint {
   offset?: number
   line?: number
@@ -31,9 +33,13 @@ interface NormalizedMathSource {
 /** Convert only prose delimiters; original parser offsets protect code and existing math. */
 export function normalizeMathSource(source: string, tree: SyntaxNode): NormalizedMathSource {
   const protectedRanges: Array<[number, number]> = []
+  const linkRanges: Array<[number, number]> = []
   const collect = (node: SyntaxNode): void => {
     const start = node.position?.start.offset
     const end = node.position?.end.offset
+    if (LINK_NODES.has(node.type) && start !== undefined && end !== undefined) {
+      linkRanges.push([start, end])
+    }
     if (PROTECTED_NODES.has(node.type) && start !== undefined && end !== undefined) {
       protectedRanges.push([start, end])
       return
@@ -68,7 +74,9 @@ export function normalizeMathSource(source: string, tree: SyntaxNode): Normalize
       continue
     }
     const opener = source.slice(offset, offset + 2)
-    if ((opener === '\\(' || opener === '\\[') && !escaped(offset)) {
+    const literalLinkBracket =
+      opener === '\\[' && linkRanges.some(([start, end]) => offset >= start && offset < end)
+    if ((opener === '\\(' || opener === '\\[') && !escaped(offset) && !literalLinkBracket) {
       const closer = opener === '\\(' ? '\\)' : '\\]'
       let end = source.indexOf(closer, offset + 2)
       while (end >= 0 && escaped(end)) end = source.indexOf(closer, end + 2)
@@ -77,7 +85,8 @@ export function normalizeMathSource(source: string, tree: SyntaxNode): Normalize
         const linePrefix = source.slice(source.lastIndexOf('\n', offset - 1) + 1, offset)
         const lineEnd = source.indexOf('\n', end + 2)
         const lineSuffix = source.slice(end + 2, lineEnd < 0 ? source.length : lineEnd)
-        const fenced = content.includes('\n') && /^(?:\s*>)*\s*$/.test(linePrefix) && !lineSuffix.trim()
+        const fenced =
+          content.includes('\n') && /^(?:\s*>)*\s*$/.test(linePrefix) && !lineSuffix.trim()
         const inline = opener === '\\('
         const delimiter = inline ? '$' : '$$'
         if (inline || fenced) {
@@ -108,7 +117,8 @@ export function normalizeMathDelimiters(source: string, tree: SyntaxNode): strin
 /** Re-express positions of a tree parsed from normalized text in original source coordinates. */
 export function restoreSourcePositions(tree: SyntaxNode, source: string, origins: number[]): void {
   const lineStarts = [0]
-  for (let index = source.indexOf('\n'); index >= 0; index = source.indexOf('\n', index + 1)) lineStarts.push(index + 1)
+  for (let index = source.indexOf('\n'); index >= 0; index = source.indexOf('\n', index + 1))
+    lineStarts.push(index + 1)
   const restore = (point: SyntaxPoint): void => {
     if (point.offset === undefined) return
     const offset = origins[Math.min(point.offset, origins.length - 1)]
@@ -158,7 +168,10 @@ export function mathCompatibility(this: ThisParameterType<RemarkPluginRaw<unknow
   }
 }
 
-export const mathCompatibilityPlugin = $remark('workbenchMathCompatibility', () => mathCompatibility)
+export const mathCompatibilityPlugin = $remark(
+  'workbenchMathCompatibility',
+  () => mathCompatibility
+)
 
 export const literalLatexSchema = codeBlockSchema.extendSchema((previous) => (ctx) => {
   const base = previous(ctx)
@@ -168,10 +181,13 @@ export const literalLatexSchema = codeBlockSchema.extendSchema((previous) => (ct
     parseMarkdown: {
       ...base.parseMarkdown,
       runner: (state, node, type) => {
-        state.openNode(type, { language: node.lang ?? '', literalLanguage: node.literalLanguage ?? null })
+        state.openNode(type, {
+          language: node.lang ?? '',
+          literalLanguage: node.literalLanguage ?? null,
+        })
         if (node.value) state.addText(node.value as string)
         state.closeNode()
-      }
+      },
     },
     toMarkdown: {
       ...base.toMarkdown,
@@ -183,8 +199,8 @@ export const literalLatexSchema = codeBlockSchema.extendSchema((previous) => (ct
         } else {
           base.toMarkdown.runner(state, node)
         }
-      }
-    }
+      },
+    },
   }
 })
 
@@ -212,14 +228,14 @@ function mathNodeForBlock(block: HTMLElement, view: EditorView): ProseNode | nul
 }
 
 /** Coordinate native CodeMirror previews so block math has one focused editor. */
-export function installMathBlockInteraction(
-  root: HTMLElement,
-  view: EditorView
-): () => void {
+export function installMathBlockInteraction(root: HTMLElement, view: EditorView): () => void {
   let expanded: HTMLElement | null = null
   const isMathBlock = (block: HTMLElement): boolean => {
     const node = mathNodeForBlock(block, view)
-    if (node) return String(node.attrs.language).toLowerCase() === LATEX_LANGUAGE && !node.attrs.literalLanguage
+    if (node)
+      return (
+        String(node.attrs.language).toLowerCase() === LATEX_LANGUAGE && !node.attrs.literalLanguage
+      )
     const language = block.querySelector('.language-button')?.firstChild?.textContent?.trim()
     return language?.toLowerCase() === LATEX_LANGUAGE
   }
@@ -227,7 +243,9 @@ export function installMathBlockInteraction(
     root.querySelectorAll<HTMLElement>(CODE_BLOCK_SELECTOR).forEach((block) => {
       if (isMathBlock(block)) {
         block.dataset.mathBlock = 'true'
-        block.dataset.mathExpanded = String(!block.querySelector(CODE_EDITOR_SELECTOR)?.classList.contains('hidden'))
+        block.dataset.mathExpanded = String(
+          !block.querySelector(CODE_EDITOR_SELECTOR)?.classList.contains('hidden')
+        )
       } else {
         delete block.dataset.mathBlock
         delete block.dataset.mathExpanded

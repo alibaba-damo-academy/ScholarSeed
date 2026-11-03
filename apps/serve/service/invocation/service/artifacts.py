@@ -6,6 +6,7 @@ import mimetypes
 import os
 import stat
 import tempfile
+from collections.abc import Callable
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -50,6 +51,8 @@ class InvocationArtifactService:
         path: str,
         role: str,
         turn_id: str,
+        validate: Callable[[bytes], None] | None = None,
+        maximum_bytes: int = ARTIFACT_MAX_BYTES,
     ) -> tuple[InvocationRecord, InvocationArtifact]:
         try:
             relative = self._relative(path)
@@ -59,8 +62,18 @@ class InvocationArtifactService:
         except (OSError, ValueError) as error:
             raise ArtifactPublishFailure(ARTIFACT_PATH_INVALID) from error
         try:
-            with handle:
-                content_sha256, size_bytes = self._handle_digest(handle)
+            with (
+                handle,
+                tempfile.SpooledTemporaryFile(max_size=ARTIFACT_SPOOL_MEMORY_BYTES) as snapshot,
+            ):
+                content_sha256, size_bytes = self._handle_digest(
+                    handle,
+                    snapshot if validate is not None else None,
+                    maximum_bytes=maximum_bytes,
+                )
+                if validate is not None:
+                    snapshot.seek(0)
+                    validate(snapshot.read(maximum_bytes + 1))
         except _ArtifactTooLarge as error:
             raise ArtifactPublishFailure(ARTIFACT_FILE_TOO_LARGE) from error
         artifact_id = sha256(
@@ -175,13 +188,16 @@ class InvocationArtifactService:
 
     @staticmethod
     def _handle_digest(
-        handle: BinaryIO, sink: tempfile.SpooledTemporaryFile[bytes] | None = None
+        handle: BinaryIO,
+        sink: tempfile.SpooledTemporaryFile[bytes] | None = None,
+        *,
+        maximum_bytes: int = ARTIFACT_MAX_BYTES,
     ) -> tuple[str, int]:
         digest = sha256()
         size_bytes = 0
         while chunk := handle.read(FILE_HASH_CHUNK_BYTES):
             size_bytes += len(chunk)
-            if size_bytes > ARTIFACT_MAX_BYTES:
+            if size_bytes > min(maximum_bytes, ARTIFACT_MAX_BYTES):
                 raise _ArtifactTooLarge
             digest.update(chunk)
             if sink is not None:

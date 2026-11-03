@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="书深插件开发专题指南：对话创建、界面绘制、组件、交互、API 与测试。">
+  <link rel="icon" href="data:,">
+  <title>插件开发指南 · 书深</title>
+  <style>
+/* Hallmark · shape: documentation workbench · theme: existing ScholarSeed · scope: app · v2.0.0 */
+/* Critique: source-first reading, green active navigation, no decorative hero. */
+/* Waiver: technical documentation retains complete tables and code rather than a marketing word budget. */
+:root {
+  color-scheme: light;
+  --paper: #faf8f4;
+  --surface: #fdfdfa;
+  --ink: #272727;
+  --muted: #606861;
+  --line: #dedfd7;
+  --accent: #2c5545;
+  --tint: #e7eee8;
+  --code: #f0f1ec;
+  --warning: #fff3d7;
+  --warning-line: #ad6b08;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { overflow-x: clip; }
+html { scroll-padding-top: 90px; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--font); line-height: 1.8; }
+a { color: var(--accent); text-underline-offset: 4px; }
+button, input { font: inherit; }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+header { border-bottom: 1px solid var(--line); background: var(--paper); }
+.mast { max-width: 1540px; margin: auto; padding: 20px 32px; display: flex; gap: 20px; align-items: center; justify-content: space-between; }
+.brand { font-size: 20px; font-weight: 650; text-decoration: none; color: var(--ink); }
+.mast span { font-size: 14px; color: var(--muted); }
+.workspace { max-width: 1540px; margin: auto; display: grid; grid-template-columns: 250px minmax(0, 1fr) 210px; gap: 40px; padding: 32px; }
+.sidebar, .outline { align-self: start; position: sticky; top: 24px; max-height: calc(100dvh - 48px); overflow-y: auto; }
+nav { display: grid; gap: 4px; }
+nav a { padding: 8px 12px; border-radius: 8px; text-decoration: none; color: var(--ink); font-size: 15px; }
+nav a:hover, nav a[aria-current="page"] { background: var(--tint); color: var(--accent); }
+nav a[aria-current="page"] { font-weight: 650; }
+.nav-title { margin: 24px 12px 8px; font-size: 13px; color: var(--muted); }
+.nav-title:first-child { margin-top: 0; }
+.sidebar label { display: block; margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+input { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--surface); color: var(--ink); }
+input:hover { border-color: var(--accent); }
+.search { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 20px; }
+.results { padding: 0; list-style: none; font-size: 14px; }
+.results a { display: block; margin: 12px 0; }
+.results small { display: block; color: var(--muted); }
+.help { color: var(--muted); font-size: 12px; }
+main { min-width: 0; }
+article { padding: 0 0 48px; overflow-wrap: break-word; }
+article + article { border-top: 1px solid var(--line); padding-top: 40px; }
+article[hidden] { display: none; }
+h1, h2, h3, h4 { min-width: 0; overflow-wrap: break-word; line-height: 1.4; text-wrap: balance; }
+h1 { font-size: 32px; margin: 12px 0 28px; font-weight: 650; }
+h2 { font-size: 24px; margin: 44px 0 16px; padding-top: 4px; }
+h3 { font-size: 19px; margin: 32px 0 16px; }
+h4 { font-size: 16px; margin: 24px 0 12px; }
+p, ul, ol { margin-top: 12px; margin-bottom: 16px; }
+li { margin: 8px 0; }
+strong { font-weight: 650; }
+.source { font-size: 13px; color: var(--muted); }
+blockquote { margin: 20px 0; border: 1px solid var(--line); padding: 12px 20px; background: var(--tint); border-radius: 8px; }
+blockquote p { margin: 0; }
+.warning { border-color: var(--warning-line); background: var(--warning); }
+code { font-family: var(--mono); font-size: .88em; background: var(--code); padding: 0 4px; border-radius: 4px; overflow-wrap: anywhere; }
+pre { position: relative; padding: 40px 20px 20px; background: var(--code); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; line-height: 1.7; }
+pre code { display: block; padding: 0; border-radius: 0; overflow-wrap: normal; font-size: 13px; }
+.copy { position: absolute; right: 12px; top: 8px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+.copy:hover, .copy:active { color: var(--accent); border-color: var(--accent); }
+.copy:disabled { opacity: .5; cursor: not-allowed; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin: 20px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; display: block; overflow-x: auto; }
+th, td { padding: 12px 16px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); min-width: 130px; }
+th { background: var(--tint); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+img { max-width: 100%; height: auto; border-radius: 8px; }
+.outline h2 { font-size: 13px; color: var(--muted); margin: 0 0 12px; }
+.outline a { display: block; text-decoration: none; color: var(--muted); font-size: 13px; line-height: 1.6; margin: 12px 0; }
+.outline a:hover { color: var(--accent); }
+.skip { position: absolute; top: -100px; left: 16px; background: var(--surface); padding: 12px; }
+.skip:focus { top: 8px; }
+footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; color: var(--muted); }
+@media (max-width: 1200px) { .workspace { grid-template-columns: 230px minmax(0, 1fr); gap: 28px; } .outline { display: none; } }
+@media (max-width: 760px) {
+  .mast { padding: 16px 20px; } .mast span { display: none; }
+  .workspace { display: block; padding: 20px; } .sidebar { position: static; max-height: none; border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 24px; }
+  nav { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nav-title { grid-column: 1 / -1; }
+  .search { margin-top: 16px; } h1 { font-size: 28px; } h2 { font-size: 22px; } .brand { font-size: 18px; }
+}
+@media print { .sidebar, .outline, header, .copy, .source { display: none; } .workspace { display: block; padding: 0; } article[hidden] { display: block; } pre { white-space: pre-wrap; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#guide--plugin-概览">跳转到正文</a>
+  <header><div class="mast"><a class="brand" href="#guide">书深 / 插件开发指南</a><span>从业务流程到真实对话</span></div></header>
+  <div class="workspace">
+    <aside class="sidebar" aria-label="专题导航">
+      <nav aria-label="插件专题"><p class="nav-title">开发指南</p>{{NAVIGATION}}</nav>
+      <section class="search" hidden>
+        <label for="search">搜索全部专题</label><input id="search" type="search" placeholder="搜索 slot、草稿或安装…" autocomplete="off">
+        <p class="help" id="search-status" role="status"></p><ul class="results" id="results"></ul>
+      </section>
+      <p class="help">离线可读，无需登录或启动后端。</p>
+    </aside>
+    <main id="content">{{ARTICLES}}<footer>正文由仓库 Markdown 生成。修改源文档后运行 <code>.venv/bin/python doc/plugins/build.py</code> 更新本页。</footer></main>
+    <aside class="outline" aria-label="本页目录"><h2>本页目录</h2><div id="outline"></div></aside>
+  </div>
+  <script>
+(() => {
+  'use strict';
+  const pages = [...document.querySelectorAll('article[data-page]')];
+  const outline = document.querySelector('#outline');
+  const search = document.querySelector('#search');
+  const results = document.querySelector('#results');
+  const status = document.querySelector('#search-status');
+  const records = [];
+  for (const page of pages) {
+    let heading = page.querySelector('h1');
+    for (const block of page.querySelectorAll('h2, h3, h4, p, li, tr, pre')) {
+      if (/^H[234]$/.test(block.tagName)) heading = block;
+      records.push({title: heading.textContent, text: block.textContent, id: heading.id, topic: page.getAttribute('aria-label')});
+    }
+  }
+  function showPage() {
+    let fragment;
+    try { fragment = decodeURIComponent(location.hash.slice(1)); } catch { fragment = ''; }
+    const selected = pages.find(page => page.dataset.page === fragment.split('--')[0]) || pages[0];
+    pages.forEach(page => { page.hidden = page !== selected; });
+    document.querySelectorAll('[data-topic]').forEach(link => {
+      if (link.dataset.topic === selected.dataset.page) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    outline.replaceChildren();
+    for (const heading of selected.querySelectorAll('h2, h3')) {
+      const link = document.createElement('a');
+      link.href = '#' + heading.id;
+      link.textContent = heading.textContent;
+      outline.append(link);
+    }
+    document.title = selected.getAttribute('aria-label') + ' | 书深插件开发指南';
+    const target = document.getElementById(fragment);
+    if (target && fragment.includes('--')) target.scrollIntoView();
+    else window.scrollTo(0, 0);
+  }
+  search.closest('section').hidden = false;
+  search.addEventListener('input', () => {
+    results.replaceChildren();
+    const query = search.value.trim().toLocaleLowerCase();
+    if (!query) { status.textContent = ''; return; }
+    const found = new Map();
+    for (const record of records) {
+      if (record.text.toLocaleLowerCase().includes(query) && !found.has(record.id)) found.set(record.id, record);
+    }
+    status.textContent = found.size ? '找到 ' + found.size + ' 个相关章节' + (found.size > 12 ? '，显示前 12 项' : '') : '没有匹配章节，请换个关键词。';
+    for (const record of [...found.values()].slice(0, 12)) {
+      const item = document.createElement('li');
+      const link = document.createElement('a');
+      const topic = document.createElement('small');
+      link.href = '#' + record.id;
+      link.append(document.createTextNode(record.title));
+      topic.textContent = record.topic;
+      link.append(topic);
+      item.append(link);
+      results.append(item);
+    }
+  });
+  for (const table of document.querySelectorAll('table')) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'table-wrap';
+    table.replaceWith(wrapper);
+    wrapper.append(table);
+  }
+  for (const block of document.querySelectorAll('pre')) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'copy';
+    button.textContent = '复制代码';
+    button.addEventListener('click', async () => {
+      const code = block.querySelector('code');
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        button.textContent = '已复制';
+      } catch {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        button.textContent = '请按 Ctrl/Cmd+C 复制';
+      }
+    });
+    block.append(button);
+  }
+  window.addEventListener('hashchange', showPage);
+  showPage();
+})();
+  </script>
+</body>
+</html>

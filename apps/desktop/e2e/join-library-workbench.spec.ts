@@ -1,3 +1,4 @@
+import { createReadyProject } from './fixtures/projects'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { test, expect } from '@playwright/test'
@@ -5,14 +6,26 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { DesktopSession, apiBase } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { adoptSeededAuth, MOCK_ACCOUNT_BASE, mockAccountApi, seedAuthTokens } from './fixtures/builders/auth'
+import { skipQuarantined } from './fixtures/quarantine'
+
+test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 // Search delivery is a deterministic fixture; every library/category write uses the real isolated backend.
 test('join library: cascading destinations, create-and-add, batch, project scope and dismissal', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
+  await seedAuthTokens(runtime)
   const desktop = new DesktopSession(runtime, testInfo)
   try {
-    const page = await desktop.launch()
+    const previousAccountBase = process.env.SCHOLARSEED_ACCOUNT_BASE_URL
+    process.env.SCHOLARSEED_ACCOUNT_BASE_URL = MOCK_ACCOUNT_BASE
+    const page = await desktop.launch().finally(() => {
+      if (previousAccountBase === undefined) delete process.env.SCHOLARSEED_ACCOUNT_BASE_URL
+      else process.env.SCHOLARSEED_ACCOUNT_BASE_URL = previousAccountBase
+    })
+    await mockAccountApi(page, 'authenticated')
+    await adoptSeededAuth(page, runtime)
     page.setDefaultTimeout(12000)
     console.log("Join acceptance: desktop ready")
     const base = await apiBase(page)
@@ -25,7 +38,7 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     await expect(page.getByLabel('名称', { exact: true })).toBeFocused()
     await expect(page.getByLabel('名称', { exact: true })).toHaveAttribute('placeholder', '输入分类名称')
     await expect(page.getByRole('dialog').getByRole('combobox')).toHaveCount(0)
-    await expect(page.getByRole('dialog')).toContainText('创建后会出现在文献全览左侧，并保存在文献库中。')
+    await expect(page.getByRole('dialog')).toContainText('创建后会出现在文献中心左侧，并保存在文献库中。')
     await expect(page.getByRole('dialog').getByRole('button', { name: '创建', exact: true })).toBeVisible()
     await page.screenshot({ path: join(evidence, 'sidebar-create-dialog.png') })
     await page.getByLabel('名称', { exact: true }).fill('侧栏验收')
@@ -41,14 +54,12 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     const row = (index: number) => page.getByTestId(`search-paper-${index}`)
     const trigger = (index: number) => row(index).getByTestId('join-library-trigger')
     await trigger(0).click()
-    await expect(page.getByRole('menuitem', { name: '加入项目', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: '关联至项目', exact: true })).toHaveCount(0)
     await page.getByRole('menuitem', { name: '直接加入', exact: true }).click()
     await expect(row(0).getByTestId('literature-joined')).toHaveText('已加入')
     await expect(page.getByText('已添加1篇文献', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '去文献库看看', exact: true })).toHaveCount(0)
-    const createProject = await page.request.post(`${base}/api/content/projects`, { data: { name: 'Join project' } })
-    expect(createProject.ok(), await createProject.text()).toBe(true)
-    const project = await createProject.json()
+    const project = await createReadyProject(page, 'Join project')
     const createCollection = async (name: string, projectId = '', parentId = '') => {
       const response = await page.request.post(`${base}/api/v1/collections`, { data: { name, project_id: projectId, parent_id: parentId } })
       expect(response.ok(), await response.text()).toBe(true)
@@ -59,17 +70,17 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     const child = await createCollection('光遗传', project.id, parent.id)
     await createCollection('深层分类', project.id, child.id)
     await trigger(1).click()
-    await page.getByRole('menuitem', { name: '加入项目', exact: true }).hover()
+    await page.getByRole('menuitem', { name: '关联至项目', exact: true }).hover()
     await page.getByRole('menuitem', { name: 'Join project', exact: true }).click()
     await expect(row(1).getByTestId('literature-joined')).toHaveText('已加入')
     await trigger(2).click()
-    await page.getByRole('menuitem', { name: '加入项目', exact: true }).hover()
+    await page.getByRole('menuitem', { name: '关联至项目', exact: true }).hover()
     await page.getByRole('menuitem', { name: 'Join project', exact: true }).hover()
     await page.getByRole('menuitem', { name: '实验方法', exact: true }).hover()
     await page.getByRole('menuitem', { name: '光遗传', exact: true }).click()
     await expect(row(2).getByTestId('literature-joined')).toHaveText('已加入')
     await trigger(3).click()
-    await expect(page.getByRole('menu').first().getByRole('menuitem')).toHaveText(['直接加入', /^加入我的分类/, /^加入项目/])
+    await expect(page.getByRole('menu').first().getByRole('menuitem')).toHaveText(['直接加入', /^加入我的分类/, /^关联至项目/])
     await expect(page.getByRole('menuitem', { name: '加入我的分类', exact: true })).toBeEnabled()
     await page.getByRole('menuitem', { name: '加入我的分类', exact: true }).hover()
     await page.getByRole('menuitem', { name: '全局方法', exact: true }).click()
@@ -124,7 +135,7 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     await expect(page.getByText('已添加2篇文献', { exact: true })).toBeVisible()
     await page.screenshot({ path: join(evidence, 'batch-success-toast.png') })
     await trigger(7).click()
-    await page.getByRole('menuitem', { name: '加入项目', exact: true }).hover()
+    await page.getByRole('menuitem', { name: '关联至项目', exact: true }).hover()
     await page.getByRole('menuitem', { name: 'Join project', exact: true }).hover()
     await page.getByRole('menuitem', { name: '实验方法', exact: true }).hover()
     await expect(page.getByRole('menuitem', { name: '新建分类…', exact: true })).toHaveCount(1)
@@ -186,8 +197,10 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     await page.getByLabel('名称', { exact: true }).fill('侧栏项目分类')
     await page.getByRole('button', { name: '创建', exact: true }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await page.getByTestId(`literature-collection-${parent.id}`).hover()
-    await page.getByRole('button', { name: '在「实验方法」下新建子分类', exact: true }).click()
+    const parentCollection = page.getByTestId(`literature-collection-${parent.id}`)
+    await parentCollection.hover()
+    await parentCollection.getByRole('button', { name: '导入文献', exact: true }).click()
+    await page.getByRole('menuitem', { name: '新建子分类', exact: true }).click()
     await expect(page.getByRole('dialog')).toContainText('将在「实验方法」下创建。')
     await expect(page.getByRole('dialog').getByRole('combobox')).toHaveCount(0)
     await page.getByLabel('名称', { exact: true }).fill('侧栏项目子分类')
@@ -202,9 +215,10 @@ test('join library: cascading destinations, create-and-add, batch, project scope
       await page.goto(`${previewServer.resolvedUrls!.local[0]}e2e/fixtures/join-preview.html`)
       const preview = page.getByTestId('preview-consumer')
       const resultRows = page.getByTestId('search-consumer')
-      await preview.getByTestId('join-library-trigger').first().click()
+      await preview.getByRole('button', { name: '查看全部结果', exact: true }).click()
+      await preview.getByTestId('search-paper-preview-1').getByTestId('join-library-trigger').click()
       await expect(page.getByRole('menuitem', { name: '加入我的分类', exact: true })).toBeEnabled()
-    await page.getByRole('menuitem', { name: '加入我的分类', exact: true }).hover()
+      await page.getByRole('menuitem', { name: '加入我的分类', exact: true }).hover()
       await page.getByRole('menuitem', { name: '全局方法', exact: true }).click()
       await expect(preview.getByTestId('literature-joined')).toHaveText('已加入')
       await expect(resultRows.getByTestId('search-paper-preview-1').getByTestId('literature-joined')).toHaveText('已加入')

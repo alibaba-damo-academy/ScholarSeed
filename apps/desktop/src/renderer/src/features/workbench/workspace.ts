@@ -5,11 +5,15 @@ import {
   type ContentKind,
   type FindTextReveal,
   type SelectionAnchor,
-  type ViewerKind
+  type SessionFileSource,
+  type ViewerKind,
 } from '../../contracts/workbench.ts'
-import { CITATION_VIEW_STATE_KEY, type CitationMatch, type CitationResolution } from '../../contracts/citations.ts'
 import {
-  DOCUMENT_LOAD_FAILURE_KIND,
+  CITATION_VIEW_STATE_KEY,
+  type CitationMatch,
+  type CitationResolution,
+} from '../../contracts/citations.ts'
+import {
   commitDocument,
   createManagedCopy,
   documentIdFor,
@@ -17,11 +21,10 @@ import {
   loadDocument,
   loadVersionCapability,
   type DocumentSource,
-  type SessionFileSource,
   type ProjectDocumentSource,
   type DocumentLoadFailure,
   type DocumentLoadResult,
-  type LoadedDocument
+  type LoadedDocument,
 } from './api.ts'
 import {
   adjacentLeaf,
@@ -42,10 +45,10 @@ import {
   type DockLayout,
   type DockNode,
   type DropEdge,
-  type TabInsertion
+  type TabInsertion,
 } from './layout.ts'
 import { usesLightweightTextState } from './limits.ts'
-import { viewerPolicy } from './policy.ts'
+import { viewerExclusiveGroup, viewerPolicy } from './policy.ts'
 import { reclaimDocumentResources, type DocumentResourceReclaimer } from './reclaim.ts'
 import {
   DEFAULT_EDITOR_LIMIT,
@@ -53,13 +56,14 @@ import {
   MAX_TEXT_HISTORY_ENTRIES,
   selectLruTabClosures,
   trimTextHistory,
-  type TextHistoryState
+  type TextHistoryState,
 } from './residency.ts'
 import { viewerForPath } from './tabs.ts'
+import { previewFormat } from './preview/routing.ts'
 
 const SPLIT_PROJECTION_SUFFIX = ':split'
 
-export type DocumentViewKind = 'preview' | 'edit'
+export type DocumentViewKind = 'preview' | 'edit' | 'source'
 export type DocumentNavigationView = 'resource' | 'literature'
 export type DocumentLoadState = 'loading' | 'ready' | 'error'
 export type DocumentSaveState = 'clean' | 'dirty' | 'saving' | 'conflict' | 'error'
@@ -106,10 +110,14 @@ export interface DocumentTab {
   title: string
   /** Viewer-owned, immutable reading state; independent of the shared document bytes. */
   viewState?: Readonly<Record<string, unknown>>
+  embedded?: boolean
 }
 
-export function documentNavigationView(tab: DocumentTab, session: DocumentSession): DocumentNavigationView {
-  if (session.source.kind === 'literature') return 'literature'
+export function documentNavigationView(
+  tab: DocumentTab,
+  session: DocumentSession
+): DocumentNavigationView {
+  if (session.source.kind === 'literature') return tab.navigationView ?? 'literature'
   if (session.source.kind === 'project') return 'resource'
   return tab.navigationView ?? 'resource'
 }
@@ -127,14 +135,15 @@ export function documentTextReveal(
   if (!candidate || typeof candidate !== 'object') return null
   const reveal = candidate as Partial<DocumentTextRevealState>
   if (
-    reveal.kind !== FIND_TEXT_REVEAL_KIND
-    || typeof reveal.query !== 'string'
-    || !reveal.query.trim()
-    || typeof reveal.source_revision !== 'string'
-    || typeof reveal.sequence !== 'number'
-    || !Number.isSafeInteger(reveal.sequence)
-    || reveal.sequence < 1
-  ) return null
+    reveal.kind !== FIND_TEXT_REVEAL_KIND ||
+    typeof reveal.query !== 'string' ||
+    !reveal.query.trim() ||
+    typeof reveal.source_revision !== 'string' ||
+    typeof reveal.sequence !== 'number' ||
+    !Number.isSafeInteger(reveal.sequence) ||
+    reveal.sequence < 1
+  )
+    return null
   return reveal as DocumentTextRevealState
 }
 
@@ -199,7 +208,11 @@ export interface FocusedSelectionPresentation {
 export interface DocumentLoader {
   load(source: DocumentSource): Promise<DocumentLoadResult>
   versioning?(source: DocumentSource): Promise<NonNullable<LoadedDocument['versioning']> | null>
-  commit(source: DocumentSource, bytes: Uint8Array, revision: string): ReturnType<typeof commitDocument>
+  commit(
+    source: DocumentSource,
+    bytes: Uint8Array,
+    revision: string
+  ): ReturnType<typeof commitDocument>
   createManagedCopy?(
     source: DocumentSource,
     bytes: Uint8Array,
@@ -275,10 +288,10 @@ export function selectionViewport(
       right: rect.right,
       bottom: rect.bottom,
       width: rect.width,
-      height: rect.height
+      height: rect.height,
     },
     point,
-    visible
+    visible,
   }
 }
 
@@ -299,6 +312,12 @@ interface DocumentWorkspaceEditorDelegate {
   changed(): void
 }
 
+interface PendingSave {
+  changeVersion: number
+  overwrite: boolean
+  promise: Promise<boolean>
+}
+
 function emptyCapabilities(): LoadedDocument['capabilities'] {
   return {
     can_preview: false,
@@ -308,7 +327,7 @@ function emptyCapabilities(): LoadedDocument['capabilities'] {
     can_save: false,
     can_version: false,
     can_diff: false,
-    pending: []
+    pending: [],
   }
 }
 
@@ -316,23 +335,23 @@ function titleFor(path: string): string {
   return path.split('/').filter(Boolean).pop() || path
 }
 
-function sharesNavigationSurface(left: DocumentSource, right: DocumentSource): boolean {
-  return (left.kind === 'literature') === (right.kind === 'literature')
-}
-
-function fallbackTabForSource(
+function fallbackTabForView(
   tabs: Record<string, DocumentTab>,
   sessions: Record<string, DocumentSession>,
   preferredTabId: string | null,
-  source: DocumentSource
+  navigationView: DocumentNavigationView
 ): string | null {
   const candidates = [preferredTabId, ...Object.keys(tabs)]
-  return candidates.find((tabId): tabId is string => {
-    if (!tabId) return false
-    const candidate = tabs[tabId]
-    const candidateSource = candidate ? sessions[candidate.sessionId]?.source : null
-    return Boolean(candidateSource && sharesNavigationSurface(source, candidateSource))
-  }) ?? null
+  return (
+    candidates.find((tabId): tabId is string => {
+      if (!tabId) return false
+      const candidate = tabs[tabId]
+      const session = candidate ? sessions[candidate.sessionId] : null
+      return Boolean(
+        candidate && session && documentNavigationView(candidate, session) === navigationView
+      )
+    }) ?? null
+  )
 }
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
@@ -347,10 +366,16 @@ function cleanByteState(bytes: Uint8Array): Pick<DocumentSession, 'bytes' | 'sav
 function canonicalViewKind(
   viewer: ViewerKind,
   requested: DocumentViewKind,
-  canEdit: boolean
+  canEdit: boolean,
+  path: string
 ): DocumentViewKind {
+  if (viewer === 'markdown' && requested === 'source') return 'source'
   if (!canEdit) return 'preview'
-  return viewer === 'code' || viewer === 'spreadsheet' ? 'edit' : requested
+  return viewer === 'code' || (viewer === 'spreadsheet' && previewFormat(path) !== 'xlsx')
+    ? 'edit'
+    : requested === 'source'
+      ? 'preview'
+      : requested
 }
 
 export function tabIdsForClose(
@@ -374,10 +399,11 @@ export function hasDirtyProjectPath(
 ): boolean {
   const prefix = `${path}/`
   return sessions.some(
-    (session) => session.source.kind === 'project'
-      && (session.source.project ?? null) === project
-      && (session.source.path === path || session.source.path.startsWith(prefix))
-      && session.dirty
+    (session) =>
+      session.source.kind === 'project' &&
+      (session.source.project ?? null) === project &&
+      (session.source.path === path || session.source.path.startsWith(prefix)) &&
+      session.dirty
   )
 }
 
@@ -390,13 +416,13 @@ export class DocumentWorkspace {
     pendingExclusiveOpen: null,
     focusedTabId: null,
     focusedLeaf: null,
-    selectionPresentations: {}
+    selectionPresentations: {},
   }
 
   private readonly listeners = new Set<() => void>()
   private nextId = 1
   private readonly saveDelegates = new Map<string, Map<symbol, DocumentSaveDelegate>>()
-  private readonly saves = new Map<string, Promise<boolean>>()
+  private readonly saves = new Map<string, PendingSave>()
   private readonly textHistories = new Map<string, TextHistoryState>()
   private readonly openings = new Map<string, Promise<string>>()
   private nextHistorySequence = 0
@@ -404,6 +430,8 @@ export class DocumentWorkspace {
   private nextVersioningRefresh = 0
   private nextExclusiveOpen = 0
   private closeQueue: string[] = []
+  private closing = false
+  private autoSave = false
   private exclusiveReplacement: { ownerTabId: string; candidateTabId: string } | null = null
   private documentNavigation: Promise<unknown> = Promise.resolve()
 
@@ -419,6 +447,12 @@ export class DocumentWorkspace {
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  setTabEmbedded(tabId: string, embedded: boolean): void {
+    const tab = this.state.tabs[tabId]
+    if (!tab || Boolean(tab.embedded) === embedded) return
+    this.publish({ ...this.state, tabs: { ...this.state.tabs, [tabId]: { ...tab, embedded } } })
   }
 
   private publish(next: DocumentWorkspaceState): void {
@@ -443,13 +477,14 @@ export class DocumentWorkspace {
 
   private sessionFor(source: DocumentSource): DocumentSession | undefined {
     const documentId = documentIdFor(source)
-    return Object.values(this.state.sessions).find((session) => (
-      session.documentId === documentId
-      || (source.kind === 'project'
-        && session.source.kind === 'project'
-        && session.source.path === source.path
-        && (session.source.project ?? null) === (source.project ?? null))
-    ))
+    return Object.values(this.state.sessions).find(
+      (session) =>
+        session.documentId === documentId ||
+        (source.kind === 'project' &&
+          session.source.kind === 'project' &&
+          session.source.path === source.path &&
+          (session.source.project ?? null) === (source.project ?? null))
+    )
   }
 
   async revealText(
@@ -469,15 +504,16 @@ export class DocumentWorkspace {
   ): Promise<string> {
     const existingSession = this.sessionFor(source)
     const focused = this.state.focusedTabId ? this.state.tabs[this.state.focusedTabId] : undefined
-    const existingTab = focused?.sessionId === existingSession?.id
-      ? focused
-      : Object.values(this.state.tabs).find((tab) => tab.sessionId === existingSession?.id)
-    const tabId = existingTab?.id ?? await this.open(source, 'preview', title)
+    const existingTab =
+      focused?.sessionId === existingSession?.id
+        ? focused
+        : Object.values(this.state.tabs).find((tab) => tab.sessionId === existingSession?.id)
+    const tabId = existingTab?.id ?? (await this.open(source, 'preview', title))
     let tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : undefined
     if (!tab || !session || session.loadState === 'error') throw new Error('source_unavailable')
-    if (session.viewer === 'markdown' && tab.viewKind !== 'preview') {
-      this.setTabView(tabId, 'preview')
+    if (session.viewer === 'markdown' && tab.viewKind !== 'source') {
+      this.setTabView(tabId, 'source')
       tab = this.state.tabs[tabId]
     }
     this.focusTab(tabId)
@@ -486,8 +522,8 @@ export class DocumentWorkspace {
       ...tab.viewState,
       [DOCUMENT_TEXT_REVEAL_VIEW_STATE_KEY]: {
         ...reveal,
-        sequence: (previous?.sequence ?? 0) + 1
-      }
+        sequence: (previous?.sequence ?? 0) + 1,
+      },
     })
     return tabId
   }
@@ -498,39 +534,107 @@ export class DocumentWorkspace {
     return navigation
   }
 
-  private async navigateCitation(source: CitationResolution, match?: CitationMatch): Promise<string> {
-    let document: DocumentSource = (source.source_kind === 'attachment' || source.source_kind === 'literature') && source.source_session_id && source.answer_id && source.answer_revision
-      ? { kind: 'session-file', sessionId: source.source_session_id, path: source.source_id, projectScope: source.scope_project_id, mediaType: 'application/pdf', citation: { answerId: source.answer_id, answerRevision: source.answer_revision, handle: source.handle }, ...(source.record_target ? { recordTarget: source.record_target } : {}) }
-      : { kind: 'project', project: source.project_id, path: source.path }
+  private async navigateCitation(
+    source: CitationResolution,
+    match?: CitationMatch
+  ): Promise<string> {
+    let document: DocumentSource =
+      (source.artifact_citation ||
+        source.source_kind === 'attachment' ||
+        source.source_kind === 'literature') &&
+      (source.source_session_id || source.artifact_citation) &&
+      (source.artifact_citation ||
+        source.saved_citation ||
+        (source.answer_id && source.answer_revision))
+        ? {
+            kind: 'session-file',
+            sessionId: source.source_session_id || source.artifact_citation!.session_id,
+            path: source.source_id,
+            projectScope: source.scope_project_id,
+            mediaType: 'application/pdf',
+            ...(source.artifact_citation
+              ? { artifactCitation: source.artifact_citation }
+              : source.saved_citation
+                ? { savedCitation: source.saved_citation }
+                : {
+                    citation: {
+                      answerId: source.answer_id!,
+                      answerRevision: source.answer_revision!,
+                      handle: source.handle,
+                    },
+                  }),
+            ...(source.record_target ? { recordTarget: source.record_target } : {}),
+          }
+        : { kind: 'project', project: source.project_id, path: source.path }
     const scope = source.scope_project_id || source.project_id
-    const candidates = Object.values(this.state.sessions).filter(session => session.viewer === 'pdf'
-      && session.loadState === 'ready' && !session.dirty && !session.deleted && !session.externalChange && session.revision === source.revision)
+    const candidates = Object.values(this.state.sessions).filter(
+      (session) =>
+        session.viewer === 'pdf' &&
+        session.loadState === 'ready' &&
+        !session.dirty &&
+        !session.deleted &&
+        !session.externalChange &&
+        session.revision === source.revision
+    )
     if (document.kind === 'session-file') {
-      const projects = candidates.filter(session => session.source.kind === 'project'
-        ? Boolean(scope) && session.source.project === scope
-        : session.source.kind === 'session-file' && (session.source.projectScope || '') === scope)
-      const linked = projects.filter(session => session.attachmentIds?.includes(documentIdFor(document)))
-      const target = linked.length === 1 ? linked[0] : projects.length === 1 ? projects[0] : undefined
+      const projects = candidates.filter((session) =>
+        session.source.kind === 'project'
+          ? Boolean(scope) && session.source.project === scope
+          : session.source.kind === 'session-file' && (session.source.projectScope || '') === scope
+      )
+      const linked = projects.filter((session) =>
+        session.attachmentIds?.includes(documentIdFor(document))
+      )
+      const target =
+        linked.length === 1 ? linked[0] : projects.length === 1 ? projects[0] : undefined
       if (target) {
         const loaded = await this.loader.load(target.source)
         const current = this.state.sessions[target.id]
-        if (current && current.documentId === target.documentId && !current.dirty && !current.deleted && !current.externalChange
-          && !isDocumentLoadFailure(loaded)
-          && current.revision === source.revision && loaded.revision === source.revision && loaded.viewer === 'pdf' && !loaded.externalChange) {
-          this.publish({ ...this.state, sessions: { ...this.state.sessions, [target.id]: {
-            ...current, attachmentIds: [...new Set([...(current.attachmentIds ?? []), documentIdFor(document)])]
-          } } })
+        if (
+          current &&
+          current.documentId === target.documentId &&
+          !current.dirty &&
+          !current.deleted &&
+          !current.externalChange &&
+          !isDocumentLoadFailure(loaded) &&
+          current.revision === source.revision &&
+          loaded.revision === source.revision &&
+          loaded.viewer === 'pdf' &&
+          !loaded.externalChange
+        ) {
+          this.publish({
+            ...this.state,
+            sessions: {
+              ...this.state.sessions,
+              [target.id]: {
+                ...current,
+                attachmentIds: [
+                  ...new Set([...(current.attachmentIds ?? []), documentIdFor(document)]),
+                ],
+              },
+            },
+          })
           document = target.source
         }
       }
     }
-    const attachments = candidates.filter(session => session.source.kind === 'session-file' && session.source.projectScope === scope)
-    const attachment = scope && document.kind === 'project' && attachments.length === 1 ? attachments[0].source as SessionFileSource : undefined
-    const existing = Object.values(this.state.sessions).find(session => session.documentId === documentIdFor(document))
-    const existingTab = existing && Object.values(this.state.tabs).find(tab => tab.sessionId === existing.id)
-    const tabId = existingTab?.id ?? (document.kind === 'project' && attachment
-      ? await this.openImported(document, attachment, source.title)
-      : await this.open(document, 'edit', source.title))
+    const attachments = candidates.filter(
+      (session) => session.source.kind === 'session-file' && session.source.projectScope === scope
+    )
+    const attachment =
+      scope && document.kind === 'project' && attachments.length === 1
+        ? (attachments[0].source as SessionFileSource)
+        : undefined
+    const existing = Object.values(this.state.sessions).find(
+      (session) => session.documentId === documentIdFor(document)
+    )
+    const existingTab =
+      existing && Object.values(this.state.tabs).find((tab) => tab.sessionId === existing.id)
+    const tabId =
+      existingTab?.id ??
+      (document.kind === 'project' && attachment
+        ? await this.openImported(document, attachment, source.title)
+        : await this.open(document, 'edit', source.title))
     this.focusTab(tabId)
     const tab = this.state.tabs[tabId]
     const session = this.state.sessions[tab.sessionId]
@@ -542,36 +646,76 @@ export class DocumentWorkspace {
       page: match?.pages[0]?.page ?? 1,
       mode: 'page',
       [CITATION_VIEW_STATE_KEY]: {
-        revision: source.revision, pages: match?.pages ?? [], sequence: (previous?.sequence ?? 0) + 1
-      }
+        revision: source.revision,
+        pages: match?.pages ?? [],
+        sequence: (previous?.sequence ?? 0) + 1,
+      },
     })
     return tabId
   }
 
   /** An import changes the writable owner, never combines two project annotation stores. */
-  async openImported(source: ProjectDocumentSource, attachment: SessionFileSource, title = titleFor(source.path)): Promise<string> {
-    const previous = Object.values(this.state.sessions).find(session => session.documentId === documentIdFor(attachment))
-    const project = Object.values(this.state.sessions).find(session => session.documentId === documentIdFor(source))
-    if (previous?.viewer === 'pdf' && previous.loadState === 'ready' && !previous.dirty && !project) {
+  async openImported(
+    source: ProjectDocumentSource,
+    attachment: SessionFileSource,
+    title = titleFor(source.path)
+  ): Promise<string> {
+    const previous = Object.values(this.state.sessions).find(
+      (session) => session.documentId === documentIdFor(attachment)
+    )
+    const project = Object.values(this.state.sessions).find(
+      (session) => session.documentId === documentIdFor(source)
+    )
+    if (
+      previous?.viewer === 'pdf' &&
+      previous.loadState === 'ready' &&
+      !previous.dirty &&
+      !project
+    ) {
       const loaded = await this.loader.load(source)
       const current = this.state.sessions[previous.id]
-      if (current && current.documentId === previous.documentId && !current.dirty && !current.deleted && !current.externalChange
-        && !Object.values(this.state.sessions).some(session => session.documentId === documentIdFor(source))
-        && !isDocumentLoadFailure(loaded)
-        && loaded.viewer === 'pdf' && !loaded.externalChange && loaded.revision === current.revision) {
-        const tab = Object.values(this.state.tabs).find(tab => tab.sessionId === current.id)
+      if (
+        current &&
+        current.documentId === previous.documentId &&
+        !current.dirty &&
+        !current.deleted &&
+        !current.externalChange &&
+        !Object.values(this.state.sessions).some(
+          (session) => session.documentId === documentIdFor(source)
+        ) &&
+        !isDocumentLoadFailure(loaded) &&
+        loaded.viewer === 'pdf' &&
+        !loaded.externalChange &&
+        loaded.revision === current.revision
+      ) {
+        const tab = Object.values(this.state.tabs).find((tab) => tab.sessionId === current.id)
         if (tab) {
-          this.publish({ ...this.state, sessions: { ...this.state.sessions, [current.id]: {
-            ...current, documentId: loaded.documentId, source: loaded.source, capabilities: loaded.capabilities,
-            versioning: loaded.versioning ?? null, externalChange: Boolean(loaded.externalChange), deleted: false,
-            title, attachmentIds: [...new Set([...(current.attachmentIds ?? []), documentIdFor(attachment)])]
-          } }, tabs: { ...this.state.tabs, [tab.id]: { ...tab, title, viewKind: 'edit' } } })
+          this.publish({
+            ...this.state,
+            sessions: {
+              ...this.state.sessions,
+              [current.id]: {
+                ...current,
+                documentId: loaded.documentId,
+                source: loaded.source,
+                capabilities: loaded.capabilities,
+                versioning: loaded.versioning ?? null,
+                externalChange: Boolean(loaded.externalChange),
+                deleted: false,
+                title,
+                attachmentIds: [
+                  ...new Set([...(current.attachmentIds ?? []), documentIdFor(attachment)]),
+                ],
+              },
+            },
+            tabs: { ...this.state.tabs, [tab.id]: { ...tab, title, viewKind: 'edit' } },
+          })
           this.focusTab(tab.id)
           return tab.id
         }
       }
     }
-    return this.open(source, 'edit', title)
+    return this.open(source, previewFormat(source.path) ? 'preview' : 'edit', title)
   }
 
   async open(
@@ -579,32 +723,50 @@ export class DocumentWorkspace {
     viewKind: DocumentViewKind = viewerPolicy(viewerForPath(source.path)).defaultViewKind,
     title = titleFor(source.path),
     area?: DockArea,
-    titleFallback?: DocumentTab['titleFallback']
+    titleFallback?: DocumentTab['titleFallback'],
+    options: Pick<DocumentTab, 'embedded'> = {}
   ): Promise<string> {
     const documentId = documentIdFor(source)
     const pending = this.openings.get(documentId)
     if (pending) {
-      const tabId = await pending
+      let tabId = await pending
       const tab = this.state.tabs[tabId]
       const session = tab ? this.state.sessions[tab.sessionId] : undefined
       if (tab && session) {
         const requestedViewKind = canonicalViewKind(
           session.viewer,
           viewKind,
-          session.capabilities.can_edit
+          session.capabilities.can_edit,
+          session.source.path
         )
-        if (tab.viewKind !== requestedViewKind) this.setTabView(tabId, requestedViewKind)
-        this.focusTab(tabId)
+        if (tab.viewKind !== requestedViewKind && previewFormat(session.source.path)) {
+          tabId = await this.openDocument(
+            source,
+            requestedViewKind,
+            title,
+            area,
+            titleFallback,
+            options
+          )
+        } else {
+          if (tab.viewKind !== requestedViewKind) this.setTabView(tabId, requestedViewKind)
+          this.focusTab(tabId)
+        }
       }
+      if (!options.embedded) this.setTabEmbedded(tabId, false)
       return tabId
     }
     if (this.sessionFor(source)) {
-      return this.openDocument(source, viewKind, title, area, titleFallback)
+      const tabId = await this.openDocument(source, viewKind, title, area, titleFallback, options)
+      if (!options.embedded) this.setTabEmbedded(tabId, false)
+      return tabId
     }
-    const opening = this.openDocument(source, viewKind, title, area, titleFallback)
+    const opening = this.openDocument(source, viewKind, title, area, titleFallback, options)
     this.openings.set(documentId, opening)
     try {
-      return await opening
+      const tabId = await opening
+      if (!options.embedded) this.setTabEmbedded(tabId, false)
+      return tabId
     } finally {
       if (this.openings.get(documentId) === opening) this.openings.delete(documentId)
     }
@@ -615,12 +777,18 @@ export class DocumentWorkspace {
     viewKind: DocumentViewKind,
     title: string,
     area?: DockArea,
-    titleFallback?: DocumentTab['titleFallback']
+    titleFallback?: DocumentTab['titleFallback'],
+    options: Pick<DocumentTab, 'embedded'> = {}
   ): Promise<string> {
     const documentId = documentIdFor(source)
     const existingSession = this.sessionFor(source)
     const requestedViewKind = existingSession
-      ? canonicalViewKind(existingSession.viewer, viewKind, existingSession.capabilities.can_edit)
+      ? canonicalViewKind(
+          existingSession.viewer,
+          viewKind,
+          existingSession.capabilities.can_edit,
+          existingSession.source.path
+        )
       : viewKind
     const sessionId = existingSession?.id ?? this.id('document')
     let target = this.openTarget(area)
@@ -630,22 +798,27 @@ export class DocumentWorkspace {
     }
     const targetLeaf = findLeaf(this.state.layout.areas[target.area], target.leafId)
     const existingTab = Object.values(this.state.tabs).find(
-      (tab) => tab.sessionId === sessionId
-        && (tab.viewKind === requestedViewKind || existingSession?.viewer === 'markdown')
-        && targetLeaf?.tabIds.includes(tab.id)
+      (tab) =>
+        tab.sessionId === sessionId &&
+        (tab.viewKind === requestedViewKind || existingSession?.viewer === 'markdown') &&
+        targetLeaf?.tabIds.includes(tab.id)
     )
     if (existingTab) {
       const leaf = this.leafForTab(existingTab.id)
       if (leaf) {
-        const tabs = existingSession?.viewer === 'markdown' && existingTab.viewKind !== requestedViewKind
-          ? { ...this.state.tabs, [existingTab.id]: { ...existingTab, viewKind: requestedViewKind } }
-          : this.state.tabs
+        const tabs =
+          existingSession?.viewer === 'markdown' && existingTab.viewKind !== requestedViewKind
+            ? {
+                ...this.state.tabs,
+                [existingTab.id]: { ...existingTab, viewKind: requestedViewKind },
+              }
+            : this.state.tabs
         this.publish({
           ...this.state,
           tabs,
           layout: activateTab(this.state.layout, leaf.leafId, existingTab.id),
           focusedTabId: existingTab.id,
-          focusedLeaf: leaf
+          focusedLeaf: leaf,
         })
       }
       return existingTab.id
@@ -657,16 +830,17 @@ export class DocumentWorkspace {
         (tab) => tab.sessionId === sessionId && tab.viewKind === 'edit'
       )
       if (editOwner) {
-        if (!await this.refreshBeforeRelocation(editOwner)) return editOwner.id
+        if (!(await this.refreshBeforeRelocation(editOwner))) return editOwner.id
         const refreshedTarget = findLeaf(this.state.layout.areas[target.area], target.leafId)
         const targetPreview = Object.values(this.state.tabs).find(
-          (tab) => tab.sessionId === sessionId
-            && tab.viewKind === 'preview'
-            && refreshedTarget?.tabIds.includes(tab.id)
+          (tab) =>
+            tab.sessionId === sessionId &&
+            tab.viewKind === 'preview' &&
+            refreshedTarget?.tabIds.includes(tab.id)
         )
         tabs = {
           ...this.state.tabs,
-          [editOwner.id]: { ...this.state.tabs[editOwner.id], viewKind: 'preview' }
+          [editOwner.id]: { ...this.state.tabs[editOwner.id], viewKind: 'preview' },
         }
         if (targetPreview) {
           tabs[targetPreview.id] = { ...targetPreview, viewKind: 'edit' }
@@ -675,28 +849,42 @@ export class DocumentWorkspace {
             tabs,
             layout: activateTab(this.state.layout, target.leafId, targetPreview.id),
             focusedTabId: targetPreview.id,
-            focusedLeaf: target
+            focusedLeaf: target,
           })
           return targetPreview.id
         }
       }
     }
 
-    const expectedExclusiveGroup = viewerPolicy(viewerForPath(source.path)).exclusiveGroup
+    const expectedExclusiveGroup = viewerExclusiveGroup(
+      viewerForPath(source.path),
+      source.path,
+      requestedViewKind
+    )
     const expectedOwner = expectedExclusiveGroup
       ? Object.values(this.state.tabs).find((candidate) => {
           const candidateSession = this.state.sessions[candidate.sessionId]
-          return candidateSession
-            && viewerPolicy(candidateSession.viewer).exclusiveGroup === expectedExclusiveGroup
+          return (
+            candidateSession &&
+            viewerExclusiveGroup(
+              candidateSession.viewer,
+              candidateSession.source.path,
+              candidate.viewKind
+            ) === expectedExclusiveGroup
+          )
         })
       : undefined
     const exclusiveOpen = expectedExclusiveGroup ? ++this.nextExclusiveOpen : 0
-    if (!existingSession && expectedExclusiveGroup && !this.state.sessions[expectedOwner?.sessionId ?? '']?.dirty) {
+    if (
+      !existingSession &&
+      expectedExclusiveGroup &&
+      !this.state.sessions[expectedOwner?.sessionId ?? '']?.dirty
+    ) {
       const tabId = this.id(requestedViewKind)
       if (expectedOwner) {
         this.publish({
           ...this.state,
-          pendingExclusiveOpen: { requestId: exclusiveOpen, ownerTabId: expectedOwner.id }
+          pendingExclusiveOpen: { requestId: exclusiveOpen, ownerTabId: expectedOwner.id },
         })
       }
       let loaded: DocumentLoadResult
@@ -715,14 +903,22 @@ export class DocumentWorkspace {
         title,
         titleFallback,
         target,
-        loaded
+        loaded,
+        options
       )
       this.clearPendingExclusiveOpen(exclusiveOpen)
       return openedTabId
     }
 
     const tabId = this.id(requestedViewKind)
-    const tab: DocumentTab = { id: tabId, sessionId, viewKind: requestedViewKind, title, ...(titleFallback ? { titleFallback } : {}) }
+    const tab: DocumentTab = {
+      id: tabId,
+      sessionId,
+      viewKind: requestedViewKind,
+      title,
+      ...options,
+      ...(titleFallback ? { titleFallback } : {}),
+    }
     const sessions = existingSession
       ? this.state.sessions
       : {
@@ -751,16 +947,18 @@ export class DocumentWorkspace {
             changeVersion: 0,
             selection: null,
             externalChange: false,
-            deleted: false
-          }
+            deleted: false,
+          },
         }
     this.publish({
       ...this.state,
       sessions,
       tabs: { ...tabs, [tabId]: tab },
-      layout: placeTab(this.state.layout, tabId, target.area, target.leafId, 'center', () => this.id('pane')),
+      layout: placeTab(this.state.layout, tabId, target.area, target.leafId, 'center', () =>
+        this.id('pane')
+      ),
       focusedTabId: tabId,
-      focusedLeaf: target
+      focusedLeaf: target,
     })
 
     if (!existingSession) {
@@ -772,8 +970,8 @@ export class DocumentWorkspace {
           ...this.state,
           sessions: {
             ...this.state.sessions,
-            [sessionId]: { ...current, loadState: 'error', loadFailure: loaded }
-          }
+            [sessionId]: { ...current, loadState: 'error', loadFailure: loaded },
+          },
         })
         return tabId
       }
@@ -787,9 +985,10 @@ export class DocumentWorkspace {
               viewKind: canonicalViewKind(
                 loaded.viewer,
                 loadedTab.viewKind,
-                loaded.capabilities.can_edit
-              )
-            }
+                loaded.capabilities.can_edit,
+                loaded.source.path
+              ),
+            },
           }
         : this.state.tabs
       this.publish({
@@ -814,12 +1013,12 @@ export class DocumentWorkspace {
             lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
             loadState: 'ready',
             loadFailure: null,
-            externalChange: Boolean(loaded.externalChange)
-          }
-        }
+            externalChange: Boolean(loaded.externalChange),
+          },
+        },
       })
-      this.enforceExclusiveViewer(tabId)
     }
+    this.enforceExclusiveViewer(tabId)
     return tabId
   }
 
@@ -831,10 +1030,18 @@ export class DocumentWorkspace {
     title: string,
     titleFallback: DocumentTab['titleFallback'] | undefined,
     target: { area: DockArea; leafId: string },
-    loaded: DocumentLoadResult
+    loaded: DocumentLoadResult,
+    options: Pick<DocumentTab, 'embedded'>
   ): string {
     if (isDocumentLoadFailure(loaded)) {
-      const tab: DocumentTab = { id: tabId, sessionId, viewKind: requestedViewKind, title, ...(titleFallback ? { titleFallback } : {}) }
+      const tab: DocumentTab = {
+        id: tabId,
+        sessionId,
+        viewKind: requestedViewKind,
+        title,
+        ...options,
+        ...(titleFallback ? { titleFallback } : {}),
+      }
       const session: DocumentSession = {
         id: sessionId,
         documentId: documentIdFor(source),
@@ -859,7 +1066,7 @@ export class DocumentWorkspace {
         changeVersion: 0,
         selection: null,
         externalChange: false,
-        deleted: false
+        deleted: false,
       }
       this.publishPreparedTab(tab, session, target)
       return tabId
@@ -869,9 +1076,15 @@ export class DocumentWorkspace {
     const tab: DocumentTab = {
       id: tabId,
       sessionId,
-      viewKind: canonicalViewKind(loaded.viewer, requestedViewKind, loaded.capabilities.can_edit),
+      viewKind: canonicalViewKind(
+        loaded.viewer,
+        requestedViewKind,
+        loaded.capabilities.can_edit,
+        loaded.source.path
+      ),
       title,
-      ...(titleFallback ? { titleFallback } : {})
+      ...options,
+      ...(titleFallback ? { titleFallback } : {}),
     }
     const session: DocumentSession = {
       id: sessionId,
@@ -896,9 +1109,9 @@ export class DocumentWorkspace {
       changeVersion: 0,
       selection: null,
       externalChange: Boolean(loaded.externalChange),
-      deleted: false
+      deleted: false,
     }
-    const group = viewerPolicy(loaded.viewer).exclusiveGroup
+    const group = viewerExclusiveGroup(loaded.viewer, loaded.source.path, tab.viewKind)
     if (!group) {
       this.publishPreparedTab(tab, session, target)
       return tabId
@@ -907,7 +1120,14 @@ export class DocumentWorkspace {
 
     const ownerTab = Object.values(this.state.tabs).find((candidate) => {
       const candidateSession = this.state.sessions[candidate.sessionId]
-      return candidateSession && viewerPolicy(candidateSession.viewer).exclusiveGroup === group
+      return (
+        candidateSession &&
+        viewerExclusiveGroup(
+          candidateSession.viewer,
+          candidateSession.source.path,
+          candidate.viewKind
+        ) === group
+      )
     })
     const owner = ownerTab ? this.state.sessions[ownerTab.sessionId] : null
     if (!ownerTab || owner?.dirty) {
@@ -928,9 +1148,11 @@ export class DocumentWorkspace {
       ...this.state,
       sessions: { ...this.state.sessions, [session.id]: session },
       tabs: { ...this.state.tabs, [tab.id]: tab },
-      layout: placeTab(this.state.layout, tab.id, target.area, target.leafId, 'center', () => this.id('pane')),
+      layout: placeTab(this.state.layout, tab.id, target.area, target.leafId, 'center', () =>
+        this.id('pane')
+      ),
       focusedTabId: tab.id,
-      focusedLeaf: target
+      focusedLeaf: target,
     })
   }
 
@@ -961,7 +1183,9 @@ export class DocumentWorkspace {
     const selectionPresentations = { ...this.state.selectionPresentations }
     delete selectionPresentations[ownerTabId]
     const withoutOwner = removeTabFromLayout(this.state.layout, ownerTabId)
-    const layout = placeTab(withoutOwner, tab.id, location.area, location.leafId, 'center', () => this.id('pane'))
+    const layout = placeTab(withoutOwner, tab.id, location.area, location.leafId, 'center', () =>
+      this.id('pane')
+    )
     this.publish({
       ...this.state,
       tabs,
@@ -970,14 +1194,17 @@ export class DocumentWorkspace {
       layout,
       pendingClose: null,
       focusedTabId: tab.id,
-      focusedLeaf: location
+      focusedLeaf: location,
     })
   }
 
   private enforceExclusiveViewer(candidateTabId: string): void {
     const candidateTab = this.state.tabs[candidateTabId]
     const candidate = candidateTab ? this.state.sessions[candidateTab.sessionId] : null
-    const group = candidate ? viewerPolicy(candidate.viewer).exclusiveGroup : null
+    const group =
+      candidate && candidateTab
+        ? viewerExclusiveGroup(candidate.viewer, candidate.source.path, candidateTab.viewKind)
+        : null
     if (!candidateTab || !candidate || !group) return
     if (this.claimExclusiveViewer && !this.claimExclusiveViewer(this, candidateTabId, group)) {
       this.closeNow(candidateTabId)
@@ -986,7 +1213,9 @@ export class DocumentWorkspace {
     const ownerTab = Object.values(this.state.tabs).find((tab) => {
       if (tab.id === candidateTabId) return false
       const session = this.state.sessions[tab.sessionId]
-      return session && viewerPolicy(session.viewer).exclusiveGroup === group
+      return (
+        session && viewerExclusiveGroup(session.viewer, session.source.path, tab.viewKind) === group
+      )
     })
     if (!ownerTab) return
     const owner = this.state.sessions[ownerTab.sessionId]
@@ -995,10 +1224,12 @@ export class DocumentWorkspace {
       const location = this.locationForTab(ownerTab.id)
       this.publish({
         ...this.state,
-        layout: location ? activateTab(this.state.layout, location.leafId, ownerTab.id) : this.state.layout,
+        layout: location
+          ? activateTab(this.state.layout, location.leafId, ownerTab.id)
+          : this.state.layout,
         pendingClose: { tabId: ownerTab.id, sessionId: ownerTab.sessionId },
         focusedTabId: ownerTab.id,
-        focusedLeaf: location ?? this.state.focusedLeaf
+        focusedLeaf: location ?? this.state.focusedLeaf,
       })
       return
     }
@@ -1056,14 +1287,16 @@ export class DocumentWorkspace {
           ...session,
           text,
           bytes,
-          lightweightText: session.lightweightText
-            || usesLightweightTextState(session.viewer, bytes.byteLength),
+          lightweightText:
+            session.lightweightText || usesLightweightTextState(session.viewer, bytes.byteLength),
           dirty,
           changeVersion: contentChanged ? session.changeVersion + 1 : session.changeVersion,
-          selection: contentChanged ? this.invalidateSelection(session.selection) : session.selection,
-          saveState: dirty ? 'dirty' : 'clean'
-        }
-      }
+          selection: contentChanged
+            ? this.invalidateSelection(session.selection)
+            : session.selection,
+          saveState: dirty ? 'dirty' : 'clean',
+        },
+      },
     })
   }
 
@@ -1077,9 +1310,9 @@ export class DocumentWorkspace {
         [sessionId]: {
           ...session,
           runtimeReadonlyReason: reason,
-          capabilities: { ...session.capabilities, can_edit: false, can_save: false }
-        }
-      }
+          capabilities: { ...session.capabilities, can_edit: false, can_save: false },
+        },
+      },
     })
   }
 
@@ -1098,9 +1331,9 @@ export class DocumentWorkspace {
           dirty,
           changeVersion: dirty ? session.changeVersion + 1 : session.changeVersion,
           selection: dirty ? this.invalidateSelection(session.selection) : session.selection,
-          saveState: dirty ? 'dirty' : 'clean'
-        }
-      }
+          saveState: dirty ? 'dirty' : 'clean',
+        },
+      },
     })
   }
 
@@ -1111,16 +1344,17 @@ export class DocumentWorkspace {
       ...this.state,
       sessions: {
         ...this.state.sessions,
-        [sessionId]: { ...session, saveState: 'conflict' }
-      }
+        [sessionId]: { ...session, saveState: 'conflict' },
+      },
     })
   }
 
   async observeExternal(project: string, path: string): Promise<void> {
     const sessions = Object.values(this.state.sessions).filter(
-      (session) => session.source.kind === 'project'
-        && (session.source.project ?? 'current') === project
-        && session.source.path === path
+      (session) =>
+        session.source.kind === 'project' &&
+        (session.source.project ?? 'current') === project &&
+        session.source.path === path
     )
     for (const session of sessions) {
       if (session.dirty) {
@@ -1132,8 +1366,8 @@ export class DocumentWorkspace {
             ...this.state,
             sessions: {
               ...this.state.sessions,
-              [session.id]: { ...current, externalChange: true }
-            }
+              [session.id]: { ...current, externalChange: true },
+            },
           })
         }
       }
@@ -1153,50 +1387,54 @@ export class DocumentWorkspace {
    */
   async reconcileProject(project: string): Promise<void> {
     const sessions = Object.values(this.state.sessions).filter(
-      (session) => session.source.kind === 'project'
-        && (session.source.project ?? 'current') === project
+      (session) =>
+        session.source.kind === 'project' && (session.source.project ?? 'current') === project
     )
-    await Promise.all(sessions.map(async (session) => {
-      const documentId = session.documentId
-      const sourceId = documentIdFor(session.source)
-      const revision = session.revision
-      const changeVersion = session.changeVersion
-      const loaded = await this.loader.load(session.source)
-      if (isDocumentLoadFailure(loaded)) return
-      const current = this.state.sessions[session.id]
-      if (
-        !current
-        || current.documentId !== documentId
-        || documentIdFor(current.source) !== sourceId
-        || current.revision !== revision
-        || current.changeVersion !== changeVersion
-        || loaded.revision === revision
-      ) return
-      if (current.dirty) {
-        this.markConflict(current.id)
-        return
-      }
-      if (this.acceptLoaded(current.id, loaded)) {
-        const accepted = this.state.sessions[current.id]
-        if (accepted) {
-          this.publish({
-            ...this.state,
-            sessions: {
-              ...this.state.sessions,
-              [current.id]: { ...accepted, externalChange: true }
-            }
-          })
+    await Promise.all(
+      sessions.map(async (session) => {
+        const documentId = session.documentId
+        const sourceId = documentIdFor(session.source)
+        const revision = session.revision
+        const changeVersion = session.changeVersion
+        const loaded = await this.loader.load(session.source)
+        if (isDocumentLoadFailure(loaded)) return
+        const current = this.state.sessions[session.id]
+        if (
+          !current ||
+          current.documentId !== documentId ||
+          documentIdFor(current.source) !== sourceId ||
+          current.revision !== revision ||
+          current.changeVersion !== changeVersion ||
+          loaded.revision === revision
+        )
+          return
+        if (current.dirty) {
+          this.markConflict(current.id)
+          return
         }
-      }
-    }))
+        if (this.acceptLoaded(current.id, loaded)) {
+          const accepted = this.state.sessions[current.id]
+          if (accepted) {
+            this.publish({
+              ...this.state,
+              sessions: {
+                ...this.state.sessions,
+                [current.id]: { ...accepted, externalChange: true },
+              },
+            })
+          }
+        }
+      })
+    )
   }
 
   async reconcileProjectPaths(project: string, paths: string[]): Promise<void> {
     const selected = new Set(paths)
     const sessions = Object.values(this.state.sessions).filter(
-      (session) => session.source.kind === 'project'
-        && (session.source.project ?? 'current') === project
-        && selected.has(session.source.path)
+      (session) =>
+        session.source.kind === 'project' &&
+        (session.source.project ?? 'current') === project &&
+        selected.has(session.source.path)
     )
     for (const session of sessions) {
       if (session.dirty) this.markConflict(session.id)
@@ -1205,13 +1443,16 @@ export class DocumentWorkspace {
   }
 
   hasResourceChanges(project: string, fileId: string, paths: readonly string[]): boolean {
-    return Object.values(this.state.sessions).some((session) => (
-      session.source.kind === 'project'
-      && (!session.source.project || session.source.project === 'current' || project === 'current'
-        || session.source.project === project)
-      && (session.versioning?.file_id === fileId || paths.includes(session.source.path))
-      && (session.dirty || session.saveState === 'saving')
-    ))
+    return Object.values(this.state.sessions).some(
+      (session) =>
+        session.source.kind === 'project' &&
+        (!session.source.project ||
+          session.source.project === 'current' ||
+          project === 'current' ||
+          session.source.project === project) &&
+        (session.versioning?.file_id === fileId || paths.includes(session.source.path)) &&
+        (session.dirty || session.saveState === 'saving')
+    )
   }
 
   async reconcileRestoredFiles(
@@ -1221,10 +1462,13 @@ export class DocumentWorkspace {
     const result: RestoreReconciliationResult = { synchronized: [], conflicted: [], failed: [] }
     for (const file of files) {
       const sessions = Object.values(this.state.sessions).filter((session) => {
-        if (session.source.kind !== 'project' || (session.source.project ?? 'current') !== project) return false
-        return session.versioning?.file_id === file.fileId
-          || session.source.path === file.previousPath
-          || session.source.path === file.path
+        if (session.source.kind !== 'project' || (session.source.project ?? 'current') !== project)
+          return false
+        return (
+          session.versioning?.file_id === file.fileId ||
+          session.source.path === file.previousPath ||
+          session.source.path === file.path
+        )
       })
       if (sessions.length === 0) continue
       let status: keyof RestoreReconciliationResult = 'synchronized'
@@ -1258,7 +1502,7 @@ export class DocumentWorkspace {
               version_id: file.versionId ?? latest.versioning.version_id,
               working_revision: loaded.revision,
               disk_revision: loaded.revision,
-              drifted: false
+              drifted: false,
             }
           }
           this.acceptLoaded(latest.id, loaded)
@@ -1276,19 +1520,20 @@ export class DocumentWorkspace {
       ...this.state,
       sessions: {
         ...this.state.sessions,
-        [sessionId]: { ...session, externalChange: false }
-      }
+        [sessionId]: { ...session, externalChange: false },
+      },
     })
   }
 
   async refreshVersioning(sessionId: string, expectedDocumentId: string): Promise<boolean> {
     const session = this.state.sessions[sessionId]
     if (
-      !session
-      || session.documentId !== expectedDocumentId
-      || session.source.kind !== 'project'
-      || !this.loader.versioning
-    ) return false
+      !session ||
+      session.documentId !== expectedDocumentId ||
+      session.source.kind !== 'project' ||
+      !this.loader.versioning
+    )
+      return false
     const source = session.source
     const sourceId = documentIdFor(source)
     const request = ++this.nextVersioningRefresh
@@ -1304,11 +1549,11 @@ export class DocumentWorkspace {
     }
     const current = this.state.sessions[sessionId]
     if (
-      !versioning
-      || !current
-      || this.versioningRefreshes.get(sessionId) !== request
-      || current.documentId !== expectedDocumentId
-      || documentIdFor(current.source) !== sourceId
+      !versioning ||
+      !current ||
+      this.versioningRefreshes.get(sessionId) !== request ||
+      current.documentId !== expectedDocumentId ||
+      documentIdFor(current.source) !== sourceId
     ) {
       if (this.versioningRefreshes.get(sessionId) === request) {
         this.versioningRefreshes.delete(sessionId)
@@ -1320,8 +1565,8 @@ export class DocumentWorkspace {
       ...this.state,
       sessions: {
         ...this.state.sessions,
-        [sessionId]: { ...current, versioning }
-      }
+        [sessionId]: { ...current, versioning },
+      },
     })
     return true
   }
@@ -1351,8 +1596,8 @@ export class DocumentWorkspace {
       ...this.state,
       sessions: {
         ...this.state.sessions,
-        [sessionId]: { ...session, loadState: 'loading', loadFailure: null }
-      }
+        [sessionId]: { ...session, loadState: 'loading', loadFailure: null },
+      },
     })
     const loaded = await this.loader.load(session.source)
     const current = this.state.sessions[sessionId]
@@ -1362,8 +1607,8 @@ export class DocumentWorkspace {
         ...this.state,
         sessions: {
           ...this.state.sessions,
-          [sessionId]: { ...current, loadState: 'error', loadFailure: loaded }
-        }
+          [sessionId]: { ...current, loadState: 'error', loadFailure: loaded },
+        },
       })
       return false
     }
@@ -1378,9 +1623,10 @@ export class DocumentWorkspace {
     this.versioningRefreshes.delete(sessionId)
     this.publish({
       ...this.state,
-      tabs: loaded.source.path === session.source.path
-        ? this.state.tabs
-        : this.retitleSessionTabs(sessionId, loaded.source.path),
+      tabs:
+        loaded.source.path === session.source.path
+          ? this.state.tabs
+          : this.retitleSessionTabs(sessionId, loaded.source.path),
       selectionPresentations: this.withoutSessionPresentations(sessionId),
       sessions: {
         ...this.state.sessions,
@@ -1406,9 +1652,9 @@ export class DocumentWorkspace {
           changeVersion: session.changeVersion + 1,
           selection: this.invalidateSelection(session.selection),
           externalChange: Boolean(loaded.externalChange),
-          deleted: false
-        }
-      }
+          deleted: false,
+        },
+      },
     })
     return true
   }
@@ -1423,9 +1669,10 @@ export class DocumentWorkspace {
     const source: DocumentSource = { kind: 'project', project, path: file.path }
     this.publish({
       ...this.state,
-      tabs: file.path === session.source.path
-        ? this.state.tabs
-        : this.retitleSessionTabs(sessionId, file.path),
+      tabs:
+        file.path === session.source.path
+          ? this.state.tabs
+          : this.retitleSessionTabs(sessionId, file.path),
       sessions: {
         ...this.state.sessions,
         [sessionId]: {
@@ -1433,9 +1680,9 @@ export class DocumentWorkspace {
           documentId: documentIdFor(source),
           source,
           saveState: 'conflict',
-          externalChange: true
-        }
-      }
+          externalChange: true,
+        },
+      },
     })
   }
 
@@ -1450,9 +1697,10 @@ export class DocumentWorkspace {
     this.textHistories.delete(sessionId)
     this.publish({
       ...this.state,
-      tabs: file.path === session.source.path
-        ? this.state.tabs
-        : this.retitleSessionTabs(sessionId, file.path),
+      tabs:
+        file.path === session.source.path
+          ? this.state.tabs
+          : this.retitleSessionTabs(sessionId, file.path),
       selectionPresentations: this.withoutSessionPresentations(sessionId),
       sessions: {
         ...this.state.sessions,
@@ -1471,17 +1719,19 @@ export class DocumentWorkspace {
           changeVersion: session.changeVersion + 1,
           selection: this.invalidateSelection(session.selection),
           externalChange: false,
-          versioning: session.versioning ? {
-            ...session.versioning,
-            can_version: false,
-            version_id: file.versionId ?? session.versioning.version_id,
-            working_revision: null,
-            disk_revision: null,
-            drifted: false
-          } : null,
-          deleted: true
-        }
-      }
+          versioning: session.versioning
+            ? {
+                ...session.versioning,
+                can_version: false,
+                version_id: file.versionId ?? session.versioning.version_id,
+                working_revision: null,
+                disk_revision: null,
+                drifted: false,
+              }
+            : null,
+          deleted: true,
+        },
+      },
     })
   }
 
@@ -1494,8 +1744,8 @@ export class DocumentWorkspace {
       ...this.state,
       sessions: {
         ...this.state.sessions,
-        [sessionId]: { ...session, revision: disk.revision, saveState: 'dirty' }
-      }
+        [sessionId]: { ...session, revision: disk.revision, saveState: 'dirty' },
+      },
     })
     return this.save(sessionId)
   }
@@ -1509,7 +1759,8 @@ export class DocumentWorkspace {
 
   async saveManagedCopy(sessionId: string): Promise<boolean> {
     let session = this.state.sessions[sessionId]
-    if (!session || session.source.kind !== 'project' || !this.loader.createManagedCopy) return false
+    if (!session || session.source.kind !== 'project' || !this.loader.createManagedCopy)
+      return false
     const delegate = Array.from(this.saveDelegates.get(sessionId)?.values() ?? []).at(-1)
     delegate?.prepare?.()
     session = this.state.sessions[sessionId]
@@ -1544,10 +1795,7 @@ export class DocumentWorkspace {
     return true
   }
 
-  registerSaveDelegate(
-    sessionId: string,
-    input: DocumentSaveDelegateInput
-  ): () => void {
+  registerSaveDelegate(sessionId: string, input: DocumentSaveDelegateInput): () => void {
     const token = Symbol(sessionId)
     const delegates = this.saveDelegates.get(sessionId) ?? new Map()
     const delegate = typeof input === 'function' ? { serialize: input } : input
@@ -1560,15 +1808,21 @@ export class DocumentWorkspace {
     }
   }
 
-  setSelection(tabId: string, selection: SelectionAnchor | null, viewport?: SelectionViewport): void {
+  setSelection(
+    tabId: string,
+    selection: SelectionAnchor | null,
+    viewport?: SelectionViewport
+  ): void {
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
     if (!tab || !session) return
-    if (selection && (
-      selection.document_session_id !== session.id
-      || selection.document_id !== session.documentId
-      || !viewport
-    )) return
+    if (
+      selection &&
+      (selection.document_session_id !== session.id ||
+        selection.document_id !== session.documentId ||
+        !viewport)
+    )
+      return
     const selectionPresentations = selection
       ? { ...this.state.selectionPresentations }
       : this.withoutSessionPresentations(session.id)
@@ -1578,39 +1832,41 @@ export class DocumentWorkspace {
         fingerprint: selectionFingerprint(selection),
         rect: viewport.rect,
         point: viewport.point,
-        visible: viewport.visible
+        visible: viewport.visible,
       }
     }
     this.publish({
       ...this.state,
       selectionPresentations,
-      sessions: { ...this.state.sessions, [session.id]: { ...session, selection } }
+      sessions: { ...this.state.sessions, [session.id]: { ...session, selection } },
     })
   }
 
   async moveTab(tabId: string, area: DockArea, leafId: string, edge: DropEdge): Promise<boolean> {
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
-    if (!tab || !session || !viewerPolicy(session.viewer).canMove || !await this.refreshBeforeRelocation(tab)) return false
+    if (
+      !tab ||
+      !session ||
+      !viewerPolicy(session.viewer).canMove ||
+      !(await this.refreshBeforeRelocation(tab))
+    )
+      return false
     const layout = placeTab(this.state.layout, tabId, area, leafId, edge, () => this.id('pane'))
     if (layout === this.state.layout) return false
-    const focusedLeaf = this.locationForTabInLayout(layout, tabId)
-    if (!focusedLeaf) return false
-    this.publish({
-      ...this.state,
-      layout,
-      focusedTabId: tabId,
-      focusedLeaf
-    })
-    return true
+    return this.publishRelocatedTab(tabId, layout)
   }
 
   canMoveTab(tabId: string, direction: AdjacentDirection): boolean {
     const location = this.locationForTab(tabId)
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
-    return Boolean(session && viewerPolicy(session.viewer).canMove
-      && location && adjacentLeaf(this.state.layout, location.area, location.leafId, direction))
+    return Boolean(
+      session &&
+      viewerPolicy(session.viewer).canMove &&
+      location &&
+      adjacentLeaf(this.state.layout, location.area, location.leafId, direction)
+    )
   }
 
   canRelocateTab(tabId: string): boolean {
@@ -1650,16 +1906,17 @@ export class DocumentWorkspace {
     }
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
-    if (!tab || !session || !viewerPolicy(session.viewer).canMove || !await this.refreshBeforeRelocation(tab)) return false
+    if (
+      !tab ||
+      !session ||
+      !viewerPolicy(session.viewer).canMove ||
+      !(await this.refreshBeforeRelocation(tab))
+    )
+      return false
     const target = this.locationForTab(targetTabId)
     if (!target) return false
-    const placed = placeTab(
-      this.state.layout,
-      tabId,
-      target.area,
-      target.leafId,
-      'center',
-      () => this.id('pane')
+    const placed = placeTab(this.state.layout, tabId, target.area, target.leafId, 'center', () =>
+      this.id('pane')
     )
     if (placed === this.state.layout) return false
     const layout = reorderTabInLeaf(
@@ -1670,13 +1927,35 @@ export class DocumentWorkspace {
       targetTabId,
       insertion
     )
+    return this.publishRelocatedTab(tabId, layout)
+  }
+
+  private publishRelocatedTab(tabId: string, layout: DockLayout): boolean {
+    const tab = this.state.tabs[tabId]
     const focusedLeaf = this.locationForTabInLayout(layout, tabId)
-    if (!focusedLeaf) return false
+    if (!tab || !focusedLeaf) return false
+    const leaf = findLeaf(layout.areas[focusedLeaf.area], focusedLeaf.leafId)
+    const tabs = { ...this.state.tabs }
+    const selectionPresentations = { ...this.state.selectionPresentations }
+    for (const candidateId of leaf?.tabIds ?? []) {
+      const candidate = tabs[candidateId]
+      if (
+        candidateId !== tabId &&
+        candidate?.sessionId === tab.sessionId &&
+        candidate.viewKind === tab.viewKind
+      ) {
+        delete tabs[candidateId]
+        delete selectionPresentations[candidateId]
+        layout = removeTabFromLayout(layout, candidateId)
+      }
+    }
     this.publish({
       ...this.state,
+      tabs,
+      selectionPresentations,
       layout,
       focusedTabId: tabId,
-      focusedLeaf
+      focusedLeaf,
     })
     return true
   }
@@ -1688,7 +1967,8 @@ export class DocumentWorkspace {
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
     if (!session || !viewerPolicy(session.viewer).canMove) return false
-    if (!source || !target || source.area !== target.area || source.leafId !== target.leafId) return false
+    if (!source || !target || source.area !== target.area || source.leafId !== target.leafId)
+      return false
     const layout = reorderTabInLeaf(
       this.state.layout,
       source.area,
@@ -1715,7 +1995,11 @@ export class DocumentWorkspace {
     return canPlaceTab(this.state.layout, candidateId, location.area, location.leafId, direction)
   }
 
-  async splitTab(tabId: string, direction: TabSplitDirection, move: boolean): Promise<string | null> {
+  async splitTab(
+    tabId: string,
+    direction: TabSplitDirection,
+    move: boolean
+  ): Promise<string | null> {
     const tab = this.state.tabs[tabId]
     if (!tab || !this.canSplitTab(tabId, direction, move)) return null
     const session = this.state.sessions[tab.sessionId]
@@ -1723,10 +2007,9 @@ export class DocumentWorkspace {
     if (!location) return null
     const leaf = findLeaf(this.state.layout.areas[location.area], location.leafId)
     if (!leaf || (move && leaf.tabIds.length < 2)) return null
-    if (!await this.refreshBeforeRelocation(tab)) return null
-    const placedViewKind = !move && session?.viewer === 'office' && tab.viewKind === 'edit'
-      ? 'preview'
-      : tab.viewKind
+    if (!(await this.refreshBeforeRelocation(tab))) return null
+    const placedViewKind =
+      !move && session?.viewer === 'office' && tab.viewKind === 'edit' ? 'preview' : tab.viewKind
     const placedTabId = move ? tabId : this.id(placedViewKind)
     const tabs = move
       ? this.state.tabs
@@ -1747,7 +2030,7 @@ export class DocumentWorkspace {
       tabs,
       layout,
       focusedTabId: placedTabId,
-      focusedLeaf
+      focusedLeaf,
     })
     return placedTabId
   }
@@ -1775,7 +2058,7 @@ export class DocumentWorkspace {
       ...this.state,
       layout: activateTab(this.state.layout, leafId, tabId),
       focusedTabId: tabId,
-      focusedLeaf
+      focusedLeaf,
     })
     if (alreadyFocused) this.recordSelection(tabId)
   }
@@ -1787,7 +2070,7 @@ export class DocumentWorkspace {
     this.publish({
       ...this.state,
       focusedTabId: leaf.activeTabId ?? this.state.focusedTabId,
-      focusedLeaf: { area, leafId }
+      focusedLeaf: { area, leafId },
     })
   }
 
@@ -1801,7 +2084,7 @@ export class DocumentWorkspace {
     if (!tab || tab.navigationView === navigationView) return
     this.publish({
       ...this.state,
-      tabs: { ...this.state.tabs, [tabId]: { ...tab, navigationView } }
+      tabs: { ...this.state.tabs, [tabId]: { ...tab, navigationView } },
     })
   }
 
@@ -1810,7 +2093,7 @@ export class DocumentWorkspace {
     if (!tab) return
     this.publish({
       ...this.state,
-      tabs: { ...this.state.tabs, [tabId]: { ...tab, viewState: { ...viewState } } }
+      tabs: { ...this.state.tabs, [tabId]: { ...tab, viewState: { ...viewState } } },
     })
   }
 
@@ -1819,15 +2102,22 @@ export class DocumentWorkspace {
     if (!tab) return false
     const session = this.state.sessions[tab.sessionId]
     if (session?.viewer !== 'markdown') return false
-    if (viewKind === 'edit' && !session.capabilities.can_edit) return false
+    if (viewKind === 'edit' && (!session.capabilities.can_edit || session.lightweightText))
+      return false
+    if (viewKind === 'preview' && session.lightweightText) return false
     if (tab.viewKind === viewKind) return true
-    if (tab.viewKind === 'edit' && viewKind === 'preview') {
+    if (tab.viewKind === 'edit' && viewKind !== 'edit') {
       const delegate = Array.from(this.saveDelegates.get(tab.sessionId)?.values() ?? []).at(-1)
       delegate?.prepare?.()
     }
     this.publish({
       ...this.state,
-      tabs: { ...this.state.tabs, [tabId]: { ...tab, viewKind } }
+      tabs: { ...this.state.tabs, [tabId]: { ...tab, viewKind } },
+      selectionPresentations: this.withoutSessionPresentations(session.id),
+      sessions: {
+        ...this.state.sessions,
+        [session.id]: { ...this.state.sessions[session.id], selection: null },
+      },
     })
     return true
   }
@@ -1844,6 +2134,10 @@ export class DocumentWorkspace {
     this.requestCloseTabs([tabId])
   }
 
+  setAutoSave(enabled: boolean): void {
+    this.autoSave = enabled
+  }
+
   closeCleanTab(tabId: string): boolean {
     if (this.state.pendingClose) return false
     const tab = this.state.tabs[tabId]
@@ -1854,22 +2148,33 @@ export class DocumentWorkspace {
   }
 
   requestCloseTabs(tabIds: readonly string[]): void {
-    if (this.state.pendingClose) return
+    if (this.state.pendingClose || this.closing) return
     this.closeQueue = [...new Set(tabIds)].filter((tabId) => Boolean(this.state.tabs[tabId]))
-    this.continueCloseQueue()
+    void this.continueCloseQueue()
+  }
+
+  discardTaskDocuments(taskId: string): void {
+    const owned = Object.values(this.state.tabs).filter((tab) => {
+      const source = this.state.sessions[tab.sessionId]?.source
+      return (
+        (source?.kind === 'session-artifact' || source?.kind === 'session-file') &&
+        source.sessionId === taskId
+      )
+    })
+    for (const tab of owned) this.closeNow(tab.id)
   }
 
   requestCloseProjectPath(project: string | null, path: string): boolean {
     if (this.state.pendingClose) return false
     const prefix = `${path}/`
-    const tabs = Object.values(this.state.tabs).filter(
-      (candidate) => {
-        const source = this.state.sessions[candidate.sessionId]?.source
-        return source?.kind === 'project'
-          && (source.project ?? null) === project
-          && (source.path === path || source.path.startsWith(prefix))
-      }
-    )
+    const tabs = Object.values(this.state.tabs).filter((candidate) => {
+      const source = this.state.sessions[candidate.sessionId]?.source
+      return (
+        source?.kind === 'project' &&
+        (source.project ?? null) === project &&
+        (source.path === path || source.path.startsWith(prefix))
+      )
+    })
     this.requestCloseTabs(tabs.map((tab) => tab.id))
     return true
   }
@@ -1885,9 +2190,11 @@ export class DocumentWorkspace {
     if (this.state.pendingClose) return false
     const tabs = Object.values(this.state.tabs).filter((candidate) => {
       const source = this.state.sessions[candidate.sessionId]?.source
-      return source?.kind === 'literature'
-        && source.literatureId === literatureId
-        && source.attachmentId === attachmentId
+      return (
+        source?.kind === 'literature' &&
+        source.literatureId === literatureId &&
+        source.attachmentId === attachmentId
+      )
     })
     if (tabs.length === 0) return false
     this.requestCloseTabs(tabs.map((tab) => tab.id))
@@ -1896,26 +2203,30 @@ export class DocumentWorkspace {
 
   discardProjectPath(project: string | null, path: string): boolean {
     const prefix = `${path}/`
-    const discardedTabIds = new Set(Object.values(this.state.tabs).flatMap((tab) => {
-      const source = this.state.sessions[tab.sessionId]?.source
-      return source?.kind === 'project'
-        && (source.project ?? null) === project
-        && (source.path === path || source.path.startsWith(prefix))
-        ? [tab.id]
-        : []
-    }))
+    const discardedTabIds = new Set(
+      Object.values(this.state.tabs).flatMap((tab) => {
+        const source = this.state.sessions[tab.sessionId]?.source
+        return source?.kind === 'project' &&
+          (source.project ?? null) === project &&
+          (source.path === path || source.path.startsWith(prefix))
+          ? [tab.id]
+          : []
+      })
+    )
     if (discardedTabIds.size === 0) return true
 
-    const tabs = Object.fromEntries(Object.entries(this.state.tabs).filter(
-      ([tabId]) => !discardedTabIds.has(tabId)
-    ))
+    const tabs = Object.fromEntries(
+      Object.entries(this.state.tabs).filter(([tabId]) => !discardedTabIds.has(tabId))
+    )
     const liveSessionIds = new Set(Object.values(tabs).map((tab) => tab.sessionId))
-    const discardedSessionIds = new Set(Array.from(discardedTabIds).map(
-      (tabId) => this.state.tabs[tabId].sessionId
-    ))
-    const sessions = Object.fromEntries(Object.entries(this.state.sessions).filter(
-      ([sessionId]) => !discardedSessionIds.has(sessionId) || liveSessionIds.has(sessionId)
-    ))
+    const discardedSessionIds = new Set(
+      Array.from(discardedTabIds).map((tabId) => this.state.tabs[tabId].sessionId)
+    )
+    const sessions = Object.fromEntries(
+      Object.entries(this.state.sessions).filter(
+        ([sessionId]) => !discardedSessionIds.has(sessionId) || liveSessionIds.has(sessionId)
+      )
+    )
     for (const sessionId of discardedSessionIds) {
       if (liveSessionIds.has(sessionId)) continue
       this.saveDelegates.delete(sessionId)
@@ -1923,9 +2234,11 @@ export class DocumentWorkspace {
       this.textHistories.delete(sessionId)
       this.versioningRefreshes.delete(sessionId)
     }
-    const selectionPresentations = Object.fromEntries(Object.entries(this.state.selectionPresentations).filter(
-      ([tabId]) => !discardedTabIds.has(tabId)
-    ))
+    const selectionPresentations = Object.fromEntries(
+      Object.entries(this.state.selectionPresentations).filter(
+        ([tabId]) => !discardedTabIds.has(tabId)
+      )
+    )
     let layout = Array.from(discardedTabIds).reduce(
       (current, tabId) => removeTabFromLayout(current, tabId),
       this.state.layout
@@ -1934,20 +2247,29 @@ export class DocumentWorkspace {
     const fallbackLeaf = previousFocusedArea
       ? firstLeaf(layout.areas[previousFocusedArea])
       : firstLeaf(layout.areas.primary)
-    const focusedSource = this.state.focusedTabId && discardedTabIds.has(this.state.focusedTabId)
-      ? this.state.sessions[this.state.tabs[this.state.focusedTabId].sessionId]?.source
-      : null
-    const focusedTabId = focusedSource
-      ? fallbackTabForSource(tabs, sessions, fallbackLeaf.activeTabId, focusedSource)
+    const focusedTab =
+      this.state.focusedTabId && discardedTabIds.has(this.state.focusedTabId)
+        ? this.state.tabs[this.state.focusedTabId]
+        : null
+    const focusedTabId = focusedTab
+      ? fallbackTabForView(
+          tabs,
+          sessions,
+          fallbackLeaf.activeTabId,
+          documentNavigationView(focusedTab, this.state.sessions[focusedTab.sessionId])
+        )
       : this.state.focusedTabId
     const fallbackLocation = focusedTabId ? this.locationForTabInLayout(layout, focusedTabId) : null
     if (fallbackLocation && focusedTabId) {
       layout = activateTab(layout, fallbackLocation.leafId, focusedTabId)
     }
-    const focusedLeaf = this.state.focusedLeaf
-      && findLeaf(layout.areas[this.state.focusedLeaf.area], this.state.focusedLeaf.leafId)
-      ? this.state.focusedLeaf
-      : focusedTabId ? this.locationForTabInLayout(layout, focusedTabId) : null
+    const focusedLeaf =
+      this.state.focusedLeaf &&
+      findLeaf(layout.areas[this.state.focusedLeaf.area], this.state.focusedLeaf.leafId)
+        ? this.state.focusedLeaf
+        : focusedTabId
+          ? this.locationForTabInLayout(layout, focusedTabId)
+          : null
     this.closeQueue = this.closeQueue.filter((tabId) => !discardedTabIds.has(tabId))
     this.publish({
       ...this.state,
@@ -1955,11 +2277,12 @@ export class DocumentWorkspace {
       sessions,
       selectionPresentations,
       layout,
-      pendingClose: this.state.pendingClose && !discardedTabIds.has(this.state.pendingClose.tabId)
-        ? this.state.pendingClose
-        : null,
+      pendingClose:
+        this.state.pendingClose && !discardedTabIds.has(this.state.pendingClose.tabId)
+          ? this.state.pendingClose
+          : null,
       focusedTabId,
-      focusedLeaf
+      focusedLeaf,
     })
     return true
   }
@@ -1977,37 +2300,55 @@ export class DocumentWorkspace {
     if (previousPath === path) return
     const prefix = `${previousPath}/`
     const relocated: Array<{ sessionId: string; documentId: string }> = []
-    const sessions = Object.fromEntries(Object.entries(this.state.sessions).map(([id, session]) => {
-      if (session.source.kind !== 'project'
-        || (session.source.project ?? null) !== project
-        || (session.source.path !== previousPath && !session.source.path.startsWith(prefix))) {
-        return [id, session]
-      }
-      relocated.push({ sessionId: id, documentId: session.documentId })
-      const suffix = session.source.path.slice(previousPath.length)
-      const nextPath = `${path}${suffix}`
-      return [id, {
-        ...session,
-        source: { ...session.source, path: nextPath },
-        title: session.source.path === previousPath && title ? title : session.title,
-        // Version capability is path-bound even when the document keeps a stable
-        // asset identity. Keeping the old projection makes a renamed pending file
-        // appear saved and disables the action that can seal its new path.
-        versioning: null
-      }]
-    }))
+    const sessions = Object.fromEntries(
+      Object.entries(this.state.sessions).map(([id, session]) => {
+        if (
+          session.source.kind !== 'project' ||
+          (session.source.project ?? null) !== project ||
+          (session.source.path !== previousPath && !session.source.path.startsWith(prefix))
+        ) {
+          return [id, session]
+        }
+        const suffix = session.source.path.slice(previousPath.length)
+        const nextPath = `${path}${suffix}`
+        const nextSource = { ...session.source, path: nextPath }
+        const nextDocumentId =
+          session.documentId === documentIdFor(session.source)
+            ? documentIdFor(nextSource)
+            : session.documentId
+        relocated.push({ sessionId: id, documentId: nextDocumentId })
+        return [
+          id,
+          {
+            ...session,
+            documentId: nextDocumentId,
+            source: nextSource,
+            title: session.source.path === previousPath && title ? title : session.title,
+            // Version capability is path-bound even when the document keeps a stable
+            // asset identity. Keeping the old projection makes a renamed pending file
+            // appear saved and disables the action that can seal its new path.
+            versioning: null,
+          },
+        ]
+      })
+    )
     if (relocated.length === 0) return
-    const tabs = Object.fromEntries(Object.entries(this.state.tabs).map(([id, tab]) => {
-      const session = sessions[tab.sessionId]
-      const previous = this.state.sessions[tab.sessionId]
-      return [id, previous && session !== previous && previous.source.path === previousPath && title
-        ? { ...tab, title, titleFallback: undefined }
-        : tab]
-    }))
+    const tabs = Object.fromEntries(
+      Object.entries(this.state.tabs).map(([id, tab]) => {
+        const session = sessions[tab.sessionId]
+        const previous = this.state.sessions[tab.sessionId]
+        return [
+          id,
+          previous && session !== previous && previous.source.path === previousPath && title
+            ? { ...tab, title, titleFallback: undefined }
+            : tab,
+        ]
+      })
+    )
     this.publish({ ...this.state, sessions, tabs })
-    const refreshed = await Promise.allSettled(relocated.map(({ sessionId, documentId }) => (
-      this.refreshVersioning(sessionId, documentId)
-    )))
+    const refreshed = await Promise.allSettled(
+      relocated.map(({ sessionId, documentId }) => this.refreshVersioning(sessionId, documentId))
+    )
     for (const result of refreshed) {
       if (result.status === 'rejected') {
         // The filesystem relocation already succeeded. Leave metadata absent so
@@ -2048,28 +2389,55 @@ export class DocumentWorkspace {
               text: session.savedText,
               dirty: false,
               changeVersion: session.changeVersion + 1,
-              saveState: 'clean'
-            }
-          }
+              saveState: 'clean',
+            },
+          },
         })
       }
     }
     this.closeQueue = this.closeQueue.filter((tabId) => tabId !== pending.tabId)
     this.closeNow(pending.tabId)
     if (this.exclusiveReplacement?.ownerTabId === pending.tabId) this.exclusiveReplacement = null
-    this.continueCloseQueue()
+    void this.continueCloseQueue()
   }
 
   async save(sessionId: string, overwrite = false): Promise<boolean> {
+    const requestedChangeVersion = this.state.sessions[sessionId]?.changeVersion ?? -1
     const active = this.saves.get(sessionId)
-    if (active) return active
-    const saving = this.commitSession(sessionId, overwrite)
-    this.saves.set(sessionId, saving)
+    if (
+      active &&
+      requestedChangeVersion <= active.changeVersion &&
+      (!overwrite || active.overwrite)
+    )
+      return active.promise
+    const saving = active
+      ? active.promise.then((saved) => {
+          if (!saved && !overwrite) return false
+          return this.commitSession(sessionId, overwrite)
+        })
+      : this.commitSession(sessionId, overwrite)
+    const pending = { changeVersion: requestedChangeVersion, overwrite, promise: saving }
+    this.saves.set(sessionId, pending)
     try {
       return await saving
     } finally {
-      if (this.saves.get(sessionId) === saving) this.saves.delete(sessionId)
+      if (this.saves.get(sessionId) === pending) this.saves.delete(sessionId)
     }
+  }
+
+  async reviewDraftBytes(sessionId: string): Promise<Uint8Array | null> {
+    let session = this.state.sessions[sessionId]
+    if (!session || !session.dirty) return null
+    const delegate = Array.from(this.saveDelegates.get(sessionId)?.values() ?? []).at(-1)
+    delegate?.prepare?.()
+    if (delegate?.beforeSave) {
+      await delegate.beforeSave()
+      delegate.prepare?.()
+    }
+    session = this.state.sessions[sessionId]
+    if (!session || !session.dirty) return null
+    const serialized = delegate ? await delegate.serialize() : session.bytes
+    return serialized ? copyBytes(serialized) : null
   }
 
   async saveFocused(): Promise<boolean> {
@@ -2081,10 +2449,10 @@ export class DocumentWorkspace {
 
   async saveAll(): Promise<boolean> {
     const sessionIds = Object.values(this.state.sessions)
-      .filter(session => session.dirty && session.capabilities.can_save)
-      .map(session => session.id)
+      .filter((session) => session.dirty && session.capabilities.can_save)
+      .map((session) => session.id)
     for (const sessionId of sessionIds) {
-      if (!await this.save(sessionId)) return false
+      if (!(await this.save(sessionId))) return false
     }
     return true
   }
@@ -2116,9 +2484,9 @@ export class DocumentWorkspace {
         [sessionId]: {
           ...session,
           selection: this.invalidateSelection(session.selection),
-          saveState: 'saving'
-        }
-      }
+          saveState: 'saving',
+        },
+      },
     })
     if (delegate) {
       const bytes = await delegate.serialize()
@@ -2127,7 +2495,7 @@ export class DocumentWorkspace {
         if (session) {
           this.publish({
             ...this.state,
-            sessions: { ...this.state.sessions, [sessionId]: { ...session, saveState: 'error' } }
+            sessions: { ...this.state.sessions, [sessionId]: { ...session, saveState: 'error' } },
           })
         }
         return false
@@ -2135,7 +2503,7 @@ export class DocumentWorkspace {
       session = { ...session, bytes: copyBytes(bytes) }
       this.publish({
         ...this.state,
-        sessions: { ...this.state.sessions, [sessionId]: session }
+        sessions: { ...this.state.sessions, [sessionId]: session },
       })
     }
     const committedBytes = copyBytes(session.bytes)
@@ -2147,7 +2515,7 @@ export class DocumentWorkspace {
         if (current) {
           this.publish({
             ...this.state,
-            sessions: { ...this.state.sessions, [sessionId]: { ...current, saveState: 'error' } }
+            sessions: { ...this.state.sessions, [sessionId]: { ...current, saveState: 'error' } },
           })
         }
         return false
@@ -2165,9 +2533,9 @@ export class DocumentWorkspace {
           ...this.state.sessions,
           [sessionId]: {
             ...current,
-            saveState: result.error === 'conflict' ? 'conflict' : 'error'
-          }
-        }
+            saveState: result.error === 'conflict' ? 'conflict' : 'error',
+          },
+        },
       })
       return false
     }
@@ -2184,9 +2552,9 @@ export class DocumentWorkspace {
             : { savedBytes: committedBytes }),
           savedText: committedText,
           dirty: current.changeVersion !== committedChangeVersion,
-          saveState: current.changeVersion === committedChangeVersion ? 'clean' : 'dirty'
-        }
-      }
+          saveState: current.changeVersion === committedChangeVersion ? 'clean' : 'dirty',
+        },
+      },
     })
     try {
       await this.refreshVersioning(sessionId, current.documentId)
@@ -2203,23 +2571,25 @@ export class DocumentWorkspace {
   }
 
   private invalidateSelection(selection: SelectionAnchor | null): SelectionAnchor | null {
-    return selection && selection.status === 'exact'
-      ? { ...selection, status: 'stale' }
-      : selection
+    return selection && selection.status === 'exact' ? { ...selection, status: 'stale' } : selection
   }
 
   private withoutSessionPresentations(sessionId: string): Record<string, SelectionPresentation> {
-    return Object.fromEntries(Object.entries(this.state.selectionPresentations).filter(
-      ([tabId]) => this.state.tabs[tabId]?.sessionId !== sessionId
-    ))
+    return Object.fromEntries(
+      Object.entries(this.state.selectionPresentations).filter(
+        ([tabId]) => this.state.tabs[tabId]?.sessionId !== sessionId
+      )
+    )
   }
 
   private retitleSessionTabs(sessionId: string, path: string): Record<string, DocumentTab> {
     const title = titleFor(path)
-    return Object.fromEntries(Object.entries(this.state.tabs).map(([tabId, tab]) => [
-      tabId,
-      tab.sessionId === sessionId ? { ...tab, title, titleFallback: undefined } : tab
-    ]))
+    return Object.fromEntries(
+      Object.entries(this.state.tabs).map(([tabId, tab]) => [
+        tabId,
+        tab.sessionId === sessionId ? { ...tab, title, titleFallback: undefined } : tab,
+      ])
+    )
   }
 
   private locationForTab(tabId: string): { area: DockArea; leafId: string } | null {
@@ -2262,8 +2632,8 @@ export class DocumentWorkspace {
       ...this.state,
       sessions: {
         ...this.state.sessions,
-        [session.id]: { ...current, bytes: copyBytes(bytes), dirty: true, saveState: 'dirty' }
-      }
+        [session.id]: { ...current, bytes: copyBytes(bytes), dirty: true, saveState: 'dirty' },
+      },
     })
     return true
   }
@@ -2273,28 +2643,55 @@ export class DocumentWorkspace {
     tabId: string
   ): string | null {
     if (node.kind === 'leaf') return node.tabIds.includes(tabId) ? node.id : null
-    return this.leafForTabInNode(node.first, tabId)
-      ?? this.leafForTabInNode(node.second, tabId)
+    return this.leafForTabInNode(node.first, tabId) ?? this.leafForTabInNode(node.second, tabId)
   }
 
-  private continueCloseQueue(): void {
-    while (this.closeQueue.length > 0) {
-      const tabId = this.closeQueue[0]
-      const tab = this.state.tabs[tabId]
-      if (!tab) {
+  private async continueCloseQueue(): Promise<void> {
+    if (this.closing) return
+    this.closing = true
+    try {
+      while (this.closeQueue.length > 0) {
+        const tabId = this.closeQueue[0]
+        const tab = this.state.tabs[tabId]
+        if (!tab) {
+          this.closeQueue.shift()
+          continue
+        }
+        let session = this.state.sessions[tab.sessionId]
+        const references = Object.values(this.state.tabs).filter(
+          (candidate) => candidate.sessionId === tab.sessionId
+        ).length
+        if (session?.viewer === 'markdown' && this.autoSave && references === 1) {
+          try {
+            const delegate = Array.from(this.saveDelegates.get(session.id)?.values() ?? []).at(-1)
+            delegate?.prepare?.()
+            session = this.state.sessions[tab.sessionId]
+            if (session?.dirty) {
+              const saved = await this.save(session.id)
+              session = this.state.sessions[tab.sessionId]
+              if (saved && session?.dirty) continue
+            }
+          } catch (error) {
+            console.warn('Document close auto-save failed', error)
+            session = this.state.sessions[tab.sessionId]
+            if (session) {
+              session = { ...session, saveState: 'error' }
+              this.publish({
+                ...this.state,
+                sessions: { ...this.state.sessions, [session.id]: session },
+              })
+            }
+          }
+        }
+        if (session?.dirty && references === 1) {
+          this.publish({ ...this.state, pendingClose: { tabId, sessionId: tab.sessionId } })
+          return
+        }
         this.closeQueue.shift()
-        continue
+        this.closeNow(tabId)
       }
-      const session = this.state.sessions[tab.sessionId]
-      const references = Object.values(this.state.tabs).filter(
-        (candidate) => candidate.sessionId === tab.sessionId
-      ).length
-      if (session?.dirty && references === 1) {
-        this.publish({ ...this.state, pendingClose: { tabId, sessionId: tab.sessionId } })
-        return
-      }
-      this.closeQueue.shift()
-      this.closeNow(tabId)
+    } finally {
+      this.closing = false
     }
   }
 
@@ -2318,17 +2715,26 @@ export class DocumentWorkspace {
     const fallbackLeaf = previousFocusedArea
       ? firstLeaf(layout.areas[previousFocusedArea])
       : firstLeaf(layout.areas.primary)
-    const focusedTabId = this.state.focusedTabId === tabId
-      ? fallbackTabForSource(tabs, sessions, fallbackLeaf.activeTabId, this.state.sessions[tab.sessionId].source)
-      : this.state.focusedTabId
+    const focusedTabId =
+      this.state.focusedTabId === tabId
+        ? fallbackTabForView(
+            tabs,
+            sessions,
+            fallbackLeaf.activeTabId,
+            documentNavigationView(tab, this.state.sessions[tab.sessionId])
+          )
+        : this.state.focusedTabId
     const fallbackLocation = focusedTabId ? this.locationForTabInLayout(layout, focusedTabId) : null
     if (fallbackLocation && focusedTabId) {
       layout = activateTab(layout, fallbackLocation.leafId, focusedTabId)
     }
-    const focusedLeaf = this.state.focusedLeaf
-      && findLeaf(layout.areas[this.state.focusedLeaf.area], this.state.focusedLeaf.leafId)
-      ? this.state.focusedLeaf
-      : focusedTabId ? this.locationForTabInLayout(layout, focusedTabId) : null
+    const focusedLeaf =
+      this.state.focusedLeaf &&
+      findLeaf(layout.areas[this.state.focusedLeaf.area], this.state.focusedLeaf.leafId)
+        ? this.state.focusedLeaf
+        : focusedTabId
+          ? this.locationForTabInLayout(layout, focusedTabId)
+          : null
     this.publish({
       ...this.state,
       tabs,
@@ -2337,7 +2743,7 @@ export class DocumentWorkspace {
       layout,
       pendingClose: null,
       focusedTabId,
-      focusedLeaf
+      focusedLeaf,
     })
   }
 }
@@ -2346,7 +2752,7 @@ export const defaultLoader: DocumentLoader = {
   load: loadDocument,
   versioning: loadVersionCapability,
   commit: commitDocument,
-  createManagedCopy
+  createManagedCopy,
 }
 
 const MONACO_VIEWERS: ReadonlySet<ViewerKind> = new Set(['code', 'markdown'])
@@ -2365,6 +2771,10 @@ export class DocumentWorkspaceRegistry {
   private nextSelectionSequence = 0
   private nextWorkspaceId = 0
   private rebalancing = false
+
+  discardTaskDocuments(taskId: string): void {
+    for (const workspace of this.workspaces.values()) workspace.discardTaskDocuments(taskId)
+  }
 
   constructor(
     private readonly loader: DocumentLoader,
@@ -2392,10 +2802,14 @@ export class DocumentWorkspaceRegistry {
   }
 
   dirtyEditorCount(): number {
-    return [...this.workspaces.values()].reduce((count, workspace) => (
-      count + Object.values(workspace.getSnapshot().sessions)
-        .filter((session) => session.dirty && MONACO_VIEWERS.has(session.viewer)).length
-    ), 0)
+    return [...this.workspaces.values()].reduce(
+      (count, workspace) =>
+        count +
+        Object.values(workspace.getSnapshot().sessions).filter(
+          (session) => session.dirty && MONACO_VIEWERS.has(session.viewer)
+        ).length,
+      0
+    )
   }
 
   async saveEditors(): Promise<boolean> {
@@ -2404,7 +2818,7 @@ export class DocumentWorkspaceRegistry {
         .filter((session) => session.dirty && MONACO_VIEWERS.has(session.viewer))
         .map((session) => session.id)
       for (const sessionId of sessionIds) {
-        if (!await workspace.save(sessionId)) return false
+        if (!(await workspace.save(sessionId))) return false
       }
     }
     return this.dirtyEditorCount() === 0
@@ -2445,20 +2859,24 @@ export class DocumentWorkspaceRegistry {
             const session = state.sessions[tab.sessionId]
             if (!session) return []
             owners.set(tab.id, workspace)
-            return [{
-              id: tab.id,
-              lastSelectedSequence: this.selectionSequences.get(tab.id) ?? 0,
-              protected: session.dirty || session.saveState !== 'clean' || visible.has(tab.id)
-            }]
+            return [
+              {
+                id: tab.id,
+                lastSelectedSequence: this.selectionSequences.get(tab.id) ?? 0,
+                protected: session.dirty || session.saveState !== 'clean' || visible.has(tab.id),
+              },
+            ]
           })
         })
         if (candidates.length <= this.limit) break
         const tabId = selectLruTabClosures(candidates, candidates.length - 1)[0]
         if (!tabId || !owners.get(tabId)?.closeCleanTab(tabId)) break
       }
-      const liveTabIds = new Set([...this.workspaces.values()].flatMap(
-        (workspace) => Object.keys(workspace.getSnapshot().tabs)
-      ))
+      const liveTabIds = new Set(
+        [...this.workspaces.values()].flatMap((workspace) =>
+          Object.keys(workspace.getSnapshot().tabs)
+        )
+      )
       for (const tabId of this.selectionSequences.keys()) {
         if (!liveTabIds.has(tabId)) this.selectionSequences.delete(tabId)
       }
@@ -2469,18 +2887,25 @@ export class DocumentWorkspaceRegistry {
   }
 
   private readonly claimExclusiveViewer: ExclusiveViewerClaim = (owner, _candidateTabId, group) => {
-    const conflicting = [...this.workspaces.values()].filter((workspace) => workspace !== owner)
+    const conflicting = [...this.workspaces.values()]
+      .filter((workspace) => workspace !== owner)
       .map((workspace) => ({
         workspace,
         tabs: Object.values(workspace.getSnapshot().tabs).filter((tab) => {
           const session = workspace.getSnapshot().sessions[tab.sessionId]
-          return session && viewerPolicy(session.viewer).exclusiveGroup === group
-        })
+          return (
+            session &&
+            viewerExclusiveGroup(session.viewer, session.source.path, tab.viewKind) === group
+          )
+        }),
       }))
       .filter(({ tabs }) => tabs.length > 0)
-    if (conflicting.some(({ workspace, tabs }) => tabs.some((tab) => (
-      workspace.getSnapshot().sessions[tab.sessionId]?.dirty
-    )))) return false
+    if (
+      conflicting.some(({ workspace, tabs }) =>
+        tabs.some((tab) => workspace.getSnapshot().sessions[tab.sessionId]?.dirty)
+      )
+    )
+      return false
     for (const conflict of conflicting) {
       conflict.workspace.requestCloseTabs(conflict.tabs.map((tab) => tab.id))
     }
@@ -2503,11 +2928,18 @@ export class DocumentWorkspaceRegistry {
 export const documentWorkspaces = new DocumentWorkspaceRegistry(defaultLoader)
 
 /** Resource actions may not bypass unsaved or in-flight editor state. */
-export function resourceEditorHasChanges(project: string, fileId: string, paths: readonly string[]): boolean {
+export function resourceEditorHasChanges(
+  project: string,
+  fileId: string,
+  paths: readonly string[]
+): boolean {
   return documentWorkspaces.forProject(project).hasResourceChanges(project, fileId, paths)
 }
 
-export function reconcileResourceEditors(project: string, files: readonly RestoredProjectFile[]): Promise<RestoreReconciliationResult> {
+export function reconcileResourceEditors(
+  project: string,
+  files: readonly RestoredProjectFile[]
+): Promise<RestoreReconciliationResult> {
   return documentWorkspaces.forProject(project).reconcileRestoredFiles(project, files)
 }
 
@@ -2521,9 +2953,5 @@ export const useWorkspaceController = (): DocumentWorkspace => {
 
 export function useDocumentWorkspace(): DocumentWorkspaceState {
   const controller = useWorkspaceController()
-  return useSyncExternalStore(
-    controller.subscribe,
-    controller.getSnapshot,
-    controller.getSnapshot
-  )
+  return useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
 }

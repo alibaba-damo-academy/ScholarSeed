@@ -7,26 +7,23 @@ session-management routes, cookies or credentials in its responses or logs.
 from __future__ import annotations
 
 import asyncio
-import errno
+import logging
 import secrets
 import sqlite3
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from service.platform.activity import Activities, ActivityDomain, ActivityLease
 from service.settings.credentials import CredentialConflictError, ModelCredentialStore
 from service.settings.oauth import PKCE, OAuthFailure, OAuthProtocol, create_pkce
 
 CALLBACK_IPV4_HOST = "127.0.0.1"
-# Browsers resolve `localhost` to either loopback family. Holding both denies a
-# co-listening wildcard socket (codex CLI, opencode) the ::1 side that would
-# otherwise receive this product's callback and reject its state.
-CALLBACK_LOOPBACK_HOSTS = (CALLBACK_IPV4_HOST, "::1")
-CALLBACK_PORT = 1455
+CALLBACK_PORT = 0
 CALLBACK_PATH = "/auth/callback"
-CALLBACK_REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}"
 AUTHORIZATION_LIFETIME_SECONDS = 300.0
 AUTHORIZATION_RESULT_RETENTION_SECONDS = 300.0
 CALLBACK_READ_TIMEOUT_SECONDS = 5.0
@@ -37,6 +34,7 @@ CALLBACK_SUCCESS_PAGE = (
     "Authorization complete. You may close this window and return to ScholarSeed."
 )
 CALLBACK_FAILURE_PAGE = "Authorization could not be completed. Return to ScholarSeed to try again."
+LOGGER = logging.getLogger(__name__)
 
 
 class AuthorizationState(str, Enum):
@@ -57,6 +55,11 @@ class Authorization:
     pkce: PKCE = field(repr=False)
     generation: int
     expires_at: float
+    activity: ActivityLease = field(repr=False)
+    nonce: str = field(repr=False)
+    redirect_uri: str
+    client_id: str
+    subject: str = field(repr=False)
     #: 凭据行的 owner 戳 = 发起授权时的真实账号; owner_id 只是归属身份(事务键控用)。
     account_id: str = ""
     state: AuthorizationState = AuthorizationState.AUTHORIZING
@@ -76,7 +79,10 @@ class Authorization:
 class BrowserAuthorization:
     """One callback listener shared by isolated, owner-bound authorization attempts."""
 
-    def __init__(self, store: ModelCredentialStore, protocol: OAuthProtocol) -> None:
+    def __init__(
+        self, store: ModelCredentialStore, protocol: OAuthProtocol, *, activities: Activities
+    ) -> None:
+        self._activities = activities
         self._store = store
         self._protocol = protocol
         self._server: asyncio.Server | None = None
@@ -90,62 +96,63 @@ class BrowserAuthorization:
     async def start(
         self, owner_id: str, connection_id: str, *, account_id: str = ""
     ) -> dict[str, Any]:
-        async with self._start_lock:
-            if self._closed:
-                raise OAuthFailure("oauth_service_closed")
-            scope = (owner_id, connection_id)
-            existing_id = self._connections.get(scope)
-            if existing_id is not None:
-                existing = self._transactions[existing_id]
-                if existing.state in (
-                    AuthorizationState.AUTHORIZING,
-                    AuthorizationState.EXCHANGING,
-                ):
-                    raise OAuthFailure("oauth_authorization_in_progress")
-            record = self._store.read(owner_id, connection_id)
-            if self._server is None:
-                self._server = await self._bind()
-            if self._closed:
-                self._server.close()
-                await self._server.wait_closed()
-                self._server = None
-                raise OAuthFailure("oauth_service_closed")
-            transaction = Authorization(
-                id=secrets.token_urlsafe(AUTHORIZATION_RANDOM_BYTES),
-                owner_id=owner_id,
-                connection_id=connection_id,
-                state_token=secrets.token_urlsafe(AUTHORIZATION_RANDOM_BYTES),
-                pkce=create_pkce(),
-                generation=record.generation,
-                expires_at=time.time() + AUTHORIZATION_LIFETIME_SECONDS,
-                account_id=account_id,
-            )
-            self._transactions[transaction.id] = transaction
-            self._states[transaction.state_token] = transaction
-            self._connections[scope] = transaction.id
-            transaction.expiry = asyncio.get_running_loop().call_later(
-                AUTHORIZATION_LIFETIME_SECONDS, self._expire, transaction.id
-            )
-            return {
-                **transaction.public(),
-                "authorization_url": self._protocol.provider.authorization_url(
-                    CALLBACK_REDIRECT_URI, transaction.pkce.challenge, transaction.state_token
-                ),
-            }
+        with self._activities.enter(ActivityDomain.CREDENTIAL, root=True):
+            async with self._start_lock:
+                if self._closed:
+                    raise OAuthFailure("oauth_service_closed")
+                scope = (owner_id, connection_id)
+                existing_id = self._connections.get(scope)
+                if existing_id is not None:
+                    existing = self._transactions[existing_id]
+                    if existing.state in (
+                        AuthorizationState.AUTHORIZING,
+                        AuthorizationState.EXCHANGING,
+                    ):
+                        raise OAuthFailure("oauth_authorization_in_progress")
+                record = self._store.read(owner_id, connection_id)
+                host_id = self._store.host_id()
+                if self._server is None:
+                    self._server = await self._bind()
+                if self._closed:
+                    self._server.close()
+                    await self._server.wait_closed()
+                    self._server = None
+                    raise OAuthFailure("oauth_service_closed")
+                transaction = Authorization(
+                    id=secrets.token_urlsafe(AUTHORIZATION_RANDOM_BYTES),
+                    owner_id=owner_id,
+                    connection_id=connection_id,
+                    state_token=secrets.token_urlsafe(AUTHORIZATION_RANDOM_BYTES),
+                    pkce=create_pkce(),
+                    generation=record.generation,
+                    expires_at=time.time() + AUTHORIZATION_LIFETIME_SECONDS,
+                    account_id=account_id,
+                    activity=self._activities.enter(ActivityDomain.CREDENTIAL),
+                    nonce=secrets.token_urlsafe(AUTHORIZATION_RANDOM_BYTES),
+                    redirect_uri=f"http://{CALLBACK_IPV4_HOST}:{self._server.sockets[0].getsockname()[1]}{CALLBACK_PATH}",
+                    client_id=record.client_id,
+                    subject=record.subject,
+                )
+                self._transactions[transaction.id] = transaction
+                self._states[transaction.state_token] = transaction
+                self._connections[scope] = transaction.id
+                transaction.expiry = asyncio.get_running_loop().call_later(
+                    AUTHORIZATION_LIFETIME_SECONDS, self._expire, transaction.id
+                )
+                return {
+                    **transaction.public(),
+                    "authorization_url": self._protocol.provider.authorization_url(
+                        transaction.redirect_uri,
+                        transaction.pkce.challenge,
+                        transaction.state_token,
+                        client_id=transaction.client_id,
+                        nonce=transaction.nonce,
+                        host_id=host_id,
+                        reconsent=bool(record.tokens),
+                    ),
+                }
 
     async def _bind(self) -> asyncio.Server:
-        try:
-            return await asyncio.start_server(
-                self._callback,
-                list(CALLBACK_LOOPBACK_HOSTS),
-                CALLBACK_PORT,
-                limit=CALLBACK_REQUEST_LIMIT_BYTES,
-            )
-        except OSError as error:
-            # A held loopback side means a foreign listener would win part of the
-            # `localhost` callbacks; binding the remainder only would share them.
-            if error.errno == errno.EADDRINUSE:
-                raise OAuthFailure("oauth_callback_port_unavailable") from None
         try:
             return await asyncio.start_server(
                 self._callback,
@@ -203,12 +210,14 @@ class BrowserAuthorization:
         self, transaction: Authorization, state: AuthorizationState, error: str = ""
     ) -> None:
         transaction.state = state
+        transaction.activity.close()
         transaction.error = error
         self._states.pop(transaction.state_token, None)
         if transaction.expiry is not None:
             transaction.expiry.cancel()
         transaction.pkce = PKCE("", "")
         transaction.state_token = ""
+        transaction.nonce = ""
         transaction.expiry = asyncio.get_running_loop().call_later(
             AUTHORIZATION_RESULT_RETENTION_SECONDS, self._forget, transaction.id
         )
@@ -238,80 +247,107 @@ class BrowserAuthorization:
         task = asyncio.current_task()
         if task is not None:
             self._callbacks.add(task)
-        successful = False
-        try:
-            async with asyncio.timeout(CALLBACK_READ_TIMEOUT_SECONDS):
-                raw = await reader.readuntil(HTTP_HEADER_TERMINATOR)
-            request_line = raw.split(b"\r\n", 1)[0].decode("ascii")
-            method, target, version = request_line.split(" ")
-            if method != "GET" or version not in ("HTTP/1.0", "HTTP/1.1"):
-                raise ValueError("invalid callback method")
-            url = urlsplit(target)
-            if url.scheme or url.netloc or url.path != CALLBACK_PATH:
-                raise ValueError("invalid callback path")
-            query = parse_qs(url.query, keep_blank_values=True)
-            if any(len(values) != 1 for values in query.values()):
-                raise ValueError("duplicate callback parameter")
-            state = query.get("state", [""])[0]
-            transaction = self._states.get(state)
-            if transaction is None or not secrets.compare_digest(transaction.state_token, state):
-                raise ValueError("unknown callback state")
-            if transaction.state != AuthorizationState.AUTHORIZING:
-                raise ValueError("callback already consumed")
-            if time.time() >= transaction.expires_at:
-                self._expire(transaction.id)
-                raise ValueError("expired callback")
-            transaction.state = AuthorizationState.EXCHANGING
-            transaction.task = task
-            code = query.get("code", [""])[0]
-            if query.get("error") or not code:
-                self._finish(transaction, AuthorizationState.FAILED, "oauth_authorization_denied")
-            else:
-                try:
-                    tokens = await self._protocol.exchange(
-                        code, CALLBACK_REDIRECT_URI, transaction.pkce.verifier
-                    )
-                    if transaction.state != AuthorizationState.EXCHANGING:
-                        raise OAuthFailure("oauth_transaction_unavailable")
-                    # 新建行按真实账号落 owner 戳; 已有行由 store 沿用原戳(_stored_scope)。
-                    self._store.replace(
-                        transaction.account_id or transaction.owner_id,
-                        transaction.connection_id,
-                        tokens,
-                        expected_generation=transaction.generation,
-                    )
-                    self._finish(transaction, AuthorizationState.CONNECTED)
-                    successful = True
-                except CredentialConflictError:
-                    self._finish(transaction, AuthorizationState.FAILED, "oauth_connection_changed")
-                except OAuthFailure as error:
-                    self._finish(transaction, AuthorizationState.FAILED, error.code)
-                except (OSError, sqlite3.Error):
-                    self._finish(
-                        transaction, AuthorizationState.FAILED, "oauth_storage_unavailable"
-                    )
-        except (
-            ValueError,
-            UnicodeError,
-            TimeoutError,
-            asyncio.IncompleteReadError,
-            asyncio.LimitOverrunError,
-        ):
-            pass
-        finally:
+        with ExitStack() as continuations:
+            successful = False
             try:
-                page = CALLBACK_SUCCESS_PAGE if successful else CALLBACK_FAILURE_PAGE
-                body = page.encode("utf-8")
-                status = "200 OK" if successful else "400 Bad Request"
-                writer.write(
-                    f"HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\n"
-                    f"Content-Length: {len(body)}\r\nCache-Control: no-store\r\n"
-                    "Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n".encode() + body
+                async with asyncio.timeout(CALLBACK_READ_TIMEOUT_SECONDS):
+                    raw = await reader.readuntil(HTTP_HEADER_TERMINATOR)
+                request_line = raw.split(b"\r\n", 1)[0].decode("ascii")
+                method, target, version = request_line.split(" ")
+                if method != "GET" or version not in ("HTTP/1.0", "HTTP/1.1"):
+                    raise ValueError("invalid callback method")
+                url = urlsplit(target)
+                if url.scheme or url.netloc or url.path != CALLBACK_PATH:
+                    raise ValueError("invalid callback path")
+                query = parse_qs(url.query, keep_blank_values=True)
+                if any(len(values) != 1 for values in query.values()):
+                    raise ValueError("duplicate callback parameter")
+                state = query.get("state", [""])[0]
+                transaction = self._states.get(state)
+                if transaction is None or not secrets.compare_digest(
+                    transaction.state_token, state
+                ):
+                    raise ValueError("unknown callback state")
+                if transaction.state != AuthorizationState.AUTHORIZING:
+                    raise ValueError("callback already consumed")
+                if time.time() >= transaction.expires_at:
+                    self._expire(transaction.id)
+                    raise ValueError("expired callback")
+                continuations.enter_context(
+                    self._activities.continue_from(transaction.activity, ActivityDomain.CREDENTIAL)
                 )
-                await writer.drain()
-            except (ConnectionError, OSError):
+                transaction.state = AuthorizationState.EXCHANGING
+                transaction.task = task
+                code = query.get("code", [""])[0]
+                if query.get("error") or not code:
+                    self._finish(
+                        transaction, AuthorizationState.FAILED, "oauth_authorization_denied"
+                    )
+                else:
+                    tokens = None
+                    try:
+                        client_id = query.get("client_id", [transaction.client_id])[0]
+                        if not client_id or (
+                            transaction.client_id and client_id != transaction.client_id
+                        ):
+                            raise OAuthFailure("oauth_client_rejected")
+                        tokens = await self._protocol.exchange(
+                            code,
+                            transaction.redirect_uri,
+                            transaction.pkce.verifier,
+                            client_id=client_id,
+                            nonce=transaction.nonce,
+                            subject=transaction.subject,
+                        )
+                        if transaction.state != AuthorizationState.EXCHANGING:
+                            raise OAuthFailure("oauth_transaction_unavailable")
+                        # 新建行按真实账号落 owner 戳; 已有行由 store 沿用原戳(_stored_scope)。
+                        self._store.replace(
+                            transaction.account_id or transaction.owner_id,
+                            transaction.connection_id,
+                            tokens,
+                            expected_generation=transaction.generation,
+                        )
+                        self._finish(transaction, AuthorizationState.CONNECTED)
+                        successful = True
+                    except CredentialConflictError:
+                        self._finish(
+                            transaction, AuthorizationState.FAILED, "oauth_connection_changed"
+                        )
+                    except OAuthFailure as error:
+                        self._finish(transaction, AuthorizationState.FAILED, error.code)
+                    except (OSError, sqlite3.Error):
+                        self._finish(
+                            transaction, AuthorizationState.FAILED, "oauth_storage_unavailable"
+                        )
+                    finally:
+                        if tokens is not None and not successful:
+                            try:
+                                await self._protocol.revoke(tokens)
+                            except OAuthFailure:
+                                LOGGER.warning("oauth_uncommitted_session_revocation_unconfirmed")
+            except (
+                ValueError,
+                UnicodeError,
+                TimeoutError,
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+            ):
                 pass
             finally:
-                writer.close()
-                if task is not None:
-                    self._callbacks.discard(task)
+                try:
+                    page = CALLBACK_SUCCESS_PAGE if successful else CALLBACK_FAILURE_PAGE
+                    body = page.encode("utf-8")
+                    status = "200 OK" if successful else "400 Bad Request"
+                    writer.write(
+                        f"HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                        f"Content-Length: {len(body)}\r\nCache-Control: no-store\r\n"
+                        "Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n".encode() + body
+                    )
+                    await writer.drain()
+                except (ConnectionError, OSError):
+                    pass
+                finally:
+                    writer.close()
+                    if task is not None:
+                        self._callbacks.discard(task)

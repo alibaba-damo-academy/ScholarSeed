@@ -12,6 +12,8 @@ import {
   deriveLinkOverlapTarget,
   deriveCoveredLinkRoots,
   linkMountNameFromSource,
+  openResourceDirectory,
+  prepareResourceOpening,
   refreshesResourceTree,
   relocateExpandedResourcePaths,
   RESOURCE_ROOT_DIRECTORY,
@@ -21,9 +23,15 @@ import {
   resourceDropDirectory,
   resourceParentDirectory,
   transformResourceContextRefs,
-  validateResourceMove
+  validateResourceMove,
 } from './lifecycle.ts'
-import { INITIAL_RESOURCE_STATE, resourceStateForProjectSwitch, type ResourceLinkRoot, type ResourceNode } from './state.ts'
+import {
+  INITIAL_RESOURCE_STATE,
+  resourceStateForProjectSwitch,
+  type ResourceLinkRoot,
+  type ResourceNode,
+  type ResourceState,
+} from './state.ts'
 
 test('initial resource load and retry keep the foreground loading state', () => {
   const loading = beginResourceTreeReload(INITIAL_RESOURCE_STATE)
@@ -34,7 +42,11 @@ test('initial resource load and retry keep the foreground loading state', () => 
 })
 
 test('an already loaded empty tree refreshes without returning to foreground loading', () => {
-  const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, { nodes: [], total: 0, root: '/project' })
+  const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, {
+    nodes: [],
+    total: 0,
+    root: '/project',
+  })
   const refreshing = beginResourceTreeReload(ready)
   assert.equal(refreshing.loadState, 'refreshing')
   assert.equal(refreshing.tree, ready.tree)
@@ -46,7 +58,11 @@ test('an already loaded empty tree refreshes without returning to foreground loa
 
 test('failed background refresh retains the last successful snapshot and retries silently', () => {
   const nodes: ResourceNode[] = [{ path: 'note.md', name: 'note.md', kind: 'file' }]
-  const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, { nodes, total: 1, root: '/project' })
+  const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, {
+    nodes,
+    total: 1,
+    root: '/project',
+  })
   const failed = finishResourceTreeReload(beginResourceTreeReload(ready), null)
   assert.equal(failed.loadState, 'ready')
   assert.equal(failed.tree, nodes)
@@ -57,9 +73,18 @@ test('failed background refresh retains the last successful snapshot and retries
 })
 
 test('background refresh publishes new data while preserving selection and expansion', () => {
-  const ready = { ...INITIAL_RESOURCE_STATE, loadState: 'ready' as const, selected: 'folder', expanded: { folder: true } }
+  const ready = {
+    ...INITIAL_RESOURCE_STATE,
+    loadState: 'ready' as const,
+    selected: 'folder',
+    expanded: { folder: true },
+  }
   const nodes: ResourceNode[] = [{ path: 'folder', name: 'folder', kind: 'dir' }]
-  const complete = finishResourceTreeReload(beginResourceTreeReload(ready), { nodes, total: 1, root: '/project' })
+  const complete = finishResourceTreeReload(beginResourceTreeReload(ready), {
+    nodes,
+    total: 1,
+    root: '/project',
+  })
   assert.equal(complete.loadState, 'ready')
   assert.equal(complete.tree, nodes)
   assert.equal(complete.selected, ready.selected)
@@ -69,13 +94,13 @@ test('background refresh publishes new data while preserving selection and expan
 const linkedRoot: ResourceLinkRoot = {
   rootId: 'root-1',
   mountPath: 'resources/关联资料',
-  sourcePath: '/authorized/关联资料'
+  sourcePath: '/authorized/关联资料',
 }
 
 const otherLinkedRoot: ResourceLinkRoot = {
   rootId: 'root-2',
   mountPath: 'resources/另一个关联',
-  sourcePath: '/authorized/另一个关联'
+  sourcePath: '/authorized/另一个关联',
 }
 
 const tree: ResourceNode[] = [
@@ -89,9 +114,9 @@ const tree: ResourceNode[] = [
         path: 'resources/本地目录/子目录',
         name: '子目录',
         kind: 'dir',
-        children: [{ path: 'resources/本地目录/子目录/深层.md', name: '深层.md', kind: 'file' }]
-      }
-    ]
+        children: [{ path: 'resources/本地目录/子目录/深层.md', name: '深层.md', kind: 'file' }],
+      },
+    ],
   },
   { path: 'resources/目标', name: '目标', kind: 'dir' },
   {
@@ -106,57 +131,260 @@ const tree: ResourceNode[] = [
         name: '文件.md',
         kind: 'file',
         origin: 'link',
-        linkRoot: linkedRoot
+        linkRoot: linkedRoot,
       },
       {
         path: `${linkedRoot.mountPath}/目录`,
         name: '目录',
         kind: 'dir',
         origin: 'link',
-        linkRoot: linkedRoot
-      }
-    ]
+        linkRoot: linkedRoot,
+      },
+    ],
   },
   {
     path: otherLinkedRoot.mountPath,
     name: '另一个关联',
     kind: 'dir',
     origin: 'link',
-    linkRoot: otherLinkedRoot
-  }
+    linkRoot: otherLinkedRoot,
+  },
 ]
+
+test('opening a collapsed linked directory selects and expands it without changing its mount', () => {
+  const resource = { ...INITIAL_RESOURCE_STATE, tree, expanded: { unrelated: true } }
+  const opened = openResourceDirectory(resource, otherLinkedRoot.mountPath)
+  assert.equal(opened.selected, otherLinkedRoot.mountPath)
+  assert.deepEqual(opened.expanded, { unrelated: true, [otherLinkedRoot.mountPath]: true })
+  assert.equal(opened.tree, tree)
+  assert.equal(opened.tree[3].linkRoot, otherLinkedRoot)
+  assert.deepEqual(resource.expanded, { unrelated: true })
+})
+
+test('opening a directory is idempotent and preserves loaded children', () => {
+  const opened = openResourceDirectory({ ...INITIAL_RESOURCE_STATE, tree }, linkedRoot.mountPath)
+  assert.deepEqual(openResourceDirectory(opened, linkedRoot.mountPath), opened)
+  assert.equal(opened.tree[2].children, tree[2].children)
+})
+
+test('opening a nested directory expands its ancestors without collapsing unrelated rows', () => {
+  const path = 'resources/本地目录/子目录'
+  const opened = openResourceDirectory(
+    {
+      ...INITIAL_RESOURCE_STATE,
+      tree,
+      expanded: { [linkedRoot.mountPath]: true },
+    },
+    path
+  )
+  assert.equal(opened.selected, path)
+  assert.deepEqual(opened.expanded, {
+    [linkedRoot.mountPath]: true,
+    'resources/本地目录': true,
+    [path]: true,
+  })
+})
+
+test('opening an empty directory still selects and expands it', () => {
+  const path = 'resources/empty'
+  const resource = {
+    ...INITIAL_RESOURCE_STATE,
+    tree: [{ path, name: 'empty', kind: 'dir' as const, count: 0, children: [] }],
+  }
+  const opened = openResourceDirectory(resource, path)
+  assert.equal(opened.selected, path)
+  assert.equal(opened.expanded[path], true)
+  assert.equal(opened.tree, resource.tree)
+})
+
+test('opening a missing directory or a file leaves resource state unchanged', () => {
+  const resource = { ...INITIAL_RESOURCE_STATE, tree }
+  assert.equal(openResourceDirectory(resource, 'resources/missing'), resource)
+  assert.equal(openResourceDirectory(resource, 'resources/本地目录/报告.final.PDF'), resource)
+})
+
+test('covered opening reveals linked files in collapsed folders and selects only the first', async () => {
+  const paths = ['resources/本地目录/报告.final.PDF', 'resources/本地目录/子目录/深层.md']
+  const resource = { ...INITIAL_RESOURCE_STATE, tree, expanded: { unrelated: true } }
+  const opened = await prepareResourceOpening(resource, paths, async () => {
+    assert.fail('loaded files must not fetch directory children')
+  })
+  assert.ok(opened)
+  assert.equal(opened.selected, paths[0])
+  assert.deepEqual(opened.expanded, {
+    unrelated: true,
+    'resources/本地目录': true,
+    'resources/本地目录/子目录': true,
+  })
+  assert.equal(opened.tree, resource.tree)
+  assert.deepEqual(resource.expanded, { unrelated: true })
+})
+
+test('covered opening materializes an unloaded file before expanding its ancestors', async () => {
+  const path = 'resources/folder/note.md'
+  const node: ResourceNode = { path, name: 'note.md', kind: 'file' }
+  const calls: [string, number][] = []
+  const resource: ResourceState = {
+    ...INITIAL_RESOURCE_STATE,
+    tree: [{ path: 'resources/folder', name: 'folder', kind: 'dir' as const, count: 1 }],
+  }
+  const opened = await prepareResourceOpening(resource, [path], async (directory, offset) => {
+    calls.push([directory, offset])
+    return { nodes: [node], total: 1 }
+  })
+  assert.ok(opened)
+  assert.deepEqual(calls, [['resources/folder', 0]])
+  assert.equal(opened.selected, path)
+  assert.deepEqual(opened.expanded, { 'resources/folder': true })
+  assert.deepEqual(opened.tree[0].children, [node])
+  assert.equal(resource.tree[0].children, undefined)
+})
+
+test('covered opening loads paginated targets and directory children for mixed links', async () => {
+  const file: ResourceNode = { path: 'resources/note.md', name: 'note.md', kind: 'file' }
+  const directory: ResourceNode = {
+    path: 'resources/folder',
+    name: 'folder',
+    kind: 'dir',
+    count: 1,
+  }
+  const child: ResourceNode = { path: 'resources/folder/proof.md', name: 'proof.md', kind: 'file' }
+  const calls: [string, number][] = []
+  const resource = { ...INITIAL_RESOURCE_STATE, tree: [file], rootTotal: 2 }
+  const opened = await prepareResourceOpening(
+    resource,
+    [file.path, directory.path],
+    async (path, offset) => {
+      calls.push([path, offset])
+      return path ? { nodes: [child], total: 1 } : { nodes: [directory], total: 2 }
+    }
+  )
+  assert.ok(opened)
+  assert.deepEqual(calls, [
+    ['', 1],
+    [directory.path, 0],
+  ])
+  assert.equal(opened.selected, file.path)
+  assert.deepEqual(opened.expanded, { [directory.path]: true })
+  assert.deepEqual(opened.tree[1].children, [child])
+  assert.equal(opened.rootTotal, 2)
+})
+
+test('covered directory opening is idempotent and keeps existing children', async () => {
+  const resource = { ...INITIAL_RESOURCE_STATE, tree }
+  const loader = async () => {
+    assert.fail('complete directories must not be reloaded')
+  }
+  const opened = await prepareResourceOpening(resource, [linkedRoot.mountPath], loader)
+  assert.ok(opened)
+  assert.equal(opened.expanded[linkedRoot.mountPath], true)
+  assert.deepEqual(await prepareResourceOpening(opened, [linkedRoot.mountPath], loader), opened)
+  assert.equal(opened.tree[2].linkRoot, linkedRoot)
+})
+
+test('covered directory opening appends missing children without replacing loaded rows', async () => {
+  const first: ResourceNode = { path: 'resources/folder/first.md', name: 'first.md', kind: 'file' }
+  const second: ResourceNode = {
+    path: 'resources/folder/second.md',
+    name: 'second.md',
+    kind: 'file',
+  }
+  const resource: ResourceState = {
+    ...INITIAL_RESOURCE_STATE,
+    tree: [{ path: 'resources/folder', name: 'folder', kind: 'dir', count: 2, children: [first] }],
+  }
+  const opened = await prepareResourceOpening(
+    resource,
+    ['resources/folder'],
+    async (path, offset) => {
+      assert.equal(path, 'resources/folder')
+      assert.equal(offset, 1)
+      return { nodes: [second], total: 2 }
+    }
+  )
+  assert.ok(opened)
+  assert.deepEqual(opened.tree[0].children, [first, second])
+  assert.equal(opened.tree[0].children?.[0], first)
+  assert.deepEqual(resource.tree[0].children, [first])
+})
+
+test('failed directory loading does not publish partial covered opening state', async () => {
+  const file: ResourceNode = { path: 'resources/note.md', name: 'note.md', kind: 'file' }
+  const resource: ResourceState = {
+    ...INITIAL_RESOURCE_STATE,
+    tree: [file, { path: 'resources/folder', name: 'folder', kind: 'dir', count: 1 }],
+  }
+  assert.equal(
+    await prepareResourceOpening(resource, [file.path, 'resources/folder'], async () => null),
+    null
+  )
+  assert.equal(resource.selected, null)
+  assert.deepEqual(resource.expanded, {})
+})
+
+test('covered opening rejects missing targets and failed page loads without mutating state', async () => {
+  const resource = { ...INITIAL_RESOURCE_STATE, tree: [], rootTotal: 1 }
+  assert.equal(
+    await prepareResourceOpening(resource, ['resources/missing'], async () => null),
+    null
+  )
+  assert.equal(
+    await prepareResourceOpening(resource, ['resources/missing'], async () => ({
+      nodes: [],
+      total: 0,
+    })),
+    null
+  )
+  assert.equal(
+    await prepareResourceOpening(resource, [], async () => {
+      assert.fail('no target')
+    }),
+    null
+  )
+  assert.deepEqual(resource.tree, [])
+  assert.deepEqual(resource.expanded, {})
+})
 
 test('rename locks the final real suffix while directories and dotfiles remain whole', () => {
   assert.deepEqual(resourceNameParts('note.md', 'file'), { basename: 'note', suffix: '.md' })
   assert.deepEqual(resourceNameParts('report.final.PDF', 'file'), {
     basename: 'report.final',
-    suffix: '.PDF'
+    suffix: '.PDF',
   })
   assert.deepEqual(resourceNameParts('archive.tar.gz', 'file'), {
     basename: 'archive.tar',
-    suffix: '.gz'
+    suffix: '.gz',
   })
   assert.deepEqual(resourceNameParts('.gitignore', 'file'), { basename: '.gitignore', suffix: '' })
   assert.deepEqual(resourceNameParts('name.', 'file'), { basename: 'name.', suffix: '' })
   assert.deepEqual(resourceNameParts('目录.with.dot', 'dir'), {
     basename: '目录.with.dot',
-    suffix: ''
+    suffix: '',
   })
 })
 
 test('move validation enforces roots, descendants and visible parents', () => {
-  assert.deepEqual(validateResourceMove(tree, 'resources/本地目录/报告.final.PDF', 'resources/目标'), { ok: true })
+  assert.deepEqual(
+    validateResourceMove(tree, 'resources/本地目录/报告.final.PDF', 'resources/目标'),
+    { ok: true }
+  )
   assert.deepEqual(
     validateResourceMove(tree, 'resources/本地目录/报告.final.PDF', RESOURCE_ROOT_DIRECTORY),
     { ok: true }
   )
-  assert.deepEqual(
-    validateResourceMove(tree, 'resources/目标', RESOURCE_ROOT_DIRECTORY),
-    { ok: false, error: 'same_parent' }
-  )
+  assert.deepEqual(validateResourceMove(tree, 'resources/目标', RESOURCE_ROOT_DIRECTORY), {
+    ok: false,
+    error: 'same_parent',
+  })
   assert.equal(validateResourceMove(tree, linkedRoot.mountPath, '').ok, false)
-  assert.equal(validateResourceMove(tree, `${linkedRoot.mountPath}/文件.md`, 'resources/目标').ok, false)
-  assert.equal(validateResourceMove(tree, `${linkedRoot.mountPath}/文件.md`, otherLinkedRoot.mountPath).ok, false)
+  assert.equal(
+    validateResourceMove(tree, `${linkedRoot.mountPath}/文件.md`, 'resources/目标').ok,
+    false
+  )
+  assert.equal(
+    validateResourceMove(tree, `${linkedRoot.mountPath}/文件.md`, otherLinkedRoot.mountPath).ok,
+    false
+  )
   assert.deepEqual(
     validateResourceMove(tree, `${linkedRoot.mountPath}/文件.md`, `${linkedRoot.mountPath}/目录`),
     { ok: true }
@@ -165,9 +393,15 @@ test('move validation enforces roots, descendants and visible parents', () => {
     validateResourceMove(tree, 'resources/本地目录', 'resources/本地目录/子目录').ok,
     false
   )
-  assert.deepEqual(resourceParentDirectory(tree, 'resources/本地目录/子目录/深层.md'), 'resources/本地目录/子目录')
+  assert.deepEqual(
+    resourceParentDirectory(tree, 'resources/本地目录/子目录/深层.md'),
+    'resources/本地目录/子目录'
+  )
   assert.equal(resourceDropDirectory(tree, 'resources/目标', 'dir'), 'resources/目标')
-  assert.equal(resourceDropDirectory(tree, 'resources/本地目录/报告.final.PDF', 'file'), 'resources/本地目录')
+  assert.equal(
+    resourceDropDirectory(tree, 'resources/本地目录/报告.final.PDF', 'file'),
+    'resources/本地目录'
+  )
 })
 
 test('path transforms cover exact descendants without touching same-prefix siblings', () => {
@@ -192,7 +426,7 @@ test('current path refs relocate or clear while submitted and non-path refs stay
       source_revision: 'old-sha',
       label: 'file.md',
       retention: 'session',
-      origin: 'explicit'
+      origin: 'explicit',
     },
     {
       ref_id: 'child',
@@ -201,7 +435,7 @@ test('current path refs relocate or clear while submitted and non-path refs stay
       source_revision: 'old-sha',
       label: 'child.md',
       retention: 'next_turn',
-      origin: 'current_document'
+      origin: 'current_document',
     },
     {
       ref_id: 'submitted',
@@ -209,7 +443,7 @@ test('current path refs relocate or clear while submitted and non-path refs stay
       source_id: 'folder/submitted',
       label: 'submitted',
       retention: 'next_turn',
-      origin: 'explicit'
+      origin: 'explicit',
     },
     {
       ref_id: 'resource',
@@ -217,8 +451,8 @@ test('current path refs relocate or clear while submitted and non-path refs stay
       source_id: 'stable-resource-id',
       label: 'resource',
       retention: 'session',
-      origin: 'explicit'
-    }
+      origin: 'explicit',
+    },
   ]
   const moved = transformResourceContextRefs(refs, ['submitted'], 'folder', 'archive/folder')
   assert.equal(moved[0].source_id, 'archive/folder/file.md')
@@ -228,13 +462,50 @@ test('current path refs relocate or clear while submitted and non-path refs stay
   assert.equal(moved[3], refs[3])
 
   const removed = transformResourceContextRefs(refs, ['submitted'], 'folder', null)
-  assert.deepEqual(removed.map((ref) => ref.ref_id), ['submitted', 'resource'])
+  assert.deepEqual(
+    removed.map((ref) => ref.ref_id),
+    ['submitted', 'resource']
+  )
 })
 
+test('resource relocation only updates references from the affected project', () => {
+  const refs: AssistantContextRef[] = ['project-a', 'project-b'].map((project_id) => ({
+    ref_id: project_id,
+    project_id,
+    kind: 'file',
+    source_id: 'resources/results.csv',
+    label: 'results.csv',
+    retention: 'next_turn',
+    origin: 'explicit',
+  }))
+  const moved = transformResourceContextRefs(
+    refs,
+    [],
+    'resources/results.csv',
+    'resources/renamed.csv',
+    'renamed.csv',
+    'project-a'
+  )
+  assert.equal(moved[0].source_id, 'resources/renamed.csv')
+  assert.equal(moved[1], refs[1])
+  const removed = transformResourceContextRefs(
+    refs,
+    [],
+    'resources/results.csv',
+    null,
+    undefined,
+    'project-a'
+  )
+  assert.deepEqual(removed, [refs[1]])
+})
 
 test('new resource names use the creation language while existing drafts and rename names retain their bytes', async () => {
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { resources: zh }, en: { resources: en } } })
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { resources: zh }, en: { resources: en } },
+  })
   const t = locale.getFixedT(null, 'resources')
   const draft = { value: resourceDefaultName('create_document', t), suffix: '.md' }
   assert.equal(draft.value, '未命名')
@@ -244,8 +515,14 @@ test('new resource names use the creation language while existing drafts and ren
   assert.equal(resourceDefaultName('create_document', t), 'Untitled')
   assert.equal(resourceDefaultName('create_folder', t), 'Untitled folder')
   assert.deepEqual(draft, { value: '用户修改 <original> & title', suffix: '.md' })
-  assert.deepEqual(resourceNameParts('未命名.final.MD', 'file'), { basename: '未命名.final', suffix: '.MD' })
-  assert.deepEqual(resourceNameParts('未命名文件夹', 'dir'), { basename: '未命名文件夹', suffix: '' })
+  assert.deepEqual(resourceNameParts('未命名.final.MD', 'file'), {
+    basename: '未命名.final',
+    suffix: '.MD',
+  })
+  assert.deepEqual(resourceNameParts('未命名文件夹', 'dir'), {
+    basename: '未命名文件夹',
+    suffix: '',
+  })
 })
 
 test('only resources-root content events refresh the resource tree', () => {
@@ -292,7 +569,7 @@ test('deriveCoveredLinkRoots finds child links strictly under a new parent sourc
     rootId: 'root-1',
     mountPath: 'resources/关联资料',
     sourcePath: '/authorized/关联资料',
-    name: '关联资料'
+    name: '关联资料',
   })
   // 同一关联根挂在父节点与其子节点上, seen 去重后只出现一次 (不是 4 条)。
   assert.equal(covered.length, 2)

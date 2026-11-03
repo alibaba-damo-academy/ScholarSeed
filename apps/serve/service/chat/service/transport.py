@@ -89,6 +89,8 @@ def transport_diagnostics(exc: BaseException) -> dict[str, Any]:
 
 
 def retryable_connect_failure(exc: BaseException, category: str) -> bool:
+    if isinstance(exc, httpx.ConnectTimeout):
+        return True
     if category in RETRYABLE_CONNECT_FAILURE_CATEGORIES:
         return True
     chain = exception_chain(exc)
@@ -98,6 +100,12 @@ def retryable_connect_failure(exc: BaseException, category: str) -> bool:
             for error in chain
         )
     return any(isinstance(error, RETRYABLE_TLS_FAILURE_TYPES) for error in chain)
+
+
+def retryable_pre_response_failure(exc: BaseException, category: str) -> bool:
+    return category == TransportFailureCategory.CONNECTION_RESET.value or retryable_connect_failure(
+        exc, category
+    )
 
 
 def exception_chain(exc: BaseException) -> tuple[BaseException, ...]:

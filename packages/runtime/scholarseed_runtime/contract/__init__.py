@@ -40,9 +40,14 @@ from scholarseed_runtime.contract.interaction import (
     CallbackKind,
     RuntimeCallbackRequest,
     RuntimeCallbackResponse,
+    RuntimeServiceTool,
+    service_tool_profile,
 )
+from scholarseed_runtime.contract.inventory import SkillPolicy
 from scholarseed_runtime.contract.model import (
+    MODEL_CATALOG_UNAVAILABLE,
     ModelCapabilities,
+    ModelCatalogEntry,
     ModelConnectionMode,
     ModelCredential,
     ModelCredentialPort,
@@ -53,7 +58,7 @@ from scholarseed_runtime.contract.model import (
     ModelWireProtocol,
 )
 from scholarseed_runtime.contract.permission import PermissionIntent, RuntimePermissionMode
-from scholarseed_runtime.contract.provider import RuntimeProvider
+from scholarseed_runtime.contract.provider import RuntimeOpenNotAppliedError, RuntimeProvider
 from scholarseed_runtime.contract.runtime import (
     RUNTIME_ABI_VERSION,
     RuntimeDescriptor,
@@ -63,12 +68,16 @@ from scholarseed_runtime.contract.runtime import (
 from scholarseed_runtime.contract.secret import (
     LaunchSecret,
     LaunchSecretIntent,
+    LaunchSecretScope,
     RuntimeSecret,
     RuntimeSecretPort,
 )
 from scholarseed_runtime.contract.session import RuntimeSession
+from scholarseed_runtime.contract.storage import StorageRoot
 
 __all__ = [
+    "StorageRoot",
+    "SkillPolicy",
     "AppliedState",
     "ActorKind",
     "ArchiveRequest",
@@ -85,9 +94,12 @@ __all__ = [
     "InterruptRequest",
     "LaunchSecret",
     "LaunchSecretIntent",
+    "LaunchSecretScope",
     "InventoryRequest",
+    "MODEL_CATALOG_UNAVAILABLE",
     "ModelConnectionMode",
     "ModelCapabilities",
+    "ModelCatalogEntry",
     "ModelToolProtocol",
     "ModelCredential",
     "ModelCredentialPort",
@@ -101,6 +113,8 @@ __all__ = [
     "RuntimeBinding",
     "RuntimeCallbackRequest",
     "RuntimeCallbackResponse",
+    "RuntimeServiceTool",
+    "service_tool_profile",
     "RuntimeCapability",
     "RuntimeCapabilityName",
     "RuntimeConfigurationIntent",
@@ -112,6 +126,7 @@ __all__ = [
     "RuntimeInventory",
     "RuntimeInspectionRequest",
     "RuntimeProvider",
+    "RuntimeOpenNotAppliedError",
     "RuntimePermissionMode",
     "RuntimeReadiness",
     "RuntimeSecret",

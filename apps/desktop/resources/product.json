@@ -5,11 +5,13 @@
   "release_lane": "local",
   "update_channel": "release",
   "update_base_url": "https://scholarseed.damo.alibaba.com",
+  "feedback_base_url": "https://scholarseed.damo.alibaba.com",
   "expected_team_id": "",
   "expected_windows_publisher": "",
   "auth_mode": "account",
   "account_base_url": "https://scholarseed.damo.alibaba.com",
   "features": {
+    "browser": true,
     "feedback_recorder": true
   },
   "credential_profiles": {
@@ -39,13 +41,12 @@
         "sandbox": "workspace-write",
         "approval_policy": "on-request",
         "full_access_sandbox": "danger-full-access",
-        "no_approval_policy": "never"
+        "no_approval_policy": "never",
+        "allowed_network_domains": ["scholarseed.damo.alibaba.com"]
       },
       "distribution": "official-vendored",
       "configuration": {
         "capacity": {
-          "execution_hosts": 16,
-          "control_hosts": 1,
           "queue_limit": 100,
           "wait_seconds": 120.0,
           "idle_seconds": 30.0

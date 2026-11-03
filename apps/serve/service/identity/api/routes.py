@@ -12,9 +12,10 @@ Host-Key 闸 (``require_host_process``), 与 ``/api/auth/mode`` 同一条纪律�
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable, Dict, Sequence
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
@@ -22,7 +23,8 @@ from service.identity.api.handoff import build_handoff_router
 from service.identity.catalog import auth_providers
 from service.identity.persistence.handoff import HandoffClaimStore
 from service.identity.providers.protocol import IdentityContext
-from service.identity.service.account import account_trust_from_env
+from service.identity.service.account import AUTH_SOURCE, account_trust_from_env
+from service.identity.service.account_token import CredentialCleanup
 from service.identity.service.auth import AuthService
 from service.identity.service.policy import (
     AUTH_MODE_CHOICES,
@@ -32,12 +34,15 @@ from service.identity.service.policy import (
     replace_policy,
 )
 from service.identity.utils import bearer_or_cookie, is_host_process, require_host_process
+from service.platform.activity import Activities, ActivityDomain
+from service.platform.http_activity import execution_admission
 
 # ── FastAPI 装配 ──
 
 _PUBLIC_PREFIXES = ("/api/healthz", "/api/auth/")
 API_PREFIX = "/api/"
 DEVICE_SKILL_ROUTE_PREFIX = "/api/capabilities/skills"
+AUTH_LOGOUT_PATH = "/api/auth/logout"
 # CORS 预检按规范不带凭据 (浏览器不会给 preflight 附 cookie/Authorization)。拦下它就等于
 # 让跨源的 JSON POST/PUT/DELETE 全部失败: 预检收不到 CORS 头 → 浏览器判定不允许 → 真正的
 # 请求根本发不出去。dev 期 renderer 在 Vite 源、后端在 127.0.0.1:<port>, 正是跨源。
@@ -45,9 +50,19 @@ DEVICE_SKILL_ROUTE_PREFIX = "/api/capabilities/skills"
 PREFLIGHT_METHOD = "OPTIONS"
 
 
+def _request_identity(
+    auth: AuthService, credential: str, activities: Activities
+) -> Dict[str, Any] | None:
+    # This scope belongs to the synchronous worker, not its cancellable waiter.
+    # Request observation does not grant an ambient business execution lease.
+    with activities.observe_request():
+        return auth.identity(credential)
+
+
 def register_auth(
     app: FastAPI,
     *,
+    activities: Activities,
     enabled: bool,
     service: AuthService | None = None,
     independently_authenticated_prefixes: Sequence[str] = (),
@@ -67,7 +82,7 @@ def register_auth(
 
     auth = service or AuthService(
         providers=auth_providers(),
-        account=account_trust_from_env(),
+        account=account_trust_from_env(activities=activities),
     )
     skill_credentials = getattr(app.state, "skill_credentials", None)
     if skill_credentials is not None and account_tokens is not None:
@@ -90,26 +105,56 @@ def register_auth(
 
     ctx = IdentityContext(users=auth.users, tokens=auth.tokens)
     for provider in auth.providers:
-        provider.register_routes(app, ctx)
+        provider.register_routes(app, ctx, activities=activities)
 
-    @app.post("/api/auth/logout")
+    mutation_lock = asyncio.Lock()
+    credential_admission = Depends(execution_admission(activities, ActivityDomain.CREDENTIAL))
+
+    @app.post(AUTH_LOGOUT_PATH, dependencies=[credential_admission])
     async def logout(request: Request) -> Dict[str, Any]:
         credential = bearer_or_cookie(request)
-        # 先解析再吊销: 吊销后这条凭据就认不出人了, 拿不到要摘的槽位。
-        who = await run_in_threadpool(auth.identity, credential)
-        ok = auth.logout(credential)
-        if account_tokens is not None and who is not None:
-            # 不摘的话这份 JWT 会一直留在进程内存里可被出站调用取用, 直到 serve 重启。
-            account_tokens.forget(str(who.get("user_id") or ""))
-        if who is not None and on_logout is not None:
-            await on_logout(str(who.get("user_id") or ""))
-        if skill_credentials is not None and who is not None:
-            skill_credentials.forget(str(who.get("user_id") or ""))
-        return {"ok": ok}
+
+        async def revoke() -> Dict[str, Any]:
+            async with mutation_lock:
+                # 先解析再吊销: 吊销后这条凭据就认不出人了, 拿不到要摘的槽位。
+                who = await run_in_threadpool(_request_identity, auth, credential, activities)
+                ok = auth.logout(credential)
+                matched = False
+                owner = str(who.get("user_id") or "") if who is not None else ""
+                if (
+                    account_tokens is not None
+                    and who is not None
+                    and who.get("auth_source") == AUTH_SOURCE
+                ):
+                    if (
+                        account_tokens.current(owner) == credential
+                        and skill_credentials is not None
+                    ):
+                        skill_credentials.forget_if_current(owner, credential)
+                    matched = (
+                        account_tokens.forget_if_current(owner, credential)
+                        == CredentialCleanup.MATCHED
+                    )
+                if (
+                    who is not None
+                    and on_logout is not None
+                    and (
+                        (
+                            matched
+                            and account_tokens is not None
+                            and not account_tokens.current(owner)
+                        )
+                        or (who.get("auth_source") != AUTH_SOURCE and ok)
+                    )
+                ):
+                    await on_logout(owner)
+                return {"ok": ok}
+
+        return await activities.finish(ActivityDomain.CREDENTIAL, revoke)
 
     @app.get("/api/auth/me")
     def me(request: Request) -> Dict[str, Any]:
-        who = auth.identity(bearer_or_cookie(request))
+        who = _request_identity(auth, bearer_or_cookie(request), activities)
         if who is None:
             # auth 关闭时报告 anonymous (webui 据此跳过登录页); 运行期切换后即时生效。
             if not current_policy(request.app).enabled:
@@ -131,7 +176,7 @@ def register_auth(
 
     # ── 运行期切换（仅受信宿主）──
 
-    @app.put("/api/auth/mode")
+    @app.put("/api/auth/mode", dependencies=[Depends(require_host_process), credential_admission])
     async def switch_auth_mode(request: Request) -> Dict[str, Any]:
         """account ↔ off 运行期切换。Host-Key 门禁：无桌面宿主时整条关闭。
 
@@ -144,34 +189,42 @@ def register_auth(
         mode = str(payload.get("mode") or "").strip()
         if mode not in AUTH_MODE_CHOICES:
             raise HTTPException(400, "invalid_auth_mode")
-        policy = replace_policy(app, mode=mode, has_users=auth.has_users())
-        if not policy.enabled:
-            if on_auth_disabled is not None:
-                await on_auth_disabled()
-            if account_tokens is not None:
-                account_tokens.clear_all()
-            skill_credentials = getattr(app.state, "skill_credentials", None)
-            if skill_credentials is not None:
-                skill_credentials.clear_credentials()
-        return {
-            "ok": True,
-            "mode": policy.mode,
-            "enabled": policy.enabled,
-            "restarted": False,
-        }
+
+        async def apply_mode() -> Dict[str, Any]:
+            async with mutation_lock:
+                policy = replace_policy(app, mode=mode, has_users=auth.has_users())
+                if not policy.enabled:
+                    try:
+                        if on_auth_disabled is not None:
+                            await on_auth_disabled()
+                    finally:
+                        if account_tokens is not None:
+                            account_tokens.clear_all()
+                        skill_credentials = getattr(app.state, "skill_credentials", None)
+                        if skill_credentials is not None:
+                            skill_credentials.clear_credentials()
+                return {
+                    "ok": True,
+                    "mode": policy.mode,
+                    "enabled": policy.enabled,
+                    "restarted": False,
+                }
+
+        return await activities.finish(ActivityDomain.CREDENTIAL, apply_mode)
 
     # ── 桌面登录交接的本机协调面（proposal 74）──
     # store 构造不做 I/O（schema 首次使用时惰性建），所以挂在这里不会因为一个坏库
     # 触发 bootstrap 的 fail-open except 把整个鉴权面降级成 no-auth。
-    app.include_router(build_handoff_router(HandoffClaimStore()))
+    app.include_router(build_handoff_router(HandoffClaimStore(), activities=activities))
 
-    register_auth_middleware(app, auth, account_tokens=account_tokens)
+    register_auth_middleware(app, auth, activities=activities, account_tokens=account_tokens)
 
 
 def register_auth_middleware(
     app: FastAPI,
     service: AuthService,
     *,
+    activities: Activities,
     account_tokens: Any | None = None,
 ) -> None:
     """Protect user APIs while leaving capability-authenticated routes to their owner.
@@ -201,14 +254,21 @@ def register_auth_middleware(
         # 未命中仍会出网最多 HTTP_TIMEOUT_S：在 async middleware 里直接调会把整个事件
         # 循环冻住（连带所有并发请求），故挪进线程池。sync 路由（/api/auth/me）由
         # FastAPI 自己放线程池，不需要这一层。
-        who = await run_in_threadpool(service.identity, credential) if credential else None
+        projection_revision = account_tokens.revision if account_tokens is not None else None
+        who = (
+            await run_in_threadpool(_request_identity, service, credential, activities)
+            if credential
+            else None
+        )
         request.state.auth_identity_rejected = bool(credential) and who is None
         if who is not None:
             request.state.user_id = who["user_id"]
             request.state.user_email = who["email"]
-            if account_tokens is not None:
+            if account_tokens is not None and path != AUTH_LOGOUT_PATH:
                 # 纯内存记住，供出站计量头动态取值；非账号服务 JWT 由 holder 自己忽略。
-                account_tokens.remember(who["user_id"], credential)
+                account_tokens.remember_if_unchanged(
+                    who["user_id"], credential, projection_revision
+                )
         elif current_policy(request.app).protects(path) and not (
             (path == DEVICE_SKILL_ROUTE_PREFIX or path.startswith(DEVICE_SKILL_ROUTE_PREFIX + "/"))
             and is_host_process(request)

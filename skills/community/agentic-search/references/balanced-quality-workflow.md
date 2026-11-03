@@ -45,7 +45,7 @@ selects the graph. Unbudgeted Quality is the default.
 Use one compact logical round. Before PaperHub, make one logical `$web-search`
 batch only when a central named entity or landmark paper family is described
 but not named. Run 3–4 complementary explicit skill invocations, using each
-invocation's `official-api` → `codex-native` → `visible-browser` route and the
+invocation's `official-api` → `codex-native` route and the
 `scholarseed.web_search.v1` consumer rules in `SKILL.md`. Preserve the rare clue bundle,
 separately probe compared families, and seek original or pivotal titles. Skip
 web when core entities and central paper families are

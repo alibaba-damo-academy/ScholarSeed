@@ -16,6 +16,7 @@ adapter —— adapter 不反向读产品目录（开源方案 §4 依赖方向�
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from service.chat.service.adapters import registrations, resolve_runtime_id
@@ -25,21 +26,18 @@ from service.chat.service.adapters import registrations, resolve_runtime_id
 # developerInstructions.md 维护叠加在其上的产品附加开发者指令 (developer_instructions)。
 # 两者由算法同学的 config.toml (instructions / developer_instructions) 同步维护:
 # baseInstructions.md 对应 instructions, developerInstructions.md 的算法章节
-# (Request Type Gate / Research Intent Clarification & Routing) 对应
-# developer_instructions, 其余章节是产品自有内容。
+# (Request Type Gate) 对应 developer_instructions, 科研细则由
+# academic-research-guidance skill 按需加载, 产品细则由
+# scholarseed-product-operations skill 按需加载。
 BASE_PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "baseInstructions.md"
 DEVELOPER_PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "developerInstructions.md"
 TEXT_ENCODING = "utf-8"
+NETWORK_DOMAINS_KEY = "allowed_network_domains"
+NETWORK_DOMAIN_PATTERN = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
+)
 OUTPUT_DIRECTORY_INSTRUCTIONS = (
     "\n\nThe session output directory, relative to the working directory, is {path}. "
-    "Write new reports, datasets and deliverables there. Keep edits to existing source files "
-    "at their original paths. New and changed files are tracked as working files, but only "
-    "published deliverables are shown as conversation file cards. Publish each user-facing "
-    "deliverable after its final write using a path relative to the working directory, including "
-    "the output directory prefix. Do not change the working directory or import outputs into a "
-    "library automatically. Skill-owned run artifacts keep their "
-    "documented paths; product-owned result registration follows the conversation integration "
-    "policy and may publish those existing reports without moving or rewriting them."
 )
 
 
@@ -100,6 +98,19 @@ RUNTIME_FULL_ACCESS_SANDBOX = _required_permission("full_access_sandbox")
 RUNTIME_NO_APPROVAL_POLICY = _required_permission("no_approval_policy")
 
 
+def _allowed_network_domains() -> tuple[str, ...]:
+    values = _permission.get(NETWORK_DOMAINS_KEY, [])
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) or NETWORK_DOMAIN_PATTERN.fullmatch(value) is None
+        for value in values
+    ):
+        raise ValueError(f"runtime {ACTIVE_RUNTIME_ID!r} has invalid {NETWORK_DOMAINS_KEY}")
+    return tuple(sorted(set(values)))
+
+
+RUNTIME_ALLOWED_NETWORK_DOMAINS = _allowed_network_domains()
+
+
 __all__ = [
     "ACTIVE_RUNTIME_ID",
     "BASE_PROMPT_FILE",
@@ -114,5 +125,6 @@ __all__ = [
     "RUNTIME_FULL_ACCESS_SANDBOX",
     "RUNTIME_ID",
     "RUNTIME_NO_APPROVAL_POLICY",
+    "RUNTIME_ALLOWED_NETWORK_DOMAINS",
     "RUNTIME_SERVICE_NAME",
 ]

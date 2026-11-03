@@ -13,24 +13,37 @@
 GIL, 故线程池即可打满多核。串行 ~245s → 8 路 ~62s (实测 4/8/12 路全绿, 结果与串行一致)。
 
 但「无共享可变态」只对纯 Python 套件成立: 少数套件会起**真的 codex CLI**, 它们共享同一个
-二进制与这台机器的进程容量。实测 `codex login status` 的耗时随并发上升 (并发 1 约 0.7s,
-并发 8 最慢 3.68s, 并发 16 最慢 10.79s), 会撞上 DamoAgent 侧 10s 的预检上限并被判成失败。
+二进制与这台机器的进程容量。高并发下真实子进程的启动与收尾仍受机器负载影响，
+不能把纯 Python 套件的并行策略直接套用到这些测试。
 这类套件列在 RUNTIME_BINARY_EXCLUSIVE 里, 与并发批分开、逐个串行跑。
+使用真实产品组合根的套件另列 NATIVE_COORDINATOR_EXCLUSIVE：其临时数据目录仍共享
+OS 账号协调器，维护资格不可并发；它们不因 --no-runtime-binary 而跳过。
 开关: --fast 跳过慢套件; --jobs N 调并发; --no-runtime-binary 整批跳过需要 runtime
 二进制在 PATH 上的套件 (CI runner 用; 真产品验收仍要在有二进制的环境跑全集)。
 """
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 
 from service import brand
+from service.platform.storage import filesystem_path
+
+from ._directories import LEASE_TEST_ROOT_ENV, make_directory
+from .prefetch import ISOLATED_JOBS_ENV, isolated_jobs
+from .progress import PROGRESS_DIRECTORY, PROGRESS_MODULE, emit
+from .utils import WindowsFlag, WindowsJob
 
 # 开源布局: tests/ 在 apps/serve/ 下, 仓库根再上两级。
 SERVE_ROOT = Path(__file__).resolve().parents[1]
@@ -42,10 +55,19 @@ SERVE_SUITE_PREFIX = "tests."
 PYTHONPATH_ENV = "PYTHONPATH"
 PYTHON_SAFE_PATH_ENV = "PYTHONSAFEPATH"
 
+PARALLEL_CASE_SUITES = frozenset({"contract_literature_delivery"})
+
 #: 单套件墙钟上限。这不是性能阈值而是**挂死兜底**: 全量 --fast 实测 ~2.5 分钟,
 #: 最慢的单套件 (起真 serve 的 integration_serve) 在分钟量级, 留一个数量级余量,
 #: 只在真的永不返回时才会触发, 不会误杀慢机器上的正常套件。
 SUITE_TIMEOUT_SECONDS = 600
+SUITE_TEMP_PREFIX = "ci-"
+SUITE_HOME_PREFIX = "scholarseed-contract-home-"
+SUITE_TEMP_PARENTS = {"darwin": Path("/tmp")}
+SCOPE_POLL_SECONDS = 0.01
+POSIX_PROCESS_TOOL = "/bin/ps"
+ZOMBIE_STATE = "Z"
+NANOSECONDS_PER_MILLISECOND = 1_000_000
 
 #: 超时套件的退码 (沿用 GNU timeout 约定, 与套件自身的 1 区分开)。
 TIMEOUT_EXIT_CODE = 124
@@ -63,61 +85,130 @@ os.environ.setdefault(brand.PROJECT_DIRNAME_ENV, brand.PROJECT_DIRNAME)
 # bc6992e2 "refactor: remove legacy research runtime" 删除。依赖 work.scholar.* /
 # service.research.* / ActionActor 的 42 个套件同批移除 —— 门不再挂不可导入的套件。
 SUITES = [
+    "contract_component_registry",
+    "contract_ui_dependency",
+    "contract_plugin_revision",
+    "contract_plugin_descriptor",
+    "contract_plugin_components",
+    "contract_plugin_packages",
+    "contract_plugin_authoring",
+    "contract_plugin_candidates",
+    "contract_plugin_admission",
+    "contract_plugin_delivery",
+    "contract_skill_browsing",
+    "contract_python",
+    "contract_connectors",
+    "contract_resource_listing",
+    "contract_continuation",
+    "contract_recovery",
+    "contract_mcp_configuration",
+    "contract_configuration_storage",
+    "contract_mcp_service",
+    "contract_mcp_plans",
+    "contract_shutdown",
+    "contract_transport",
+    "contract_runner",
+    "contract_activity",
+    "contract_workbench_admission",
+    "contract_http_activity",
+    "contract_passive_events",
+    "contract_content_drain",
+    "contract_diagnostic_drain",
     "contract_folder_names",
     "contract_runtime_components",
     "contract_oauth",
+    "contract_siwc",
     "contract_oauth_bridge",
     "contract_subscriptions",
     "contract_pdf_analysis",
+    "contract_analysis_drain",
     "contract_figure_stream",
     "contract_pdf_failures",
+    "contract_pdf_parser",
+    "contract_pdf_worker",
     "contract_pdf_records",
     "contract_attachment_import",
     "contract_resource_ai",
+    "contract_inference",
     "contract_pdf_layout",
     "contract_pdf_materialize",
     "contract_history",
+    "contract_local",
+    "contract_bridge",
+    "contract_bridge_routes",
+    "contract_bridge_drain",
+    "contract_scoped_bridge_drain",
+    "contract_runtime_inventory_drain",
+    "contract_reconfiguration",
+    "contract_bridge_transport",
     "contract_recall_status",
     "contract_auth",
+    "contract_auth_lock",
+    "contract_auth_generation",
     "contract_cors",
     "contract_session_principal",
     "contract_ownership_axis",
     "contract_session_catalog",
+    "contract_session_deletion",
+    "contract_session_title",
+    "contract_session_catalog_bodies",
+    "contract_session_journal",
+    "contract_event_blocks",
+    "contract_session_maintenance",
     "contract_activation",
     "contract_product_events",
+    "contract_attention",
     "contract_resource_terminal",
     "contract_resource_activation",
     "contract_service_lifecycle",
+    "contract_index_shutdown",
     "contract_session_artifacts",
+    "contract_schema_repair",
+    "contract_cutover_recovery",
     "contract_codex_service",
+    "contract_persistence_worker",
     "contract_codex_watch",
     "contract_completion_bridge",
     "contract_content_source",
     "contract_community_auth",
     "contract_account_trust",
+    "contract_account_drain",
+    "contract_auth_drain",
+    "contract_identity_writes",
+    "contract_handoff_drain",
     "contract_auth_policy_switch",
     "contract_skill_credentials",
     "contract_desktop_handoff_local",
     "contract_session_align",
+    "contract_session_fork",
     "contract_product_boundaries",
     "contract_runtime_root",
     "contract_runtime_incidents",
+    "contract_codex_submission",
     "contract_trace_evidence",
     "contract_detailed_diagnostics",
     "contract_runtime_transport",
     "contract_desktop_config",
+    "contract_privacy",
+    "contract_startup",
     "contract_renderer_assets",
     "contract_feedback",
+    "contract_sandbox_diagnostics",
     "contract_permission_settings",
+    "contract_settings_transaction",
     # MVP 0.2 工作台三域: 资料库真实落盘/越界拦截/不永久删除, 文献
     # BIB·RIS 解析与去重, 未实现能力显式 501, 全局搜索跨域命中。
     "contract_workbench_domains",
     "contract_literature_store",
+    # 文献 curation 桥 (AI 侧读写口径): 之前漏登记, 29 例从来没进过门禁。
+    "contract_literature_curation",
+    "contract_taxonomy",
     "contract_literature_import",
     "contract_literature_zotero",
     "contract_literature_search",
     "contract_file_workbench",
     "contract_spreadsheet_processors",
+    "contract_csv",
     "contract_model_profiles",
     "contract_model_capabilities",
     "contract_session_model",
@@ -125,16 +216,34 @@ SUITES = [
     "contract_session_workspace",
     "contract_session_workspaces",
     "contract_projects",
+    "contract_default_project",
     # proposal 47: content 域的项目身份、关联根授权、单一入口三道 guard。
     # 必须是裸名 —— 带点的模块名会被 SERVE_SUITE_PREFIX 那行静默剔除。
     "contract_content_identity",
+    "contract_content_operations",
+    "contract_parent_control",
     "contract_storage",
+    "contract_permissions",
+    "contract_domains",
+    "contract_directory_wait",
+    "contract_reclamation",
+    "contract_lease",
+    "contract_toolchain",
+    "contract_security",
+    "contract_startup_sources",
+    "contract_project_locator",
+    "contract_trace_startup",
+    "contract_inspection",
+    "contract_inspection_rows",
+    "contract_desktop_inspection",
+    "contract_desktop_history",
     "contract_content_authorization",
     "contract_content_boundary",
     "contract_content_events",
     "contract_content_migration",
     # 深度是 UI 的分页, 不是可见性上限: 截断必须可辨, 深层必须可续扫。
     "contract_content_tree",
+    "contract_content_paths",
     "contract_web_import",
     # 项目级业务库: 位置经 ContentPort.resolve 得到、惰性创建、不污染资料树,
     # 且 WAL/外键/事务回滚这些各域不再各写一遍的机制真的生效。
@@ -167,10 +276,24 @@ SUITES = [
     "contract_review_migration",
     "contract_display_cards",
     "contract_resource_bridge",
+    "contract_project_queries",
+    "contract_taxonomy_bridge",
+    "contract_browser_bridge",
+    "contract_browser_history_bridge",
+    "contract_agent_transport",
+    "contract_browser_feature",
+    "contract_browser_storage",
     "contract_literature_bridge",
     "contract_literature_result",
     "contract_literature_review",
     "contract_fulltext_gate",
+    "contract_fulltext_protection",
+    "contract_literature_acquire",
+    "contract_literature_binding",
+    "contract_literature_fulltext",
+    "contract_filenames",
+    "contract_literature_delivery",
+    "contract_literature_downloads",
     "contract_task_lease",
     "contract_running_history",
     "contract_interrupt_barrier",
@@ -179,14 +302,27 @@ SUITES = [
     "contract_assistant_context",
     "contract_citations",
     "contract_answer_sources",
+    "contract_native_provenance",
+    "contract_citation_coverage",
+    "contract_search",
+    "contract_resource_search",
+    "contract_browser_search",
     "contract_papercard",
     "contract_persistence",
+    "contract_sqlite_preview",
+    "contract_sqlite_rows",
+    "contract_sqlite_owner_rows",
+    "contract_resource_history_rows",
+    "contract_resource_cas_formats",
+    "contract_document_preview",
     "contract_assistant_annotations",
     "contract_assistant_resources",
     "contract_resource_excerpts",
+    "contract_resource_catalog_schema",
     "contract_assistant_turn",
     "contract_assistant_actions",
     "contract_invocation",
+    "contract_invocation_results",
     "contract_context_provider",
     "contract_selection_actions",
     "contract_selection_stream",
@@ -196,13 +332,22 @@ SUITES = [
     # proposal 32 agent-id capability service.
     "contract_capabilities",
     "contract_skill_prebundle",
+    "contract_skill_paths",
+    "contract_fast_search_metadata",
     "contract_skill_packages",
     "contract_skill_distribution",
     "contract_skill_runtime",
+    "contract_validation",
+    "contract_nextsteps",
+    # bug 87681703: 技能盘点缓存 (读路径 O(1) + 单飞冷读 + 状态漂移/失效重建)
+    "contract_skill_cache",
     "contract_skill_dependencies",
     "contract_skill_python",
+    "contract_executables",
     "contract_skill_admission",
     "contract_skill_install",
+    "contract_clawhub",
+    "contract_skill_management",
     "contract_todo_monitor",
     "contract_plan",
     "tests.contract_scheduler",
@@ -368,14 +513,25 @@ PRODUCT_ROOT_SUITES = (
     "tests.release.contract_lint",
     "tests.release.contract_dependencies",
     "tests.contract_codex_adapter",
+    "tests.contract_codex_mailbox",
+    "tests.integration_observation_drain",
+    "tests.contract_codex_sandbox",
+    # proposal 116 P4: permissions profile 的 deny-read 投影 (平台矩阵 / bypass / symlink)
+    "tests.contract_codex_permissions",
     "tests.contract_failure_codes",
     "tests.contract_codex_isolation",
+    "tests.contract_mcp_projection",
+    "tests.contract_mcp_admission",
+    "tests.contract_mcp_inventory",
+    "tests.contract_mcp_credentials",
     "tests.contract_artifact_directives",
     "tests.contract_runtime_driver",
     "tests.contract_runtime_suspension",
     "tests.contract_codex_activity",
     "tests.contract_codex_suspension",
     "tests.contract_codex_admission",
+    # proposal 115/116: 技能全文边界 (零提权文案 / 获取只经 serve / 授权以 receipt 再确认)
+    "tests.contract_skill_fulltext",
     "tests.contract_codex_capacity",
     "tests.contract_runtime_gateway",
     "tests.release.contract_distribution",
@@ -401,6 +557,28 @@ RUNTIME_BINARY_EXCLUSIVE = frozenset(
         "contract_capabilities",
         "integration_serve",
         "tests.contract_codex_isolation",
+        "tests.contract_mcp_projection",
+    }
+)
+
+
+# These suites compose real product applications. Their temporary product homes
+# do not isolate the permanent OS-account coordinator: maintenance intent locks
+# on common ancestors are deliberately exclusive. Run them outside the parallel
+# batch instead of adding product path overrides or retrying failed assertions.
+# This set remains enabled by --no-runtime-binary.
+NATIVE_COORDINATOR_EXCLUSIVE = frozenset(
+    {
+        "contract_auth",
+        "contract_account_trust",
+        "contract_bridge_routes",
+        "contract_cors",
+        "contract_product_boundaries",
+        "contract_review_boundary",
+        "contract_runtime_inventory_drain",
+        "contract_session_listing",
+        "contract_startup",
+        "contract_startup_sources",
     }
 )
 
@@ -424,32 +602,191 @@ def _parse_jobs(argv: list[str]) -> int:
     return min(8, os.cpu_count() or 4)
 
 
-def _child_environment(*, product_root: bool) -> dict[str, str]:
-    """子进程环境: 按套件归属只放它自己的根, 两个同名 ``tests`` 包互不可见。
+class UndrainedSuite(RuntimeError):
+    """The suite could not be stopped; retain its owned directories for diagnosis."""
 
-    开源布局下有两个 ``tests`` 包 —— ``apps/serve/tests``(serve 域契约) 与仓库根
-    ``tests``(跨包 integration/acceptance/release gate)。若把两个根同时放进
-    PYTHONPATH, Python 只会解析到先命中的那一个, 另一批套件就会静默 import 错包。
-    因此这里按归属二选一: 跨包套件只看仓库根, serve 套件只看 serve 包根。
+
+@contextmanager
+def _measure(timings: dict[str, float] | None, phase: str) -> Iterator[None]:
+    started = time.perf_counter_ns() if timings is not None else None
+    try:
+        yield
+    finally:
+        if timings is not None and started is not None:
+            timings[phase] = (
+                timings.get(phase, 0.0)
+                + (time.perf_counter_ns() - started) / NANOSECONDS_PER_MILLISECOND
+            )
+
+
+@contextmanager
+def _child_environment(
+    *, product_root: bool, timings: dict[str, float] | None = None
+) -> Iterator[dict[str, str]]:
+    """Resolve the owning tests package first, then repository-qualified fixtures.
+
+    Both roots contain a regular ``tests`` package. Its owner must precede the
+    repository and inherited paths; ``apps.serve.tests`` still needs the repository
+    root explicitly because -P excludes the working directory from imports.
     """
 
+    preparation_started = time.perf_counter_ns() if timings is not None else None
     env = os.environ.copy()
     owner_root = REPOSITORY_ROOT if product_root else SERVE_ROOT
-    source_path = os.pathsep.join((str(RUNTIME_SOURCE_ROOT), str(owner_root)))
+    source_path = os.pathsep.join(
+        map(str, dict.fromkeys((RUNTIME_SOURCE_ROOT, owner_root, REPOSITORY_ROOT)))
+    )
     inherited = env.get(PYTHONPATH_ENV, "")
     env[PYTHONPATH_ENV] = os.pathsep.join((source_path, inherited)) if inherited else source_path
     env[PYTHON_SAFE_PATH_ENV] = "1"
-    # Each child owns runtime state even if a test forgets its own home override.
-    isolated_home = Path(tempfile.mkdtemp(prefix="scholarseed-contract-home-"))
-    env[brand.HOME_ENV] = str(isolated_home)
-    env[brand.TRACE_HOME_ENV] = str(isolated_home)
-    env[brand.TRACE_LEDGER_ROOT_ENV] = str(isolated_home / brand.PROJECTS_DIRNAME)
-    env[brand.CODEX_HOME_ENV] = str(isolated_home / brand.CODEX_DIRNAME)
-    return env
+    # The parent owns isolated runtime state until the child's scope drains.
+    # Native directory admission requires physical paths, including on macOS
+    # where the default temporary directory can have a /var symlink ancestor.
+    owned = []
+    try:
+        isolated_home = make_directory(SUITE_HOME_PREFIX)
+        owned.append(isolated_home)
+        env[brand.HOME_ENV] = str(isolated_home)
+        env[brand.TRACE_HOME_ENV] = str(isolated_home)
+        env[brand.TRACE_LEDGER_ROOT_ENV] = str(isolated_home / brand.PROJECTS_DIRNAME)
+        env[brand.CODEX_HOME_ENV] = str(isolated_home / brand.CODEX_DIRNAME)
+        temporary_root = make_directory(
+            SUITE_TEMP_PREFIX,
+            parent=(
+                None
+                if os.environ.get(LEASE_TEST_ROOT_ENV)
+                else SUITE_TEMP_PARENTS.get(sys.platform)
+            ),
+        )
+        owned.append(temporary_root)
+        for variable in ("TMPDIR", "TEMP", "TMP"):
+            env[variable] = str(temporary_root)
+        if timings is not None and preparation_started is not None:
+            timings["preparationMs"] = (
+                time.perf_counter_ns() - preparation_started
+            ) / NANOSECONDS_PER_MILLISECOND
+        yield env
+    except BaseException as error:
+        if isinstance(error, UndrainedSuite) or (
+            isinstance(error, BaseExceptionGroup) and error.subgroup(UndrainedSuite) is not None
+        ):
+            owned.clear()
+        raise
+    finally:
+        cleanup_started = time.perf_counter_ns() if timings is not None else None
+        primary = sys.exception()
+        errors = []
+        for directory in reversed(owned):
+            try:
+                shutil.rmtree(filesystem_path(directory))
+            except BaseException as error:
+                errors.append(error)
+        if timings is not None and cleanup_started is not None:
+            timings["directoryCleanupMs"] = (
+                time.perf_counter_ns() - cleanup_started
+            ) / NANOSECONDS_PER_MILLISECOND
+        if errors:
+            raise BaseExceptionGroup(
+                "suite execution or directory cleanup failed",
+                ([primary] if primary is not None else []) + errors,
+            )
 
 
-def _run_suite(suite: str) -> tuple[str, int, str, str]:
-    """跑单套契约 (独立子进程); 返回 (套件名, 退码, 末行摘要, 失败时的输出尾部)。
+@contextmanager
+def _suite_job() -> Iterator[WindowsJob | None]:
+    job = WindowsJob() if sys.platform == "win32" else None
+    try:
+        yield job
+    finally:
+        if job is not None:
+            primary = sys.exception()
+            try:
+                job.close()
+            except BaseException as error:
+                raise BaseExceptionGroup(
+                    "suite execution or job close failed",
+                    ([primary] if primary is not None else []) + [error],
+                )
+
+
+def _scope_active(proc: subprocess.Popen[str], job: WindowsJob | None) -> bool:
+    if job is not None:
+        return job.active()
+    if sys.platform == "win32":
+        raise RuntimeError("Windows suite has no owned Job Object")
+    try:
+        os.killpg(proc.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    snapshot = subprocess.run(
+        [POSIX_PROCESS_TOOL, "-A", "-o", "pgid=", "-o", "state="],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=SUITE_TIMEOUT_SECONDS,
+    )
+    for row in snapshot.stdout.splitlines():
+        group, state = row.split()
+        if int(group) == proc.pid and not state.startswith(ZOMBIE_STATE):
+            return True
+    return False
+
+
+def _wait_scope(proc: subprocess.Popen[str], job: WindowsJob | None) -> None:
+    deadline = time.monotonic() + SUITE_TIMEOUT_SECONDS
+    while _scope_active(proc, job):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("suite process scope did not drain")
+        time.sleep(SCOPE_POLL_SECONDS)
+
+
+def _stop_suite(proc: subprocess.Popen[str], job: WindowsJob | None = None) -> tuple[str, str]:
+    if job is not None:
+        job.terminate()
+        if proc.poll() is None:
+            proc.kill()
+    elif sys.platform == "win32":
+        raise RuntimeError("cannot stop Windows suite without Job Object ownership")
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            if _scope_active(proc, job):
+                raise
+    try:
+        return proc.communicate(timeout=SUITE_TIMEOUT_SECONDS)
+    finally:
+        primary = sys.exception()
+        errors = []
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except BaseException as error:
+                    errors.append(error)
+        try:
+            proc.wait(timeout=SUITE_TIMEOUT_SECONDS)
+            _wait_scope(proc, job)
+        except BaseException as error:
+            errors.append(error)
+        if errors:
+            raise BaseExceptionGroup(
+                "suite pipe cleanup or wait failed",
+                ([primary] if primary is not None else []) + errors,
+            )
+
+
+def _run_suite(
+    suite: str,
+    case_report_dir: Path | None = None,
+    timings: dict[str, float] | None = None,
+    queued_at: int | None = None,
+) -> tuple[str, int, str, str, int]:
+    """跑单套契约 (独立子进程); 返回 (套件名, 退码, 末行摘要, 失败时的完整输出)。
 
     带点的名字 (如 ``tests.contract_distribution``) 是仓库根的跨包套件, 原样执行;
     裸名是 serve 域套件, 补上 ``tests.`` 前缀并在 serve 包根下解析。
@@ -462,65 +799,271 @@ def _run_suite(suite: str) -> tuple[str, int, str, str]:
     只杀直接子进程会把它们留成孤儿, 继续占端口与句柄。
     """
 
+    emit("suite", suite, "starting")
     product_root = "." in suite
+    if timings is not None and queued_at is not None:
+        timings["queueWaitMs"] = (time.perf_counter_ns() - queued_at) / NANOSECONDS_PER_MILLISECOND
     mod = suite if product_root else f"{SERVE_SUITE_PREFIX}{suite}"
-    proc = subprocess.Popen(  # pylint: disable=consider-using-with
-        [sys.executable, "-P", "-m", mod],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=_child_environment(product_root=product_root),
-        start_new_session=True,
+    command = [sys.executable, "-P", "-m", mod]
+    if case_report_dir is not None:
+        command = [
+            sys.executable,
+            "-P",
+            str(Path(__file__).with_name("observations.py")),
+            "--module",
+            mod,
+            "--report",
+            str(case_report_dir.resolve() / f"{suite}.json"),
+        ]
+    started = time.monotonic()
+    timed_out = False
+    environment_context = (
+        _child_environment(product_root=product_root)
+        if timings is None
+        else _child_environment(product_root=product_root, timings=timings)
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=SUITE_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
+    with (
+        _measure(timings, "totalMs"),
+        environment_context as environment,
+        _suite_job() as job,
+    ):
+        # Nested runner probes are test fixtures, not live smoke work.
+        if environment.get(PROGRESS_MODULE):
+            environment.pop(PROGRESS_DIRECTORY, None)
+        environment[PROGRESS_MODULE] = mod
+        environment[ISOLATED_JOBS_ENV] = str(
+            isolated_jobs() if suite in PARALLEL_CASE_SUITES else 1
+        )
+        proc = None
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        stdout, stderr = proc.communicate()
+            with _measure(timings, "processCreationMs"):
+                proc = subprocess.Popen(  # pylint: disable=consider-using-with
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=environment,
+                    start_new_session=job is None,
+                    creationflags=WindowsFlag.CREATE_SUSPENDED if job is not None else 0,
+                )
+                if job is not None:
+                    job.attach_and_resume(proc.pid)
+            with _measure(timings, "childExecutionAndWaitMs"):
+                stdout, stderr = proc.communicate(timeout=SUITE_TIMEOUT_SECONDS)
+            with _measure(timings, "scopeCheckMs"):
+                if _scope_active(proc, job):
+                    raise RuntimeError("suite descendants survived direct child exit")
+        except BaseException as primary:
+            if proc is None:
+                raise
+            try:
+                with _measure(timings, "failureScopeDrainMs"):
+                    stdout, stderr = _stop_suite(proc, job)
+            except BaseException as cleanup:
+                raise UndrainedSuite(
+                    f"suite drain failed; retained home={environment[brand.HOME_ENV]} "
+                    f"tmp={environment['TMPDIR']}"
+                ) from BaseExceptionGroup("suite execution and drain failed", [primary, cleanup])
+            if not isinstance(primary, subprocess.TimeoutExpired):
+                raise
+            timed_out = True
+    if timed_out:
         summary = f"超时 {SUITE_TIMEOUT_SECONDS}s 未结束, 已杀进程组"
-        return suite, TIMEOUT_EXIT_CODE, summary, f"{summary}\n{stdout[-2000:]}{stderr[-2000:]}"
+        return (
+            suite,
+            TIMEOUT_EXIT_CODE,
+            summary,
+            f"{summary}\n{stdout}{stderr}",
+            int((time.monotonic() - started) * 1000),
+        )
     tail = (stdout or stderr).strip().splitlines()[-1:] or ["(no output)"]
-    return suite, proc.returncode, tail[0], stdout[-2000:] + stderr[-2000:]
+    return (
+        suite,
+        proc.returncode,
+        tail[0],
+        (stdout + stderr) if proc.returncode else "",
+        int((time.monotonic() - started) * 1000),
+    )
+
+
+def write_report(
+    target: Path,
+    planned: list[str],
+    results: dict[str, tuple[int, int]],
+    omitted: list[str] | None = None,
+    case_report_dir: Path | None = None,
+    timings_by_suite: dict[str, dict[str, float]] | None = None,
+) -> dict[str, object]:
+    rows = []
+    for suite in planned:
+        result = results.get(suite)
+        exit_code, duration_ms = result if result is not None else (None, None)
+        rows.append(
+            {
+                "suite": suite,
+                "exitCode": exit_code,
+                "durationMs": duration_ms,
+                "timedOut": exit_code == TIMEOUT_EXIT_CODE,
+                "status": "missing" if result is None else "passed" if exit_code == 0 else "failed",
+            }
+        )
+        if case_report_dir is not None:
+            if timings_by_suite is not None:
+                rows[-1]["timings"] = timings_by_suite.get(suite, {})
+            case_report = case_report_dir.resolve() / f"{suite}.json"
+            rows[-1]["caseReport"] = str(case_report)
+            try:
+                rows[-1]["observations"] = json.loads(case_report.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                rows[-1]["observations"] = {"errors": [str(error)], "exitStatus": 1}
+                rows[-1]["status"] = "failed"
+    report = {
+        "schemaVersion": 1,
+        "planned": planned,
+        "omitted": omitted or [],
+        "results": rows,
+        "verdict": "pass" if planned and all(row["status"] == "passed" for row in rows) else "fail",
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=target.parent, delete=False
+    ) as temporary:
+        json.dump(report, temporary, ensure_ascii=False)
+        temporary.write("\n")
+        temporary_path = Path(temporary.name)
+    try:
+        os.replace(temporary_path, target)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return report
+
+
+def _report_path(argv: list[str]) -> Path | None:
+    for index, arg in enumerate(argv):
+        if arg == "--report":
+            if index + 1 >= len(argv):
+                raise ValueError("--report requires a path")
+            return Path(argv[index + 1])
+        if arg.startswith("--report="):
+            return Path(arg.split("=", 1)[1])
+    return None
 
 
 def main() -> int:
+    if "--list" in sys.argv:
+        print(json.dumps({"schemaVersion": 1, "suites": SUITES + SLOW}))
+        return 0
+    case_report_dir = None
+    if "--case-report-dir" in sys.argv:
+        index = sys.argv.index("--case-report-dir")
+        if index + 1 >= len(sys.argv):
+            raise ValueError("--case-report-dir requires a path")
+        case_report_dir = Path(sys.argv[index + 1]).resolve()
     fast = "--fast" in sys.argv
     # CI runner 上没有 runtime 二进制 (codex 等), 起真 app-server 的套件必然失败。
     # 这不是“跳过不过的测试”而是分层: 无二进制环境跑约束层, 真产品验收另跑。
     no_runtime_binary = "--no-runtime-binary" in sys.argv
     jobs = _parse_jobs(sys.argv)
     planned = SUITES + ([] if fast else SLOW)
+    only: list[str] = []
+    for index, argument in enumerate(sys.argv):
+        if argument == "--only-suite":
+            if index + 1 >= len(sys.argv) or sys.argv[index + 1] not in planned:
+                raise ValueError("--only-suite requires a known suite")
+            only.append(sys.argv[index + 1])
+    if len(set(only)) != len(only):
+        raise ValueError("duplicate only suite")
+    if only:
+        planned = [suite for suite in planned if suite in only]
+    exclusion_flag = "--exclude-suite"
+    excluded = []
+    for index, argument in enumerate(sys.argv):
+        if argument == exclusion_flag:
+            if index + 1 >= len(sys.argv) or sys.argv[index + 1] not in planned:
+                raise ValueError("--exclude-suite requires a known suite")
+            excluded.append(sys.argv[index + 1])
+    if len(set(excluded)) != len(excluded):
+        raise ValueError("duplicate excluded suite")
+    planned = [suite for suite in planned if suite not in excluded]
     if no_runtime_binary:
         planned = [suite for suite in planned if suite not in RUNTIME_BINARY_EXCLUSIVE]
     failed: list[str] = []
     err_output: dict[str, str] = {}
+    results: dict[str, tuple[int, int]] = {}
 
-    def record(result: tuple[str, int, str, str]) -> None:
-        suite, returncode, tail, err = result
+    def record(result: tuple[str, int, str, str, int]) -> None:
+        suite, returncode, tail, err, duration_ms = result
+        results[suite] = (returncode, duration_ms)
+        emit("suite", suite, "passed" if returncode == 0 else "failed", durationMs=duration_ms)
         print(f"[{'OK ' if returncode == 0 else 'FAIL'}] {suite}: {tail}", flush=True)
         if returncode != 0:
             failed.append(suite)
             err_output[suite] = err
 
-    exclusive = [suite for suite in planned if suite in RUNTIME_BINARY_EXCLUSIVE]
-    concurrent = [suite for suite in planned if suite not in RUNTIME_BINARY_EXCLUSIVE]
+    serialized = RUNTIME_BINARY_EXCLUSIVE | NATIVE_COORDINATOR_EXCLUSIVE
+    # Case workers run outside the suite pool to avoid nested oversubscription.
+    if isolated_jobs() > 1:
+        serialized = serialized | PARALLEL_CASE_SUITES
+    exclusive = [suite for suite in planned if suite in serialized]
+    concurrent = [suite for suite in planned if suite not in serialized]
+    timings_by_suite = {suite: {} for suite in planned} if case_report_dir is not None else None
+    lane_ready = time.perf_counter_ns() if timings_by_suite is not None else None
     # 并发批: 纯 Python 子进程之间确实无共享态。按完成顺序流式打印, 失败列表最后按
     # planned 顺序回放。起真 codex app-server 的套件不在这里 —— 它们抢同一个二进制与
     # 机器的进程容量, 并发会把 codex 预检拖过超时上限。
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {pool.submit(_run_suite, suite): suite for suite in concurrent}
+        futures = {
+            (
+                pool.submit(_run_suite, suite, case_report_dir)
+                if timings_by_suite is None
+                else pool.submit(
+                    _run_suite,
+                    suite,
+                    case_report_dir,
+                    timings_by_suite[suite],
+                    time.perf_counter_ns(),
+                )
+            ): suite
+            for suite in concurrent
+        }
         for future in as_completed(futures):
             record(future.result())
     for suite in exclusive:
-        record(_run_suite(suite))
+        record(
+            _run_suite(suite, case_report_dir)
+            if timings_by_suite is None
+            else _run_suite(suite, case_report_dir, timings_by_suite[suite], lane_ready)
+        )
+    report_failed = False
+    report_path = _report_path(sys.argv[1:])
+    if report_path is not None:
+        report = write_report(
+            report_path,
+            planned,
+            results,
+            omitted=[suite for suite in SUITES + SLOW if suite not in planned],
+            case_report_dir=case_report_dir,
+            timings_by_suite=timings_by_suite,
+        )
+        report_failed = case_report_dir is not None and report["verdict"] != "pass"
+        if report_failed:
+            sys.stderr.write(f"[ci:failure] report={report_path}\n")
+            for row in report["results"]:
+                if row["status"] != "passed":
+                    sys.stderr.write(
+                        f"[ci:failure] suite={row['suite']} exit={row['exitCode']} "
+                        f"case_report={row.get('caseReport')}\n"
+                    )
+                    for error in row.get("observations", {}).get("errors", []):
+                        sys.stderr.write(f"[ci:failure] {error}\n")
     if failed:
         failed.sort(key=planned.index)
         for suite in failed:
+            sys.stderr.write(f"[ci:failure] suite={suite} output follows\n")
             sys.stderr.write(err_output[suite])
         print(f"\nREGRESSION FAILED: {failed}")
+        return 1
+    if report_failed:
         return 1
     print("\nALL GREEN")
     return 0

@@ -1,8 +1,9 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { DiagnosticPolicy, DiagnosticPreview } from '../../api'
 import {
-  DiagnosticOperationError, clearDetailedDiagnostics, DiagnosticPolicy, DiagnosticPreview, downloadDetailedDiagnostics,
+  DiagnosticOperationError, clearDetailedDiagnostics, downloadDetailedDiagnostics,
   getDiagnosticPolicy, previewDetailedDiagnostics, SESSION_DIAGNOSTIC_FILENAME, setDiagnosticPolicy
 } from '../../api'
 import { Button, Checkbox } from '../ui'

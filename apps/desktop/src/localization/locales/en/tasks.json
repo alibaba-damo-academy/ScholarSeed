@@ -1,18 +1,31 @@
 {
+  "plan": {
+    "timing": {
+      "upperBound": "{{duration}}",
+      "upperBoundExplanation": "This step has no recorded start. The value is an upper bound from the last pending snapshot or this turn's start to the first completion report, not an exact execution time. User waits and idle time between turns are excluded.",
+      "notStarted": "Not started",
+      "unrecorded": "Not recorded"
+    }
+  },
   "feedback": {
     "completed": "{{name}} completed",
     "cancelled": "{{name}} cancelled",
-    "incomplete": "{{name}} did not fully complete"
+    "incomplete": "{{name}}: some or all sources failed.",
+    "reasonUnavailable": "The task result did not include a cause. Retry in Message center; keep the logs if it fails again.",
+    "moreFailures_one": "{{count}} more source failed. Open Message center for details.",
+    "moreFailures_other": "{{count}} more sources failed. Open Message center for details.",
+    "viewTaskCenter": "View Message center"
   },
   "center": {
-    "title": "Task center",
+    "clearCompleted": "Clear completed messages",
+    "title": "Message center",
+    "noFiles": "No associated files",
     "description": "Tasks continue in the background when you switch pages.",
-    "empty": "No background tasks"
+    "empty": "No messages"
   },
   "status": {
     "queued": "Queued",
     "running": "Running",
-    "settling": "Finalizing",
     "completed": "Completed",
     "partial": "Partially completed",
     "failed": "Failed",
@@ -21,7 +34,6 @@
   "progress": {
     "failed": "Execution failed",
     "linking": "Creating links",
-    "refreshing": "Refreshing the resource tree",
     "preparing": "Preparing",
     "copying": "Copying",
     "scanning_one": "Scanning ({{count}} item found)",
@@ -52,11 +64,11 @@
       "sourceNotFound": "The selected local file or folder no longer exists.",
       "parentNotWritable": "The destination is not writable. Fix its permissions or choose another folder.",
       "targetNotFound": "The destination folder does not exist.",
-      "nameExists": "An item with the same name already exists here.",
+      "nameExists": "An item with the same name already exists here. Rename it or choose another destination, then retry.",
       "importFailed": "Import failed. Check the source and destination permissions.",
       "copyFailed": "Copy failed. Check the folder permissions.",
-      "rootExists": "A linked source with the same name already exists.",
-      "sourceOverlap": "This folder is already covered by a linked parent folder.",
+      "rootExists": "A linked source with the same name already exists. Check the existing link or choose another folder.",
+      "sourceOverlap": "This folder is already covered by a linked parent folder. Use that link or unlink the parent first.",
       "sourceCoversLinks": "Its subfolders are already linked separately. Supersede those child links to mount this parent folder.",
       "diskFull": "There is not enough disk space. Free up space and try again.",
       "storageIoFailed": "Local storage could not be read or written. Check the disk and try again.",

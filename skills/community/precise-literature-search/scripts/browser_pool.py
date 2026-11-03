@@ -1,5 +1,5 @@
 #!/usr/bin/env scholarseed-skill-python
-"""Three local, persistent Chrome leases. Unknown cleanup always fails closed.
+"""Three local, persistent browser leases. Unknown cleanup always fails closed.
 
 Lock order: run lock -> pool lock -> nonblocking slot execution lock. The pool
 lock is never held over process/network waits. Workers are registered before a
@@ -25,6 +25,7 @@ import uuid
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 from urllib.parse import urlparse
 
+from filesystem import filesystem_path, path_exists
 from io_utils import atomic_write_json, atomic_write_text, read_json
 from process_control import ChildProcessCancelled, wait_for_exit
 from profile_template import (
@@ -54,7 +55,7 @@ def cancellation_signals():
 
 @contextmanager
 def run_lock(run_dir, *, blocking=True):
-    path = Path(run_dir) / "downloads/.paid-download.lock"
+    path = filesystem_path(Path(run_dir) / "downloads/.paid-download.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as handle:
         try:
@@ -129,31 +130,54 @@ def cdp_json(endpoint, path):
 
 
 def validate_config():
-    for name in ("PAPER_DL_CDP_ENDPOINT", "PAPER_DL_CDP_PROFILE"):
+    for name in ("PAPER_DL_CDP_ENDPOINT", "PAPER_DL_CDP_PROFILE", "PAPER_DL_PROFILE"):
         if os.getenv(name):
-            raise PoolError(f"Unset {name}: interactive downloads now use the shared three-slot browser pool")
+            raise PoolError(f"Unset {name}: both download modes use the shared three-slot browser pool; use PAPER_DL_PROFILE_TEMPLATE for login templates")
     if os.getenv("PAPER_DL_ZOTERO_MODE", "off") != "off":
         raise PoolError("The browser-pool requires PAPER_DL_ZOTERO_MODE=off; Zotero concurrency is not supported")
     if os.getenv("PAPER_DL_AUTO_LAUNCH_CHROME", "yes").lower() in {"0", "no", "false"}:
-        raise PoolError("The browser pool owns Chrome startup; unset PAPER_DL_AUTO_LAUNCH_CHROME")
+        raise PoolError("The browser pool owns browser startup; unset PAPER_DL_AUTO_LAUNCH_CHROME")
 
 
 def chrome_executable():
+    """Resolve the configured browser, otherwise Chrome first and Edge second."""
     configured = os.getenv("PAPER_DL_CHROME_EXECUTABLE")
     candidates = [configured] if configured else [
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         str(Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        shutil.which("google-chrome"), shutil.which("google-chrome-stable"), shutil.which("chromium"),
+        shutil.which("google-chrome"), shutil.which("google-chrome-stable"),
     ]
     if WINDOWS and not configured:
         candidates = [str(Path(base) / vendor / "Application/chrome.exe")
                       for key in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
-                      if (base := os.getenv(key)) for vendor in ("Google/Chrome", "Chromium")]
+                      if (base := os.getenv(key)) for vendor in ("Google/Chrome",)]
         candidates.append(shutil.which("chrome.exe"))
+    if not configured:
+        if WINDOWS:
+            candidates.extend(str(Path(base) / "Microsoft/Edge/Application/msedge.exe")
+                              for key in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
+                              if (base := os.getenv(key)))
+            candidates.append(shutil.which("msedge.exe"))
+            candidates.extend(str(Path(base) / "Chromium/Application/chrome.exe")
+                              for key in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
+                              if (base := os.getenv(key)))
+        else:
+            candidates.extend([
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                str(Path.home() / "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                shutil.which("microsoft-edge"), shutil.which("microsoft-edge-stable"),
+                shutil.which("chromium"),
+            ])
     for value in candidates:
         if value and Path(value).is_file() and os.access(value, os.X_OK):
             return str(Path(value).resolve())
-    raise PoolError("Chrome executable not found; install Chrome and configure PAPER_DL_CHROME_EXECUTABLE or PATH")
+    raise PoolError("Browser executable not found; install Chrome or Edge and configure PAPER_DL_CHROME_EXECUTABLE or PATH")
+
+
+def browser_kind(executable):
+    return "edge" if Path(executable).name.lower() in {
+        "msedge", "msedge.exe", "microsoft edge", "microsoft-edge", "microsoft-edge-stable",
+    } else "chrome"
 
 
 class BrowserPool:
@@ -161,7 +185,9 @@ class BrowserPool:
         self.default_root = (Path.home() / ".paper-dl/browser-pool").resolve()
         self.root = Path(root or os.getenv("PAPER_DL_BROWSER_POOL_DIR") or self.default_root).expanduser().resolve()
 
-    def profile_path(self, slot):
+    def profile_path(self, slot, browser="chrome"):
+        if browser == "edge":
+            return self.root / f"slot-{slot}" / "edge-profile"
         if self.root == self.default_root:
             if slot == 1:
                 return Path.home() / ".paper-dl-cdp-profile"
@@ -199,7 +225,7 @@ class BrowserPool:
 
     def acquire(self, run_dir, *, existing_only=False, maintenance=False, on_wait=None):
         run_dir = Path(run_dir).resolve()
-        if existing_only and not self.root.exists() and not (run_dir / REFERENCE).exists():
+        if existing_only and not self.root.exists() and not path_exists(run_dir / REFERENCE):
             return None
         self.prepare(run_dir)
         ref_path = run_dir / REFERENCE
@@ -207,13 +233,13 @@ class BrowserPool:
             primary_busy = False
             # Legacy Chrome has no pool lease. Inspect it outside the pool lock
             # and leave its profile untouched, using a parallel slot instead.
-            if self.root == self.default_root and not existing_only and not ref_path.exists():
+            if self.root == self.default_root and not existing_only and not path_exists(ref_path):
                 try:
                     require_offline(self.profile_path(1))
                 except ProfileInUse:
                     primary_busy = True
             with self.locked():
-                ref = read_json(ref_path) if ref_path.exists() else None
+                ref = read_json(ref_path) if path_exists(ref_path) else None
                 if ref and ref.get("pool") != str(self.root):
                     raise PoolError("Run belongs to a different browser pool; use its original PAPER_DL_BROWSER_POOL_DIR")
                 states = [self.state(slot) for slot in range(1, CAPACITY + 1)]
@@ -246,16 +272,16 @@ class BrowserPool:
                         lock_file(handle, blocking=False)
                     except BlockingIOError:
                         handle.close()
-                        if not owned:
-                            continue
-                        raise PoolError("This browser slot is already executing; retry after it finishes")
-                    try:
-                        atomic_write_json(self.state_path(state["slot"]), state)
-                        atomic_write_json(ref_path, {"pool": str(self.root), "slot": state["slot"], "lease_id": state["lease_id"]})
-                    except BaseException:
-                        handle.close()
-                        raise
-                    return Lease(self, run_dir, state, handle)
+                        if owned:
+                            raise PoolError("This browser slot is already executing; retry after it finishes")
+                    else:
+                        try:
+                            atomic_write_json(self.state_path(state["slot"]), state)
+                            atomic_write_json(ref_path, {"pool": str(self.root), "slot": state["slot"], "lease_id": state["lease_id"]})
+                        except BaseException:
+                            handle.close()
+                            raise
+                        return Lease(self, run_dir, state, handle)
             if on_wait:
                 on_wait()
             time.sleep(0.25)
@@ -374,7 +400,7 @@ class Lease:
         # Check before touching Preferences/history, including for legacy
         # profiles which may be open outside this pool. Paused resumes skip it.
         require_offline(self.profile)
-        initialize_profile(self.profile, self.pool.root)
+        initialize_profile(self.profile, self.pool.root, browser=self.state.get("browser_kind", "chrome"))
         self.profile.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.profile.mkdir(exist_ok=True, mode=0o700)
         if WINDOWS:
@@ -386,20 +412,20 @@ class Lease:
     def verify_browser(self):
         record = self.state.get("browser")
         if not record or process_identity(record["pid"]) != record["started"]:
-            raise PoolError("Owned Chrome process is unavailable; abandon this lease before retrying")
+            raise PoolError("Owned browser process is unavailable; abandon this lease before retrying")
         active = (self.profile / "DevToolsActivePort").read_text().splitlines()
         port = int(active[0])
         if not 0 < port < 65536 or not active[1].startswith("/devtools/browser/"):
-            raise PoolError("Invalid owned Chrome discovery record")
+            raise PoolError("Invalid owned browser discovery record")
         if self.state.get("port") is not None and port != self.state["port"]:
-            raise PoolError("Chrome discovery port does not match this lease's reservation")
+            raise PoolError("Browser discovery port does not match this lease's reservation")
         endpoint = f"http://127.0.0.1:{port}"
         version = cdp_json(endpoint, "/json/version")
         websocket = urlparse(version.get("webSocketDebuggerUrl", ""))
         if websocket.hostname != "127.0.0.1" or websocket.port != port or websocket.path != active[1]:
-            raise PoolError("CDP endpoint does not belong to the leased Chrome")
+            raise PoolError("CDP endpoint does not belong to the leased browser")
         if self.endpoint and self.endpoint != endpoint:
-            raise PoolError("Owned Chrome endpoint changed unexpectedly")
+            raise PoolError("Owned browser endpoint changed unexpectedly")
         return endpoint
 
     def reserve_port(self):
@@ -431,31 +457,36 @@ class Lease:
             endpoint = self.verify_browser()
             self.save(phase="running", endpoint=endpoint)
             return
-        executable = chrome_executable()
+        executable = self.state.get("browser_executable") or chrome_executable()
+        kind = browser_kind(executable)
+        if not self.state.get("browser_executable"):
+            if kind == "edge":
+                self.profile = self.pool.profile_path(self.state["slot"], kind).resolve()
+            self.save(browser_executable=executable, browser_kind=kind, profile=str(self.profile))
         self.prepare_profile()
         port = self.reserve_port()
         process = self.spawn("browser", [executable, "--remote-debugging-address=127.0.0.1",
             f"--remote-debugging-port={port}", f"--user-data-dir={self.profile}",
             "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble", "about:blank"])
         deadline = time.monotonic() + timeout
-        last_error = "Chrome startup timed out"
+        last_error = "Browser startup timed out"
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise PoolError("Managed Chrome exited during startup")
+                raise PoolError("Managed browser exited during startup")
             try:
                 endpoint = self.verify_browser()
                 pages = cdp_json(endpoint, "/json/list")
                 if not isinstance(pages, list) or any(
-                    page.get("type") == "page" and page.get("url") not in {"", "about:blank", "chrome://newtab/"}
+                    page.get("type") == "page" and page.get("url") not in {"", "about:blank", "chrome://newtab/", "edge://newtab/"}
                     for page in pages
                 ):
-                    raise PoolError("Chrome restored old pages; slot cannot start a new download")
+                    raise PoolError("Browser restored old pages; slot cannot start a new download")
                 self.save(phase="running", endpoint=endpoint)
                 return
             except (OSError, ValueError, IndexError) as exc:
                 last_error = str(exc)
                 time.sleep(0.2)
-        raise PoolError(f"Owned Chrome did not become ready: {last_error}")
+        raise PoolError(f"Owned browser did not become ready: {last_error}")
 
     def run_download(self, command, cwd=None, text=True, timeout=None):
         self.verify_browser()
@@ -491,7 +522,7 @@ class Lease:
                 current = self.pool.state(self.state["slot"])
                 if not current or current["lease_id"] != self.state["lease_id"]:
                     raise PoolError("Stale browser lease; refusing release")
-                (self.run_dir / REFERENCE).unlink(missing_ok=True)
+                filesystem_path(self.run_dir / REFERENCE).unlink(missing_ok=True)
                 self.pool.state_path(self.state["slot"]).unlink()
         except BaseException:
             self.save(phase="needs_cleanup")
@@ -603,8 +634,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["status", "abandon", "create-template"])
     parser.add_argument("--run-dir", type=Path)
-    parser.add_argument("--source-profile", type=Path, help="Closed Chrome user-data directory containing Default")
-    parser.add_argument("--template-dir", type=Path, help="New output directory; defaults to pool/profile-template")
+    parser.add_argument("--source-profile", type=Path, help="Closed Chrome or Edge user-data directory containing Default")
+    parser.add_argument("--template-dir", type=Path, help="New output directory; defaults to pool/profile-template or pool/edge-profile-template")
+    parser.add_argument("--browser", choices=["chrome", "edge"], default="chrome", help="Browser owning the source template (default: chrome)")
     args = parser.parse_args()
     try:
         if args.command == "status":
@@ -612,12 +644,12 @@ def main():
         elif args.command == "create-template":
             if args.source_profile is None:
                 raise PoolError("create-template requires --source-profile")
-            destination = args.template_dir or BrowserPool().root / "profile-template"
+            destination = args.template_dir or BrowserPool().root / ("edge-profile-template" if args.browser == "edge" else "profile-template")
             with cancellation_signals():
-                path = create_template(args.source_profile, destination)
+                path = create_template(args.source_profile, destination, browser=args.browser)
             result = {"profile_template": str(path), "created": True}
         else:
-            if args.run_dir is None or not args.run_dir.is_dir():
+            if args.run_dir is None or not filesystem_path(args.run_dir).is_dir():
                 raise PoolError("abandon requires an existing --run-dir")
             with cancellation_signals(), run_lock(args.run_dir, blocking=False):
                 result = abandon(args.run_dir.resolve())

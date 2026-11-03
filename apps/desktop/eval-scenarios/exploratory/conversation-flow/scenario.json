@@ -1,0 +1,11 @@
+{
+  "id": "conversation-flow",
+  "config": {
+    "language": "zh"
+  },
+  "drive": "cmd.jsonl",
+  "expected": {
+    "minTurns": 1,
+    "maxTurns": 2
+  }
+}

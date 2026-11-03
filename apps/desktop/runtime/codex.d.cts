@@ -11,5 +11,6 @@ export interface CodexRelease {
     integrity: string
   }
 }
-export function resolveVendoredCodex(desktopRoot: string, platform?: string, arch?: string, log?: (line: string) => void): Promise<CodexRelease>
+export const CACHE_VALIDATION: Readonly<{ execution: 'execution'; integrity: 'integrity' }>
+export function resolveVendoredCodex(desktopRoot: string, platform?: string, arch?: string, log?: (line: string) => void, cachedValidation?: 'execution' | 'integrity'): Promise<CodexRelease>
 export function bundledCodex(resourcesRoot: string): string

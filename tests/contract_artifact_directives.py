@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from scholarseed_codex.directive import DIRECTIVE_LINE_MAX_CHARS, parse_declarations
 from scholarseed_codex.emitter import CodexEmitter
+from scholarseed_codex.mailbox import ObservationMailbox
 from scholarseed_codex.protocol.session import (
     CodexSessionEvent,
     CodexSessionEventKind,
@@ -25,17 +26,20 @@ from scholarseed_runtime.contract.command import OpenSessionRequest
 from scholarseed_runtime.contract.event import DeliveryClass, RuntimeEventKind
 
 SPEC = (ArtifactDirectiveSpec("preview"),)
+EVENT_TIMEOUT_SECONDS = 5
 
 
-class DeclarationContract(unittest.TestCase):
+class DeclarationContract(unittest.IsolatedAsyncioTestCase):
     def session(self) -> CodexRuntimeSession:
         temporary = tempfile.TemporaryDirectory(prefix="artifact-directive-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        with patch("scholarseed_codex.session.prepare_codex_runtime_home", return_value=root):
-            return CodexRuntimeSession(
+        with patch("scholarseed_codex.pool.CodexHostPool.prepare_home", return_value=(root, "")):
+            session = CodexRuntimeSession(
                 OpenSessionRequest("product", root, artifact_directives=SPEC)
             )
+        self.addAsyncCleanup(session._events.close)
+        return session
 
     def parse(self, text: str, identity: str = "thread:turn:item"):
         return parse_declarations(text, SPEC, message_identity=identity)
@@ -158,7 +162,7 @@ class DeclarationContract(unittest.TestCase):
             with self.subTest(streamed=streamed):
                 asyncio.run(scenario(streamed))
 
-    def test_history_cleans_assistant_declarations_without_republishing(self):
+    async def test_history_cleans_assistant_declarations_without_republishing(self):
         session = self.session()
         declaration = '::preview{file="report.md" role="final"}'
         texts = [declaration, "Ready\n" + declaration, "```\n" + declaration + "\n```"]
@@ -170,14 +174,18 @@ class DeclarationContract(unittest.TestCase):
                 for index, (role, text) in enumerate(zip(["user", "assistant", "assistant"], texts))
             ]
         )
-        history = asyncio.run(session.history())
+        history = await session.history()
         self.assertEqual([entry["text"] for entry in history], [texts[0], "Ready", texts[2]])
-        self.assertTrue(session._events.empty())
+        self.assertEqual(session._events.qsize(), 0)
         self.assertEqual(session._native.history[1].text, texts[1])
 
-    def test_complete_native_item_is_authoritative(self):
-        async def scenario():
+    async def test_complete_native_item_is_authoritative(self):
+        async def scenario(spill: bool):
             session = self.session()
+            if spill:
+                await session._events.close()
+                session._events = ObservationMailbox(memory_budget_bytes=1)
+                self.addAsyncCleanup(session._events.close)
             session._active_command_id = "command"
             session._committed_commands = {"command"}
             session._native = SimpleNamespace(
@@ -204,24 +212,68 @@ class DeclarationContract(unittest.TestCase):
                         payload={"text": text, "phase": "final_answer"},
                     )
                 )
-            return [session._events.get_nowait() for _ in range(session._events.qsize())]
+            self.assertEqual(session._events.qsize(), 4)
+            self.assertEqual(session._events.spilled, spill)
+            stream = session.events()
+            try:
+                events = [
+                    await asyncio.wait_for(anext(stream), EVENT_TIMEOUT_SECONDS) for _ in range(4)
+                ]
+            finally:
+                await stream.aclose()
+            self.assertEqual(session._events.qsize(), 0)
+            return events
 
-        events = asyncio.run(scenario())
-        self.assertEqual([event.sequence for event in events], [1, 2, 3, 4])
-        self.assertEqual(
-            [event.kind for event in events],
-            [
-                RuntimeEventKind.CONTENT_DELTA,
-                RuntimeEventKind.CONTENT_COMPLETED,
-                RuntimeEventKind.ARTIFACT_DECLARED,
-                RuntimeEventKind.TURN_COMPLETED,
-            ],
-        )
-        self.assertEqual(events[1].payload["text"], "最终正文")
-        self.assertEqual(events[2].payload["role"], "final")
-        self.assertEqual(events[2].causation_id, events[1].event_id)
-        self.assertEqual(events[2].delivery, DeliveryClass.MUST_PERSIST)
-        self.assertEqual(events[2].correlation_id, "command")
+        for spill in (False, True):
+            with self.subTest(spill=spill):
+                events = await scenario(spill)
+                self.assertEqual([event.sequence for event in events], [1, 2, 3, 4])
+                self.assertEqual(
+                    [event.kind for event in events],
+                    [
+                        RuntimeEventKind.CONTENT_DELTA,
+                        RuntimeEventKind.CONTENT_COMPLETED,
+                        RuntimeEventKind.ARTIFACT_DECLARED,
+                        RuntimeEventKind.TURN_COMPLETED,
+                    ],
+                )
+                self.assertEqual(events[1].payload["text"], "最终正文")
+                self.assertEqual(events[2].payload["role"], "final")
+                self.assertEqual(events[2].causation_id, events[1].event_id)
+                self.assertEqual(events[2].delivery, DeliveryClass.MUST_PERSIST)
+                self.assertEqual(events[2].correlation_id, "command")
+
+
+class WorkspaceWatchIsolation(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_threads_do_not_attribute_same_workspace_file_to_each_other(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="shared-watch-") as directory:
+            workspace = Path(directory)
+            watcher = WorkspaceWatch(AsyncMock(return_value={}), lambda message: None)
+            targets = [
+                SimpleNamespace(
+                    thread_id=thread_id,
+                    request=CodexSessionOpenRequest(
+                        request_id=thread_id, runtime_id="codex", cwd=workspace
+                    ),
+                    attached_generation=1,
+                    fs_watch_id="",
+                    turn_done=asyncio.get_running_loop().create_future(),
+                    watched_paths={},
+                )
+                for thread_id in ("thread-a", "thread-b")
+            ]
+            for target in targets:
+                await watcher.open(target, 1)
+                await watcher.begin_turn(target)
+            (workspace / "result.py").write_text("print('done')\n")
+            for target in targets:
+                watcher.changed(
+                    {"watchId": target.fs_watch_id, "changedPaths": [str(workspace / "result.py")]}
+                )
+                await watcher.finish_turn(target)
+                self.assertEqual(target.watched_paths, {})
 
 
 if __name__ == "__main__":

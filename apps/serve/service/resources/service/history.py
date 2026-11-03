@@ -7,11 +7,12 @@ import sqlite3
 from contextlib import contextmanager
 from difflib import unified_diff
 from hashlib import sha256
+from pathlib import PurePosixPath
 from typing import Iterator
 from unicodedata import category
 
 from service.content.domain.model import ContentError
-from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
+from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE, TASK_PYTHON_PARTS
 from service.platform.content import (
     ContentPort,
     ContentWriteReceipt,
@@ -61,6 +62,7 @@ from service.resources.domain.version import (
 from service.resources.persistence.objects import CasCorruptError, CasStore, ObjectDescriptor
 from service.resources.persistence.version import (
     OPERATION_KIND_ADMISSION,
+    InitialVersionPlan,
     VersionStore,
     VersionStoreConflict,
 )
@@ -98,6 +100,14 @@ class ResourceVersionService:
 
     def bind_admission_policy(self, policy: ResourceAdmissionPolicy) -> None:
         self._admission_policy = policy
+
+    def reviewable(self, path: str) -> bool:
+        """Keep review presentation eligibility separate from version admission."""
+        parts = PurePosixPath(path).parts
+        environment = TASK_PYTHON_PARTS[:-1]
+        return self._formats.reviewable(path) and not any(
+            parts[offset : offset + len(environment)] == environment for offset in range(len(parts))
+        )
 
     def _git_managed(self, project_id: str, path: str) -> bool:
         return self._content.repository_roots(project_id, (path,))[path] is not None
@@ -167,24 +177,41 @@ class ResourceVersionService:
         with self._cas(project_id).writer():
             yield
 
-    def ensure_initial(self, project_id: str, path: str) -> SealResult | None:
-        """Create v1 on first stable discovery and remain idempotent afterwards."""
-
+    def ensure_initial(
+        self, project_id: str, path: str, *, recovery: InitialVersionPlan | None = None
+    ) -> SealResult | None:
+        """Create v1 through the same owner used by private startup recovery."""
         if self._git_managed(project_id, path):
             return None
         with self.writer(project_id):
-            existing = self.history(project_id, path)
-            if existing:
-                return SealResult(version=existing[0], unchanged=True)
             store = self._store(project_id)
-            identity = store.identity(path)
-            if identity is not None and store.pending(identity[0]) is not None:
+            state = store.initial_version_state(path)
+            if state.version is not None:
+                return SealResult(version=state.version, unchanged=True)
+            if not state.required:
                 return None
-            if store.initialization_deferred(path):
-                if store.identity(path) is None:
-                    self._accept_working(project_id, None, path, PendingOrigin.EXTERNAL)
-                return None
-            return self.seal(project_id, path, VersionOrigin.INITIAL_SCAN)
+            self._require_book_versions(project_id, path)
+            stable, object_id, descriptor = self._capture_object(
+                project_id, path, self._cas(project_id)
+            )
+            snapshot = self._complete_snapshot(path, stable, object_id, VersionOrigin.INITIAL_SCAN)
+            try:
+                result = store.initialize_first(snapshot, descriptor, plan=recovery)
+            except VersionStoreConflict as exc:
+                raise ResourceVersionError(exc.code) from exc
+            if result is not None and not result.unchanged:
+                emit(
+                    _log,
+                    ResourceVersionEvent.VERSION_CREATED,
+                    project_id=project_id,
+                    file_id=result.version.file_id,
+                    version_id=result.version.id,
+                    revision=snapshot.revision,
+                    object_id=result.version.object_id,
+                    size_bytes=stable.size,
+                    result_code=result.version.origin.value,
+                )
+            return result
 
     def seal(
         self,
@@ -743,10 +770,8 @@ class ResourceVersionService:
             pending = store.pending(identity[0]) if identity is not None else None
             automatically_seal = automatic_version and (
                 pending is None
-                or (
-                    not pending.needs_review
-                    and pending.origin in {PendingOrigin.USER, PendingOrigin.RESTORE}
-                )
+                or pending.needs_review
+                or pending.origin in {PendingOrigin.USER, PendingOrigin.RESTORE}
             )
             effective_seal_version = seal_version or automatically_seal
             try:
@@ -803,6 +828,7 @@ class ResourceVersionService:
                         notify=False,
                     )
                 elif current_revision == target_revision:
+                    assert current_revision is not None
                     receipt = ContentWriteReceipt(
                         project_id=project_id,
                         path=path,
@@ -845,7 +871,11 @@ class ResourceVersionService:
                 self._retention.enforce(project_id)
                 emit(
                     _log,
-                    ResourceVersionEvent.VERSION_CREATED,
+                    (
+                        ResourceVersionEvent.VERSION_UPDATED
+                        if sealed.replaced
+                        else ResourceVersionEvent.VERSION_CREATED
+                    ),
                     project_id=project_id,
                     file_id=sealed.version.file_id,
                     version_id=sealed.version.id,
@@ -926,7 +956,11 @@ class ResourceVersionService:
                     self._retention.enforce(project_id)
                     emit(
                         _log,
-                        ResourceVersionEvent.VERSION_CREATED,
+                        (
+                            ResourceVersionEvent.VERSION_UPDATED
+                            if sealed.replaced
+                            else ResourceVersionEvent.VERSION_CREATED
+                        ),
                         project_id=project_id,
                         file_id=sealed.version.file_id,
                         version_id=sealed.version.id,
@@ -1193,11 +1227,15 @@ class ResourceVersionService:
 
         cas = self._cas(project_id)
         repositories = self._content.repository_roots(project_id, eligible_paths)
-        eligible = {path for path in eligible_paths if repositories[path] is None}
+        eligible = {
+            path for path in eligible_paths if repositories[path] is None and self.reviewable(path)
+        }
         with cas.writer():
             store = self._store(project_id)
             captured: list[tuple[TurnBaseline, ObjectDescriptor, ObjectDescriptor | None]] = []
-            for managed in store.managed_files():
+            # A deleted identity may already exist on disk again. Eligibility and
+            # stable capture below prove presence; historical head state cannot.
+            for managed in store.managed_files(include_deleted=True):
                 if managed.path not in eligible:
                     continue
                 try:
@@ -1265,6 +1303,14 @@ class ResourceVersionService:
         self, project_id: str, session_id: str, turn_id: str, state: str = "discarded"
     ) -> None:
         self._store(project_id).discard_turn(session_id, turn_id, state)
+
+    def version_identity(
+        self, project_id: str, path: str
+    ) -> tuple[str, str | None, str | None] | None:
+        return self._store(project_id).identity(path)
+
+    def current_version_path(self, project_id: str, file_id: str) -> str:
+        return self._current_path(project_id, file_id)
 
     def history_for_file(
         self,
@@ -1411,7 +1457,38 @@ class ResourceVersionService:
             )
         )
 
-    def observe(self, project_id: str, path: str) -> bool:
+    @staticmethod
+    def captured_observation(capture: StableContentCapture) -> DiskObservation:
+        return DiskObservation(
+            ObservationState.PRESENT,
+            revision=capture.revision,
+            size_bytes=capture.size,
+            mtime_ns=capture.mtime_ns,
+            mode_bits=capture.mode_bits,
+        )
+
+    @staticmethod
+    def failed_observation(error: ContentError) -> DiskObservation:
+        return DiskObservation(
+            ObservationState.TOMBSTONE
+            if error.code == "file_not_found"
+            else ObservationState.UNAVAILABLE
+        )
+
+    @staticmethod
+    def deleted_snapshot(path: str) -> SnapshotVersion:
+        return SnapshotVersion(
+            path=path,
+            media_type="application/octet-stream",
+            revision=None,
+            object_id=None,
+            mode_bits=None,
+            mtime_ns=None,
+            origin=VersionOrigin.USER,
+            state=FileState.TOMBSTONE,
+        )
+
+    def observe(self, project_id: str, path: str, *, now_ms: int | None = None) -> bool:
         """Capture settled external snapshots without sealing or changing open reviews."""
 
         if self._git_managed(project_id, path):
@@ -1425,52 +1502,29 @@ class ResourceVersionService:
             try:
                 captured = self._capture_object(project_id, path, self._cas(project_id))
                 current = captured[0]
-                observation = DiskObservation(
-                    ObservationState.PRESENT,
-                    revision=current.revision,
-                    size_bytes=current.size,
-                    mtime_ns=current.mtime_ns,
-                    mode_bits=current.mode_bits,
-                )
+                observation = self.captured_observation(current)
             except ContentError as exc:
-                observation = DiskObservation(
-                    ObservationState.TOMBSTONE
-                    if exc.code == "file_not_found"
-                    else ObservationState.UNAVAILABLE
+                observation = self.failed_observation(exc)
+            if observation.state is ObservationState.PRESENT:
+                if captured is None:
+                    raise ResourceVersionError("observation_capture_missing")
+                snapshot = self._complete_snapshot(
+                    path, captured[0], captured[1], VersionOrigin.USER
                 )
-            changed = store.observe(identity[0], observation)
-            head = store.working_snapshot(identity[0])
-            available = observation.state is not ObservationState.UNAVAILABLE
-            observed = (
-                SnapshotIdentity(
-                    observation.revision,
-                    FileState(observation.state.value),
-                    path,
-                    observation.mode_bits,
-                    None,
-                )
-                if available
-                else None
+                descriptor = captured[2]
+            elif observation.state is ObservationState.TOMBSTONE:
+                snapshot = self.deleted_snapshot(path)
+                descriptor = None
+            else:
+                snapshot, descriptor = None, None
+            transition = store.reconcile_external(
+                identity[0], path, observation, snapshot, descriptor, now_ms=now_ms
             )
-            drifted = not available or not same_source_identity(head, observed)
-            current_pending = store.pending(identity[0])
-            if (
-                available
-                and drifted
-                and not (current_pending and current_pending.review)
-                and not store.initialization_deferred(path)
-            ):
-                if observation.state is ObservationState.PRESENT:
-                    self._accept_working(
-                        project_id,
-                        identity[0],
-                        path,
-                        PendingOrigin.EXTERNAL,
-                        captured=captured,
-                    )
-                else:
-                    self._accept_deleted(project_id, identity[0], path, PendingOrigin.EXTERNAL)
-            if changed and drifted:
+            if transition.accepted:
+                emit_pending(
+                    _log, project_id, transition.before, transition.after, observation.revision
+                )
+            if transition.drifted:
                 emit(
                     _log,
                     ResourceVersionEvent.OBSERVE_DRIFT,
@@ -1479,7 +1533,7 @@ class ResourceVersionService:
                     revision=observation.revision,
                     result_code=observation.state.value,
                 )
-            return changed and drifted
+            return transition.drifted
 
     def capability(self, project_id: str, path: str) -> ResourceCapability:
         """Project current version identity without exposing physical storage."""
@@ -1703,8 +1757,8 @@ class ResourceVersionService:
             raise ResourceVersionError("file_not_managed")
         return head[0]
 
+    @staticmethod
     def _complete_snapshot(
-        self,
         path: str,
         stable: StableContentCapture | StableContentSnapshot,
         object_id: str,

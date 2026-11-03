@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import Enum
+from hashlib import sha256
 
 from scholarseed_runtime.contract.event import RuntimeValue
 
@@ -22,6 +24,26 @@ class CallbackKind(str, Enum):
     DYNAMIC_TOOL = "dynamic_tool"
     ATTESTATION = "attestation"
     CURRENT_TIME = "current_time"
+
+
+@dataclass(frozen=True)
+class RuntimeServiceTool:
+    name: str
+    description: str
+    input_schema: RuntimeValue
+
+
+def service_tool_profile(tools: tuple[RuntimeServiceTool, ...]) -> str:
+    if not tools:
+        return ""
+    declarations = [
+        {"name": tool.name, "description": tool.description, "schema": tool.input_schema}
+        for tool in tools
+    ]
+    return (
+        "service-tools:"
+        + sha256(json.dumps(declarations, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    )
 
 
 @dataclass(frozen=True)
@@ -58,4 +80,6 @@ __all__ = [
     "CallbackKind",
     "RuntimeCallbackRequest",
     "RuntimeCallbackResponse",
+    "RuntimeServiceTool",
+    "service_tool_profile",
 ]

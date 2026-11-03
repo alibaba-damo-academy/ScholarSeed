@@ -55,10 +55,10 @@ export const DEFAULT_MOCK_ACCOUNT: MockAccountConfig = {
 }
 
 /**
- * 渲染层 mock 用的账号服务假源。它只需要能被 `page.route` 的 glob 命中并与 serve
- * 同源区分开；不起真服务，所以用保留的 .test 顶级域，杜绝意外出网。
+ * 渲染层 mock 与主进程不可达地址共用本机 discard 端口。测试页的生产 CSP 只允许
+ * 启动时的账号源与 loopback；用其他假域名即使 page.route 拦截也会被 CSP 阻断。
  */
-export const MOCK_ACCOUNT_BASE = 'https://account.mock.scholarseed.test'
+export const MOCK_ACCOUNT_BASE = 'http://127.0.0.1:9'
 
 /** seed 描述文件名；落在 runtime.root（测试自有目录），不进产品家目录。 */
 const AUTH_SEED_FILE = 'auth-seed.json'

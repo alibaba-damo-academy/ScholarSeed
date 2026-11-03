@@ -1,6 +1,6 @@
 {
   "menu": {
-    "addToConversation": "Add to current conversation",
+    "addToConversation": "Add to current task",
     "rename": "Rename",
     "moveTo": "Move to…",
     "moveUp": "Move to parent folder",
@@ -69,9 +69,9 @@
     "fileTitle": "Delete resource",
     "folderDescription": "Delete <name>{{name}}</name> and all its contents.",
     "fileDescription": "Delete <name>{{name}}</name>.",
-    "warning": "This also affects your local files: they will be moved to the system trash, where you can restore them.",
-    "unsavedWarning": "This resource or one of its child tabs has unsaved changes. Continuing discards those changes and moves the local files to the system trash.",
-    "action": "Move to trash"
+    "warning": "This also affects your local files: they will be moved to the {{trash}}, where you can restore them.",
+    "unsavedWarning": "This resource or one of its child tabs has unsaved changes. Continuing discards those changes and moves the local files to the {{trash}}.",
+    "action": "Move to the {{trash}}"
   },
   "linkedCreate": {
     "label": "Confirm changes to linked folder",
@@ -82,9 +82,10 @@
     "continue": "Continue creating"
   },
   "origin": {
-    "artifact": "Return to the conversation that generated this artifact",
-    "answer": "Return to the original conversation for this answer",
-    "view": "View original conversation"
+    "deleted": "Source task deleted",
+    "artifact": "Return to the task that generated this artifact",
+    "answer": "Return to the original task for this answer",
+    "view": "View original task"
   },
   "webImportError": {
     "web_invalid_url": "Invalid URL.",
@@ -140,9 +141,9 @@
   "webFeedback": {
     "failed": "Web search did not complete",
     "completed": "Web search completed",
-    "browser": "Switched to the local browser",
-    "browserReason": "Reason: {{reason}} ScholarSeed continued the search in the local browser according to its automatic policy.",
-    "browserDefault": "Web Search did not complete. ScholarSeed continued the search in the local browser according to its automatic policy.",
+    "browser": "Switched to the built-in browser",
+    "browserReason": "Reason: {{reason}} ScholarSeed continued the search in the built-in browser.",
+    "browserDefault": "Web Search did not complete. ScholarSeed continued the search in the built-in browser.",
     "candidates": "Organized {{total}} candidate web pages.",
     "requestFailed": "Save request did not complete",
     "projectUnavailable": "The current project is unavailable. Close the dialog and try again.",
@@ -204,6 +205,13 @@
     "manualAdmitted": "Manually managed; overrides policy rules",
     "migrationRequired": "Version management needs setup",
     "git": "Versions are managed by Git"
+  },
+  "creation": {
+    "folderName": "Folder name",
+    "documentName": "File name",
+    "folderPlaceholder": "Enter a folder name",
+    "documentPlaceholder": "Enter a file name",
+    "nameTooLong": "Names cannot exceed 20 characters. Shorten the name and try again."
   },
   "panel": {
     "matchName": "File name",
@@ -272,7 +280,7 @@
     "pathUnavailable": "Could not resolve the actual file path.",
     "pathCopied": "Path copied",
     "deleteDirty": "Save changes in this resource and its child tabs before deleting it.",
-    "trashUnavailable": "Moving items to the trash is unavailable in this environment.",
+    "trashUnavailable": "Moving items to the {{trash}} is unavailable in this environment.",
     "unlinkDirty": "Save changes in the linked resource’s child tabs before unlinking it.",
     "moveDirty": "Save changes in this resource and its child tabs before moving it.",
     "movePathMissing": "The move operation returned without a final resource path.",
@@ -280,17 +288,17 @@
     "importChanged": "The resources have changed. Confirm how to handle them again.",
     "clipboardFailed": "Could not write to the clipboard.",
     "revealFailed": "Could not reveal this resource in the file manager.",
-    "trashFailed": "Could not move the resource to the trash.",
+    "trashFailed": "Could not move the resource to the {{trash}}.",
     "unlinkFailed": "Could not unlink the resource.",
     "copied": "Created copy {{name}}",
     "renamed": "Renamed to {{name}}",
     "renamedSyncFailed": "Renamed to {{name}}, but the current Agent references could not be synchronized.",
     "moved": "Moved to {{name}}",
     "movedSyncFailed": "Moved to {{name}}, but the current Agent references could not be synchronized.",
-    "trashed": "Moved {{name}} to the trash",
-    "trashReceiptFailed": "Moved {{name}} to the trash, but the deletion receipt could not be synchronized.",
-    "trashTabsFailed": "Moved {{name}} to the trash, but its child tabs could not be synchronized.",
-    "trashContextFailed": "Moved {{name}} to the trash, but the current Agent references could not be synchronized.",
+    "trashed": "Moved {{name}} to the {{trash}}",
+    "trashReceiptFailed": "Moved {{name}} to the {{trash}}, but the deletion receipt could not be synchronized.",
+    "trashTabsFailed": "Moved {{name}} to the {{trash}}, but its child tabs could not be synchronized.",
+    "trashContextFailed": "Moved {{name}} to the {{trash}}, but the current Agent references could not be synchronized.",
     "unlinkTabsFailed": "Unlinked {{name}} and preserved the originals, but its child tabs could not be synchronized.",
     "unlinkContextFailed": "Unlinked {{name}} and preserved the originals, but the current Agent references could not be synchronized.",
     "unlinked": "Unlinked {{name}}. The originals are unchanged; Agent permissions will update on the next turn.",
@@ -316,7 +324,7 @@
     "revealDesktopUnavailable": "This resource cannot be shown in the file manager because the desktop connection is not ready."
   },
   "operationError": {
-    "invalid_name": "The name cannot be empty or contain path separators.",
+    "invalid_name": "The name cannot be empty, be . or .., or contain /, \\, a colon (:), or a null character. Change the name; for example, replace colons in a time with hyphens (-).",
     "name_too_long": "The file or folder name or path is too long. Shorten the name and try again.",
     "name_exists": "An item with this name already exists here.",
     "node_not_found": "This resource is no longer in its original location. Refresh first.",
@@ -351,7 +359,7 @@
     "import_decisions_invalid": "The name-conflict choices are invalid. Try again.",
     "replace_not_supported": "These conflicting items cannot safely preserve versions. Choose automatic renaming.",
     "idempotency_conflict": "This import confirmation differs from the earlier request. Select the resources again.",
-    "assistant_project_unavailable": "The current conversation has no linked project, so the artifact cannot be saved to resources.",
+    "assistant_project_unavailable": "The current task has no linked project, so the artifact cannot be saved to resources.",
     "session_artifact_not_found": "The session artifact no longer exists.",
     "session_artifact_path_forbidden": "This session artifact is outside the locations allowed for import.",
     "session_artifact_integrity_mismatch": "The session artifact has changed. Regenerate or refresh it before importing.",
@@ -498,9 +506,15 @@
   "finalizations": {
     "notReadyTitle": "Review snapshot not ready",
     "refresh": "Refresh review snapshot status",
+    "refreshAction": "Refresh status",
     "more": "More unavailable rounds",
     "startedAt": "Round started at",
     "reason": "Reason:",
+    "reasons": {
+      "readFailed": "Could not read a file, so the review snapshot for this turn could not be saved.",
+      "snapshotUnavailable": "The review snapshot at the end of this turn was not saved and cannot be recovered.",
+      "unknown": "The review snapshot for this turn could not be processed."
+    },
     "loadFailed": "Could not load review snapshot status. Try again later.",
     "retryFailed": "Review snapshot retry did not complete ({{detail}}). Current files were not changed.",
     "openFailed": "Could not open {{path}}. Check that the file is still accessible.",
@@ -537,6 +551,8 @@
     "promptGuideSuffix": ".",
     "promptSettings": "AI prompt settings",
     "original": "Original",
+    "expandOriginal": "Expand",
+    "collapseOriginal": "Collapse",
     "translation": "Translation",
     "close": "Close",
     "stop": "Stop generating",
@@ -581,7 +597,7 @@
     "agent": "Agent changes",
     "external": "External changes",
     "invalid": "Invalid review address",
-    "reopen": "Reopen the review from its card in the conversation.",
+    "reopen": "Reopen the review from its card in the task.",
     "loading": "Loading review batch",
     "unavailable": "Cannot open review",
     "missing": "The batch does not exist or is no longer available.",
@@ -593,7 +609,25 @@
     "content": "File review content",
     "failed": "Review action did not complete",
     "changed": "Files changed after the Agent finished",
-    "changedDetail": "The current disk content is shown below. Accepting or revising creates a version from the content shown now.",
+    "changedBadge": "External change",
+    "agentPreview": "Agent version",
+    "basePreview": "Pre-Agent version",
+    "draftPreview": "Revision draft",
+    "diskPreview": "Current disk",
+    "changedDetail": "The current disk content is shown below. Accept restores and keeps the Agent changes; Revise keeps the current content.",
+    "undoTitle": "Undo revisions to selected files",
+    "undoDescription": "Restore {{count}} files to the Agent version. The current content of {{backups}} files will be saved as recoverable versions first; {{drafts}} in-page drafts will be discarded.",
+    "undoConfirm": "Undo revisions",
+    "undoCancel": "Cancel",
+    "undoResult": "Undo results",
+    "undoSucceeded": "Restored",
+    "undoRetry": "Not restored; retry",
+    "partialResult": "Some files were not submitted",
+    "submitFailedFile": "Not submitted",
+    "retryFailed": "Retry failed files",
+    "submitDraftTitle": "In-page drafts are still unsubmitted",
+    "submitDraftDescription": "Accept or Reject writes the selected version. In-page drafts are not included and remain in the editor for you to resolve. Choose Revise to include them.",
+    "submitDraftConfirm": "Submit current decisions",
     "processed": "This batch has been processed",
     "decided": "All files have a decision.",
     "submitted": "This file has been submitted",
@@ -602,20 +636,26 @@
     "unsupported": "Built-in review is not supported for this format",
     "wholeSnapshot": "You can still accept or reject this complete file snapshot.",
     "count": "{{total}} files · {{decided}} decided",
-    "outcomeProgress": "Reviewed {{reviewed}} · Pending {{pending}} · Failed {{failed}}",
+    "outcomeProgress": "Decided {{reviewed}} · Undecided {{pending}} · Failed {{failed}}",
     "loadFailed": "Could not load this review batch.",
     "contentFailed": "Could not load the file review content.",
     "prepareFailed": "Could not prepare the file review.",
     "refreshFailed": "Could not refresh the review batch.",
     "stale": "File content has changed. Confirm the undecided files again.",
     "submitFailed": "Batch submission did not complete. Retry with the current decisions.",
-    "undoFailed": "Could not discard the in-memory edits to “{{path}}”.",
+    "undoFailed": "Could not restore “{{path}}” to the Agent version.",
     "diskFailed": "Could not read the current disk content of “{{path}}”.",
-    "saveFailed": "Could not save the revisions to “{{path}}”. The batch remains pending review."
+    "saveFailed": "Could not read the revision draft for “{{path}}”. The batch remains pending review.",
+    "syncFailed": "Submission completed, but the editor could not reload the disk content. Reload it manually."
   },
   "reviewOrigin": {
     "agent": "Agent changes",
     "external": "External changes"
+  },
+  "reviewAdmission": {
+    "pending": "File reviews are still pending. Resolve them before continuing the task.",
+    "open": "Open review",
+    "cancel": "Cancel"
   },
   "admissionFailure": {
     "undoFailed": "Unable to discard in-memory edits to “{{path}}”. Open review to resolve them.",
@@ -623,6 +663,10 @@
     "submitFailed": "Unable to submit the review batch. Open review to resolve it. {{detail}}"
   },
   "webSearchFailure": {
+    "browser_search_navigation_unknown": "Built-in browser navigation could not be confirmed. No results were collected. You can start a new search.",
+    "browser_search_navigation_failed": "The built-in browser could not open the search page. Check your connection and retry.",
+    "browser_search_extraction_failed": "The search page opened, but its results could not be read. Please retry.",
+    "search_not_authenticated": "Official search is unavailable while signed out.",
     "invalid_query": "Search query cannot be empty.",
     "verification_required": "Bing requires human verification. Complete it in the visible browser and try again.",
     "execution_denied": "The current environment denied permission to launch the local browser. Check system execution permissions and try again.",

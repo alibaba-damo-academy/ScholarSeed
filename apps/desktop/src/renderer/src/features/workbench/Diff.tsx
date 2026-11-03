@@ -13,6 +13,7 @@ interface DiffProps {
   readOnly: boolean
   testId: string
   onCandidateChange?: (text: string) => void
+  onSplitPositionChange?: (left: number) => void
 }
 
 export function Diff({
@@ -22,7 +23,8 @@ export function Diff({
   path,
   readOnly,
   testId,
-  onCandidateChange
+  onCandidateChange,
+  onSplitPositionChange
 }: DiffProps): React.JSX.Element {
   const { state } = useApp()
   const [frame, setFrame] = useState<MonacoFrameContext | null>(null)
@@ -48,22 +50,44 @@ export function Diff({
       originalEditable: false,
       readOnly,
       renderSideBySide: true,
+      // Version and review headers label the original and modified columns.
+      useInlineViewWhenSpaceIsLimited: false,
       scrollBeyondLastLine: false,
       fontFamily: 'var(--font-mono)',
       fontSize: 12,
       lineHeight: 20
     })
     editor.setModel({ original, modified })
+    const frameWindow = host.ownerDocument.defaultView!
+    let layoutFrame: number | null = null
+    const reportLayout = (): void => {
+      if (!onSplitPositionChange || layoutFrame !== null) return
+      // Both panes finish their layout before reading the modified pane's origin.
+      layoutFrame = frameWindow.requestAnimationFrame(() => {
+        layoutFrame = null
+        const modifiedNode = editor.getModifiedEditor().getDomNode()
+        if (modifiedNode) {
+          onSplitPositionChange(modifiedNode.getBoundingClientRect().left - host.getBoundingClientRect().left)
+        }
+      })
+    }
+    const layoutListeners = onSplitPositionChange ? [
+      editor.getOriginalEditor().onDidLayoutChange(reportLayout),
+      editor.getModifiedEditor().onDidLayoutChange(reportLayout)
+    ] : []
+    reportLayout()
     const listener = onCandidateChange
       ? modified.onDidChangeContent(() => onCandidateChange(modified.getValue()))
       : null
     return () => {
+      if (layoutFrame !== null) frameWindow.cancelAnimationFrame(layoutFrame)
+      layoutListeners.forEach((layoutListener) => layoutListener.dispose())
       listener?.dispose()
       editor.dispose()
       original.dispose()
       modified.dispose()
     }
-  }, [baseText, candidateText, frame, identity, onCandidateChange, path, readOnly])
+  }, [baseText, frame, identity, onCandidateChange, onSplitPositionChange, path, readOnly])
 
   return (
     <MonacoFrame

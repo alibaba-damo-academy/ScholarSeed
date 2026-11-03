@@ -10,57 +10,76 @@
 4. **删除不永久**: 后端只签一次性令牌, 不自己删 —— 真正的删除走 Electron
    系统废纸篓；关联资料连令牌都不能签，只能取消关联并保留原文件。
 5. **重复导入去重**: 同一篇文献重复入库只留一条, 且已有的非空字段不被空值冲掉。
-6. **未实现要显式 501**: Zotero / 全文自动取回本期没做, 必须明确回 501,
-   不能假成功 —— 假成功会让用户以为文献已下载。
 
 用 TestClient 直连 FastAPI 应用, 是这三个域的真实 HTTP 路径; 项目根用临时目录,
 不碰用户真实工作区。
 """
 
+# isort: skip_file -- SCHOLARSEED_HOME must be isolated before importing service modules.
+
 from __future__ import annotations
 
+import asyncio
+import os
 import shutil
 import tempfile
-from dataclasses import replace
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
-from docx import Document
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+# 文献库是**用户级**仓储 (`$SCHOLARSEED_HOME/service/literature.sqlite3`), /api/v1 的
+# 导入、分类、标签、批量与笔记全部落它; 不 pin 家目录就会把夹具行写进开发机真实的
+# ~/.scholarseed (泄漏 = FAIL)。service.paths 在 import 时即求值, 所以隔离必须发生在
+# 任何 first-party import 之前。
+_HOME = tempfile.TemporaryDirectory(prefix="v02-workbench-home-")
+os.environ["SCHOLARSEED_HOME"] = _HOME.name
 
-from service.content.domain.model import (
+import httpx  # noqa: E402  (隔离先于 first-party import)
+from docx import Document  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from service.content.domain.model import (  # noqa: E402
     MANAGED_LITERATURE_ROOT_RELATIVE,
     MANAGED_RESOURCES_ROOT_RELATIVE,
 )
-from service.content.persistence.catalog import ContentCatalog
-from service.content.service.port import ContentService, ProjectRegistry
-from service.content.service.search import MAX_RESULTS
-from service.literature.api.routes import register_literature_routes
-from service.literature.domain.model import LiteratureError
-from service.literature.persistence.store import decode, load_library
-from service.literature.schema import (
+from service.content.persistence.catalog import ContentCatalog  # noqa: E402
+from service.content.service.port import ContentService, ProjectRegistry  # noqa: E402
+from service.content.service.search import MAX_RESULTS  # noqa: E402
+from service.literature.api.catalogue import register_global_routes  # noqa: E402
+from service.literature.domain.model import LiteratureError  # noqa: E402
+from service.literature.persistence.store import decode, load_library  # noqa: E402
+from service.literature.schema import (  # noqa: E402
     FulltextStatus,
     LiteratureItem,
     LiteratureNote,
     LiteratureView,
 )
-from service.literature.service.catalog import append_items
-from service.platform.search import register_search_routes
-from service.resources.api.routes import register_resource_routes
-from service.resources.service.activation import ResourceActivation
-from service.resources.service.delivery import ResourceDeliveryService
-from service.resources.service.history import ResourceVersionService
-from service.resources.service.importer import IMPORT_BACKGROUND_REQUIRED, ResourceImportService
-from service.resources.service.migration import ResourceReviewMigration
-from service.resources.service.observe import ResourceVersionSupervisor
-from service.resources.service.recovery import ResourceRecoveryService
-from service.resources.service.retention import ResourceRetentionService
-from service.workbench.domain.model import WorkbenchFormatPolicy
-from service.workbench.service.records import PdfRecordStore
+from service.literature.service.catalog import append_items  # noqa: E402
+from service.platform.activity import Activities  # noqa: E402
+from service.platform.search import register_search_routes  # noqa: E402
+from service.resources.api.routes import register_resource_routes  # noqa: E402
+from service.resources.service.activation import ResourceActivation  # noqa: E402
+from service.resources.service.delivery import ResourceDeliveryService  # noqa: E402
+from service.resources.service.history import ResourceVersionService  # noqa: E402
+from service.resources.service.importer import (  # noqa: E402
+    IMPORT_BACKGROUND_REQUIRED,
+    ResourceImportService,
+)
+from service.resources.service.migration import ResourceReviewMigration  # noqa: E402
+from service.resources.service.observe import ResourceVersionSupervisor  # noqa: E402
+from service.resources.service.recovery import ResourceRecoveryService  # noqa: E402
+from service.resources.service.retention import ResourceRetentionService  # noqa: E402
+from service.workbench.domain.model import WorkbenchFormatPolicy  # noqa: E402
+from service.workbench.service.records import PdfRecordStore  # noqa: E402
 
 PASS = 0
 FAIL = 0
+RESOURCE_TREE_BLOCK_SECONDS = 0.5
+RESOURCE_TREE_HEALTH_MAX_SECONDS = 0.2
 
 
 class ResourceVersionSettings:
@@ -136,14 +155,18 @@ def _client(project: Path) -> TestClient:
     catalog = ContentCatalog(project.parent / f"{project.name}-content.sqlite3")
     registry = ProjectRegistry(str(project), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     settings = ResourceVersionSettings()
     formats = WorkbenchFormatPolicy()
     retention = ResourceRetentionService(content, settings)
     annotations = PdfRecordStore(content)
     versions = ResourceVersionService(content, retention, formats, annotations)
-    supervisor = ResourceVersionSupervisor(content, versions, formats, settings)
-    deliveries = ResourceDeliveryService(content, versions, supervisor)
+    supervisor = ResourceVersionSupervisor(
+        content, versions, formats, settings, activities=Activities()
+    )
+    deliveries = ResourceDeliveryService(
+        content, versions, supervisor, activities=supervisor._activities
+    )
     supervisor.bind_preparation(
         ResourceActivation(
             content,
@@ -160,7 +183,7 @@ def _client(project: Path) -> TestClient:
     app.state.resource_version_supervisor = supervisor
     app.state.resource_importer = ResourceImportService(content, versions, supervisor)
     register_resource_routes(app)
-    register_literature_routes(app)
+    register_global_routes(app)
     register_search_routes(app)
     return TestClient(app)
 
@@ -481,6 +504,59 @@ def test_resource_tree_carries_authoritative_link_root_identity() -> None:
         shutil.rmtree(outside, ignore_errors=True)
 
 
+def test_resource_tree_scan_does_not_block_event_loop() -> None:
+    project = Path(tempfile.mkdtemp(prefix="v02-tree-loop-"))
+    client = _client(project)
+    try:
+        app = client.app
+        content = app.state.content
+        current = content.project("")
+        original_tree = content.tree
+        release = threading.Event()
+
+        @app.get("/api/test-healthz")
+        async def healthz() -> dict[str, bool]:
+            return {"ok": True}
+
+        def blocked_tree(*args, **kwargs):
+            release.wait(RESOURCE_TREE_BLOCK_SECONDS)
+            return original_tree(*args, **kwargs)
+
+        async def exercise() -> tuple[int, int, float]:
+            transport = httpx.ASGITransport(app=app)
+            timer = threading.Timer(RESOURCE_TREE_BLOCK_SECONDS, release.set)
+            timer.start()
+            try:
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as browser:
+                    with patch.object(content, "tree", side_effect=blocked_tree):
+                        tree_request = asyncio.create_task(
+                            browser.get("/api/resource/tree", params={"project": current.id})
+                        )
+                        health_request = asyncio.create_task(browser.get("/api/test-healthz"))
+                        started = time.monotonic()
+                        health = await health_request
+                        elapsed = time.monotonic() - started
+                        tree = await tree_request
+                        return health.status_code, tree.status_code, elapsed
+            finally:
+                release.set()
+                timer.cancel()
+
+        health_status, tree_status, elapsed = asyncio.run(exercise())
+        check(
+            "resource tree scan leaves the event loop available for health checks",
+            health_status == 200
+            and tree_status == 200
+            and elapsed < RESOURCE_TREE_HEALTH_MAX_SECONDS,
+            f"health={health_status} tree={tree_status} elapsed={elapsed:.3f}s",
+        )
+    finally:
+        client.close()
+        shutil.rmtree(project, ignore_errors=True)
+
+
 def test_resource_search_matches_name_and_content() -> None:
     """资料搜索要同时命中文件名与正文, 并标明命中来源 (PRD「资料搜索」)。"""
 
@@ -677,6 +753,46 @@ def test_resource_search_includes_authorized_directory_and_file() -> None:
         shutil.rmtree(outside, ignore_errors=True)
 
 
+def _import_bibliography(
+    client: TestClient, project_id: str, uploads: list[tuple[str, bytes]]
+) -> Any:
+    """v1 受理面: multipart `files` + query `project_id`, 成功回 201。"""
+
+    return client.post(
+        "/api/v1/imports/bibliography",
+        params={"project_id": project_id} if project_id else None,
+        files=[("files", (name, payload, "application/x-bibtex")) for name, payload in uploads],
+    )
+
+
+def _literatures(client: TestClient, project_id: str = "", **params: Any) -> dict:
+    response = client.get(
+        "/api/v1/literatures", params={"project_id": project_id, **params} if project_id else params
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _tag_id(client: TestClient, name: str) -> str:
+    """v1 的标签筛选按 id 走, 先把名字换成 id。"""
+
+    entries = client.get("/api/v1/tags").json()
+    match = next((entry for entry in entries if entry["name"] == name), None)
+    assert match is not None, f"tag {name!r} missing in {entries}"
+    return str(match["id"])
+
+
+def _add_tags(client: TestClient, identifiers: list[str], tags: list[str]) -> Any:
+    return client.post(
+        "/api/v1/literatures/bulk",
+        json={
+            "literature_ids": identifiers,
+            "operation": "add_tags",
+            "parameters": {"tags": tags},
+        },
+    )
+
+
 def test_literature_import_parses_and_appends() -> None:
     """BIB/RIS 解析真实字段; 文献库不判重, 同一份文件再导入就是新增一条。"""
 
@@ -685,64 +801,57 @@ def test_literature_import_parses_and_appends() -> None:
         (project / "sample.bib").write_text(SAMPLE_BIB, encoding="utf-8")
         (project / "sample.ris").write_text(SAMPLE_RIS, encoding="utf-8")
         client = _client(project)
+        project_id = client.app.state.content.project().id
 
-        bib = client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(project / "sample.bib")]},
-        )
+        bib = _import_bibliography(client, project_id, [("sample.bib", SAMPLE_BIB.encode())])
         check(
             "BIB 入库 1 条",
-            bib.status_code == 200 and bib.json()["added"] == 1,
+            bib.status_code == 201 and bib.json()["count"] == 1,
             f"body={bib.text[:160]}",
         )
 
-        ris = client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(project / "sample.ris")]},
-        )
+        ris = _import_bibliography(client, project_id, [("sample.ris", SAMPLE_RIS.encode())])
         check(
             "RIS 入库 1 条",
-            ris.status_code == 200 and ris.json()["added"] == 1,
+            ris.status_code == 201 and ris.json()["count"] == 1,
             f"body={ris.text[:160]}",
         )
 
-        again = client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(project / "sample.bib")]},
-        )
+        again = _import_bibliography(client, project_id, [("sample.bib", SAMPLE_BIB.encode())])
         check(
-            "同一份 BIB 再导入是新增一条 (added=1)",
-            again.status_code == 200 and again.json()["added"] == 1,
+            "同一份 BIB 再导入是新增一条 (count=1)",
+            again.status_code == 201 and again.json()["count"] == 1,
             f"body={again.text[:160]}",
         )
 
-        items = client.get("/api/literature/items").json()["items"]
+        items = _literatures(client, project_id)["items"]
         bib_item = next((i for i in items if "Humidity" in i["title"]), None)
         ris_item = next((i for i in items if "Turbulence" in i["title"]), None)
         check(
             "BibTeX 作者语序归一化为 First Last",
-            bib_item is not None and bib_item["authors"] == "Wei Zhang, Yuki Nakamura",
-            f"authors={bib_item and bib_item['authors']}",
+            bib_item is not None and bib_item["creators_display"] == "Wei Zhang, Yuki Nakamura",
+            f"creators={bib_item and bib_item['creators_display']}",
         )
         check(
             "RIS 每行作者也归一化, 作者边界可分辨",
-            ris_item is not None and ris_item["authors"] == "Elena Ivanova, Marc Dubois",
-            f"authors={ris_item and ris_item['authors']}",
+            ris_item is not None and ris_item["creators_display"] == "Elena Ivanova, Marc Dubois",
+            f"creators={ris_item and ris_item['creators_display']}",
         )
         check(
             "跨行摘要与 DOI 被完整解析",
             bib_item is not None
-            and "encapsulation strategies" in bib_item["abstract"]
+            and "encapsulation strategies" in (bib_item["abstract"] or "")
             and bib_item["doi"] == "10.1038/s41560-023-01234-8",
             f"item={bib_item}",
         )
+        counts = client.get("/api/v1/literatures/counts", params={"project_id": project_id})
         check(
             "题录入库时全文状态为未获取, 不虚标已就绪",
-            bib_item is not None and bib_item["fulltext"] == "none",
-            f"fulltext={bib_item and bib_item['fulltext']}",
+            counts.status_code == 200 and counts.json()["without_fulltext"] == len(items),
+            f"counts={counts.text[:160]}",
         )
 
-        library = load_library(client.app.state.content.project().id)
+        library = load_library(project_id)
         check(
             "文献库落盘到全局仓储且项目投影条目数一致",
             len(library.items) == len(items),
@@ -753,113 +862,57 @@ def test_literature_import_parses_and_appends() -> None:
 
 
 def test_literature_filter_sort_and_batch() -> None:
-    """筛选 / 排序 / 批量打标要真实作用于落盘数据 (PRD「文献组织」)。"""
+    """筛选 / 排序 / 批量打标要真实落盘, 批量移除要真减条目。"""
 
-    project = Path(tempfile.mkdtemp(prefix="v02-lit2-"))
+    project = Path(tempfile.mkdtemp(prefix="v02-litfilter-"))
     try:
-        (project / "a.bib").write_text(SAMPLE_BIB, encoding="utf-8")
-        (project / "b.ris").write_text(SAMPLE_RIS, encoding="utf-8")
         client = _client(project)
-        client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(project / "a.bib")]},
+        project_id = client.app.state.content.project().id
+        imported = _import_bibliography(
+            client,
+            project_id,
+            [("a.bib", SAMPLE_BIB.encode()), ("b.ris", SAMPLE_RIS.encode())],
         )
-        client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(project / "b.ris")]},
-        )
+        assert imported.status_code == 201, imported.text
 
-        desc = client.get("/api/literature/items", params={"sort": "year", "desc": True})
-        years = [i["year"] for i in desc.json()["items"]]
+        desc = _literatures(client, project_id, sort="year", order="desc")
+        years = [item["year"] for item in desc["items"]]
         check("按年份倒序排序生效", years == sorted(years, reverse=True), f"years={years}")
 
-        searched = client.get("/api/literature/items", params={"search": "perovskite"})
+        searched = _literatures(client, project_id, q="perovskite")
         check(
             "搜索按标题命中",
-            len(searched.json()["items"]) == 1
-            and "Humidity" in searched.json()["items"][0]["title"],
-            f"items={[i['title'] for i in searched.json()['items']]}",
+            len(searched["items"]) == 1 and "Humidity" in searched["items"][0]["title"],
+            f"items={[i['title'] for i in searched['items']]}",
         )
 
-        imported = client.get("/api/literature/items").json()["items"]
-        check("导入关键词不自动成为标签", all(not item["tags"] for item in imported))
-        target_ids = [item["id"] for item in imported if "Turbulence" in item["title"]]
-        explicit_tag = client.post(
-            "/api/literature/batch",
-            json={"action": "add_tag", "ids": target_ids, "tag": "turbulence"},
-        )
-        check("显式添加筛选标签成功", explicit_tag.status_code == 200)
-        tagged = client.get("/api/literature/items", params={"tag": "turbulence"})
+        listed = _literatures(client, project_id)
+        check("导入关键词不自动成为标签", all(not item["tags"] for item in listed["items"]))
+        target_ids = [item["id"] for item in listed["items"] if "Turbulence" in item["title"]]
+        explicit_tag = _add_tags(client, target_ids, ["turbulence"])
+        check("显式添加筛选标签成功", explicit_tag.status_code == 200, explicit_tag.text[:160])
+        tagged = _literatures(client, project_id, tag_id=_tag_id(client, "turbulence"))
         check(
             "按标签筛选生效",
-            len(tagged.json()["items"]) == 1 and "Turbulence" in tagged.json()["items"][0]["title"],
-            f"items={[i['title'] for i in tagged.json()['items']]}",
+            len(tagged["items"]) == 1 and "Turbulence" in tagged["items"][0]["title"],
+            f"items={[i['title'] for i in tagged['items']]}",
         )
 
-        ids = [i["id"] for i in client.get("/api/literature/items").json()["items"]]
-        batched = client.post(
-            "/api/literature/batch",
-            json={"action": "add_tag", "ids": ids, "tag": "待阅读"},
-        )
-        after = client.get("/api/literature/items", params={"tag": "待阅读"})
+        ids = [item["id"] for item in listed["items"]]
+        batched = _add_tags(client, ids, ["待阅读"])
+        after = _literatures(client, project_id, tag_id=_tag_id(client, "待阅读"))
         check(
             "批量打标真实落盘并可被筛出",
-            batched.status_code == 200 and len(after.json()["items"]) == len(ids),
-            f"batched={batched.text[:120]} filtered={len(after.json()['items'])}",
+            batched.status_code == 200 and len(after["items"]) == len(ids),
+            f"batched={batched.text[:120]} filtered={len(after['items'])}",
         )
 
-        removed = client.post(
-            "/api/literature/batch",
-            json={"action": "remove_items", "ids": [ids[0]]},
-        )
-        remaining = client.get("/api/literature/items").json()
+        removed = client.post("/api/v1/literatures/bulk-delete", json={"literature_ids": [ids[0]]})
+        remaining = _literatures(client, project_id)
         check(
             "批量移除真实减少条目",
             removed.status_code == 200 and remaining["total"] == len(ids) - 1,
             f"total={remaining['total']}",
-        )
-    finally:
-        shutil.rmtree(project, ignore_errors=True)
-
-
-def test_unimplemented_paths_are_explicit_501() -> None:
-    """本期未实现的能力必须显式 501, 不能假成功 (假下载会误导用户)。"""
-
-    project = Path(tempfile.mkdtemp(prefix="v02-501-"))
-    try:
-        (project / "a.bib").write_text(SAMPLE_BIB, encoding="utf-8")
-        client = _client(project)
-        client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(project / "a.bib")]},
-        )
-        item_id = client.get("/api/literature/items").json()["items"][0]["id"]
-
-        zotero = client.post(
-            "/api/literature/import", json={"source": "zotero", "sources": ["/tmp"]}
-        )
-        check(
-            "Zotero 目录导入显式 501",
-            zotero.status_code == 501 and zotero.json()["detail"] == "unsupported_source",
-            f"status={zotero.status_code} body={zotero.text[:120]}",
-        )
-
-        fetch = client.post("/api/literature/fulltext", json={"id": item_id, "fetch": True})
-        check(
-            "全文自动取回显式 501",
-            fetch.status_code == 501 and fetch.json()["detail"] == "fulltext_fetch_pending",
-            f"status={fetch.status_code} body={fetch.text[:120]}",
-        )
-
-        # 手动标注状态是真实可用的, 且真落盘。
-        marked = client.post(
-            "/api/literature/fulltext", json={"id": item_id, "status": "restricted"}
-        )
-        reread = client.get("/api/literature/items").json()["items"][0]["fulltext"]
-        check(
-            "手动标注全文状态真实落盘",
-            marked.status_code == 200 and reread == "restricted",
-            f"status={marked.status_code} fulltext={reread}",
         )
     finally:
         shutil.rmtree(project, ignore_errors=True)
@@ -871,12 +924,10 @@ def test_global_search_spans_domains() -> None:
     project = Path(tempfile.mkdtemp(prefix="v02-gs-"))
     try:
         _seed(project)
-        (project / "a.bib").write_text(SAMPLE_BIB, encoding="utf-8")
         client = _client(project)
-        client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(project / "a.bib")]},
-        )
+        project_id = client.app.state.content.project().id
+        imported = _import_bibliography(client, project_id, [("a.bib", SAMPLE_BIB.encode())])
+        assert imported.status_code == 201, imported.text
 
         resource_hit = client.get("/api/search", params={"q": "想法"})
         domains = {h["domain"] for h in resource_hit.json()["hits"]}
@@ -918,7 +969,7 @@ def test_foreign_project_paths_are_rejected() -> None:
         (foreign / "私密.md").write_text("topsecret 别处的内容", encoding="utf-8")
         client = _client(project)
 
-        listed = client.get("/api/literature/items", params={"project": str(foreign)})
+        listed = client.get("/api/v1/literatures", params={"project_id": str(foreign)})
         check(
             "文献库拒绝项目外绝对路径",
             listed.status_code >= 400,
@@ -973,7 +1024,7 @@ def test_literature_import_appends_without_touching_existing_rows() -> None:
 def test_literature_collections_are_not_tags() -> None:
     """分类与标签是两个维度，不得互相污染。
 
-    回归守卫：`append_items` / `apply_batch` / `fulltext` 三处曾都写
+    回归守卫：`append_items` / 批量操作 / 全文状态三处曾都写
     `collections=collect_tags(items)`，把标签当成分类写回。后果是侧栏分类区
     出现一堆并不存在的「分类」，且用户真建的分类会在下一次批量操作后消失。
     """
@@ -989,73 +1040,66 @@ def test_literature_collections_are_not_tags() -> None:
             encoding="utf-8",
         )
         client = _client(project)
-        client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(source)]},
-        )
+        project_id = client.app.state.content.project().id
+        imported = _import_bibliography(client, project_id, [("seed.bib", source.read_bytes())])
+        assert imported.status_code == 201, imported.text
+        listed = _literatures(client, project_id)
+        ids = [item["id"] for item in listed["items"]]
+        check("导入不自动建标签", all(not item["tags"] for item in listed["items"]))
+        check("导入不自动建分类", all(not item["collections"] for item in listed["items"]))
 
-        listed = client.get("/api/literature/items").json()
-        check("导入关键词不创建标签维度", listed["tags"] == [])
         for title, tags in (("T1", ("观测方法", "低仰角")), ("T2", ("综述",))):
             identifiers = [item["id"] for item in listed["items"] if item["title"] == title]
             for tag in tags:
-                response = client.post(
-                    "/api/literature/batch",
-                    json={"action": "add_tag", "ids": identifiers, "tag": tag},
-                )
-                check("分类测试显式打标成功", response.status_code == 200)
-        listed = client.get("/api/literature/items").json()
-        names = [entry["name"] for entry in listed["collections"]]
+                response = _add_tags(client, identifiers, [tag])
+                check("分类测试显式打标成功", response.status_code == 200, response.text[:120])
+        # 分类与标签都是**用户级**维度 (整个进程共用一份仓储), 所以断言按本项目的
+        # facet 作用域收敛, 不与同一轮里其他用例的夹具互相干扰。
+        facets = client.get("/api/v1/literatures/facets", params={"project_id": project_id})
+        assert facets.status_code == 200, facets.text
+        facet_names = {entry["name"] for entry in facets.json()["collections"]}
         check(
-            "导入后分类区只有「未整理」，标签不污染分类",
-            names == ["未整理"],
-            f"collections={names}",
+            "打标之后分类维度里没有标签名，标签不污染分类",
+            not facet_names & {"观测方法", "低仰角", "综述", "核心"},
+            f"collections={sorted(facet_names)}",
         )
+        # 标签清单是全库的 (删除标签是全库操作), 计数才按请求的项目范围收敛;
+        # 因此这里断言的是「本项目里被用到的标签」, 而不是标签表的全部内容。
+        tag_names = {entry["name"] for entry in facets.json()["tags"] if entry["count"]}
         check(
-            "标签单独成维度返回",
-            {entry["name"] for entry in listed["tags"]} == {"观测方法", "低仰角", "综述"},
-            f"tags={[e['name'] for e in listed['tags']]}",
+            "标签单独成维度返回，且只有显式打的三个落在本项目",
+            tag_names == {"观测方法", "低仰角", "综述"},
+            f"tags={sorted(tag_names)}",
         )
 
-        client.post(
-            "/api/literature/collection",
-            json={"action": "create", "name": "大气湍流"},
-        )
-        ids = [item["id"] for item in listed["items"]]
-        client.post(
-            "/api/literature/batch",
-            json={"action": "add_tag", "ids": ids, "tag": "核心"},
-        )
-        after = client.get("/api/literature/items").json()
-        survived = [entry["name"] for entry in after["collections"]]
-        check(
-            "批量打标后用户建的分类仍在",
-            "大气湍流" in survived,
-            f"collections={survived}",
-        )
+        created = client.post("/api/v1/collections", json={"name": "大气湍流"})
+        assert created.status_code == 201, created.text
+        check("批量打标成功", _add_tags(client, ids, ["核心"]).status_code == 200)
+        survived = [entry["name"] for entry in client.get("/api/v1/collections").json()]
+        check("批量打标后用户建的分类仍在", "大气湍流" in survived, f"collections={survived}")
+
         noted = client.post(
             f"/api/v1/literatures/{ids[0]}/notes",
             json={"text": "重复导入后仍应保留的笔记"},
         )
         assert noted.status_code == 201, noted.text
-        repeated = client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(source)]},
-        )
-        assert repeated.status_code == 200, repeated.text
-        reopened = client.get("/api/literature/items").json()
-        item = next(row for row in reopened["items"] if row["id"] == ids[0])
+        repeated = _import_bibliography(client, project_id, [("seed.bib", source.read_bytes())])
+        assert repeated.status_code == 201, repeated.text
+        notes = client.get(f"/api/v1/literatures/{ids[0]}/notes").json()
+        reopened = _literatures(client, project_id)
         check(
             "HTTP 重复导入后既存条目的笔记仍在，且导入只追加",
-            item["notes"] == [noted.json()] and repeated.json()["added"] == len(ids),
-            str(item),
+            [note["text"] for note in notes["items"]] == ["重复导入后仍应保留的笔记"]
+            and repeated.json()["count"] == len(ids)
+            and reopened["total"] == len(ids) * 2,
+            f"notes={notes} repeated={repeated.text[:120]} total={reopened['total']}",
         )
     finally:
         shutil.rmtree(project, ignore_errors=True)
 
 
 def test_literature_collection_delete_keeps_items() -> None:
-    """删分类不删文献：里面的条目退回「未整理」。
+    """删分类不删文献：里面的条目退回未分类。
 
     分类是组织方式而非容器。把它当容器删掉会连带删掉用户积累的题录。
     """
@@ -1069,116 +1113,159 @@ def test_literature_collection_delete_keeps_items() -> None:
             encoding="utf-8",
         )
         client = _client(project)
-        client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(source)]},
-        )
-        listed = client.get("/api/literature/items").json()
-        ids = [item["id"] for item in listed["items"]]
-        client.post(
-            "/api/literature/collection",
-            json={"action": "create", "name": "待阅读"},
-        )
-        client.post(
-            "/api/literature/batch",
-            json={"action": "set_collection", "ids": ids, "collection": "待阅读"},
-        )
-        moved = client.get("/api/literature/items", params={"collection": "待阅读"}).json()
-        check("条目可移进分类并被筛出", len(moved["items"]) == 1, f"n={len(moved['items'])}")
+        project_id = client.app.state.content.project().id
+        imported = _import_bibliography(client, project_id, [("seed.bib", source.read_bytes())])
+        assert imported.status_code == 201, imported.text
+        ids = [item["id"] for item in imported.json()["items"]]
 
-        client.post(
-            "/api/literature/collection",
-            json={"action": "delete", "name": "待阅读"},
+        created = client.post("/api/v1/collections", json={"name": "待阅读"})
+        assert created.status_code == 201, created.text
+        collection_id = str(created.json()["id"])
+        moved = client.post(
+            "/api/v1/literatures/bulk",
+            json={
+                "literature_ids": ids,
+                "operation": "add_collections",
+                "parameters": {"collection_ids": [collection_id]},
+            },
         )
-        after = client.get("/api/literature/items").json()
+        assert moved.status_code == 200, moved.text
+        scoped = _literatures(client, collection_id=collection_id)
+        check("条目可移进分类并被筛出", len(scoped["items"]) == 1, f"n={len(scoped['items'])}")
+
+        deleted = client.delete(f"/api/v1/collections/{collection_id}")
+        check("删除分类成功", deleted.status_code == 200, deleted.text[:160])
+        after = _literatures(client, project_id)
         check(
-            "删分类后文献仍在且退回未整理",
-            after["total"] == 1 and after["items"][0]["collection"] == "未整理",
-            f"total={after['total']} collection={after['items'][0]['collection']}",
+            "删分类后文献仍在且退回未分类",
+            after["total"] == 1 and after["items"][0]["collections"] == [],
+            f"total={after['total']} collections={after['items'][0]['collections']}",
         )
     finally:
         shutil.rmtree(project, ignore_errors=True)
 
 
-def test_fulltext_status_preserves_user_fields() -> None:
-    """Changing status must not reconstruct the record and erase unrelated fields."""
+def test_metadata_patch_preserves_user_fields() -> None:
+    """改元数据不得重建整行：笔记、分类与其余字段必须原样留着。"""
 
     with tempfile.TemporaryDirectory(prefix="scholarseed-litstatus-") as directory:
         project = Path(directory)
-        source = project / "seed.bib"
-        source.write_text(SAMPLE_BIB, encoding="utf-8")
         with _client(project) as client:
-            imported = client.post(
-                "/api/literature/import",
-                json={"source": "local", "sources": [str(source)]},
+            project_id = client.app.state.content.project().id
+            imported = _import_bibliography(client, project_id, [("seed.bib", SAMPLE_BIB.encode())])
+            assert imported.status_code == 201, imported.text
+            item_id = str(imported.json()["items"][0]["id"])
+
+            collection = client.post("/api/v1/collections", json={"name": "人工归档"})
+            assert collection.status_code == 201, collection.text
+            associated = client.post(
+                "/api/v1/literatures/bulk",
+                json={
+                    "literature_ids": [item_id],
+                    "operation": "add_collections",
+                    "parameters": {"collection_ids": [str(collection.json()["id"])]},
+                },
             )
-            assert imported.status_code == 200, imported.text
-            before = client.get("/api/literature/items").json()["items"][0]
-            item_id = before["id"]
-            for route, payload in (
-                ("collection", {"action": "create", "name": "人工归档"}),
-                (
-                    "batch",
-                    {"action": "set_collection", "ids": [item_id], "collection": "人工归档"},
-                ),
-            ):
-                response = client.post(f"/api/literature/{route}", json=payload)
-                assert response.status_code == 200, response.text
+            assert associated.status_code == 200, associated.text
             noted = client.post(
                 f"/api/v1/literatures/{item_id}/notes",
-                json={"text": "此笔记不能因修改状态而消失"},
+                json={"text": "此笔记不能因修改元数据而消失"},
             )
             assert noted.status_code == 201, noted.text
-            before = client.get("/api/literature/items").json()["items"][0]
-            updated = client.post(
-                "/api/literature/fulltext",
-                json={"id": item_id, "status": FulltextStatus.RESTRICTED.value},
+
+            before = client.get(f"/api/v1/literatures/{item_id}").json()
+            patched = client.patch(
+                f"/api/v1/literatures/{item_id}",
+                json={"fields": {"year": 2031, "title": "改写后的标题"}},
             )
-            assert updated.status_code == 200, updated.text
-            after = client.get("/api/literature/items").json()["items"][0]
+            assert patched.status_code == 200, patched.text
+            after = client.get(f"/api/v1/literatures/{item_id}").json()
             check(
-                "全文状态修改只变更状态，保留笔记、分类、入库时间和全部元数据",
-                after == {**before, "fulltext": FulltextStatus.RESTRICTED.value},
-                str(after),
+                "元数据修改只变更被改字段，保留笔记、分类、入库时间和其余元数据",
+                after["year"] == 2031
+                and after["title"] == "改写后的标题"
+                and [note["text"] for note in after["notes"]]
+                == [note["text"] for note in before["notes"]]
+                and [entry["id"] for entry in after["collections"]]
+                == [entry["id"] for entry in before["collections"]]
+                and after["created_at"] == before["created_at"]
+                and after["doi"] == before["doi"]
+                and after["abstract"] == before["abstract"]
+                and after["creators_display"] == before["creators_display"],
+                f"before={before}\nafter={after}",
             )
 
 
 def test_collection_rename_preserves_hierarchy_and_rejects_collision() -> None:
+    """分类名唯一性按**同级**判定 (v1 `literature_collection_sibling_names`)。
+
+    改名不得丢子分类归属; 同一父级下撞名必须 409 且不动任何既有层级。
+    """
+
     with tempfile.TemporaryDirectory(prefix="scholarseed-litrename-") as directory:
         with _client(Path(directory)) as client:
-            for name, parent in (("parent", ""), ("child", "parent"), ("other", "")):
-                created = client.post(
-                    "/api/literature/collection",
-                    json={"action": "create", "name": name, "parent": parent},
+            created: dict[str, str] = {}
+            for name, parent in (
+                ("parent", ""),
+                ("child", "parent"),
+                ("sibling", "parent"),
+                ("other", ""),
+            ):
+                response = client.post(
+                    "/api/v1/collections",
+                    json={"name": name, "parent_id": created.get(parent) or None},
                 )
-                assert created.status_code == 200, created.text
-            renamed = client.post(
-                "/api/literature/collection",
-                json={"action": "rename", "name": "parent", "target": "renamed"},
+                assert response.status_code == 201, response.text
+                created[name] = str(response.json()["id"])
+
+            renamed = client.patch(
+                f"/api/v1/collections/{created['parent']}", json={"name": "renamed"}
             )
             assert renamed.status_code == 200, renamed.text
-            before = client.get("/api/literature/items").json()["collections"]
-            child = next(entry for entry in before if entry["name"] == "child")
-            check("分类改名保留子分类归属", child["parent"] == "renamed")
-            collision = client.post(
-                "/api/literature/collection",
-                json={"action": "rename", "name": "child", "target": "other"},
+            before = {
+                entry["name"]: entry["parent_id"]
+                for entry in client.get("/api/v1/collections").json()
+            }
+            check(
+                "分类改名保留全部子分类归属",
+                before["child"] == created["parent"] and before["sibling"] == created["parent"],
+                str(before),
+            )
+
+            collision = client.patch(
+                f"/api/v1/collections/{created['child']}", json={"name": "sibling"}
+            )
+            after = {
+                entry["name"]: entry["parent_id"]
+                for entry in client.get("/api/v1/collections").json()
+            }
+            check(
+                "同级同名冲突拒绝且不覆盖任何层级",
+                collision.status_code == 409
+                and collision.json()["detail"]["code"] == "COLLECTION_NAME_EXISTS"
+                and after == before,
+                f"status={collision.status_code} body={collision.text[:120]} tree={after}",
+            )
+
+            renamed_child = client.patch(
+                f"/api/v1/collections/{created['child']}", json={"name": "renamed-child"}
             )
             check(
-                "分类同名冲突拒绝且不覆盖任何层级",
-                collision.status_code == 400
-                and collision.json()["detail"] == "collection_exists"
-                and client.get("/api/literature/items").json()["collections"] == before,
+                "子分类改名保留父级",
+                renamed_child.status_code == 200
+                and renamed_child.json()["parent_id"] == created["parent"],
+                renamed_child.text[:160],
             )
-            renamed = client.post(
-                "/api/literature/collection",
-                json={"action": "rename", "name": "child", "target": "renamed-child"},
+
+            cross_level = client.post(
+                "/api/v1/collections",
+                json={"name": "renamed", "parent_id": created["parent"]},
             )
-            assert renamed.status_code == 200, renamed.text
-            child = next(
-                entry for entry in renamed.json()["collections"] if entry["name"] == "renamed-child"
+            check(
+                "唯一性只约束同级：跨层级同名可以共存",
+                cross_level.status_code == 201,
+                cross_level.text[:160],
             )
-            check("子分类改名保留父级", child["parent"] == "renamed")
 
 
 def test_literature_bibtex_export_disambiguates_keys() -> None:
@@ -1198,12 +1285,11 @@ def test_literature_bibtex_export_disambiguates_keys() -> None:
             encoding="utf-8",
         )
         client = _client(project)
-        client.post(
-            "/api/literature/import",
-            json={"source": "local", "sources": [str(source)]},
-        )
-        ids = [item["id"] for item in client.get("/api/literature/items").json()["items"]]
-        exported = client.post("/api/literature/export", json={"ids": ids})
+        project_id = client.app.state.content.project().id
+        imported = _import_bibliography(client, project_id, [("seed.bib", source.read_bytes())])
+        assert imported.status_code == 201, imported.text
+        ids = [item["id"] for item in imported.json()["items"]]
+        exported = client.post("/api/v1/exports", json={"literature_ids": ids, "format": "bibtex"})
         body = exported.json().get("bibtex", "")
         keys = [
             line.split("{", 1)[1].rstrip(",") for line in body.splitlines() if line.startswith("@")
@@ -1229,7 +1315,7 @@ def test_managed_layout_tree_root_is_the_resources_library() -> None:
     catalog = ContentCatalog(workspace.parent / f"{workspace.name}-content.sqlite3")
     registry = ProjectRegistry(str(workspace), catalog)
     registry.seed_workspace()
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
     project = content.create_project("内置双库项目")
     root = Path(project.root)
 
@@ -1378,19 +1464,19 @@ def main() -> int:
     test_resource_delete_is_not_permanent()
     test_resource_import_modes()
     test_resource_tree_carries_authoritative_link_root_identity()
+    test_resource_tree_scan_does_not_block_event_loop()
     test_resource_search_matches_name_and_content()
     test_resource_search_reads_current_plain_and_docx_bytes()
     test_resource_search_ranks_metadata_before_content_and_limit()
     test_resource_search_includes_authorized_directory_and_file()
-    test_literature_import_parses_and_dedupes()
+    test_literature_import_parses_and_appends()
     test_literature_filter_sort_and_batch()
-    test_unimplemented_paths_are_explicit_501()
     test_global_search_spans_domains()
     test_foreign_project_paths_are_rejected()
     test_literature_collections_are_not_tags()
-    test_literature_duplicate_preserves_user_state()
+    test_literature_import_appends_without_touching_existing_rows()
     test_literature_collection_delete_keeps_items()
-    test_fulltext_status_preserves_user_fields()
+    test_metadata_patch_preserves_user_fields()
     test_collection_rename_preserves_hierarchy_and_rejects_collision()
     test_literature_bibtex_export_disambiguates_keys()
     test_literature_serialization_rejects_corruption()

@@ -1,0 +1,21 @@
+{
+  "id": "project-flow",
+  "config": {
+    "language": "zh"
+  },
+  "auth": "none",
+  "drive": "cmd.jsonl",
+  "expected": {
+    "minTurns": 0,
+    "maxTurns": 0
+  },
+  "project": {
+    "name": "P2 project-flow",
+    "files": [
+      {
+        "path": "p2-inputs/P2-SEARCH-TOKEN.md",
+        "contentFrom": "../p2-assets/fixtures/P2-SEARCH-TOKEN.md"
+      }
+    ]
+  }
+}

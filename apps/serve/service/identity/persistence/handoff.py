@@ -28,12 +28,21 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from service.paths import DESKTOP_HANDOFF_DB
-from service.persistence.project import transaction
+from service.persistence.project import (
+    database_files,
+    reader,
+    reject_schema_residue,
+    sql_tokens,
+    table_clauses,
+    transaction,
+)
 
 #: 表名带域前缀: 用户级库虽一库一域, 但与项目级 `project.sqlite3` 的约定保持一致。
 CLAIMS_TABLE = "desktop_handoff_claims"
@@ -76,12 +85,99 @@ def _bounded(value: str, limit: int, error: str) -> str:
     return value
 
 
+@dataclass(frozen=True)
+class HandoffSchema:
+    """Claim table initialization requirements, not credential validation."""
+
+    create_table: bool
+    create_index: bool
+
+    @property
+    def needs_write(self) -> bool:
+        return self.create_table or self.create_index
+
+
 class HandoffClaimStore:
     """本机交接 claim 的读写口。构造不做 I/O, schema 首次使用时惰性建好。"""
 
     def __init__(self, database: Path = DESKTOP_HANDOFF_DB) -> None:
         self.database = database
-        self._schema_ready = False
+
+    @classmethod
+    def inspect_schema(cls, database: Path) -> HandoffSchema:
+        """Read a stable startup WAL snapshot; callers retain directory qualification.
+
+        SQLite can touch SHM. This is neither atomic VFS binding nor row validation.
+        """
+        return cls._inspect_path(database, stable_sidecars=True)
+
+    @classmethod
+    def _inspect_path(cls, database: Path, *, stable_sidecars: bool) -> HandoffSchema:
+        with database_files(database, stable_sidecars=stable_sidecars) as present:
+            if not present:
+                with closing(sqlite3.connect(":memory:")) as connection:
+                    connection.row_factory = sqlite3.Row
+                    return cls.inspect_connection(connection)
+            with reader(database) as connection:
+                connection.execute("BEGIN")
+                return cls.inspect_connection(connection)
+
+    @classmethod
+    def inspect_connection(cls, connection: sqlite3.Connection) -> HandoffSchema:
+        reject_schema_residue(connection, (CLAIMS_TABLE,))
+        objects = {
+            row["name"]: row
+            for row in connection.execute("SELECT name,type,tbl_name,sql FROM sqlite_master")
+        }
+        with closing(sqlite3.connect(":memory:")) as reference:
+            cls._create_table(reference)
+            expected = reference.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (CLAIMS_TABLE,)
+            ).fetchone()[0]
+            actual = objects.get(CLAIMS_TABLE)
+            if actual is not None:
+                try:
+                    valid = actual["type"] == "table" and table_clauses(
+                        actual["sql"], CLAIMS_TABLE
+                    ) == table_clauses(expected, CLAIMS_TABLE)
+                except ValueError as error:
+                    raise RuntimeError("unsupported handoff table definition") from error
+                if not valid:
+                    raise RuntimeError("unsupported handoff table definition")
+            name, definition = reference.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            ).fetchone()
+            owned_index = objects.get(name)
+            if owned_index is not None and (
+                owned_index["type"] != "index"
+                or owned_index["tbl_name"] != CLAIMS_TABLE
+                or sql_tokens(owned_index["sql"]) != sql_tokens(definition)
+            ):
+                raise RuntimeError("unsupported handoff owned index")
+            return HandoffSchema(actual is None, owned_index is None)
+
+    @classmethod
+    def initialize_schema(cls, connection: sqlite3.Connection) -> None:
+        """Initialize structure without claiming, expiring, or delivering codes."""
+        if cls.inspect_connection(connection).needs_write:
+            cls._create_table(connection)
+        if cls.inspect_connection(connection).needs_write:
+            raise RuntimeError("handoff initialization did not converge")
+
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        # Refuse unknown formats before private path setup or SQLite pragmas.
+        # The transaction rechecks to cover changes since this read snapshot.
+        self._inspect_path(self.database, stable_sidecars=False)
+        with transaction(self.database, immediate=True, private=True) as connection:
+            self.initialize_schema(connection)
+            yield connection
+
+    def ensure_schema(self) -> None:
+        """Prepare structure without claiming, expiring, or delivering a handoff."""
+        if self.inspect_schema(self.database).needs_write:
+            with self._transaction():
+                pass
 
     def claim(self, state: str, owner_id: str) -> HandoffLease | None:
         """发起方登记 claim。
@@ -94,15 +190,11 @@ class HandoffClaimStore:
         owner_id = _bounded(owner_id, OWNER_MAX_LENGTH, "invalid_handoff_owner")
         now = time.time()
         lease_expires_at = now + LEASE_SECONDS
-        with transaction(self.database, immediate=True, private=True) as connection:
-            self._ensure_schema(connection)
+        with self._transaction() as connection:
             self._purge_expired(connection, now)
             row = self._find(connection, state)
-            if (
-                row is not None
-                and float(row["lease_expires_at"]) > now
-                and str(row["owner_id"]) != owner_id
-            ):
+            lease = self._lease_owner(row) if row is not None else None
+            if lease is not None and lease[1] > now and lease[0] != owner_id:
                 return None
             if row is None:
                 connection.execute(
@@ -112,8 +204,7 @@ class HandoffClaimStore:
                 )
             else:
                 connection.execute(
-                    f"UPDATE {CLAIMS_TABLE} SET owner_id = ?, lease_expires_at = ?"
-                    " WHERE state = ?",
+                    f"UPDATE {CLAIMS_TABLE} SET owner_id = ?, lease_expires_at = ? WHERE state = ?",
                     (owner_id, lease_expires_at, state),
                 )
         return HandoffLease(lease_expires_at=lease_expires_at)
@@ -128,8 +219,7 @@ class HandoffClaimStore:
         owner_id = _bounded(owner_id, OWNER_MAX_LENGTH, "invalid_handoff_owner")
         now = time.time()
         lease_expires_at = now + LEASE_SECONDS
-        with transaction(self.database, immediate=True, private=True) as connection:
-            self._ensure_schema(connection)
+        with self._transaction() as connection:
             cursor = connection.execute(
                 f"UPDATE {CLAIMS_TABLE} SET lease_expires_at = ?"
                 " WHERE state = ? AND owner_id = ? AND lease_expires_at > ?",
@@ -153,7 +243,7 @@ class HandoffClaimStore:
             )
             if taken.rowcount != 1:
                 return HandoffLease(lease_expires_at=lease_expires_at)
-        return HandoffLease(lease_expires_at=lease_expires_at, code=str(row["code"]))
+        return HandoffLease(lease_expires_at=lease_expires_at, code=self._code(row))
 
     def deliver(self, state: str, code: str, delivered_by: str) -> DeliveryStatus:
         """接管方把深链里的一次性 code 转交给发起方。
@@ -167,14 +257,10 @@ class HandoffClaimStore:
         code = _bounded(code, CODE_MAX_LENGTH, "invalid_handoff_code")
         delivered_by = _bounded(delivered_by, OWNER_MAX_LENGTH, "invalid_handoff_owner")
         now = time.time()
-        with transaction(self.database, immediate=True, private=True) as connection:
-            self._ensure_schema(connection)
+        with self._transaction() as connection:
             row = self._find(connection, state)
-            if (
-                row is None
-                or float(row["lease_expires_at"]) <= now
-                or str(row["owner_id"]) == delivered_by
-            ):
+            lease = self._lease_owner(row) if row is not None else None
+            if lease is None or lease[1] <= now or lease[0] == delivered_by:
                 return DeliveryStatus.ORPHANED
             connection.execute(
                 f"UPDATE {CLAIMS_TABLE} SET code = ?, code_written_at = ?, delivered_by = ?"
@@ -188,8 +274,7 @@ class HandoffClaimStore:
 
         state = _bounded(state, STATE_MAX_LENGTH, "invalid_handoff_state")
         owner_id = _bounded(owner_id, OWNER_MAX_LENGTH, "invalid_handoff_owner")
-        with transaction(self.database, immediate=True, private=True) as connection:
-            self._ensure_schema(connection)
+        with self._transaction() as connection:
             connection.execute(
                 f"DELETE FROM {CLAIMS_TABLE} WHERE state = ? AND owner_id = ?",
                 (state, owner_id),
@@ -201,9 +286,24 @@ class HandoffClaimStore:
             (state,),
         ).fetchone()
 
-    def _ensure_schema(self, connection: sqlite3.Connection) -> None:
-        if self._schema_ready:
-            return
+    @staticmethod
+    def _lease_owner(row: sqlite3.Row) -> tuple[str, float]:
+        return str(row["owner_id"]), float(row["lease_expires_at"])
+
+    @staticmethod
+    def _code(row: sqlite3.Row) -> str:
+        return str(row["code"])
+
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Read the existing handoff representation without taking or renewing it."""
+        for row in connection.execute(f"SELECT owner_id,lease_expires_at,code FROM {CLAIMS_TABLE}"):
+            cls._lease_owner(row)
+            if row["code"] is not None:
+                cls._code(row)
+
+    @staticmethod
+    def _create_table(connection: sqlite3.Connection) -> None:
         connection.execute(f"""CREATE TABLE IF NOT EXISTS {CLAIMS_TABLE} (
                 state TEXT PRIMARY KEY,
                 owner_id TEXT NOT NULL,
@@ -215,10 +315,8 @@ class HandoffClaimStore:
                 claimed_at REAL
             )""")
         connection.execute(
-            f"CREATE INDEX IF NOT EXISTS {CLAIMS_TABLE}_lease ON {CLAIMS_TABLE}"
-            " (lease_expires_at)"
+            f"CREATE INDEX IF NOT EXISTS {CLAIMS_TABLE}_lease ON {CLAIMS_TABLE} (lease_expires_at)"
         )
-        self._schema_ready = True
 
     @staticmethod
     def _purge_expired(connection, now: float) -> None:  # type: ignore[no-untyped-def]
@@ -240,4 +338,5 @@ __all__ = [
     "DeliveryStatus",
     "HandoffClaimStore",
     "HandoffLease",
+    "HandoffSchema",
 ]

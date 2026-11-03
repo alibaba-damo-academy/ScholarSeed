@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from io_utils import atomic_write_json, read_json, utc_now
+from filesystem import canonical_path, filesystem_path, path_exists
+from task_binding import RUN_ROOT_NAME, write_binding
 from validate_json import validate_reading_outcome, validate_report_review, validate_run_state
 
 
@@ -25,24 +27,27 @@ STATUSES = {
     "REPORT_REVIEW_PENDING", "FINAL_REPORTING", "COMPLETED", "FAILED",
 }
 
+MANAGED_STORAGE = "managed"
+
 
 def new_run_id() -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
 
 
 def initialize_run(work_dir: Path, request: str | None = None) -> Path:
-    root = work_dir.resolve() / ".precise-literature-search" / "runs"
+    root = canonical_path(work_dir) / RUN_ROOT_NAME / "runs"
     while True:
         run_dir = root / new_run_id()
         try:
-            run_dir.mkdir(parents=True, exist_ok=False)
+            filesystem_path(run_dir).mkdir(parents=True, exist_ok=False)
             break
         except FileExistsError:
             continue
     for relative in ("search", "downloads/papers", "downloads/paper-dl-logs"):
-        (run_dir / relative).mkdir(parents=True, exist_ok=True)
+        filesystem_path((run_dir / relative)).mkdir(parents=True, exist_ok=True)
+    write_binding(run_dir, work_dir)
     if request is not None:
-        (run_dir / "request.txt").write_text(request.rstrip() + "\n", encoding="utf-8")
+        filesystem_path((run_dir / "request.txt")).write_text(request.rstrip() + "\n", encoding="utf-8")
     now = utc_now()
     state = {
         "schema_version": "2.0",
@@ -152,11 +157,11 @@ def increment_search_round(run_dir: Path, message: str = "Started search round")
 
 
 def _resolve_run_path(run_dir: Path, value: str) -> Path:
-    root = run_dir.resolve()
+    root = canonical_path(run_dir)
     relative = Path(value)
     if relative.is_absolute():
         raise ValueError(f"run artifact path must be relative: {value}")
-    candidate = (root / relative).resolve()
+    candidate = canonical_path((root / relative))
     try:
         candidate.relative_to(root)
     except ValueError as exc:
@@ -165,14 +170,14 @@ def _resolve_run_path(run_dir: Path, value: str) -> Path:
 
 
 def _copy_immutable(source: Path, destination: Path) -> None:
-    if not source.is_file():
+    if not filesystem_path(source).is_file():
         raise ValueError(f"run artifact does not exist: {source}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        if not destination.is_file() or destination.read_bytes() != source.read_bytes():
+    filesystem_path(destination.parent).mkdir(parents=True, exist_ok=True)
+    if path_exists(destination):
+        if not filesystem_path(destination).is_file() or filesystem_path(destination).read_bytes() != filesystem_path(source).read_bytes():
             raise ValueError(f"refusing to overwrite archived artifact: {destination}")
         return
-    shutil.copy2(source, destination)
+    shutil.copy2(filesystem_path(source), filesystem_path(destination))
 
 
 def record_report_review(
@@ -200,17 +205,17 @@ def record_report_review(
     if not isinstance(report_value, str):
         raise ValueError("REPORT_REVIEW_PENDING requires a report path in state.json")
     report_path = _resolve_run_path(run_dir, report_value)
-    if not report_path.is_file():
+    if not filesystem_path(report_path).is_file():
         raise ValueError(f"report does not exist: {report_value}")
-    if not report_path.read_text(encoding="utf-8").strip():
+    if not filesystem_path(report_path).read_text(encoding="utf-8").strip():
         raise ValueError(f"report is empty: {report_value}")
     paper_summary_value = state["paths"].get("paper_summary")
     if not isinstance(paper_summary_value, str):
         raise ValueError("REPORT_REVIEW_PENDING requires a paper summary path in state.json")
     paper_summary_path = _resolve_run_path(run_dir, paper_summary_value)
-    if not paper_summary_path.is_file():
+    if not filesystem_path(paper_summary_path).is_file():
         raise ValueError(f"paper summary does not exist: {paper_summary_value}")
-    if not paper_summary_path.read_text(encoding="utf-8").strip():
+    if not filesystem_path(paper_summary_path).read_text(encoding="utf-8").strip():
         raise ValueError(f"paper summary is empty: {paper_summary_value}")
 
     archive_dir = run_dir / "iterations" / f"round-{round_number:03d}"
@@ -222,11 +227,11 @@ def record_report_review(
                 state["paths"].get("download_manifest"),
                 "download-manifest.json",
             ),
-            "report": (report_value, "report.md"),
+            "report": (report_value, "read_report.md"),
         }
         candidates["paper_summary"] = (paper_summary_value, "paper_summary.md")
         paid_action = run_dir / "paid-action.json"
-        if paid_action.is_file():
+        if filesystem_path(paid_action).is_file():
             candidates["paid_action"] = ("paid-action.json", "paid-action.json")
         optional_reader_artifacts = {
             "reading_outcome": (state["paths"].get("reading_outcome"), "reading-outcome.json"),
@@ -257,7 +262,7 @@ def record_report_review(
     }
     if decision_source is not None:
         review["decision_source"] = decision_source
-    if review_path.exists():
+    if path_exists(review_path):
         existing = read_json(review_path)
         validate_report_review(existing)
         comparable = {key: value for key, value in review.items() if key != "reviewed_at"}
@@ -308,7 +313,7 @@ def _no_readable_fulltext(run_dir: Path, state: dict[str, Any]) -> bool:
     not proof of zero readable papers; their ordinary citation gate stays intact.
     """
     rounds = [(state["search_round"], state["paths"])]
-    for review_path in sorted((run_dir / "iterations").glob("round-*/review.json")):
+    for review_path in sorted(filesystem_path(run_dir / "iterations").glob("round-*/review.json")):
         review = read_json(review_path)
         validate_report_review(review)
         if review.get("run_id") != state["run_id"]:
@@ -326,7 +331,7 @@ def _no_readable_fulltext(run_dir: Path, state: dict[str, Any]) -> bool:
         manifest = read_json(manifest_path)
         if (outcome.get("schema_version") != "1.0" or outcome.get("run_id") != state["run_id"]
                 or outcome.get("search_round") != round_number
-                or outcome.get("manifest_sha256") != hashlib.sha256(manifest_path.read_bytes()).hexdigest()):
+                or outcome.get("manifest_sha256") != hashlib.sha256(filesystem_path(manifest_path).read_bytes()).hexdigest()):
             raise ValueError("reading outcome must match the run, round and download manifest SHA-256")
         papers = outcome.get("papers")
         if not isinstance(manifest, dict) or not isinstance(manifest.get("papers"), list):
@@ -335,19 +340,27 @@ def _no_readable_fulltext(run_dir: Path, state: dict[str, Any]) -> bool:
                or (p.get("file_path") is not None and not isinstance(p["file_path"], str))
                for p in manifest["papers"]):
             raise ValueError("invalid download manifest paper identity")
-        expected = {(p["paper_id"], p.get("file_path")) for p in manifest["papers"]
-                    if p.get("status") == "downloaded"}
-        seen = set()
+        expected = {p["paper_id"]: p for p in manifest["papers"] if p.get("status") == "downloaded"}
+        seen: set[str] = set()
         has_readable = False
         for paper in papers:
-            key = (paper.get("paper_id"), paper.get("file_path"))
-            if key in seen or key not in expected or paper.get("status") not in {"readable", "unreadable"}:
+            paper_id = paper.get("paper_id")
+            entry = expected.get(paper_id) if isinstance(paper_id, str) else None
+            if paper_id in seen or entry is None or paper.get("status") not in {"readable", "unreadable"}:
                 raise ValueError("reading outcomes must uniquely cover downloaded manifest entries")
-            seen.add(key)
+            evidence = paper.get("file_path")
+            if entry.get("storage") == MANAGED_STORAGE:
+                # Managed bytes never enter the run, so the outcome must instead name the
+                # run-contained text the reader actually used.
+                if not isinstance(evidence, str) or not evidence:
+                    raise ValueError("a managed paper must name the run-contained text it was read from")
+            elif evidence != entry.get("file_path"):
+                raise ValueError("reading outcome must name the downloaded file it used")
+            seen.add(paper_id)
             has_readable |= paper["status"] == "readable"
             if paper["status"] == "unreadable" and not str(paper.get("reason") or "").strip():
                 raise ValueError("unreadable paper requires an exclusion reason")
-        if seen != expected:
+        if seen != set(expected):
             raise ValueError("reading outcome omits downloaded papers")
         if has_readable:
             return False
@@ -379,9 +392,9 @@ def complete_final_report(run_dir: Path, report: str = "final_report.md", *, _st
         raise ValueError("final report requires an explicit complete review decision")
 
     report_path = _resolve_run_path(run_dir, report)
-    if not report_path.is_file():
+    if not filesystem_path(report_path).is_file():
         raise ValueError(f"final report does not exist: {report}")
-    contents = report_path.read_text(encoding="utf-8").strip()
+    contents = filesystem_path(report_path).read_text(encoding="utf-8").strip()
     if not contents:
         raise ValueError(f"final report is empty: {report}")
     reference_headings = list(re.finditer(
@@ -413,15 +426,20 @@ def complete_final_report(run_dir: Path, report: str = "final_report.md", *, _st
                 "the abstract-alert section must appear immediately before final references"
             )
         abstract_entry_numbers: list[str] = []
+        previous_entry = False
         for line in abstract_alerts.splitlines():
             stripped = line.strip()
             if not stripped:
+                previous_entry = False
                 continue
             match = re.fullmatch(r"\[A(\d+)\]\s+\S.*", stripped)
             if match is None:
                 raise ValueError(
                     "the abstract-alert section may contain only single-line [A#] entries"
                 )
+            if previous_entry:
+                raise ValueError("abstract-alert entries must be separated by blank lines")
+            previous_entry = True
             chinese_label = (
                 re.search(r"证据级别\s*[:：]\s*摘要", stripped) is not None
                 and "未阅读全文" in stripped
@@ -465,15 +483,21 @@ def complete_final_report(run_dir: Path, report: str = "final_report.md", *, _st
     elif not citation_groups:
         raise ValueError("final report must contain numbered inline citations such as [1]")
     reference_numbers: list[str] = []
+    previous_entry_is_list_item = None
     for line in references.splitlines():
         stripped = line.strip()
         if not stripped:
+            previous_entry_is_list_item = None
             continue
         match = re.fullmatch(r"(?:[-*]\s*)?\[(\d+)\]\s+\S.*", stripped)
         if match is None:
             raise ValueError(
                 "the final reference section may contain only numbered reference entries"
             )
+        is_list_item = re.match(r"[-*]\s+", stripped) is not None
+        if previous_entry_is_list_item is not None and not (previous_entry_is_list_item and is_list_item):
+            raise ValueError("reference entries must be separated by blank lines or Markdown list markers")
+        previous_entry_is_list_item = is_list_item
         reference_numbers.append(match.group(1))
     if not reference_numbers and not no_fulltext:
         raise ValueError("final report reference section must contain numbered entries")
@@ -491,7 +515,7 @@ def complete_final_report(run_dir: Path, report: str = "final_report.md", *, _st
     state["schema_version"] = "2.0"
     state["status"] = "COMPLETED"
     state["completion_outcome"] = "no_readable_fulltext" if no_fulltext else "full_text"
-    state["paths"]["final_report"] = report_path.relative_to(run_dir.resolve()).as_posix()
+    state["paths"]["final_report"] = report_path.relative_to(canonical_path(run_dir)).as_posix()
     state["events"].append({
         "timestamp": utc_now(),
         "from": previous,

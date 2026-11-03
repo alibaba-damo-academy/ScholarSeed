@@ -21,6 +21,7 @@ from service.identity.persistence.tokens import issue_token, verify_token  # noq
 from service.identity.persistence.users import create_user, verify_password  # noqa: E402
 from service.identity.service.policy import AUTH_MODE_CHOICES, enabled_for_mode  # noqa: E402
 from service.identity.utils import HOST_PROCESS_HEADER, HOST_PROCESS_KEY_ENV  # noqa: E402
+from service.platform.activity import Activities  # noqa: E402
 
 REMOVED_ROUTES = (
     ("POST", "/api/auth/sso/login"),
@@ -53,7 +54,7 @@ class CommunityAuthContract(unittest.TestCase):
 
     def client(self, mode: str) -> TestClient:
         app = FastAPI()
-        register_auth(app, enabled=enabled_for_mode(mode, True), mode=mode)
+        register_auth(app, enabled=enabled_for_mode(mode, True), mode=mode, activities=Activities())
         return TestClient(app)
 
     def test_removed_routes_and_ignored_legacy_configuration(self) -> None:

@@ -2,7 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { ResourceReviewBatch, ResourceReviewBatchMember } from './api.ts'
-import { ReviewDraftStore } from './draft.ts'
+import {
+  resolveExpectedDiskRevision,
+  resolveReviewAction,
+  resolveReviewUndoSource,
+  ReviewUndoSource,
+  ReviewDraftStore,
+  shouldRestoreReviewCandidate,
+  shouldSaveReviewDraft
+} from './draft.ts'
 
 function member(overrides: Partial<ResourceReviewBatchMember> = {}): ResourceReviewBatchMember {
   return {
@@ -42,7 +50,7 @@ test('review draft remains editable until commit and is isolated by project', ()
   assert.equal(store.choice('project-b', 'batch-1', current.file_id), null)
 })
 
-test('hydrate keeps matching choices and invalidates stale review identity', () => {
+test('hydrate keeps a decision across pending revision changes but invalidates review identity', () => {
   const store = new ReviewDraftStore()
   const original = batch()
   store.hydrate('project', original)
@@ -50,6 +58,8 @@ test('hydrate keeps matching choices and invalidates stale review identity', () 
   store.hydrate('project', { ...original, updated_at_ms: 2 })
   assert.equal(store.choice('project', original.id, 'file-1')?.action, 'accept')
   store.hydrate('project', { ...original, members: [member({ pending_revision: 2 })] })
+  assert.equal(store.choice('project', original.id, 'file-1')?.pendingRevision, 2)
+  store.hydrate('project', { ...original, members: [member({ review_id: 'replacement-review' })] })
   assert.equal(store.choice('project', original.id, 'file-1'), null)
 })
 
@@ -77,4 +87,88 @@ test('completed members stay decided when a failed batch is resumed', () => {
   assert.equal(store.choice('project', current.id, accepted.file_id)?.action, 'accept')
   store.choose('project', current.id, remaining, 'reject', remaining.candidate_revision)
   assert.equal(store.decisions('project', current)?.length, 2)
+})
+
+test('accepting changed disk content keeps the Agent candidate intent', () => {
+  const current = member()
+  assert.equal(resolveReviewAction('accept', current, current.candidate_revision), 'accept')
+  assert.equal(resolveReviewAction('accept', current, 'sha256:external'), 'accept')
+  assert.equal(resolveReviewAction('reject', current, 'sha256:external'), 'reject')
+  assert.equal(resolveReviewAction('revise', current, 'sha256:external'), 'revise')
+})
+
+test('external content is observed without creating a user decision', () => {
+  const current = member()
+  const store = new ReviewDraftStore()
+  const currentBatch = batch({ members: [current] })
+  store.hydrate('project', currentBatch)
+  assert.equal(store.choice('project', currentBatch.id, current.file_id), null)
+  assert.equal(store.decidedCount('project', currentBatch.id), 0)
+})
+
+test('undo restores the Agent candidate only for persisted external revisions', () => {
+  const current = member()
+  assert.equal(shouldRestoreReviewCandidate(null, current), false)
+  assert.equal(shouldRestoreReviewCandidate({
+    action: 'revise',
+    reviewId: current.review_id,
+    pendingRevision: current.pending_revision,
+    candidateRevision: current.candidate_revision,
+    expectedDiskRevision: 'sha256:external'
+  }, current), true)
+  assert.equal(shouldRestoreReviewCandidate({
+    action: 'revise',
+    reviewId: current.review_id,
+    pendingRevision: current.pending_revision,
+    candidateRevision: current.candidate_revision,
+    expectedDiskRevision: current.candidate_revision
+  }, current), false)
+})
+
+test('external revision rollback takes priority over a dirty editor marker', () => {
+  const current = member()
+  const external = {
+    action: 'revise' as const,
+    reviewId: current.review_id,
+    pendingRevision: current.pending_revision,
+    candidateRevision: current.candidate_revision,
+    expectedDiskRevision: 'sha256:external'
+  }
+  const memory = { ...external, expectedDiskRevision: current.candidate_revision }
+  assert.equal(resolveReviewUndoSource(external, current, true, 'sha256:external'), ReviewUndoSource.Candidate)
+  assert.equal(resolveReviewUndoSource(external, current, false, 'sha256:external'), ReviewUndoSource.Candidate)
+  assert.equal(resolveReviewUndoSource(null, current, false, 'sha256:external'), ReviewUndoSource.Candidate)
+  assert.equal(resolveReviewUndoSource(memory, current, true, current.candidate_revision), ReviewUndoSource.Memory)
+  assert.equal(resolveReviewUndoSource(memory, current, false, current.candidate_revision), null)
+})
+
+test('clearing one review choice preserves other file decisions', () => {
+  const store = new ReviewDraftStore()
+  const first = member()
+  const second = member({ file_id: 'file-2', review_id: 'review-2' })
+  const currentBatch = batch({ members: [first, second] })
+  store.choose('project', currentBatch.id, first, 'accept', first.candidate_revision)
+  store.choose('project', currentBatch.id, second, 'reject', second.candidate_revision)
+  store.clearChoice('project', currentBatch.id, first.file_id)
+  assert.equal(store.choice('project', currentBatch.id, first.file_id), null)
+  assert.equal(store.choice('project', currentBatch.id, second.file_id)?.action, 'reject')
+})
+
+test('the review snapshot wins over a stale open editor revision', () => {
+  const current = member()
+  assert.equal(
+    resolveExpectedDiskRevision(current, 'sha256:external', 'sha256:stale-editor'),
+    'sha256:external'
+  )
+  assert.equal(
+    resolveExpectedDiskRevision(current, undefined, 'sha256:editor'),
+    'sha256:editor'
+  )
+})
+
+test('only in-memory review revisions need saving before commit', () => {
+  assert.equal(shouldSaveReviewDraft('revise', true), true)
+  assert.equal(shouldSaveReviewDraft('revise', false), false)
+  assert.equal(shouldSaveReviewDraft('accept', true), false)
+  assert.equal(shouldSaveReviewDraft('reject', true), false)
 })

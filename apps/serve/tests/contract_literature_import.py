@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import base64
+import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -19,11 +20,16 @@ from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.utils import read_regular
+from service.literature.api.catalogue import register_global_routes
 from service.literature.api.reading import register_reading_routes
-from service.literature.api.routes import register_literature_routes
-from service.literature.domain.model import LIBRARY_INVALID, LiteratureError
+from service.literature.domain.model import (
+    LIBRARY_INVALID,
+    LIBRARY_UNAVAILABLE,
+    MAX_BATCH_RECORDS,
+    LiteratureError,
+)
 from service.literature.persistence.files import LiteratureFileBatch, managed_object
-from service.literature.persistence.imports import IMPORT_TABLE, ImportState
+from service.literature.persistence.imports import IMPORT_TABLE, ImportState, LiteratureImports
 from service.literature.persistence.store import (
     LiteratureRepository,
     connect,
@@ -31,30 +37,29 @@ from service.literature.persistence.store import (
     load_library,
 )
 from service.literature.schema import (
+    AttachmentRole,
     FulltextStatus,
     ImportSource,
     LiteratureItem,
-    LiteratureNote,
     LiteratureView,
 )
 from service.literature.service import zotero
-from service.literature.service.arxiv import (
-    ARXIV_DOWNLOAD_FAILED,
-    ARXIV_INVALID,
-    ARXIV_NOT_FOUND,
-    ArxivDownloadError,
-    fetch_arxiv_pdf,
-    normalize_arxiv_id,
+from service.literature.service.arxiv import ArxivDownloadError, normalize_arxiv_id
+from service.literature.service.attachment import (
+    ARXIV_ALREADY_ATTACHED,
+    LiteratureAttachmentContent,
 )
-from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.extractor import extract_pdf_metadata
+from service.literature.service.fulltext import FulltextDownload
 from service.literature.service.importer import (
-    MAX_RECORDS_PER_IMPORT,
     LiteratureImportError,
+    import_from_bytes,
     import_from_paths,
     parse_import,
+    plan_artifact_import,
 )
 from service.literature.service.pdf import LiteraturePdf
+from service.platform.activity import Activities
 from service.platform.content import RootKind
 from service.workbench.domain.model import WorkbenchFormatPolicy
 
@@ -82,7 +87,7 @@ class LiteratureImportTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="literature-import-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.database = self.root / "literature.sqlite3"
         repository_init = LiteratureRepository.__init__
 
@@ -101,7 +106,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.addCleanup(repository_patch.stop)
         catalog = ContentCatalog(self.root / "content.sqlite3")
         registry = ProjectRegistry(str(self.root), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = self.content.create_project("文献准入")
         self.library = Path(
             self.content.resolve(
@@ -120,12 +125,11 @@ class LiteratureImportTests(unittest.TestCase):
         path.write_bytes(data)
         return path
 
-    def test_bibliography_formats_share_records(self) -> None:
+    def test_bibliography_formats_preserve_metadata_with_independent_identity(self) -> None:
         bib = parse_import("source.BIB", BIB).items[0]
         ris = parse_import("source.RIS", RIS).items[0]
-        self.assertEqual(
-            (bib.id, bib.title, bib.authors, bib.year), (ris.id, ris.title, ris.authors, ris.year)
-        )
+        self.assertEqual((bib.title, bib.authors, bib.year), (ris.title, ris.authors, ris.year))
+        self.assertNotEqual(bib.id, ris.id)
         self.assertEqual(bib.fulltext, FulltextStatus.NONE)
         self.assertEqual(ris.fulltext, FulltextStatus.NONE)
         for item in (bib, ris):
@@ -140,7 +144,7 @@ class LiteratureImportTests(unittest.TestCase):
         payload = document.tobytes()
         document.close()
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
 
         response = TestClient(app).post(
             "/api/v1/imports/pdf",
@@ -164,7 +168,7 @@ class LiteratureImportTests(unittest.TestCase):
         document.close()
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
 
         files = self.root / "project-pdf-files"
         with patch("service.literature.api.catalogue.SERVICE_LITERATURE_FILES_DIR", files):
@@ -191,7 +195,7 @@ class LiteratureImportTests(unittest.TestCase):
         files = self.root / "managed-attachments"
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         register_reading_routes(
             app,
             repository,
@@ -256,6 +260,63 @@ class LiteratureImportTests(unittest.TestCase):
                 415,
             )
 
+    def test_primary_upload_never_replaces_a_usable_primary_attachment(self) -> None:
+        """产品上传腿的主附件不变式: 已有可用全文时 409, 不静默降级旧文件。
+
+        ``literature/fulltext-attach`` (bridge) 与这条 ``?primary=true`` 腿共用附件域
+        owner ``attach_primary_pdf`` 的同一判据, 所以同一条不变式的另一半契约打在
+        ``tests/contract_literature_curation.py``; 这里钉的是 HTTP 入口的结果。
+        """
+
+        repository = LiteratureRepository()
+        item = repository.save(LiteratureItem(id="primary-paper", title="Primary paper"))
+        with pdf_fixture.open() as document:
+            document.new_page()
+            first = document.tobytes()
+        with pdf_fixture.open() as document:
+            document.new_page()
+            document.set_metadata({"title": "Replacement"})
+            second = document.tobytes()
+        app = FastAPI()
+        app.state.content = self.content
+        register_global_routes(app)
+        client = TestClient(app)
+        route = f"/api/v1/literatures/{item.id}/attachments"
+
+        created = client.post(
+            route,
+            params={"primary": "true"},
+            files={"file": ("paper.pdf", first, "application/pdf")},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        refused = client.post(
+            route,
+            params={"primary": "true"},
+            files={"file": ("replacement.pdf", second, "application/pdf")},
+        )
+
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertEqual(refused.json()["detail"]["code"], ARXIV_ALREADY_ATTACHED)
+        rows = repository.attachments(item.id)
+        # 旧主附件既没被换掉, 也没被降级成补充材料; 库里始终只有一行。
+        self.assertEqual([row["id"] for row in rows], [created.json()["id"]])
+        self.assertEqual(rows[0]["role"], AttachmentRole.PRIMARY.value)
+        self.assertEqual(Path(rows[0]["path"]).read_bytes(), first)
+        self.assertEqual(repository.get(item.id).fulltext, FulltextStatus.READY)
+
+        # 行在而字节丢 (lost) 是「需要补救」: 允许补挂, 且旧行连文件带派生索引一起清掉。
+        Path(rows[0]["path"]).unlink()
+        recovered = client.post(
+            route,
+            params={"primary": "true"},
+            files={"file": ("recovered.pdf", second, "application/pdf")},
+        )
+        self.assertEqual(recovered.status_code, 201, recovered.text)
+        self.assertNotEqual(recovered.json()["id"], created.json()["id"])
+        self.assertEqual(
+            [row["id"] for row in repository.attachments(item.id)], [recovered.json()["id"]]
+        )
+
     def test_attachment_open_uses_the_same_workbench_format_policy_as_resources(self) -> None:
         repository = LiteratureRepository()
         item = repository.save(LiteratureItem(id="format-paper", title="Format paper"))
@@ -263,7 +324,7 @@ class LiteratureImportTests(unittest.TestCase):
         formats = WorkbenchFormatPolicy()
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         register_reading_routes(
             app,
             repository,
@@ -335,7 +396,7 @@ class LiteratureImportTests(unittest.TestCase):
         files = self.root / "editable-attachments"
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         register_reading_routes(
             app,
             repository,
@@ -386,7 +447,7 @@ class LiteratureImportTests(unittest.TestCase):
         item = repository.save(LiteratureItem(id="mismatch-paper", title="Mismatch paper"))
         files = self.root / "mismatch-attachments"
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
         with patch("service.literature.api.catalogue.SERVICE_LITERATURE_FILES_DIR", files):
             response = TestClient(app).post(
                 f"/api/v1/literatures/{item.id}/attachments",
@@ -421,7 +482,7 @@ class LiteratureImportTests(unittest.TestCase):
         document.close()
         files = self.root / "attachments"
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
 
         with (
             patch(
@@ -437,9 +498,15 @@ class LiteratureImportTests(unittest.TestCase):
                 "service.literature.persistence.files.SERVICE_LITERATURE_FILES_DIR",
                 files,
             ),
+            # 主附件的暂存根归 attachment owner 持有 (attach_primary_pdf), 少指一个就会
+            # 把副本写进真实的 SCHOLARSEED_HOME。
             patch(
-                "service.literature.api.catalogue.fetch_arxiv_pdf",
-                return_value=(item.arxiv, payload),
+                "service.literature.service.attachment.SERVICE_LITERATURE_FILES_DIR",
+                files,
+            ),
+            patch(
+                "service.literature.api.catalogue.fetch_identifier_pdf",
+                return_value=FulltextDownload(content=payload, arxiv=item.arxiv),
             ),
         ):
             response = TestClient(app).post(f"/api/v1/literatures/{item.id}/attachments/arxiv")
@@ -457,74 +524,6 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertTrue(Path(primary.path).is_file())
         self.assertEqual(len(repository.attachments(item.id)), 1)
 
-    def test_arxiv_upstream_404_is_kept_apart_from_transport_failures(self) -> None:
-        """A missing upstream PDF is actionable; a dead network is not.
-
-        Folding the 404 into the transport code made the detail panel blame
-        the network for an identifier arXiv has no PDF for.
-        """
-
-        class _Response:
-            def __init__(self, status_code: int) -> None:
-                self.status_code = status_code
-
-            def raise_for_status(self) -> None:
-                raise httpx.ConnectError("boom")
-
-            def iter_bytes(self):
-                return iter(())
-
-            def __enter__(self) -> "_Response":
-                return self
-
-            def __exit__(self, *exc) -> bool:
-                return False
-
-        class _Client:
-            def __init__(self, status_code: int) -> None:
-                self._status_code = status_code
-
-            def stream(self, method: str, url: str) -> _Response:
-                return _Response(self._status_code)
-
-            def __enter__(self) -> "_Client":
-                return self
-
-            def __exit__(self, *exc) -> bool:
-                return False
-
-        with patch("httpx.Client", lambda **kwargs: _Client(404)):
-            with self.assertRaises(ArxivDownloadError) as missing:
-                fetch_arxiv_pdf("2401.12345")
-        self.assertEqual(missing.exception.code, ARXIV_NOT_FOUND)
-        with patch("httpx.Client", lambda **kwargs: _Client(500)):
-            with self.assertRaises(ArxivDownloadError) as broken:
-                fetch_arxiv_pdf("2401.12345")
-        self.assertEqual(broken.exception.code, ARXIV_DOWNLOAD_FAILED)
-
-    def test_arxiv_download_failure_codes_map_to_actionable_statuses(self) -> None:
-        repository = LiteratureRepository(self.root / "arxiv-errors.sqlite3")
-        item = repository.save(
-            LiteratureItem(id="arxiv-errors", title="Arxiv errors", arxiv="2401.99999")
-        )
-        app = FastAPI()
-        register_literature_routes(app)
-        expectations = {ARXIV_INVALID: 400, ARXIV_NOT_FOUND: 404, ARXIV_DOWNLOAD_FAILED: 502}
-        for code, status in expectations.items():
-            with (
-                patch(
-                    "service.literature.api.catalogue.LiteratureRepository",
-                    return_value=repository,
-                ),
-                patch(
-                    "service.literature.api.catalogue.fetch_arxiv_pdf",
-                    side_effect=ArxivDownloadError(code),
-                ),
-            ):
-                response = TestClient(app).post(f"/api/v1/literatures/{item.id}/attachments/arxiv")
-            self.assertEqual(response.status_code, status, response.text)
-            self.assertEqual(response.json()["detail"]["code"], code)
-
     def test_global_pdf_upload_accepts_missing_author(self) -> None:
         document = pdf_fixture.open()
         document.new_page()
@@ -532,7 +531,7 @@ class LiteratureImportTests(unittest.TestCase):
         payload = document.tobytes()
         document.close()
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
 
         response = TestClient(app).post(
             "/api/v1/imports/pdf",
@@ -549,7 +548,7 @@ class LiteratureImportTests(unittest.TestCase):
             document.new_page()
             payload = document.tobytes()
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
         response = TestClient(app).post(
             "/api/v1/imports/pdf",
             files={"file": ("我的论文.v2.PDF", payload, "application/pdf")},
@@ -573,7 +572,7 @@ class LiteratureImportTests(unittest.TestCase):
         parsed = parse_import("paper.pdf", payload).items[0]
         self.assertEqual((parsed.arxiv, parsed.doi), (metadata.arxiv, metadata.doi))
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
         response = TestClient(app).post(
             "/api/v1/imports/pdf",
             files={"file": ("paper.pdf", payload, "application/pdf")},
@@ -641,7 +640,7 @@ class LiteratureImportTests(unittest.TestCase):
 
     def test_invalid_file_is_not_imported_as_a_pdf(self) -> None:
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
         response = TestClient(app).post(
             "/api/v1/imports/pdf",
             files={"file": ("fake.pdf", b"not a PDF", "application/pdf")},
@@ -708,7 +707,7 @@ class LiteratureImportTests(unittest.TestCase):
 
     def test_global_bibliography_upload_imports_every_bib_and_ris_entry(self) -> None:
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
 
         response = TestClient(app).post(
             "/api/v1/imports/bibliography",
@@ -740,7 +739,7 @@ class LiteratureImportTests(unittest.TestCase):
     def test_project_bibliography_upload_links_bib_and_ris_to_current_project(self) -> None:
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
 
         response = TestClient(app).post(
             "/api/v1/imports/bibliography",
@@ -767,7 +766,7 @@ class LiteratureImportTests(unittest.TestCase):
         repository.save_all((item,))
         collection = repository.create_collection("Card research")
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
         client = TestClient(app)
         with patch(
             "service.literature.api.catalogue.LiteratureRepository", return_value=repository
@@ -797,7 +796,7 @@ class LiteratureImportTests(unittest.TestCase):
     def test_card_import_missing_collection_does_not_write(self) -> None:
         repository = LiteratureRepository(self.root / "cards.sqlite3")
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
         with patch(
             "service.literature.api.catalogue.LiteratureRepository", return_value=repository
         ):
@@ -811,7 +810,7 @@ class LiteratureImportTests(unittest.TestCase):
 
     def test_global_bibliography_upload_is_atomic_when_one_file_is_invalid(self) -> None:
         app = FastAPI()
-        register_literature_routes(app)
+        register_global_routes(app)
         before = LiteratureRepository().list()
 
         response = TestClient(app).post(
@@ -962,7 +961,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(list(self.library.iterdir()), [])
 
     def test_record_limit_rejects_whole_batch_without_truncation(self) -> None:
-        source = self.source("many.bib", BIB * (MAX_RECORDS_PER_IMPORT + 1))
+        source = self.source("many.bib", BIB * (MAX_BATCH_RECORDS + 1))
         with self.assertRaises(LiteratureImportError) as caught:
             import_from_paths(
                 self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE
@@ -1037,7 +1036,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(resolver.read(stored)[0], payload)
         app = FastAPI()
         app.state.content = self.content
-        register_literature_routes(app)
+        register_global_routes(app)
         register_reading_routes(
             app,
             LiteratureRepository(),
@@ -1159,11 +1158,12 @@ class LiteratureImportTests(unittest.TestCase):
             operation_id,
         )
 
-        self.assertEqual((first.added, first.merged), (1, 0))
-        self.assertEqual((second.added, second.merged), (1, 0))
+        self.assertEqual((first.added, first.skipped, first.total), (1, 0, 1))
+        self.assertEqual((second.added, second.skipped, second.total), (1, 0, 1))
+        self.assertNotEqual(first.items[0].id, second.items[0].id)
         self.assertEqual(len(load_library(self.project.id).items), 1)
         self.assertEqual(len(load_library(other.id).items), 1)
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             states = connection.execute(
                 f"SELECT project_id,state FROM {IMPORT_TABLE} WHERE operation_id=?",
                 (operation_id,),
@@ -1194,7 +1194,14 @@ class LiteratureImportTests(unittest.TestCase):
             ImportSource.LOCAL_FILE,
             "rollback-request",
         )
-        self.assertEqual((recovered.added, recovered.merged), (1, 0))
+        self.assertEqual((recovered.added, recovered.skipped, recovered.total), (1, 0, 1))
+        self.assertTrue(
+            all(item.updated_at == item.added_at for item in load_library(self.project.id).items)
+        )
+        self.assertEqual(
+            tuple(replace(item, updated_at=0) for item in load_library(self.project.id).items),
+            recovered.items,
+        )
         self.assertEqual(len(list(self.library.iterdir())), 1)
 
     def test_pdf_renamed_after_materialization_is_recovered_at_current_path(self) -> None:
@@ -1246,7 +1253,7 @@ class LiteratureImportTests(unittest.TestCase):
                     ImportSource.LOCAL_FILE,
                     "bad-preparation",
                 )
-        with connect(self.database) as connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute(
                 f"UPDATE {IMPORT_TABLE} SET skipped = -1 WHERE project_id = ?",
                 (self.project.id,),
@@ -1316,12 +1323,151 @@ class LiteratureImportTests(unittest.TestCase):
             receipt = import_from_paths(
                 self.content, self.project.id, sources, ImportSource.LOCAL_FILE, "recover-batch"
             )
-        self.assertEqual((receipt.added, receipt.merged), (1, 1))
-        self.assertEqual(len(receipt.items), 1)
+        self.assertEqual((receipt.added, receipt.skipped, receipt.total), (2, 0, 2))
+        self.assertEqual(len({item.id for item in receipt.items}), 2)
         self.assertEqual(
             sorted(path.name for path in self.library.iterdir()), ["first.bib", "second.ris"]
         )
-        self.assertEqual(len(load_library(self.project.id).items), 1)
+        persisted = load_library(self.project.id).items
+        self.assertTrue(all(item.updated_at == item.added_at for item in persisted))
+        self.assertEqual(tuple(replace(item, updated_at=0) for item in persisted), receipt.items)
+        with (
+            patch.object(
+                self.content, "read_import_source", side_effect=AssertionError("no source read")
+            ),
+            patch.object(
+                self.content, "materialize", side_effect=AssertionError("no duplicate write")
+            ),
+        ):
+            replay = import_from_paths(
+                self.content, self.project.id, sources, ImportSource.LOCAL_FILE, "recover-batch"
+            )
+        self.assertEqual(replay, receipt)
+        self.assertEqual(load_library(self.project.id).items, persisted)
+
+    def test_artifact_collection_id_survives_pending_import_and_rename(self) -> None:
+        repository = LiteratureRepository()
+        collection = repository.create_collection("Pending global")
+        plan = plan_artifact_import("artifact", "paper.bib", BIB, collection_id=collection["id"])
+        with patch.object(self.content, "materialize", side_effect=ContentError("write_failed")):
+            with self.assertRaises(LiteratureImportError):
+                import_from_bytes(self.content, self.project.id, plan, "paper.bib", BIB)
+        repository.rename_collection(collection["id"], "Renamed global")
+        receipt = LiteratureImports(self.content).resume(
+            self.project.id, plan.operation_id, plan.fingerprint
+        )
+        self.assertIsNotNone(receipt)
+        with closing(connect(self.database)) as connection:
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in connection.execute(
+                        "SELECT collection_id,literature_id FROM literature_collection_items"
+                    )
+                ],
+                [(collection["id"], receipt.items[0].id)],
+            )
+
+    def test_collection_import_failure_rolls_back_items_membership_and_receipt(self) -> None:
+        repository = LiteratureRepository()
+        collection = repository.create_collection("Atomic global")
+        plan = plan_artifact_import("artifact", "paper.bib", BIB, collection_id=collection["id"])
+        with patch.object(
+            LiteratureImports,
+            "_decode_receipt",
+            side_effect=sqlite3.OperationalError("write failed"),
+        ):
+            with self.assertRaises(LiteratureError) as caught:
+                import_from_bytes(self.content, self.project.id, plan, "paper.bib", BIB)
+        self.assertEqual(caught.exception.code, LIBRARY_UNAVAILABLE)
+        self.assertEqual(load_library(self.project.id).items, ())
+        with closing(connect(self.database)) as connection:
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM literature_collection_items").fetchone()[
+                    0
+                ],
+                0,
+            )
+            self.assertEqual(
+                tuple(connection.execute(f"SELECT state,result FROM {IMPORT_TABLE}").fetchone()),
+                (ImportState.PREPARED.value, None),
+            )
+        receipt = LiteratureImports(self.content).resume(
+            self.project.id, plan.operation_id, plan.fingerprint
+        )
+        self.assertEqual(receipt.added, 1)
+
+    def test_deleted_collection_rejects_pending_import_without_committing_items(self) -> None:
+        repository = LiteratureRepository()
+        collection = repository.create_collection("Deleted global")
+        plan = plan_artifact_import("artifact", "paper.bib", BIB, collection_id=collection["id"])
+        with patch.object(self.content, "materialize", side_effect=ContentError("write_failed")):
+            with self.assertRaises(LiteratureImportError):
+                import_from_bytes(self.content, self.project.id, plan, "paper.bib", BIB)
+        repository.delete_collection(collection["id"])
+        with self.assertRaises(LiteratureError):
+            LiteratureImports(self.content).resume(
+                self.project.id, plan.operation_id, plan.fingerprint
+            )
+        self.assertEqual(load_library(self.project.id).items, ())
+        with closing(connect(self.database)) as connection:
+            self.assertEqual(
+                connection.execute(f"SELECT state FROM {IMPORT_TABLE}").fetchone()[0],
+                ImportState.PREPARED.value,
+            )
+
+    def test_collection_schema_upgrade_preserves_receipts_and_extra_columns(self) -> None:
+        source = self.source("legacy.bib", BIB)
+        receipt = import_from_paths(
+            self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE, "legacy"
+        )
+        with closing(connect(self.database)) as connection, connection:
+            connection.execute(f"ALTER TABLE {IMPORT_TABLE} DROP COLUMN collection_id")
+            connection.execute(
+                f"ALTER TABLE {IMPORT_TABLE} ADD COLUMN retained TEXT DEFAULT 'retained'"
+            )
+        replay = import_from_paths(
+            self.content, self.project.id, (str(source),), ImportSource.LOCAL_FILE, "legacy"
+        )
+        self.assertEqual(replay, receipt)
+        with closing(connect(self.database)) as connection:
+            self.assertEqual(
+                tuple(
+                    connection.execute(
+                        f"SELECT collection_id,retained FROM {IMPORT_TABLE}"
+                    ).fetchone()
+                ),
+                ("", "retained"),
+            )
+
+    def test_collection_id_import_preserves_existing_same_named_project_children(self) -> None:
+        repository = LiteratureRepository()
+        parents = [
+            repository.create_collection(name, project_id=self.project.id)
+            for name in ("First", "Second")
+        ]
+        children = [
+            repository.create_collection("Same", parent_id=parent["id"], project_id=self.project.id)
+            for parent in parents
+        ]
+        before = repository.collections(self.project.id)
+        plan = plan_artifact_import("artifact", "paper.bib", BIB, collection_id=children[1]["id"])
+        receipt = import_from_bytes(self.content, self.project.id, plan, "paper.bib", BIB)
+        after = repository.collections(self.project.id)
+        self.assertEqual(
+            [(row["id"], row["parent_id"]) for row in after],
+            [(row["id"], row["parent_id"]) for row in before],
+        )
+        with closing(connect(self.database)) as connection:
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in connection.execute(
+                        "SELECT collection_id,literature_id FROM literature_collection_items"
+                    )
+                ],
+                [(children[1]["id"], receipt.items[0].id)],
+            )
 
 
 if __name__ == "__main__":

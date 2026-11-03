@@ -1,344 +1,602 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createHash } from 'crypto'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-
+  mkdir,
+  mkdtemp,
+  realpath,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
+import { join } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import fsPromises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
+import { tmpdir } from 'node:os'
 import {
-  ensureComponents,
-  persistComponentLog,
-  sweepStaleStaging,
-  sweepUnreferencedComponents,
-  windowsTarExecutable
+  componentArchivePath,
+  componentDownloadUrl,
+  downloadRuntimeComponents,
+  installedRuntimeManifest,
+  reusableComponent,
+  verifyComponentPaths,
+  verifyRuntimeEnvelope,
 } from './components.ts'
-import type { ComponentExtractor, ComponentProbe } from './components.ts'
+import type { RuntimeComponent, RuntimeManifest } from '../../runtime/components.cjs'
+import type { DirectoryPinRole } from '../../native/domains.cjs'
 
-const TARGET = 'win32-x86_64'
-const PYTHON_CONTENT_ID = 'a1'.repeat(32)
-const TEXLIVE_CONTENT_ID = 'b2'.repeat(32)
-const PYTHON_ARCHIVE_SHA = 'c3'.repeat(32)
-const TEXLIVE_ARCHIVE_SHA = 'd4'.repeat(32)
-
-interface Fixture {
-  root: string
-  backendDirectory: string
-  storeRoot: string
-  extractCalls: string[]
+const pair = generateKeyPairSync('ed25519')
+const keys = {
+  release: pair.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64'),
 }
-
-function fixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), 'scholarseed-components-'))
-  const backendDirectory = join(root, 'backend')
-  mkdirSync(join(backendDirectory, 'components'), { recursive: true })
-  // “归档”是测试替身：内容任意，extractor 按名字取预置树拷贝。
-  writeFileSync(join(backendDirectory, 'components', `python-${PYTHON_CONTENT_ID}.zip`), 'python-archive')
-  writeFileSync(join(backendDirectory, 'components', `texlive-${TEXLIVE_CONTENT_ID}.zip`), 'texlive-archive')
-  writeFileSync(
-    join(backendDirectory, 'components', 'app-components.json'),
+const payload = Buffer.from('runtime archive bytes')
+const critical = Buffer.from('entry executable')
+const digest = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex')
+function component(kind = 'python', version = '3.13.2-r1'): RuntimeComponent {
+  return {
+    kind,
+    version,
+    contentId: digest(kind),
+    archive: `${kind}.zip`,
+    archiveSha256: digest(payload),
+    archiveBytes: payload.length,
+    expandedBytes: critical.length,
+    fileCount: 1,
+    entry: 'bin/entry.exe',
+    files: [{ path: 'bin/entry.exe', size: critical.length, sha256: digest(critical) }],
+  }
+}
+function manifest(components = [component()]): RuntimeManifest {
+  return {
+    schema: 1,
+    domain: 'scholarseed.runtime-components',
+    product_id: 'scholarseed',
+    bundle_id: 'com.scholarseed.desktop',
+    app_id: 'scholarseed',
+    target: 'win32-x86_64',
+    components,
+  }
+}
+function envelope(value: unknown) {
+  const bytes = Buffer.from(JSON.stringify(value))
+  return {
+    schema: 1,
+    key_id: 'release',
+    manifest: bytes.toString('base64'),
+    signature: sign(null, bytes, pair.privateKey).toString('base64'),
+  }
+}
+async function fixture(run: (root: string) => Promise<void>) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'components-')))
+  try {
+    await run(root)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+async function prepare(root: string, item: RuntimeComponent) {
+  const directory = join(root, 'runtime', item.kind, item.version)
+  await mkdir(join(directory, 'bin'), { recursive: true })
+  await writeFile(join(directory, item.entry), critical)
+  await writeFile(
+    join(directory, '.scholarseed-component.json'),
     JSON.stringify({
-      schemaVersion: 1,
-      target: TARGET,
-      components: [
-        {
-          kind: 'python',
-          contentId: PYTHON_CONTENT_ID,
-          archive: `python-${PYTHON_CONTENT_ID}.zip`,
-          archiveSha256: sha256Of('python-archive'),
-          archiveBytes: 14,
-          entry: 'python/python.exe'
-        },
-        {
-          kind: 'texlive',
-          contentId: TEXLIVE_CONTENT_ID,
-          archive: `texlive-${TEXLIVE_CONTENT_ID}.zip`,
-          archiveSha256: sha256Of('texlive-archive'),
-          archiveBytes: 14,
-          entry: 'texlive/bin/windows',
-          executables: ['xelatex', 'pdflatex']
-        }
-      ]
+      schema: 1,
+      product_id: 'scholarseed',
+      kind: item.kind,
+      version: item.version,
+      contentId: item.contentId,
+      archiveSha256: item.archiveSha256,
+      inventorySha256: digest(JSON.stringify(item.files)),
+      ...(['python', 'texlive', 'powershell'].includes(item.kind)
+        ? {
+            accessPolicy: 1,
+            principalSid: 'S-1-5-21-123-456-789-1001',
+            rootIdentity: '1234abcd:0000000000000123',
+          }
+        : {}),
     })
   )
-  return { root, backendDirectory, storeRoot: join(root, 'runtime'), extractCalls: [] }
+}
+function options(root: string, value = manifest()) {
+  return {
+    root,
+    baseUrl: 'https://updates.example.test',
+    manifest: value,
+    native: {
+      pin(path: string, _create: boolean, _role?: DirectoryPinRole) {
+        return path
+      },
+      pinChild(parent: unknown, name: string) {
+        return join(parent as string, name)
+      },
+      createChild(parent: unknown, name: string) {
+        const child = join(parent as string, name)
+        mkdirSync(child, { recursive: true })
+        return child
+      },
+      release(_pin: unknown) {},
+    },
+  }
 }
 
-function sha256Of(text: string): string {
-  return createHash('sha256').update(text).digest('hex')
-}
+test('runtime envelope authenticates exact bytes, trusted key and manifest identity before use', () => {
+  const signed = envelope(manifest())
+  assert.deepEqual(verifyRuntimeEnvelope(signed, keys), manifest())
+  assert.throws(() => verifyRuntimeEnvelope(signed, {}), /trusted/)
+  assert.throws(
+    () =>
+      verifyRuntimeEnvelope({ ...signed, signature: Buffer.alloc(64).toString('base64') }, keys),
+    /signature/
+  )
+  assert.throws(
+    () => verifyRuntimeEnvelope(envelope({ ...manifest(), product_id: 'other' }), keys),
+    /manifest/
+  )
+  assert.throws(
+    () =>
+      verifyRuntimeEnvelope(
+        envelope(manifest([{ ...component(), archive: '../python.zip' }])),
+        keys
+      ),
+    /manifest/
+  )
+  assert.throws(
+    () =>
+      verifyRuntimeEnvelope(
+        envelope(manifest([component('a-b', '1-r1'), component('a', 'b-1-r1')])),
+        keys
+      ),
+    /manifest|collide/
+  )
+})
 
-/** 替身解压器：按归档名在 staging 里造出对应组件树。 */
-function fakeExtractor(fixture: Fixture, options: { failArchiveSha?: boolean } = {}): ComponentExtractor {
-  return async (archive, destination) => {
-    fixture.extractCalls.push(archive)
-    if (archive.includes('python')) {
-      mkdirSync(join(destination, 'python'), { recursive: true })
-      writeFileSync(join(destination, 'python', 'python.exe'), 'MZ')
-    } else {
-      mkdirSync(join(destination, 'texlive', 'bin', 'windows'), { recursive: true })
-      writeFileSync(join(destination, 'texlive', 'bin', 'windows', 'xelatex.exe'), 'MZ')
-      writeFileSync(join(destination, 'texlive', 'bin', 'windows', 'pdflatex.exe'), 'MZ')
+test('initial installation reads the exact embedded signed manifest and rejects altered bytes', async () =>
+  fixture(async (root) => {
+    const directory = join(root, 'current', 'resources', 'components')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'runtime.json'), JSON.stringify(envelope(manifest())))
+    assert.deepEqual(await installedRuntimeManifest(join(root, 'current'), keys), manifest())
+    const altered = envelope(manifest())
+    altered.manifest = Buffer.from(JSON.stringify(manifest([component('office')]))).toString(
+      'base64'
+    )
+    await writeFile(join(directory, 'runtime.json'), JSON.stringify(altered))
+    await assert.rejects(installedRuntimeManifest(join(root, 'current'), keys), /signature/)
+  }))
+
+test('unchanged component works offline without touching an archive or creating archive storage', async (t) =>
+  fixture(async (root) => {
+    await prepare(root, component())
+    const network = t.mock.method(globalThis, 'fetch', async () => {
+      throw new Error('must not download')
+    })
+    await downloadRuntimeComponents(options(root))
+    assert.equal(network.mock.callCount(), 0)
+    assert.deepEqual(await readdir(join(root, 'runtime')), ['python'])
+  }))
+
+test('cross-version program full still downloads only the changed component, including a new registered kind', async (t) =>
+  fixture(async (root) => {
+    await prepare(root, component())
+    const urls: string[] = []
+    t.mock.method(globalThis, 'fetch', async (url: URL) => {
+      urls.push(url.href)
+      return new Response(payload)
+    })
+    const browser = component('browser', '1.0-r2')
+    await downloadRuntimeComponents(options(root, manifest([component(), browser])))
+    assert.deepEqual(urls, [componentDownloadUrl(options(root).baseUrl, manifest(), browser).href])
+    assert.deepEqual(await readFile(componentArchivePath(root, browser)), payload)
+    assert.deepEqual(await readdir(join(root, 'runtime', '.archives')), ['browser-1.0-r2.zip'])
+    // A later retry consumes authenticated downloaded bytes without another request.
+    await downloadRuntimeComponents(options(root, manifest([component(), browser])))
+    assert.equal(urls.length, 1)
+  }))
+
+test('receipt identity and critical-entry corruption reject without overwriting a runtime or network fallback', async (t) =>
+  fixture(async (root) => {
+    const item = component()
+    await prepare(root, item)
+    const network = t.mock.method(globalThis, 'fetch', async () => {
+      throw new Error('must not download')
+    })
+    await assert.rejects(
+      downloadRuntimeComponents(options(root, manifest([{ ...item, contentId: 'a'.repeat(64) }]))),
+      /identity/
+    )
+    await writeFile(
+      join(root, 'runtime', item.kind, item.version, item.entry),
+      Buffer.from('tampered')
+    )
+    await assert.rejects(downloadRuntimeComponents(options(root)), /size|changed/)
+    assert.equal(network.mock.callCount(), 0)
+  }))
+
+test('component download rejects short, oversized and wrong-hash responses and removes its partial file', async (t) =>
+  fixture(async (root) => {
+    for (const bytes of [
+      payload.subarray(1),
+      Buffer.concat([payload, Buffer.from('!')]),
+      Buffer.alloc(payload.length),
+    ]) {
+      const mock = t.mock.method(globalThis, 'fetch', async () => new Response(bytes))
+      await assert.rejects(downloadRuntimeComponents(options(root)), /signed size|digest/)
+      assert.deepEqual(await readdir(join(root, 'runtime', '.archives')), [])
+      mock.mock.restore()
     }
-    if (options.failArchiveSha) writeFileSync(join(destination, 'tamper.txt'), 'x')
-  }
-}
+  }))
 
-const passingProbe: ComponentProbe = async () => {}
+test('cancellation cleans partial bytes and a later retry can complete', async (t) =>
+  fixture(async (root) => {
+    const controller = new AbortController()
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(payload.subarray(0, 3))
+              stream.enqueue(payload.subarray(3))
+              stream.close()
+            },
+          })
+        )
+    )
+    await assert.rejects(
+      downloadRuntimeComponents({
+        ...options(root),
+        signal: controller.signal,
+        onProgress: (state) => {
+          if (state.phase === 'downloading') controller.abort()
+        },
+      }),
+      /abort/i
+    )
+    assert.deepEqual(await readdir(join(root, 'runtime', '.archives')), [])
+    await downloadRuntimeComponents(options(root))
+    assert.deepEqual(await readFile(componentArchivePath(root, component())), payload)
+  }))
 
-function texliveEnginesMissingProbe(): ComponentProbe {
-  return async (component, directory) => {
-    if (component.kind !== 'texlive') return
-    const entry = join(directory, ...component.entry.split('/'))
-    for (const executable of component.executables ?? []) {
-      if (!existsSync(join(entry, `${executable}.exe`))) throw new Error(`engine missing: ${executable}`)
+test('redirects are bounded and refuse downgrade before issuing an HTTP request', async (t) =>
+  fixture(async (root) => {
+    const downgrade = t.mock.method(
+      globalThis,
+      'fetch',
+      async () =>
+        new Response(null, { status: 302, headers: { location: 'http://unsafe.test/data' } })
+    )
+    await assert.rejects(downloadRuntimeComponents(options(root)), /HTTPS/)
+    assert.equal(downgrade.mock.callCount(), 1)
+    downgrade.mock.restore()
+    const loop = t.mock.method(
+      globalThis,
+      'fetch',
+      async () =>
+        new Response(null, { status: 302, headers: { location: 'https://cdn.example.test/data' } })
+    )
+    await assert.rejects(downloadRuntimeComponents(options(root)), /redirect limit/)
+    assert.equal(loop.mock.callCount(), 4)
+  }))
+
+test('HTTPS object redirect retains immutable requested identity and verifies response length', async (t) =>
+  fixture(async (root) => {
+    const requests: string[] = []
+    t.mock.method(globalThis, 'fetch', async (url: URL) => {
+      requests.push(url.href)
+      return requests.length === 1
+        ? new Response(null, {
+            status: 302,
+            headers: { location: 'https://cdn.example.test/fixed/python.zip?token=signed' },
+          })
+        : new Response(payload, { headers: { 'content-length': String(payload.length) } })
+    })
+    await downloadRuntimeComponents(options(root))
+    assert.match(requests[0], new RegExp(`/win32-x86_64/python/3.13.2-r1/${digest(payload)}$`))
+    assert.equal(requests.length, 2)
+  }))
+
+test('path and linked-directory failures occur before creating or downloading component data', async (t) =>
+  fixture(async (root) => {
+    assert.throws(
+      () => verifyComponentPaths(join(root, 'x'.repeat(240)), manifest()),
+      /path exceeds/
+    )
+    const outside = join(root, 'outside')
+    await mkdir(outside)
+    await symlink(outside, join(root, 'runtime'), 'junction')
+    const network = t.mock.method(globalThis, 'fetch', async () => {
+      throw new Error('must not download')
+    })
+    await assert.rejects(downloadRuntimeComponents(options(root)), /link/)
+    assert.equal(network.mock.callCount(), 0)
+    assert.deepEqual(await readdir(outside), [])
+  }))
+
+test('directory entry reuses the first signed critical member', async () =>
+  fixture(async (root) => {
+    const item = component('texlive')
+    item.entry = 'bin'
+    await prepare(root, component('texlive'))
+    assert.equal(await reusableComponent(root, manifest([item]), item), true)
+  }))
+
+test('only exact frozen local initial metadata permits an unsigned envelope', async () =>
+  fixture(async (root) => {
+    const directory = join(root, 'current', 'resources', 'components')
+    await mkdir(directory, { recursive: true })
+    const unsigned = { ...envelope(manifest()), key_id: '', signature: '' }
+    const raw = JSON.stringify(unsigned) + '\n'
+    await writeFile(join(directory, 'runtime.json'), raw)
+    const policy = { releaseLane: 'local', runtimeManifestSha256: digest(raw) }
+    assert.deepEqual(await installedRuntimeManifest(join(root, 'current'), {}, policy), manifest())
+    await assert.rejects(
+      installedRuntimeManifest(
+        join(root, 'current'),
+        {},
+        { ...policy, releaseLane: 'distribution' }
+      ),
+      /trusted/
+    )
+    await assert.rejects(
+      installedRuntimeManifest(join(root, 'current'), {}, { releaseLane: 'local' }),
+      /trusted/
+    )
+    await assert.rejects(
+      installedRuntimeManifest(
+        join(root, 'current'),
+        {},
+        { ...policy, runtimeManifestSha256: 'a'.repeat(64) }
+      ),
+      /frozen/
+    )
+    assert.throws(() => verifyRuntimeEnvelope(unsigned, {}), /trusted/)
+  }))
+
+test('native directory pins outlive network writes and partial cleanup', async (t) =>
+  fixture(async (root) => {
+    const delivery = options(root)
+    const held = new Set<unknown>()
+    const operations: string[] = []
+    delivery.native.pin = (path) => {
+      held.add(path)
+      operations.push(`pin:${path}`)
+      return path
     }
-  }
-}
-
-test('首次 provision 发布两个组件并解析出入口路径', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const result = await ensureComponents({
-    backendDirectory: fx.backendDirectory,
-    storeRoot: fx.storeRoot,
-    log: () => {},
-    extractor: fakeExtractor(fx),
-    probe: passingProbe
-  })
-  assert.equal(result.pythonExecutable, join(fx.storeRoot, 'python', `${TARGET}-${PYTHON_CONTENT_ID}`, 'python', 'python.exe'))
-  assert.equal(result.texliveBinDirectory, join(fx.storeRoot, 'texlive', `${TARGET}-${TEXLIVE_CONTENT_ID}`, 'texlive', 'bin', 'windows'))
-  assert.equal(fx.extractCalls.length, 2)
-  // store 清单是命中的唯一凭据
-  const manifest = JSON.parse(readFileSync(join(fx.storeRoot, 'manifests', `${PYTHON_CONTENT_ID}.json`), 'utf8'))
-  assert.equal(manifest.kind, 'python')
-  assert.equal(typeof manifest.publishedAt, 'number')
-  // staging 已清空、锁已释放
-  assert.deepEqual(existsSync(join(fx.storeRoot, 'staging')) ? readDirNames(join(fx.storeRoot, 'staging')) : [], [])
-  assert.deepEqual(existsSync(join(fx.storeRoot, 'locks')) ? readDirNames(join(fx.storeRoot, 'locks')) : [], [])
-})
-
-function readDirNames(directory: string): string[] {
-  return readdirSync(directory)
-}
-
-test('命中路径零展开：第二次 ensure 不再调用解压器', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const extractor = fakeExtractor(fx)
-  const options = { backendDirectory: fx.backendDirectory, storeRoot: fx.storeRoot, log: () => {}, extractor, probe: passingProbe }
-  await ensureComponents(options)
-  const callsAfterFirst = fx.extractCalls.length
-  await ensureComponents(options)
-  assert.equal(fx.extractCalls.length, callsAfterFirst)
-})
-
-test('发布目录损坏（入口丢失）触发修复重展开，绝不带病命中', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const extractor = fakeExtractor(fx)
-  const options = { backendDirectory: fx.backendDirectory, storeRoot: fx.storeRoot, log: () => {}, extractor, probe: passingProbe }
-  await ensureComponents(options)
-  rmSync(join(fx.storeRoot, 'python', `${TARGET}-${PYTHON_CONTENT_ID}`, 'python', 'python.exe'))
-  await ensureComponents(options)
-  assert.equal(fx.extractCalls.filter((archive) => archive.includes('python')).length, 2)
-  assert.ok(existsSync(join(fx.storeRoot, 'python', `${TARGET}-${PYTHON_CONTENT_ID}`, 'python', 'python.exe')))
-})
-
-test('归档 SHA-256 与清单不符：fail-closed，不发布任何内容', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  writeFileSync(join(fx.backendDirectory, 'components', `python-${PYTHON_CONTENT_ID}.zip`), 'tampered-archive')
-  await assert.rejects(
-    ensureComponents({
-      backendDirectory: fx.backendDirectory,
-      storeRoot: fx.storeRoot,
-      log: () => {},
-      extractor: fakeExtractor(fx),
-      probe: passingProbe
-    }),
-    /SHA-256 differs/
-  )
-  assert.equal(existsSync(join(fx.storeRoot, 'manifests', `${PYTHON_CONTENT_ID}.json`)), false)
-})
-
-test('运行探测失败：staging 被回收，不发布', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const failing: ComponentProbe = async (component) => {
-    if (component.kind === 'texlive') throw new Error('probe rejected component')
-  }
-  await assert.rejects(
-    ensureComponents({
-      backendDirectory: fx.backendDirectory,
-      storeRoot: fx.storeRoot,
-      log: () => {},
-      extractor: fakeExtractor(fx),
-      probe: failing
-    }),
-    /probe rejected/
-  )
-  assert.equal(existsSync(join(fx.storeRoot, 'texlive', `${TARGET}-${TEXLIVE_CONTENT_ID}`)), false)
-})
-
-test('引擎探测（默认探针的 texlive 分支）拒绝缺引擎的树', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const extractor: ComponentExtractor = async (archive, destination) => {
-    if (archive.includes('python')) {
-      mkdirSync(join(destination, 'python'), { recursive: true })
-      writeFileSync(join(destination, 'python', 'python.exe'), 'MZ')
-    } else {
-      // 只放一个引擎，缺 pdflatex
-      mkdirSync(join(destination, 'texlive', 'bin', 'windows'), { recursive: true })
-      writeFileSync(join(destination, 'texlive', 'bin', 'windows', 'xelatex.exe'), 'MZ')
+    const create = delivery.native.createChild
+    delivery.native.createChild = (parent, name) => {
+      assert.ok(held.has(parent))
+      operations.push(`create:${name}`)
+      return create(parent, name)
     }
-  }
-  await assert.rejects(
-    ensureComponents({
-      backendDirectory: fx.backendDirectory,
-      storeRoot: fx.storeRoot,
-      log: () => {},
-      extractor,
-      probe: texliveEnginesMissingProbe()
-    }),
-    /engine missing/
-  )
-})
+    delivery.native.release = (pin) => {
+      held.delete(pin)
+      operations.push(`release:${pin}`)
+    }
+    t.mock.method(globalThis, 'fetch', async () => {
+      assert.equal(held.size, 3)
+      return new Response(Buffer.alloc(payload.length))
+    })
+    await assert.rejects(downloadRuntimeComponents(delivery), /digest/)
+    assert.equal(held.size, 0)
+    assert.deepEqual(await readdir(join(root, 'runtime', '.archives')), [])
+    assert.match(operations[0], /^pin:/)
+    assert.equal(operations[1], 'create:runtime')
+    assert.equal(operations[3], 'create:.archives')
+    assert.ok(operations.slice(-3).every((value) => value.startsWith('release:')))
+  }))
 
-test('陈旧 staging 被清扫；未超龄的保留', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const staging = join(fx.storeRoot, 'staging')
-  mkdirSync(join(staging, 'old-directory'), { recursive: true })
-  const hour = 60 * 60 * 1000
-  // 假时钟拨到 7 小时后：真实 mtime 的目录即「超龄」，应被清扫
-  sweepStaleStaging(fx.storeRoot, () => Date.now() + 7 * hour, () => {})
-  assert.equal(existsSync(join(staging, 'old-directory')), false)
-  // 真时钟下新建目录不超龄：保留
-  mkdirSync(join(staging, 'kept-directory'), { recursive: true })
-  sweepStaleStaging(fx.storeRoot, () => Date.now(), () => {})
-  assert.equal(existsSync(join(staging, 'kept-directory')), true)
-})
+test('Windows downloads derive child pins without reopening private ancestry', async (t) =>
+  fixture(async (root) => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    t.after(() => Object.defineProperty(process, 'platform', platform))
+    const delivery = options(root)
+    const held: unknown[] = []
+    const operations: unknown[][] = []
+    t.mock.method(
+      delivery.native,
+      'pin',
+      (path: string, create: boolean, role?: DirectoryPinRole) => {
+        assert.equal(path, root)
+        assert.equal(create, false)
+        assert.equal(role, 'installation')
+        operations.push(['root', path, role])
+        held.push(path)
+        return path
+      }
+    )
+    t.mock.method(delivery.native, 'createChild', (parent: unknown, name: string) => {
+      assert.equal(parent, held.at(-1))
+      operations.push(['create', name])
+      mkdirSync(join(parent as string, name))
+      return join(parent as string, name)
+    })
+    t.mock.method(delivery.native, 'pinChild', (parent: unknown, name: string) => {
+      assert.equal(parent, held.at(-1))
+      const child = join(parent as string, name)
+      held.push(child)
+      operations.push(['child', name])
+      return child
+    })
+    t.mock.method(delivery.native, 'release', (pin: unknown) => assert.equal(pin, held.pop()))
+    t.mock.method(globalThis, 'fetch', async () => {
+      assert.equal(held.length, 3)
+      return new Response(payload)
+    })
+    await downloadRuntimeComponents(delivery)
+    assert.deepEqual(operations, [
+      ['root', root, 'installation'],
+      ['create', 'runtime'],
+      ['child', 'runtime'],
+      ['create', '.archives'],
+      ['child', '.archives'],
+    ])
+    assert.equal(held.length, 0)
+  }))
 
-test('锁被其它实例持有且组件已发布：等待路径直接命中', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const extractor = fakeExtractor(fx)
-  const options = { backendDirectory: fx.backendDirectory, storeRoot: fx.storeRoot, log: () => {}, extractor, probe: passingProbe }
-  await ensureComponents(options)
-  mkdirSync(join(fx.storeRoot, 'locks'), { recursive: true })
-  writeFileSync(join(fx.storeRoot, 'locks', `${PYTHON_CONTENT_ID}.lock`), `${JSON.stringify({ pid: 999999, at: Date.now() })}\n`)
-  const calls = fx.extractCalls.length
-  await ensureComponents(options)
-  assert.equal(fx.extractCalls.length, calls)
-  // 别人持有的新鲜锁不得被删
-  assert.ok(existsSync(join(fx.storeRoot, 'locks', `${PYTHON_CONTENT_ID}.lock`)))
-})
+test('Windows child pin failure releases only held ancestors before any download', async (t) =>
+  fixture(async (root) => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    t.after(() => Object.defineProperty(process, 'platform', platform))
+    const delivery = options(root)
+    const released: unknown[] = []
+    t.mock.method(delivery.native, 'pinChild', () => {
+      throw Object.assign(new Error('unsafe child'), { code: 'ERR_LEASE_PERMISSION' })
+    })
+    t.mock.method(delivery.native, 'release', (pin: unknown) => released.push(pin))
+    const network = t.mock.method(globalThis, 'fetch', async () => new Response(payload))
+    await assert.rejects(downloadRuntimeComponents(delivery), { code: 'ERR_LEASE_PERMISSION' })
+    assert.deepEqual(released, [root])
+    assert.equal(network.mock.callCount(), 0)
+  }))
 
-test('锁被持有且组件未发布：等到超时失败，而不是并发解压', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  mkdirSync(join(fx.storeRoot, 'locks'), { recursive: true })
-  let virtual = 0
-  writeFileSync(
-    join(fx.storeRoot, 'locks', `${PYTHON_CONTENT_ID}.lock`),
-    `${JSON.stringify({ pid: 999999, at: 0 })}\n`
-  )
-  const now = (): number => {
-    virtual += 60_000
-    return virtual
-  }
-  await assert.rejects(
-    ensureComponents({
-      backendDirectory: fx.backendDirectory,
-      storeRoot: fx.storeRoot,
-      log: () => {},
-      extractor: fakeExtractor(fx),
-      probe: passingProbe,
-      now
-    }),
-    /timed out waiting|not usable/
-  )
-  assert.equal(fx.extractCalls.length, 0)
-})
+test('Windows delivery never falls back when native child pin support is missing', async (t) =>
+  fixture(async (root) => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    t.after(() => Object.defineProperty(process, 'platform', platform))
+    const delivery = options(root)
+    const { pinChild: _pinChild, ...native } = delivery.native
+    const pin = t.mock.method(native, 'pin')
+    const network = t.mock.method(globalThis, 'fetch', async () => new Response(payload))
+    await assert.rejects(
+      downloadRuntimeComponents({ ...delivery, native }),
+      /requires native child directory pins/
+    )
+    assert.equal(pin.mock.callCount(), 0)
+    assert.equal(network.mock.callCount(), 0)
+  }))
 
-test('陈旧锁（超过 30 分钟）被接管，provision 正常完成', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  mkdirSync(join(fx.storeRoot, 'locks'), { recursive: true })
-  writeFileSync(
-    join(fx.storeRoot, 'locks', `${PYTHON_CONTENT_ID}.lock`),
-    `${JSON.stringify({ pid: 999999, at: Date.now() - 31 * 60 * 1000 })}\n`
-  )
-  const result = await ensureComponents({
-    backendDirectory: fx.backendDirectory,
-    storeRoot: fx.storeRoot,
-    log: () => {},
-    extractor: fakeExtractor(fx),
-    probe: passingProbe
-  })
-  assert.ok(result.pythonExecutable.endsWith('python.exe'))
-})
+test('Windows release uncertainty stops cleanup before releasing parent capabilities', async (t) =>
+  fixture(async (root) => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    t.after(() => Object.defineProperty(process, 'platform', platform))
+    const delivery = options(root)
+    const released: unknown[] = []
+    t.mock.method(delivery.native, 'release', (pin: unknown) => {
+      released.push(pin)
+      throw Object.assign(new Error('uncertain child close'), { code: 'ERR_LEASE_NATIVE' })
+    })
+    t.mock.method(globalThis, 'fetch', async () => new Response(payload))
+    await assert.rejects(downloadRuntimeComponents(delivery), { code: 'ERR_LEASE_NATIVE' })
+    assert.deepEqual(released, [join(root, 'runtime', '.archives')])
+  }))
 
-test('未引用组件被 GC；被引用与被锁住的保留', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  await ensureComponents({
-    backendDirectory: fx.backendDirectory,
-    storeRoot: fx.storeRoot,
-    log: () => {},
-    extractor: fakeExtractor(fx),
-    probe: passingProbe
-  })
-  const orphanId = 'e5'.repeat(32)
-  mkdirSync(join(fx.storeRoot, 'python', `${TARGET}-${orphanId}`), { recursive: true })
-  writeFileSync(join(fx.storeRoot, 'manifests', `${orphanId}.json`), '{}')
-  const lockedId = 'f6'.repeat(32)
-  mkdirSync(join(fx.storeRoot, 'python', `${TARGET}-${lockedId}`), { recursive: true })
-  mkdirSync(join(fx.storeRoot, 'locks'), { recursive: true })
-  writeFileSync(join(fx.storeRoot, 'locks', `${lockedId}.lock`), `${JSON.stringify({ pid: 999999, at: Date.now() })}\n`)
-  sweepUnreferencedComponents(fx.storeRoot, [PYTHON_CONTENT_ID, TEXLIVE_CONTENT_ID, lockedId], () => {})
-  assert.equal(existsSync(join(fx.storeRoot, 'python', `${TARGET}-${orphanId}`)), false)
-  assert.equal(existsSync(join(fx.storeRoot, 'manifests', `${orphanId}.json`)), false)
-  assert.equal(existsSync(join(fx.storeRoot, 'python', `${TARGET}-${lockedId}`)), true)
-  assert.equal(existsSync(join(fx.storeRoot, 'python', `${TARGET}-${PYTHON_CONTENT_ID}`)), true)
-})
+test('retry disk budget counts retained archive once and reserves only missing expansion', async (t) =>
+  fixture(async (root) => {
+    const item = component()
+    await mkdir(join(root, 'runtime', '.archives'), { recursive: true })
+    await writeFile(componentArchivePath(root, item), payload)
+    const available = BigInt(64 * 1024 ** 2 + critical.length)
+    const filesystem = t.mock.method(fsPromises, 'statfs', async () => ({
+      type: 0n,
+      bsize: 1n,
+      blocks: available,
+      bfree: available,
+      bavail: available,
+      files: 0n,
+      ffree: 0n,
+    }))
+    syncBuiltinESMExports()
+    const network = t.mock.method(globalThis, 'fetch', async () => {
+      throw new Error('retained archive must not download')
+    })
+    try {
+      await downloadRuntimeComponents(options(root))
+      assert.equal(network.mock.callCount(), 0)
+    } finally {
+      filesystem.mock.restore()
+      syncBuiltinESMExports()
+    }
+  }))
 
-test('manifest 非法（缺 kind、entry 绝对路径、schema 不符）直接拒绝', async (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  writeFileSync(join(fx.backendDirectory, 'components', 'app-components.json'), '{"schemaVersion":2}')
-  await assert.rejects(
-    ensureComponents({
-      backendDirectory: fx.backendDirectory,
-      storeRoot: fx.storeRoot,
-      log: () => {},
-      extractor: fakeExtractor(fx),
-      probe: passingProbe
-    }),
-    /manifest is unusable/
-  )
-})
+test('a local temporary-file open failure cancels the acquired HTTP body', async (t) =>
+  fixture(async (root) => {
+    let cancelled = false
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true
+            },
+          })
+        )
+    )
+    const realOpen = fsPromises.open
+    const fileOpen = t.mock.method(
+      fsPromises,
+      'open',
+      async (...[path, flags, mode]: Parameters<typeof fsPromises.open>) => {
+        if (String(path).includes('.part-'))
+          throw Object.assign(new Error('disk unavailable'), { code: 'ENOSPC' })
+        return realOpen(path, flags, mode)
+      }
+    )
+    syncBuiltinESMExports()
+    try {
+      await assert.rejects(downloadRuntimeComponents(options(root)), /disk unavailable/)
+      assert.equal(cancelled, true)
+      assert.deepEqual(await readdir(join(root, 'runtime', '.archives')), [])
+    } finally {
+      fileOpen.mock.restore()
+      syncBuiltinESMExports()
+    }
+  }))
 
-test('windowsTarExecutable 锚定 System32 绝对路径，不吃 PATH', () => {
-  assert.equal(windowsTarExecutable({ SystemRoot: 'D:\\Win' }), join('D:\\Win', 'System32', 'tar.exe'))
-  assert.equal(windowsTarExecutable({}), join('C:\\Windows', 'System32', 'tar.exe'))
-})
+test('component diagnostics distinguish download, retained archive, and installed reuse', async (t) =>
+  fixture(async (root) => {
+    const logs: string[] = []
+    const delivery = { ...options(root), log: (line: string) => logs.push(line) }
+    const network = t.mock.method(globalThis, 'fetch', async () => new Response(payload))
+    const events = () => logs.map((line) => JSON.parse(line.slice('[component-timing] '.length)))
+    await downloadRuntimeComponents(delivery)
+    const cold = events().find((event) => event.operation === 'download')
+    assert.equal(cold.status, 'passed')
+    assert.equal(cold.bytes, payload.length)
+    for (const phase of ['headers', 'read', 'write', 'hash', 'sync', 'publish']) {
+      assert.ok(cold.metrics[phase].calls > 0, phase)
+      assert.ok(cold.metrics[phase].elapsed_ms >= 0, phase)
+    }
+    logs.length = 0
+    await downloadRuntimeComponents(delivery)
+    assert.equal(network.mock.callCount(), 1)
+    assert.ok(
+      events().some((event) => event.operation === 'archive' && event.status === 'retained')
+    )
+    assert.ok(events().every((event) => event.operation !== 'download'))
+    await prepare(root, component())
+    logs.length = 0
+    await downloadRuntimeComponents(delivery)
+    assert.equal(network.mock.callCount(), 1)
+    const reuse = events().find((event) => event.operation === 'reuse')
+    assert.equal(reuse.status, 'reused')
+    for (const phase of ['lineage', 'receipt', 'inventory', 'entry', 'open', 'read', 'hash']) {
+      assert.ok(reuse.metrics[phase].calls > 0, phase)
+    }
+    assert.ok(events().some((event) => event.operation === 'paths'))
+  }))
 
-test('persistComponentLog 落盘可回读，写失败不抛', (t) => {
-  const fx = fixture()
-  t.after(() => rmSync(fx.root, { recursive: true, force: true }))
-  const logs = join(fx.root, 'logs')
-  persistComponentLog(logs, 'line-one\n')
-  persistComponentLog(logs, 'line-two\n')
-  assert.equal(readFileSync(join(logs, 'components.log'), 'utf8'), 'line-one\nline-two\n')
-  persistComponentLog(join(fx.root, 'backend', 'components', 'app-components.json', 'not-a-dir'), 'x')
-})
+test('failed download retains diagnostics and never publishes unauthenticated bytes', async (t) =>
+  fixture(async (root) => {
+    const logs: string[] = []
+    t.mock.method(globalThis, 'fetch', async () => new Response(Buffer.alloc(payload.length)))
+    await assert.rejects(
+      downloadRuntimeComponents({ ...options(root), log: (line) => logs.push(line) }),
+      /digest/
+    )
+    const event = JSON.parse(logs.at(-1)!.slice('[component-timing] '.length))
+    assert.equal(event.operation, 'download')
+    assert.equal(event.status, 'failed')
+    assert.equal(event.metrics.publish, undefined)
+    assert.deepEqual(await readdir(join(componentArchivePath(root, component()), '..')), [])
+  }))

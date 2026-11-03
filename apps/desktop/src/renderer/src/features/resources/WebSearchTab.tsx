@@ -13,7 +13,7 @@ import {
   EmptyState,
   Skeleton,
   Spinner,
-  useToast
+  useToast,
 } from '../../components/ui'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
@@ -28,19 +28,19 @@ import {
   WEB_IMPORT_SELECTION_LIMIT,
   WEB_SEARCH_AUTOMATIC_ROUTE,
   webSearchModeDefinition,
-  webSearchOutputMissing
+  webSearchOutputMissing,
 } from './search'
 import {
-  WEB_SEARCH_CANDIDATES_MODE,
   webSearchNoticePending,
   withWebSearchNotice,
   type ResourceWebSearch,
   type WebSearchAttempt,
-  type WebSearchNotice
+  type WebSearchNotice,
 } from './state'
 
 const WEB_SOURCE_FALLBACK_MARK = 'W'
 const WEB_SEARCH_SKELETON_COUNT = 3
+const SILENT_SEARCH_FAILURES = new Set(['browser_search_navigation_unknown', 'request_unknown'])
 
 function webSearchNoticeId(notice: WebSearchNotice, tabId: string): string {
   return `web-search-${notice}:${tabId}`
@@ -54,9 +54,13 @@ function sourceMark(source: string): string {
 function latestAttempt(search: ResourceWebSearch | undefined): WebSearchAttempt | undefined {
   if (!search) return undefined
   if (search.resolvedMode) {
-    return [...search.attempts].reverse().find((attempt) => (
-      attempt.mode === search.resolvedMode && attempt.status === 'completed'
-    ))
+    return [...search.attempts]
+      .reverse()
+      .find(
+        (attempt) =>
+          attempt.mode === search.resolvedMode &&
+          (attempt.status === 'completed' || attempt.resultReadyAt !== undefined)
+      )
   }
   return search.attempts.at(-1)
 }
@@ -67,7 +71,7 @@ function WebSearchLoading({ query }: { query: string }): React.JSX.Element {
     <section
       aria-busy="true"
       aria-label={t('webSearch.loading')}
-      className="vds-web-search-loading grid gap-[var(--vds-space-3)]"
+      className="grid min-h-0 flex-1 content-start overflow-hidden gap-[var(--vds-space-3)] [&>div:last-child]:min-h-0 [&>div:last-child]:overflow-y-auto [&>div:last-child]:overscroll-contain"
       data-testid="web-search-loading"
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-[var(--vds-space-3)] border-0 border-b border-solid border-[var(--vds-divider-default)] pb-[var(--vds-space-4)]">
@@ -102,8 +106,12 @@ function WebSearchLoading({ query }: { query: string }): React.JSX.Element {
                 width="var(--vds-avatar-size-md)"
               />
               <div className="grid min-w-0 flex-1 gap-[var(--vds-space-2)]">
-                <span className="block w-2/5"><Skeleton /></span>
-                <span className="block w-4/5"><Skeleton /></span>
+                <span className="block w-2/5">
+                  <Skeleton />
+                </span>
+                <span className="block w-4/5">
+                  <Skeleton />
+                </span>
               </div>
             </div>
           </Card>
@@ -128,54 +136,74 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
   const [importParent, setImportParent] = useState('')
   const [importParentPath, setImportParentPath] = useState('')
   const projection = useMemo(
-    () => projectWebSearch(
-      attempt?.invocationEvents ?? [],
-      mode,
+    () =>
+      projectWebSearch(
+        attempt?.invocationEvents ?? [],
+        mode,
+        attempt?.resultText,
+        search?.query,
+        attempt?.artifactPath,
+        attempt?.officialSearchId,
+        attempt?.invocationProfile
+      ),
+    [
+      attempt?.artifactPath,
+      attempt?.officialSearchId,
+      attempt?.invocationProfile,
+      attempt?.invocationEvents,
       attempt?.resultText,
-      search?.query
-    ),
-    [attempt?.invocationEvents, attempt?.resultText, mode, search?.query]
+      mode,
+      search?.query,
+    ]
   )
-  const terminal = search?.status === 'completed'
-    || search?.status === 'failed'
-    || search?.status === 'interrupted'
-    || search?.status === 'unknown'
+  const terminal =
+    search?.status === 'completed' ||
+    search?.status === 'failed' ||
+    search?.status === 'interrupted' ||
+    search?.status === 'unknown'
   const missingSearchOutput = webSearchOutputMissing({
     invocationStarted: Boolean(attempt?.invocationId),
     terminal,
     executionEvidenceFound: projection.executionEvidenceFound,
-    structuredOutputFound: projection.structuredOutputFound
+    structuredOutputFound: projection.structuredOutputFound,
   })
   const candidates = verifiedWebSearchCandidates(projection)
-  const failed = search?.status === 'failed'
-    || search?.status === 'interrupted'
-    || search?.status === 'unknown'
-    || (terminal && (Boolean(projection.error) || missingSearchOutput))
+  const failed =
+    search?.status === 'failed' ||
+    search?.status === 'interrupted' ||
+    search?.status === 'unknown' ||
+    (terminal && (Boolean(projection.error) || missingSearchOutput))
   const failureError = terminal
-    ? search?.error
-      || projection.error
-      || (missingSearchOutput ? modeDefinition.executionError : undefined)
+    ? search?.error ||
+      projection.error ||
+      (missingSearchOutput ? modeDefinition.executionError : undefined)
     : undefined
-  const fallbackUsed = Boolean(search && search.attempts.length > 1)
-  const fallbackReason = fallbackUsed ? search?.attempts[0]?.error : undefined
 
-  const patchSearch = useCallback((patch: Partial<ResourceWebSearch>): void => {
-    set((current) => {
-      const existing = current.resource.webSearches[tabId]
-      if (!existing) return current
-      return {
-        resource: {
-          ...current.resource,
-          webSearches: {
-            ...current.resource.webSearches,
-            [tabId]: { ...existing, ...patch }
-          }
+  const patchSearch = useCallback(
+    (patch: Partial<ResourceWebSearch>): void => {
+      set((current) => {
+        const existing = current.resource.webSearches[tabId]
+        if (!existing) return current
+        return {
+          resource: {
+            ...current.resource,
+            webSearches: {
+              ...current.resource.webSearches,
+              [tabId]: { ...existing, ...patch },
+            },
+          },
         }
-      }
-    })
-  }, [set, tabId])
+      })
+    },
+    [set, tabId]
+  )
 
-  const searching = Boolean(search) && !failed && !terminal
+  const ready =
+    search?.readyAt !== undefined &&
+    projection.executionEvidenceFound &&
+    projection.structuredOutputFound &&
+    !projection.error
+  const searching = Boolean(search) && !failed && !terminal && !ready
 
   /**
    * 一次性提示只在首次到达时投递。
@@ -183,60 +211,79 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
    * `search.notified` 跨挂载记账：切换标签会卸载本组件，回写到搜索状态后切回来不再重复弹；
    * `deliveredNotices` 只在本次挂载内闭锁，覆盖状态回写还没提交完的那一小段窗口。
    */
-  const deliverNotice = useCallback((notice: WebSearchNotice, deliver: () => void): void => {
-    if (!search || !webSearchNoticePending(search, notice)) return
-    if (deliveredNotices.current.has(notice)) return
-    deliveredNotices.current.add(notice)
-    set((current) => {
-      const existing = current.resource.webSearches[tabId]
-      if (!existing) return current
-      const next = withWebSearchNotice(existing, notice)
-      if (next === existing) return current
-      return {
-        resource: {
-          ...current.resource,
-          webSearches: { ...current.resource.webSearches, [tabId]: next }
+  const deliverNotice = useCallback(
+    (notice: WebSearchNotice, deliver: () => void): void => {
+      if (!search || !webSearchNoticePending(search, notice)) return
+      if (deliveredNotices.current.has(notice)) return
+      deliveredNotices.current.add(notice)
+      set((current) => {
+        const existing = current.resource.webSearches[tabId]
+        if (!existing) return current
+        const next = withWebSearchNotice(existing, notice)
+        if (next === existing) return current
+        return {
+          resource: {
+            ...current.resource,
+            webSearches: { ...current.resource.webSearches, [tabId]: next },
+          },
         }
-      }
-    })
-    deliver()
-  }, [search, set, tabId])
+      })
+      deliver()
+    },
+    [search, set, tabId]
+  )
 
   useEffect(() => {
     if (!search || !terminal) return
     const toastId = webSearchNoticeId('result', tabId)
     deliverNotice('result', () => {
       if (failed) {
+        if (failureError && SILENT_SEARCH_FAILURES.has(failureError)) return
         toast({
           description: <SearchFeedback message={{ kind: 'failure', error: failureError }} />,
           id: toastId,
-          title: <SearchFeedback message={{ kind: 'label', messageKey: failureError === modeDefinition.executionError
-            ? modeDefinition.failureTitleKey
-            : 'webFeedback.failed' }} />,
-          tone: 'error'
+          title: (
+            <SearchFeedback
+              message={{
+                kind: 'label',
+                messageKey:
+                  failureError === modeDefinition.executionError
+                    ? modeDefinition.failureTitleKey
+                    : 'webFeedback.failed',
+              }}
+            />
+          ),
+          tone: 'error',
         })
         return
       }
       toast({
-        description: <SearchFeedback message={{ kind: 'count', messageKey: 'webFeedback.candidates', total: candidates.length }} />,
+        description: (
+          <SearchFeedback
+            message={{
+              kind: 'count',
+              messageKey: 'webFeedback.candidates',
+              total: candidates.length,
+            }}
+          />
+        ),
         id: toastId,
         title: <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.completed' }} />,
-        tone: 'success'
+        tone: 'success',
       })
     })
-  }, [candidates.length, deliverNotice, failureError, failed, modeDefinition.executionError, modeDefinition.failureTitleKey, search, tabId, terminal, toast])
-
-  useEffect(() => {
-    if (!search || !fallbackUsed || mode === WEB_SEARCH_CANDIDATES_MODE) return
-    deliverNotice('fallback', () => {
-      toast({
-        description: <SearchFeedback message={{ kind: 'fallback', error: fallbackReason }} />,
-        id: webSearchNoticeId('fallback', tabId),
-        title: <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.browser' }} />,
-        tone: 'warning'
-      })
-    })
-  }, [deliverNotice, fallbackReason, fallbackUsed, mode, search, tabId, toast])
+  }, [
+    candidates.length,
+    deliverNotice,
+    failureError,
+    failed,
+    modeDefinition.executionError,
+    modeDefinition.failureTitleKey,
+    search,
+    tabId,
+    terminal,
+    toast,
+  ])
 
   useEffect(() => {
     setImportDialogOpen(false)
@@ -247,7 +294,7 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
   if (!search) {
     return (
       <EmptyState
-        className="vds-web-search-empty"
+        className="my-[var(--vds-web-search-empty-margin-block)] mx-auto"
         icon={<Icon name="globe" size={24} />}
         title={t('webSearch.expired')}
         description={t('webSearch.restart')}
@@ -260,13 +307,20 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
     (candidate) => search.importResults[candidate.url]?.status !== 'success'
   )
   const selectedCandidates = eligibleCandidates.filter((candidate) => selected.has(candidate.url))
-  const allSelected = eligibleCandidates.length > 0
-    && eligibleCandidates.every((candidate) => selected.has(candidate.url))
+  const allSelected =
+    eligibleCandidates.length > 0 &&
+    eligibleCandidates.every((candidate) => selected.has(candidate.url))
   const notifySelectionLimit = (): void => {
     toast({
-      description: <SearchFeedback message={{ kind: 'limit', limit: WEB_IMPORT_SELECTION_LIMIT }} />,
-      title: <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.selectionLimitTitle' }} />,
-      tone: 'warning'
+      description: (
+        <SearchFeedback message={{ kind: 'limit', limit: WEB_IMPORT_SELECTION_LIMIT }} />
+      ),
+      title: (
+        <SearchFeedback
+          message={{ kind: 'label', messageKey: 'webFeedback.selectionLimitTitle' }}
+        />
+      ),
+      tone: 'warning',
     })
   }
 
@@ -289,7 +343,7 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
     patchSearch({
       selectedUrls: eligibleCandidates
         .slice(0, WEB_IMPORT_SELECTION_LIMIT)
-        .map((candidate) => candidate.url)
+        .map((candidate) => candidate.url),
     })
     if (eligibleCandidates.length > WEB_IMPORT_SELECTION_LIMIT) notifySelectionLimit()
   }
@@ -328,16 +382,19 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
       selectedCandidates.map((candidate) => ({
         title: candidate.title,
         url: candidate.url,
-        snippet: candidate.description
+        snippet: candidate.description,
       })),
       parent
     )
     if (!result.ok) {
       patchSearch({ importing: false })
       toast({
+        dedupeKey: JSON.stringify(['web-import-failure', tabId, result.error]),
         description: <SearchFeedback message={{ kind: 'importFailure', error: result.error }} />,
-        title: <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.requestFailed' }} />,
-        tone: 'error'
+        title: (
+          <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.requestFailed' }} />
+        ),
+        tone: 'error',
       })
       return
     }
@@ -346,34 +403,43 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
       nextResults[item.url] = {
         status: item.status,
         error: item.error,
-        nodePath: item.node?.path
+        nodePath: item.node?.path,
       }
     }
     patchSearch({
       importing: false,
       importResults: nextResults,
-      selectedUrls: result.items
-        .filter((item) => item.status === 'failed')
-        .map((item) => item.url)
+      selectedUrls: result.items.filter((item) => item.status === 'failed').map((item) => item.url),
     })
     setImportDialogOpen(false)
     if (result.succeeded > 0) await act.reloadResourceTree()
     toast({
-      description: result.failed > 0
-        ? <SearchFeedback message={{ kind: 'count', messageKey: 'webFeedback.partial', total: result.failed }} />
-        : <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.savedDescription' }} />,
-      title: result.succeeded > 0
-        ? <SearchFeedback message={{ kind: 'count', messageKey: 'webFeedback.saved', total: result.succeeded }} />
-        : <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.saveFailed' }} />,
-      tone: result.failed > 0 ? 'warning' : 'success'
+      description:
+        result.failed > 0 ? (
+          <SearchFeedback
+            message={{ kind: 'count', messageKey: 'webFeedback.partial', total: result.failed }}
+          />
+        ) : (
+          <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.savedDescription' }} />
+        ),
+      title:
+        result.succeeded > 0 ? (
+          <SearchFeedback
+            message={{ kind: 'count', messageKey: 'webFeedback.saved', total: result.succeeded }}
+          />
+        ) : (
+          <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.saveFailed' }} />
+        ),
+      tone: result.failed > 0 ? 'warning' : 'success',
     })
   }
 
   return (
-    <div className="vds-web-search" data-testid="web-search-tab">
-      {searching ? (
-        <WebSearchLoading query={search.query} />
-      ) : null}
+    <div
+      className="box-border flex h-full min-h-0 w-full flex-col gap-[var(--vds-space-5)] overflow-hidden px-[var(--vds-space-4)] py-[var(--vds-web-search-padding-block)]"
+      data-testid="web-search-tab"
+    >
+      {searching ? <WebSearchLoading query={search.query} /> : null}
 
       {!project && candidates.length > 0 ? (
         <Alert
@@ -385,7 +451,10 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
       ) : null}
 
       {!searching ? (
-        <section className="vds-web-search-results" aria-label={t('webSearch.candidates')}>
+        <section
+          className="flex min-h-0 flex-1 flex-col gap-[var(--vds-space-3)]"
+          aria-label={t('webSearch.candidates')}
+        >
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-[var(--vds-space-3)] border-0 border-b border-solid border-[var(--vds-divider-default)] pb-[var(--vds-space-4)]">
             <div className="flex min-w-0 items-center gap-[var(--vds-space-3)]">
               <Checkbox
@@ -415,7 +484,10 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
             ) : null}
           </div>
           {candidates.length > 0 ? (
-            <div data-testid="web-search-results">
+            <div
+              className="min-h-0 overflow-y-auto overscroll-contain"
+              data-testid="web-search-results"
+            >
               {candidates.map((candidate, index) => {
                 const importResult = search.importResults[candidate.url]
                 const saved = importResult?.status === 'success'
@@ -478,15 +550,19 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
               })}
             </div>
           ) : failed ? (
-            <div className="vds-web-search-waiting">{t('webSearch.retry')}</div>
+            <div className="py-[var(--vds-web-search-waiting-padding-block)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+              {t('webSearch.retry')}
+            </div>
           ) : (
             <EmptyState
               data-testid="web-search-no-results"
               icon={<Icon name="search" size={24} />}
               title={t('webSearch.empty')}
-              description={projection.structuredOutputFound
+              description={
+                projection.structuredOutputFound
                   ? t('webSearch.noCandidates')
-                  : t('webSearch.invalidOutput')}
+                  : t('webSearch.invalidOutput')
+              }
             />
           )}
         </section>

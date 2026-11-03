@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import stat
 from collections.abc import Callable, Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -11,14 +13,23 @@ from typing import Any
 from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD
 from service.chat.persistence.events import ProductEventStore
 from service.platform.bridge import DisplayCardContent
+from service.platform.files import file_access_code
 
 DISPLAY_CARD_MAX_CONTENT_BYTES = 65_536
-DISPLAY_CARD_MAX_PER_TURN = 4
 DISPLAY_CARD_MAX_BYTES_PER_TURN = 131_072
 DISPLAY_CARD_ENCODING = "utf-8"
 DISPLAY_CARD_ID_PREFIX = "card"
 DISPLAY_CARD_IDEMPOTENCY_PREFIX = "display-card"
 DISPLAY_CARD_IDENTITY_SEPARATOR = "\0"
+DISPLAY_CARD_PATH_UNAVAILABLE = "display_card_path_unavailable"
+DISPLAY_CARD_TURN_BYTES = "display_card_turn_bytes_exceeded"
+DISPLAY_CARD_LIMIT_ERRORS = frozenset((DISPLAY_CARD_TURN_BYTES,))
+DISPLAY_CARD_CONTINUE_ACTION = (
+    "End this turn and ask the user to send a new message in the same conversation to continue. "
+    "Resume the original run and retry only its pending publication; do not repeat completed "
+    "downloads or saves, retry in this exhausted turn, or infer new authorization."
+)
+LOGGER = logging.getLogger(__name__)
 
 
 class DisplayCardError(ValueError):
@@ -26,6 +37,7 @@ class DisplayCardError(ValueError):
 
 
 CardValidator = Callable[[Mapping[str, Any]], dict[str, Any]]
+CardSlot = Callable[[Mapping[str, Any]], str]
 
 
 class CardRegistry:
@@ -34,16 +46,32 @@ class CardRegistry:
     def __init__(self) -> None:
         self._validators: dict[str, CardValidator] = {}
         self._direct: set[str] = set()
+        self._slots: dict[str, CardSlot] = {}
 
-    def register(self, card_type: str, validator: CardValidator, *, direct: bool = True) -> None:
+    def register(
+        self,
+        card_type: str,
+        validator: CardValidator,
+        *,
+        direct: bool = True,
+        slot: CardSlot | None = None,
+    ) -> None:
         if not card_type or card_type in self._validators:
             raise ValueError("display_card_type_registration_invalid")
+        if slot is not None and direct:
+            raise ValueError("display_card_slot_requires_product_owner")
         self._validators[card_type] = validator
+        if slot is not None:
+            self._slots[card_type] = slot
         if direct:
             self._direct.add(card_type)
 
     def allows_direct(self, card_type: str) -> bool:
         return card_type in self._direct
+
+    def slot(self, card_type: str, value: Mapping[str, Any]) -> str | None:
+        selector = self._slots.get(card_type)
+        return selector(value) if selector is not None else None
 
     def validate(self, card_type: str, value: Mapping[str, Any]) -> dict[str, Any]:
         validator = self._validators.get(card_type)
@@ -73,17 +101,39 @@ def normalize_card(
                 raise DisplayCardError("display_card_path_invalid")
             root = workdir.resolve()
             source = (root / candidate).resolve()
-            if not source.is_relative_to(root) or not source.is_file():
+            if not source.is_relative_to(root):
                 raise DisplayCardError("display_card_path_invalid")
-        except (OSError, ValueError) as error:
+            if not stat.S_ISREG(source.stat().st_mode):
+                raise DisplayCardError("display_card_path_invalid")
+        except DisplayCardError:
+            raise
+        except ValueError as error:
             raise DisplayCardError("display_card_path_invalid") from error
+        except OSError as error:
+            LOGGER.warning(
+                "display_card_file_access_failed path=%s code=%s errno=%s winerror=%s",
+                content.path,
+                file_access_code(error),
+                error.errno,
+                getattr(error, "winerror", None),
+            )
+            raise DisplayCardError(DISPLAY_CARD_PATH_UNAVAILABLE) from error
         try:
             with source.open("rb") as stream:
                 encoded_source = stream.read(DISPLAY_CARD_MAX_CONTENT_BYTES + 1)
             if len(encoded_source) > DISPLAY_CARD_MAX_CONTENT_BYTES:
                 raise DisplayCardError("display_card_content_too_large")
             value = json.loads(encoded_source.decode(DISPLAY_CARD_ENCODING))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        except OSError as error:
+            LOGGER.warning(
+                "display_card_file_access_failed path=%s code=%s errno=%s winerror=%s",
+                content.path,
+                file_access_code(error),
+                error.errno,
+                getattr(error, "winerror", None),
+            )
+            raise DisplayCardError(DISPLAY_CARD_PATH_UNAVAILABLE) from error
+        except (UnicodeError, json.JSONDecodeError) as error:
             raise DisplayCardError("display_card_content_invalid") from error
     if not isinstance(value, Mapping):
         raise DisplayCardError("display_card_content_invalid")

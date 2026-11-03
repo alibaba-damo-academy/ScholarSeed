@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
-import mimetypes
+import logging
 import os
 import re
 import stat
+import time
 import uuid
 from pathlib import Path
 from threading import Lock
@@ -15,7 +17,13 @@ from service.content.domain.model import ContentError
 from service.content.persistence import snapshots
 from service.content.service.native import copy_descriptor_exclusive, creation_marker
 from service.content.service.utils import directory
-from service.platform.content import ArtifactScope, ArtifactStorageLocation, VerifiedArtifactContent
+from service.platform.content import (
+    ArtifactScope,
+    ArtifactSnapshotFailure,
+    ArtifactStorageLocation,
+    VerifiedArtifactContent,
+)
+from service.platform.files import CONTENT_SNIFF_BYTES, guess_media_type
 from service.platform.storage import NOFOLLOW, NONBLOCK, DirectoryHandle, preserve_mode
 
 CHUNK_BYTES = 1024 * 1024
@@ -28,14 +36,36 @@ PATH_INVALID = "artifact_snapshot_path_invalid"
 SOURCE_CHANGED = "artifact_snapshot_source_changed"
 INTEGRITY_MISMATCH = "artifact_snapshot_integrity_mismatch"
 TOO_LARGE = "artifact_snapshot_too_large"
-UNAVAILABLE = "artifact_snapshot_unavailable"
+UNAVAILABLE = ArtifactSnapshotFailure.UNAVAILABLE.value
+WINDOWS_SHARING_VIOLATION = 32
+WINDOWS_LOCK_VIOLATION = 33
+WINDOWS_NOT_SUPPORTED = 50
+WINDOWS_INVALID_FUNCTION = 1
+CAPTURE_RETRY_DELAYS = (0.1, 0.2)
 TEMP_PREFIX = ".capture-"
 _COPY_LOCKS_GUARD = Lock()
 _COPY_LOCKS: dict[tuple[str, str, str, str], Lock] = {}
+logger = logging.getLogger(__name__)
 
 
 def _signature(value: os.stat_result) -> tuple[int, ...]:
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _failure_code(error: OSError) -> str:
+    windows_code = getattr(error, "winerror", None)
+    if windows_code in (WINDOWS_SHARING_VIOLATION, WINDOWS_LOCK_VIOLATION):
+        return ArtifactSnapshotFailure.BUSY.value
+    if error.errno in (errno.EACCES, errno.EPERM):
+        return ArtifactSnapshotFailure.ACCESS_DENIED.value
+    if error.errno == errno.ENOSPC:
+        return ArtifactSnapshotFailure.DISK_FULL.value
+    if windows_code in (WINDOWS_NOT_SUPPORTED, WINDOWS_INVALID_FUNCTION) or error.errno in (
+        errno.ENOTSUP,
+        errno.ENOSYS,
+    ):
+        return ArtifactSnapshotFailure.UNSUPPORTED.value
+    return UNAVAILABLE
 
 
 def _copy_lock(location: ArtifactStorageLocation, scope: ArtifactScope, digest: str) -> Lock:
@@ -48,10 +78,10 @@ def _read_object(directory: DirectoryHandle, digest: str, marker: str = "") -> b
     descriptor = directory.open(digest, os.O_RDONLY | NOFOLLOW | NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or (
-            marker and creation_marker(stream.fileno()) != marker
-        ):
+        if not stat.S_ISREG(before.st_mode):
             raise ContentError(PATH_INVALID)
+        if marker and creation_marker(stream.fileno()) != marker:
+            raise ContentError(INTEGRITY_MISMATCH)
         if before.st_size > MAX_ARTIFACT_BYTES:
             raise ContentError(TOO_LARGE)
         payload = stream.read(MAX_ARTIFACT_BYTES + 1)
@@ -132,6 +162,30 @@ def capture(
     *,
     expected_sha256: str = "",
 ) -> VerifiedArtifactContent:
+    for attempt in range(len(CAPTURE_RETRY_DELAYS) + 1):
+        try:
+            return _capture_once(location, scope, source, expected_sha256=expected_sha256)
+        except ContentError as error:
+            if str(error) != ArtifactSnapshotFailure.BUSY.value or attempt == len(
+                CAPTURE_RETRY_DELAYS
+            ):
+                raise
+            logger.warning(
+                "artifact_snapshot_retry attempt=%s delay=%s",
+                attempt + 1,
+                CAPTURE_RETRY_DELAYS[attempt],
+            )
+            time.sleep(CAPTURE_RETRY_DELAYS[attempt])
+    raise ContentError(UNAVAILABLE)
+
+
+def _capture_once(
+    location: ArtifactStorageLocation,
+    scope: ArtifactScope,
+    source: Path,
+    *,
+    expected_sha256: str = "",
+) -> VerifiedArtifactContent:
     """Copy one stable file, then atomically install it under its verified digest."""
 
     root = Path(location.source_root).expanduser().resolve()
@@ -163,8 +217,11 @@ def capture(
                     try:
                         digest = hashlib.sha256()
                         size = 0
+                        prefix = b""
                         with os.fdopen(os.dup(output), "wb") as target:
                             while chunk := source_stream.read(CHUNK_BYTES):
+                                if not prefix:
+                                    prefix = chunk[:CONTENT_SNIFF_BYTES]
                                 size += len(chunk)
                                 if size > MAX_ARTIFACT_BYTES:
                                     raise ContentError(TOO_LARGE)
@@ -192,12 +249,47 @@ def capture(
             scope=scope,
             source_path=relative.as_posix(),
             name=relative.name,
-            media_type=mimetypes.guess_type(relative.name)[0] or DEFAULT_MEDIA_TYPE,
+            media_type=guess_media_type(relative.name, prefix) or DEFAULT_MEDIA_TYPE,
             size=size,
             sha256=value,
         )
     except OSError as exc:
-        raise ContentError(UNAVAILABLE) from exc
+        logger.exception(
+            "artifact_snapshot_capture_failed errno=%s winerror=%s",
+            exc.errno,
+            getattr(exc, "winerror", None),
+        )
+        raise ContentError(_failure_code(exc)) from exc
+
+
+def remove(location: ArtifactStorageLocation, content: VerifiedArtifactContent) -> None:
+    """Release a caller-proven unreferenced immutable snapshot, retaining unknown bytes."""
+    if not DIGEST_PATTERN.fullmatch(content.sha256):
+        raise ContentError(PATH_INVALID)
+    with _copy_lock(location, content.scope, content.sha256):
+        claim = snapshots.get(location.database, content.scope, content.sha256)
+        if claim is None:
+            try:
+                with directory(
+                    Path(location.storage_root), Path(location.objects_relative).parts
+                ) as objects:
+                    objects.stat(content.sha256)
+            except FileNotFoundError:
+                return
+            raise ContentError(INTEGRITY_MISMATCH)
+        try:
+            with directory(
+                Path(location.storage_root), Path(location.objects_relative).parts
+            ) as objects:
+                try:
+                    _read_object(objects, content.sha256, claim.marker)
+                except FileNotFoundError:
+                    pass
+                else:
+                    objects.unlink(content.sha256, expected=objects.stat(content.sha256))
+        except FileNotFoundError:
+            pass
+        snapshots.remove(location.database, content.scope, content.sha256, claim.marker)
 
 
 def read(location: ArtifactStorageLocation, content: VerifiedArtifactContent) -> bytes:
@@ -214,7 +306,12 @@ def read(location: ArtifactStorageLocation, content: VerifiedArtifactContent) ->
                 raise ContentError(UNAVAILABLE)
             payload = _read_object(objects, content.sha256, claim.marker if claim else "")
     except OSError as exc:
-        raise ContentError(UNAVAILABLE) from exc
+        logger.exception(
+            "artifact_snapshot_read_failed errno=%s winerror=%s",
+            exc.errno,
+            getattr(exc, "winerror", None),
+        )
+        raise ContentError(_failure_code(exc)) from exc
     if len(payload) != content.size:
         raise ContentError(INTEGRITY_MISMATCH)
     return payload

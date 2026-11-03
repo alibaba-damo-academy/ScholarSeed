@@ -3,16 +3,20 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const crypto = require('node:crypto')
-const { execFile, spawn, spawnSync } = require('node:child_process')
+const { execFile, spawn } = require('node:child_process')
 const { promisify } = require('node:util')
-const { nativeTar } = require('../../../scripts/python.cjs')
-const { ensureArtifact } = require('../../../scripts/artifacts.cjs')
+const { nativeTar } = require('../../../scripts/shared/python.cjs')
+const { ensureArtifact } = require('../../../scripts/shared/artifacts.cjs')
+const state = require('../scripts/shared/build-state.cjs')
+const CACHE_RECEIPT = 'resolve-receipt.json'
 
 const run = promisify(execFile)
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'codex')
 const MANIFEST_NAME = 'manifest.json'
 const CACHE_DIRECTORY = 'node_modules/.cache/scholarseed/codex'
-const CACHE_RECEIPT = 'resolve-receipt.json'
+const CACHE_ROOT_ENV = 'SCHOLARSEED_BUILD_CACHE_ROOT'
+const RUNTIME_CACHE_ENV = 'SCHOLARSEED_CODEX_RUNTIME_CACHE'
+const PERSISTENT_CACHE_DIRECTORY = 'codex-runtime'
 const PROBE_TIMEOUT_MS = 15_000
 const PROBE_BOOTSTRAP_TIMEOUT_MS = 60_000
 const METADATA_LIMIT = 8 * 1024 * 1024
@@ -21,6 +25,7 @@ const WINDOWS_PLATFORM = 'win32'
 const WINDOWS_PUBLISH_RETRY_DELAYS_MS = Object.freeze([250, 500, 1000, 2000, 4000, 8000])
 const WINDOWS_TRANSIENT_FILESYSTEM_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY'])
 const WINDOWS_CLEANUP_RETRY_DELAY_MS = 1000
+const CACHE_VALIDATION = Object.freeze({ execution: 'execution', integrity: 'integrity' })
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]+={0,2}$/
 
@@ -121,13 +126,10 @@ function sourceRecord(selected) {
     archive_sha256: selected.sha256, integrity: selected.integrity }
 }
 
-// A cache directory is only published by a fully verified resolve (extraction +
-// per-file digests + version probe) and its name embeds the archive checksum,
-// so a matching receipt plus a passing probe is the same guarantee re-hashing
-// every cached file on each launch used to buy.
 function cachedRuntime(directory, selected) {
   let receipt
   try {
+    state.regular(path.join(directory, CACHE_RECEIPT))
     receipt = JSON.parse(fs.readFileSync(path.join(directory, CACHE_RECEIPT), 'utf8'))
   } catch (error) {
     return null
@@ -137,7 +139,9 @@ function cachedRuntime(directory, selected) {
       typeof receipt.entrypoint !== 'string' ||
       !Array.isArray(receipt.files) ||
       !receipt.files.every(file => file && typeof file.path === 'string' &&
-        typeof file.sha256 === 'string' && typeof file.mode === 'number') ||
+        file.path.length > 0 && !path.isAbsolute(file.path) &&
+        !file.path.includes('\\') && !file.path.split('/').some(part => !part || part === '.' || part === '..') &&
+        SHA256_PATTERN.test(file.sha256) && file.mode === RUNTIME_FILE_MODE) ||
       !receipt.files.some(file => file.path === receipt.entrypoint)) {
     return null
   }
@@ -151,20 +155,59 @@ function cachedRuntime(directory, selected) {
   }
 }
 
+function verifyCachedFiles(directory, cached) {
+  const actual = state.inventory(directory).filter(file => file.path !== CACHE_RECEIPT)
+    .map(file => ({ path: file.path, sha256: file.sha256 }))
+  const expected = cached.files.map(file => ({ path: file.path, sha256: file.sha256 }))
+  const order = (a, b) => a.path.localeCompare(b.path)
+  if (JSON.stringify(actual.sort(order)) !== JSON.stringify(expected.sort(order)))
+    throw new Error('Codex runtime cache inventory changed')
+}
+
+async function completeRuntime(directory, selected, runtime, options = {}) {
+  const probe = options.probe || probeVersion
+  verifyCachedFiles(directory, runtime)
+  await probe(path.join(directory, runtime.entrypoint), selected.version)
+  verifyCachedFiles(directory, runtime)
+  fs.writeFileSync(path.join(directory, CACHE_RECEIPT), JSON.stringify({
+    archive_sha256: selected.sha256,
+    reported_version: selected.version,
+    entrypoint: runtime.entrypoint,
+    files: runtime.files
+  }), { flag: 'wx' })
+}
+
 async function resolveVendoredCodex(
   desktopRoot,
   platform = process.platform,
   arch = process.arch,
-  log = () => {}
+  log = () => {},
+  cachedValidation = CACHE_VALIDATION.execution
 ) {
+  if (!Object.values(CACHE_VALIDATION).includes(cachedValidation)) {
+    throw new Error('Unknown Codex cache validation policy')
+  }
   const selected = artifact(desktopRoot, platform, arch)
-  const cache = path.join(desktopRoot, CACHE_DIRECTORY)
+  const persistent = process.env[RUNTIME_CACHE_ENV] ||
+    (process.env[CACHE_ROOT_ENV] && path.join(process.env[CACHE_ROOT_ENV], PERSISTENT_CACHE_DIRECTORY))
+  const cache = persistent
+    ? state.ensurePrivateDirectory(persistent)
+    : path.join(desktopRoot, CACHE_DIRECTORY)
   fs.mkdirSync(cache, { recursive: true })
   const directory = path.join(cache, `${selected.version}-${selected.key}-${selected.sha256}`)
+  if ((persistent || cachedValidation === CACHE_VALIDATION.integrity) && fs.existsSync(directory)) {
+    state.noLinks(directory)
+  }
   const cached = cachedRuntime(directory, selected)
   if (cached) {
     try {
-      await probeVersion(cached.executable, selected.version)
+      if (persistent || cachedValidation === CACHE_VALIDATION.integrity) {
+        state.noLinks(directory)
+        verifyCachedFiles(directory, cached)
+      }
+      if (cachedValidation === CACHE_VALIDATION.execution) {
+        await probeVersion(cached.executable, selected.version)
+      }
       for (const file of cached.files) {
         fs.chmodSync(path.join(directory, file.path), file.mode)
       }
@@ -187,7 +230,9 @@ async function resolveVendoredCodex(
   }
   await verifyArchive(selected.archive, selected.integrity)
   if (fs.existsSync(directory)) {
-    fs.rmSync(directory, { recursive: true, force: true })
+    fs.rmSync(directory, { recursive: true, force: true,
+      maxRetries: platform === WINDOWS_PLATFORM ? WINDOWS_PUBLISH_RETRY_DELAYS_MS.length : 0,
+      retryDelay: WINDOWS_CLEANUP_RETRY_DELAY_MS })
   }
   const stage = fs.mkdtempSync(path.join(cache, 'resolve-'))
   try {
@@ -213,33 +258,27 @@ async function resolveVendoredCodex(
     if (packageManifest.target !== selected.target || typeof packageManifest.entrypoint !== 'string') {
       throw new Error('Codex runtime package manifest differs from its target')
     }
-    if (!fs.existsSync(directory)) await publishRuntime(runtime, directory, { platform })
     for (const file of files) {
-      const cached = path.join(directory, file.path)
+      const cached = path.join(runtime, file.path)
       if (await digest(cached, 'sha256', 'hex') !== file.sha256) {
         throw new Error(`Cached Codex runtime was modified: ${file.path}`)
       }
       fs.chmodSync(cached, file.mode)
     }
-    const executable = path.join(directory, packageManifest.entrypoint)
-    const probe = spawnSync(executable, ['--version'], {
-      timeout: PROBE_BOOTSTRAP_TIMEOUT_MS,
-      encoding: 'utf8',
-      env: { ...process.env, TMPDIR: os.tmpdir() }
-    })
-    if (probe.error || probe.status !== 0) {
-      throw new Error(`Codex runtime probe failed: ${probe.error?.message || probe.stderr || probe.signal || probe.status}`)
+    let published = false
+    try {
+      await publishRuntime(runtime, directory, { platform })
+      published = true
+    } catch (error) {
+      // A concurrent build may have published the same fully verified input.
+      const winner = cachedRuntime(directory, selected)
+      if (!winner || !['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error
+      verifyCachedFiles(directory, { files })
+      await probeVersion(winner.executable, selected.version)
     }
-    const reported = probe.stdout.trim()
-    if (reported !== `codex-cli ${selected.version}`) {
-      throw new Error(`Codex version mismatch: expected ${selected.version}, got ${reported}`)
+    if (published) {
+      await completeRuntime(directory, selected, { entrypoint: packageManifest.entrypoint, files })
     }
-    fs.writeFileSync(path.join(directory, CACHE_RECEIPT), JSON.stringify({
-      archive_sha256: selected.sha256,
-      reported_version: selected.version,
-      entrypoint: packageManifest.entrypoint,
-      files
-    }), { flag: 'wx' })
     const destination = path.join(directory, packageManifest.entrypoint)
     log(`Vendored Codex ${selected.version}: ${destination}`)
     return {
@@ -267,4 +306,4 @@ function bundledCodex(resourcesRoot, platform = process.platform) {
   return executable
 }
 
-module.exports = { artifact, bundledCodex, publishRuntime, resolveVendoredCodex, verifyArchive }
+module.exports = { artifact, bundledCodex, CACHE_VALIDATION, completeRuntime, publishRuntime, resolveVendoredCodex, verifyArchive }

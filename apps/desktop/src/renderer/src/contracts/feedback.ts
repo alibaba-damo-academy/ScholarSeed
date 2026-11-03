@@ -1,16 +1,56 @@
 import type { i18n, ParseKeys } from 'i18next'
+import { ASSISTANT_CONTEXT_REVISION_CONFLICT } from './assistant.ts'
+
+const TURN_ADMISSION_MESSAGE_KEYS = {
+  [ASSISTANT_CONTEXT_REVISION_CONFLICT]: 'composer.contextChanged',
+  previous_turn_pending_hil: 'composer.previousTurnPendingHil',
+  previous_turn_background_active: 'composer.previousTurnBackgroundActive',
+  previous_turn_activity_unavailable: 'composer.previousTurnActivityUnavailable',
+  previous_turn_settling: 'composer.previousTurnSettling',
+  turn_outcome_unconfirmed: 'composer.turnOutcomeUnconfirmed',
+} as const satisfies Record<string, ParseKeys<'components'>>
+
+export function turnAdmissionMessageKey(code: unknown) {
+  return typeof code === 'string' &&
+    Object.prototype.hasOwnProperty.call(TURN_ADMISSION_MESSAGE_KEYS, code)
+    ? TURN_ADMISSION_MESSAGE_KEYS[code as keyof typeof TURN_ADMISSION_MESSAGE_KEYS]
+    : undefined
+}
 
 const FEEDBACK_KEYS = {
   conversation: {
-    'request.historyUnavailable': 'none', 'request.timeout': 'none', 'request.unavailable': 'none', 'request.invalidRecovery': 'none',
-    'request.failed': 'none', 'request.authentication': 'none', 'request.httpFailure': 'status', 'request.diagnostic': 'detail',
+    'request.historyUnavailable': 'none',
+    'request.timeout': 'none',
+    'request.unavailable': 'none',
+    'request.invalidRecovery': 'none',
+    'request.failed': 'none',
+    'request.authentication': 'none',
+    'request.httpFailure': 'status',
+    'request.diagnostic': 'detail',
     'request.resourceReviewRequired': 'none',
-    'models.deferred': 'none', 'models.effortReset': 'none', 'models.nextTurn': 'none',
-    'retry.continueUnconfirmed': 'none', 'retry.continueUnknown': 'none', 'retry.attachmentsGone': 'none', 'retry.contextNotReady': 'none', 'retry.regenerateUnknown': 'none'
+    'continuation.modelUnavailable': 'none',
+    'models.deferred': 'none',
+    'models.effortReset': 'none',
+    'models.nextTurn': 'none',
+    'retry.continueUnconfirmed': 'none',
+    'retry.continueUnknown': 'none',
+    'retry.attachmentsGone': 'none',
+    'retry.contextNotReady': 'none',
+    'retry.regenerateUnknown': 'none',
   } satisfies Partial<Record<ParseKeys<'conversation'>, 'none' | 'status' | 'detail'>>,
   components: {
-    'composer.askPermission': 'none', 'composer.autoPermission': 'none', 'composer.fullPermission': 'none', 'composer.modeSelected': 'mode',
-    'composer.terminating': 'none', 'composer.stopFailed': 'error', 'composer.unknownError': 'none',
+    'runtimePreparation.failed': 'none',
+    'stream.stopped': 'none',
+    'stream.runtimeInterrupted': 'none',
+    'stream.automaticRecovery': 'none',
+    'stream.automaticRecoveryCancelled': 'none',
+    'composer.askPermission': 'none',
+    'composer.autoPermission': 'none',
+    'composer.fullPermission': 'none',
+    'composer.modeSelected': 'mode',
+    'composer.terminating': 'none',
+    'composer.stopFailed': 'error',
+    'composer.unknownError': 'none',
     'composer.adjustFailed': 'error',
     'composer.attachmentSession': 'none',
     'composer.backendUnavailable': 'none',
@@ -18,11 +58,18 @@ const FEEDBACK_KEYS = {
     'composer.confirmContinueFailed': 'none',
     'composer.contextFailed': 'none',
     'composer.contextNotReady': 'none',
+    'composer.contextChanged': 'none',
     'composer.contextNotSaved': 'none',
     'composer.contextUnavailable': 'name',
     'composer.createFailed': 'none',
     'composer.filesFailed': 'none',
     'composer.messageFailed': 'none',
+    'composer.notSubmitted': 'none',
+    'composer.previousTurnPendingHil': 'none',
+    'composer.previousTurnBackgroundActive': 'none',
+    'composer.previousTurnActivityUnavailable': 'none',
+    'composer.previousTurnSettling': 'none',
+    'composer.turnOutcomeUnconfirmed': 'none',
     'composer.partialFilesFailed': 'none',
     'composer.pendingFailed': 'error',
     'composer.queueCheckUnknown': 'none',
@@ -33,6 +80,7 @@ const FEEDBACK_KEYS = {
     'composer.runtimePreflight': 'none',
     'composer.runtimeUnavailable': 'none',
     'composer.selectionContextChanged': 'name',
+    'composer.selectionSnapshotRequired': 'name',
     'composer.sessionUnavailable': 'none',
     'composer.skillDependencies': 'name',
     'composer.skillDisabled': 'name',
@@ -51,15 +99,24 @@ const FEEDBACK_KEYS = {
     'composer.withdrawUnavailable': 'none',
     'composer.workspaceFailed': 'none',
     'models.failed': 'none',
+    'models.defaultFailed': 'none',
     'models.retryFailed': 'none',
     'sessionTitle.failed': 'none',
-  } satisfies Partial<Record<ParseKeys<'components'>, 'none' | 'name' | 'error' | 'detail' | 'mode'>>,
+  } satisfies Partial<
+    Record<ParseKeys<'components'>, 'none' | 'name' | 'error' | 'detail' | 'mode'>
+  >,
   assistant: {
+    'referencePicker.collections': 'none',
+    'referencePicker.ungrouped': 'none',
     'sources.untitledSession': 'none',
     'panel.new': 'none',
     'sources.selectionLabel': 'name',
-    'sources.resources': 'none', 'sources.resourcesEmpty': 'none', 'sources.literature': 'none',
-    'sources.literatureEmpty': 'none', 'sources.sessions': 'none', 'sources.sessionsEmpty': 'none',
+    'sources.resources': 'none',
+    'sources.resourcesEmpty': 'none',
+    'sources.literature': 'none',
+    'sources.literatureEmpty': 'none',
+    'sources.sessions': 'none',
+    'sources.sessionsEmpty': 'none',
     'contextErrors.annotationFailed': 'detail',
     'contextErrors.initializeFailed': 'none',
     'contextErrors.loadFailed': 'none',
@@ -80,28 +137,46 @@ const FEEDBACK_KEYS = {
     'foreground.permissionConnection': 'none',
     'foreground.permissionFailed': 'none',
     'foreground.permissionImmutable': 'none',
+    'foreground.permissionRequiresApprovalResolution': 'none',
     'foreground.reviewUnknown': 'none',
     'foreground.reviewUnsaved': 'none',
     'foreground.runtimeNotReady': 'none',
     'foreground.submitNotReady': 'none',
+    'foreground.harnessLanding': 'none',
+    'foreground.harnessLogin': 'none',
+    'foreground.harnessGuide': 'none',
+    'foreground.harnessNoProject': 'none',
     'foreground.workspaceAuthorization': 'none',
+    'workspaceLoading.retrying': 'none',
+    'workspaceLoading.unavailable': 'none',
   } satisfies Partial<Record<ParseKeys<'shell'>, 'none' | 'name' | 'error' | 'detail'>>,
 } as const
 
 type FeedbackNamespace = keyof typeof FEEDBACK_KEYS
-type FeedbackKey<N extends FeedbackNamespace> = keyof typeof FEEDBACK_KEYS[N]
+type FeedbackKey<N extends FeedbackNamespace> = keyof (typeof FEEDBACK_KEYS)[N]
 type FeedbackValues = Record<string, string | number | FeedbackDescriptor>
 export type FeedbackDescriptor = {
   [N in FeedbackNamespace]: { ns: N; key: FeedbackKey<N>; values?: FeedbackValues }
 }[FeedbackNamespace]
 export type ForegroundMessage = string | FeedbackDescriptor
 
-type ParametersFor<N extends FeedbackNamespace, K extends FeedbackKey<N>> =
-  (typeof FEEDBACK_KEYS)[N][K] extends 'none' ? [values?: FeedbackValues]
-    : [values: FeedbackValues & Record<Exclude<Extract<(typeof FEEDBACK_KEYS)[N][K], string>, 'none'>, string | number | FeedbackDescriptor>]
+type ParametersFor<
+  N extends FeedbackNamespace,
+  K extends FeedbackKey<N>,
+> = (typeof FEEDBACK_KEYS)[N][K] extends 'none'
+  ? [values?: FeedbackValues]
+  : [
+      values: FeedbackValues &
+        Record<
+          Exclude<Extract<(typeof FEEDBACK_KEYS)[N][K], string>, 'none'>,
+          string | number | FeedbackDescriptor
+        >,
+    ]
 
 export function feedback<N extends FeedbackNamespace, K extends FeedbackKey<N>>(
-  ns: N, key: K, ...[values]: ParametersFor<N, K>
+  ns: N,
+  key: K,
+  ...[values]: ParametersFor<N, K>
 ): Extract<FeedbackDescriptor, { ns: N }> {
   return { ns, key, values } as Extract<FeedbackDescriptor, { ns: N }>
 }
@@ -110,13 +185,24 @@ export function renderFeedback(instance: i18n, message: ForegroundMessage): stri
   if (typeof message === 'string') return message
   const value = (key: string): string | number => {
     const input = message.values?.[key]
-    return typeof input === 'object' ? renderFeedback(instance, input) : input ?? ''
+    return typeof input === 'object' ? renderFeedback(instance, input) : (input ?? '')
   }
-  const values = { name: value('name'), error: value('error'), detail: value('detail'), status: value('status'), message: value('message'), mode: value('mode') }
+  const values = {
+    name: value('name'),
+    error: value('error'),
+    detail: value('detail'),
+    status: value('status'),
+    message: value('message'),
+    mode: value('mode'),
+  }
   switch (message.ns) {
-    case 'components': return instance.getFixedT(null, 'components')(message.key, values) as string
-    case 'assistant': return instance.getFixedT(null, 'assistant')(message.key, values) as string
-    case 'conversation': return instance.getFixedT(null, 'conversation')(message.key, values) as string
-    case 'shell': return instance.getFixedT(null, 'shell')(message.key, values) as string
+    case 'components':
+      return instance.getFixedT(null, 'components')(message.key, values) as string
+    case 'assistant':
+      return instance.getFixedT(null, 'assistant')(message.key, values) as string
+    case 'conversation':
+      return instance.getFixedT(null, 'conversation')(message.key, values) as string
+    case 'shell':
+      return instance.getFixedT(null, 'shell')(message.key, values) as string
   }
 }

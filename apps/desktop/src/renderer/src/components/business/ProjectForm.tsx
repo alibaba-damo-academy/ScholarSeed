@@ -1,9 +1,11 @@
 import React from 'react'
-import { Trans, useTranslation } from 'react-i18next'
+import { useTranslation } from 'react-i18next'
+import { Folder, Info } from 'lucide-react'
 
-import { createManagedProject, Project, removeProject, renameProject } from '../../api'
-import { PROJECT_NAME_MAX } from '../../contracts/content'
-import { Icon } from '../../icons'
+import type { Project } from '../../api'
+import { adoptProject, createManagedProject } from '../../api'
+import { PROJECT_DESCRIPTION_MAX, PROJECT_NAME_MAX } from '../../contracts/content'
+import { previewProjectDirectory, renameProject as updateProject } from '../../features/project/api'
 import {
   Alert,
   AlertDialog,
@@ -13,6 +15,7 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogPortal,
   AlertDialogTitle,
   Button,
   Dialog,
@@ -26,21 +29,20 @@ import {
   FormLabel,
   FormMessage,
   Input,
-  Label
+  IconButton,
+  Tooltip,
+  Textarea,
 } from '../ui'
 
-// ProjectForm.tsx — 新建 / 编辑项目弹窗 (PRD 2.1.8)。
-//   新建：只填项目显示名（必填）→ 创建。后端在工作区容器根下生成 MANAGED 目录，
-//         用户不再选择本机文件夹（proposal 47 §4：容器根是项目的家，不是项目本身）。
-//   编辑：可改显示名 + 只读源文件夹 + 「本版本一个项目只能挂靠一个文件夹」 → 移除项目 / 保存
-//
-// 「移除项目」只把项目从书深摘掉，**不动本机文件**；这一点必须在 UI 上写明，否则用户会
-// 以为点下去连论文一起删了。
-
 const OVERLAY_CLASS_NAME = 'project-form-scrim'
-const CONFIRM_OVERLAY_CLASS_NAME = 'project-form-scrim z-[var(--vds-z-dialog-nested-overlay)]'
+const CONFIRM_OVERLAY_CLASS_NAME = 'project-form-scrim !z-[var(--vds-z-dialog-nested-overlay)]'
 const DIALOG_CLASS_NAME = 'project-form-dialog w-[min(520px,calc(100vw-48px))]'
-const CONFIRM_DIALOG_CLASS_NAME = 'project-form-dialog z-[var(--vds-z-dialog-nested)] w-[min(360px,calc(100vw-48px))]'
+const CONFIRM_DIALOG_CLASS_NAME =
+  'project-form-dialog !z-[var(--vds-z-dialog-nested)] w-[min(360px,calc(100vw-48px))]'
+const FIELD_LABEL_CLASS_NAME =
+  'text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-control-label-line-height)] !font-[var(--vds-fw-regular)] text-[var(--vds-text-primary)]'
+const FIELD_INPUT_CLASS_NAME =
+  '!px-[var(--vds-space-3)] !leading-[var(--vds-control-label-line-height)] !font-[var(--vds-fw-regular)]'
 
 export interface ProjectFormTarget {
   mode: 'create' | 'edit'
@@ -57,18 +59,53 @@ function displayName(project?: Project): string {
 export function ProjectForm({
   target,
   onClose,
-  onDone
+  onDone,
+  heading,
+  introduction,
+  footerLeading,
+  pending = false,
+  onCancel,
 }: {
   target: ProjectFormTarget
+  heading?: string
+  introduction?: string
+  footerLeading?: React.ReactNode | ((busy: boolean) => React.ReactNode)
+  pending?: boolean
+  onCancel?: () => void
   onClose: () => void
   onDone: (message: string, created?: Project) => Promise<void>
 }): React.JSX.Element {
   const { t } = useTranslation('components')
+  const { t: layoutText } = useTranslation('layout')
   const editing = target.mode === 'edit'
   const [name, setName] = React.useState(editing ? displayName(target.project) : '')
-  const [busy, setBusy] = React.useState(false)
-  const [error, setError] = React.useState<{ messageKey: 'project.required' | 'project.createFailed' | 'project.saveFailed' | 'project.removeFailed' } | { text: string } | null>(null)
-  const [confirmRemove, setConfirmRemove] = React.useState(false)
+  const [description, setDescription] = React.useState(target.project?.description ?? '')
+  const [folder, setFolder] = React.useState<string | null>(null)
+  const [defaultFolder, setDefaultFolder] = React.useState<string | null>(null)
+  const [confirmFolder, setConfirmFolder] = React.useState(false)
+  const createdProject = React.useRef<Project | null>(null)
+  const [saving, setBusy] = React.useState(false)
+  const busy = saving || pending
+  const [error, setError] = React.useState<
+    | {
+        messageKey: 'project.required' | 'project.createFailed' | 'project.saveFailed'
+      }
+    | { text: string }
+    | null
+  >(null)
+  React.useEffect(() => {
+    if (editing || folder) return
+    let active = true
+    void previewProjectDirectory(name).then((result) => {
+      if (active) setDefaultFolder(result?.root ?? null)
+    })
+    return () => {
+      active = false
+    }
+  }, [editing, folder, name])
+  const displayedFolder = editing
+    ? (target.project?.path ?? '')
+    : (folder ?? defaultFolder ?? layoutText('defaultFolder'))
 
   const create = async (): Promise<void> => {
     const next = name.trim()
@@ -76,16 +113,40 @@ export function ProjectForm({
       setError({ messageKey: 'project.required' })
       return
     }
+    if (busy) return
     setBusy(true)
     setError(null)
-    const created = await createManagedProject(next)
+    const created =
+      createdProject.current ??
+      (await (folder ? adoptProject(folder, next) : createManagedProject(next)))
     if (!created) {
       setBusy(false)
       setError({ messageKey: 'project.createFailed' })
       return
     }
-    setBusy(false)
-    await onDone(t('project.created', { name: created.name }), created)
+    createdProject.current = created
+    const createdName = folder ? next : created.name
+    if (description.trim() || created.name !== createdName) {
+      const metadata = await updateProject(created.id, createdName, {
+        description: description.trim(),
+      })
+      if (!metadata.ok) {
+        setBusy(false)
+        setError({ messageKey: 'project.saveFailed' })
+        return
+      }
+    }
+    try {
+      await onDone(t('project.created', { name: createdName }), {
+        ...created,
+        name: createdName,
+        description: description.trim(),
+      })
+    } catch {
+      setError({ messageKey: 'project.createFailed' })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const save = async (): Promise<void> => {
@@ -97,7 +158,9 @@ export function ProjectForm({
       return
     }
     setBusy(true)
-    const result = await renameProject(path, next)
+    const result = await updateProject(target.project!.id, next, {
+      description: description.trim(),
+    })
     setBusy(false)
     if (!result.ok) {
       setError(result.error ? { text: result.error } : { messageKey: 'project.saveFailed' })
@@ -106,76 +169,153 @@ export function ProjectForm({
     await onDone(t('project.renamed', { name: next }))
   }
 
-  const remove = async (): Promise<void> => {
-    const path = target.project?.path
-    if (!path) return
-    setBusy(true)
-    const result = await removeProject(path)
-    setBusy(false)
-    if (!result.ok) {
-      setConfirmRemove(false)
-      setError(result.error ? { text: result.error } : { messageKey: 'project.removeFailed' })
-      return
-    }
-    await onDone(t('project.removed', { name: target.project?.name ?? '' }))
-  }
-
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent
-        aria-label={t(editing ? 'project.edit' : 'project.new')}
+        aria-label={heading ?? t(editing ? 'project.edit' : 'project.new')}
         className={DIALOG_CLASS_NAME}
         data-testid={editing ? 'project-edit-modal' : 'project-new-modal'}
         overlayClassName={OVERLAY_CLASS_NAME}
       >
         <DialogHeader>
-          <DialogTitle>{t(editing ? 'project.edit' : 'project.new')}</DialogTitle>
+          <DialogTitle>{heading ?? t(editing ? 'project.edit' : 'project.new')}</DialogTitle>
+          {introduction && <DialogDescription>{introduction}</DialogDescription>}
         </DialogHeader>
-
-        {editing ? (
-          <>
-            <div className="flex items-center [gap:8px] [padding:8px_10px] [border:1px_solid_var(--border-soft)] [border-radius:8px] [background:var(--bg)] [color:var(--text-2)]">
-              <Icon name="folder" size={15} />
-              <Input
-                value={name}
-                maxLength={PROJECT_NAME_MAX}
-                data-testid="project-edit-name"
-                unstyled
-                className="min-w-0 flex-1 border-0 bg-transparent p-[var(--vds-space-0)] font-[inherit] text-[12.5px] text-[var(--text)] outline-none"
-                onChange={(event) => setName(event.target.value)}
-              />
-            </div>
-            <Label>{t('project.source')}</Label>
-            <DialogDescription>{t('project.sourceHint')}</DialogDescription>
-            <div className="break-all [padding:8px_10px] [border-radius:8px] [background:var(--bg-3)] [font-family:var(--font-mono)] [font-size:10.5px] [color:var(--text-2)]">{target.project?.path}</div>
-          </>
-        ) : (
-          <FormField id="project-name" className="gap-[var(--vds-space-2)]">
+        <div className="grid min-w-0 gap-[var(--vds-space-3)] font-[family-name:var(--vds-font-main)]">
+          <FormField id="project-name" className="!gap-[var(--vds-space-2)]">
             <div className="flex items-baseline justify-between gap-[var(--vds-space-2)]">
-              <FormLabel required>{t('project.name')}</FormLabel>
-              <span className="text-[length:var(--vds-font-caption)] tabular-nums text-[var(--vds-text-tertiary)]">
+              <FormLabel required className={FIELD_LABEL_CLASS_NAME}>
+                {t('project.nameLabel')}
+              </FormLabel>
+            </div>
+            <div className="relative min-w-0">
+              <FormControl invalid={Boolean(error)}>
+                <Input
+                  size="md"
+                  className={`${FIELD_INPUT_CLASS_NAME} !pr-[calc(var(--vds-space-10)+var(--vds-space-4))]`}
+                  aria-describedby="project-name-count"
+                  value={name}
+                  data-testid={editing ? 'project-edit-name' : 'project-create-name'}
+                  disabled={busy || Boolean(createdProject.current)}
+                  maxLength={PROJECT_NAME_MAX}
+                  placeholder={t('project.placeholder')}
+                  autoComplete="off"
+                  onChange={(event) => {
+                    setName(event.target.value)
+                    if (error) setError(null)
+                  }}
+                />
+              </FormControl>
+              <span
+                id="project-name-count"
+                className="pointer-events-none absolute right-[var(--vds-space-3)] top-1/2 -translate-y-1/2 text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-[var(--vds-fw-regular)] tabular-nums text-[var(--vds-text-placeholder)]"
+              >
                 {name.length}/{PROJECT_NAME_MAX}
               </span>
             </div>
-            <FormControl invalid={Boolean(error)}>
-              <Input
-                value={name}
-                maxLength={PROJECT_NAME_MAX}
-                placeholder={t('project.placeholder')}
-                autoComplete="off"
-                onChange={(event) => {
-                  setName(event.target.value)
-                  if (error) setError(null)
-                }}
-              />
-            </FormControl>
             {error && (
-              <FormMessage>
-                {'messageKey' in error ? t(error.messageKey) : error.text}
-              </FormMessage>
+              <FormMessage>{'messageKey' in error ? t(error.messageKey) : error.text}</FormMessage>
             )}
           </FormField>
-        )}
+
+          <FormField id="project-description" className="!gap-[var(--vds-space-2)]">
+            <FormLabel className={FIELD_LABEL_CLASS_NAME}>
+              {t('project.descriptionLabel')}
+            </FormLabel>
+            <div className="relative min-w-0">
+              <FormControl>
+                <Textarea
+                  className="!h-[var(--vds-project-form-description-height)] !min-h-[var(--vds-project-form-description-height)] resize-none !px-[var(--vds-space-3)] !pt-[calc(var(--vds-space-1)+var(--vds-border-width-1))] !pb-[var(--vds-space-6)] !text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-control-label-line-height)] !font-[var(--vds-fw-regular)]"
+                  value={description}
+                  maxLength={PROJECT_DESCRIPTION_MAX}
+                  aria-describedby="project-description-count"
+                  placeholder={layoutText('descriptionPlaceholder')}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              </FormControl>
+              <span
+                id="project-description-count"
+                className="pointer-events-none absolute right-[var(--vds-space-3)] bottom-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-[var(--vds-fw-regular)] tabular-nums text-[var(--vds-text-placeholder)]"
+              >
+                {description.length}/{PROJECT_DESCRIPTION_MAX}
+              </span>
+            </div>
+          </FormField>
+
+          <FormField id="project-folder" className="!gap-[var(--vds-space-2)]">
+            <div className="flex items-center gap-[var(--vds-space-1)]">
+              <FormLabel className={FIELD_LABEL_CLASS_NAME}>{t('project.folderLabel')}</FormLabel>
+              <Tooltip content={layoutText('rootHint')}>
+                <IconButton
+                  variant="ghost"
+                  size="xs"
+                  className="!size-[var(--vds-icon-8)] !min-w-0 !p-0 !text-[var(--vds-icon-outline-default)] [&_svg]:!size-[var(--vds-icon-8)]"
+                  label={layoutText('rootHint')}
+                  icon={<Info />}
+                />
+              </Tooltip>
+            </div>
+            <div className="flex items-center gap-[var(--vds-space-2)]">
+              <div className="min-w-0 flex-1">
+                <FormControl>
+                  <Input
+                    size="md"
+                    className={FIELD_INPUT_CLASS_NAME}
+                    disabled
+                    value={displayedFolder}
+                    title={displayedFolder}
+                  />
+                </FormControl>
+              </div>
+              {!editing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="!h-[var(--vds-control-height-md)] shrink-0 !gap-[calc(var(--vds-space-1)+var(--vds-space-half))] !border-[var(--vds-divider-default)] !leading-[var(--vds-control-label-line-height)] !font-[var(--vds-fw-regular)]"
+                  disabled={busy || Boolean(createdProject.current)}
+                  onClick={() => {
+                    void window.scholarseed
+                      .pickDir()
+                      .then((selected) => {
+                        if (selected) setFolder(selected)
+                      })
+                      .catch(() => setError({ messageKey: 'project.createFailed' }))
+                  }}
+                >
+                  <Folder />
+                  {layoutText('chooseFolder')}
+                </Button>
+              )}
+            </div>
+          </FormField>
+        </div>
+
+        <AlertDialog open={confirmFolder} onOpenChange={setConfirmFolder}>
+          <AlertDialogPortal>
+            <AlertDialogContent
+              showCloseButton
+              overlayClassName={CONFIRM_OVERLAY_CLASS_NAME}
+              className={CONFIRM_DIALOG_CLASS_NAME}
+            >
+              <AlertDialogHeader>
+                <AlertDialogTitle>{layoutText('trustFolder')}</AlertDialogTitle>
+                <AlertDialogDescription>{layoutText('trustFolderHint')}</AlertDialogDescription>
+              </AlertDialogHeader>
+              <p className="break-all">{folder}</p>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t('project.cancel')}</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    setConfirmFolder(false)
+                    void create()
+                  }}
+                >
+                  {layoutText('trustCreate')}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialogPortal>
+        </AlertDialog>
 
         {editing && error && (
           <Alert
@@ -184,58 +324,28 @@ export function ProjectForm({
           />
         )}
 
-        <DialogFooter className="mt-[var(--vds-space-4)]">
-          {editing && (
-            <Button
-              type="button"
-              data-testid="project-remove"
-              disabled={busy}
-              onClick={() => setConfirmRemove(true)}
-              size="sm"
-              variant="danger"
-            >
-              {t('project.removeTitle')}
-            </Button>
+        <DialogFooter>
+          {footerLeading && (
+            <div className="mr-auto">
+              {typeof footerLeading === 'function' ? footerLeading(busy) : footerLeading}
+            </div>
           )}
-          <Button type="button" onClick={onClose} disabled={busy} variant="outline">{t('project.cancel')}</Button>
+          <Button type="button" onClick={onCancel ?? onClose} disabled={busy} variant="outline">
+            {t('project.cancel')}
+          </Button>
           <Button
             type="button"
             data-testid={editing ? 'project-save' : 'project-create'}
             disabled={busy}
-            onClick={() => void (editing ? save() : create())}
+            onClick={() => {
+              if (!editing && folder && name.trim() && !createdProject.current)
+                setConfirmFolder(true)
+              else void (editing ? save() : create())
+            }}
           >
             {t(busy ? 'project.busy' : editing ? 'project.save' : 'project.create')}
           </Button>
         </DialogFooter>
-
-        {confirmRemove && (
-          <AlertDialog open onOpenChange={(open) => !open && setConfirmRemove(false)}>
-            <AlertDialogContent
-              aria-label={t('project.removeTitle')}
-              className={CONFIRM_DIALOG_CLASS_NAME}
-              overlayClassName={CONFIRM_OVERLAY_CLASS_NAME}
-            >
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t('project.removeTitle')}</AlertDialogTitle>
-                <AlertDialogDescription>
-                  <Trans t={t} ns="components" i18nKey="project.confirm" values={{ name: target.project?.name ?? '' }} components={{ b: <b /> }} />
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <Alert tone="warning" description={t('project.safety')} />
-              <AlertDialogFooter>
-                <AlertDialogCancel disabled={busy}>{t('project.cancel')}</AlertDialogCancel>
-                <AlertDialogAction
-                  data-testid="project-remove-confirm"
-                  disabled={busy}
-                  onClick={() => void remove()}
-                  variant="danger"
-                >
-                  {t(busy ? 'project.removing' : 'project.remove')}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        )}
       </DialogContent>
     </Dialog>
   )

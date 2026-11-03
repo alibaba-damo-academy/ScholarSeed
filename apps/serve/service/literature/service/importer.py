@@ -9,7 +9,11 @@ from hashlib import sha256
 from uuid import uuid4
 
 from service.content.domain.model import ContentError
-from service.literature.domain.model import IMPORT_CONFLICT, MAX_IMPORT_BYTES
+from service.literature.domain.model import (
+    IMPORT_CONFLICT,
+    MAX_BATCH_RECORDS,
+    MAX_IMPORT_BYTES,
+)
 from service.literature.persistence.imports import ImportReceipt, LiteratureImports
 from service.literature.schema import (
     UNFILED_COLLECTION,
@@ -36,8 +40,6 @@ RIS_SUFFIXES = frozenset({".ris"})
 #: PDF 扩展名。
 PDF_SUFFIXES = frozenset({".pdf"})
 
-#: 单次导入的题录上限, 防止一个巨大的 bib 拖垮请求。
-MAX_RECORDS_PER_IMPORT = 2000
 MAX_BIBLIOGRAPHY_BYTES = 2 * 1024 * 1024
 PDF_FILETYPE = "pdf"
 INVALID_PDF = "invalid_pdf"
@@ -133,7 +135,7 @@ def parse_import(name: str, payload: bytes) -> ImportOutcome:
     if parser is None:
         raise LiteratureImportError("unsupported_format")
     records = parser.parse(payload, name)
-    if len(records) > MAX_RECORDS_PER_IMPORT:
+    if len(records) > MAX_BATCH_RECORDS:
         raise LiteratureImportError(TOO_MANY_RECORDS)
     items_list: list[LiteratureItem] = []
     for record in records:
@@ -159,6 +161,7 @@ class LiteratureImportPlan:
     name: str
     sha256: str
     outcome: ImportOutcome
+    collection_id: str = ""
 
 
 def plan_artifact_import(
@@ -167,6 +170,7 @@ def plan_artifact_import(
     payload: bytes,
     operation_id: str | None = None,
     collection: str = "",
+    collection_id: str = "",
 ) -> LiteratureImportPlan:
     """Bind an explicit artifact version and filename, without filesystem writes.
 
@@ -183,9 +187,13 @@ def plan_artifact_import(
     collection = collection.strip()
     if collection == UNFILED_COLLECTION:
         collection = ""
-    identity = [source_key, name, digest]
+    if collection and collection_id:
+        raise LiteratureImportError(IMPORT_CONFLICT)
+    identity: list[str | dict[str, str]] = [source_key, name, digest]
     if collection:
         identity.append(collection)
+    if collection_id:
+        identity.append({"collection_id": collection_id})
     fingerprint = sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
     outcome = parse_import(name, payload)
     return LiteratureImportPlan(
@@ -196,6 +204,7 @@ def plan_artifact_import(
         replace(
             outcome, items=tuple(replace(item, collection=collection) for item in outcome.items)
         ),
+        collection_id,
     )
 
 
@@ -223,6 +232,7 @@ def import_from_bytes(
             plan.fingerprint,
             ((ImportSourceContent(name, payload, "application/octet-stream"), outcome.items),),
             outcome.skipped,
+            collection_id=plan.collection_id,
         )
         return imports.finish(project_id, plan.operation_id, plan.fingerprint)
     except ContentError as error:
@@ -249,7 +259,7 @@ def import_from_paths(
 
     if not sources:
         raise LiteratureImportError("sources_required")
-    if len(sources) > MAX_RECORDS_PER_IMPORT:
+    if len(sources) > MAX_BATCH_RECORDS:
         raise LiteratureImportError(TOO_MANY_RECORDS)
 
     imports = LiteratureImports(content)
@@ -277,7 +287,7 @@ def import_from_paths(
                 raise LiteratureImportError("import_too_large")
             outcome = parse_import(source.name, source.content)
             total_records += len(outcome.items) + outcome.skipped
-            if total_records > MAX_RECORDS_PER_IMPORT:
+            if total_records > MAX_BATCH_RECORDS:
                 raise LiteratureImportError(TOO_MANY_RECORDS)
             admitted.append((source, outcome))
         if operation_id is None:

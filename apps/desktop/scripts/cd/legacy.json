@@ -1,0 +1,10 @@
+{
+  "build": "202610091639",
+  "commit": "b8a938849f0be71d7b3d92830b8a4988722435d7",
+  "source": "https://scholarseed.damo.alibaba.com/api/v1/updates/download/0.2.0/windows/amd64?build_number=202610091639",
+  "installerSha256": "76c32c4aacdfa97015fde9047fff233cf7d2d8fac0b8a105e7e7e1fa798f32da",
+  "uninstallerSha256": "4510a9b6a6afefaaced4bf0049a8d2d56fb2ab1dd26c860308e13274437a7bd9",
+  "productSha256": "f3d19d34b0e4296d499cdf8f9a4e21993a39e71769c0d9e63018e021042fd912",
+  "asarSha256": "d50d0ffe38a4d655b0e20976ccb85beacdf4137cb615941fbb5509e1a7851a2f",
+  "inventorySha256": "85c37e1163e8f10cdd7a20a2231478222f3e7cc2676c4deacc7257c0c24b10b7"
+}

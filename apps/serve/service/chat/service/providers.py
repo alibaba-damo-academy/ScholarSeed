@@ -6,7 +6,8 @@ their own credential, and activates the resulting connection.
 
 Adding a vendor is adding one declaration below — no branch anywhere reads a specific
 ``id``. Every ``base_url`` host here must also be registered in
-``wiki/architecture/network.md`` §2.1; the contract gate enforces that.
+``apps/serve/docs/network.md`` (preset recipient registration); the contract gate
+enforces host presence, not runtime authorization.
 
 Vendor knowledge is product-level, so it lives in Serve rather than in DamoAgent: the
 runtime contract package must not learn about "DashScope" or "OpenRouter".

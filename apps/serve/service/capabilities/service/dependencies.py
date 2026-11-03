@@ -34,6 +34,7 @@ from service.capabilities.service.source import (
     load_source_lock,
     verify_source_locked_pack,
 )
+from service.platform.storage import filesystem_path
 
 DEPENDENCY_FIELDS = frozenset(
     {
@@ -92,6 +93,7 @@ def declaration(value: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _inputs(lock_path: Path, root: Path) -> dict[str, Any]:
+    lock_path, root = filesystem_path(lock_path), filesystem_path(root)
     candidate = json.loads(lock_path.read_bytes())
     if isinstance(candidate, dict) and candidate.get("source") == LOCK_SOURCE:
         lock = load_source_lock(lock_path)
@@ -150,6 +152,7 @@ def _python(arguments: list[str], *, installing: bool = False) -> None:
 def provision_dependencies(
     lock_path: Path, root: Path, toolchain_root: Path | None = None
 ) -> dict[str, Any]:
+    root = filesystem_path(root)
     lock = _inputs(lock_path, root)
     requirements = sorted(
         {spec for row in lock["skills"] for spec in row["dependencies"].get("python", [])}
@@ -262,6 +265,7 @@ def _bundled_executables(
 def verify_dependencies(
     lock_path: Path, root: Path, toolchain_root: Path | None = None
 ) -> dict[str, Any]:
+    root = filesystem_path(root)
     lock = _inputs(lock_path, root)
     _python(["-m", "pip", "check"])
     results = []

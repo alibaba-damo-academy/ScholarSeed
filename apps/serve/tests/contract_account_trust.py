@@ -15,9 +15,9 @@ import logging
 import os
 import re
 import sys
-import tempfile
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -30,7 +30,10 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
-_HOME = Path(tempfile.mkdtemp(prefix="rp-account-trust-home-"))
+from ._directories import directory
+
+_FIXTURES = ExitStack()
+_HOME = _FIXTURES.enter_context(directory("rp-account-trust-home-"))
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
 
 from tests._isolate import isolate_research_db  # noqa: E402
@@ -39,7 +42,6 @@ _RESEARCH_DB = isolate_research_db()
 
 from service.bootstrap import create_app  # noqa: E402
 from service.chat.api.sessions import ARTIFACT_EDITABLE_HEADER  # noqa: E402
-from service.cli.serve import AUTH_MODE_CHOICES, AUTH_MODE_ENFORCED  # noqa: E402
 from service.identity.api.routes import register_auth  # noqa: E402
 from service.identity.persistence.tokens import TokenRepository  # noqa: E402
 from service.identity.persistence.users import UserRepository  # noqa: E402
@@ -56,7 +58,9 @@ from service.identity.service.account import (  # noqa: E402
 )
 from service.identity.service.account_token import AccountTokenHolder  # noqa: E402
 from service.identity.service.auth import AuthService  # noqa: E402
+from service.identity.service.policy import AUTH_MODE_CHOICES, AUTH_MODE_ENFORCED  # noqa: E402
 from service.identity.utils import LOCAL_USER_ID, request_user_id  # noqa: E402
+from service.platform.activity import Activities  # noqa: E402
 
 PASS, FAIL = 0, 0
 
@@ -225,6 +229,7 @@ def build_trust(
         client=stub.client(),
         clock=clock or Clock(),
         spawn=spawn,
+        activities=Activities(),
     )
 
 
@@ -356,7 +361,7 @@ def test_transport_failure_logs_cause_chain_without_credentials() -> None:
     print("[5b] 传输失败日志保留异常链/errno 且不泄露凭据")
     signer = Signer()
     token = signer.token()
-    trust = AccountTrust(ACCOUNT_BASE, client=FailingClient())
+    trust = AccountTrust(ACCOUNT_BASE, client=FailingClient(), activities=Activities())
     capture = LogCapture()
     account_logger = logging.getLogger(ACCOUNT_LOGGER)
     account_logger.addHandler(capture)
@@ -476,7 +481,13 @@ def _protected_app(trust: AccountTrust) -> TestClient:
     def probe() -> Dict[str, str]:
         return {"ok": "yes"}
 
-    register_auth(app, enabled=True, service=AuthService(account=trust), mode=ACCOUNT_MODE)
+    register_auth(
+        app,
+        enabled=True,
+        service=AuthService(account=trust),
+        mode=ACCOUNT_MODE,
+        activities=Activities(),
+    )
     return TestClient(app)
 
 
@@ -532,6 +543,7 @@ def test_logout_drops_the_in_memory_token() -> None:
         service=AuthService(account=build_trust(AccountStub(signer))),
         account_tokens=holder,
         mode=ACCOUNT_MODE,
+        activities=Activities(),
     )
     client = TestClient(app)
 
@@ -569,6 +581,7 @@ def test_off_mode_projects_account_identity() -> None:
         enabled=False,
         service=AuthService(account=build_trust(AccountStub(signer))),
         account_tokens=holder,
+        activities=Activities(),
     )
     client = TestClient(app)
 
@@ -606,7 +619,12 @@ def test_preflight_not_blocked() -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    register_auth(app, enabled=True, service=AuthService(account=build_trust(AccountStub(signer))))
+    register_auth(
+        app,
+        enabled=True,
+        service=AuthService(account=build_trust(AccountStub(signer))),
+        activities=Activities(),
+    )
     client = TestClient(app)
 
     preflight = client.options(
@@ -645,8 +663,9 @@ def test_unauthorized_is_readable_cross_origin() -> None:
     print("[9] 真 create_app 的 401 带 CORS 头, 跨源前端读得到状态码")
     cases = _HOME / "cases"
     cases.mkdir(exist_ok=True)
-    app = create_app(cases_root=cases, auth=True, auth_mode=ACCOUNT_MODE)
-    denied = TestClient(app).get("/api/content/projects", headers={"origin": DEV_ORIGIN})
+    app = create_app(cases, auth=True, auth_mode=ACCOUNT_MODE)
+    with TestClient(app) as client:
+        denied = client.get("/api/content/projects", headers={"origin": DEV_ORIGIN})
     check("无凭据 401", denied.status_code == 401, f"got {denied.status_code}")
     # 鉴权 middleware 是直接 return 401 不进内层的: CORS 必须包在它外面 (在 create_app 里
     # 最后注册), 否则浏览器拿到一个没 CORS 头的响应 → fetch 抛"Failed to fetch" →
@@ -672,7 +691,7 @@ def test_revision_headers_are_readable_cross_origin() -> None:
     print("[10] 真 create_app 暴露工作台响应头, 跨源 renderer 能确认文件状态")
     cases = _HOME / "etag-cases"
     cases.mkdir(exist_ok=True)
-    app = create_app(cases_root=cases, auth=False)
+    app = create_app(cases, auth=False)
 
     @app.get("/api/probe-etag")
     def probe_etag() -> Response:
@@ -684,7 +703,8 @@ def test_revision_headers_are_readable_cross_origin() -> None:
             }
         )
 
-    response = TestClient(app).get("/api/probe-etag", headers={"origin": DEV_ORIGIN})
+    with TestClient(app) as client:
+        response = client.get("/api/probe-etag", headers={"origin": DEV_ORIGIN})
     exposed = {
         header.strip().lower()
         for header in response.headers.get("access-control-expose-headers", "").split(",")
@@ -721,14 +741,14 @@ def test_status_projection() -> None:
 
     # Hosted mode remains explicit even when its service URL is not configured.
     # 前端据此直接显示「账号服务地址未配置」，而不是给一个点了没反应的登录表单。
-    silent = _protected_app(AccountTrust(""))
+    silent = _protected_app(AccountTrust("", activities=Activities()))
     fallback = silent.get("/api/auth/status").json()
     check("未配地址仍报 account", fallback.get("mode") == ACCOUNT_MODE, str(fallback))
     check("未配地址时地址为空", fallback.get("account_base_url") == "", str(fallback))
 
     # account 腿没挂上（None）时按 provider 决议走，不无端冒出 account 模式
     bare = FastAPI()
-    register_auth(bare, enabled=True, service=AuthService())
+    register_auth(bare, enabled=True, service=AuthService(), activities=Activities())
     bare_body = TestClient(bare).get("/api/auth/status").json()
     check("未挂 account 腿时回落 provider", bare_body.get("mode") != ACCOUNT_MODE, str(bare_body))
 
@@ -744,8 +764,9 @@ def test_product_app_env_wiring() -> None:
     cases.mkdir(exist_ok=True)
     os.environ[ACCOUNT_BASE_URL_ENV] = ACCOUNT_BASE
     try:
-        app = create_app(cases_root=cases, auth=True, auth_mode=ACCOUNT_MODE)
-        body = TestClient(app).get("/api/auth/status").json()
+        app = create_app(cases, auth=True, auth_mode=ACCOUNT_MODE)
+        with TestClient(app) as client:
+            body = client.get("/api/auth/status").json()
     finally:
         os.environ.pop(ACCOUNT_BASE_URL_ENV, None)
     check("mode=account", body.get("mode") == ACCOUNT_MODE, str(body))
@@ -881,4 +902,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        _FIXTURES.close()

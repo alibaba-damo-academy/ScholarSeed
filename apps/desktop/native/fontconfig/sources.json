@@ -1,0 +1,35 @@
+{
+  "emscripten": {
+    "version": "3.1.65",
+    "sdk": "fdcf56c75a1d27fdff6525a7e03423595485ca19"
+  },
+  "zetaSource": "https://github.com/LibreOffice/core/tree/dced3bc711d18407a2cc2400eb46e8261b663d95",
+  "archives": [
+    {
+      "name": "fontconfig-2.14.2.tar.xz",
+      "url": "https://dev-www.libreoffice.org/src/fontconfig-2.14.2.tar.xz",
+      "bytes": 1440844,
+      "sha256": "dba695b57bce15023d2ceedef82062c2b925e51f5d4cc4aef736cf13f60a468b"
+    },
+    {
+      "name": "freetype-2.13.0.tar.xz",
+      "url": "https://dev-www.libreoffice.org/src/freetype-2.13.0.tar.xz",
+      "bytes": 2492440,
+      "sha256": "5ee23abd047636c24b2d43c6625dcafc66661d1aca64dec9e0d05df29592624c"
+    },
+    {
+      "name": "libxml2-2.12.10.tar.xz",
+      "url": "https://dev-www.libreoffice.org/src/libxml2-2.12.10.tar.xz",
+      "bytes": 2483708,
+      "sha256": "c3d8c0c34aa39098f66576fe51969db12a5100b956233dc56506f7a8679be995"
+    }
+  ],
+  "patches": {
+    "external_fontconfig_fontconfig-2.12.1.patch.1": "540a87a49ef58d796c57f133a508f4549587175f8d290ef8effb7ad382519887",
+    "external_fontconfig_libfontconfig-bundled-soname.patch.0": "bcf8a25c0653d7249789a6a3e05ab7e5e1c2ddeaa6d41328360c9f7a9e35a87f",
+    "external_fontconfig_ubsan.patch": "148ee52375430d7bd978b01a7767a2bb923dadd02a6bc8c1c783c61e824851bb",
+    "external_freetype_freetype-2.6.5.patch.1": "88fb813299d221c173c6c091d1346dce8a65eba3e3da37c962813dfece47766c",
+    "external_freetype_freetype-fd-hack.patch.0": "32fb4914b445b0367db01fd3a7127c3873836637c7fe6674ef773d05ff4b99b1",
+    "external_freetype_ubsan.patch": "04a07f7bc8f58f16cb83e345a64ef5c4dfeed0c3d512d0562dc1842d2c40a7b1"
+  }
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
+from service.platform.activity import Activities
 from service.platform.resources import (
     PendingOrigin,
     ReviewAction,
@@ -24,11 +26,11 @@ from service.platform.resources import (
     TurnOutcome,
 )
 from service.resources.api.versions import register_version_routes
-from service.resources.persistence.version import VersionStore
+from service.resources.persistence.version import VersionStore, VersionStoreConflict
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.batch import ResourceReviewBatchError, ResourceReviewBatchService
 from service.resources.service.delivery import ResourceDeliveryService
-from service.resources.service.history import ResourceVersionService
+from service.resources.service.history import ResourceVersionError, ResourceVersionService
 from service.resources.service.migration import ResourceReviewMigration
 from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.recovery import ResourceRecoveryService
@@ -58,6 +60,27 @@ class Settings:
 
 
 class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recovered_runtime_tool_event_is_durable_and_idempotent(self) -> None:
+        await self.delivery.begin_turn("session", "replay", self.project.root)
+        await self.delivery.bind_turn("session", "replay", "native-replay", "generation")
+        for _ in range(2):
+            await self.delivery.record_tool_call(
+                "session",
+                "native-replay",
+                {"command": "same"},
+                generation="generation",
+                event_id="original-runtime-event",
+            )
+        self.assertEqual(len(self.store.turn_tool_calls("session", "replay")), 1)
+        with self.assertRaisesRegex(VersionStoreConflict, "runtime_event_conflict"):
+            await self.delivery.record_tool_call(
+                "session",
+                "native-replay",
+                {"command": "different"},
+                generation="generation",
+                event_id="original-runtime-event",
+            )
+
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
@@ -65,7 +88,7 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "catalog.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("review batches")
         self.policy = WorkbenchFormatPolicy()
         self.settings = Settings()
@@ -76,9 +99,15 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.recovery = ResourceRecoveryService(self.content, self.retention, self.annotations)
         self.supervisor = ResourceVersionSupervisor(
-            self.content, self.versions, self.policy, self.settings
+            self.content,
+            self.versions,
+            self.policy,
+            self.settings,
+            activities=Activities(),
         )
-        self.delivery = ResourceDeliveryService(self.content, self.versions, self.supervisor)
+        self.delivery = ResourceDeliveryService(
+            self.content, self.versions, self.supervisor, activities=self.supervisor._activities
+        )
         self.batches = ResourceReviewBatchService(self.content, self.versions, self.recovery)
         self.supervisor.bind_preparation(
             ResourceActivation(
@@ -327,7 +356,7 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.paths, ("resources/新建.md",))
         self.assertIs(batch.members[0].origin, PendingOrigin.AGENT)
 
-    async def test_turn_candidate_inventory_excludes_git_repository_files(self) -> None:
+    async def test_turn_candidate_inventory_excludes_git_and_preserves_external_bytes(self) -> None:
         ordinary = Path(self.project.root) / "resources/ordinary.md"
         ordinary.parent.mkdir(parents=True, exist_ok=True)
         ordinary.write_bytes(b"ordinary")
@@ -341,6 +370,20 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         inventory = self.store.turn_inventory("session", "git-inventory")
         self.assertIn("resources/ordinary.md", inventory)
         self.assertNotIn("resources/code/tracked.md", inventory)
+        baselines = self.store.turn_baselines("session", "git-inventory")
+        self.assertEqual(tuple(item.path for item in baselines), ("resources/ordinary.md",))
+
+        await self.delivery.bind_turn("session", "git-inventory", "git-inventory", "generation")
+        ordinary.write_bytes(b"ordinary changed")
+        (repository / "tracked.md").write_bytes(b"tracked changed")
+        for target in (ordinary, repository / "tracked.md"):
+            await self.delivery.record_change(
+                "session", "git-inventory", str(target), "update", generation="generation"
+            )
+        result = await self.delivery.finish_turn("session", "git-inventory", TurnOutcome.COMPLETED)
+        self.assertEqual(result.paths, ("resources/ordinary.md",))
+        self.assertEqual(self.versions.history(self.project.id, "resources/code/tracked.md"), ())
+        self.assertEqual((repository / "tracked.md").read_bytes(), b"tracked changed")
 
     async def test_agent_file_with_later_external_bytes_remains_in_review_batch(self) -> None:
         file_id = self._seed("resources/mixed.md", b"base")
@@ -466,7 +509,15 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reconcile.call_count, 0)
         self.assertEqual(completed.batch.state, ReviewBatchState.COMPLETED)
         self.assertEqual(target.read_bytes(), b"base")
-        self.assertEqual(len(self.store.history_for_file(file_id)), 1)
+        history = self.store.history_for_file(file_id)
+        self.assertEqual(
+            [version.origin.value for version in history],
+            ["restore", "external_confirmed", "initial_scan"],
+        )
+        self.assertTrue(history[1].review_backup)
+        self.assertEqual(
+            b"".join(self.versions.content(self.project.id, history[1].id)[0]), b"external"
+        )
 
     async def test_failed_member_can_be_redecided_before_retry(self) -> None:
         file_id = self._seed("resources/redecide.md", b"base")
@@ -621,7 +672,9 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revised.batch.state, ReviewBatchState.COMPLETED)
         self.assertEqual(self.store.history_for_file(file_id)[0].review_outcome.value, "revised")
 
-    async def test_accept_can_version_the_actual_externally_changed_file(self) -> None:
+    async def test_accept_restores_and_versions_agent_candidate_after_external_change(
+        self,
+    ) -> None:
         file_id = self._seed("resources/external.md", b"base")
         receipt = await self._capture("external", {"resources/external.md": b"candidate"})
         member = self.batches.batch(self.project.id, receipt.batch_id).members[0]
@@ -641,6 +694,250 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             "accept-external",
+        )
+        self.assertEqual(completed.batch.state, ReviewBatchState.COMPLETED)
+        self.assertEqual(target.read_bytes(), b"candidate")
+        history = self.store.history_for_file(file_id)
+        self.assertEqual(history[0].review_outcome.value, "accepted")
+        self.assertTrue(history[1].review_backup)
+        self.assertEqual(
+            b"".join(self.versions.content(self.project.id, history[1].id)[0]), b"external final"
+        )
+        self.assertNotIn(history[1].id, self.store.retention_plan(1)[0])
+
+    async def test_accept_external_revision_preserves_a_later_external_edit(self) -> None:
+        file_id = self._seed("resources/stale-external-accept.md", b"base")
+        receipt = await self._capture(
+            "stale-external-accept", {"resources/stale-external-accept.md": b"candidate"}
+        )
+        member = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        target = Path(self.project.root) / member.path
+        target.write_bytes(b"external revision")
+        current_revision = self.batches.content(
+            self.project.id, receipt.batch_id, file_id, "current"
+        )[2]
+        target.write_bytes(b"later external edit")
+
+        failed = self.batches.commit(
+            self.project.id,
+            receipt.batch_id,
+            (
+                ReviewBatchDecision(
+                    file_id,
+                    member.review_id,
+                    member.pending_revision,
+                    ReviewAction.ACCEPT,
+                    current_revision,
+                ),
+            ),
+            "accept-stale-external-revision",
+        )
+
+        self.assertEqual(failed.batch.state, ReviewBatchState.FAILED)
+        self.assertEqual(failed.batch.members[0].error, "review_disk_revision_conflict")
+        self.assertEqual(target.read_bytes(), b"later external edit")
+
+    async def test_revise_applies_submitted_draft_only_at_commit_and_backs_up_disk(self) -> None:
+        file_id = self._seed("resources/draft.md", b"base")
+        receipt = await self._capture("draft", {"resources/draft.md": b"candidate"})
+        member = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        target = Path(self.project.root) / member.path
+        target.write_bytes(b"external")
+        current_revision = self.batches.content(
+            self.project.id, receipt.batch_id, file_id, "current"
+        )[2]
+        decision = ReviewBatchDecision(
+            file_id,
+            member.review_id,
+            member.pending_revision,
+            ReviewAction.REVISE,
+            current_revision,
+            b"external plus review edits",
+        )
+        self.assertEqual(target.read_bytes(), b"external")
+        completed = self.batches.commit(
+            self.project.id, receipt.batch_id, (decision,), "submit-draft"
+        )
+        self.assertEqual(completed.batch.state, ReviewBatchState.COMPLETED)
+        self.assertEqual(target.read_bytes(), b"external plus review edits")
+        history = self.store.history_for_file(file_id)
+        self.assertEqual(history[0].review_outcome.value, "revised")
+        self.assertTrue(history[1].review_backup)
+        self.assertEqual(
+            b"".join(self.versions.content(self.project.id, history[1].id)[0]), b"external"
+        )
+        replay = self.batches.commit(self.project.id, receipt.batch_id, (decision,), "submit-draft")
+        self.assertEqual(replay.batch.state, ReviewBatchState.COMPLETED)
+        self.assertEqual(self.store.history_for_file(file_id), history)
+
+    async def test_http_commit_decodes_revised_content_without_precommit_write(self) -> None:
+        file_id = self._seed("resources/http-draft.md", b"base")
+        receipt = await self._capture("http-draft", {"resources/http-draft.md": b"candidate"})
+        member = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        target = Path(self.project.root) / member.path
+        target.write_bytes(b"external")
+        expected = self.batches.content(self.project.id, receipt.batch_id, file_id, "current")[2]
+        app = FastAPI()
+        app.state.resource_versions = self.versions
+        app.state.resource_recovery = self.recovery
+        app.state.resource_review_batches = self.batches
+        register_version_routes(app)
+        with TestClient(app) as client:
+            result = client.post(
+                f"/api/resource/review-batches/{receipt.batch_id}/commit",
+                params={"project": self.project.id},
+                headers={"Idempotency-Key": "http-draft"},
+                json={
+                    "decisions": [
+                        {
+                            "file_id": file_id,
+                            "review_id": member.review_id,
+                            "pending_revision": member.pending_revision,
+                            "action": "revise",
+                            "expected_disk_revision": expected,
+                            "revised_content": base64.b64encode(b"review draft").decode("ascii"),
+                        }
+                    ]
+                },
+            )
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(target.read_bytes(), b"review draft")
+
+    async def test_revise_retry_after_draft_write_does_not_duplicate_backup(self) -> None:
+        file_id = self._seed("resources/retry-draft.md", b"base")
+        receipt = await self._capture("retry-draft", {"resources/retry-draft.md": b"candidate"})
+        member = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        target = Path(self.project.root) / member.path
+        target.write_bytes(b"external")
+        current_revision = self.batches.content(
+            self.project.id, receipt.batch_id, file_id, "current"
+        )[2]
+        first = ReviewBatchDecision(
+            file_id,
+            member.review_id,
+            member.pending_revision,
+            ReviewAction.REVISE,
+            current_revision,
+            b"review draft",
+        )
+        with patch.object(
+            self.versions, "seal_review", side_effect=ResourceVersionError("injected_failure")
+        ):
+            failed = self.batches.commit(self.project.id, receipt.batch_id, (first,), "draft-fails")
+        self.assertEqual(failed.batch.state, ReviewBatchState.FAILED)
+        self.assertEqual(target.read_bytes(), b"review draft")
+        replayed = self.batches.commit(self.project.id, receipt.batch_id, (first,), "draft-fails")
+        self.assertEqual(replayed.batch.state, ReviewBatchState.COMPLETED)
+        refreshed = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        second = ReviewBatchDecision(
+            file_id,
+            refreshed.review_id,
+            refreshed.pending_revision,
+            ReviewAction.REVISE,
+            current_revision,
+            b"review draft",
+        )
+        completed = self.batches.commit(self.project.id, receipt.batch_id, (second,), "draft-retry")
+        self.assertEqual(completed.batch.state, ReviewBatchState.COMPLETED)
+        self.assertEqual(
+            sum(version.review_backup for version in self.store.history_for_file(file_id)), 1
+        )
+
+    async def test_accept_all_restores_persisted_user_and_external_revisions(self) -> None:
+        first_id = self._seed("resources/accept-user.md", b"first base")
+        second_id = self._seed("resources/accept-external.md", b"second base")
+        receipt = await self._capture(
+            "accept-mixed-revisions",
+            {
+                "resources/accept-user.md": b"first candidate",
+                "resources/accept-external.md": b"second candidate",
+            },
+        )
+        members = {
+            member.file_id: member
+            for member in self.batches.batch(self.project.id, receipt.batch_id).members
+        }
+        first = members[first_id]
+        second = members[second_id]
+        saved = self.versions.commit_working(
+            self.project.id,
+            first.path,
+            b"persisted user revision",
+            first.candidate_revision,
+            "accept-user-save",
+            automatic_version=True,
+        )
+        saved_version = self.store.history_for_file(first_id)[0]
+        self.assertEqual(
+            self.versions.read(self.project.id, saved_version.id)[0], b"persisted user revision"
+        )
+        second_target = Path(self.project.root) / second.path
+        second_target.write_bytes(b"external revision")
+        second_revision = self.batches.content(
+            self.project.id, receipt.batch_id, second_id, "current"
+        )[2]
+        refreshed = {
+            member.file_id: member
+            for member in self.batches.batch(self.project.id, receipt.batch_id).members
+        }
+
+        completed = self.batches.commit(
+            self.project.id,
+            receipt.batch_id,
+            tuple(
+                ReviewBatchDecision(
+                    file_id,
+                    refreshed[file_id].review_id,
+                    refreshed[file_id].pending_revision,
+                    ReviewAction.ACCEPT,
+                    revision,
+                )
+                for file_id, revision in (
+                    (first_id, saved.revision),
+                    (second_id, second_revision),
+                )
+            ),
+            "accept-all-mixed-revisions",
+        )
+
+        self.assertEqual(
+            completed.batch.state,
+            ReviewBatchState.COMPLETED,
+            tuple((member.path, member.error) for member in completed.batch.members),
+        )
+        self.assertEqual((Path(self.project.root) / first.path).read_bytes(), b"first candidate")
+        self.assertEqual(second_target.read_bytes(), b"second candidate")
+        outcomes = {
+            version.file_id: version.review_outcome.value
+            for version in self.store.history_for_file(first_id)
+            + self.store.history_for_file(second_id)
+            if version.review_outcome is not None
+        }
+        self.assertEqual(outcomes, {first_id: "accepted", second_id: "accepted"})
+        self.assertIn(saved_version, self.store.history_for_file(first_id))
+
+    async def test_revise_can_version_the_actual_externally_changed_file(self) -> None:
+        file_id = self._seed("resources/external-revise.md", b"base")
+        receipt = await self._capture(
+            "external-revise", {"resources/external-revise.md": b"candidate"}
+        )
+        member = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        target = Path(self.project.root) / member.path
+        target.write_bytes(b"external final")
+        current = self.batches.content(self.project.id, receipt.batch_id, file_id, "current")
+        completed = self.batches.commit(
+            self.project.id,
+            receipt.batch_id,
+            (
+                ReviewBatchDecision(
+                    file_id,
+                    member.review_id,
+                    member.pending_revision,
+                    ReviewAction.REVISE,
+                    current[2],
+                ),
+            ),
+            "revise-external",
         )
         self.assertEqual(completed.batch.state, ReviewBatchState.COMPLETED)
         self.assertEqual(target.read_bytes(), b"external final")
@@ -676,6 +973,160 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(completed.batch.state, ReviewBatchState.COMPLETED)
         self.assertEqual(target.read_bytes(), b"base")
+
+    async def test_reject_all_restores_persisted_user_and_candidate_files_to_their_bases(
+        self,
+    ) -> None:
+        first_id = self._seed("resources/external-reject-first.md", b"first base")
+        second_id = self._seed("resources/external-reject-second.md", b"second base")
+        receipt = await self._capture(
+            "external-reject-all",
+            {
+                "resources/external-reject-first.md": b"first candidate",
+                "resources/external-reject-second.md": b"second candidate",
+            },
+        )
+        batch = self.batches.batch(self.project.id, receipt.batch_id)
+        members = {member.file_id: member for member in batch.members}
+        first_target = Path(self.project.root) / members[first_id].path
+        second_target = Path(self.project.root) / members[second_id].path
+        first_saved = self.versions.commit_working(
+            self.project.id,
+            members[first_id].path,
+            b"first user revision",
+            members[first_id].candidate_revision,
+            "workbench-save",
+            automatic_version=True,
+        )
+        saved_version = self.store.history_for_file(first_id)[0]
+        self.assertEqual(
+            self.versions.read(self.project.id, saved_version.id)[0], b"first user revision"
+        )
+        refreshed = self.batches.batch(self.project.id, batch.id)
+        members = {member.file_id: member for member in refreshed.members}
+
+        completed = self.batches.commit(
+            self.project.id,
+            batch.id,
+            (
+                ReviewBatchDecision(
+                    first_id,
+                    members[first_id].review_id,
+                    members[first_id].pending_revision,
+                    ReviewAction.REJECT,
+                    first_saved.revision,
+                ),
+                ReviewBatchDecision(
+                    second_id,
+                    members[second_id].review_id,
+                    members[second_id].pending_revision,
+                    ReviewAction.REJECT,
+                    members[second_id].candidate_revision,
+                ),
+            ),
+            "reject-external-all",
+        )
+
+        self.assertEqual(
+            completed.batch.state,
+            ReviewBatchState.COMPLETED,
+            tuple((member.path, member.error) for member in completed.batch.members),
+        )
+        self.assertTrue(
+            all(member.state is ReviewMemberState.COMPLETED for member in completed.batch.members)
+        )
+        self.assertEqual(first_target.read_bytes(), b"first base")
+        self.assertEqual(second_target.read_bytes(), b"second base")
+        self.assertIn(saved_version, self.store.history_for_file(first_id))
+        self.assertEqual(
+            self.versions.read(self.project.id, saved_version.id)[0], b"first user revision"
+        )
+
+    async def test_reject_persisted_user_revision_preserves_a_later_external_edit(self) -> None:
+        file_id = self._seed("resources/stale-user-reject.md", b"base")
+        receipt = await self._capture(
+            "stale-user-reject", {"resources/stale-user-reject.md": b"candidate"}
+        )
+        member = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        saved = self.versions.commit_working(
+            self.project.id,
+            member.path,
+            b"user revision",
+            member.candidate_revision,
+            "workbench-save",
+        )
+        refreshed = self.batches.batch(self.project.id, receipt.batch_id).members[0]
+        target = Path(self.project.root) / member.path
+        target.write_bytes(b"later external edit")
+
+        failed = self.batches.commit(
+            self.project.id,
+            receipt.batch_id,
+            (
+                ReviewBatchDecision(
+                    file_id,
+                    refreshed.review_id,
+                    refreshed.pending_revision,
+                    ReviewAction.REJECT,
+                    saved.revision,
+                ),
+            ),
+            "reject-stale-user-revision",
+        )
+
+        self.assertEqual(failed.batch.state, ReviewBatchState.FAILED)
+        self.assertEqual(failed.batch.members[0].error, "review_revision_conflict")
+        self.assertEqual(target.read_bytes(), b"later external edit")
+
+    async def test_reject_after_revised_version_restores_that_version(self) -> None:
+        file_id = self._seed("resources/sequential-reject.md", b"base")
+        first = await self._capture(
+            "sequential-revise", {"resources/sequential-reject.md": b"first candidate"}
+        )
+        first_member = self.batches.batch(self.project.id, first.batch_id).members[0]
+        target = Path(self.project.root) / first_member.path
+        target.write_bytes(b"first external")
+        first_current = self.batches.content(self.project.id, first.batch_id, file_id, "current")[2]
+        revised = self.batches.commit(
+            self.project.id,
+            first.batch_id,
+            (
+                ReviewBatchDecision(
+                    file_id,
+                    first_member.review_id,
+                    first_member.pending_revision,
+                    ReviewAction.REVISE,
+                    first_current,
+                ),
+            ),
+            "sequential-revise",
+        )
+        self.assertEqual(revised.batch.state, ReviewBatchState.COMPLETED)
+
+        second = await self._capture(
+            "sequential-reject", {"resources/sequential-reject.md": b"second candidate"}
+        )
+        second_member = self.batches.batch(self.project.id, second.batch_id).members[0]
+        target.write_bytes(b"second external")
+        second_current = self.batches.content(self.project.id, second.batch_id, file_id, "current")[
+            2
+        ]
+        rejected = self.batches.commit(
+            self.project.id,
+            second.batch_id,
+            (
+                ReviewBatchDecision(
+                    file_id,
+                    second_member.review_id,
+                    second_member.pending_revision,
+                    ReviewAction.REJECT,
+                    second_current,
+                ),
+            ),
+            "sequential-reject",
+        )
+        self.assertEqual(rejected.batch.state, ReviewBatchState.COMPLETED)
+        self.assertEqual(target.read_bytes(), b"first external")
 
     async def test_created_and_deleted_tombstone_contents_are_empty(self) -> None:
         await self.delivery.begin_turn("session", "create", self.project.root)

@@ -5,11 +5,12 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
 from service.platform.content import ContentPort
-from service.platform.records import RecordOwner, RecordTarget
+from service.platform.records import RecordOwner, RecordTarget, decode_records, record_revision
 
 PDF_RECORD_LINK_TABLE = "workbench_pdf_record_link"
 
@@ -29,6 +30,12 @@ class PdfRecordRow:
     record_revision: str
     source_revision: str
     payload: bytes
+
+    def records(self) -> dict[str, Any]:
+        records = decode_records(self.payload)
+        if self.record_revision != record_revision(self.source_revision, records):
+            raise ValueError("invalid PDF record revision")
+        return records
 
 
 class PdfRecordCatalog:
@@ -81,11 +88,28 @@ class PdfRecordCatalog:
                 f"SELECT owner,scope_id,subject_id FROM {PDF_RECORD_LINK_TABLE} WHERE asset_id=?",
                 (asset_id,),
             ).fetchone()
-        return (
-            RecordTarget(RecordOwner(row["owner"]), row["scope_id"], row["subject_id"])
-            if row
-            else None
-        )
+        return self._target(row) if row else None
+
+    @staticmethod
+    def _target(row: sqlite3.Row) -> RecordTarget:
+        return RecordTarget(RecordOwner(row["owner"]), row["scope_id"], row["subject_id"])
+
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Read stored documents and links without following asset or PDF paths."""
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if PDF_RECORD_TABLE in tables:
+            for row in connection.execute(f"SELECT * FROM {PDF_RECORD_TABLE}"):
+                stored = cls._row(row)
+                if stored is None:
+                    raise ValueError("missing PDF record")
+                stored.records()
+        if PDF_RECORD_LINK_TABLE in tables:
+            for row in connection.execute(f"SELECT * FROM {PDF_RECORD_LINK_TABLE}"):
+                cls._target(row)
 
     def link(self, project_id: str, asset_id: str, target: RecordTarget) -> None:
         with transaction(self._database(project_id)) as connection:

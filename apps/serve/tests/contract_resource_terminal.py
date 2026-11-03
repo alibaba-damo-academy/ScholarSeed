@@ -12,6 +12,7 @@ from service.chat.persistence.events import ProductEventStore
 from service.chat.service.terminals import TurnTerminalReader
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.platform.activity import Activities
 from service.platform.resources import ResourceTurn
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
@@ -52,7 +53,7 @@ class TerminalContract(unittest.IsolatedAsyncioTestCase):
         workspace.mkdir()
         catalog = ContentCatalog(root / "content.sqlite3")
         registry = ProjectRegistry(str(workspace), catalog)
-        self.content = ContentService(registry, catalog)
+        self.content = ContentService(registry, catalog, activities=Activities())
         self.project = registry.create("终态")
         self.path = Path(self.project.root) / "resources/notes.md"
         self.path.write_bytes(b"before\n")
@@ -62,9 +63,15 @@ class TerminalContract(unittest.IsolatedAsyncioTestCase):
             self.content, retention, WorkbenchFormatPolicy(), annotations
         )
         self.supervisor = ResourceVersionSupervisor(
-            self.content, self.versions, WorkbenchFormatPolicy(), Settings()
+            self.content,
+            self.versions,
+            WorkbenchFormatPolicy(),
+            Settings(),
+            activities=Activities(),
         )
-        self.deliveries = ResourceDeliveryService(self.content, self.versions, self.supervisor)
+        self.deliveries = ResourceDeliveryService(
+            self.content, self.versions, self.supervisor, activities=self.supervisor._activities
+        )
         self.supervisor.bind_preparation(
             ResourceActivation(
                 self.content,
@@ -126,7 +133,9 @@ class TerminalContract(unittest.IsolatedAsyncioTestCase):
         terminal = self.append("turn_completed")
         self.append("user_message", payload={"client_turn_id": "client", "binding": "bound"})
         self.assertEqual(self.read().product_seq, terminal.product_seq)
-        restarted = ResourceDeliveryService(self.content, self.versions, self.supervisor)
+        restarted = ResourceDeliveryService(
+            self.content, self.versions, self.supervisor, activities=self.supervisor._activities
+        )
         restarted.bind_terminals(self.reader)
         with patch.object(self.content, "stable_snapshot", side_effect=AssertionError("late read")):
             restarted.recover_project(self.project.id, self.project.root)

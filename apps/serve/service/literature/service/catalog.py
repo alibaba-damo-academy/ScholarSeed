@@ -1,20 +1,18 @@
-"""文献库编目：筛选、排序、分组与批量操作。
+"""文献库编目：筛选、排序与 BibTeX 导出。
 
 所有函数都是纯函数，只操作不可变的 ``LiteratureView`` / ``LiteratureItem``，
-不触碰 IO。持久化由 ``library.py`` 负责。
+不触碰 IO。持久化由 ``persistence/store.py`` 的 ``LiteratureRepository`` 负责。
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 
 from service.literature.schema import (
     RECENT_WINDOW_DAYS,
     UNFILED_COLLECTION,
-    FulltextStatus,
-    LiteratureCollection,
     LiteratureItem,
     LiteratureView,
     PublicationType,
@@ -29,15 +27,6 @@ class SortKey(str, Enum):
     AUTHORS = "authors"
     JOURNAL = "journal"
     YEAR = "year"
-
-
-class BatchAction(str, Enum):
-    """批量操作。"""
-
-    ADD_TAG = "add_tag"
-    REMOVE_TAG = "remove_tag"
-    REMOVE_ITEMS = "remove_items"
-    SET_COLLECTION = "set_collection"
 
 
 class PdfFilter(str, Enum):
@@ -153,107 +142,6 @@ def apply_query(
     return tuple(filtered)
 
 
-def collect_collections(
-    items: tuple[LiteratureItem, ...],
-    declared: tuple[LiteratureCollection, ...] = (),
-) -> tuple[LiteratureCollection, ...]:
-    """分类列表；计数从条目实时派生，结构用声明补齐。"""
-
-    counts: dict[str, int] = {UNFILED_COLLECTION: 0}
-    order: list[str] = [UNFILED_COLLECTION]
-    parents: dict[str, str] = {}
-    for item in items:
-        name = item_collection(item)
-        if name not in counts:
-            counts[name] = 0
-            order.append(name)
-        counts[name] += 1
-    for entry in declared:
-        if not entry.name:
-            continue
-        if entry.name not in counts:
-            counts[entry.name] = 0
-            order.append(entry.name)
-        if entry.parent:
-            parents[entry.name] = entry.parent
-    return tuple(
-        LiteratureCollection(name=name, count=counts[name], parent=parents.get(name, ""))
-        for name in order
-    )
-
-
-def collect_tags(items: tuple[LiteratureItem, ...]) -> tuple[tuple[str, int], ...]:
-    """按标签汇总分组，返回 (标签, 计数) 并按计数降序、名称升序排列。"""
-
-    counts: dict[str, int] = {}
-    for item in items:
-        for tag in item.tags:
-            counts[tag] = counts.get(tag, 0) + 1
-    return tuple(sorted(counts.items(), key=lambda x: (-x[1], x[0])))
-
-
-def collect_years(items: tuple[LiteratureItem, ...]) -> tuple[int, ...]:
-    """出现过的年份，倒序。"""
-
-    years = {item.year for item in items if item.year is not None}
-    return tuple(sorted(years, reverse=True))
-
-
-def collect_fulltext_counts(items: tuple[LiteratureItem, ...]) -> dict[str, int]:
-    """各全文状态的条目数。"""
-
-    counts = {status.value: 0 for status in FulltextStatus}
-    for item in items:
-        counts[item.fulltext.value] += 1
-    return counts
-
-
-def apply_batch(
-    view: LiteratureView,
-    action: BatchAction,
-    ids: tuple[str, ...],
-    tag: str = "",
-    collection: str = "",
-) -> LiteratureView:
-    """批量打标/去标/移除/改分类，返回新的库视图。"""
-
-    selected = set(ids)
-    if action is BatchAction.REMOVE_ITEMS:
-        remaining = tuple(item for item in view.items if item.id not in selected)
-        return LiteratureView(items=remaining, collections=view.collections)
-
-    if action is BatchAction.SET_COLLECTION:
-        target = collection.strip()
-        if not target:
-            return view
-        stored = "" if target == UNFILED_COLLECTION else target
-        updated = tuple(
-            (
-                replace(item, collection=stored, collections=(stored,) if stored else ())
-                if item.id in selected
-                else item
-            )
-            for item in view.items
-        )
-        return LiteratureView(items=updated, collections=view.collections)
-
-    cleaned = tag.strip()
-    if not cleaned:
-        return view
-
-    updated_items: list[LiteratureItem] = []
-    for item in view.items:
-        if item.id not in selected:
-            updated_items.append(item)
-            continue
-        if action is BatchAction.ADD_TAG:
-            tags = item.tags if cleaned in item.tags else (*item.tags, cleaned)
-        else:
-            tags = tuple(existing for existing in item.tags if existing != cleaned)
-        updated_items.append(replace(item, tags=tags))
-    return LiteratureView(items=tuple(updated_items), collections=view.collections)
-
-
 def append_items(
     view: LiteratureView,
     incoming: tuple[LiteratureItem, ...],
@@ -332,18 +220,12 @@ def to_bibtex(items: tuple[LiteratureItem, ...]) -> str:
 
 __all__ = [
     "FILTER_ALL",
-    "BatchAction",
     "ListQuery",
     "PdfFilter",
     "SortKey",
-    "apply_batch",
+    "append_items",
     "apply_query",
-    "collect_collections",
-    "collect_fulltext_counts",
-    "collect_tags",
-    "collect_years",
     "is_recent",
     "item_collection",
-    "append_items",
     "to_bibtex",
 ]

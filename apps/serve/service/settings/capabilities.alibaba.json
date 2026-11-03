@@ -8,6 +8,36 @@
     "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
   ],
   "models": {
+    "qwen3-next-80b-a3b-thinking": {
+      "limits": {
+        "context": 131072,
+        "max_input": 126976,
+        "max_output": 32768,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-next-80b-a3b-thinking",
+        "retrieved": "2026-09-29"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": []
+    },
     "qwen": {
       "limits": {
         "context": 256000,
@@ -234,7 +264,7 @@
               "medium",
               "xhigh"
             ],
-            "default": "low",
+            "default": "medium",
             "wire": {
               "chat_completions": "reasoning_effort",
               "responses": "reasoning.effort"
@@ -276,7 +306,7 @@
         "快照 qwen3.8-max-0902（别名 qwen3.8-max-2026-09-02）数值与主版本相同。",
         "原 scholarseed-gateway 连接覆盖已扁平化进本基线：reasoning_effort 档位 [low,medium,xhigh] 为我方网关实测(gateway-probed, proposal 70)，与厂商 enable_thinking/thinking_budget(vendor-doc) 并存。",
         "2026-09-21 核对：models.dev 输入含 pdf，百炼能力表未列；冲突未决。models.dev 列 budget_tokens 0~262144，与 deep-thinking 页、控制台构成第三种口径，区间仍留 null。",
-        "默认思考档位确定为 low（产品口径：去除「跟随模型默认」档，模型定义给出确定默认档，未声明时取最低档）。"
+        "默认思考档位确定为 medium（产品质量策略；保留用户明确选择与既有会话档位，未声明默认时仍取最低档）。"
       ]
     },
     "qwen3.8-flash": {
@@ -307,7 +337,7 @@
               "medium",
               "xhigh"
             ],
-            "default": "low",
+            "default": "medium",
             "wire": {
               "chat_completions": "reasoning_effort",
               "responses": "reasoning.effort"
@@ -347,7 +377,7 @@
         "qwen3.8-flash 能力声明与百炼 qwen3.8 系列一致；支持开关与思考预算。",
         "原 scholarseed-gateway 连接覆盖已扁平化进本基线：reasoning_effort 档位 [low,medium,xhigh] 为我方网关实测(gateway-probed, proposal 70)，与厂商 enable_thinking/thinking_budget(vendor-doc) 并存。",
         "2026-09-21 核对：models.dev 列 budget_tokens max 262144；厂商未公布区间，仍留 null。",
-        "默认思考档位确定为 low（产品口径：去除「跟随模型默认」档，模型定义给出确定默认档，未声明时取最低档）。"
+        "默认思考档位确定为 medium（产品质量策略；保留用户明确选择与既有会话档位，未声明默认时仍取最低档）。"
       ]
     },
     "qwen-max": {

@@ -7,12 +7,16 @@ export function ReviewDiff({
   baseText,
   candidateText,
   path,
-  sessionId
+  sessionId,
+  previewKey,
+  readOnly
 }: {
   baseText: string
   candidateText: string
   path: string
   sessionId: string
+  previewKey: string
+  readOnly: boolean
 }): React.JSX.Element {
   const workspace = useWorkspaceController()
   const updateCandidate = useCallback((text: string): void => {
@@ -21,10 +25,10 @@ export function ReviewDiff({
   return <Diff
     baseText={baseText}
     candidateText={candidateText}
-    identity={`${sessionId}:${path}`}
+    identity={`${sessionId}:${path}:${previewKey}`}
     path={path}
-    readOnly={false}
+    readOnly={readOnly}
     testId="review-diff"
-    onCandidateChange={updateCandidate}
+    onCandidateChange={readOnly ? undefined : updateCandidate}
   />
 }

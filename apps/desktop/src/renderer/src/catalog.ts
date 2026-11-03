@@ -1,5 +1,50 @@
-import type { ModelInfo } from './api'
+import type { ModelInfo, ServeSession } from './api'
 import type { SessionNode, Thread } from './model'
+
+export type CatalogWorkspaceState = 'loading' | 'ready' | 'error'
+
+export interface CatalogFailureProjection {
+  workspaceLoadState: 'ready' | 'error'
+  retry: boolean
+}
+
+export const SESSION_CATALOG_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const
+
+export function sameSessionCatalog(
+  previous: readonly ServeSession[] | null,
+  current: readonly ServeSession[]
+): boolean {
+  return previous !== null && JSON.stringify(previous) === JSON.stringify(current)
+}
+
+export function sessionCatalogNeedsRefresh(
+  sessions: ReadonlyArray<Pick<SessionNode, 'id' | 'status'>>,
+  activeSession: string | null,
+  threads: Readonly<Record<string, Pick<Thread, 'recoveryPending'>>>
+): boolean {
+  return (
+    sessions.some(
+      (session) =>
+        session.id !== activeSession &&
+        (session.status === 'running' || session.status === 'waiting')
+    ) || Object.values(threads).some((thread) => thread.recoveryPending === true)
+  )
+}
+
+export function sessionCatalogRetryDelay(attempt: number): number {
+  const index = Math.min(Math.max(0, attempt), SESSION_CATALOG_RETRY_DELAYS_MS.length - 1)
+  return SESSION_CATALOG_RETRY_DELAYS_MS[index]
+}
+
+export function projectCatalogFailure(
+  current: CatalogWorkspaceState,
+  retryable: boolean
+): CatalogFailureProjection {
+  return {
+    workspaceLoadState: current === 'ready' ? 'ready' : 'error',
+    retry: retryable,
+  }
+}
 
 /**
  * Whether the catalogue still offers a model the user may pick.
@@ -9,9 +54,7 @@ import type { SessionNode, Thread } from './model'
  * with no personal connection lands exactly here — the server projects both
  * built-in and subscription rows as disabled with a readable reason.
  */
-export function hasSelectableModel(
-  models: ReadonlyArray<Pick<ModelInfo, 'disabled'>>
-): boolean {
+export function hasSelectableModel(models: ReadonlyArray<Pick<ModelInfo, 'disabled'>>): boolean {
   return models.some((model) => !model.disabled)
 }
 
@@ -34,10 +77,21 @@ export function selectableCatalogModelKey(
   if (enabled.some((model) => model.key === previous)) return previous
 
   const requestedModelId = personalModelId(requested) || requested
-  const equivalent = enabled.find((model) =>
-    model.model_id === requestedModelId || personalModelId(model.key) === requestedModelId
+  const equivalent = enabled.find(
+    (model) =>
+      model.model_id === requestedModelId || personalModelId(model.key) === requestedModelId
   )
   return equivalent?.key ?? enabled[0]?.key ?? (requested || previous)
+}
+
+export function selectableActionModelKey(
+  preferred: string,
+  models: ReadonlyArray<Pick<ModelInfo, 'key' | 'disabled' | 'model_id'>>,
+  fallback = ''
+): string {
+  const enabled = models.filter((model) => !model.disabled)
+  if (!enabled.length) return ''
+  return selectableCatalogModelKey(preferred || fallback, enabled, fallback)
 }
 
 /** Resolve the picker label from the active session before the new-session default. */
@@ -64,8 +118,10 @@ export function effectiveSessionModelKey(
   models: ReadonlyArray<Pick<ModelInfo, 'key' | 'disabled'>>,
   defaultModel: string,
   activeSession: string | null,
-  threads: Record<string, Thread>
+  threads: Record<string, Thread>,
+  exactDraftModelId: string | null = null
 ): string {
+  if (exactDraftModelId) return exactDraftModelId
   const sessionKey = selectedSessionModelKey(defaultModel, activeSession, threads)
   const row = models.find((model) => model.key === sessionKey)
   if (!row?.disabled) return sessionKey || defaultModel
@@ -87,9 +143,7 @@ export function requestModelKey(
   activeSession: string | null,
   threads: Record<string, Thread>
 ): string {
-  return (
-    effectiveSessionModelKey(models, defaultModel, activeSession, threads) || defaultModel
-  )
+  return effectiveSessionModelKey(models, defaultModel, activeSession, threads) || defaultModel
 }
 
 /** Whether the exact model used by a workbench request accepts image input. */
@@ -167,15 +221,18 @@ export function pruneMissingCatalogThreads(
 ): Record<string, Thread> {
   let next = threads
   for (const [threadId, thread] of Object.entries(threads)) {
-    if (retainCatalogThread(
-      threadId,
-      thread,
-      nodes,
-      catalogSessionIds,
-      activeSession,
-      nowSeconds,
-      appearanceGraceSeconds
-    )) continue
+    if (
+      retainCatalogThread(
+        threadId,
+        thread,
+        nodes,
+        catalogSessionIds,
+        activeSession,
+        nowSeconds,
+        appearanceGraceSeconds
+      )
+    )
+      continue
     if (next === threads) next = { ...threads }
     delete next[threadId]
   }

@@ -1,9 +1,11 @@
+import './frame.css'
+
 import {
   MONACO_FRAME_LANGUAGE_PARAM,
   MONACO_FRAME_MESSAGE,
   MONACO_FRAME_TOKEN_PARAM,
   type MonacoFrameWindow,
-  type MonacoFrameReadyMessage
+  type MonacoFrameReadyMessage,
 } from './contract'
 import type { PreferenceLanguage } from '../../../../../preferences'
 
@@ -14,6 +16,8 @@ const nlsHost = globalThis as typeof globalThis & {
   _VSCODE_NLS_MESSAGES?: string[]
   _VSCODE_NLS_LANGUAGE?: string
 }
+
+document.documentElement.classList.add('[&[data-theme=dark]]:scheme-dark')
 
 if (language === 'zh') {
   await import('monaco-editor/nls/lang/zh-cn')
@@ -29,6 +33,6 @@ const runtime = await import('./runtime')
 const ready: MonacoFrameReadyMessage = {
   kind: MONACO_FRAME_MESSAGE,
   language,
-  token
+  token,
 }
 window.parent.postMessage(ready, window.location.origin)

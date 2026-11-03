@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from scholarseed_runtime.contract import CommandReceipt, CommandState
 from service.chat.runtime.live import LiveSession
 from service.chat.service.turns import TurnService
+from service.platform.activity import Activities
 
 PASS = 0
 FAIL = 0
@@ -55,15 +56,24 @@ class _Adapter:
 
 def live_session(adapter: object, catalog: _Catalog) -> LiveSession:
     live = object.__new__(LiveSession)
+    live._browser_scope = None
+    live._browser_scope_lock = asyncio.Lock()
+    live._browser_delivery_lock = asyncio.Lock()
+    live._browser_scope_end_pending = False
     live.id = "interrupt-contract"
     live.vendor_thread_id = "interrupt-contract-thread"
     live.runtime_session = adapter
     live._catalog = catalog  # type: ignore[assignment]
     live.interrupting = False
+    live.termination_task = None
+    live.terminating = False
+    live.terminated = False
     live.interrupt_generation = 0
     live.last_interrupt_succeeded = None
     live.current_task = None
+    live._citation_review_task = None
     live.resource_task = None
+    live._citation_review_task = None
     live.waiting_request_id = ""
     live.waiting_resources = False
     live.turn_lock = asyncio.Lock()
@@ -86,6 +96,7 @@ async def scenario_interrupt_closes_admission_before_cancel() -> None:
     result, status = await TurnService(
         {live.id: live},
         SimpleNamespace(error=lambda *_args, **_kwargs: None),
+        activities=Activities(),
     ).post(
         live.id,
         {"input": [{"type": "text", "text": "must not enter"}]},

@@ -2,6 +2,11 @@
 
 'use strict'
 
+const FAILURE_CODES = {
+  officeDocumentUnavailable: 'office_document_unavailable',
+  processorMismatch: processor => `office_processor_mismatch:${processor}`,
+}
+
 let zetajs
 let css
 let desktop
@@ -33,6 +38,8 @@ let writerAutoscrollCursor
 const OFFICE_IMAGE_FAILED = 'office_image_failed'
 const OFFICE_POLICY_FAILED = 'office_policy_failed'
 const OFFICE_FORMULA_POLICY_FAILED = 'office_formula_policy_failed'
+const OFFICE_DOCUMENT_UNAVAILABLE = 'office_document_unavailable'
+const DOCUMENT_READY_EVENTS = new Set(['OnLoadFinished', 'OnLayoutFinished'])
 const INSERT_IMAGE_COMMAND = '.uno:InsertGraphic'
 const PASTE_COMMAND = '.uno:Paste'
 const TEXT_CLIPBOARD_FLAVOR = 'text/plain;charset=utf-16'
@@ -544,14 +551,14 @@ function observeLayout(bindingId) {
   layoutListener = zetajs.unoObject([css.document.XDocumentEventListener], {
     documentEventOccured(event) {
       post({ cmd: 'document_event', bindingId, eventName: event.EventName })
-      if (event.EventName === 'OnLayoutFinished') post({ cmd: 'layout_finished', bindingId })
+      if (DOCUMENT_READY_EVENTS.has(event.EventName)) post({ cmd: 'layout_finished', bindingId })
     },
     disposing() {},
   })
   layoutBroadcaster.addDocumentEventListener(layoutListener)
 }
 
-function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOptions, bindingId, readonlyReason = '') {
+function loadFile(filename, processor, expectedDocumentKind, readOnly, bindingId, readonlyReason = '') {
   closeDocument()
   observeLayout(bindingId)
   // Native locks cover direct native entry points as well as UNO dispatch.
@@ -560,14 +567,10 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOption
     new css.beans.PropertyValue({ Name, Value: true })
   ))
   if (readOnly) properties.push(new css.beans.PropertyValue({ Name: 'ReadOnly', Value: true }))
-  if (csvOptions) {
-    properties.push(new css.beans.PropertyValue({ Name: 'FilterName', Value: 'Text - txt - csv (StarCalc)' }))
-    properties.push(new css.beans.PropertyValue({ Name: 'FilterOptions', Value: csvOptions }))
-  }
   xModel = desktop.loadComponentFromURL(`file:///tmp/office/${filename}`, '_default', 0, properties)
   if (!xModel) {
     removeLayoutListener()
-    post({ cmd: 'policy_failed', message: 'office_document_unavailable' })
+    post({ cmd: 'policy_failed', message: FAILURE_CODES.officeDocumentUnavailable })
     return
   }
   const controller = xModel.getCurrentController()
@@ -576,12 +579,12 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOption
   ))
   if (expectedDocumentKind && documentKind !== expectedDocumentKind) {
     closeDocument()
-    post({ cmd: 'policy_failed', message: `office_processor_mismatch:${processor}` })
+    post({ cmd: 'policy_failed', message: FAILURE_CODES.processorMismatch(processor) })
     return
   }
   const policy = ScholarSeedOfficePolicy.select(documentKind, !readOnly)
   if (!readOnly && !policy.editable) {
-    loadFile(filename, processor, expectedDocumentKind, true, csvOptions, bindingId)
+    loadFile(filename, processor, expectedDocumentKind, true, bindingId)
     return
   }
   const writerFormat = documentKind === 'writer'
@@ -602,7 +605,7 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOption
     } catch (error) {
       const detail = error instanceof WebAssembly.Exception ? zetajs.catchUnoException(error) : error
       console.error('[office-protection] installation failed', detail?.Message || String(detail))
-      loadFile(filename, processor, expectedDocumentKind, true, csvOptions, bindingId, 'office_editing_unavailable')
+      loadFile(filename, processor, expectedDocumentKind, true, bindingId, 'office_editing_unavailable')
       return
     }
   }
@@ -670,7 +673,13 @@ function start() {
   desktop = css.frame.Desktop.create(zetajs.getUnoComponentContext())
   zetajs.mainPort.onmessage = function onMainMessage(event) {
     switch (event.data.cmd) {
-      case 'upload': loadFile(event.data.filename, event.data.processor, event.data.expectedDocumentKind, event.data.readOnly, event.data.csvOptions, event.data.bindingId); break
+      case 'upload':
+        try {
+          loadFile(event.data.filename, event.data.processor, event.data.expectedDocumentKind, event.data.readOnly, event.data.bindingId)
+        } catch (error) {
+          post({ cmd: 'document_failed', bindingId: event.data.bindingId, message: OFFICE_DOCUMENT_UNAVAILABLE, detail: String(error) })
+        }
+        break
       case 'theme': applyPalette(event.data.palette); break
       case VIEWPORT_RESIZE_COMMAND:
         // Qt owns the transferred OffscreenCanvas and updates both screen geometry and backing pixels.
@@ -708,7 +717,7 @@ function start() {
       case SELECTION_AUTOSCROLL_COMMIT_COMMAND:
         commitWriterAutoscroll(event.data)
         break
-      case SELECTION_COMMIT_COMMAND: scheduleSelectionReport(); break
+      case SELECTION_COMMIT_COMMAND: cancelSelectionReport(); reportSelection(); break
       case 'host_saved':
         protection?.saved()
         if (xModel && typeof xModel.setModified === 'function') xModel.setModified(false)

@@ -28,8 +28,6 @@ from service.content.domain.model import (
     resolve_root,
 )
 from service.content.persistence.catalog import (
-    AUDIT_AUTHORIZE,
-    AUDIT_REVOKE,
     ContentCatalog,
     ExternalRootRow,
 )
@@ -61,14 +59,7 @@ def registered_roots(database: str) -> dict[RootKind, str]:
         return {}
     try:
         with reader(database) as connection:
-            table = connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-                (OWNED_ROOT_TABLE,),
-            ).fetchone()
-            if table is None:
-                return {}
-            rows = connection.execute(f"SELECT kind, path FROM {OWNED_ROOT_TABLE}").fetchall()
-            return {RootKind(row["kind"]): row["path"] for row in rows}
+            return registered_root_rows(connection)
     except sqlite3.OperationalError as exc:
         if (
             getattr(exc, "sqlite_errorcode", 0) & SQLITE_PRIMARY_RESULT_MASK
@@ -76,6 +67,18 @@ def registered_roots(database: str) -> dict[RootKind, str]:
         ):
             raise ContentError(ROOT_UNAVAILABLE_ERROR) from exc
         raise
+
+
+def registered_root_rows(connection: sqlite3.Connection) -> dict[RootKind, str]:
+    """Read the same explicit claims from a live or private project snapshot."""
+    table = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (OWNED_ROOT_TABLE,),
+    ).fetchone()
+    if table is None:
+        return {}
+    rows = connection.execute(f"SELECT kind, path FROM {OWNED_ROOT_TABLE}").fetchall()
+    return {RootKind(row["kind"]): row["path"] for row in rows}
 
 
 def ensure_owned_root(database: str, location: RootLocation) -> None:
@@ -151,9 +154,25 @@ class ExternalRootService:
         if len(sources) != len(mounts) or not sources:
             raise ContentError("invalid_root_batch")
         rows = tuple(
-            self._prepare(project, source, mount, nested=nested)
+            self.plan(project, source, mount, nested=nested)
             for source, mount in zip(sources, mounts)
         )
+        return self.commit(project, rows, supersede=supersede)
+
+    def commit(
+        self,
+        project: ProjectRef,
+        rows: tuple[ExternalRootRow, ...],
+        *,
+        supersede: bool = False,
+        receipt: tuple[str, str] | None = None,
+        effect: tuple[str, dict[str, object]] | None = None,
+        authorization_operation_id: str | None = None,
+    ) -> tuple[ExternalRootRef, ...]:
+        if not project.available:
+            raise ContentError(ROOT_UNAVAILABLE_ERROR)
+        if not rows or any(row.project_id != project.id for row in rows):
+            raise ContentError("invalid_root_batch")
         if len({row.source_path for row in rows}) != len(rows) or len(
             {row.mount_path for row in rows}
         ) != len(rows):
@@ -167,7 +186,11 @@ class ExternalRootService:
             return tuple(
                 _root_ref(row)
                 for row in self._catalog.authorize_external_roots(
-                    rows, supersede_root_ids=covering if supersede else ()
+                    rows,
+                    supersede_root_ids=covering if supersede else (),
+                    receipt=receipt,
+                    effect=effect,
+                    authorization_operation_id=authorization_operation_id,
                 )
             )
         except sqlite3.IntegrityError as exc:
@@ -188,6 +211,8 @@ class ExternalRootService:
         无法解析或不存在的源在此跳过, 交给 job 用 `source_not_found` 报告, 预检不抢答。
         """
 
+        if not project.available:
+            raise ContentError(ROOT_UNAVAILABLE_ERROR)
         active = self._active_paths(project)
         if not active:
             return
@@ -204,9 +229,11 @@ class ExternalRootService:
             raise ContentError(SOURCE_COVERS_LINKS_ERROR)
 
     @staticmethod
-    def _prepare(
+    def plan(
         project: ProjectRef, source: str, mount: str, *, nested: bool = False
     ) -> ExternalRootRow:
+        if not project.available:
+            raise ContentError(ROOT_UNAVAILABLE_ERROR)
         name = mount if nested else naming.normalize_display_name(mount)
         if not name:
             raise ContentError("mount_required")
@@ -256,16 +283,35 @@ class ExternalRootService:
             kind=kind,
         )
 
-    def revoke(self, root_id: str) -> None:
+    def plan_revocation(self, root_id: str, project_id: str | None = None) -> ExternalRootRow:
         row = self._catalog.external_root(root_id)
         if row is None:
             raise ContentError("unknown_root")
-        if not self._catalog.revoke_external_root(root_id):
+        if project_id is not None and row.project_id != project_id:
+            raise ContentError("root_project_mismatch")
+        if row.revoked_at is not None:
             raise ContentError("root_already_revoked")
-        self._catalog.record(AUDIT_REVOKE, f"{row.mount_path} <- {row.source_path}", row.project_id)
+        return row
+
+    def revoke(
+        self,
+        root_id: str,
+        project_id: str | None = None,
+        *,
+        effect: tuple[str, dict[str, object]] | None = None,
+    ) -> ExternalRootRef:
+        row = self.plan_revocation(root_id, project_id)
+        if not self._catalog.revoke_external_root(root_id, effect=effect):
+            raise ContentError("root_already_revoked")
+        return _root_ref(row)
 
     def active(self, project_id: str) -> tuple[ExternalRootRef, ...]:
-        return tuple(_root_ref(row) for row in self._catalog.external_roots(project_id))
+        return tuple(self.reference(row) for row in self._catalog.external_roots(project_id))
+
+    @staticmethod
+    def reference(row: ExternalRootRow) -> ExternalRootRef:
+        """Use the actual availability reader under caller-held qualifications."""
+        return _root_ref(row)
 
     def writable_roots(self, project: ProjectRef) -> tuple[str, ...]:
         """项目根 + 当前有效关联根。

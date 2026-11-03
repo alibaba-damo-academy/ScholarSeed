@@ -3,6 +3,7 @@ import type { AnnotationPoint } from './model'
 export interface TextDraft {
   id: number
   alignRight: boolean
+  fontSize?: number
   color: string
   point: AnnotationPoint
   surfaceX: number

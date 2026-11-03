@@ -5,17 +5,20 @@ from typing import Mapping
 from scholarseed_runtime.contract import (
     CapabilitySet,
     CapabilityState,
+    ModelIntent,
+    ModelWireProtocol,
     RuntimeBinding,
     RuntimeCapability,
     RuntimeCapabilityName,
     RuntimeValue,
 )
 
+CODEX_RUNTIME_ABI_VERSION = "6"
 CODEX_DISPLAY_NAME = "Codex"
 CODEX_PROTOCOL_VERSION = "2"
 CODEX_PROTOCOL_SCHEMA_HASH = "f3dec1e031d99a420b137b903f02196d4325eece57620c925bb7130b25f168d2"
-CODEX_MIN_SUPPORTED_VERSION = (0, 147, 0)
-CODEX_MAX_TESTED_VERSION = (0, 147, 0)
+CODEX_MIN_SUPPORTED_VERSION = (0, 159, 0)
+CODEX_MAX_TESTED_VERSION = (0, 159, 0)
 CODEX_ALLOW_UNTESTED_NEWER = True
 CODEX_DEVELOPMENT_VERSION = (0, 0, 0)
 CODEX_ALLOW_DEVELOPMENT_VERSION_ENV = "DAMOAGENT_CODEX_ALLOW_DEVELOPMENT_VERSION"
@@ -26,8 +29,11 @@ if not CODEX_ALLOW_UNTESTED_NEWER:
 
 CODEX_WEB_SEARCH_MODE_KEY = "web_search"
 CODEX_WEB_SEARCH_LIVE_MODE = "live"
+CODEX_WEB_SEARCH_DISABLED_MODE = "disabled"
 CODEX_PLAN_TOOL_ENABLED_CONFIG = "tools.update_plan.enabled"
+CODEX_PLAN_TOOL_NAME = "update_plan"
 CODEX_USER_INPUT_ENABLED_CONFIG = "features.default_mode_request_user_input"
+CODEX_MULTI_AGENT_V2_ENABLED_CONFIG = "features.multi_agent_v2"
 
 _SUPPORTED_CAPABILITIES = frozenset(
     {
@@ -53,6 +59,12 @@ _SUPPORTED_CAPABILITIES = frozenset(
         RuntimeCapabilityName.SUBAGENT_LIFECYCLE,
         RuntimeCapabilityName.TERMINATE_SESSION,
         RuntimeCapabilityName.RESOURCE_ADMISSION,
+        RuntimeCapabilityName.HOST_WARMUP,
+        RuntimeCapabilityName.HOST_RECONFIGURATION,
+        RuntimeCapabilityName.SHARED_HOST_CONTROL,
+        RuntimeCapabilityName.TURN_CONFIRMATION,
+        RuntimeCapabilityName.THREAD_REPLACEMENT,
+        RuntimeCapabilityName.TURN_ADMISSION,
     }
 )
 
@@ -116,11 +128,32 @@ def required_capabilities(
     return required
 
 
+def native_web_search_supported(model: ModelIntent) -> bool:
+    """Check transport compatibility without claiming upstream provider availability."""
+    return (
+        model.transport.wire_protocol is ModelWireProtocol.RESPONSES
+        and model.capabilities.native_web_search is not False
+    )
+
+
+def optional_capabilities(
+    values: tuple[RuntimeCapabilityName, ...],
+    required: frozenset[RuntimeCapabilityName],
+) -> frozenset[RuntimeCapabilityName]:
+    optional = frozenset(values)
+    if len(optional) != len(values):
+        raise ValueError("optional runtime capabilities must be unique")
+    if optional & required:
+        raise ValueError("runtime capabilities cannot be both required and optional")
+    return optional & _SUPPORTED_CAPABILITIES
+
+
 def session_thread_config(
     capabilities: frozenset[RuntimeCapabilityName],
+    service_tool_names: frozenset[str] = frozenset(),
 ) -> dict[str, RuntimeValue]:
     config: dict[str, RuntimeValue] = {
-        CODEX_PLAN_TOOL_ENABLED_CONFIG: True,
+        CODEX_PLAN_TOOL_ENABLED_CONFIG: CODEX_PLAN_TOOL_NAME not in service_tool_names,
         CODEX_USER_INPUT_ENABLED_CONFIG: True,
     }
     for capability in sorted(capabilities, key=lambda item: item.value):
@@ -141,5 +174,5 @@ def resumed_capabilities(binding: RuntimeBinding) -> tuple[RuntimeCapabilityName
     return tuple(
         capability
         for capability in sorted(SESSION_SCOPED_CAPABILITIES, key=lambda item: item.value)
-        if capability.value in supported
+        if capability.value in supported and capability not in binding.optional_capabilities
     )

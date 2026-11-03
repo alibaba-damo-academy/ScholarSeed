@@ -181,19 +181,39 @@ def _required(connection: sqlite3.Connection, batch_id: str) -> ReviewBatch:
     return batch
 
 
-def _members(connection: sqlite3.Connection, batch_id: str) -> list[sqlite3.Row]:
+def _members(connection: sqlite3.Connection, batch_id: str | None) -> list[sqlite3.Row]:
+    predicate = "" if batch_id is None else "WHERE member.batch_id = ?"
     return connection.execute(
-        """
+        f"""
         SELECT member.*,
                pending.revision AS current_pending_revision,
                pending.edited_by_user AS current_edited_by_user
         FROM resources_review_batch_members AS member
         LEFT JOIN resources_pending AS pending
           ON pending.file_id = member.file_id AND pending.review_id = member.review_id
-        WHERE member.batch_id = ? ORDER BY member.file_id
+        {predicate} ORDER BY member.file_id
         """,
-        (batch_id,),
+        () if batch_id is None else (batch_id,),
     ).fetchall()
+
+
+def _request_result(row: sqlite3.Row) -> dict | None:
+    return (
+        json.loads(str(row["result_json"]))
+        if row["state"] == "completed" and row["result_json"] is not None
+        else None
+    )
+
+
+def inspect_rows(connection: sqlite3.Connection) -> None:
+    """Decode review progress without preparing, reconciling or completing it."""
+    for row in connection.execute("SELECT * FROM resources_review_batches"):
+        _batch(row, _members(connection, str(row["batch_id"])))
+    # Read child rows independently too; a missing header cannot hide a codec.
+    for row in _members(connection, None):
+        _member(row)
+    for row in connection.execute("SELECT * FROM resources_review_batch_requests"):
+        _request_result(row)
 
 
 def _batch(row: sqlite3.Row, members: list[sqlite3.Row]) -> ReviewBatch:
@@ -364,11 +384,7 @@ class ReviewBatchStore:
             if row is not None:
                 if row["batch_id"] != batch_id or row["request_digest"] != request_digest:
                     raise ReviewBatchStoreConflict("idempotency_conflict")
-                return (
-                    json.loads(str(row["result_json"]))
-                    if row["state"] == "completed" and row["result_json"] is not None
-                    else None
-                )
+                return _request_result(row)
             connection.execute(
                 """
                 INSERT INTO resources_review_batch_requests (

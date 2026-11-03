@@ -113,8 +113,18 @@ export async function streamAgentInvocation(
   signal?: AbortSignal,
   onInteraction?: AgentInvocationInteractionHandler
 ): Promise<AgentInvocationStreamResult> {
+  return streamInvocationEvents(AGENT_INVOCATION_ROUTE, request, onEvent, signal, onInteraction)
+}
+
+export async function streamInvocationEvents(
+  route: string,
+  request: unknown,
+  onEvent: (event: AgentInvocationEvent) => void | Promise<void>,
+  signal?: AbortSignal,
+  onInteraction?: AgentInvocationInteractionHandler
+): Promise<AgentInvocationStreamResult> {
   try {
-    const response = await apiFetch(AGENT_INVOCATION_ROUTE, {
+    const response = await apiFetch(route, {
       method: 'POST',
       headers: {
         Accept: SSE_MEDIA_TYPE,
@@ -143,6 +153,7 @@ export async function streamAgentInvocation(
     let invocationId = ''
     let terminal: AgentInvocationEvent | undefined
     for await (const payload of sseData(response.body)) {
+      if (signal?.aborted) throw new DOMException(INVOCATION_ABORTED_CODE, 'AbortError')
       let decoded: unknown
       try {
         decoded = JSON.parse(payload)
@@ -160,7 +171,8 @@ export async function streamAgentInvocation(
       ) return protocolFailure(response.status)
       invocationId ||= event.invocation_id
       expectedSequence += 1
-      onEvent(event)
+      await onEvent(event)
+      if (signal?.aborted) throw new DOMException(INVOCATION_ABORTED_CODE, 'AbortError')
       if (event.type === AGENT_INVOCATION_INTERACTION_REQUIRED_EVENT) {
         const requestId = typeof event.data.request_id === 'string'
           ? event.data.request_id

@@ -14,12 +14,12 @@ const INPUT: AssistantSelectionActionInput = {
       kind: 'markdown',
       start: 4,
       end: 21,
-      source_map_version: 'md-source-v1'
+      source_map_version: 'md-source-v1',
     },
     selected_text_hash: 'sha256:selected',
-    preview_text: 'selected evidence'
+    preview_text: 'selected evidence',
   },
-  question: '为什么？'
+  question: '为什么？',
 }
 
 test('selection action identity is owned and reused by AssistantIngress', () => {
@@ -31,13 +31,13 @@ test('selection action identity is owned and reused by AssistantIngress', () => 
 
   assert.deepEqual(first, {
     clientActionId: 'action-1',
-    clientAttemptId: 'attempt-1'
+    clientAttemptId: 'attempt-1',
   })
   assert.equal(replay, first)
   assert.deepEqual(retry, {
     clientActionId: 'action-1',
     clientAttemptId: 'attempt-2',
-    retryOfAttemptId: 'attempt-1'
+    retryOfAttemptId: 'attempt-1',
   })
 })
 
@@ -46,24 +46,33 @@ test('selection action key changes with evidence, action policy or question', ()
   assert.equal(selectionActionKey({ ...INPUT }), base)
   assert.notEqual(selectionActionKey({ ...INPUT, question: '如何验证？' }), base)
   assert.notEqual(selectionActionKey({ ...INPUT, action: 'translate' }), base)
-  assert.notEqual(selectionActionKey({
-    ...INPUT,
-    selection: { ...INPUT.selection, selected_text_hash: 'sha256:changed' }
-  }), base)
-  assert.notEqual(selectionActionKey({
-    ...INPUT,
-    draft: {
-      change_version: 2,
-      selected_text: 'unsaved selection',
-      context_text: 'unsaved context',
-      selected_text_hash: 'sha256:draft'
-    }
-  }), base)
+  assert.notEqual(
+    selectionActionKey({
+      ...INPUT,
+      selection: { ...INPUT.selection, selected_text_hash: 'sha256:changed' },
+    }),
+    base
+  )
+  assert.notEqual(
+    selectionActionKey({
+      ...INPUT,
+      draft: {
+        change_version: 2,
+        selected_text: 'unsaved selection',
+        context_text: 'unsaved context',
+        selected_text_hash: 'sha256:draft',
+      },
+    }),
+    base
+  )
 })
 
 test('answer selection menu items share one style without a default fill', () => {
   const annotations = readFileSync(new URL('./Annotations.tsx', import.meta.url), 'utf8')
-  const menu = annotations.slice(annotations.indexOf('remaining.selectionActions') - 2000, annotations.indexOf('remaining.selectionActions'))
+  const menu = annotations.slice(
+    annotations.indexOf('remaining.selectionActions') - 2000,
+    annotations.indexOf('remaining.selectionActions')
+  )
   const items = menu.match(/<Button\b/g) ?? []
   // 每项必须用同一个常量, 否则其中一项带默认底色会看起来已选中。
   assert.equal(items.length, 3)
@@ -82,7 +91,7 @@ test('inline annotation marker is forced to a perfect circle', () => {
   const notes = readFileSync(new URL('./Notes.tsx', import.meta.url), 'utf8')
   const badge = notes.slice(notes.indexOf('const ANNOTATION_BADGE_CLASS'))
   // 徽章由回答内联与用户消息共用: 等宽高 + 全圆角保证圆形气泡, 改成不等宽高会破坏设计稿标识。
-  assert.match(badge, /\bsize-5\b/)
+  assert.match(badge, /size-\[var\(--vds-badge-height-sm\)\]/)
   assert.match(badge, /rounded-\[var\(--vds-radius-circle\)\]/)
 })
 

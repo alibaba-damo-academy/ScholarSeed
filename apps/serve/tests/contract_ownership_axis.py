@@ -247,7 +247,14 @@ class ConnectionOwnershipAxisContract(unittest.TestCase):
         self.credentials(shared=shared).replace(
             account,
             profile["id"],
-            OAuthTokens("access", "refresh", time.time() + 3600, "chatgpt-account"),
+            OAuthTokens(
+                "access",
+                "refresh",
+                time.time() + 3600,
+                "chatgpt-account",
+                client_id="oaiapp_contract",
+                scopes=("chatgpt.tokens.use.direct",),
+            ),
             expected_generation=0,
         )
         return str(profile["id"])
@@ -363,7 +370,14 @@ class ConnectionOwnershipAxisContract(unittest.TestCase):
         self.credentials(shared=False).replace(
             "zzz-live",
             connection,
-            OAuthTokens("access", "refresh", time.time() + 3600, "chatgpt-account"),
+            OAuthTokens(
+                "access",
+                "refresh",
+                time.time() + 3600,
+                "chatgpt-account",
+                client_id="oaiapp_contract",
+                scopes=("chatgpt.tokens.use.direct",),
+            ),
             expected_generation=0,
         )
         self.assertEqual(

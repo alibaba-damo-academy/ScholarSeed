@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shlex
+
+from platform_support import command_display
+from filesystem import canonical_path, filesystem_path, path_exists
 
 
 class ActionError(ValueError):
@@ -16,11 +18,11 @@ class ActionError(ValueError):
 
 def _read(work, name, default):
     path = work / name
-    if not path.resolve().is_relative_to(work.resolve()):
+    if not canonical_path(path).is_relative_to(canonical_path(work)):
         raise ValueError("worker state artifact must stay inside its work directory")
-    if not path.exists():
+    if not path_exists(path):
         return default
-    with path.open(encoding="utf-8") as handle:
+    with filesystem_path(path).open(encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -37,13 +39,13 @@ def phase_state(work):
     anchors = {str(paper.get("id", "")).strip() for paper in papers}
     anchors = {identity for identity in anchors if identity.isdigit() and identity not in excluded}
     return {
-        "plan_saved": (work / "plan.json").exists(),
-        "search_saved": (work / "results/iteration-001-search-batch.json").exists(),
-        "citations_saved": (work / "results/iteration-001-citations-batch.json").exists(),
+        "plan_saved": path_exists(work / "plan.json"),
+        "search_saved": path_exists(work / "results/iteration-001-search-batch.json"),
+        "citations_saved": path_exists(work / "results/iteration-001-citations-batch.json"),
         "search_finished": bool(progress.get("search_finished")),
         "citations_finished": bool(progress.get("completed")),
         "citation_anchor_count": len(anchors),
-        "selection_finished": (work / "selection.json").exists(),
+        "selection_finished": path_exists(work / "selection.json"),
         "web_batch_count": len(web),
         "web_query_count": len(logged),
         "web_accounting": "post_hoc",
@@ -52,12 +54,18 @@ def phase_state(work):
     }
 
 
-def _resume(command):
-    argv = shlex.split(command)
-    if "--input" in argv:
-        index = argv.index("--input")
-        del argv[index:index + 2]
-    return shlex.join(argv)
+def resume_argv(argv):
+    """Drop --input from a saved batch.
+
+    Rebuilds from argv rather than re-parsing a rendered command: a round trip
+    through the display form destroys the platform rendering (on Windows it turns
+    the leading PowerShell call operator into a quoted literal).
+    """
+    resumed = list(argv)
+    if "--input" in resumed:
+        index = resumed.index("--input")
+        del resumed[index:index + 2]
+    return resumed
 
 
 def guidance(work, budget, commands):
@@ -87,7 +95,8 @@ def guidance(work, budget, commands):
         item = dict(commands[action])
         saved = state["search_saved"] if action == "retrieve" else state["citations_saved"] if action == "cite" else False
         if saved:
-            item["command"] = _resume(item["command"])
+            item["argv"] = resume_argv(item["argv"])
+            item["command"] = command_display(item["argv"])
             item["instruction"] = "Resume the saved batch without --input; its decisions are immutable."
         elif action in {"retrieve", "cite", "select", "record-web"}:
             item["instruction"] = "Write the decision file before executing this command."
@@ -152,9 +161,9 @@ def error_guidance(work, error, budget, commands):
         recovery = "context"
         if recovery in result["next_commands"]:
             item = dict(result["next_commands"][recovery])
-            item["command"] = shlex.join([
-                *shlex.split(item["command"]), "--ids", *identities,
-                "--limit", "1", "--abstract-chars", "4000"])
+            item["argv"] = [*item["argv"], "--ids", *identities,
+                            "--limit", "1", "--abstract-chars", "4000"]
+            item["command"] = command_display(item["argv"])
             item["instruction"] = "Inspect the failed paper and copy its current review_ref and exact displayed evidence."
             result["next_commands"][recovery] = item
     result.update(error_code=code, retryable=retryable, recovery_action=recovery)

@@ -13,9 +13,9 @@ import { resolve } from 'path'
 import { defineConfig } from 'vite'
 import type { PluginOption } from 'vite'
 import react from '@vitejs/plugin-react'
-import { developmentLocalization } from './scripts/localization/dom.mjs'
+import { developmentLocalization } from './scripts/ci/localization/dom.mjs'
 import { DEFAULT_SERVE_URL, RENDERER_DEV_PORT } from './endpoints'
-import { RENDERER_OPTIMIZE_DEPS } from './renderer'
+import { RENDERER_OPTIMIZE_DEPS, supportedFontSources } from './renderer'
 
 // 指向任意已在运行的 serve，与 `scholarseed-desktop --attach` 共用同一个环境变量。
 const SERVE_URL = process.env.SCHOLARSEED_SERVE_URL || DEFAULT_SERVE_URL
@@ -46,7 +46,7 @@ function browserBridge(): PluginOption {
 export default defineConfig(({ command }) => ({
   root: 'src/renderer',
   base: './',
-  plugins: [react({ babel: developmentLocalization(command) }), browserBridge()],
+  plugins: [react({ babel: developmentLocalization(command) }), supportedFontSources(), browserBridge()],
   optimizeDeps: RENDERER_OPTIMIZE_DEPS,
   define: { __SCHOLARSEED_WEB_VERSION__: JSON.stringify(WEB_VERSION) },
   build: { outDir: resolve(__dirname, WEB_OUT_DIR), emptyOutDir: true },

@@ -82,6 +82,7 @@ function getTriggerValues(children: TabsListProps['children']): string[] {
 
   Children.forEach(children, (child) => {
     if (!isValidElement<TabsTriggerProps>(child)) return
+    if (typeof child.props.value !== 'string') return
     if (child.props.disabled) return
     values.push(child.props.value)
   })
@@ -92,14 +93,22 @@ function getTriggerValues(children: TabsListProps['children']): string[] {
 function getEnabledTriggerValues(children: TabsProps['children']): string[] {
   const values: string[] = []
 
-  Children.forEach(children, (child) => {
-    if (!isValidElement<{ children?: TabsListProps['children'] }>(child)) return
-    Children.forEach(child.props.children, (nestedChild) => {
-      if (!isValidElement<TabsTriggerProps>(nestedChild)) return
-      if (nestedChild.props.disabled) return
-      values.push(nestedChild.props.value)
+  const visit = (nodes: TabsProps['children']): void => {
+    Children.forEach(nodes, (child) => {
+      if (!isValidElement<{ children?: TabsListProps['children'] }>(child)) return
+      if (child.type !== TabsList) {
+        if (typeof child.type === 'string') visit(child.props.children)
+        return
+      }
+      Children.forEach(child.props.children, (nestedChild) => {
+        if (!isValidElement<TabsTriggerProps>(nestedChild)) return
+        if (typeof nestedChild.props.value !== 'string') return
+        if (nestedChild.props.disabled) return
+        values.push(nestedChild.props.value)
+      })
     })
-  })
+  }
+  visit(children)
 
   return values
 }

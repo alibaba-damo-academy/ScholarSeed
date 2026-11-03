@@ -25,7 +25,7 @@
   "selected": "已选模型：{{models}}",
   "connect": "连接 ChatGPT",
   "unavailable": "当前环境无法使用订阅连接",
-  "login": "登录 ChatGPT",
+  "login": "继续使用 ChatGPT",
   "cancel": "取消",
   "operationFailed": "操作失败，请重试。",
   "errors": {
@@ -39,7 +39,7 @@
     "oauth_transaction_unavailable": "登录已结束，请重新点击「登录 ChatGPT」。",
     "oauth_network_unavailable": "无法连接，请检查网络后重试。",
     "oauth_exchange_failed": "未能完成 ChatGPT 登录，请重新授权。",
-    "oauth_account_changed": "ChatGPT 账号已变更，请断开连接后重新登录。",
+    "oauth_account_changed": "此连接已绑定其他 ChatGPT 身份，请使用原身份登录，或新建连接。",
     "oauth_connection_changed": "连接状态已变更，请重新登录。",
     "oauth_storage_unavailable": "无法保存授权，请检查本机存储后重试。",
     "oauth_refresh_busy": "授权正在刷新，请稍后重试。",
@@ -47,7 +47,12 @@
     "oauth_reauth_required": "授权已失效，请重新登录。",
     "oauth_models_rejected": "无法加载模型，请检查账号订阅状态。",
     "oauth_models_unavailable": "暂时无法读取模型，请检查网络后重试。",
-    "oauth_disconnect_before_login": "请先断开当前账号。"
+    "oauth_disconnect_before_login": "请先断开当前账号。",
+    "oauth_plan_permission_required": "尚未授权使用 ChatGPT 订阅，请重新授权并允许订阅使用。",
+    "oauth_identity_invalid": "无法验证 OpenAI 返回的身份，请重新授权。",
+    "oauth_discovery_unavailable": "暂时无法读取 OpenAI 认证配置，请稍后重试。",
+    "oauth_revocation_unconfirmed": "本地已断开，但未确认远端撤销。请在 ChatGPT 设置中断开此应用。",
+    "oauth_capability_unsupported": "ChatGPT 订阅通道暂不支持此请求能力，请选择其他模型来源。"
   },
   "ipc": {
     "localServiceRequired": "请使用本机桌面服务登录 ChatGPT；远程连接暂不支持此登录方式。",
@@ -61,5 +66,11 @@
     "http": "模型连接请求失败（HTTP {{status}}）。",
     "network": "无法连接模型配置服务，请稍后重试。"
   },
-  "listSeparator": "、"
+  "listSeparator": "、",
+  "storageUnavailable": "凭据暂不可访问",
+  "storageRecovery": "无法读取本地凭据。请检查数据目录的访问权限或存储状态，恢复后重试；无需删除连接或重新登录。",
+  "retry": "重试",
+  "permissionRequired": "尚未授权使用 ChatGPT 订阅",
+  "manageUsage": "管理 ChatGPT 用量",
+  "sourceNotice": "此连接使用你的 ChatGPT 订阅，与书深登录和书深模型额度独立。"
 }

@@ -1,26 +1,34 @@
 {
-  "schema": 1,
-  "name": "project-literature",
-  "version": "0.0.0",
-  "source": { "kind": "directory" },
   "dependencies": {
     "executables": [
       "scholarseed-bridge"
     ]
   },
-  "source_document_sha256": "f18f1bc5e56f114c0b6d13c39c912d0d6bc635d63b3d658a7c70a2758de853c4",
   "files": [
     {
+      "mode": 420,
       "path": "SKILL.md",
-      "size": 6685,
-      "sha256": "f18f1bc5e56f114c0b6d13c39c912d0d6bc635d63b3d658a7c70a2758de853c4",
-      "mode": 420
+      "sha256": "93c97dafe04ed08013d9195fc56b7f446972c5eb1668224ebef15de1cddf00c7",
+      "size": 9205
     },
     {
+      "mode": 420,
+      "path": "VERSION",
+      "sha256": "77f27c639a4705f9aa32a5b762f39fd4b3ca81a6fa6ee0813c0cf7a55efd0ec4",
+      "size": 13
+    },
+    {
+      "mode": 420,
       "path": "agents/openai.yaml",
-      "size": 291,
-      "sha256": "a11dcb167e594b3cb4bcc383f1e1983a406a4b7f52e4c8cc9108a7079806fc11",
-      "mode": 420
+      "sha256": "d0d7bee8d9fac40624f2f2d5aa927305f635749ca2b03ea05928a7bace674156",
+      "size": 351
     }
-  ]
+  ],
+  "name": "project-literature",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "93c97dafe04ed08013d9195fc56b7f446972c5eb1668224ebef15de1cddf00c7",
+  "version": "2026.10.21+1"
 }

@@ -1,7 +1,10 @@
 import { sourceLeaf } from '../../components/markdown/source.ts'
 
 /** Resolve whitespace-only visual/source differences without guessing an occurrence. */
-export function whitespaceSelection(source: string, selected: string): { start: number; end: number } | null {
+export function whitespaceSelection(
+  source: string,
+  selected: string
+): { start: number; end: number } | null {
   const offsets: number[] = []
   let compact = ''
   for (let index = 0; index < source.length; index++) {
@@ -26,10 +29,11 @@ export interface MarkdownSyntaxNode {
 type SourceLeafKind = Parameters<typeof sourceLeaf>[4]
 
 /** Syntax leaves whose rendered characters have a character-exact source decoder. */
+const TEXT_LEAF_KIND = 'text'
 const EXACT_LEAF_KINDS: Readonly<Record<string, SourceLeafKind>> = {
-  text: 'text',
+  text: TEXT_LEAF_KIND,
   inlineCode: 'inline-code',
-  code: 'fenced-code'
+  code: 'fenced-code',
 }
 const FENCED_CODE_KIND: SourceLeafKind = 'fenced-code'
 const FENCED_CODE_TERMINATOR = '\n'
@@ -44,7 +48,13 @@ interface MappedLeaf {
   trailingControls: MarkdownSourceSegment[]
 }
 
-function leafBoundaries(source: string, node: MarkdownSyntaxNode, value: string, start: number, end: number): Array<number | null> | null {
+function leafBoundaries(
+  source: string,
+  node: MarkdownSyntaxNode,
+  value: string,
+  start: number,
+  end: number
+): Array<number | null> | null {
   const kind = EXACT_LEAF_KINDS[node.type]
   if (!kind) return null
   // Fenced code content keeps its final line break in the source decoder's display model.
@@ -67,53 +77,50 @@ function uncoveredSegments(
     cursor = Math.max(cursor, Math.min(segment.end, end))
   }
   if (cursor < end) segments.push({ start: cursor, end })
-  return segments.filter(segment => segment.start < segment.end)
+  return segments.filter((segment) => segment.start < segment.end)
 }
 
 function syntaxLeaves(source: string, tree: MarkdownSyntaxNode): MappedLeaf[] {
   const leaves: MappedLeaf[] = []
-  const visit = (
-    node: MarkdownSyntaxNode,
-    ancestorControls: MarkdownSourceSegment[]
-  ): void => {
+  const visit = (node: MarkdownSyntaxNode, ancestorControls: MarkdownSourceSegment[]): void => {
     const start = node.position?.start.offset
     const end = node.position?.end.offset
     const positioned = start !== undefined && end !== undefined
     if (typeof node.value === 'string' && positioned) {
       const boundaries = leafBoundaries(source, node, node.value, start, end)
-      const numericBoundaries = boundaries?.filter((boundary): boundary is number => boundary !== null) ?? []
+      const numericBoundaries =
+        boundaries?.filter((boundary): boundary is number => boundary !== null) ?? []
       const contentStart = numericBoundaries[0] ?? start
       const contentEnd = numericBoundaries.at(-1) ?? end
       const controls = [
         ...ancestorControls,
-        ...uncoveredSegments(start, end, [{ start: contentStart, end: contentEnd }])
+        ...uncoveredSegments(start, end, [{ start: contentStart, end: contentEnd }]),
       ]
       leaves.push({
         value: node.value,
         start,
         end,
         boundaries,
-        leadingControls: controls.filter(segment => segment.end <= contentStart),
-        trailingControls: controls.filter(segment => segment.start >= contentEnd)
+        leadingControls: controls.filter((segment) => segment.end <= contentStart),
+        trailingControls: controls.filter((segment) => segment.start >= contentEnd),
       })
       return
     }
     const children = node.children ?? []
     const firstChildStart = children[0]?.position?.start.offset
     const lastChildEnd = children.at(-1)?.position?.end.offset
-    const boundaryControls = positioned
-      && firstChildStart !== undefined
-      && lastChildEnd !== undefined
-      ? [
-          { start, end: firstChildStart },
-          { start: lastChildEnd, end }
-        ].filter(segment => segment.start < segment.end)
-      : []
+    const boundaryControls =
+      positioned && firstChildStart !== undefined && lastChildEnd !== undefined
+        ? [
+            { start, end: firstChildStart },
+            { start: lastChildEnd, end },
+          ].filter((segment) => segment.start < segment.end)
+        : []
     const controls = [...ancestorControls, ...boundaryControls]
-    children.forEach(child => visit(child, controls))
+    children.forEach((child) => visit(child, controls))
   }
   // The document root is not markup of its first or last block.
-  tree.children?.forEach(child => visit(child, []))
+  tree.children?.forEach((child) => visit(child, []))
   return leaves
 }
 
@@ -145,7 +152,12 @@ function renderedPoints(leaves: MappedLeaf[], rendered: string): Array<LeafPoint
     while (leafIndex < leaves.length) {
       const leaf = leaves[leafIndex]
       let probe = valueIndex
-      while (probe < leaf.value.length && leaf.value[probe] !== character && WHITESPACE.test(leaf.value[probe])) probe++
+      while (
+        probe < leaf.value.length &&
+        leaf.value[probe] !== character &&
+        WHITESPACE.test(leaf.value[probe])
+      )
+        probe++
       if (probe < leaf.value.length && leaf.value[probe] === character) {
         point = { leaf, index: probe }
         valueIndex = probe + 1
@@ -191,7 +203,9 @@ function selectedTrailingBoundary(point: LeafPoint): number | null {
   return null
 }
 
-function coalescedSegments(positions: Array<{ start: number; end: number }>): MarkdownSourceSegment[] {
+function coalescedSegments(
+  positions: Array<{ start: number; end: number }>
+): MarkdownSourceSegment[] {
   const segments: MarkdownSourceSegment[] = []
   for (const position of positions) {
     const previous = segments.at(-1)
@@ -202,7 +216,7 @@ function coalescedSegments(positions: Array<{ start: number; end: number }>): Ma
 }
 
 function joinedSource(source: string, segments: MarkdownSourceSegment[]): string {
-  return segments.map(segment => source.slice(segment.start, segment.end)).join('')
+  return segments.map((segment) => source.slice(segment.start, segment.end)).join('')
 }
 
 function completedSegments(
@@ -211,11 +225,13 @@ function completedSegments(
   selectedStart: number,
   selectedEnd: number
 ): MarkdownSourceSegment[] {
-  return coalescedSegments([
-    ...first.leaf.leadingControls.filter(segment => segment.end <= selectedStart),
-    { start: selectedStart, end: selectedEnd },
-    ...last.leaf.trailingControls.filter(segment => segment.start >= selectedEnd)
-  ].sort((left, right) => left.start - right.start))
+  return coalescedSegments(
+    [
+      ...first.leaf.leadingControls.filter((segment) => segment.end <= selectedStart),
+      { start: selectedStart, end: selectedEnd },
+      ...last.leaf.trailingControls.filter((segment) => segment.start >= selectedEnd),
+    ].sort((left, right) => left.start - right.start)
+  )
 }
 
 /**
@@ -248,6 +264,6 @@ export function markdownSourceRange(
     start: segments[0].start,
     end: segments.at(-1)?.end ?? segments[0].end,
     segments,
-    text: joinedSource(source, segments)
+    text: joinedSource(source, segments),
   }
 }

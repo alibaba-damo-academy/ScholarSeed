@@ -1,5 +1,6 @@
 {
   "schema": 1,
+  "features": { "browser": true },
   "product_id": "scholarseed",
   "product_name": "ScholarSeed",
   "bundle_id": "com.scholarseed.desktop",
@@ -20,14 +21,12 @@
         "sandbox": "workspace-write",
         "approval_policy": "on-request",
         "full_access_sandbox": "danger-full-access",
-        "no_approval_policy": "never"
+        "no_approval_policy": "never",
+        "allowed_network_domains": ["scholarseed.damo.alibaba.com"]
       },
       "executable_sha256": "95a3af73d52372a6d98f288114f7bafcbc4d12711b874d51ffc277539bd6daad",
-      "reported_version": "0.147.0",
       "configuration": {
         "capacity": {
-          "execution_hosts": 16,
-          "control_hosts": 1,
           "queue_limit": 100,
           "wait_seconds": 120.0,
           "idle_seconds": 30.0

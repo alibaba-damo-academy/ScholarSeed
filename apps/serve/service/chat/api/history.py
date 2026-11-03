@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.status import (
@@ -14,17 +14,20 @@ from starlette.status import (
     HTTP_413_CONTENT_TOO_LARGE,
 )
 
-from service.chat.api.bridge import bridge_caller
+from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.constants import PRODUCT_EVENT_HISTORY_RETRIEVED
 from service.chat.service.history import HistoryError, HistoryService
 from service.chat.service.sessions import SessionService
+from service.platform.activity import Activities
 from service.platform.bridge import (
-    BRIDGE_MAX_REQUEST_BYTES,
-    BRIDGE_MAX_RESPONSE_BYTES,
     HISTORY_REQUESTS,
     HISTORY_ROUTE_PREFIX,
 )
 from service.platform.context import HistoryScopeSource
+from service.platform.vocabulary import (
+    BRIDGE_MAX_REQUEST_BYTES,
+    BRIDGE_MAX_RESPONSE_BYTES,
+)
 
 
 def register_history_routes(
@@ -32,8 +35,10 @@ def register_history_routes(
     sessions: SessionService,
     history: HistoryService,
     scope: HistoryScopeSource,
+    *,
+    activities: Activities,
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
 
     @router.post(HISTORY_ROUTE_PREFIX + "{operation}")
     async def query_history(operation: str, request: Request) -> JSONResponse:
@@ -47,6 +52,8 @@ def register_history_routes(
                 {"ok": False, "error": "bridge_operation_unknown"}, HTTP_400_BAD_REQUEST
             )
         snapshot_id = live.active_assistant_snapshot_id
+        turn_id = live.ledger.active_turn_id
+        activity = live.turn_activity
         raw = bytearray()
         async for chunk in request.stream():
             raw.extend(chunk)
@@ -65,6 +72,8 @@ def register_history_routes(
         if (
             sessions.bridge_caller(session_id) is not live
             or live.active_assistant_snapshot_id != snapshot_id
+            or live.ledger.active_turn_id != turn_id
+            or live.turn_activity is not activity
         ):
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         try:
@@ -85,7 +94,7 @@ def register_history_routes(
         await live.publish(
             PRODUCT_EVENT_HISTORY_RETRIEVED,
             {"operation": operation, "snapshot_id": snapshot_id, **result},
-            turn_id=live.ledger.active_turn_id,
+            turn_id=turn_id,
             idempotency_key=f"history:{uuid.uuid4().hex}",
         )
         return response

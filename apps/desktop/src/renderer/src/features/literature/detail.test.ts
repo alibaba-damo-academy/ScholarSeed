@@ -1,15 +1,73 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { beginDetailRead } from './detail.ts'
 
-const detailSource = readFileSync(
-  new URL('./LiteratureDetail.tsx', import.meta.url),
-  'utf8'
-)
-const literatureStyles = readFileSync(
-  new URL('./literature.css', import.meta.url),
-  'utf8'
-)
+test('disposed detail reads ignore both successful and failed old requests', async () => {
+  for (const outcome of ['resolved', 'rejected']) {
+    const published: unknown[] = []
+    let resolve!: (value: string) => void
+    let reject!: (reason: Error) => void
+    const pending = new Promise<string>((ready, failed) => {
+      resolve = ready
+      reject = failed
+    })
+    const dispose = beginDetailRead(
+      () => pending,
+      (value) => published.push(value),
+      (reason) => published.push(reason)
+    )
+    await Promise.resolve()
+    dispose()
+    if (outcome === 'resolved') resolve('old detail')
+    else reject(new Error('old detail failed'))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.deepEqual(published, [])
+  }
+})
+
+test('detail reads publish the current failure and synchronous request errors', async () => {
+  const failure = new Error('detail unavailable')
+  for (const request of [
+    () => Promise.reject(failure),
+    () => {
+      throw failure
+    },
+  ]) {
+    const published: unknown[] = []
+    beginDetailRead(
+      request,
+      (value) => published.push(value),
+      (reason) => published.push(reason)
+    )
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.deepEqual(published, [failure])
+  }
+})
+
+test('a newer detail read stays authoritative after the disposed request rejects', async () => {
+  const published: unknown[] = []
+  let reject!: (reason: Error) => void
+  const previous = new Promise<string>((_resolve, failed) => {
+    reject = failed
+  })
+  const dispose = beginDetailRead(
+    () => previous,
+    (value) => published.push(value),
+    (reason) => published.push(reason)
+  )
+  dispose()
+  beginDetailRead(
+    async () => 'new detail',
+    (value) => published.push(value),
+    (reason) => published.push(reason)
+  )
+  reject(new Error('previous reload failed'))
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(published, ['new detail'])
+})
+
+const detailSource = readFileSync(new URL('./LiteratureDetail.tsx', import.meta.url), 'utf8')
 
 test('attachment icon buttons do not forward unsupported tooltip attributes', () => {
   const iconButtons = detailSource.match(/<IconButton\b[\s\S]*?(?=\sicon=)/g) ?? []
@@ -20,11 +78,23 @@ test('attachment icon buttons do not forward unsupported tooltip attributes', ()
 })
 
 test('attachment double click opens only available files and excludes action buttons', () => {
-  assert.match(detailSource, /onDoubleClick=\{isAttachmentAvailable\(candidate\)[\s\S]*?\? \(\) => act\.openLiteratureAttachment\(item\.id, candidate\.id\)[\s\S]*?: undefined\}/)
-  assert.match(detailSource, /className="lit-row-actions[^"]*"[\s\S]*?onDoubleClick=\{\(event\) => event\.stopPropagation\(\)\}/)
+  assert.match(
+    detailSource,
+    /onDoubleClick=\{\s*isAttachmentAvailable\(candidate\)[\s\S]*?\? \(\) => act\.openLiteratureAttachment\(item\.id, candidate\.id\)[\s\S]*?: undefined\s*\}/
+  )
+  assert.match(
+    detailSource,
+    /className="lit-row-actions[^"]*"[\s\S]*?onDoubleClick=\{\(event\) => event\.stopPropagation\(\)\}/
+  )
   const listSource = readFileSync(new URL('./LiteratureList.tsx', import.meta.url), 'utf8')
-  assert.match(listSource, /onDoubleClick=\{\s*isAttachmentAvailable\(attachment\)[\s\S]*?\? \(\) =>[\s\S]*?act\.openLiteratureAttachment\([\s\S]*?item\.id,[\s\S]*?attachment\.id[\s\S]*?\)[\s\S]*?: undefined[\s\S]*?\}/)
-  assert.match(listSource, /onClick=\{\(\) =>\s*catalogue\.focusAttachment\(item\.id, attachment\.id\)/)
+  assert.match(
+    listSource,
+    /onDoubleClick=\{\s*isAttachmentAvailable\(attachment\)[\s\S]*?\? \(\) =>[\s\S]*?act\.openLiteratureAttachment\([\s\S]*?item\.id,[\s\S]*?attachment\.id[\s\S]*?\)[\s\S]*?: undefined[\s\S]*?\}/
+  )
+  assert.match(
+    listSource,
+    /onClick=\{\(\) =>\s*catalogue\.focusAttachment\(item\.id, attachment\.id\)/
+  )
 })
 
 test('attachment selection supports multiple files while primary PDF stays single', () => {
@@ -55,10 +125,7 @@ test('basic information preserves attachment management and identity', () => {
   )
   assert.match(detailSource, /data-testid="literature-detail-attachments"/)
   assert.match(detailSource, /item\.attachments\.map\(\(candidate\) =>/)
-  assert.match(
-    detailSource,
-    /act\.openLiteratureAttachment\(item\.id, candidate\.id\)/
-  )
+  assert.match(detailSource, /act\.openLiteratureAttachment\(item\.id, candidate\.id\)/)
   assert.match(detailSource, /catalogue\.focusAttachment\(item\.id, candidate\.id\)/)
   assert.doesNotMatch(detailSource, /data-testid="literature-detail-marks"/)
 })
@@ -67,23 +134,19 @@ test('attachment marks show source framing only when comments exist', () => {
   assert.match(detailSource, /const hasComments = markComments\.length > 0/)
   assert.match(
     detailSource,
-    /\{hasComments \? <span className="lit-attachment-mark-label">\{literature\('attachment\.sourceLabel'\)\}<\/span> : null\}/
+    /\{hasComments \?\s*\(?\s*<span className="lit-attachment-mark-label[^"]*">\s*\{literature\('attachment\.sourceLabel'\)\}\s*<\/span>\s*\)?\s*: null\}/
   )
   assert.match(
     detailSource,
-    /lit-attachment-mark-text\$\{hasComments \? ' is-source' : ''\}/
+    /lit-attachment-mark-text[^\n]*\[&\.is-source\]:border-l-2[^\n]*\$\{hasComments \? ' is-source' : ''\}/
   )
-  assert.match(literatureStyles, /\.lit-attachment-mark-text\.is-source\s*\{[\s\S]*border-left:/)
 })
 
 test('three-tab labels are localized in Chinese and English', () => {
   for (const language of ['zh', 'en']) {
     const resources = JSON.parse(
       readFileSync(
-        new URL(
-          `../../../../localization/locales/${language}/literature.json`,
-          import.meta.url
-        ),
+        new URL(`../../../../localization/locales/${language}/literature.json`, import.meta.url),
         'utf8'
       )
     ) as {
@@ -141,7 +204,7 @@ test('metadata sync is offered for every identifier and confirms title matches',
 
 test('basic information saves update one row without reloading the literature list', () => {
   const saveBlock = detailSource.match(
-    /const save = async \(update: LiteratureUpdate\): Promise<void> => \{[\s\S]*?\n  \}/
+    /const save = async \(update: LiteratureUpdate\): Promise<void> => \{[\s\S]*?\n {2}\}/
   )?.[0]
   assert.ok(saveBlock)
   assert.match(saveBlock, /acceptUpdatedItem\(updated\)/)
@@ -159,29 +222,38 @@ test('metadata sync copy is localized and keeps the agreed wording', () => {
     bannerByTitle: '从 openalex.org 同步元数据',
     succeeded: '同步元数据成功',
     failed: '同步元数据失败',
-    quotaFailed: '接口限流，请稍后重试'
+    quotaFailed: '接口限流，请稍后重试',
   }
   for (const language of ['zh', 'en']) {
     const resources = JSON.parse(
       readFileSync(
-        new URL(
-          `../../../../localization/locales/${language}/literature.json`,
-          import.meta.url
-        ),
+        new URL(`../../../../localization/locales/${language}/literature.json`, import.meta.url),
         'utf8'
       )
     ) as { detail: { sync: Record<string, string> } }
     const sync = resources.detail.sync
 
-    assert.deepEqual(
-      Object.keys(sync).sort(),
-      [
-        'action', 'bannerByArxiv', 'bannerByDoi', 'bannerByTitle', 'byArxiv',
-        'byDoi', 'byTitle', 'confirm', 'confirmDescription', 'confirmTitle',
-        'currentValue', 'failed', 'missed', 'networkFailed', 'nextValue',
-        'quotaFailed', 'reasonLabel', 'succeeded', 'supplementIdentifier'
-      ]
-    )
+    assert.deepEqual(Object.keys(sync).sort(), [
+      'action',
+      'bannerByArxiv',
+      'bannerByDoi',
+      'bannerByTitle',
+      'byArxiv',
+      'byDoi',
+      'byTitle',
+      'confirm',
+      'confirmDescription',
+      'confirmTitle',
+      'currentValue',
+      'failed',
+      'missed',
+      'networkFailed',
+      'nextValue',
+      'quotaFailed',
+      'reasonLabel',
+      'succeeded',
+      'supplementIdentifier',
+    ])
     assert.ok(Object.values(sync).every((value) => value.length > 0))
     if (language === 'zh') {
       for (const [key, value] of Object.entries(expected)) {

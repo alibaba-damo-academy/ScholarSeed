@@ -11,18 +11,20 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  useToast
+  useToast,
 } from '../../components/ui'
 import { listOpenWithApps, revealInFinder, revealLabelKey, type OpenContext } from '../../fileOpen'
 import { resolveRevealTarget } from '../resources/api'
-import {
-  useWorkspaceController,
-  type DocumentSession,
-  type DocumentWorkspace
-} from './workspace'
+import { useWorkspaceController, type DocumentSession, type DocumentWorkspace } from './workspace'
 
 type ExternalOpenError = {
-  key: 'dock.notProject' | 'dock.resolveSave' | 'dock.notSaved' | 'dock.resolvePath' | 'dock.openFailed' | 'dock.desktopUnavailable'
+  key:
+    | 'dock.notProject'
+    | 'dock.resolveSave'
+    | 'dock.notSaved'
+    | 'dock.resolvePath'
+    | 'dock.openFailed'
+    | 'dock.desktopUnavailable'
   detail?: string
 }
 
@@ -32,12 +34,21 @@ interface ExternalOpenResult {
   error?: ExternalOpenError
 }
 
-export function canOpenDocumentExternally(session: DocumentSession | null | undefined): session is DocumentSession {
-  return Boolean(session?.source.kind === 'project'
-    && (session.viewer === 'office' || (!session.capabilities.can_edit && session.viewer === 'spreadsheet')))
+export function canOpenDocumentExternally(
+  session: DocumentSession | null | undefined
+): session is DocumentSession {
+  return Boolean(
+    session?.source.kind === 'project' &&
+    (session.viewer === 'office' ||
+      (!session.capabilities.can_edit && session.viewer === 'spreadsheet'))
+  )
 }
 
-function ExternalApplicationIcon({ application }: { application?: OpenWithApp }): React.JSX.Element {
+function ExternalApplicationIcon({
+  application,
+}: {
+  application?: OpenWithApp
+}): React.JSX.Element {
   if (!application?.icon) return <AppWindow />
   return (
     <img
@@ -54,7 +65,7 @@ async function saveDocumentIfNeeded(
   session: DocumentSession
 ): Promise<ExternalOpenResult> {
   if (session.source.kind !== 'project') return { ok: false, error: { key: 'dock.notProject' } }
-  if (session.dirty && !await workspace.save(session.id)) {
+  if (session.dirty && !(await workspace.save(session.id))) {
     return { ok: false, error: { key: 'dock.resolveSave' } }
   }
   const current = workspace.getSnapshot().sessions[session.id]
@@ -72,7 +83,8 @@ async function prepareDocumentExternalPath(
   const saved = await saveDocumentIfNeeded(workspace, session)
   if (!saved.ok) return saved
   const resolved = await resolveRevealTarget(session.source.path, session.source.project)
-  if (!resolved.ok || !resolved.absolute) return { ok: false, error: { key: 'dock.resolvePath', detail: resolved.error } }
+  if (!resolved.ok || !resolved.absolute)
+    return { ok: false, error: { key: 'dock.resolvePath', detail: resolved.error } }
   return { ok: true, path: resolved.absolute }
 }
 
@@ -83,9 +95,15 @@ async function openDocumentExternally(
   const prepared = await prepareDocumentExternalPath(workspace, session)
   if (!prepared.ok || !prepared.path) return prepared
   const opened = await openSystemPath(prepared.path)
-  return opened.ok ? { ok: true } : { ok: false, error: opened.applicationFailure?.code === 'desktop_bridge_unavailable'
-    ? { key: 'dock.desktopUnavailable' }
-    : { key: 'dock.openFailed', detail: opened.error } }
+  return opened.ok
+    ? { ok: true }
+    : {
+        ok: false,
+        error:
+          opened.applicationFailure?.code === 'desktop_bridge_unavailable'
+            ? { key: 'dock.desktopUnavailable' }
+            : { key: 'dock.openFailed', detail: opened.error },
+      }
 }
 
 async function openDocumentWithApplication(
@@ -111,22 +129,27 @@ async function saveDocumentCopy(
   if (!current) return { ok: false, error: { key: 'dock.notSaved' } }
   const result = await window.scholarseed.saveFileCopy({
     bytes: current.bytes,
-    suggestedName: session.source.path.split('/').at(-1) ?? session.title
+    suggestedName: session.source.path.split('/').at(-1) ?? session.title,
   })
   return result.ok || result.canceled
     ? { ok: true }
     : { ok: false, error: { key: 'dock.openFailed', detail: result.error } }
 }
 
-export function DocumentExternalOpen({ session }: { session: DocumentSession }): React.JSX.Element | null {
-  const { t } = useTranslation('workbench')
+export function DocumentExternalOpen({
+  session,
+}: {
+  session: DocumentSession
+}): React.JSX.Element | null {
+  const { t } = useTranslation(['workbench', 'resources'])
   const { toast } = useToast()
   const workspace = useWorkspaceController()
   const [externalOpening, setExternalOpening] = useState(false)
   const [externalApps, setExternalApps] = useState<OpenWithApp[] | null>(null)
   const [externalAppsLoading, setExternalAppsLoading] = useState(false)
   const [externalContext, setExternalContext] = useState<OpenContext | null>(null)
-  const defaultExternalApp = externalApps?.find((application) => application.isDefault) ?? externalApps?.[0]
+  const defaultExternalApp =
+    externalApps?.find((application) => application.isDefault) ?? externalApps?.[0]
 
   const reportExternalResult = (result: ExternalOpenResult): void => {
     if (!result.ok) {
@@ -139,7 +162,10 @@ export function DocumentExternalOpen({ session }: { session: DocumentSession }):
     try {
       reportExternalResult(await action())
     } catch (error) {
-      toast({ title: `${t('dock.openFailed')} ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+      toast({
+        title: `${t('dock.openFailed')} ${error instanceof Error ? error.message : String(error)}`,
+        tone: 'error',
+      })
     } finally {
       setExternalOpening(false)
     }
@@ -152,20 +178,26 @@ export function DocumentExternalOpen({ session }: { session: DocumentSession }):
       if (!resolved.ok || !resolved.absolute) {
         setExternalContext(null)
         setExternalApps([])
-        reportExternalResult({ ok: false, error: { key: 'dock.resolvePath', detail: resolved.error } })
+        reportExternalResult({
+          ok: false,
+          error: { key: 'dock.resolvePath', detail: resolved.error },
+        })
         return
       }
       const context = {
         absolute: resolved.absolute,
         relative: session.source.path,
-        title: session.source.path.split('/').at(-1) ?? session.title
+        title: session.source.path.split('/').at(-1) ?? session.title,
       }
       setExternalContext(context)
       setExternalApps(await listOpenWithApps(context))
     } catch (error) {
       setExternalContext(null)
       setExternalApps([])
-      toast({ title: `${t('dock.openFailed')} ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+      toast({
+        title: `${t('dock.openFailed')} ${error instanceof Error ? error.message : String(error)}`,
+        tone: 'error',
+      })
     } finally {
       setExternalAppsLoading(false)
     }
@@ -180,7 +212,9 @@ export function DocumentExternalOpen({ session }: { session: DocumentSession }):
     <div className="inline-flex shrink-0" data-testid="external-open-split-button">
       <Button
         className="rounded-r-none"
-        data-testid={session.viewer === 'office' ? 'office-open-external' : 'spreadsheet-open-external'}
+        data-testid={
+          session.viewer === 'office' ? 'office-open-external' : 'spreadsheet-open-external'
+        }
         disabled={externalOpening || session.saveState === 'saving'}
         icon={<ExternalApplicationIcon application={defaultExternalApp} />}
         loading={externalOpening}
@@ -190,7 +224,11 @@ export function DocumentExternalOpen({ session }: { session: DocumentSession }):
       >
         {t('dock.openExternal')}
       </Button>
-      <DropdownMenu onOpenChange={(open) => { if (open) void loadExternalApps() }}>
+      <DropdownMenu
+        onOpenChange={(open) => {
+          if (open) void loadExternalApps()
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={t('dock.openWith')}
@@ -202,32 +240,49 @@ export function DocumentExternalOpen({ session }: { session: DocumentSession }):
             variant="outline"
           />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className={`${PRODUCT_MENU_CONTENT_CLASS} !w-56 !rounded-[var(--vds-radius-6)] !p-[var(--vds-space-2)]`}>
+        <DropdownMenuContent
+          align="end"
+          className={`${PRODUCT_MENU_CONTENT_CLASS} !w-[var(--vds-external-resource-menu-width)] !rounded-[var(--vds-radius-6)] !p-[var(--vds-space-2)]`}
+        >
           {externalAppsLoading && (
             <div className="px-[var(--vds-space-2)] py-[var(--vds-space-2)] text-[var(--vds-text-secondary)]">
               {t('dock.openAppsLoading')}
             </div>
           )}
-          {!externalAppsLoading && externalApps?.map((application) => (
-            <DropdownMenuItem
-              className={application.isDefault ? 'bg-[var(--vds-other-overlay-1)]' : undefined}
-              key={application.path}
-              onSelect={() => void runExternalAction(() => openDocumentWithApplication(workspace, session, application))}
-            >
-              <ExternalApplicationIcon application={application} />
-              <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{application.name}</span>
-            </DropdownMenuItem>
-          ))}
+          {!externalAppsLoading &&
+            externalApps?.map((application) => (
+              <DropdownMenuItem
+                className={application.isDefault ? 'bg-[var(--vds-other-overlay-1)]' : undefined}
+                key={application.path}
+                onSelect={() =>
+                  void runExternalAction(() =>
+                    openDocumentWithApplication(workspace, session, application)
+                  )
+                }
+              >
+                <ExternalApplicationIcon application={application} />
+                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                  {application.name}
+                </span>
+              </DropdownMenuItem>
+            ))}
           {!externalAppsLoading && externalApps?.length === 0 && (
             <div className="px-[var(--vds-space-2)] py-[var(--vds-space-2)] text-[var(--vds-text-secondary)]">
               {t('dock.openAppsEmpty')}
             </div>
           )}
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={!externalContext} onSelect={() => { if (externalContext) revealInFinder(externalContext) }}>
+          <DropdownMenuItem
+            disabled={!externalContext}
+            onSelect={() => {
+              if (externalContext) revealInFinder(externalContext)
+            }}
+          >
             {t(revealLabelKey())}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void runExternalAction(() => saveDocumentCopy(workspace, session))}>
+          <DropdownMenuItem
+            onSelect={() => void runExternalAction(() => saveDocumentCopy(workspace, session))}
+          >
             {t('dock.saveAsExternal')}
           </DropdownMenuItem>
         </DropdownMenuContent>

@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "target": "win32-x86_64",
+  "components": {
+    "python": {
+      "version": "3.12.13-r3",
+      "contentId": "87c9fe4536d00df482b2b20755ae146525778dd7d780e89dd57d6508fbd6403b",
+      "archiveSha256": "864c2c0a9349478d8fd24a3220084fc2c2b3fe3ddc04dad3ca833dc4d3b7c6f2"
+    },
+    "texlive": {
+      "version": "2026-r4",
+      "contentId": "159845d44d495b0912986c16d31a6b83a2f3bb39c7a9471c212392d7a66155cc",
+      "archiveSha256": "6ac8ef8108017b48188fa5ca64878a84f5f9689d3bfdf7cd03a40bb662ab2665"
+    },
+    "powershell": {
+      "version": "7.6.6-r2",
+      "contentId": "cb835191b6d5d2fa6bf8152dcd321063007a228abff7a498798b929c3e41f03b",
+      "archiveSha256": "5b2314c0ed3cca27dd4ab71b8555f638395eb4c19fd6ac60c55365a625f673b5"
+    },
+    "codex": {
+      "version": "0.165.0-r1",
+      "contentId": "a362cf5e14ebe09cad94e3934be6c0b35e1130b2e54fb1953fd324caaee8f6ad",
+      "archiveSha256": "ad338abe747329422890922fd0a3642d870232ac33a92688f40d50e9efdae45a"
+    },
+    "office": {
+      "version": "zeta-24-2-20250513-r2",
+      "contentId": "7f477ddc2ff056f18a9efcb854370684ccf0c853777c24bba3887ce4fe4b5d2b",
+      "archiveSha256": "617a429e99bdd844e17ba236607c756dea0379e26c30ea08ae1bb5b9d21e3771"
+    },
+    "electron": {
+      "version": "44.3.0-r1",
+      "contentId": "8958808eea290994a214cb58aa8b54931ff5445081c9bb3e5f37a9a327f4acb8",
+      "archiveSha256": "b32e3127786869d8035eb7fd49010f36860177c2a73cb0246252e060f9cfd3b7"
+    }
+  }
+}

@@ -17,9 +17,9 @@ retained; image regions and table data are excluded from the indexed text.
 Raw files, parser identity, sentence indexes and captions are cached separately.
 The output schema consumed by existing card extraction stays unchanged.
 
-The default profile enables only paperhub. Explicit --sources options may add
-PDF URL/arXiv/DOI fallbacks, all processed with the same local parser. A failed
-or uncertain parse is reported rather than passed off as usable full text.
+The default profile tries PaperHub, then a known arXiv ID with a short deadline.
+Explicit --sources options may add PDF URL/DOI sources. Table layout findings
+are advisory; other fatal parsing failures remain explicit.
 
 What it will not do
 -------------------
@@ -65,14 +65,11 @@ for _slr_anc in _slr_pathlib.Path(__file__).resolve().parents:
 else:
     raise RuntimeError("systematic-literature-review skill root not found above " + __file__)
 import slr_paths as _slr_paths
-# bootstrap() is not optional here: it runs lib/no_proxy.py, and PaperHub sits on
-# an internal network. Handed to an ambient outbound proxy, its responses come
-# back as a 405 that parses as an empty result set rather than as an error — the
-# whole corpus would silently degrade to abstract-only with no failure to see.
 _slr_paths.bootstrap(__file__)
 # --- end slr path bootstrap ---
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -86,6 +83,7 @@ from pathlib import Path
 from urllib import error, parse, request
 
 import pypdfium2
+import httpx
 
 RETRIEVAL_DIR = "02_retrieval"
 SELECTED_FILENAME = "selected_paper.json"
@@ -96,26 +94,18 @@ CACHE_DIRNAME = "_fulltext_cache/caption-sentences-v1"
 MAX_PDF_BYTES = 50 * 1024 * 1024
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_CONCURRENCY = 8
+ARXIV_CONNECT_TIMEOUT = 3.0
+ARXIV_TOTAL_TIMEOUT = 10.0
+ARXIV_CONCURRENCY = 1
+DOWNLOAD_CHUNK_BYTES = 65536
+_ARXIV_SLOTS = threading.BoundedSemaphore(ARXIV_CONCURRENCY)
 
 # Consecutive *transport* failures before a source is written off for the run.
 BREAKER_THRESHOLD = 5
 
-# The acquisition sources, in cascade order, and which of them this run may use.
-#
-# `--sources` exists because the cascade is a *deployment* decision, not a code
-# one. Where the machine can reach the open web, every source earns its place:
-# PaperHub-only was measured at 30-70% coverage across the sample workspaces,
-# and each paper it misses is a card built from a 150-word abstract. Where it
-# cannot — an internal network, or a policy that says paper text comes from the
-# hub or not at all — the web sources are not merely useless, they are 30s of
-# timeout per paper before the same null gets written anyway.
-#
-# So the script keeps the full cascade as its own default and the profile
-# manifest narrows it. `config/profiles/fast.json` ships `--sources paperhub`,
-# which reproduces the pre-cascade behaviour: PaperHub serves what it has, and
-# every other paper is written null and degrades to abstract-only.
 ALL_SOURCES = ("paperhub", "pdf_url", "arxiv_pdf", "doi_pdf")
 PDF_SOURCES = ("pdf_url", "arxiv_pdf", "doi_pdf")
+DEFAULT_SOURCES = ("paperhub", "arxiv_pdf")
 
 
 def parse_sources(raw: str) -> tuple[str, ...]:
@@ -247,13 +237,7 @@ def pdf_candidates(paper: dict) -> list[tuple[str, str]]:
 
     doi = _norm_doi(paper)
     if doi:
-        # arXiv-minted DOIs carry the arXiv id; go straight to the file rather
-        # than bouncing through the resolver to a landing page.
-        m = re.match(r"10\.48550/arxiv\.(.+)$", doi, re.I)
-        if m:
-            add("arxiv_pdf", f"https://arxiv.org/pdf/{parse.quote(m.group(1), safe='./')}")
-        else:
-            add("doi_pdf", f"https://doi.org/{parse.quote(doi, safe='/')}")
+        add("doi_pdf", f"https://doi.org/{parse.quote(doi, safe='/')}")
 
     return out
 
@@ -320,8 +304,9 @@ def fetch_paperhub(paper_id: str, base_url: str, timeout: float, cache_dir: Path
     try:
         source, meta = download(paper_id, cache_dir, base_url, timeout, use_cache=use_cache)
         parsed = parse_source(source, cache_dir / 'parsed')
+        fatal_warnings = parsed.get('fatal_warnings', parsed.get('warnings', []))
         if parsed['status'] != 'ok':
-            raise FetchError('extract_failed', '; '.join(parsed['warnings']), False)
+            raise FetchError('extract_failed', '; '.join(fatal_warnings), False)
         record = blank_record('', parsed['info_type'], parsed['sentences'])
         record['paperhub_id'] = paper_id
         record['source_file'] = str(source)
@@ -333,6 +318,53 @@ def fetch_paperhub(paper_id: str, base_url: str, timeout: float, cache_dir: Path
         raise FetchError(outcome, str(exc), exc.status in (None,429,500,502,503,504)) from exc
     except (ParseError, OSError, ValueError) as exc:
         raise FetchError('extract_failed', str(exc), False) from exc
+
+
+async def _arxiv_bytes(url: str, budget: float) -> bytes:
+    limits = httpx.Timeout(budget, connect=min(ARXIV_CONNECT_TIMEOUT, budget))
+    async with httpx.AsyncClient(timeout=limits, follow_redirects=True, trust_env=True) as client:
+        async with client.stream('GET', url, headers={'User-Agent': USER_AGENT, 'Accept': 'application/pdf'}) as response:
+            if response.status_code != 200:
+                raise FetchError('fetch_failed', f'HTTP {response.status_code}',
+                                 response.status_code == 429 or response.status_code >= 500)
+            declared = response.headers.get('content-length', '')
+            if declared.isdigit() and int(declared) > MAX_PDF_BYTES:
+                raise FetchError('too_large', f'{declared} bytes > cap {MAX_PDF_BYTES}', False)
+            data = bytearray()
+            async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
+                data.extend(chunk)
+                if len(data) > MAX_PDF_BYTES:
+                    raise FetchError('too_large', f'body exceeds cap {MAX_PDF_BYTES}', False)
+            return _validated_pdf(bytes(data), MAX_PDF_BYTES)
+
+
+async def _arxiv_request(url: str, budget: float) -> bytes:
+    return await asyncio.wait_for(_arxiv_bytes(url, budget), timeout=budget)
+
+
+def download_arxiv(url: str) -> bytes:
+    started = time.monotonic()
+    if not _ARXIV_SLOTS.acquire(timeout=ARXIV_TOTAL_TIMEOUT):
+        raise FetchError('timeout', 'arXiv download queue exceeded its deadline', False)
+    try:
+        remaining = ARXIV_TOTAL_TIMEOUT - (time.monotonic() - started)
+        if remaining <= 0:
+            raise FetchError('timeout', 'arXiv download deadline exhausted', False)
+        return asyncio.run(_arxiv_request(url, remaining))
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise FetchError('timeout', f'arXiv download exceeded {ARXIV_TOTAL_TIMEOUT:g}s', True) from exc
+    except httpx.HTTPError as exc:
+        raise FetchError('fetch_failed', f'{type(exc).__name__}: {exc}', True) from exc
+    finally:
+        _ARXIV_SLOTS.release()
+
+
+def _validated_pdf(data: bytes, max_bytes: int) -> bytes:
+    if len(data) > max_bytes:
+        raise FetchError('too_large', f'body exceeds cap {max_bytes}', False)
+    if not data.lstrip().startswith(b'%PDF'):
+        raise FetchError('not_a_pdf', 'response has no PDF magic bytes', False)
+    return data
 
 
 def download_pdf(url: str, timeout: float, max_bytes: int = MAX_PDF_BYTES) -> bytes:
@@ -351,12 +383,7 @@ def download_pdf(url: str, timeout: float, max_bytes: int = MAX_PDF_BYTES) -> by
     })
     _, data = _get(req, timeout, max_bytes)
 
-    if len(data) > max_bytes:
-        raise FetchError("too_large", f"body exceeds cap {max_bytes}", False)
-    if not data.lstrip()[:5].startswith(b"%PDF"):
-        head = data[:80].decode("utf-8", errors="replace").strip().replace("\n", " ")
-        raise FetchError("not_a_pdf", f"no %PDF magic; starts with {head[:60]!r}", False)
-    return data
+    return _validated_pdf(data, max_bytes)
 
 
 # ---------------------------------------------------------------- extraction --
@@ -669,7 +696,7 @@ def record_is_usable(record: dict | None) -> bool:
 
 def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
             breaker: Breaker, timeout: float,
-            sources: tuple[str, ...] = ALL_SOURCES,
+            sources: tuple[str, ...] = DEFAULT_SOURCES,
             use_cache: bool = True) -> tuple[dict | None, dict]:
     """
     Run the cascade for one paper. Returns (record_or_None, outcome_row).
@@ -763,7 +790,10 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
         return None, row
 
     if not candidates and not arxiv_id:
-        row["detail"] = "; ".join(attempts) or "no arxiv_id, no doi, no pdf_urls"
+        if 'arxiv_pdf' in sources:
+            attempts.append('arxiv_pdf: no known arXiv ID; use supplied abstract')
+        row.update(outcome=last_outcome if hub_id else 'no_identifier',
+                   detail='; '.join(attempts) or 'no arxiv_id, no doi, no pdf_urls')
         return None, row
 
     pdf_bytes = cache.read_pdf(paper_id) if use_cache else None
@@ -775,7 +805,7 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
                 attempts.append(f"{source}: disabled by circuit breaker")
                 continue
             try:
-                pdf_bytes = download_pdf(url, timeout)
+                pdf_bytes = download_arxiv(url) if source == 'arxiv_pdf' else download_pdf(url, timeout)
                 breaker.record_success(source)
                 used_source = source
                 cache.write_pdf(paper_id, pdf_bytes)
@@ -794,7 +824,8 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
         source = cache.path_for(paper_id, '.pdf')
         if not source.exists(): source.write_bytes(pdf_bytes)
         parsed = parse_source(source, cache.path_for(paper_id, '.parsed'))
-        if parsed['status'] != 'ok': raise FetchError('extract_failed', '; '.join(parsed['warnings']), False)
+        fatal_warnings = parsed.get('fatal_warnings', parsed.get('warnings', []))
+        if parsed['status'] != 'ok': raise FetchError('extract_failed', '; '.join(fatal_warnings), False)
         blob = parsed['sentences']
     except (FetchError, ValueError, OSError) as exc:
         err = exc if isinstance(exc, FetchError) else FetchError("extract_failed", str(exc), False)
@@ -915,7 +946,7 @@ def decide_status(report: dict, breaker: Breaker) -> dict:
 
 
 def run(workspace: Path, concurrency: int, timeout: float, force: bool,
-        sources: tuple[str, ...] = ALL_SOURCES) -> tuple[dict, dict]:
+        sources: tuple[str, ...] = DEFAULT_SOURCES) -> tuple[dict, dict]:
     retrieval = workspace / RETRIEVAL_DIR
     selected_path = retrieval / SELECTED_FILENAME
     output_path = retrieval / OUTPUT_FILENAME
@@ -1063,9 +1094,9 @@ def main() -> int:
                     help=f"per-request timeout in seconds (default {DEFAULT_TIMEOUT:.0f})")
     ap.add_argument("--force", action="store_true",
                     help="re-fetch papers that already have a non-null paper_info entry")
-    ap.add_argument("--sources", default="all",
+    ap.add_argument("--sources", default=','.join(DEFAULT_SOURCES),
                     help=f"comma-separated acquisition sources to use, from "
-                         f"{', '.join(ALL_SOURCES)} (default: all). `--sources paperhub` "
+                         f"{', '.join(ALL_SOURCES)} (default: {','.join(DEFAULT_SOURCES)}). `--sources paperhub` "
                          f"restricts acquisition to the hub; every paper it does not hold "
                          f"is written null and degrades to abstract-only")
     ap.add_argument("--json", action="store_true",

@@ -14,7 +14,7 @@ from service.chat.persistence.catalog import SessionCatalogStore
 from service.chat.persistence.events import ProductEventStore
 from service.chat.service.artifacts import ArtifactReadError
 from service.paths import SESSION_ATTACHMENT_DIRNAME
-from service.platform.citations import CitationDocument
+from service.platform.citations import CitationDocument, CitationSourceChanged
 
 ATTACHMENT_NOT_FOUND = "session_attachment_not_found"
 ATTACHMENT_CHANGED = "session_attachment_changed"
@@ -69,7 +69,7 @@ class AttachmentService:
             raise ValueError(ATTACHMENT_NOT_FOUND) from error
         digest = sha256(payload).hexdigest()
         if ref.get("sha256") and ref["sha256"] != digest:
-            raise ValueError(ATTACHMENT_CHANGED)
+            raise CitationSourceChanged(ATTACHMENT_CHANGED)
         return CitationDocument(
             "",
             str(ref.get("title") or source.name),

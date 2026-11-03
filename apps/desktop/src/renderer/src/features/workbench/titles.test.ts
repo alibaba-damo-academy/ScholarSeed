@@ -9,11 +9,13 @@ import {
   PROJECTS_TAB,
   literatureResultTab,
   literatureSearchTab,
+  newProjectTab,
   openFixedTab,
   openReviewTab,
   openVersionDiffTab,
   parseVersionDiffTab,
   reviewTab,
+  selectProjectTab,
   versionDiffTab,
   workbenchTabTitle
 } from './tabs.ts'
@@ -85,4 +87,18 @@ test('project, review and AI search tabs redraw while preserving canonical title
   assert.equal(openReviewTab(tabs, 'project / 甲', 'batch:1', 3), tabs)
   assert.equal(workbenchTabTitle(reviewTab('p', 'b', 0), literature, workbench), 'Review changes · 0')
   assert.equal(workbenchTabTitle(literatureSearchTab('empty', ''), literature, workbench), 'AI search: ')
+})
+
+test('new project tab and its selected surface follow the current language', async () => {
+  const locale = createInstance()
+  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { literature: zh, workbench: zhWorkbench }, en: { literature: en, workbench: enWorkbench } } })
+  const literature = locale.getFixedT(null, 'literature')
+  const workbench = locale.getFixedT(null, 'workbench')
+  const blank = newProjectTab('project-1')
+  assert.equal(workbenchTabTitle(blank, literature, workbench), '新标签页')
+  const files = selectProjectTab([blank], blank.id, 'library')[0]
+  assert.equal(workbenchTabTitle(files, literature, workbench), '项目文件')
+  await locale.changeLanguage('en')
+  assert.equal(workbenchTabTitle(blank, literature, workbench), 'New tab')
+  assert.equal(workbenchTabTitle(files, literature, workbench), 'Project files')
 })

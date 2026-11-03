@@ -24,6 +24,7 @@ from service.inference.transport import (
     log_http_failure,
     receive,
 )
+from service.platform.activity import Activities
 from service.platform.inference import (
     ModelInvocationEventKind,
     ModelInvocationLimits,
@@ -90,12 +91,12 @@ class ResourceContracts(unittest.IsolatedAsyncioTestCase):
         self.text = "研究上下文。待解释内容。"
         self.path.write_text(self.text)
         revision = "sha256:" + hashlib.sha256(self.path.read_bytes()).hexdigest()
-        content = ContentService(registry, catalog)
+        content = ContentService(registry, catalog, activities=Activities())
         self.provider = RecordingProvider()
         tasks = AssistantInvocationStore(self.root / "tasks.db")
         self.service = ResourceAIService(
             evidence=SelectionContextProvider(content),
-            actions=AssistantActionService(tasks, model=self.provider),
+            actions=AssistantActionService(tasks, activities=Activities(), model=self.provider),
             tasks=tasks,
         )
         self.command = ResourceCommand(

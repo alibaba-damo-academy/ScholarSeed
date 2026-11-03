@@ -19,13 +19,18 @@ import hashlib
 import os
 import shutil
 import stat
-import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from service.content.domain.model import PREPARED_CONFLICT, PREPARED_UNAVAILABLE, ContentError
+from service.content.domain.model import (
+    PREPARED_CONFLICT,
+    PREPARED_UNAVAILABLE,
+    WORKING_CONTENT_CONFLICT,
+    WORKING_CONTENT_PATH_INVALID,
+    ContentError,
+)
 from service.content.service.enumeration import GITIGNORE_FILENAME
 from service.content.service.native import (
     CREATION_MARKER_BYTES,
@@ -37,7 +42,7 @@ from service.content.service.native import (
     sync_published_descriptor,
 )
 from service.content.service.space import ProjectSpace
-from service.content.service.utils import filesystem_error, name_length_error
+from service.content.service.utils import filesystem_error, name_length_error, read_regular
 from service.platform.content import (
     AssetKind,
     AssetOrigin,
@@ -46,7 +51,13 @@ from service.platform.content import (
     ImportMode,
     PreparedContent,
 )
-from service.platform.storage import NOFOLLOW, NONBLOCK, DirectoryHandle
+from service.platform.storage import (
+    NOFOLLOW,
+    NONBLOCK,
+    DirectoryHandle,
+    canonical_root,
+    open_directory,
+)
 
 #: 新建 Markdown 资料的默认扩展名 (PRD「新建文档.md」)。
 MARKDOWN_SUFFIX = ".md"
@@ -60,8 +71,7 @@ PARENT_NOT_WRITABLE = "parent_not_writable"
 #: 同名冲突时的序号上限, 超过即报错而不是无限试探。
 MAX_NAME_ATTEMPTS = 999
 
-#: 非法文件名字符 (路径分隔符与空字节), 阻断目录穿越与坏名字。
-FORBIDDEN_NAME_CHARS = frozenset({"/", "\\", "\x00"})
+FORBIDDEN_NAME_CHARS = frozenset({"/", "\\", ":", "\x00"})
 
 #: 自定义导入名称必须与来源逐项对应，且只适用于 COPY。
 INVALID_IMPORT_TARGET_NAMES = "invalid_import_target_names"
@@ -320,6 +330,48 @@ def _create_bytes_document(
                 if output is not None:
                     os.close(output)
                 descriptor.close()
+
+
+def publish_working_bytes(root: Path, path: str, content: bytes) -> bool:
+    """Publish complete bytes at an exact scoped path, reusing only identical bytes."""
+    relative = PurePosixPath(path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or ".." in relative.parts
+        or "\\" in path
+        or ":" in path
+    ):
+        raise ContentError(WORKING_CONTENT_PATH_INVALID)
+    parent = open_directory(canonical_root(root), relative.parts[:-1], create=True)
+    temporary = f"{CREATE_TEMP_PREFIX}{uuid.uuid4().hex}"
+    output = None
+    try:
+        output = _open_stage(parent, temporary)
+        _write_stage(output, content)
+        try:
+            publish_descriptor(output, parent, relative.name)
+        except FileExistsError:
+            try:
+                existing = read_regular(parent, relative.name, len(content))
+            except ContentError as error:
+                if error.code == "file_too_large":
+                    raise ContentError(WORKING_CONTENT_CONFLICT) from error
+                raise
+            if existing != content:
+                raise ContentError(WORKING_CONTENT_CONFLICT)
+            return True
+        sync_published_descriptor(output, parent, relative.name)
+        parent.sync()
+        return False
+    finally:
+        try:
+            if output is not None:
+                _unlink_stage(parent, temporary, os.fstat(output))
+        finally:
+            if output is not None:
+                os.close(output)
+            parent.close()
 
 
 def _open_stage(directory: DirectoryHandle, name: str) -> int:
@@ -706,12 +758,54 @@ def _move_source_and_directory(
     return source, destination_dir
 
 
-def move_target(space: ProjectSpace, path: str, target_dir: str) -> Path:
+def relocate_file(space: ProjectSpace, path: str, target: str) -> FileAssetRef:
+    """Preserve physical identity at an exact path, without collision renaming."""
+    source = _mutable(space, path)
+    destination = space.absolute(target)
+    validate_name(destination.name)
+    if not source.is_file():
+        raise ContentError("not_a_file")
+    if source.suffix != destination.suffix:
+        raise ContentError(FILE_EXTENSION_CHANGE_FORBIDDEN)
+    source_mount = space.mount_for(path)
+    destination_mount = space.mount_for(target)
+    if (source_mount.root_id if source_mount else None) != (
+        destination_mount.root_id if destination_mount else None
+    ):
+        raise ContentError(MOVE_SCOPE_MISMATCH)
+    if source == destination:
+        return node_for(space, source)
+    source_directory = None
+    target_directory = None
+    try:
+        source_directory, source_name = space.open_parent(path)
+        target_directory, target_name = space.open_parent(target, create=True)
+        rename_exclusive(source_directory, source_name, target_directory, target_name)
+        source_directory.sync()
+        target_directory.sync()
+    except FileExistsError as exc:
+        raise ContentError(NAME_EXISTS) from exc
+    except OSError as exc:
+        raise filesystem_error(exc, RENAME_FAILED) from exc
+    finally:
+        if target_directory is not None:
+            target_directory.close()
+        if source_directory is not None:
+            source_directory.close()
+    return node_for(space, destination)
+
+
+def move_target(space: ProjectSpace, path: str, target_dir: str, *, exact: bool = False) -> Path:
     """Choose the exact collision-free target after enforcing the move scope."""
 
     source, destination_dir = _move_source_and_directory(space, path, target_dir)
     if destination_dir == source.parent:
         return source
+    if exact:
+        target = destination_dir / source.name
+        if target.exists():
+            raise ContentError(NAME_EXISTS)
+        return target
     return unique_path(destination_dir, source.name)
 
 

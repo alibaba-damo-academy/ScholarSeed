@@ -14,10 +14,19 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 import tempfile
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from service.assistant.persistence.store import AssistantStore
+from service.chat.persistence.catalog import SessionCatalogStore
 from service.content.domain.model import (
     IGNORED_NAMES,
     LITERATURE_ROOT_RELATIVE,
@@ -29,7 +38,11 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_FILENAME, PROJECT_DB_RELATIVE, PROJECT_SERVICE_DIRNAME
 from service.persistence import project as project_db
+from service.platform.activity import Activities
 from service.platform.content import RootKind
+from service.platform.storage import filesystem_path
+from service.resources.persistence.jobs import ImportJobStore
+from service.resources.persistence.version import VersionStore
 
 PASS = 0
 FAIL = 0
@@ -55,14 +68,369 @@ def collect_names(nodes: tuple) -> set[str]:
     return names
 
 
+CONNECTION_WORKERS = 8
+CONNECTION_BATCH_SIZE = 24
+CONNECTION_BATCHES = 10
+LONG_DIRECTORY_SEGMENT = "database-path-" * 8
+
+
+class ConnectionFilenameContract(unittest.TestCase):
+    def test_long_native_and_ordinary_names_share_wal_and_preserve_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ordinary = Path(directory) / LONG_DIRECTORY_SEGMENT / LONG_DIRECTORY_SEGMENT
+            ordinary = ordinary / LONG_DIRECTORY_SEGMENT / "资料 #% database.sqlite3"
+            native = filesystem_path(ordinary)
+            native.parent.mkdir(parents=True)
+            with closing(project_db.open_database(native)) as writer, writer:
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute("CREATE TABLE probe(id INTEGER PRIMARY KEY)")
+                writer.execute("INSERT INTO probe VALUES (0)")
+            with closing(project_db.open_database(native)) as writer:
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute("INSERT INTO probe VALUES (-1)")
+                with project_db.reader(ordinary) as reader:
+                    self.assertEqual(
+                        [tuple(row) for row in reader.execute("SELECT id FROM probe")], [(0,)]
+                    )
+                    with self.assertRaises(sqlite3.OperationalError) as caught:
+                        reader.execute("INSERT INTO probe VALUES (-2)")
+                    self.assertEqual(caught.exception.sqlite_errorcode, sqlite3.SQLITE_READONLY)
+                writer.rollback()
+
+            def append(index):
+                with project_db.reader(native) as reader:
+                    reader.execute("BEGIN")
+                    self.assertTrue(reader.execute("PRAGMA table_info(probe)").fetchall())
+                # Alternate spellings while retaining concurrent connection churn.
+                target = native if index % 2 else ordinary
+                with closing(project_db.open_database(target)) as writer, writer:
+                    writer.execute("PRAGMA journal_mode=WAL")
+                    writer.execute("INSERT INTO probe VALUES (?)", (index,))
+
+            with ThreadPoolExecutor(max_workers=CONNECTION_WORKERS) as pool:
+                list(pool.map(append, range(1, CONNECTION_BATCH_SIZE * CONNECTION_BATCHES + 1)))
+            with project_db.reader(native) as reader:
+                self.assertEqual(
+                    reader.execute("SELECT count(*) FROM probe").fetchone()[0],
+                    CONNECTION_BATCH_SIZE * CONNECTION_BATCHES + 1,
+                )
+                self.assertEqual(reader.execute("PRAGMA quick_check").fetchone()[0], "ok")
+
+    def test_read_only_and_existing_modes_never_create_a_missing_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "missing.sqlite3"
+            for mode in (project_db.DatabaseMode.READ_ONLY, project_db.DatabaseMode.EXISTING):
+                with self.subTest(mode=mode), self.assertRaises(sqlite3.OperationalError):
+                    project_db.open_database(database, mode=mode)
+                self.assertFalse(database.exists())
+            database = Path(directory) / "missing-directory" / "missing.sqlite3"
+            with self.assertRaises(sqlite3.OperationalError):
+                project_db.open_database(database)
+            self.assertFalse(database.parent.exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows verbatim filename semantics")
+    def test_ambiguous_verbatim_filename_is_rejected_without_changing_its_meaning(self):
+        for filename in (
+            r"\\?\C:\state\database. ",
+            r"\\?\C:\state\db:stream",
+            r"\\?\C:\state\NUL.sqlite3",
+        ):
+            with self.subTest(filename=filename), self.assertRaises(ValueError):
+                project_db.open_database(filename)
+
+
+class InspectionFilesContract(unittest.TestCase):
+    def test_runtime_schema_reobserves_retired_sidecar_without_accepting_it(self):
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                database = root / "state" / "db.sqlite3"
+                store = VersionStore(database, root)
+                store.ensure()
+                original = Path.lstat
+                observations = []
+
+                def observe(path, *args, **kwargs):
+                    if path == Path(str(database) + "-shm") and (persistent or not observations):
+                        observations.append(path)
+                        info = original(database)
+                        return SimpleNamespace(
+                            st_mode=info.st_mode,
+                            st_nlink=0,
+                            st_dev=info.st_dev,
+                            st_ino=info.st_ino,
+                            st_file_attributes=0,
+                        )
+                    return original(path, *args, **kwargs)
+
+                with patch.object(Path, "lstat", observe):
+                    if persistent:
+                        with self.assertRaises(project_db.DatabaseBindingError):
+                            store.ensure()
+                        self.assertGreater(len(observations), 1)
+                        self.assertLessEqual(len(observations), 8)
+                    else:
+                        store.ensure()
+                        self.assertEqual(len(observations), 1)
+                with project_db.reader(database) as connection:
+                    self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+
+    def test_retired_sidecar_is_classified_but_main_and_unsafe_files_are_not(self):
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            for links in (0, 2):
+                with (
+                    self.subTest(suffix=suffix, links=links),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    database = Path(directory) / "db.sqlite3"
+                    database.write_bytes(b"main")
+                    target = Path(str(database) + suffix)
+                    original = Path.lstat
+
+                    def observe(path, *args, **kwargs):
+                        if path == target:
+                            info = original(database) if suffix else original(path)
+                            return SimpleNamespace(
+                                st_mode=info.st_mode,
+                                st_nlink=links,
+                                st_dev=info.st_dev,
+                                st_ino=info.st_ino,
+                                st_file_attributes=0,
+                            )
+                        return original(path, *args, **kwargs)
+
+                    with patch.object(Path, "lstat", observe):
+                        with self.assertRaises(project_db.DatabaseBindingError) as caught:
+                            with project_db.database_files(database, stable_sidecars=False):
+                                self.fail("an unsafe observation must not enter SQLite")
+                    self.assertEqual(
+                        isinstance(
+                            caught.exception.__cause__, project_db.DatabaseSidecarChangedError
+                        ),
+                        bool(suffix) and links == 0,
+                    )
+                    self.assertIn("file=", str(caught.exception))
+                    self.assertNotIn(directory, str(caught.exception))
+
+    def test_binding_diagnostics_preserve_owner_error_and_classify_only_sidecars(self):
+        class OwnerError(sqlite3.DatabaseError):
+            pass
+
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                database = Path(directory) / "catalog.sqlite3"
+                database.write_bytes(b"main")
+                leaf = Path(str(database) + suffix)
+                if suffix:
+                    leaf.write_bytes(b"sidecar")
+                replacement = Path(directory) / "replacement"
+                replacement.write_bytes(b"new")
+                with self.assertRaises(OwnerError) as caught:
+                    with project_db.database_files(database, error_type=OwnerError):
+                        os.replace(replacement, leaf)
+                self.assertIn("role=" + (suffix or "main"), str(caught.exception))
+                self.assertIn("before=", str(caught.exception))
+                self.assertNotIn(directory, str(caught.exception))
+                self.assertEqual(
+                    isinstance(caught.exception.__cause__, project_db.DatabaseSidecarChangedError),
+                    bool(suffix),
+                )
+
+    def test_owners_reject_unsafe_database_and_sidecars_before_open(self):
+        for owner in (SessionCatalogStore, AssistantStore, ImportJobStore, VersionStore):
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                for kind in ("symlink", "hardlink", "directory"):
+                    with self.subTest(owner=owner.__name__, suffix=suffix, kind=kind):
+                        with tempfile.TemporaryDirectory() as directory:
+                            root = Path(directory)
+                            database, outside = root / "db.sqlite3", root / "outside"
+                            SessionCatalogStore(database)
+                            AssistantStore(database)
+                            ImportJobStore(database)
+                            leaf = Path(str(database) + suffix)
+                            if leaf.exists():
+                                leaf.replace(outside)
+                            else:
+                                outside.write_bytes(b"must preserve external data")
+                            before = outside.read_bytes()
+                            if kind == "symlink":
+                                leaf.symlink_to(outside)
+                            elif kind == "hardlink":
+                                os.link(outside, leaf)
+                            else:
+                                leaf.mkdir()
+                            with patch(
+                                "sqlite3.connect",
+                                side_effect=AssertionError("opened unsafe database"),
+                            ):
+                                with self.assertRaises(sqlite3.DatabaseError):
+                                    owner.inspect_schema(database)
+                            self.assertEqual(outside.read_bytes(), before)
+
+    def test_binding_changes_and_sqlite_sidecar_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "db.sqlite3"
+            for suffix in ("-wal", "-shm", "-journal"):
+                leaf = Path(str(database) + suffix)
+                with (
+                    self.subTest(orphan=suffix),
+                    self.assertRaises(project_db.DatabaseBindingError),
+                ):
+                    with project_db.database_files(database) as present:
+                        self.assertFalse(present)
+                        leaf.write_bytes(b"new orphan")
+                leaf.unlink()
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("CREATE TABLE item (id INTEGER)")
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                leaf = Path(str(database) + suffix)
+                if suffix:
+                    leaf.write_bytes(b"sidecar")
+                replacement = root / "replacement"
+                replacement.write_bytes(b"different identity")
+                with (
+                    self.subTest(replaced=suffix),
+                    self.assertRaises(project_db.DatabaseBindingError),
+                ):
+                    with project_db.database_files(database):
+                        os.replace(replacement, leaf)
+                if suffix:
+                    leaf.unlink()
+            # Normal sidecar appearance/removal is allowed while the main file stays bound.
+            for suffix in ("-wal", "-shm", "-journal"):
+                leaf = Path(str(database) + suffix)
+                with project_db.database_files(database):
+                    leaf.write_bytes(b"sidecar")
+                with project_db.database_files(database):
+                    leaf.unlink()
+
+    def test_live_binding_checks_still_reject_unsafe_files(self):
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            for kind in ("symlink", "hardlink", "directory"):
+                with (
+                    self.subTest(suffix=suffix, kind=kind),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    database = root / "db.sqlite3"
+                    database.write_bytes(b"existing")
+                    outside = root / "outside"
+                    outside.write_bytes(b"preserve")
+                    leaf = Path(str(database) + suffix)
+                    with self.assertRaises(project_db.DatabaseBindingError):
+                        with project_db.database_files(database, stable_sidecars=False):
+                            if not suffix:
+                                leaf.unlink()
+                            if kind == "symlink":
+                                leaf.symlink_to(outside)
+                            elif kind == "hardlink":
+                                os.link(outside, leaf)
+                            else:
+                                leaf.mkdir()
+                    self.assertEqual(outside.read_bytes(), b"preserve")
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "db.sqlite3"
+            replacement = Path(directory) / "replacement"
+            database.write_bytes(b"old")
+            replacement.write_bytes(b"new")
+            with self.assertRaises(project_db.DatabaseBindingError):
+                with project_db.database_files(database, stable_sidecars=False):
+                    os.replace(replacement, database)
+            database.unlink()
+            with self.assertRaises(project_db.DatabaseBindingError):
+                with project_db.database_files(database, stable_sidecars=False):
+                    Path(str(database) + "-wal").write_bytes(b"orphan")
+
+    def test_live_version_check_allows_sqlite_sidecar_rotation(self):
+        from service.resources.persistence import version
+
+        for strict in (False, True):
+            with self.subTest(strict=strict), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                database = root / PROJECT_DB_RELATIVE
+                store = VersionStore(database, root)
+                store.ensure()
+                keeper = project_db.connect(database)
+                self.addCleanup(keeper.close)
+                keeper.execute("SELECT * FROM resources_objects").fetchall()
+                original_reader = project_db.reader
+
+                @contextmanager
+                def rotate_after_close(path):
+                    nonlocal keeper
+                    with original_reader(path) as connection:
+                        yield connection
+                    keeper.close()
+                    # Let SQLite remove and recreate its own WAL/SHM; do not
+                    # replace files manually or fabricate native identities.
+                    keeper = project_db.connect(database)
+                    self.addCleanup(keeper.close)
+                    keeper.execute("SELECT * FROM resources_objects").fetchall()
+
+                try:
+                    with patch.object(project_db, "reader", rotate_after_close):
+                        if strict:
+                            with self.assertRaises(project_db.DatabaseBindingError):
+                                store.inspect_schema(database)
+                        else:
+                            store.ensure()
+                finally:
+                    keeper.close()
+
+    def test_owners_reject_replacement_after_reader_closed(self):
+        for owner in (SessionCatalogStore, AssistantStore, ImportJobStore):
+            with self.subTest(owner=owner.__name__), tempfile.TemporaryDirectory() as directory:
+                database = Path(directory) / "db.sqlite3"
+                replacement = Path(directory) / "replacement.sqlite3"
+                SessionCatalogStore(database)
+                AssistantStore(database)
+                ImportJobStore(database)
+                replacement.write_bytes(database.read_bytes())
+                original_reader = project_db.reader
+
+                @contextmanager
+                def replace_after_close(
+                    path,
+                    original_reader=original_reader,
+                    replacement=replacement,
+                    database=database,
+                ):
+                    with original_reader(path) as connection:
+                        yield connection
+                    os.replace(replacement, database)
+
+                with patch(owner.__module__ + ".reader", replace_after_close):
+                    with self.assertRaises(project_db.DatabaseBindingError):
+                        owner.inspect_schema(database)
+
+    def test_missing_database_with_sidecars_is_not_empty(self):
+        for owner in (SessionCatalogStore, AssistantStore, ImportJobStore):
+            for suffix in ("-wal", "-shm", "-journal"):
+                with self.subTest(owner=owner.__name__, suffix=suffix):
+                    with tempfile.TemporaryDirectory() as directory:
+                        database = Path(directory) / "missing.sqlite3"
+                        sidecar = Path(str(database) + suffix)
+                        sidecar.write_bytes(b"unrecovered data")
+                        with self.assertRaises(sqlite3.DatabaseError):
+                            owner.inspect_schema(database)
+                        self.assertFalse(database.exists())
+                        self.assertEqual(sidecar.read_bytes(), b"unrecovered data")
+
+
 def main() -> int:
+    result = unittest.TextTestRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    )
+    if not result.wasSuccessful():
+        return 1
     root = Path(tempfile.mkdtemp(prefix="project-database-")).resolve()
     workspace = root / "workspace"
     workspace.mkdir()
 
     catalog = ContentCatalog(root / "content.sqlite3")
     registry = ProjectRegistry(str(workspace), catalog)
-    content = ContentService(registry, catalog)
+    content = ContentService(registry, catalog, activities=Activities())
 
     managed = registry.create("内置项目")
     project_root = Path(managed.root)

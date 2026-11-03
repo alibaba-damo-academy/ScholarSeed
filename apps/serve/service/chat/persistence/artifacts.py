@@ -18,14 +18,24 @@ from service.chat.persistence.catalog import (
     SessionBindingConflictError,
     SessionStateConflictError,
 )
-from service.chat.persistence.events import PRODUCT_EVENT_TABLE
+from service.chat.persistence.events import PRODUCT_EVENT_TABLE, ProductEventStore
 from service.chat.persistence.utils import validate_transaction
 from service.paths import SESSION_CATALOG_DB
+from service.persistence.project import (
+    database_files,
+    open_database,
+    reader,
+    rebuild_table,
+    reject_schema_residue,
+    schema_transaction,
+    sql_tokens,
+    table_clauses,
+)
 
+SESSION_ARTIFACT_SOURCE_TABLE = "session_artifact_source"
 SESSION_ARTIFACT_TABLE = "session_artifact"
 SESSION_ARTIFACT_DRAFT_TABLE = "session_artifact_draft"
 SESSION_ARTIFACT_SAVED_TO_COLUMN = "saved_to"
-ARTIFACT_FOREIGN_KEY_MIGRATION_SUFFIX = "_foreign_key_migration"
 PRODUCT_ARTIFACT_ID_ENCODING = "utf-8"
 ARTIFACT_CHANGE_DELETE = "delete"
 ARTIFACT_CHANGE_UPDATE = "update"
@@ -111,47 +121,260 @@ def artifact_identity(record: SessionArtifactRecord) -> str:
     return product_artifact_id(record.session_id, record.canonical_path)
 
 
+@dataclass(frozen=True)
+class ArtifactSchema:
+    """Artifact-owned initialization requirements, not whole-database admission."""
+
+    create_tables: tuple[str, ...]
+    add_saved_to: bool
+    rebuild_tables: tuple[str, ...]
+    create_indexes: tuple[str, ...]
+
+    @property
+    def needs_write(self) -> bool:
+        return bool(
+            self.create_tables or self.add_saved_to or self.rebuild_tables or self.create_indexes
+        )
+
+
+_LEGACY_FOREIGN_TARGETS = {
+    SESSION_ARTIFACT_SOURCE_TABLE: {},
+    SESSION_ARTIFACT_TABLE: {
+        SESSION_CATALOG_TABLE + "_migration": SESSION_CATALOG_TABLE,
+        PRODUCT_EVENT_TABLE: SESSION_ARTIFACT_SOURCE_TABLE,
+        PRODUCT_EVENT_TABLE + "_migration": SESSION_ARTIFACT_SOURCE_TABLE,
+    },
+    SESSION_ARTIFACT_DRAFT_TABLE: {
+        SESSION_ARTIFACT_TABLE + "_foreign_key_migration": SESSION_ARTIFACT_TABLE,
+    },
+}
+
+
 class SessionArtifactStore:
     """Index artifacts without observing or diffing a shared workspace."""
 
     def __init__(self, database: Path | None = None) -> None:
         self._database = Path(database or SESSION_CATALOG_DB)
+        if not self.inspect_schema(self._database).needs_write:
+            return
         self._database.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection, connection:
-            self._create_table(connection)
-            self._repair_foreign_keys(connection)
-            connection.execute(f"""
-                CREATE TABLE IF NOT EXISTS {SESSION_ARTIFACT_DRAFT_TABLE} (
-                    artifact_id TEXT PRIMARY KEY,
-                    content BLOB NOT NULL,
-                    FOREIGN KEY(artifact_id) REFERENCES {SESSION_ARTIFACT_TABLE}(artifact_id)
-                        ON DELETE CASCADE
-                )
-                """)
-            columns = {
-                str(row["name"])
-                for row in connection.execute(
-                    f"PRAGMA table_info({SESSION_ARTIFACT_TABLE})"
-                ).fetchall()
-            }
-            if SESSION_ARTIFACT_SAVED_TO_COLUMN not in columns:
-                connection.execute(
-                    f"ALTER TABLE {SESSION_ARTIFACT_TABLE} "
-                    f"ADD COLUMN {SESSION_ARTIFACT_SAVED_TO_COLUMN} TEXT"
-                )
-            connection.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{SESSION_ARTIFACT_TABLE}_session "
-                f"ON {SESSION_ARTIFACT_TABLE}(session_id, source_product_seq, artifact_id)"
-            )
-            connection.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{SESSION_ARTIFACT_TABLE}_path "
-                f"ON {SESSION_ARTIFACT_TABLE}(session_id, canonical_path)"
-            )
+        with closing(self._connect()) as connection, schema_transaction(connection):
+            self.initialize_schema(connection)
 
     @classmethod
-    def _create_table(cls, connection: sqlite3.Connection) -> None:
+    def initialize_schema(cls, connection: sqlite3.Connection) -> None:
+        """Apply owned startup migrations inside the caller's transaction.
+
+        Uses the same code for qualified startup and isolated compatibility
+        projection; this method neither opens files nor grants write access.
+        """
+        schema = cls.inspect_connection(connection)
+        if schema.needs_write:
+            cls._create_source_table(connection)
+            if SESSION_ARTIFACT_TABLE in schema.rebuild_tables:
+                cls._backfill_sources(connection)
+            cls._create_table(connection)
+            cls._create_draft_table(connection)
+            if schema.add_saved_to:
+                connection.execute(
+                    f"ALTER TABLE {SESSION_ARTIFACT_TABLE} ADD COLUMN {SESSION_ARTIFACT_SAVED_TO_COLUMN} TEXT"
+                )
+            for table, create in (
+                (SESSION_ARTIFACT_TABLE, cls._create_table),
+                (SESSION_ARTIFACT_DRAFT_TABLE, cls._create_draft_table),
+            ):
+                if table in schema.rebuild_tables:
+                    rebuild_table(connection, table, create)
+            cls._create_indexes(connection)
+        if cls.inspect_connection(connection).needs_write:
+            raise RuntimeError("artifact initialization did not reach the supported format")
+
+    @classmethod
+    def inspect_schema(cls, database: Path) -> ArtifactSchema:
+        """Read a WAL snapshot under the caller's directory qualification.
+
+        SQLite may touch SHM. File checks are not atomic VFS binding and this
+        structural classification neither validates every row nor grants access.
+        """
+        with database_files(database) as present:
+            if not present:
+                with closing(sqlite3.connect(":memory:")) as connection:
+                    connection.row_factory = sqlite3.Row
+                    return cls.inspect_connection(connection)
+            with reader(database) as connection:
+                connection.execute("BEGIN")
+                return cls.inspect_connection(connection)
+
+    @classmethod
+    def inspect_connection(cls, connection: sqlite3.Connection) -> ArtifactSchema:
+        reject_schema_residue(connection, _LEGACY_FOREIGN_TARGETS)
+        objects = {
+            row["name"]: row
+            for row in connection.execute("SELECT name,type,tbl_name,sql FROM sqlite_master")
+        }
+        create_tables, rebuild_tables, indexes = [], [], []
+        add_saved_to = False
+        with closing(sqlite3.connect(":memory:")) as reference:
+            cls._create_source_table(reference)
+            cls._create_table(reference)
+            cls._create_draft_table(reference)
+            cls._create_indexes(reference)
+            for table, definition in reference.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='table'"
+            ):
+                if table not in objects:
+                    create_tables.append(table)
+                    continue
+                if objects[table]["type"] != "table":
+                    raise RuntimeError("unsupported artifact table object")
+                actual_columns = {
+                    row["name"] for row in connection.execute(f"PRAGMA table_xinfo({table})")
+                }
+                missing_saved_to = (
+                    table == SESSION_ARTIFACT_TABLE
+                    and SESSION_ARTIFACT_SAVED_TO_COLUMN not in actual_columns
+                )
+                add_saved_to |= missing_saved_to
+                required = {
+                    clause
+                    for clause in table_clauses(definition, table)
+                    if not (missing_saved_to and clause[0] == SESSION_ARTIFACT_SAVED_TO_COLUMN)
+                }
+                try:
+                    clauses = table_clauses(objects[table]["sql"], table)
+                except ValueError as error:
+                    raise RuntimeError("unsupported artifact table definition") from error
+                actual, repair = set(), False
+                for clause in clauses:
+                    normalized = clause
+                    if clause[:2] == ("foreign", "key") and "references" in clause:
+                        position = clause.index("references") + 1
+                        target = _LEGACY_FOREIGN_TARGETS[table].get(
+                            clause[position], clause[position]
+                        )
+                        normalized = (*clause[:position], target, *clause[position + 1 :])
+                        repair |= normalized != clause
+                    if normalized in actual or normalized not in required:
+                        raise RuntimeError("unsupported artifact schema declaration")
+                    actual.add(normalized)
+                if actual != required:
+                    raise RuntimeError("unsupported artifact missing constraints or columns")
+                if repair:
+                    rebuild_tables.append(table)
+            for name, table, sql in reference.execute(
+                "SELECT name,tbl_name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            ):
+                if name not in objects:
+                    indexes.append(name)
+                elif (
+                    objects[name]["type"] != "index"
+                    or objects[name]["tbl_name"] != table
+                    or sql_tokens(objects[name]["sql"]) != sql_tokens(sql)
+                ):
+                    raise RuntimeError("unsupported artifact owned index")
+        return ArtifactSchema(
+            tuple(sorted(create_tables)),
+            add_saved_to,
+            tuple(sorted(rebuild_tables)),
+            tuple(sorted(indexes)),
+        )
+
+    @staticmethod
+    def _create_source_table(
+        connection: sqlite3.Connection, table: str = SESSION_ARTIFACT_SOURCE_TABLE
+    ) -> None:
         connection.execute(f"""
-                CREATE TABLE IF NOT EXISTS {SESSION_ARTIFACT_TABLE} (
+            CREATE TABLE IF NOT EXISTS {table} (
+                session_id TEXT NOT NULL,
+                product_seq INTEGER NOT NULL CHECK(product_seq > 0),
+                runtime_id TEXT NOT NULL,
+                vendor_thread_id TEXT,
+                vendor_turn_id TEXT,
+                vendor_item_id TEXT,
+                PRIMARY KEY(session_id, product_seq),
+                FOREIGN KEY(session_id) REFERENCES {SESSION_CATALOG_TABLE}(session_id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+    @staticmethod
+    def _backfill_sources(connection: sqlite3.Connection) -> None:
+        # Only the old event-table FK grants migration provenance. Current
+        # anchors are checked, never reconstructed from unqualified records.
+        targets = {
+            row["table"]
+            for row in connection.execute(f"PRAGMA foreign_key_list({SESSION_ARTIFACT_TABLE})")
+        }
+        if not targets.intersection({PRODUCT_EVENT_TABLE, PRODUCT_EVENT_TABLE + "_migration"}):
+            return
+        invalid = connection.execute(f"""
+            SELECT 1 FROM {SESSION_ARTIFACT_TABLE} AS artifact
+            LEFT JOIN {PRODUCT_EVENT_TABLE} AS event
+                ON event.session_id=artifact.session_id
+                AND event.product_seq=artifact.source_product_seq
+            WHERE event.product_seq IS NULL
+                OR event.vendor_turn_id IS NOT artifact.vendor_turn_id
+                OR event.vendor_item_id IS NOT artifact.vendor_item_id
+            LIMIT 1
+        """).fetchone()
+        if invalid is not None:
+            raise RuntimeError("artifact source event missing or identity mismatch")
+        connection.execute(f"""
+            INSERT INTO {SESSION_ARTIFACT_SOURCE_TABLE}
+                (session_id, product_seq, runtime_id, vendor_thread_id, vendor_turn_id, vendor_item_id)
+            SELECT DISTINCT event.session_id, event.product_seq, event.runtime_id,
+                event.vendor_thread_id, event.vendor_turn_id, event.vendor_item_id
+            FROM {PRODUCT_EVENT_TABLE} AS event
+            JOIN {SESSION_ARTIFACT_TABLE} AS artifact
+                ON artifact.session_id=event.session_id
+                AND artifact.source_product_seq=event.product_seq
+            WHERE NOT EXISTS (
+                SELECT 1 FROM {SESSION_ARTIFACT_SOURCE_TABLE} AS source
+                WHERE source.session_id=event.session_id AND source.product_seq=event.product_seq
+            )
+        """)
+        if connection.execute(f"""
+            SELECT 1 FROM {SESSION_ARTIFACT_SOURCE_TABLE} AS source
+            JOIN {PRODUCT_EVENT_TABLE} AS event
+                ON source.session_id=event.session_id AND source.product_seq=event.product_seq
+            WHERE source.runtime_id IS NOT event.runtime_id
+                OR source.vendor_thread_id IS NOT event.vendor_thread_id
+                OR source.vendor_turn_id IS NOT event.vendor_turn_id
+                OR source.vendor_item_id IS NOT event.vendor_item_id
+            LIMIT 1
+        """).fetchone() is not None:
+            raise RuntimeError("artifact source anchor identity mismatch")
+
+    @staticmethod
+    def _create_draft_table(
+        connection: sqlite3.Connection, table: str = SESSION_ARTIFACT_DRAFT_TABLE
+    ) -> None:
+        connection.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                artifact_id TEXT PRIMARY KEY,
+                content BLOB NOT NULL,
+                FOREIGN KEY(artifact_id) REFERENCES {SESSION_ARTIFACT_TABLE}(artifact_id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+    @staticmethod
+    def _create_indexes(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{SESSION_ARTIFACT_TABLE}_session "
+            f"ON {SESSION_ARTIFACT_TABLE}(session_id, source_product_seq, artifact_id)"
+        )
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{SESSION_ARTIFACT_TABLE}_path "
+            f"ON {SESSION_ARTIFACT_TABLE}(session_id, canonical_path)"
+        )
+
+    @classmethod
+    def _create_table(
+        cls, connection: sqlite3.Connection, table: str = SESSION_ARTIFACT_TABLE
+    ) -> None:
+        connection.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table} (
                     artifact_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
                     runtime_id TEXT NOT NULL,
@@ -175,41 +398,10 @@ class SessionArtifactStore:
                     FOREIGN KEY(session_id) REFERENCES {SESSION_CATALOG_TABLE}(session_id)
                         ON DELETE CASCADE,
                     FOREIGN KEY(session_id, source_product_seq)
-                        REFERENCES {PRODUCT_EVENT_TABLE}(session_id, product_seq)
+                        REFERENCES {SESSION_ARTIFACT_SOURCE_TABLE}(session_id, product_seq)
                         ON DELETE CASCADE
                 )
                 """)
-
-    @staticmethod
-    def _foreign_targets(connection: sqlite3.Connection, table: str) -> frozenset[str]:
-        rows = connection.execute(f"PRAGMA foreign_key_list({table})").fetchall()
-        return frozenset(str(row["table"]) for row in rows)
-
-    @classmethod
-    def _repair_foreign_keys(cls, connection: sqlite3.Connection) -> None:
-        expected = frozenset((SESSION_CATALOG_TABLE, PRODUCT_EVENT_TABLE))
-        if cls._foreign_targets(connection, SESSION_ARTIFACT_TABLE) == expected:
-            return
-
-        connection.commit()
-        connection.execute("PRAGMA foreign_keys = OFF")
-        migration = f"{SESSION_ARTIFACT_TABLE}{ARTIFACT_FOREIGN_KEY_MIGRATION_SUFFIX}"
-        try:
-            connection.execute(f"DROP TABLE IF EXISTS {migration}")
-            connection.execute(f"ALTER TABLE {SESSION_ARTIFACT_TABLE} RENAME TO {migration}")
-            cls._create_table(connection)
-            columns = tuple(
-                row["name"]
-                for row in connection.execute(f"PRAGMA table_info({migration})").fetchall()
-            )
-            column_sql = ", ".join(columns)
-            connection.execute(
-                f"INSERT INTO {SESSION_ARTIFACT_TABLE} ({column_sql}) "
-                f"SELECT {column_sql} FROM {migration}"
-            )
-            connection.execute(f"DROP TABLE {migration}")
-        finally:
-            connection.execute("PRAGMA foreign_keys = ON")
 
     @property
     def database(self) -> Path:
@@ -222,7 +414,16 @@ class SessionArtifactStore:
                 f"SELECT content FROM {SESSION_ARTIFACT_DRAFT_TABLE} WHERE artifact_id = ?",
                 (artifact_id,),
             ).fetchone()
-            return bytes(row["content"]) if row is not None else None
+            return self._draft(row) if row is not None else None
+
+    @staticmethod
+    def _draft(row: sqlite3.Row) -> bytes:
+        content = row["content"]
+        if not isinstance(content, bytes):
+            # SQLite affinity does not guarantee a BLOB. In particular,
+            # bytes(integer) would allocate an attacker-controlled size.
+            raise RuntimeError("unsupported artifact draft content")
+        return content
 
     def save_draft(self, artifact_id: str, content: bytes, *, connection) -> None:
         validate_transaction(connection, self._database)
@@ -233,7 +434,7 @@ class SessionArtifactStore:
         )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
+        connection = open_database(
             str(self._database),
             check_same_thread=False,
             timeout=SQLITE_TIMEOUT_SECONDS,
@@ -245,6 +446,44 @@ class SessionArtifactStore:
         except BaseException:
             connection.close()
             raise
+
+    @classmethod
+    def inspect_rows(cls, connection: sqlite3.Connection) -> None:
+        """Decode durable records and draft bytes without opening their paths.
+
+        Files and content-domain reservation/recovery records have separate
+        owners; reading this index is not approval of those stores.
+        """
+        for row in connection.execute(f"SELECT * FROM {SESSION_ARTIFACT_SOURCE_TABLE}"):
+            if (
+                not isinstance(row["session_id"], str)
+                or not row["session_id"].strip()
+                or not isinstance(row["product_seq"], int)
+                or isinstance(row["product_seq"], bool)
+                or row["product_seq"] <= 0
+                or not isinstance(row["runtime_id"], str)
+                or not row["runtime_id"].strip()
+                or any(
+                    row[name] is not None and not isinstance(row[name], str)
+                    for name in ("vendor_thread_id", "vendor_turn_id", "vendor_item_id")
+                )
+            ):
+                raise RuntimeError("unsupported artifact source identity")
+        if connection.execute(f"""
+            SELECT 1 FROM {SESSION_ARTIFACT_TABLE} AS artifact
+            LEFT JOIN {SESSION_ARTIFACT_SOURCE_TABLE} AS source
+                ON source.session_id=artifact.session_id
+                AND source.product_seq=artifact.source_product_seq
+            WHERE source.product_seq IS NULL
+                OR source.vendor_turn_id IS NOT artifact.vendor_turn_id
+                OR source.vendor_item_id IS NOT artifact.vendor_item_id
+            LIMIT 1
+        """).fetchone() is not None:
+            raise RuntimeError("artifact source anchor missing or identity mismatch")
+        for row in connection.execute(f"SELECT * FROM {SESSION_ARTIFACT_TABLE}"):
+            cls._record(row)
+        for row in connection.execute(f"SELECT content FROM {SESSION_ARTIFACT_DRAFT_TABLE}"):
+            cls._draft(row)
 
     @staticmethod
     def _optional(row: sqlite3.Row, name: str) -> str | None:
@@ -361,6 +600,7 @@ class SessionArtifactStore:
         connection = self._connect()
         try:
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
                 yield connection
         finally:
             connection.close()
@@ -415,10 +655,8 @@ class SessionArtifactStore:
         encoded = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
         if connection is not None:
             validate_transaction(connection, self._database)
-        with (
-            nullcontext(connection) if connection is not None else self._transaction()
-        ) as connection:
-            existing_row = connection.execute(
+        with nullcontext(connection) if connection is not None else self._transaction() as current:
+            existing_row = current.execute(
                 f"""
                 SELECT * FROM {SESSION_ARTIFACT_TABLE}
                 WHERE session_id = ? AND idempotency_key = ?
@@ -444,8 +682,30 @@ class SessionArtifactStore:
                     size_bytes=size_bytes,
                     metadata=metadata,
                 )
+                source_event = ProductEventStore(self._database).by_sequence(
+                    session_id, source_product_seq, connection=current
+                )
+                source_row = current.execute(
+                    f"SELECT session_id,product_seq,runtime_id,vendor_thread_id,vendor_turn_id,vendor_item_id "
+                    f"FROM {SESSION_ARTIFACT_SOURCE_TABLE} WHERE session_id=? AND product_seq=?",
+                    (session_id, source_product_seq),
+                ).fetchone()
+                if (
+                    source_event is None
+                    or source_row is None
+                    or tuple(source_row)
+                    != (
+                        source_event.session_id,
+                        source_event.product_seq,
+                        source_event.runtime_id,
+                        source_event.vendor_thread_id,
+                        source_event.vendor_turn_id,
+                        source_event.vendor_item_id,
+                    )
+                ):
+                    raise SessionStateConflictError("artifact source anchor identity mismatch")
                 return existing
-            binding = connection.execute(
+            binding = current.execute(
                 f"""
                 SELECT runtime_id, vendor_thread_id FROM {SESSION_CATALOG_TABLE}
                 WHERE session_id = ?
@@ -463,18 +723,14 @@ class SessionArtifactStore:
                 raise SessionBindingConflictError(
                     f"artifact runtime binding {expected_binding} does not match {actual_binding}"
                 )
-            event = connection.execute(
-                f"""
-                SELECT vendor_turn_id, vendor_item_id FROM {PRODUCT_EVENT_TABLE}
-                WHERE session_id = ? AND product_seq = ?
-                """,
-                (session_id, source_product_seq),
-            ).fetchone()
+            event = ProductEventStore(self._database).by_sequence(
+                session_id, source_product_seq, connection=current
+            )
             if event is None:
                 raise SessionStateConflictError("artifact source event does not exist")
             event_binding = (
-                str(event["vendor_turn_id"] or "") or None,
-                str(event["vendor_item_id"] or "") or None,
+                event.vendor_turn_id or None,
+                event.vendor_item_id or None,
             )
             artifact_binding = (
                 (vendor_turn_id or "").strip() or None,
@@ -484,7 +740,28 @@ class SessionArtifactStore:
                 raise SessionStateConflictError(
                     "artifact turn/item does not match its source product event"
                 )
-            connection.execute(
+            anchor = (
+                event.session_id,
+                event.product_seq,
+                event.runtime_id,
+                event.vendor_thread_id,
+                event.vendor_turn_id,
+                event.vendor_item_id,
+            )
+            current.execute(
+                f"INSERT INTO {SESSION_ARTIFACT_SOURCE_TABLE} "
+                "(session_id,product_seq,runtime_id,vendor_thread_id,vendor_turn_id,vendor_item_id) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(session_id,product_seq) DO NOTHING",
+                anchor,
+            )
+            persisted = current.execute(
+                f"SELECT session_id,product_seq,runtime_id,vendor_thread_id,vendor_turn_id,vendor_item_id "
+                f"FROM {SESSION_ARTIFACT_SOURCE_TABLE} WHERE session_id=? AND product_seq=?",
+                (session_id, source_product_seq),
+            ).fetchone()
+            if persisted is None or tuple(persisted) != anchor:
+                raise SessionStateConflictError("artifact source anchor identity mismatch")
+            current.execute(
                 f"""
                 INSERT INTO {SESSION_ARTIFACT_TABLE} (
                     artifact_id, session_id, runtime_id, vendor_thread_id,
@@ -515,7 +792,7 @@ class SessionArtifactStore:
                     timestamp,
                 ),
             )
-            row = connection.execute(
+            row = current.execute(
                 f"SELECT * FROM {SESSION_ARTIFACT_TABLE} WHERE artifact_id = ?",
                 (artifact_id,),
             ).fetchone()

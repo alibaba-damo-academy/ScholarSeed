@@ -36,17 +36,11 @@ from service.chat.runtime.composition import LiveSessionService
 from service.chat.service.context import SessionContextProvider
 from service.chat.service.history import HistoryError, HistoryService
 from service.cli.bridge import main
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     ARTIFACT_PUBLISH_ROUTE,
-    BRIDGE_MAX_RESPONSE_BYTES,
-    BRIDGE_SESSION_ENV,
-    BRIDGE_SESSION_HEADER,
-    BRIDGE_SOCKET_ENV,
-    BRIDGE_TOKEN_ENV,
-    BRIDGE_TOKEN_HEADER,
     HISTORY_ROUTE_PREFIX,
     HISTORY_TEXT_CHARS,
-    INTERNAL_BASE_URL_ENV,
     HistoryList,
     HistoryRead,
     HistorySearch,
@@ -65,6 +59,15 @@ from service.platform.local import (
     UNIX_SOCKET_FAMILY,
     WINDOWS_PLATFORM,
     local_listener,
+)
+from service.platform.vocabulary import (
+    BRIDGE_MAX_RESPONSE_BYTES,
+    BRIDGE_SESSION_ENV,
+    BRIDGE_SESSION_HEADER,
+    BRIDGE_SOCKET_ENV,
+    BRIDGE_TOKEN_ENV,
+    BRIDGE_TOKEN_HEADER,
+    INTERNAL_BASE_URL_ENV,
 )
 
 SOURCE = "history-source"
@@ -144,7 +147,7 @@ class HistoryContract(unittest.TestCase):
         )
 
     def test_context_is_reference_not_truncated_transcript(self) -> None:
-        self.assertIn("scholarseed-bridge", self.context.model_context)
+        self.assertIn("scholarseed_bridge", self.context.model_context)
         self.assertNotIn("统一 CLI", self.context.model_context)
 
     def test_search_excerpts_keep_original_offsets_and_mark_omissions(self) -> None:
@@ -307,7 +310,11 @@ class HistoryContract(unittest.TestCase):
             bridge_caller=lambda session: live if session == CALLER else None
         )
         app = FastAPI()
-        register_history_routes(app, sessions, self.history, self.assistant)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_history_routes(app, sessions, self.history, self.assistant, activities=activities)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             base_url = f"http://127.0.0.1:{listener.getsockname()[1]}"
@@ -401,20 +408,18 @@ class HistoryContract(unittest.TestCase):
         )
         with patch.dict(os.environ, {INTERNAL_BASE_URL_ENV: "http://127.0.0.1:12345"}):
             environment = LiveSessionService._launch_environment(live)
-        self.assertEqual(environment[BRIDGE_TOKEN_ENV], CAPABILITY)
+        self.assertNotIn(BRIDGE_TOKEN_ENV, environment)
+        self.assertNotIn(BRIDGE_SESSION_ENV, environment)
+        self.assertNotIn(BRIDGE_SOCKET_ENV, environment)
+        self.assertNotIn(INTERNAL_BASE_URL_ENV, environment)
         self.assertEqual(live.process_environment, {"SKILL_KEY": "fixture"})
 
     def test_http_environment_drops_inherited_socket(self) -> None:
-        base = {BRIDGE_SOCKET_ENV: "stale.sock"}
-        address = "http://127.0.0.1:12345"
-        with patch.dict(os.environ, {INTERNAL_BASE_URL_ENV: address}):
-            environment = LiveSessionService._bridge_environment(
-                base, scope_id=CALLER, token=CAPABILITY, local_socket=None
-            )
+        base = {BRIDGE_SOCKET_ENV: "stale.sock", BRIDGE_TOKEN_ENV: CAPABILITY}
+        live = SimpleNamespace(process_environment=base)
+        environment = LiveSessionService._launch_environment(live)
         self.assertNotIn(BRIDGE_SOCKET_ENV, environment)
-        self.assertEqual(environment[INTERNAL_BASE_URL_ENV], address)
-        self.assertEqual(environment[BRIDGE_TOKEN_ENV], CAPABILITY)
-        self.assertEqual(environment[BRIDGE_SESSION_ENV], CALLER)
+        self.assertNotIn(BRIDGE_TOKEN_ENV, environment)
         self.assertEqual(base[BRIDGE_SOCKET_ENV], "stale.sock")
 
     def test_unsupported_unix_listener_uses_existing_http(self) -> None:
@@ -452,7 +457,13 @@ class HistoryContract(unittest.TestCase):
         sessions = SimpleNamespace(
             bridge_caller=lambda session: live if session == CALLER else None
         )
-        router = register_history_routes(FastAPI(), sessions, self.history, self.assistant)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        router = register_history_routes(
+            FastAPI(), sessions, self.history, self.assistant, activities=activities
+        )
 
         async def check():
             # Keep the isolated fixture below the platform's Unix socket path limit.
@@ -534,7 +545,11 @@ class HistoryContract(unittest.TestCase):
             bridge_caller=lambda session: live if session == CALLER else None
         )
         app = FastAPI()
-        register_history_routes(app, sessions, self.history, self.assistant)
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_history_routes(app, sessions, self.history, self.assistant, activities=activities)
         with TestClient(app) as client:
             route = HISTORY_ROUTE_PREFIX + "search"
             self.assertEqual(client.post(route, json={"query": "方案"}).status_code, 403)
@@ -577,7 +592,11 @@ class ArtifactPublishContract(unittest.TestCase):
         sessions = SimpleNamespace(
             bridge_caller=lambda session: live if session == CALLER else None
         )
-        router = register_artifact_routes(FastAPI(), sessions.bridge_caller)
+        activities = Activities()
+        self.activities = activities
+        live.bridge_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.bridge_activity.close)
+        router = register_artifact_routes(FastAPI(), sessions.bridge_caller, activities=activities)
 
         async def check():
             with tempfile.TemporaryDirectory(prefix="bridge-artifact-", dir="/tmp") as directory:

@@ -8,7 +8,7 @@ import re
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, cast
 
 from service.paths import CONFIG_PATH
 from service.settings.capabilities import (
@@ -65,29 +65,23 @@ MODEL_CATALOG: List[Dict[str, Any]] = []
 # 内置目录条目只声明「连到哪、调哪个模型」; 上下文长度、模态、思考形态一律来自
 # capabilities.json 的 (连接, wire model) 声明 —— 名字不再产出能力真值 (proposal 78 I1)。
 GATEWAY_STRATEGY_MODELS = (
-    ("claude-opus-4-8", "Claude Opus 4.8"),
-    ("deepseek-v4-pro", "DeepSeek V4 Pro"),
-    ("deepseek-v4-flash", "DeepSeek V4 Flash"),
-    ("glm-5.2", "GLM 5.2"),
-    ("glm-5.1", "GLM 5.1"),
-    ("kimi-k2.7-code", "Kimi K2.7 Code"),
-    ("kimi-k2.6", "Kimi K2.6"),
-    ("kimi-k2-thinking", "Kimi K2 Thinking"),
-    ("qwen", "Qwen 3.7 Max"),
     ("qwen3.8-max", "Qwen 3.8 Max"),
     ("qwen3.8-flash", "Qwen 3.8 Flash"),
-    ("gpt-5.5", "GPT 5.5"),
+    ("qwen3-next-80b-a3b-thinking", "Qwen 3 Next 80B A3B Thinking"),
 )
-GATEWAY_DIRECT_MODELS = (
-    ("claude-opus-4-7", "Claude Opus 4.7"),
-    ("qwen3.7-plus", "Qwen 3.7 Plus"),
-    ("qwen3.6-plus", "Qwen 3.6 Plus"),
-    ("qwen3.7-max", "Qwen 3.7 Max"),
+GATEWAY_DIRECT_MODELS = cast(tuple[tuple[str, str], ...], ())
+GATEWAY_APPROVAL_MODEL_KEY = "auto_review_model"
+GATEWAY_QWEN_APPROVAL_MODEL = "qwen3-next-80b-a3b-thinking"
+GATEWAY_QWEN_MODEL_KEYS = frozenset(
+    {
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3-next-80b-a3b-thinking",
+    }
 )
-GATEWAY_CAPABILITY_ALIASES = {"qwen": "qwen3.7-max"}
-# 内置模型收敛: 网关目录当前只**对外暴露** qwen3.8-max 与 qwen3.8-flash。收敛的是选择器
-# 可见性, 不是目录本身 —— 条目全部保留, 旧配置/旧会话按 key 仍解析到正确连接, 只是不再进
-# 选择器 (含 config 派生的 "current-config" 合成项, 所以旧配置无需迁移文件就自动收敛)。
+GATEWAY_APPROVAL_MODELS = {name: GATEWAY_QWEN_APPROVAL_MODEL for name in GATEWAY_QWEN_MODEL_KEYS}
+# 内置目录仅保留两种主模型与独立审批模型；选择器只展示前两者。旧内置配置在加载态
+# 收敛到可见默认模型，不修改用户文件，也不改变个人连接。
 # 单一事实源: 产品可见性只在这里声明, 服务层不再维护第二张常量表。空集合 = 不收敛。
 GATEWAY_VISIBLE_MODEL_KEYS: frozenset[str] = frozenset({"qwen3.8-max", "qwen3.8-flash"})
 # 连接**身份**字段说明「连到哪、用什么协议、调哪个模型」; 连接**凭据**字段只说明「这条
@@ -153,7 +147,7 @@ def _gateway_edition(name: str, edition: str) -> tuple[str, Optional[int]]:
     """Identity used to prefer a strategy without collapsing real context editions."""
 
     capability = _wire_model_id(name).rsplit("/", 1)[-1]
-    return GATEWAY_CAPABILITY_ALIASES.get(capability, capability), _gateway_window(name, edition)
+    return capability, _gateway_window(name, edition)
 
 
 def _gateway_model_item(
@@ -181,6 +175,8 @@ def _gateway_model_item(
         "aliases": list(aliases),
         "description": f"DeepRD gateway {route_kind}: {name}.",
     }
+    if name in GATEWAY_APPROVAL_MODELS:
+        item[GATEWAY_APPROVAL_MODEL_KEY] = GATEWAY_APPROVAL_MODELS[name]
     return apply_capability(
         item,
         bundled_registry().lookup(name, GATEWAY_CONNECTION),

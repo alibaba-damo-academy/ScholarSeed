@@ -49,6 +49,7 @@ class WorkspaceWatch:
         self._routes: dict[str, WatchTarget] = {}
         self._baselines: dict[str, dict[str, FileStamp]] = {}
         self._scans: dict[str, object] = {}
+        self._ambiguous_turns: set[str] = set()
 
     def _scan_error(self, error: OSError) -> None:
         self._report(f"fs_snapshot_incomplete:{type(error).__name__}")
@@ -57,6 +58,14 @@ class WorkspaceWatch:
         )
 
     async def begin_turn(self, state: WatchTarget) -> None:
+        workspace = state.request.cwd.expanduser().resolve()
+        for other in self._routes.values():
+            if (
+                other.thread_id != state.thread_id
+                and other.thread_id in self._scans
+                and other.request.cwd.expanduser().resolve() == workspace
+            ):
+                self._ambiguous_turns.update((state.thread_id, other.thread_id))
         token = object()
         self._scans[state.thread_id] = token
         snapshot = await asyncio.to_thread(workspace_snapshot, state.request.cwd, self._scan_error)
@@ -72,6 +81,9 @@ class WorkspaceWatch:
         if self._scans.get(state.thread_id) is not token:
             return
         self._scans.pop(state.thread_id, None)
+        if state.thread_id in self._ambiguous_turns:
+            self._ambiguous_turns.discard(state.thread_id)
+            return
         for path, stamp in current.items():
             if previous.get(path) != stamp:
                 change = FILE_CHANGE_UPDATE if path in previous else FILE_CHANGE_ADD
@@ -81,11 +93,13 @@ class WorkspaceWatch:
     def abandon_turn(self, thread_id: str) -> None:
         self._scans.pop(thread_id, None)
         self._baselines.pop(thread_id, None)
+        self._ambiguous_turns.discard(thread_id)
 
     def reset(self) -> None:
         self._routes.clear()
         self._scans.clear()
         self._baselines.clear()
+        self._ambiguous_turns.clear()
 
     async def open(self, state: WatchTarget, generation: int) -> None:
         """Subscribe to Codex-owned filesystem notifications for this workspace."""
@@ -151,7 +165,7 @@ class WorkspaceWatch:
                 "changed_path_count": len(paths),
             },
         )
-        if not turn_active:
+        if not turn_active or state.thread_id in self._ambiguous_turns:
             return
         accepted = 0
         for changed_path in paths:

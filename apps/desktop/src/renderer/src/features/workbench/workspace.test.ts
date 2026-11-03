@@ -10,22 +10,216 @@ import {
   isDocumentLoadFailure,
   isMissingDocumentFailure,
   type LoadedDocument,
-  viewerFromProjection
+  viewerFromProjection,
 } from './api.ts'
 import type { LiteratureDocumentSource } from '../../contracts/workbench.ts'
 import { findLeaf, nodeTabCount } from './layout.ts'
 import {
   DocumentWorkspace,
   DocumentWorkspaceRegistry,
+  documentNavigationView,
   documentTextReveal,
   focusedSelectionPresentation,
   tabIdsForClose,
   type DocumentLoader,
   type RestoredProjectFile,
-  type SelectionViewport
+  type SelectionViewport,
 } from './workspace.ts'
 
 const source = { kind: 'project' as const, path: 'notes/readme.md' }
+
+test('document navigation honors literature reading context without changing source defaults', async () => {
+  for (const kind of ['literature', 'project', 'session-artifact', 'session-file'] as const) {
+    const workspace = new DocumentWorkspace(loader())
+    const tabId = await workspace.open(
+      { ...source, kind } as Parameters<DocumentWorkspace['open']>[0],
+      'preview'
+    )
+    for (const navigationView of [undefined, 'resource', 'literature'] as const) {
+      const snapshot = workspace.getSnapshot()
+      const tab = { ...snapshot.tabs[tabId], navigationView }
+      assert.equal(
+        documentNavigationView(tab, snapshot.sessions[tab.sessionId]),
+        kind === 'project'
+          ? 'resource'
+          : (navigationView ?? (kind === 'literature' ? 'literature' : 'resource'))
+      )
+    }
+  }
+})
+
+test('closing a literature tab in resource falls back to a project document on the same surface', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const projectTabId = await workspace.open(source, 'preview')
+  const literatureTabId = await workspace.open(
+    {
+      kind: 'literature',
+      literatureId: 'paper',
+      attachmentId: 'supplement',
+      path: 'supplement.pdf',
+      recordTarget: { owner: 'literature_attachment', scope_id: 'paper', subject_id: 'supplement' },
+    },
+    'preview'
+  )
+  workspace.setTabNavigationView(literatureTabId, 'resource')
+  workspace.requestClose(literatureTabId)
+  assert.equal(workspace.getSnapshot().focusedTabId, projectTabId)
+})
+
+test('embedded opens stay embedded in every published loading and ready snapshot', async () => {
+  const base = loader()
+  let finishLoad!: () => void
+  const pending = new Promise<void>((resolve) => {
+    finishLoad = resolve
+  })
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested) {
+      await pending
+      return base.load(requested)
+    },
+  })
+  const published: boolean[] = []
+  workspace.subscribe(() => {
+    for (const tab of Object.values(workspace.getSnapshot().tabs)) {
+      published.push(Boolean(tab.embedded))
+    }
+  })
+  const opening = workspace.open(source, 'preview', undefined, undefined, undefined, {
+    embedded: true,
+  })
+  assert.equal(Object.values(workspace.getSnapshot().sessions)[0]?.loadState, 'loading')
+  finishLoad()
+  const tabId = await opening
+  assert.ok(published.length >= 2)
+  assert.ok(published.every(Boolean), 'an internal preview must never appear as a standalone tab')
+  workspace.setTabEmbedded(tabId, false)
+  assert.equal(workspace.getSnapshot().tabs[tabId].embedded, false)
+  assert.equal(
+    await workspace.open(source, 'preview', undefined, undefined, undefined, { embedded: true }),
+    tabId
+  )
+  assert.equal(
+    workspace.getSnapshot().tabs[tabId].embedded,
+    false,
+    'existing standalone tabs stay visible'
+  )
+})
+
+test('standalone opens promote existing embedded previews without replacing their session', async () => {
+  for (const [path, viewer] of [
+    ['notes/readme.md', 'markdown'],
+    ['notes/report.xlsx', 'office'],
+  ] as const) {
+    const base = loader()
+    const workspace = new DocumentWorkspace({
+      ...base,
+      async load(requested) {
+        return { ...(await base.load(requested)), viewer }
+      },
+    })
+    const requested = { ...source, path }
+    const tabId = await workspace.open(requested, 'preview', undefined, undefined, undefined, {
+      embedded: true,
+    })
+    const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+    const opened = await workspace.open(requested, 'preview')
+    assert.equal(opened, tabId)
+    assert.equal(workspace.getSnapshot().tabs[opened].embedded, false)
+    assert.equal(workspace.getSnapshot().tabs[opened].sessionId, sessionId)
+    assert.equal(workspace.getSnapshot().focusedTabId, opened)
+    await workspace.open(requested, 'preview', undefined, undefined, undefined, { embedded: true })
+    assert.equal(workspace.getSnapshot().tabs[opened].embedded, false)
+  }
+})
+
+test('standalone opens promote in-flight embedded previews in either request order', async () => {
+  for (const [path, viewer] of [
+    ['notes/readme.md', 'markdown'],
+    ['notes/report.xlsx', 'office'],
+  ] as const) {
+    for (const embeddedFirst of [true, false]) {
+      const base = loader()
+      let finishLoad!: () => void
+      const pending = new Promise<void>((resolve) => {
+        finishLoad = resolve
+      })
+      let loads = 0
+      const workspace = new DocumentWorkspace({
+        ...base,
+        async load(requested) {
+          loads += 1
+          await pending
+          return { ...(await base.load(requested)), viewer }
+        },
+      })
+      const requested = { ...source, path }
+      const first = workspace.open(requested, 'preview', undefined, undefined, undefined, {
+        embedded: embeddedFirst,
+      })
+      const second = workspace.open(requested, 'preview', undefined, undefined, undefined, {
+        embedded: !embeddedFirst,
+      })
+      finishLoad()
+      const [firstId, secondId] = await Promise.all([first, second])
+      assert.equal(firstId, secondId)
+      assert.equal(loads, 1)
+      assert.equal(Boolean(workspace.getSnapshot().tabs[firstId].embedded), false)
+      assert.equal(workspace.getSnapshot().focusedTabId, firstId)
+    }
+  }
+})
+
+test('embedded exclusive-viewer opens preserve placement on success and failure', async () => {
+  for (const failed of [false, true]) {
+    const requested = { ...source, path: 'notes/report.docx' }
+    const base = loader()
+    const workspace = new DocumentWorkspace({
+      ...base,
+      async load() {
+        if (failed) {
+          return {
+            kind: DOCUMENT_LOAD_FAILURE_KIND,
+            code: 'document_not_found',
+            message: 'missing',
+            retryable: false,
+            status: 404,
+          }
+        }
+        return { ...(await base.load(requested)), viewer: 'office' as const }
+      },
+    })
+    const published: boolean[] = []
+    workspace.subscribe(() => {
+      published.push(
+        ...Object.values(workspace.getSnapshot().tabs).map((tab) => Boolean(tab.embedded))
+      )
+    })
+    const tabId = await workspace.open(requested, 'preview', undefined, undefined, undefined, {
+      embedded: true,
+    })
+    assert.equal(workspace.getSnapshot().tabs[tabId].embedded, true)
+    assert.ok(published.length > 0)
+    assert.ok(published.every(Boolean))
+  }
+})
+
+test('deleting a task discards its open artifacts but preserves independent library documents', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  await workspace.open({
+    kind: 'session-artifact',
+    sessionId: 'deleted-task',
+    artifactId: 'report',
+    path: 'report.md',
+  })
+  await workspace.open({ kind: 'session-file', sessionId: 'other-task', path: 'other.md' })
+  await workspace.open({ kind: 'project', project: 'project', path: 'resources/copy.md' })
+  workspace.discardTaskDocuments('deleted-task')
+  const remaining = Object.values(workspace.getSnapshot().sessions)
+    .map((session) => session.source.path)
+    .sort()
+  assert.deepEqual(remaining, ['other.md', 'resources/copy.md'])
+})
 
 const undiscoveredVersioning = {
   file_id: null,
@@ -38,7 +232,7 @@ const undiscoveredVersioning = {
   management_state: 'managed' as const,
   snapshot_state: 'pending' as const,
   pending: null,
-  drifted: false
+  drifted: false,
 }
 
 const managedVersioning = {
@@ -52,13 +246,13 @@ const managedVersioning = {
   management_state: 'managed' as const,
   snapshot_state: 'saved' as const,
   pending: null,
-  drifted: false
+  drifted: false,
 }
 
 const viewport: SelectionViewport = {
   rect: { left: 10, top: 20, right: 110, bottom: 40, width: 100, height: 20 },
   point: { x: 110, y: 40 },
-  visible: false
+  visible: false,
 }
 
 test('artifact MIME projections select Markdown and image viewers without a render hint', () => {
@@ -66,32 +260,37 @@ test('artifact MIME projections select Markdown and image viewers without a rend
     ['text/markdown', 'markdown'],
     ['text/x-markdown; charset=utf-8', 'markdown'],
     ['image/png', 'image'],
-    ['image/jpeg', 'image']
+    ['image/jpeg', 'image'],
   ] as const) {
-    assert.equal(viewerFromProjection({
-      kind: 'session-artifact',
-      sessionId: 'session',
-      artifactId: 'publication',
-      path: 'artifact',
-      mediaType
-    }), expected)
+    assert.equal(
+      viewerFromProjection({
+        kind: 'session-artifact',
+        sessionId: 'session',
+        artifactId: 'publication',
+        path: 'artifact',
+        mediaType,
+      }),
+      expected
+    )
   }
 })
 
 test('session Python artifacts use the existing code viewer', () => {
-  assert.equal(viewerFromProjection({
-    kind: 'session-artifact',
-    sessionId: 'session-python',
-    artifactId: 'artifact-python',
-    path: 'quick_sort.py',
-    mediaType: 'text/x-python'
-  }), 'code')
+  assert.equal(
+    viewerFromProjection({
+      kind: 'session-artifact',
+      sessionId: 'session-python',
+      artifactId: 'artifact-python',
+      path: 'quick_sort.py',
+      mediaType: 'text/x-python',
+    }),
+    'code'
+  )
 })
 
 test('content-inferred code viewer remains editable without a known extension', async () => {
   const workspace = new DocumentWorkspace({
     async load(requested): Promise<LoadedDocument> {
-      const markdown = requested.path.endsWith('.md')
       return {
         documentId: 'project:current:Dockerfile',
         source: requested,
@@ -105,17 +304,17 @@ test('content-inferred code viewer remains editable without a known extension', 
           can_save: true,
           can_version: false,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:dockerfile',
         mediaType: 'application/octet-stream',
         contentKind: 'text',
-        bytes: new TextEncoder().encode('FROM python:3.13\n')
+        bytes: new TextEncoder().encode('FROM python:3.13\n'),
       }
     },
     async commit() {
       return { ok: false, error: 'unavailable' }
-    }
+    },
   })
 
   const tabId = await workspace.open({ kind: 'project', path: 'Dockerfile' }, 'edit')
@@ -143,17 +342,17 @@ test('unsupported binary files remain in preview mode', async () => {
           can_save: false,
           can_version: false,
           can_diff: false,
-          pending: ['binary_preview_unsupported']
+          pending: ['binary_preview_unsupported'],
         },
         revision: 'sha256:opaque',
         mediaType: 'application/octet-stream',
         contentKind: 'binary',
-        bytes: new Uint8Array()
+        bytes: new Uint8Array(),
       }
     },
     async commit() {
       return { ok: false, error: 'unavailable' }
-    }
+    },
   })
 
   const tabId = await workspace.open({ kind: 'project', path: 'opaque' }, 'edit')
@@ -173,8 +372,8 @@ function textSelection(sessionId: string, revision: string, text = 'Draft') {
       start_line: 0,
       start_column: 2,
       end_line: 0,
-      end_column: 2 + text.length
-    }
+      end_column: 2 + text.length,
+    },
   }
 }
 
@@ -196,17 +395,17 @@ function loader(): DocumentLoader {
           can_save: true,
           can_version: false,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:initial',
         mediaType: 'text/markdown',
-        bytes
+        bytes,
       }
     },
     async commit() {
       revision += 1
       return { ok: true as const, revision: `sha256:saved-${revision}` }
-    }
+    },
   }
 }
 
@@ -227,16 +426,16 @@ test('clean binary sessions share one immutable baseline snapshot', async () => 
           can_save: true,
           can_version: true,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:pdf',
         mediaType: 'application/pdf',
-        bytes: new Uint8Array([1, 2, 3])
+        bytes: new Uint8Array([1, 2, 3]),
       }
     },
     async commit() {
       return { ok: false as const, error: 'unavailable' }
-    }
+    },
   })
 
   const tabId = await workspace.open(pdfSource, 'preview')
@@ -259,11 +458,11 @@ test('failed document loads preserve typed evidence and can be retried in place'
           code: 'literature_attachment_unreadable',
           message: '附件当前无法读取',
           retryable: true,
-          status: 422
+          status: 422,
         }
       }
       return successful.load(requested)
-    }
+    },
   })
 
   const tabId = await workspace.open(source, 'edit')
@@ -283,14 +482,14 @@ test('missing document failures are classified separately from retryable load fa
     code: 'document_http_error',
     message: 'document_http_error:404',
     retryable: false,
-    status: 404
+    status: 404,
   }
   const transient = {
     kind: DOCUMENT_LOAD_FAILURE_KIND,
     code: 'document_http_error',
     message: 'document_http_error:503',
     retryable: true,
-    status: 503
+    status: 503,
   }
   assert.equal(isDocumentLoadFailure(missing), true)
   assert.equal(isMissingDocumentFailure(missing), true)
@@ -316,7 +515,10 @@ test('project registry isolates tabs, layout, focus, and dirty sessions for iden
   assert.deepEqual(Object.keys(home.getSnapshot().tabs), [])
   assert.equal(registry.forProject('project-one'), first)
   assert.equal(registry.forProject('project-one').getSnapshot().focusedTabId, firstTab)
-  assert.equal(registry.forProject('project-one').getSnapshot().sessions[firstSession].text, '# project one draft')
+  assert.equal(
+    registry.forProject('project-one').getSnapshot().sessions[firstSession].text,
+    '# project one draft'
+  )
   assert.equal(registry.forProject('project-one').getSnapshot().sessions[firstSession].dirty, true)
 })
 
@@ -326,9 +528,11 @@ test('project registry counts and saves dirty Monaco documents across every inst
   const registry = new DocumentWorkspaceRegistry({
     ...base,
     async commit(requested, bytes, revision) {
-      commits.push(`${requested.kind === 'project' ? requested.project : requested.kind}:${requested.path}`)
+      commits.push(
+        `${requested.kind === 'project' ? requested.project : requested.kind}:${requested.path}`
+      )
       return base.commit(requested, bytes, revision)
-    }
+    },
   })
   const first = registry.forProject('project-one')
   const second = registry.forProject('project-two')
@@ -339,10 +543,7 @@ test('project registry counts and saves dirty Monaco documents across every inst
 
   assert.equal(registry.dirtyEditorCount(), 2)
   assert.equal(await registry.saveEditors(), true)
-  assert.deepEqual(commits, [
-    'project-one:notes/readme.md',
-    'project-two:notes/readme.md'
-  ])
+  assert.deepEqual(commits, ['project-one:notes/readme.md', 'project-two:notes/readme.md'])
   assert.equal(registry.dirtyEditorCount(), 0)
 })
 
@@ -355,7 +556,7 @@ test('project registry refuses editor reload preparation when any dirty Monaco d
         return { ok: false, error: 'failed' as const }
       }
       return base.commit(requested, bytes, revision)
-    }
+    },
   })
   const cleanable = registry.forProject('cleanable')
   const blocked = registry.forProject('blocked')
@@ -382,23 +583,32 @@ test('editor reload preparation leaves non-Monaco documents untouched', async ()
     async commit(requested, bytes, revision) {
       commits.push(requested.path)
       return base.commit(requested, bytes, revision)
-    }
+    },
   })
   const workspace = registry.forProject('project')
-  const markdownTab = await workspace.open({ kind: 'project', project: 'project', path: 'notes/readme.md' }, 'edit')
-  const pdfTab = await workspace.open({ kind: 'project', project: 'project', path: 'paper.pdf' }, 'edit')
+  const markdownTab = await workspace.open(
+    { kind: 'project', project: 'project', path: 'notes/readme.md' },
+    'edit'
+  )
+  const pdfTab = await workspace.open(
+    { kind: 'project', project: 'project', path: 'paper.pdf' },
+    'edit'
+  )
   workspace.updateText(workspace.getSnapshot().tabs[markdownTab].sessionId, '# changed')
   workspace.setExternalDirty(workspace.getSnapshot().tabs[pdfTab].sessionId, true)
 
   assert.equal(registry.dirtyEditorCount(), 1)
   assert.equal(await registry.saveEditors(), true)
   assert.deepEqual(commits, ['notes/readme.md'])
-  assert.equal(workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[pdfTab].sessionId].dirty, true)
+  assert.equal(
+    workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[pdfTab].sessionId].dirty,
+    true
+  )
 })
 
 test('registry closes the least recently used clean background tab', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    limit: 2
+    limit: 2,
   })
   registry.activateProject('project-one')
   const workspace = registry.forProject('project-one')
@@ -433,7 +643,7 @@ test('registry enforces the default ten editor limit', async () => {
 
 test('registry protects dirty and visible tabs and permits temporary overflow', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    limit: 1
+    limit: 1,
   })
   registry.activateProject('project-one')
   const workspace = registry.forProject('project-one')
@@ -449,7 +659,7 @@ test('registry protects dirty and visible tabs and permits temporary overflow', 
 
 test('registry applies one editor limit across project workspaces', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    limit: 1
+    limit: 1,
   })
   const first = registry.forProject('project-one')
   const firstTab = await first.open({ ...source, project: 'project-one' }, 'edit')
@@ -484,7 +694,7 @@ test('registry reclaims viewer caches after closing the last session reference',
     reclaim: (sessions, tabs) => {
       liveSessionIds = new Set(sessions)
       liveTabIds = new Set(tabs)
-    }
+    },
   })
   registry.activateProject('project-one')
   const workspace = registry.forProject('project-one')
@@ -501,7 +711,7 @@ test('registry reclaims viewer caches after closing the last session reference',
 
 test('closing a clean tab removes its document text undo history', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    limit: 1
+    limit: 1,
   })
   registry.activateProject('project-one')
   const workspace = registry.forProject('project-one')
@@ -523,7 +733,7 @@ test('saveFocused commits only the focused dirty save-capable session through or
     async commit(requested, bytes, revision) {
       commits.push(requested.path)
       return base.commit(requested, bytes, revision)
-    }
+    },
   })
   const firstTab = await workspace.open({ ...source, path: 'notes/first.md' }, 'edit')
   const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
@@ -547,7 +757,7 @@ test('saveAll saves every dirty writable document and stops on the first failure
       commits.push(requested.path)
       if (requested.path === 'notes/blocked.md') return { ok: false, error: 'failed' as const }
       return base.commit(requested, bytes, revision)
-    }
+    },
   })
   const firstTab = await workspace.open({ ...source, path: 'notes/first.md' }, 'edit')
   const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
@@ -576,7 +786,9 @@ test('disk save refreshes version state without claiming a new saved version', a
       assert.ok(loaded)
       return { ...loaded, versioning: managedVersioning }
     },
-    async versioning() { return pending }
+    async versioning() {
+      return pending
+    },
   })
   const tab = await workspace.open(source, 'edit')
   const session = workspace.getSnapshot().tabs[tab].sessionId
@@ -607,7 +819,9 @@ test('a missing post-save capability cannot retain the old saved-version status'
       assert.ok(loaded)
       return { ...loaded, versioning: managedVersioning }
     },
-    async versioning() { return null }
+    async versioning() {
+      return null
+    },
   })
   const tab = await workspace.open(source, 'edit')
   const session = workspace.getSnapshot().tabs[tab].sessionId
@@ -619,7 +833,9 @@ test('a missing post-save capability cannot retain the old saved-version status'
 
 test('successful seal capability refresh preserves an edit made while capability is loading', async () => {
   let release!: (value: typeof managedVersioning) => void
-  const pending = new Promise<typeof managedVersioning>((resolve) => { release = resolve })
+  const pending = new Promise<typeof managedVersioning>((resolve) => {
+    release = resolve
+  })
   const base = loader()
   const workspace = new DocumentWorkspace({
     ...base,
@@ -628,7 +844,7 @@ test('successful seal capability refresh preserves an edit made while capability
       assert.ok(loaded)
       return { ...loaded, versioning: undiscoveredVersioning }
     },
-    versioning: async () => pending
+    versioning: async () => pending,
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -659,7 +875,7 @@ test('failed version capability refresh leaves the complete session unchanged', 
       assert.ok(loaded)
       return { ...loaded, versioning: undiscoveredVersioning }
     },
-    versioning: async () => null
+    versioning: async () => null,
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -685,9 +901,9 @@ test('project path reconciliation reloads a clean open preview in place', async 
         documentId: documentIdFor(requested),
         source: requested,
         revision,
-        bytes: new TextEncoder().encode(text)
+        bytes: new TextEncoder().encode(text),
       }
-    }
+    },
   })
   const tabId = await workspace.open(projectSource, 'preview')
   const before = workspace.getSnapshot()
@@ -704,14 +920,17 @@ test('project path reconciliation reloads a clean open preview in place', async 
   assert.deepEqual(after.tabs[tabId].viewState, { scrollTop: 120 })
   assert.equal(after.sessions[sessionId].text, '# After\n')
   assert.equal(after.sessions[sessionId].revision, 'sha256:after')
-  assert.equal(after.sessions[sessionId].changeVersion, before.sessions[sessionId].changeVersion + 1)
+  assert.equal(
+    after.sessions[sessionId].changeVersion,
+    before.sessions[sessionId].changeVersion + 1
+  )
   assert.equal(after.sessions[sessionId].dirty, false)
 })
 
 test('project rescan reloads changed linked previews and leaves other projects untouched', async () => {
   const revisions = new Map([
     ['project-1', 'sha256:before'],
-    ['project-2', 'sha256:other']
+    ['project-2', 'sha256:other'],
   ])
   const base = loader()
   const workspace = new DocumentWorkspace({
@@ -719,16 +938,16 @@ test('project rescan reloads changed linked previews and leaves other projects u
     async load(requested) {
       const loaded = await base.load(requested)
       assert.ok(loaded)
-      const project = requested.kind === 'project' ? requested.project ?? 'current' : 'current'
+      const project = requested.kind === 'project' ? (requested.project ?? 'current') : 'current'
       const revision = revisions.get(project) ?? 'sha256:unknown'
       return {
         ...loaded,
         documentId: documentIdFor(requested),
         source: requested,
         revision,
-        bytes: new TextEncoder().encode(`# ${revision}\n`)
+        bytes: new TextEncoder().encode(`# ${revision}\n`),
       }
-    }
+    },
   })
   const linked = await workspace.open(
     { kind: 'project', project: 'project-1', path: 'resources/linked.md' },
@@ -764,9 +983,9 @@ test('project rescan checks disk revision before marking an unsaved editor confl
         documentId: documentIdFor(requested),
         source: requested,
         revision: diskRevision,
-        bytes: new TextEncoder().encode(`# ${diskRevision}\n`)
+        bytes: new TextEncoder().encode(`# ${diskRevision}\n`),
       }
-    }
+    },
   })
   const tabId = await workspace.open(
     { kind: 'project', project: 'project-1', path: 'resources/linked.md' },
@@ -788,7 +1007,9 @@ test('project rescan checks disk revision before marking an unsaved editor confl
 test('project rescan cannot restore a stale path after the document is relocated', async () => {
   let loads = 0
   let release!: () => void
-  const pending = new Promise<void>((resolve) => { release = resolve })
+  const pending = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const base = loader()
   const workspace = new DocumentWorkspace({
     ...base,
@@ -802,9 +1023,9 @@ test('project rescan cannot restore a stale path after the document is relocated
         documentId: 'project:project-1:asset:linked',
         source: requested,
         revision: call > 1 ? 'sha256:after' : 'sha256:before',
-        bytes: new TextEncoder().encode(call > 1 ? '# After\n' : '# Before\n')
+        bytes: new TextEncoder().encode(call > 1 ? '# After\n' : '# Before\n'),
       }
-    }
+    },
   })
   const tabId = await workspace.open(
     { kind: 'project', project: 'project-1', path: 'resources/linked.md' },
@@ -839,7 +1060,7 @@ test('external path events are scoped to their project before refreshing a previ
       const loaded = await base.load(requested)
       assert.ok(loaded)
       return { ...loaded, documentId: documentIdFor(requested), source: requested }
-    }
+    },
   })
   await workspace.open(
     { kind: 'project', project: 'project-2', path: 'resources/linked.md' },
@@ -862,7 +1083,7 @@ test('project path reconciliation preserves unsaved edits as a conflict', async 
       const loaded = await base.load(requested)
       assert.ok(loaded)
       return { ...loaded, documentId: documentIdFor(requested), source: requested }
-    }
+    },
   })
   const tabId = await workspace.open(projectSource, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -880,7 +1101,9 @@ test('project path reconciliation preserves unsaved edits as a conflict', async 
 test('project path reconciliation never overwrites an edit made while reloading', async () => {
   let loads = 0
   let release!: () => void
-  const pending = new Promise<void>((resolve) => { release = resolve })
+  const pending = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const projectSource = { kind: 'project' as const, project: 'project-1', path: source.path }
   const base = loader()
   const workspace = new DocumentWorkspace({
@@ -895,9 +1118,9 @@ test('project path reconciliation never overwrites an edit made while reloading'
         documentId: documentIdFor(requested),
         source: requested,
         revision: loads > 1 ? 'sha256:after' : 'sha256:before',
-        bytes: new TextEncoder().encode(loads > 1 ? '# After\n' : '# Before\n')
+        bytes: new TextEncoder().encode(loads > 1 ? '# After\n' : '# Before\n'),
       }
-    }
+    },
   })
   const tabId = await workspace.open(projectSource, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -918,7 +1141,9 @@ test('project path reconciliation never overwrites an edit made while reloading'
 test('a stale reload cannot turn a newer clean reload into a conflict', async () => {
   let loads = 0
   let releaseStale!: () => void
-  const stalePending = new Promise<void>((resolve) => { releaseStale = resolve })
+  const stalePending = new Promise<void>((resolve) => {
+    releaseStale = resolve
+  })
   const base = loader()
   const workspace = new DocumentWorkspace({
     ...base,
@@ -932,9 +1157,9 @@ test('a stale reload cannot turn a newer clean reload into a conflict', async ()
         documentId: documentIdFor(requested),
         source: requested,
         revision: `sha256:load-${call}`,
-        bytes: new TextEncoder().encode(call === 3 ? '# Newer reload\n' : '# Stale reload\n')
+        bytes: new TextEncoder().encode(call === 3 ? '# Newer reload\n' : '# Stale reload\n'),
       }
-    }
+    },
   })
   const tabId = await workspace.open(
     { kind: 'project', project: 'project-1', path: source.path },
@@ -958,7 +1183,9 @@ test('a stale reload cannot turn a newer clean reload into a conflict', async ()
 test('unexpected version capability failure is observable and leaves the session unchanged', async () => {
   const workspace = new DocumentWorkspace({
     ...loader(),
-    versioning: async () => { throw new Error('capability failed') }
+    versioning: async () => {
+      throw new Error('capability failed')
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -979,7 +1206,7 @@ test('external change clearing is guarded by the archived document identity', as
       const loaded = await base.load(requested)
       assert.ok(loaded)
       return { ...loaded, externalChange: true }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'preview')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -993,7 +1220,9 @@ test('external change clearing is guarded by the archived document identity', as
 
 test('closing a document invalidates its pending version capability refresh', async () => {
   let release!: (value: typeof managedVersioning) => void
-  const pending = new Promise<typeof managedVersioning>((resolve) => { release = resolve })
+  const pending = new Promise<typeof managedVersioning>((resolve) => {
+    release = resolve
+  })
   const workspace = new DocumentWorkspace({ ...loader(), versioning: async () => pending })
   const tabId = await workspace.open(source, 'preview')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -1010,7 +1239,10 @@ test('an older version capability response cannot overwrite a newer response', a
   const releases: Array<(value: typeof managedVersioning) => void> = []
   const workspace = new DocumentWorkspace({
     ...loader(),
-    versioning: async () => new Promise((resolve) => { releases.push(resolve) })
+    versioning: async () =>
+      new Promise((resolve) => {
+        releases.push(resolve)
+      }),
   })
   const tabId = await workspace.open(source, 'preview')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -1028,13 +1260,15 @@ test('an older version capability response cannot overwrite a newer response', a
 
 test('a successful reload invalidates an older capability response for the same document', async () => {
   let release!: (value: typeof managedVersioning) => void
-  const pending = new Promise<typeof managedVersioning>((resolve) => { release = resolve })
+  const pending = new Promise<typeof managedVersioning>((resolve) => {
+    release = resolve
+  })
   const base = loader()
   let loadCount = 0
   const reloadedVersioning = {
     ...managedVersioning,
     version_id: 'version-reloaded',
-    working_revision: 'sha256:reloaded'
+    working_revision: 'sha256:reloaded',
   }
   const workspace = new DocumentWorkspace({
     ...base,
@@ -1044,10 +1278,10 @@ test('a successful reload invalidates an older capability response for the same 
       loadCount += 1
       return {
         ...loaded,
-        versioning: loadCount === 1 ? undiscoveredVersioning : reloadedVersioning
+        versioning: loadCount === 1 ? undiscoveredVersioning : reloadedVersioning,
       }
     },
-    versioning: async () => pending
+    versioning: async () => pending,
   })
   const tabId = await workspace.open(source, 'preview')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -1068,14 +1302,16 @@ test('plain reload preserves edits made while disk content is loading', async ()
   const base = loader()
   let block = false
   let release!: () => void
-  const pending = new Promise<void>((resolve) => { release = resolve })
+  const pending = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const workspace = new DocumentWorkspace({
     ...base,
     async load(requested) {
       const loaded = await base.load(requested)
       if (block) await pending
       return loaded
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -1092,7 +1328,9 @@ test('plain reload preserves edits made while disk content is loading', async ()
 
 test('a capability response for an old document identity cannot update a restored path', async () => {
   let release!: (value: typeof managedVersioning) => void
-  const pending = new Promise<typeof managedVersioning>((resolve) => { release = resolve })
+  const pending = new Promise<typeof managedVersioning>((resolve) => {
+    release = resolve
+  })
   const base = loader()
   const workspace = new DocumentWorkspace({
     ...base,
@@ -1103,22 +1341,24 @@ test('a capability response for an old document identity cannot update a restore
         ...loaded,
         documentId: `project:current:${requested.path}`,
         source: requested,
-        versioning: undiscoveredVersioning
+        versioning: undiscoveredVersioning,
       }
     },
-    versioning: async () => pending
+    versioning: async () => pending,
   })
   const tabId = await workspace.open(source, 'preview')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
   const documentId = workspace.getSnapshot().sessions[sessionId].documentId
   const refreshing = workspace.refreshVersioning(sessionId, documentId)
-  const restored = await workspace.reconcileRestoredFiles('current', [{
-    fileId: 'file-notes',
-    versionId: 'version-restored',
-    previousPath: source.path,
-    path: 'notes/restored.md',
-    state: 'present'
-  }])
+  const restored = await workspace.reconcileRestoredFiles('current', [
+    {
+      fileId: 'file-notes',
+      versionId: 'version-restored',
+      previousPath: source.path,
+      path: 'notes/restored.md',
+      state: 'present',
+    },
+  ])
   assert.deepEqual(restored, { synchronized: ['file-notes'], conflicted: [], failed: [] })
   release(managedVersioning)
 
@@ -1144,7 +1384,7 @@ test('runtime capability restriction preserves session bytes, dirty state and se
   assert.equal(after.saveState, 'dirty')
 })
 
-test('Markdown source and visual modes reuse one tab and one document session', async () => {
+test('Markdown text, visual and preview modes share edits in one tab and document session', async () => {
   const workspace = new DocumentWorkspace(loader())
   const editId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[editId].sessionId
@@ -1160,6 +1400,54 @@ test('Markdown source and visual modes reuse one tab and one document session', 
   workspace.updateText(sessionId, '# Changed\n')
   assert.equal(workspace.getSnapshot().sessions[sessionId].dirty, true)
   assert.equal(workspace.getSnapshot().sessions[sessionId].text, '# Changed\n')
+  const sourceId = await workspace.open(source, 'source')
+  assert.equal(sourceId, editId)
+  assert.equal(workspace.getSnapshot().tabs[sourceId].viewKind, 'source')
+  assert.equal(workspace.getSnapshot().sessions[sessionId].text, '# Changed\n')
+  assert.equal(workspace.setTabView(sourceId, 'preview'), true)
+  assert.equal(workspace.getSnapshot().sessions[sessionId].dirty, true)
+  assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 1)
+})
+
+test('readonly Markdown allows text and preview but rejects visual editing', async () => {
+  const original = loader()
+  const workspace = new DocumentWorkspace({
+    ...original,
+    async load(requested) {
+      const result = await original.load(requested)
+      if (isDocumentLoadFailure(result)) return result
+      return {
+        ...result,
+        capabilities: { ...result.capabilities, can_edit: false, can_save: false },
+      }
+    },
+  })
+  const tabId = await workspace.open(source, 'source')
+  assert.equal(workspace.getSnapshot().tabs[tabId].viewKind, 'source')
+  assert.equal(workspace.setTabView(tabId, 'preview'), true)
+  assert.equal(workspace.setTabView(tabId, 'source'), true)
+  assert.equal(workspace.setTabView(tabId, 'edit'), false)
+})
+
+test('leaving Markdown visual editing for text or preview prepares pending edits', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  let prepared = 0
+  workspace.registerSaveDelegate(sessionId, {
+    prepare: () => {
+      prepared += 1
+      workspace.updateText(sessionId, `# Prepared ${prepared}\n`)
+    },
+    serialize: async () => null,
+  })
+  workspace.setTabView(tabId, 'source')
+  assert.equal(prepared, 1)
+  assert.equal(workspace.getSnapshot().sessions[sessionId].text, '# Prepared 1\n')
+  workspace.setTabView(tabId, 'edit')
+  workspace.setTabView(tabId, 'preview')
+  assert.equal(prepared, 2)
+  assert.equal(workspace.getSnapshot().sessions[sessionId].text, '# Prepared 2\n')
 })
 
 test('text reveal opens Markdown source, reuses its tab, and advances the request sequence', async () => {
@@ -1168,16 +1456,16 @@ test('text reveal opens Markdown source, reuses its tab, and advances the reques
   const reveal = {
     kind: 'find' as const,
     query: 'Draft',
-    source_revision: 'sha256:search-result'
+    source_revision: 'sha256:search-result',
   }
 
   const first = await workspace.revealText(source, reveal)
   const firstState = workspace.getSnapshot()
   assert.equal(first, editId)
-  assert.equal(firstState.tabs[first].viewKind, 'preview')
+  assert.equal(firstState.tabs[first].viewKind, 'source')
   assert.deepEqual(firstState.tabs[first].viewState?.documentTextReveal, {
     ...reveal,
-    sequence: 1
+    sequence: 1,
   })
 
   const second = await workspace.revealText(source, reveal)
@@ -1195,8 +1483,8 @@ test('project relocation preserves the stable session, tab and PDF view state', 
       file_id: managedVersioning.file_id,
       revision: 2,
       origin: 'user' as const,
-      review: null
-    }
+      review: null,
+    },
   }
   let capabilityPath = ''
   const workspace = new DocumentWorkspace({
@@ -1209,13 +1497,13 @@ test('project relocation preserves the stable session, tab and PDF view state', 
         documentId: 'project:project-1:asset:pdf-asset',
         source: { ...pdfSource, assetId: 'pdf-asset' },
         viewer: 'pdf',
-        versioning: managedVersioning
+        versioning: managedVersioning,
       }
     },
     async versioning(requested) {
       capabilityPath = requested.path
       return relocatedVersioning
-    }
+    },
   })
   const tabId = await workspace.open(pdfSource, 'preview')
   assert.equal(await workspace.open(pdfSource, 'preview'), tabId)
@@ -1247,10 +1535,48 @@ test('project relocation never changes a same-path session from another project'
 
   workspace.relocateProjectPath('project-1', first.path, 'archive/report.pdf')
 
-  const paths = Object.values(workspace.getSnapshot().sessions)
-    .map(session => [session.source.kind === 'project' ? session.source.project : null, session.source.path])
-  assert.ok(paths.some(([project, path]) => project === 'project-1' && path === 'archive/report.pdf'))
-  assert.ok(paths.some(([project, path]) => project === 'project-2' && path === 'papers/report.pdf'))
+  const paths = Object.values(workspace.getSnapshot().sessions).map((session) => [
+    session.source.kind === 'project' ? session.source.project : null,
+    session.source.path,
+  ])
+  assert.ok(
+    paths.some(([project, path]) => project === 'project-1' && path === 'archive/report.pdf')
+  )
+  assert.ok(
+    paths.some(([project, path]) => project === 'project-2' && path === 'papers/report.pdf')
+  )
+})
+
+test('project relocation releases the old path identity for a new file', async () => {
+  const previous = { kind: 'project' as const, path: 'notes/report.md', project: 'project-1' }
+  const base = loader()
+  let loads = 0
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested) {
+      const loaded = await base.load(requested)
+      loads += 1
+      return {
+        ...loaded,
+        documentId: documentIdFor(requested),
+        bytes: new TextEncoder().encode(loads === 1 ? '# Original\n' : '# Replacement\n'),
+      }
+    },
+  })
+  const firstTab = await workspace.open(previous, 'preview')
+  const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
+
+  await workspace.relocateProjectPath(previous.project, previous.path, 'archive/report.md')
+  const secondTab = await workspace.open(previous, 'preview')
+  const secondSession = workspace.getSnapshot().tabs[secondTab].sessionId
+
+  assert.notEqual(secondSession, firstSession)
+  assert.equal(workspace.getSnapshot().sessions[firstSession].source.path, 'archive/report.md')
+  assert.equal(
+    workspace.getSnapshot().sessions[firstSession].documentId,
+    'project:project-1:archive/report.md'
+  )
+  assert.equal(workspace.getSnapshot().sessions[secondSession].text, '# Replacement\n')
 })
 
 test('project subtree dirty checks include descendants but isolate prefixes and projects', async () => {
@@ -1263,10 +1589,7 @@ test('project subtree dirty checks include descendants but isolate prefixes and 
     { kind: 'project', project: 'project-1', path: 'folder-copy/child.md' },
     'edit'
   )
-  await workspace.open(
-    { kind: 'project', project: 'project-2', path: 'folder/child.md' },
-    'edit'
-  )
+  await workspace.open({ kind: 'project', project: 'project-2', path: 'folder/child.md' }, 'edit')
   const sessionId = workspace.getSnapshot().tabs[dirtyTab].sessionId
   workspace.updateText(sessionId, '# Dirty\n')
 
@@ -1278,18 +1601,24 @@ test('project subtree dirty checks include descendants but isolate prefixes and 
 test('project subtree close removes all descendants and preserves same-prefix siblings', async () => {
   const workspace = new DocumentWorkspace(loader())
   await workspace.open({ kind: 'project', project: 'project-1', path: 'folder/a.md' }, 'preview')
-  await workspace.open({ kind: 'project', project: 'project-1', path: 'folder/sub/b.md' }, 'preview')
-  await workspace.open({ kind: 'project', project: 'project-1', path: 'folder-copy/c.md' }, 'preview')
+  await workspace.open(
+    { kind: 'project', project: 'project-1', path: 'folder/sub/b.md' },
+    'preview'
+  )
+  await workspace.open(
+    { kind: 'project', project: 'project-1', path: 'folder-copy/c.md' },
+    'preview'
+  )
   await workspace.open({ kind: 'project', project: 'project-2', path: 'folder/d.md' }, 'preview')
 
   assert.equal(workspace.requestCloseProjectPath('project-1', 'folder'), true)
   const remaining = Object.values(workspace.getSnapshot().sessions).map((session) => [
     session.source.kind === 'project' ? session.source.project : null,
-    session.source.path
+    session.source.path,
   ])
   assert.deepEqual(remaining, [
     ['project-1', 'folder-copy/c.md'],
-    ['project-2', 'folder/d.md']
+    ['project-2', 'folder/d.md'],
   ])
 })
 
@@ -1302,7 +1631,7 @@ test('closing a deleted literature attachment reaches every project workspace', 
     literatureId: 'paper',
     attachmentId: 'primary',
     recordTarget: { owner: 'literature_attachment', scope_id: 'paper', subject_id: 'primary' },
-    path: 'primary.pdf'
+    path: 'primary.pdf',
   }
   await first.open(primary, 'preview')
   await first.open({ ...primary, attachmentId: 'slides', path: 'slides.pdf' }, 'preview')
@@ -1331,29 +1660,20 @@ test('discarding a project subtree closes dirty descendants without another conf
     { kind: 'project', project: 'project-1', path: 'folder/a.md' },
     'edit'
   )
-  await workspace.open(
-    { kind: 'project', project: 'project-1', path: 'folder/sub/b.md' },
-    'edit'
-  )
-  await workspace.open(
-    { kind: 'project', project: 'project-1', path: 'folder-copy/c.md' },
-    'edit'
-  )
-  await workspace.open(
-    { kind: 'project', project: 'project-2', path: 'folder/d.md' },
-    'edit'
-  )
+  await workspace.open({ kind: 'project', project: 'project-1', path: 'folder/sub/b.md' }, 'edit')
+  await workspace.open({ kind: 'project', project: 'project-1', path: 'folder-copy/c.md' }, 'edit')
+  await workspace.open({ kind: 'project', project: 'project-2', path: 'folder/d.md' }, 'edit')
   const dirtySessionId = workspace.getSnapshot().tabs[dirty].sessionId
   workspace.updateText(dirtySessionId, '# Unsaved\n')
 
   assert.equal(workspace.discardProjectPath('project-1', 'folder'), true)
   const remaining = Object.values(workspace.getSnapshot().sessions).map((session) => [
     session.source.kind === 'project' ? session.source.project : null,
-    session.source.path
+    session.source.path,
   ])
   assert.deepEqual(remaining, [
     ['project-1', 'folder-copy/c.md'],
-    ['project-2', 'folder/d.md']
+    ['project-2', 'folder/d.md'],
   ])
   assert.equal(workspace.getSnapshot().pendingClose, null)
 })
@@ -1365,8 +1685,13 @@ test('code files normalize preview requests into one editable tab', async () => 
     async load() {
       const loaded = await loader().load(codeSource)
       assert.ok(loaded)
-      return { ...loaded, viewer: 'code', source: codeSource, documentId: 'project:current:source/main.c' }
-    }
+      return {
+        ...loaded,
+        viewer: 'code',
+        source: codeSource,
+        documentId: 'project:current:source/main.c',
+      }
+    },
   }
   const workspace = new DocumentWorkspace(codeLoader)
   const first = await workspace.open(codeSource, 'preview')
@@ -1388,9 +1713,9 @@ test('spreadsheet requests normalize into one tab without preview mode', async (
         ...loaded,
         viewer: 'spreadsheet' as const,
         source: spreadsheetSource,
-        documentId: 'project:current:results.csv'
+        documentId: 'project:current:results.csv',
       }
-    }
+    },
   }
   const workspace = new DocumentWorkspace(spreadsheetLoader)
   const first = await workspace.open(spreadsheetSource, 'preview')
@@ -1419,21 +1744,92 @@ function officeLoader(): DocumentLoader {
           can_save: true,
           can_version: false,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: `sha256:${requested.path}`,
         mediaType: markdown
           ? 'text/markdown'
           : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         contentKind: markdown ? 'text' : 'binary',
-        bytes: markdown ? new TextEncoder().encode('# Notes') : new Uint8Array([1, 2, 3])
+        bytes: markdown ? new TextEncoder().encode('# Notes') : new Uint8Array([1, 2, 3]),
       }
     },
     async commit(_source, _bytes, revision) {
       return { ok: true, revision }
-    }
+    },
   }
 }
+
+test('editable XLSX opens in preview until the user explicitly requests editing', async () => {
+  const workspace = new DocumentWorkspace(officeLoader())
+  const source = { kind: 'project' as const, path: 'results.xlsx' }
+  const preview = await workspace.open(source)
+  assert.equal(workspace.getSnapshot().tabs[preview].viewKind, 'preview')
+  const edit = await workspace.open(source, 'edit')
+  assert.equal(workspace.getSnapshot().tabs[edit].viewKind, 'edit')
+  assert.equal(
+    workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[edit].sessionId].dirty,
+    false
+  )
+})
+
+test('an explicit XLSX edit request during preview loading retains the requested mode', async () => {
+  const workspace = new DocumentWorkspace(officeLoader())
+  const source = { kind: 'project' as const, path: 'results.xlsx' }
+  const preview = workspace.open(source)
+  const editing = workspace.open(source, 'edit')
+  await preview
+  const edit = await editing
+  assert.equal(workspace.getSnapshot().tabs[edit].viewKind, 'edit')
+})
+
+test('native Office previews keep independent tabs alongside the exclusive editor', async () => {
+  const workspace = new DocumentWorkspace(officeLoader())
+  const editor = await workspace.open({ kind: 'project', path: 'editor.docx' }, 'edit')
+  workspace.setExternalDirty(workspace.getSnapshot().tabs[editor].sessionId, true)
+  const previews = []
+  for (const path of ['first.docx', 'second.xlsx', 'third.pptx']) {
+    previews.push(await workspace.open({ kind: 'project', path }, 'preview'))
+  }
+  const state = workspace.getSnapshot()
+  assert.equal(Object.keys(state.tabs).length, 4)
+  assert.ok(state.tabs[editor])
+  assert.equal(state.pendingClose, null)
+  for (const tabId of previews) assert.equal(state.tabs[tabId].viewKind, 'preview')
+})
+
+test('native previews in another project do not close an existing Office tab', async () => {
+  const registry = new DocumentWorkspaceRegistry(officeLoader())
+  const first = registry.forProject('first')
+  const second = registry.forProject('second')
+  const original = await first.open({ kind: 'project', project: 'first', path: 'first.docx' })
+  await second.open({ kind: 'project', project: 'second', path: 'second.xlsx' })
+  assert.ok(first.getSnapshot().tabs[original])
+  assert.equal(Object.keys(second.getSnapshot().tabs).length, 1)
+})
+
+test('imported Office resources use native preview without replacing prior tabs', async () => {
+  const workspace = new DocumentWorkspace(officeLoader())
+  for (const path of ['first.docx', 'second.xlsx']) {
+    await workspace.openImported(
+      { kind: 'project', path },
+      { kind: 'session-file', sessionId: 'task', path }
+    )
+  }
+  assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 2)
+  assert.ok(Object.values(workspace.getSnapshot().tabs).every((tab) => tab.viewKind === 'preview'))
+})
+
+test('promoting a native preview to editing retains dirty-owner confirmation', async () => {
+  const workspace = new DocumentWorkspace(officeLoader())
+  const owner = await workspace.open({ kind: 'project', path: 'owner.docx' }, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[owner].sessionId
+  workspace.setExternalDirty(sessionId, true)
+  const source = { kind: 'project' as const, path: 'candidate.xlsx' }
+  await workspace.open(source, 'preview')
+  await workspace.open(source, 'edit')
+  assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId: owner, sessionId })
+})
 
 test('opening another Office-family document replaces the clean owner', async () => {
   const workspace = new DocumentWorkspace(officeLoader())
@@ -1443,21 +1839,26 @@ test('opening another Office-family document replaces the clean owner', async ()
 
   assert.equal(state.tabs[first], undefined)
   assert.ok(state.tabs[second])
-  assert.equal(Object.values(state.sessions).filter((session) => (
-    session.viewer === 'office' || session.viewer === 'spreadsheet'
-  )).length, 1)
+  assert.equal(
+    Object.values(state.sessions).filter(
+      (session) => session.viewer === 'office' || session.viewer === 'spreadsheet'
+    ).length,
+    1
+  )
 })
 
 test('Office-family replacement stays on the current owner until the candidate is loaded', async () => {
   let releaseCandidate: (() => void) | undefined
-  const candidateGate = new Promise<void>((resolve) => { releaseCandidate = resolve })
+  const candidateGate = new Promise<void>((resolve) => {
+    releaseCandidate = resolve
+  })
   const base = officeLoader()
   const deferredLoader: DocumentLoader = {
     ...base,
     async load(requested) {
       if (requested.path === 'second.xlsx') await candidateGate
       return base.load(requested)
-    }
+    },
   }
   const workspace = new DocumentWorkspace(deferredLoader)
   const first = await workspace.open({ kind: 'project', path: 'first.docx' }, 'edit')
@@ -1465,7 +1866,10 @@ test('Office-family replacement stays on the current owner until the candidate i
 
   assert.deepEqual(Object.keys(workspace.getSnapshot().tabs), [first])
   assert.equal(workspace.getSnapshot().focusedTabId, first)
-  assert.deepEqual(workspace.getSnapshot().pendingExclusiveOpen, { requestId: 2, ownerTabId: first })
+  assert.deepEqual(workspace.getSnapshot().pendingExclusiveOpen, {
+    requestId: 2,
+    ownerTabId: first,
+  })
 
   releaseCandidate?.()
   const second = await opening
@@ -1482,10 +1886,12 @@ test('the latest Office-family request wins when candidate loads finish out of o
     ...base,
     async load(requested) {
       if (requested.path !== 'first.docx') {
-        await new Promise<void>((resolve) => { releases.set(requested.path, resolve) })
+        await new Promise<void>((resolve) => {
+          releases.set(requested.path, resolve)
+        })
       }
       return base.load(requested)
-    }
+    },
   }
   const workspace = new DocumentWorkspace(deferredLoader)
   await workspace.open({ kind: 'project', path: 'first.docx' }, 'edit')
@@ -1494,7 +1900,7 @@ test('the latest Office-family request wins when candidate loads finish out of o
 
   assert.deepEqual(workspace.getSnapshot().pendingExclusiveOpen, {
     requestId: 3,
-    ownerTabId: workspace.getSnapshot().focusedTabId
+    ownerTabId: workspace.getSnapshot().focusedTabId,
   })
 
   releases.get('third.pptx')?.()
@@ -1527,8 +1933,14 @@ test('the registry replaces a clean Office owner across project workspaces', asy
   const registry = new DocumentWorkspaceRegistry(officeLoader())
   const firstWorkspace = registry.forProject('first-project')
   const secondWorkspace = registry.forProject('second-project')
-  await firstWorkspace.open({ kind: 'project', project: 'first-project', path: 'first.docx' }, 'edit')
-  await secondWorkspace.open({ kind: 'project', project: 'second-project', path: 'second.docx' }, 'edit')
+  await firstWorkspace.open(
+    { kind: 'project', project: 'first-project', path: 'first.docx' },
+    'edit'
+  )
+  await secondWorkspace.open(
+    { kind: 'project', project: 'second-project', path: 'second.docx' },
+    'edit'
+  )
 
   assert.equal(Object.keys(firstWorkspace.getSnapshot().tabs).length, 0)
   assert.equal(Object.keys(secondWorkspace.getSnapshot().tabs).length, 1)
@@ -1579,7 +1991,7 @@ test('explicit conflict overwrite retries with the latest revision and closes th
       if (expectedRevision !== revision) return { ok: false, error: 'conflict' }
       revision = 'sha256:overwritten'
       return { ok: true, revision }
-    }
+    },
   }
   const workspace = new DocumentWorkspace(conflictLoader)
   const tabId = await workspace.open(source, 'edit')
@@ -1601,7 +2013,7 @@ test('failed save keeps the close decision available so discard can finish closi
     ...loader(),
     async commit() {
       return { ok: false, error: 'failed' }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -1744,13 +2156,21 @@ test('reordering tabs stays within one leaf and preserves the active tab', async
 
   assert.equal(workspace.reorderTab(first, third, 'after'), true)
   let state = workspace.getSnapshot()
-  assert.deepEqual(findLeaf(state.layout.areas.primary, 'primary-root')?.tabIds, [second, third, first])
+  assert.deepEqual(findLeaf(state.layout.areas.primary, 'primary-root')?.tabIds, [
+    second,
+    third,
+    first,
+  ])
   assert.equal(findLeaf(state.layout.areas.primary, 'primary-root')?.activeTabId, third)
   assert.equal(state.focusedTabId, third)
 
   assert.equal(workspace.reorderTab(first, second, 'before'), true)
   state = workspace.getSnapshot()
-  assert.deepEqual(findLeaf(state.layout.areas.primary, 'primary-root')?.tabIds, [first, second, third])
+  assert.deepEqual(findLeaf(state.layout.areas.primary, 'primary-root')?.tabIds, [
+    first,
+    second,
+    third,
+  ])
   assert.equal(findLeaf(state.layout.areas.primary, 'primary-root')?.activeTabId, third)
   assert.equal(state.focusedTabId, third)
   assert.equal(workspace.reorderTab(first, first, 'before'), false)
@@ -1809,10 +2229,150 @@ test('closing only the last dirty view requires an explicit choice', async () =>
   assert.equal(workspace.getSnapshot().sessions[sessionId], undefined)
 })
 
+test('automatic Markdown close prepares and saves before removing the last view', async () => {
+  let committed = ''
+  const workspace = new DocumentWorkspace({
+    ...loader(),
+    async commit(_source, bytes) {
+      committed = new TextDecoder().decode(bytes)
+      assert.equal(workspace.getSnapshot().pendingClose, null)
+      return { ok: true, revision: 'saved' }
+    },
+  })
+  workspace.setAutoSave(true)
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.registerSaveDelegate(sessionId, {
+    prepare() {
+      workspace.updateText(sessionId, '# Latest editor text\n')
+    },
+    async serialize() {
+      return new TextEncoder().encode('# Latest editor text\n')
+    },
+  })
+  workspace.requestClose(tabId)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(committed, '# Latest editor text\n')
+  assert.equal(workspace.getSnapshot().tabs[tabId], undefined)
+  assert.equal(workspace.getSnapshot().pendingClose, null)
+})
+
+for (const failure of ['failed', 'conflict', 'throw'] as const) {
+  test(`automatic Markdown close preserves the document on ${failure}`, async () => {
+    const workspace = new DocumentWorkspace({
+      ...loader(),
+      async commit() {
+        if (failure === 'throw') throw new Error('disk unavailable')
+        return { ok: false, error: failure }
+      },
+    })
+    workspace.setAutoSave(true)
+    const tabId = await workspace.open(source, 'edit')
+    const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+    workspace.updateText(sessionId, '# Local edit\n')
+    workspace.requestClose(tabId)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.ok(workspace.getSnapshot().tabs[tabId])
+    assert.equal(workspace.getSnapshot().sessions[sessionId].text, '# Local edit\n')
+    assert.equal(workspace.getSnapshot().sessions[sessionId].dirty, true)
+    assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId, sessionId })
+    assert.equal(
+      workspace.getSnapshot().sessions[sessionId].saveState,
+      failure === 'conflict' ? 'conflict' : 'error'
+    )
+  })
+}
+
+test('automatic Markdown bulk close drains edits made during an in-flight save', async () => {
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const committed: string[] = []
+  const workspace = new DocumentWorkspace({
+    ...loader(),
+    async commit(_source, bytes) {
+      committed.push(new TextDecoder().decode(bytes))
+      if (committed.length === 1) await gate
+      return { ok: true, revision: `saved-${committed.length}` }
+    },
+  })
+  workspace.setAutoSave(true)
+  const first = await workspace.open(source, 'edit')
+  const second = await workspace.open({ ...source, path: 'second.md' }, 'edit')
+  const firstSession = workspace.getSnapshot().tabs[first].sessionId
+  const secondSession = workspace.getSnapshot().tabs[second].sessionId
+  workspace.updateText(firstSession, '# First\n')
+  workspace.updateText(secondSession, '# Second\n')
+  const saving = workspace.save(firstSession)
+  workspace.requestCloseTabs([first, second])
+  workspace.requestClose(second)
+  assert.ok(workspace.getSnapshot().tabs[first])
+  assert.equal(workspace.getSnapshot().pendingClose, null)
+  workspace.updateText(firstSession, '# Newer\n')
+  release()
+  await saving
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(committed, ['# First\n', '# Newer\n', '# Second\n'])
+  assert.deepEqual(workspace.getSnapshot().tabs, {})
+  assert.equal(workspace.getSnapshot().pendingClose, null)
+})
+
+test('automatic close only saves Markdown and only on the final shared view', async () => {
+  let commits = 0
+  const workspace = new DocumentWorkspace({
+    ...loader(),
+    async load(requested) {
+      const loaded = await loader().load(requested)
+      return {
+        ...loaded,
+        viewer: requested.path.endsWith('.md') ? 'markdown' : 'code',
+      } as LoadedDocument
+    },
+    async commit() {
+      commits += 1
+      return { ok: true, revision: 'saved' }
+    },
+  })
+  workspace.setAutoSave(true)
+  const first = await workspace.open(source, 'edit')
+  const second = await workspace.splitTab(first, 'right', false)
+  assert.ok(second)
+  workspace.updateText(workspace.getSnapshot().tabs[first].sessionId, '# Shared edit\n')
+  workspace.requestClose(first)
+  assert.equal(commits, 0)
+  assert.ok(workspace.getSnapshot().tabs[second])
+  workspace.requestClose(second)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(commits, 1)
+  const code = await workspace.open({ ...source, path: 'script.py' }, 'edit')
+  const codeSession = workspace.getSnapshot().tabs[code].sessionId
+  workspace.updateText(codeSession, 'print(1)')
+  workspace.requestClose(code)
+  assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId: code, sessionId: codeSession })
+  assert.equal(commits, 1)
+})
+
+test('disabling automatic save retains the manual Markdown close decision', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  workspace.setAutoSave(true)
+  workspace.setAutoSave(false)
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.updateText(sessionId, '# Manual edit\n')
+  workspace.requestClose(tabId)
+  assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId, sessionId })
+})
+
 test('tab close scopes follow the selected tab order', () => {
   const tabIds = ['left-a', 'left-b', 'selected', 'right-a', 'right-b']
   assert.deepEqual(tabIdsForClose(tabIds, 'selected', 'current'), ['selected'])
-  assert.deepEqual(tabIdsForClose(tabIds, 'selected', 'others'), ['left-a', 'left-b', 'right-a', 'right-b'])
+  assert.deepEqual(tabIdsForClose(tabIds, 'selected', 'others'), [
+    'left-a',
+    'left-b',
+    'right-a',
+    'right-b',
+  ])
   assert.deepEqual(tabIdsForClose(tabIds, 'selected', 'left'), ['left-a', 'left-b'])
   assert.deepEqual(tabIdsForClose(tabIds, 'selected', 'right'), ['right-a', 'right-b'])
   assert.deepEqual(tabIdsForClose(tabIds, 'selected', 'all'), tabIds)
@@ -1833,14 +2393,14 @@ test('bulk close removes clean tabs and confirms dirty documents in order', asyn
   assert.equal(workspace.getSnapshot().tabs[cleanId], undefined)
   assert.deepEqual(workspace.getSnapshot().pendingClose, {
     tabId: firstDirtyId,
-    sessionId: firstSessionId
+    sessionId: firstSessionId,
   })
 
   await workspace.resolveClose('discard')
   assert.equal(workspace.getSnapshot().tabs[firstDirtyId], undefined)
   assert.deepEqual(workspace.getSnapshot().pendingClose, {
     tabId: secondDirtyId,
-    sessionId: secondSessionId
+    sessionId: secondSessionId,
   })
 
   await workspace.resolveClose('cancel')
@@ -1866,17 +2426,17 @@ test('binary editor save delegate supplies bytes before the shared CAS commit', 
           can_save: true,
           can_version: true,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:office-initial',
         mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        bytes: new Uint8Array([1, 2, 3])
+        bytes: new Uint8Array([1, 2, 3]),
       }
     },
     async commit(_source, bytes) {
       committed = new Uint8Array(bytes)
       return { ok: true, revision: 'sha256:office-saved' }
-    }
+    },
   }
   const workspace = new DocumentWorkspace(officeLoader)
   const tabId = await workspace.open(officeSource, 'edit')
@@ -1896,14 +2456,14 @@ test('save delegate prepares the latest editor snapshot before the commit bounda
     async commit(_source, bytes) {
       committed = new TextDecoder().decode(bytes)
       return { ok: true, revision: 'sha256:prepared' }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
   workspace.updateText(sessionId, '# Observed before editor flush\n')
   workspace.registerSaveDelegate(sessionId, {
     prepare: () => workspace.updateText(sessionId, '# Latest editor snapshot\n'),
-    serialize: async () => new TextEncoder().encode('# Latest editor snapshot\n')
+    serialize: async () => new TextEncoder().encode('# Latest editor snapshot\n'),
   })
 
   assert.equal(await workspace.save(sessionId), true)
@@ -1914,14 +2474,16 @@ test('save delegate prepares the latest editor snapshot before the commit bounda
 
 test('save delegate awaits save-only formatting before capturing the committed text', async () => {
   let releaseFormat!: () => void
-  const formatting = new Promise<void>((resolve) => { releaseFormat = resolve })
+  const formatting = new Promise<void>((resolve) => {
+    releaseFormat = resolve
+  })
   let committed = ''
   const workspace = new DocumentWorkspace({
     ...loader(),
     async commit(_source, bytes) {
       committed = new TextDecoder().decode(bytes)
       return { ok: true, revision: 'sha256:formatted' }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -1933,7 +2495,7 @@ test('save delegate awaits save-only formatting before capturing the committed t
       await formatting
       editorText = '# Formatted\n'
     },
-    serialize: async () => new TextEncoder().encode(editorText)
+    serialize: async () => new TextEncoder().encode(editorText),
   })
 
   const saving = workspace.save(sessionId)
@@ -1954,8 +2516,10 @@ test('save-only formatting does not run for a clean document', async () => {
   let formats = 0
   workspace.registerSaveDelegate(sessionId, {
     prepare: () => {},
-    beforeSave: async () => { formats += 1 },
-    serialize: async () => new TextEncoder().encode('# Draft\n')
+    beforeSave: async () => {
+      formats += 1
+    },
+    serialize: async () => new TextEncoder().encode('# Draft\n'),
   })
 
   assert.equal(await workspace.save(sessionId), true)
@@ -1969,7 +2533,7 @@ test('successful user save refreshes the pending snapshot projection once', asyn
     ...managedVersioning,
     snapshot_state: 'pending' as const,
     working_revision: 'sha256:saved-2',
-    disk_revision: 'sha256:saved-2'
+    disk_revision: 'sha256:saved-2',
   }
   const workspace = new DocumentWorkspace({
     ...base,
@@ -1981,7 +2545,7 @@ test('successful user save refreshes the pending snapshot projection once', asyn
     async versioning() {
       capabilityLoads += 1
       return savedVersioning
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -1989,20 +2553,28 @@ test('successful user save refreshes the pending snapshot projection once', asyn
 
   assert.equal(await workspace.save(sessionId), true)
   assert.equal(capabilityLoads, 1)
-  assert.equal(workspace.getSnapshot().sessions[sessionId].versioning?.version_id, managedVersioning.version_id)
+  assert.equal(
+    workspace.getSnapshot().sessions[sessionId].versioning?.version_id,
+    managedVersioning.version_id
+  )
   assert.equal(workspace.getSnapshot().sessions[sessionId].versioning?.snapshot_state, 'pending')
-  assert.equal(workspace.getSnapshot().sessions[sessionId].versioning?.working_revision, 'sha256:saved-2')
+  assert.equal(
+    workspace.getSnapshot().sessions[sessionId].versioning?.working_revision,
+    'sha256:saved-2'
+  )
 })
 
 test('a change made while CAS save is in flight stays dirty after the older snapshot commits', async () => {
   let releaseCommit!: () => void
-  const pendingCommit = new Promise<void>((resolve) => { releaseCommit = resolve })
+  const pendingCommit = new Promise<void>((resolve) => {
+    releaseCommit = resolve
+  })
   const delayedLoader: DocumentLoader = {
     ...loader(),
     async commit() {
       await pendingCommit
       return { ok: true, revision: 'sha256:saved-first-change' }
-    }
+    },
   }
   const workspace = new DocumentWorkspace(delayedLoader)
   const tabId = await workspace.open(source, 'edit')
@@ -2025,14 +2597,16 @@ test('a change made while CAS save is in flight stays dirty after the older snap
 test('concurrent saves for one document share a single CAS transaction', async () => {
   let commits = 0
   let releaseCommit!: () => void
-  const pendingCommit = new Promise<void>((resolve) => { releaseCommit = resolve })
+  const pendingCommit = new Promise<void>((resolve) => {
+    releaseCommit = resolve
+  })
   const workspace = new DocumentWorkspace({
     ...loader(),
     async commit() {
       commits += 1
       await pendingCommit
       return { ok: true, revision: 'sha256:single-flight' }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -2050,6 +2624,53 @@ test('concurrent saves for one document share a single CAS transaction', async (
   assert.equal(workspace.getSnapshot().sessions[sessionId].saveState, 'clean')
 })
 
+test('a newer change queues another save while the prior save refreshes version metadata', async () => {
+  let releaseVersioning!: () => void
+  let markVersioningStarted!: () => void
+  const versioningStarted = new Promise<void>((resolve) => {
+    markVersioningStarted = resolve
+  })
+  const pendingVersioning = new Promise<void>((resolve) => {
+    releaseVersioning = resolve
+  })
+  const committed: string[] = []
+  const base = loader()
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested) {
+      const loaded = await base.load(requested)
+      assert.ok(loaded)
+      return { ...loaded, versioning: managedVersioning }
+    },
+    async commit(_source, bytes) {
+      committed.push(new TextDecoder().decode(bytes))
+      return { ok: true, revision: `sha256:saved-${committed.length}` }
+    },
+    async versioning() {
+      markVersioningStarted()
+      await pendingVersioning
+      return managedVersioning
+    },
+  })
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.updateText(sessionId, '# First queued save\n')
+
+  const first = workspace.save(sessionId)
+  await versioningStarted
+  workspace.updateText(sessionId, '# Second queued save\n')
+  const second = workspace.save(sessionId)
+  releaseVersioning()
+
+  assert.equal(await first, true)
+  assert.equal(await second, true)
+  assert.deepEqual(committed, ['# First queued save\n', '# Second queued save\n'])
+  const session = workspace.getSnapshot().sessions[sessionId]
+  assert.equal(session.savedText, '# Second queued save\n')
+  assert.equal(session.dirty, false)
+  assert.equal(session.saveState, 'clean')
+})
+
 test('the resolved project identity from open is retained for later saves', async () => {
   const requested = { kind: 'project' as const, path: 'notes/readme.md' }
   const canonical = { ...requested, project: 'project-resolved' }
@@ -2061,13 +2682,13 @@ test('the resolved project identity from open is retained for later saves', asyn
       return {
         ...loaded,
         documentId: 'project:project-resolved:notes/readme.md',
-        source: canonical
+        source: canonical,
       }
     },
     async commit(committedSource, _bytes, revision) {
       committedProject = committedSource.kind === 'project' ? committedSource.project : undefined
       return { ok: true, revision }
-    }
+    },
   })
   const tabId = await workspace.open(requested, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -2079,7 +2700,9 @@ test('the resolved project identity from open is retained for later saves', asyn
 
 test('an Office change made while its save delegate is serializing stays dirty', async () => {
   let releaseSerialization!: (bytes: Uint8Array) => void
-  const serialized = new Promise<Uint8Array>((resolve) => { releaseSerialization = resolve })
+  const serialized = new Promise<Uint8Array>((resolve) => {
+    releaseSerialization = resolve
+  })
   const officeSource = { kind: 'project' as const, path: 'draft.docx' }
   const workspace = new DocumentWorkspace({
     async load() {
@@ -2099,13 +2722,13 @@ test('an Office change made while its save delegate is serializing stays dirty',
           can_save: true,
           can_version: true,
           can_diff: false,
-          pending: []
-        }
+          pending: [],
+        },
       }
     },
     async commit() {
       return { ok: true, revision: 'sha256:office-saved' }
-    }
+    },
   })
   const tabId = await workspace.open(officeSource, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -2142,17 +2765,17 @@ test('dirty Office tabs reject cross-pane moves without serializing', async () =
           can_save: true,
           can_version: true,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:office-initial',
         mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        bytes: new Uint8Array([1, 2, 3])
+        bytes: new Uint8Array([1, 2, 3]),
       }
     },
     async commit() {
       commits += 1
       return { ok: true, revision: 'sha256:office-saved' }
-    }
+    },
   }
   const workspace = new DocumentWorkspace(officeLoader)
   const tabId = await workspace.open(officeSource, 'edit')
@@ -2167,7 +2790,10 @@ test('dirty Office tabs reject cross-pane moves without serializing', async () =
   assert.equal(await workspace.moveTab(tabId, 'secondary', 'secondary-root', 'center'), false)
 
   const state = workspace.getSnapshot()
-  assert.equal(findLeaf(state.layout.areas.secondary, 'secondary-root')?.tabIds.includes(tabId), false)
+  assert.equal(
+    findLeaf(state.layout.areas.secondary, 'secondary-root')?.tabIds.includes(tabId),
+    false
+  )
   assert.deepEqual(Array.from(state.sessions[sessionId].bytes), [1, 2, 3])
   assert.equal(state.sessions[sessionId].dirty, true)
   assert.equal(commits, 0)
@@ -2208,17 +2834,20 @@ test('closing the focused right split restores the selected tab from the remaini
 test('closing the only literature document does not focus an unrelated resource document', async () => {
   const workspace = new DocumentWorkspace(loader())
   const resourceTabId = await workspace.open(source, 'preview')
-  const literatureTabId = await workspace.open({
-    kind: 'literature',
-    literatureId: 'paper-1',
-    attachmentId: 'attachment-1',
-    recordTarget: {
-      owner: 'literature_attachment',
-      scope_id: 'paper-1',
-      subject_id: 'attachment-1'
+  const literatureTabId = await workspace.open(
+    {
+      kind: 'literature',
+      literatureId: 'paper-1',
+      attachmentId: 'attachment-1',
+      recordTarget: {
+        owner: 'literature_attachment',
+        scope_id: 'paper-1',
+        subject_id: 'attachment-1',
+      },
+      path: 'papers/paper.pdf',
     },
-    path: 'papers/paper.pdf'
-  }, 'preview')
+    'preview'
+  )
   assert.equal(workspace.getSnapshot().focusedTabId, literatureTabId)
 
   workspace.requestClose(literatureTabId)
@@ -2245,7 +2874,10 @@ test('the same document view opens as a new projection in another focused leaf',
   assert.equal(Object.keys(state.tabs).length, 2)
   assert.equal(state.tabs[secondTabId].viewKind, 'edit')
   assert.equal(state.tabs[secondTabId].sessionId, state.tabs[firstTabId].sessionId)
-  assert.equal(findLeaf(state.layout.areas.primary, root.second.id)?.tabIds.includes(secondTabId), true)
+  assert.equal(
+    findLeaf(state.layout.areas.primary, root.second.id)?.tabIds.includes(secondTabId),
+    true
+  )
 })
 
 test('splitting an editable Office tab is rejected', async () => {
@@ -2265,16 +2897,16 @@ test('splitting an editable Office tab is rejected', async () => {
           can_save: true,
           can_version: true,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:office-initial',
         mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        bytes: new Uint8Array([1, 2, 3])
+        bytes: new Uint8Array([1, 2, 3]),
       }
     },
     async commit(_source, _bytes, revision) {
       return { ok: true, revision }
-    }
+    },
   })
   const editTabId = await workspace.open(officeSource, 'edit')
   const previewTabId = await workspace.splitTab(editTabId, 'right', false)
@@ -2301,16 +2933,16 @@ test('reopening the same Office document preserves its sole editor tab', async (
           can_save: true,
           can_version: true,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:office-initial',
         mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        bytes: new Uint8Array([1])
+        bytes: new Uint8Array([1]),
       }
     },
     async commit(_source, _bytes, revision) {
       return { ok: true, revision }
-    }
+    },
   })
   const editTabId = await workspace.open(officeSource, 'edit')
   const sessionId = workspace.getSnapshot().tabs[editTabId].sessionId
@@ -2346,17 +2978,17 @@ test('concurrent opens for one Markdown document share one loading session and t
           can_save: true,
           can_version: false,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: 'sha256:markdown-initial',
         mediaType: 'text/markdown',
         contentKind: 'text',
-        bytes: new TextEncoder().encode('# Concurrent\n')
+        bytes: new TextEncoder().encode('# Concurrent\n'),
       }
     },
     async commit() {
       return { ok: false, error: 'unavailable' }
-    }
+    },
   })
 
   const first = workspace.open(source, 'edit')
@@ -2398,7 +3030,7 @@ test('leaving Markdown visual edit prepares the latest editor snapshot', async (
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
   workspace.registerSaveDelegate(sessionId, {
     prepare: () => workspace.updateText(sessionId, '# Latest visual edit\n'),
-    serialize: async () => new TextEncoder().encode('# Latest visual edit\n')
+    serialize: async () => new TextEncoder().encode('# Latest visual edit\n'),
   })
 
   workspace.setTabView(tabId, 'preview')
@@ -2438,16 +3070,16 @@ test('new files open in the leaf most recently focused by the user', async () =>
           can_save: true,
           can_version: false,
           can_diff: false,
-          pending: []
+          pending: [],
         },
         revision: `sha256:${requested.path}`,
         mediaType: 'text/markdown',
-        bytes: new TextEncoder().encode(requested.path)
+        bytes: new TextEncoder().encode(requested.path),
       }
     },
     async commit(_source, _bytes, revision) {
       return { ok: true, revision }
-    }
+    },
   }
   const workspace = new DocumentWorkspace(dynamicLoader)
   const first = await workspace.open({ kind: 'project', path: 'first.md' }, 'preview')
@@ -2459,8 +3091,17 @@ test('new files open in the leaf most recently focused by the user', async () =>
 
   workspace.focusLeaf('primary', root.second.id)
   const second = await workspace.open({ kind: 'project', path: 'second.md' }, 'preview')
-  assert.equal(findLeaf(workspace.getSnapshot().layout.areas.primary, root.second.id)?.tabIds.includes(second), true)
-  assert.equal(findLeaf(workspace.getSnapshot().layout.areas.primary, root.first.kind === 'leaf' ? root.first.id : '')?.tabIds.includes(first), true)
+  assert.equal(
+    findLeaf(workspace.getSnapshot().layout.areas.primary, root.second.id)?.tabIds.includes(second),
+    true
+  )
+  assert.equal(
+    findLeaf(
+      workspace.getSnapshot().layout.areas.primary,
+      root.first.kind === 'leaf' ? root.first.id : ''
+    )?.tabIds.includes(first),
+    true
+  )
 })
 
 test('viewer state belongs to the tab and survives movement without dirtying the file', async () => {
@@ -2484,7 +3125,7 @@ const restoredFile = (overrides: Partial<RestoredProjectFile> = {}): RestoredPro
   previousPath: source.path,
   path: source.path,
   state: 'present',
-  ...overrides
+  ...overrides,
 })
 
 test('restore reconciliation reloads clean sessions without replacing their tabs or view state', async () => {
@@ -2499,14 +3140,27 @@ test('restore reconciliation reloads clean sessions without replacing their tabs
       return {
         ...loaded,
         revision,
-        bytes: new TextEncoder().encode(revision === 'sha256:before' ? '# Before\n' : '# Restored\n'),
-        versioning: loads === 1 ? {
-          file_id: 'file-notes', version_id: revision, working_revision: revision,
-          disk_revision: revision, can_version: true, can_diff: true,
-          can_preview_history: true, management_state: 'managed', drifted: false, snapshot_state: 'saved', pending: null
-        } : undefined
+        bytes: new TextEncoder().encode(
+          revision === 'sha256:before' ? '# Before\n' : '# Restored\n'
+        ),
+        versioning:
+          loads === 1
+            ? {
+                file_id: 'file-notes',
+                version_id: revision,
+                working_revision: revision,
+                disk_revision: revision,
+                can_version: true,
+                can_diff: true,
+                can_preview_history: true,
+                management_state: 'managed',
+                drifted: false,
+                snapshot_state: 'saved',
+                pending: null,
+              }
+            : undefined,
       }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   workspace.setTabViewState(tabId, { line: 4, column: 2, scrollTop: 120 })
@@ -2515,7 +3169,7 @@ test('restore reconciliation reloads clean sessions without replacing their tabs
   revision = 'sha256:restored'
 
   const result = await workspace.reconcileRestoredFiles('current', [
-    restoredFile({ versionId: 'version-restored' })
+    restoredFile({ versionId: 'version-restored' }),
   ])
   const after = workspace.getSnapshot()
   assert.deepEqual(result, { synchronized: ['file-notes'], conflicted: [], failed: [] })
@@ -2541,12 +3195,20 @@ test('restore reconciliation keeps existing unsaved memory and enters conflict h
       return {
         ...loaded,
         versioning: {
-          file_id: 'file-notes', version_id: 'version-1', working_revision: loaded.revision,
-          disk_revision: loaded.revision, can_version: true, can_diff: true,
-          can_preview_history: true, management_state: 'managed', drifted: false, snapshot_state: 'saved', pending: null
-        }
+          file_id: 'file-notes',
+          version_id: 'version-1',
+          working_revision: loaded.revision,
+          disk_revision: loaded.revision,
+          can_version: true,
+          can_diff: true,
+          can_preview_history: true,
+          management_state: 'managed',
+          drifted: false,
+          snapshot_state: 'saved',
+          pending: null,
+        },
       }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -2564,7 +3226,9 @@ test('restore reconciliation keeps existing unsaved memory and enters conflict h
 test('restore reload never overwrites an edit made while disk content is loading', async () => {
   let loadCount = 0
   let release!: () => void
-  const pending = new Promise<void>((resolve) => { release = resolve })
+  const pending = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const workspace = new DocumentWorkspace({
     ...loader(),
     async load(requested) {
@@ -2577,12 +3241,20 @@ test('restore reload never overwrites an edit made while disk content is loading
         revision: loadCount > 1 ? 'sha256:restored' : 'sha256:before',
         bytes: new TextEncoder().encode(loadCount > 1 ? '# Restored\n' : '# Before\n'),
         versioning: {
-          file_id: 'file-notes', version_id: 'version-1', working_revision: loaded.revision,
-          disk_revision: loaded.revision, can_version: true, can_diff: true,
-          can_preview_history: true, management_state: 'managed', drifted: false, snapshot_state: 'saved', pending: null
-        }
+          file_id: 'file-notes',
+          version_id: 'version-1',
+          working_revision: loaded.revision,
+          disk_revision: loaded.revision,
+          can_version: true,
+          can_diff: true,
+          can_preview_history: true,
+          management_state: 'managed',
+          drifted: false,
+          snapshot_state: 'saved',
+          pending: null,
+        },
       }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
@@ -2601,7 +3273,7 @@ test('restore reload never overwrites an edit made while disk content is loading
 test('Delivery reconciliation refreshes every restored open file in one workspace', async () => {
   const revisions = new Map([
     ['a.md', 'sha256:a-before'],
-    ['b.md', 'sha256:b-before']
+    ['b.md', 'sha256:b-before'],
   ])
   const workspace = new DocumentWorkspace({
     ...loader(),
@@ -2615,12 +3287,20 @@ test('Delivery reconciliation refreshes every restored open file in one workspac
         revision,
         bytes: new TextEncoder().encode(revision),
         versioning: {
-          file_id: `file-${path}`, version_id: revision, working_revision: revision,
-          disk_revision: revision, can_version: true, can_diff: true,
-          can_preview_history: true, management_state: 'managed', drifted: false, snapshot_state: 'saved', pending: null
-        }
+          file_id: `file-${path}`,
+          version_id: revision,
+          working_revision: revision,
+          disk_revision: revision,
+          can_version: true,
+          can_diff: true,
+          can_preview_history: true,
+          management_state: 'managed',
+          drifted: false,
+          snapshot_state: 'saved',
+          pending: null,
+        },
       }
-    }
+    },
   })
   const tabA = await workspace.open({ kind: 'project', path: 'a.md' }, 'edit')
   const tabB = await workspace.open({ kind: 'project', path: 'b.md' }, 'edit')
@@ -2629,11 +3309,13 @@ test('Delivery reconciliation refreshes every restored open file in one workspac
 
   const result = await workspace.reconcileRestoredFiles('current', [
     restoredFile({ fileId: 'file-a.md', previousPath: 'a.md', path: 'a.md' }),
-    restoredFile({ fileId: 'file-b.md', previousPath: 'b.md', path: 'b.md' })
+    restoredFile({ fileId: 'file-b.md', previousPath: 'b.md', path: 'b.md' }),
   ])
   const state = workspace.getSnapshot()
   assert.deepEqual(result, {
-    synchronized: ['file-a.md', 'file-b.md'], conflicted: [], failed: []
+    synchronized: ['file-a.md', 'file-b.md'],
+    conflicted: [],
+    failed: [],
   })
   assert.equal(state.sessions[state.tabs[tabA].sessionId].revision, 'sha256:a-restored')
   assert.equal(state.sessions[state.tabs[tabB].sessionId].revision, 'sha256:b-restored')
@@ -2648,19 +3330,26 @@ test('tombstone restore keeps the open tab and history available while clearing 
       return {
         ...loaded,
         versioning: {
-          file_id: 'file-notes', version_id: 'version-present',
-          working_revision: loaded.revision, disk_revision: loaded.revision,
-          can_version: true, can_diff: true, can_preview_history: true,
-          management_state: 'managed', drifted: false, snapshot_state: 'saved', pending: null
-        }
+          file_id: 'file-notes',
+          version_id: 'version-present',
+          working_revision: loaded.revision,
+          disk_revision: loaded.revision,
+          can_version: true,
+          can_diff: true,
+          can_preview_history: true,
+          management_state: 'managed',
+          drifted: false,
+          snapshot_state: 'saved',
+          pending: null,
+        },
       }
-    }
+    },
   })
   const tabId = await workspace.open(source, 'edit')
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
 
   const result = await workspace.reconcileRestoredFiles('current', [
-    restoredFile({ state: 'tombstone', versionId: 'version-deleted' })
+    restoredFile({ state: 'tombstone', versionId: 'version-deleted' }),
   ])
   const state = workspace.getSnapshot()
   const session = state.sessions[sessionId]
@@ -2674,50 +3363,181 @@ test('tombstone restore keeps the open tab and history available while clearing 
   assert.equal(session.versioning?.version_id, 'version-deleted')
 })
 
+test('artifact PDF navigation retains its report reference without an answer identity', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const reference = {
+    session_id: 'session',
+    artifact_id: 'report',
+    revision: 'sha256:report',
+    handle: 'source',
+  }
+  const tabId = await workspace.revealCitation({
+    artifact_citation: reference,
+    handle: 'source',
+    project_id: 'project',
+    path: 'paper.pdf',
+    title: 'paper.pdf',
+    revision: 'sha256:initial',
+    quote: 'Original text',
+    version_bound: true,
+    state: 'exact',
+    source_kind: 'file',
+    source_id: 'paper.pdf',
+    content_level: 'fulltext',
+    pages: [{ page: 2, quads: [] }],
+    matches: [],
+    presentation: {
+      version: 1,
+      mode: 'structured_text',
+      precision: 'page',
+      text: 'Original text',
+      quality_reasons: [],
+      manual_check: false,
+    },
+  })
+  const state = workspace.getSnapshot()
+  const opened = state.sessions[state.tabs[tabId].sessionId].source
+  assert.equal(opened.kind, 'session-file')
+  assert.ok(opened.kind === 'session-file')
+  assert.deepEqual(opened.artifactCitation, reference)
+  assert.equal(opened.sessionId, 'session')
+  assert.equal(opened.citation, undefined)
+})
+
 test('attachment citations reuse the source tab across handles and distinguish same-name files', async () => {
   const dependencies = loader()
   const originalLoad = dependencies.load
-  dependencies.load = async requested => {
+  dependencies.load = async (requested) => {
     const loaded = await originalLoad(requested)
-    return loaded && { ...loaded, source: requested, revision: requested.kind === 'session-file' && requested.path.includes('second-paper') ? 'sha256:different' : 'sha256:initial', documentId: documentIdFor(requested), viewer: 'pdf' }
+    return (
+      loaded && {
+        ...loaded,
+        source: requested,
+        revision:
+          requested.kind === 'session-file' && requested.path.includes('second-paper')
+            ? 'sha256:different'
+            : 'sha256:initial',
+        documentId: documentIdFor(requested),
+        viewer: 'pdf',
+      }
+    )
   }
   const workspace = new DocumentWorkspace(dependencies)
   const citation = {
-    handle: 'first', project_id: '', path: 'paper.pdf', title: 'paper.pdf',
-    revision: 'sha256:initial', quote: 'Original text', version_bound: true,
-    state: 'exact' as const, source_kind: 'attachment', source_id: 'attachments/first-paper.pdf',
-    source_session_id: 'session', answer_id: 'answer', answer_revision: 'answer-revision',
-    content_level: 'fulltext', pages: [{ page: 1, quads: [[0.2, 0.5, 0.8, 0.6]] }], matches: [],
-    presentation: { version: 1, mode: 'structured_text' as const, precision: 'region' as const, text: 'Original text', quality_reasons: [], manual_check: false }
+    handle: 'first',
+    project_id: '',
+    path: 'paper.pdf',
+    title: 'paper.pdf',
+    revision: 'sha256:initial',
+    quote: 'Original text',
+    version_bound: true,
+    state: 'exact' as const,
+    source_kind: 'attachment',
+    source_id: 'attachments/first-paper.pdf',
+    source_session_id: 'session',
+    answer_id: 'answer',
+    answer_revision: 'answer-revision',
+    content_level: 'fulltext',
+    pages: [{ page: 1, quads: [[0.2, 0.5, 0.8, 0.6]] }],
+    matches: [],
+    presentation: {
+      version: 1,
+      mode: 'structured_text' as const,
+      precision: 'region' as const,
+      text: 'Original text',
+      quality_reasons: [],
+      manual_check: false,
+    },
   }
   const first = await workspace.revealCitation(citation, { pages: citation.pages })
-  const second = await workspace.revealCitation({ ...citation, handle: 'second' }, { pages: [{ ...citation.pages[0], page: 7 }] })
+  const second = await workspace.revealCitation(
+    { ...citation, handle: 'second' },
+    { pages: [{ ...citation.pages[0], page: 7 }] }
+  )
   assert.equal(second, first)
   assert.equal(workspace.getSnapshot().tabs[first].viewState?.page, 7)
-  const library = await workspace.revealCitation({ ...citation, handle: 'library', source_kind: 'literature', source_id: 'literature:paper' }, { pages: [{ ...citation.pages[0], page: 4 }] })
+  const library = await workspace.revealCitation(
+    { ...citation, handle: 'library', source_kind: 'literature', source_id: 'literature:paper' },
+    { pages: [{ ...citation.pages[0], page: 4 }] }
+  )
   assert.equal(library, first)
   assert.equal(workspace.getSnapshot().tabs[first].viewState?.page, 4)
-  const other = await workspace.revealCitation({ ...citation, handle: 'third', revision: 'sha256:different', source_id: 'attachments/second-paper.pdf' }, { pages: citation.pages })
+  const other = await workspace.revealCitation(
+    {
+      ...citation,
+      handle: 'third',
+      revision: 'sha256:different',
+      source_id: 'attachments/second-paper.pdf',
+    },
+    { pages: citation.pages }
+  )
   assert.notEqual(other, first)
   assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 2)
+  const savedWorkspace = new DocumentWorkspace(dependencies)
+  const saved = await savedWorkspace.revealCitation({
+    ...citation,
+    source_id: 'attachments/saved-paper.pdf',
+    answer_id: undefined,
+    answer_revision: undefined,
+    saved_citation: { project_id: 'project', path: 'resources/report.md', handle: 'saved' },
+  })
+  const savedSource =
+    savedWorkspace.getSnapshot().sessions[savedWorkspace.getSnapshot().tabs[saved].sessionId].source
+  assert.equal(savedSource.kind, 'session-file')
+  assert.deepEqual(savedSource.kind === 'session-file' ? savedSource.savedCitation : null, {
+    project_id: 'project',
+    path: 'resources/report.md',
+    handle: 'saved',
+  })
 })
 
 test('literature citations carry the cited attachment annotation owner into the opened PDF', async () => {
   const dependencies = loader()
   const originalLoad = dependencies.load
-  dependencies.load = async requested => {
+  dependencies.load = async (requested) => {
     const loaded = await originalLoad(requested)
-    return loaded && { ...loaded, source: requested, revision: 'sha256:initial', documentId: documentIdFor(requested), viewer: 'pdf' }
+    return (
+      loaded && {
+        ...loaded,
+        source: requested,
+        revision: 'sha256:initial',
+        documentId: documentIdFor(requested),
+        viewer: 'pdf',
+      }
+    )
   }
   const workspace = new DocumentWorkspace(dependencies)
-  const recordTarget = { owner: 'literature_attachment' as const, scope_id: 'paper', subject_id: 'primary-pdf' }
+  const recordTarget = {
+    owner: 'literature_attachment' as const,
+    scope_id: 'paper',
+    subject_id: 'primary-pdf',
+  }
   const tabId = await workspace.revealCitation({
-    handle: 'library', project_id: 'project', path: 'paper.pdf', title: 'Paper',
-    revision: 'sha256:initial', quote: 'Original text', version_bound: true,
-    state: 'exact' as const, source_kind: 'literature', source_id: 'paper', record_target: recordTarget,
-    source_session_id: 'session', answer_id: 'answer', answer_revision: 'answer-revision',
-    content_level: 'fulltext', pages: [{ page: 2, quads: [[0.2, 0.5, 0.8, 0.6]] }], matches: [],
-    presentation: { version: 1, mode: 'structured_text' as const, precision: 'region' as const, text: 'Original text', quality_reasons: [], manual_check: false }
+    handle: 'library',
+    project_id: 'project',
+    path: 'paper.pdf',
+    title: 'Paper',
+    revision: 'sha256:initial',
+    quote: 'Original text',
+    version_bound: true,
+    state: 'exact' as const,
+    source_kind: 'literature',
+    source_id: 'paper',
+    record_target: recordTarget,
+    source_session_id: 'session',
+    answer_id: 'answer',
+    answer_revision: 'answer-revision',
+    content_level: 'fulltext',
+    pages: [{ page: 2, quads: [[0.2, 0.5, 0.8, 0.6]] }],
+    matches: [],
+    presentation: {
+      version: 1,
+      mode: 'structured_text' as const,
+      precision: 'region' as const,
+      text: 'Original text',
+      quality_reasons: [],
+      manual_check: false,
+    },
   })
   const state = workspace.getSnapshot()
   const opened = state.sessions[state.tabs[tabId].sessionId].source
@@ -2731,56 +3551,129 @@ test('citation preview has independent page state and rejects changed source byt
   const before = main.getSnapshot()
   const preview = new DocumentWorkspace(loader())
   const citation = {
-    handle: 'read-handle', project_id: 'project', path: 'paper.pdf', title: 'Paper',
-    revision: 'sha256:initial', quote: 'Original text', version_bound: true,
-    state: 'exact' as const, source_kind: 'file', source_id: 'paper.pdf', content_level: 'fulltext',
-    pages: [{ page: 3, quads: [[0.2, 0.5, 0.8, 0.6]] }], matches: [],
-    presentation: { version: 1, mode: 'structured_text' as const, precision: 'region' as const, text: 'Original text', quality_reasons: [], manual_check: false }
+    handle: 'read-handle',
+    project_id: 'project',
+    path: 'paper.pdf',
+    title: 'Paper',
+    revision: 'sha256:initial',
+    quote: 'Original text',
+    version_bound: true,
+    state: 'exact' as const,
+    source_kind: 'file',
+    source_id: 'paper.pdf',
+    content_level: 'fulltext',
+    pages: [{ page: 3, quads: [[0.2, 0.5, 0.8, 0.6]] }],
+    matches: [],
+    presentation: {
+      version: 1,
+      mode: 'structured_text' as const,
+      precision: 'region' as const,
+      text: 'Original text',
+      quality_reasons: [],
+      manual_check: false,
+    },
   }
   const tabId = await preview.revealCitation(citation, { pages: citation.pages })
   assert.equal(preview.getSnapshot().tabs[tabId].viewState?.page, 3)
   assert.equal(main.getSnapshot(), before)
-  await assert.rejects(preview.revealCitation({ ...citation, revision: 'sha256:changed' }), /source_revision_changed/)
+  await assert.rejects(
+    preview.revealCitation({ ...citation, revision: 'sha256:changed' }),
+    /source_revision_changed/
+  )
 })
 
 test('PDF citation reuse is scoped, version-bound and preserves the project annotation owner in both orders', async () => {
   const dependencies = loader()
   const originalLoad = dependencies.load
-  dependencies.load = async requested => {
+  dependencies.load = async (requested) => {
     const loaded = await originalLoad(requested)
-    return loaded && { ...loaded, source: requested, documentId: documentIdFor(requested), viewer: 'pdf' }
+    return (
+      loaded && {
+        ...loaded,
+        source: requested,
+        documentId: documentIdFor(requested),
+        viewer: 'pdf',
+      }
+    )
   }
   const citation = {
-    handle: 'attachment', project_id: '', scope_project_id: 'project', path: 'paper.pdf', title: 'paper.pdf',
-    revision: 'sha256:initial', quote: 'Original text', version_bound: true,
-    state: 'exact' as const, source_kind: 'attachment', source_id: 'attachments/paper.pdf',
-    source_session_id: 'session', answer_id: 'answer', answer_revision: 'answer-revision',
-    content_level: 'fulltext', pages: [{ page: 1, quads: [[0.2, 0.5, 0.8, 0.6]] }], matches: [],
-    presentation: { version: 1, mode: 'structured_text' as const, precision: 'region' as const, text: 'Original text', quality_reasons: [], manual_check: false }
+    handle: 'attachment',
+    project_id: '',
+    scope_project_id: 'project',
+    path: 'paper.pdf',
+    title: 'paper.pdf',
+    revision: 'sha256:initial',
+    quote: 'Original text',
+    version_bound: true,
+    state: 'exact' as const,
+    source_kind: 'attachment',
+    source_id: 'attachments/paper.pdf',
+    source_session_id: 'session',
+    answer_id: 'answer',
+    answer_revision: 'answer-revision',
+    content_level: 'fulltext',
+    pages: [{ page: 1, quads: [[0.2, 0.5, 0.8, 0.6]] }],
+    matches: [],
+    presentation: {
+      version: 1,
+      mode: 'structured_text' as const,
+      precision: 'region' as const,
+      text: 'Original text',
+      quality_reasons: [],
+      manual_check: false,
+    },
   }
-  const projectCitation = { ...citation, source_kind: 'file', project_id: 'project', path: 'resources/paper.pdf' }
+  const projectCitation = {
+    ...citation,
+    source_kind: 'file',
+    project_id: 'project',
+    path: 'resources/paper.pdf',
+  }
   for (const attachmentFirst of [true, false]) {
     const workspace = new DocumentWorkspace(dependencies)
-    const first = await workspace.revealCitation(attachmentFirst ? citation : projectCitation, { pages: citation.pages })
-    const second = await workspace.revealCitation(attachmentFirst ? projectCitation : citation, { pages: citation.pages })
+    const first = await workspace.revealCitation(attachmentFirst ? citation : projectCitation, {
+      pages: citation.pages,
+    })
+    const second = await workspace.revealCitation(attachmentFirst ? projectCitation : citation, {
+      pages: citation.pages,
+    })
     assert.equal(first, second)
     assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 1)
     const session = workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[first].sessionId]
-    assert.deepEqual(session.source, { kind: 'project', project: 'project', path: 'resources/paper.pdf' })
-    const repeated = await Promise.all([workspace.revealCitation(citation), workspace.revealCitation(citation)])
+    assert.deepEqual(session.source, {
+      kind: 'project',
+      project: 'project',
+      path: 'resources/paper.pdf',
+    })
+    const repeated = await Promise.all([
+      workspace.revealCitation(citation),
+      workspace.revealCitation(citation),
+    ])
     assert.deepEqual(repeated, [first, first])
-    assert.notEqual(await workspace.revealCitation({ ...citation, scope_project_id: 'other' }), first)
+    assert.notEqual(
+      await workspace.revealCitation({ ...citation, scope_project_id: 'other' }),
+      first
+    )
   }
   const workspace = new DocumentWorkspace(dependencies)
-  const attachment = { kind: 'session-file' as const, sessionId: 'session', path: citation.source_id }
+  const attachment = {
+    kind: 'session-file' as const,
+    sessionId: 'session',
+    path: citation.source_id,
+  }
   const first = await workspace.open(attachment, 'preview')
-  const imported = await workspace.openImported({ kind: 'project', project: 'project', path: projectCitation.path }, attachment)
+  const imported = await workspace.openImported(
+    { kind: 'project', project: 'project', path: projectCitation.path },
+    attachment
+  )
   assert.equal(first, imported)
   assert.equal(Object.keys(workspace.getSnapshot().sessions).length, 1)
-  const separate = await workspace.open({ kind: 'project', project: 'project', path: 'resources/copy.pdf' }, 'edit')
+  const separate = await workspace.open(
+    { kind: 'project', project: 'project', path: 'resources/copy.pdf' },
+    'edit'
+  )
   assert.notEqual(separate, imported)
 })
-
 
 test('fallback tab titles change language without reopening or changing document state', async () => {
   const workspace = new DocumentWorkspace(loader())
@@ -2789,14 +3682,24 @@ test('fallback tab titles change language without reopening or changing document
   workspace.updateText(sessionId, '# unsaved draft')
   const before = workspace.getSnapshot()
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, resources: {
-    zh: { conversation: { delivery: { untitled: '未命名产物' } } },
-    en: { conversation: { delivery: { untitled: 'Untitled artifact' } } }
-  } })
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: {
+      zh: { conversation: { delivery: { untitled: '未命名产物' } } },
+      en: { conversation: { delivery: { untitled: 'Untitled artifact' } } },
+    },
+  })
   const t = locale.getFixedT(null, 'conversation')
-  assert.equal(documentDisplayTitle(before.tabs[tabId], t, locale.getFixedT(null, 'workbench')), '未命名产物')
+  assert.equal(
+    documentDisplayTitle(before.tabs[tabId], t, locale.getFixedT(null, 'workbench')),
+    '未命名产物'
+  )
   await locale.changeLanguage('en')
-  assert.equal(documentDisplayTitle(before.tabs[tabId], t, locale.getFixedT(null, 'workbench')), 'Untitled artifact')
+  assert.equal(
+    documentDisplayTitle(before.tabs[tabId], t, locale.getFixedT(null, 'workbench')),
+    'Untitled artifact'
+  )
   assert.equal(workspace.getSnapshot(), before)
   assert.equal(before.tabs[tabId].sessionId, sessionId)
   assert.equal(before.sessions[sessionId].title, '')
@@ -2808,28 +3711,46 @@ test('fallback tab titles change language without reopening or changing document
 
 test('baseline display metadata retains raw filename and open document state across locales', async () => {
   const workspace = new DocumentWorkspace(loader())
-  const tabId = await workspace.open(source, 'edit', '修改前 · 研究.md', undefined, { kind: 'reviewBaseline', filename: '研究.md' })
+  const tabId = await workspace.open(source, 'edit', '修改前 · 研究.md', undefined, {
+    kind: 'reviewBaseline',
+    filename: '研究.md',
+  })
   const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
   workspace.updateText(sessionId, '# unsaved baseline draft')
   const before = workspace.getSnapshot()
   const locale = createInstance()
-  await locale.init({ lng: 'zh', fallbackLng: false, resources: {
-    zh: { workbench: { snapshot: { baselineTitle: '修改前 · {{title}}' } } },
-    en: { workbench: { snapshot: { baselineTitle: 'Before changes · {{title}}' } } }
-  } })
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: {
+      zh: { workbench: { snapshot: { baselineTitle: '修改前 · {{title}}' } } },
+      en: { workbench: { snapshot: { baselineTitle: 'Before changes · {{title}}' } } },
+    },
+  })
   const conversation = locale.getFixedT(null, 'conversation')
   const workbench = locale.getFixedT(null, 'workbench')
-  assert.equal(documentDisplayTitle(before.tabs[tabId], conversation, workbench), '修改前 · 研究.md')
+  assert.equal(
+    documentDisplayTitle(before.tabs[tabId], conversation, workbench),
+    '修改前 · 研究.md'
+  )
   await locale.changeLanguage('en')
-  assert.equal(documentDisplayTitle(before.tabs[tabId], conversation, workbench), 'Before changes · 研究.md')
+  assert.equal(
+    documentDisplayTitle(before.tabs[tabId], conversation, workbench),
+    'Before changes · 研究.md'
+  )
   assert.equal(workspace.getSnapshot(), before)
   assert.equal(before.tabs[tabId].title, '修改前 · 研究.md')
   assert.equal(before.sessions[sessionId].title, '修改前 · 研究.md')
   assert.equal(before.sessions[sessionId].dirty, true)
   assert.equal(before.sessions[sessionId].text, '# unsaved baseline draft')
-  assert.equal(await workspace.open(source, 'edit', '修改前 · 研究.md', undefined, { kind: 'reviewBaseline', filename: '研究.md' }), tabId)
+  assert.equal(
+    await workspace.open(source, 'edit', '修改前 · 研究.md', undefined, {
+      kind: 'reviewBaseline',
+      filename: '研究.md',
+    }),
+    tabId
+  )
 })
-
 
 test('four-pane limits reject duplicate and drag splits while close releases the slot', async () => {
   const workspace = new DocumentWorkspace(loader())
@@ -2844,14 +3765,79 @@ test('four-pane limits reject duplicate and drag splits while close releases the
   const before = workspace.getSnapshot()
   assert.equal(await workspace.splitTab(first, 'bottom', false), null)
   assert.equal(workspace.getSnapshot(), before)
-  assert.equal(await workspace.moveTab(first, 'primary', before.focusedLeaf!.leafId, 'right'), false)
+  assert.equal(
+    await workspace.moveTab(first, 'primary', before.focusedLeaf!.leafId, 'right'),
+    false
+  )
   assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 4)
   workspace.requestClose(bottomLeft)
   assert.equal(workspace.canSplitTab(first, 'bottom', false), true)
   assert.ok(await workspace.splitTab(first, 'bottom', false))
 })
 
-test('directional tab moves use existing adjacent panes at the four-pane limit', async () => {
+test('returning a split tab merges equivalent projections and preserves its draft and view state', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const first = await workspace.open(source, 'edit')
+  const leftLeaf = workspace.getSnapshot().focusedLeaf!
+  const right = await workspace.splitTab(first, 'right', false)
+  assert.ok(right)
+  const bottom = await workspace.splitTab(right, 'bottom', false)
+  assert.ok(bottom)
+  const sessionId = workspace.getSnapshot().tabs[first].sessionId
+  workspace.updateText(sessionId, '# unsaved after splitting')
+  workspace.setTabViewState(first, { scrollTop: 10 })
+  workspace.setTabViewState(bottom, { scrollTop: 240 })
+
+  assert.equal(await workspace.moveTab(bottom, leftLeaf.area, leftLeaf.leafId, 'center'), true)
+
+  const state = workspace.getSnapshot()
+  assert.deepEqual(findLeaf(state.layout.areas[leftLeaf.area], leftLeaf.leafId)?.tabIds, [bottom])
+  assert.equal(state.tabs[first], undefined)
+  assert.ok(state.tabs[right])
+  assert.equal(state.focusedTabId, bottom)
+  assert.deepEqual(state.tabs[bottom].viewState, { scrollTop: 240 })
+  assert.equal(state.sessions[sessionId].dirty, true)
+  assert.equal(state.sessions[sessionId].text, '# unsaved after splitting')
+  assert.equal(await workspace.save(sessionId), true)
+  assert.equal(workspace.getSnapshot().sessions[sessionId].savedText, '# unsaved after splitting')
+})
+
+test('cross-pane tab insertion merges matching projections but keeps same-name files', async () => {
+  for (const insertion of ['before', 'after'] as const) {
+    const workspace = new DocumentWorkspace(loader())
+    const first = await workspace.open(source, 'preview')
+    const leftLeaf = workspace.getSnapshot().focusedLeaf!
+    const right = await workspace.splitTab(first, 'right', false)
+    assert.ok(right)
+    workspace.activate(leftLeaf.leafId, first)
+    const other = await workspace.open({ ...source, path: 'other/readme.md' }, 'preview')
+    assert.equal(await workspace.moveTabToTab(right, first, insertion), true)
+    const state = workspace.getSnapshot()
+    assert.equal(state.tabs[first], undefined)
+    assert.ok(state.tabs[other])
+    assert.ok(state.tabs[right])
+    assert.equal(Object.keys(state.tabs).length, 2)
+    assert.equal(state.focusedTabId, right)
+  }
+})
+
+test('moving a projection does not merge different views of the same document', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const preview = await workspace.open(source, 'preview')
+  const target = workspace.getSnapshot().focusedLeaf!
+  const edit = await workspace.splitTab(preview, 'right', false)
+  assert.ok(edit)
+  assert.equal(workspace.setTabView(edit, 'source'), true)
+  assert.equal(await workspace.moveTab(edit, target.area, target.leafId, 'center'), true)
+  const state = workspace.getSnapshot()
+  assert.deepEqual(findLeaf(state.layout.areas[target.area], target.leafId)?.tabIds, [
+    preview,
+    edit,
+  ])
+  assert.equal(state.tabs[preview].sessionId, state.tabs[edit].sessionId)
+})
+
+test('directional tab moves merge equivalent projections at the four-pane limit', async () => {
   const workspace = new DocumentWorkspace(loader())
   const first = await workspace.open(source, 'preview')
   const right = await workspace.splitTab(first, 'right', false)
@@ -2866,19 +3852,26 @@ test('directional tab moves use existing adjacent panes at the four-pane limit',
   assert.equal(await workspace.moveTabToAdjacent(first, 'right'), true)
 
   const state = workspace.getSnapshot()
-  const moved = state.focusedLeaf && findLeaf(state.layout.areas[state.focusedLeaf.area], state.focusedLeaf.leafId)
+  const moved =
+    state.focusedLeaf &&
+    findLeaf(state.layout.areas[state.focusedLeaf.area], state.focusedLeaf.leafId)
   assert.ok(moved?.tabIds.includes(first))
-  assert.ok(moved?.tabIds.includes(right))
+  assert.equal(state.tabs[right], undefined)
+  assert.deepEqual(moved?.tabIds, [first])
   assert.equal(workspace.canMoveTab(first, 'right'), false)
 })
-
 
 test('opening a file into an unavailable extra area keeps the tab in an existing pane', async () => {
   const workspace = new DocumentWorkspace(loader())
   const first = await workspace.open(source, 'preview')
   const right = await workspace.splitTab(first, 'right', false)
   assert.ok(right)
-  const opened = await workspace.open({ ...source, path: 'notes/another.md' }, 'preview', 'another', 'secondary')
+  const opened = await workspace.open(
+    { ...source, path: 'notes/another.md' },
+    'preview',
+    'another',
+    'secondary'
+  )
   const state = workspace.getSnapshot()
   assert.equal(nodeTabCount(state.layout.areas.secondary), 0)
   assert.equal(nodeTabCount(state.layout.areas.primary), 3)

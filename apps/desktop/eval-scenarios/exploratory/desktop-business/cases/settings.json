@@ -1,0 +1,578 @@
+[
+  {
+    "id": "D6-SET-001",
+    "name": "保存获准模型服务后可选择目标模型",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例。未来运行须另核隔离配置写入权、获准模型服务端点与专用临时密钥，以及连接探测的外部调用和费用授权。不得从用户配置或日志读取、复制真实密钥；本轮只有空编辑表单观察，不具备新密钥连接前提。无须发送产品模型对话。",
+    "steps": [
+      "在真实头像菜单的设置中打开模型服务，记录目标厂商及配置前状态。",
+      "仅在本次专用凭据及外部探测获准后，由获准操作者通过产品可见表单输入端点和临时密钥，按当前界面测试连接、选择目标模型并保存；无前提则在输入前停止。",
+      "重新打开相同服务配置并查看可选模型，核对保存结果与目标模型身份；只记录密钥是否遮挡，不采集密钥值，不把它写入截图、日志、用例或报告。"
+    ],
+    "expected": [
+      "获准配置保存后目标模型进入客户端可选目录；输入、保存及重新打开的密钥字段不以明文回显。没有真实配置与保存证据时，不从空 password 字段或内置模型目录推断此结果成立。"
+    ],
+    "tag": "探索用例；候选预期；稳定点主用例",
+    "description": "复用 MODEL-CONFIG-01@4。本轮仅打开未添加厂商的空编辑表单并取消，未输入密钥、测试连接或保存；空 password 字段不证明真实密钥全生命周期安全。",
+    "businessPointId": "MODEL-CONFIG-01",
+    "revision": 5,
+    "directionIds": [
+      "MODEL-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#MODEL-CONFIG-01@5",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "模型配置是核心对话前提，保持 P1；专用凭据和外部连接探测必须另行获准。",
+    "readiness": "manual_ready",
+    "checkIds": [
+      "MODEL-SAVE-SELECT",
+      "MODEL-KEY-REDACTION"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/006-service-detail.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/003-model-edit-empty-key.png"
+    ],
+    "caseRevision": 4,
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [
+          "MODEL-SAVE-SELECT",
+          "MODEL-KEY-REDACTION"
+        ],
+        "assetGaps": [],
+        "caseRevision": 2
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-SET-002",
+    "name": "专用账户登录后恢复正确身份状态",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例。未来运行须提供明确授权的专用测试账户、可用登录环境及登录操作权限，并从本轮获准的未登录隔离状态开始。不得为准备此用例退出当前用户、读取真实凭据或变更其账户。重新打开客户端若在范围内，须另核生命周期操作权限，不中断真实会话。",
+    "steps": [
+      "记录本轮隔离客户端明确的未登录状态，通过当时真实可见的应用内登录入口进入登录流程，不假设存在独立账户页面。",
+      "由获准操作者完成专用测试账户登录，不在执行记录保存密码、验证码、令牌或完整敏感身份。",
+      "在客户端可见账户入口核对正确已登录身份；关闭并重新打开账户入口，按本轮获准范围验证身份仍有效。若要求客户端重开，另取重开后的同身份证据，不从面板重开推断进程重开恢复。"
+    ],
+    "expected": [
+      "真实登录后客户端显示该专用账户的正确身份，在明确记录的重新打开范围内保持有效状态；只见启动时已登录菜单不等于完成登录或认证恢复。"
+    ],
+    "tag": "探索用例；候选预期；稳定点主用例",
+    "description": "复用 ACCOUNT-LOGIN-01@3。本轮仅观察已有登录态的头像菜单，未重新登录、退出或验证认证恢复；完整登录用例保持未观察与前提缺口。",
+    "businessPointId": "ACCOUNT-LOGIN-01",
+    "revision": 3,
+    "directionIds": [
+      "ACCOUNT-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#ACCOUNT-LOGIN-01@3",
+    "observationStatus": "not_observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "账户认证与恢复为关键状态，保持 P1，不借用已有登录态证明。",
+    "readiness": "manual_ready",
+    "checkIds": [
+      "ACCOUNT-LOGIN",
+      "ACCOUNT-RESTORE"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/003-account-menu.yaml"
+    ],
+    "caseRevision": 2,
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 2,
+        "readiness": "partial",
+        "checkIds": [
+          "ACCOUNT-LOGIN",
+          "ACCOUNT-RESTORE"
+        ],
+        "assetGaps": [],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-SET-003",
+    "name": "只读查看模型服务与内置模型目录",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例。仅获准读取本轮隔离客户端设置；不输入密钥，不测试连接，不添加、启停或保存服务，不修改模型配置，不发起产品模型回合。若界面需要额外认证或权限，则如实停止。",
+    "steps": [
+      "通过真实头像菜单打开设置，再选择模型服务，记录厂商目录、可见启用计数和控件状态。",
+      "切到模型配置页，只读记录当前实际内置模型名称及显示开关的 checked/disabled 状态，不点击保存设置。",
+      "关闭设置并交接同一次观察的页面状态及已检查截图，明确本次没有验证任何新服务连接。"
+    ],
+    "expected": [
+      "模型服务目录与模型配置目录可通过真实 UI 查看，厂商状态和内置模型的当前显示状态有可核证据；目录可见或开关勾选不代表新服务可连接、模型可调用或设置已保存。"
+    ],
+    "tag": "探索用例；候选预期；新增只读稳定点",
+    "description": "绑定 MODEL-CATALOG-01@1。本轮已观察模型服务显示 0 / 11 已启用、厂商未添加且开关 disabled；模型配置显示 Qwen 3.8 Max 与 Qwen 3.8 Flash，显示开关 checked 且 disabled。计数和名称是本次事实，不是未来固定预期。",
+    "businessPointId": "MODEL-CATALOG-01",
+    "revision": 2,
+    "directionIds": [
+      "MODEL-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#MODEL-CATALOG-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "只读模型目录与状态展示，不涉及核心配置写入或真实连接，定为 P2。",
+    "checkIds": [
+      "MODEL-CATALOG"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/005-model-services.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/007-model-configuration.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/002-model-services.png",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/004-model-builtins.png"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D6-SET-004",
+    "name": "头像菜单显示当前账户状态与遮挡身份",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例。允许只读打开本轮隔离客户端的头像菜单；使用当前实际账户状态，不为制造分支而登录或退出，不读取凭据、不执行付费或账户变更。记录敏感身份时只保留产品原有遮挡或概述。",
+    "steps": [
+      "在真实主界面记录当前头像入口，打开其账户菜单。",
+      "核对菜单显示已登录身份或明确未登录状态，记录可见敏感身份是否按产品 UI 遮挡；只观察当前分支，不点击登录、退出、积分或付费入口。",
+      "关闭菜单，保留同一次观察的 UI 状态和证据；没有对应截图时注明截图缺口，不借用其他画面。"
+    ],
+    "expected": [
+      "头像菜单清楚反映当前实际账户分支；已登录分支的敏感身份按可见 UI 遮挡。本项只验证当前状态展示，不证明登录、退出、令牌有效性或认证恢复。"
+    ],
+    "tag": "探索用例；候选预期；新增只读稳定点",
+    "description": "绑定 ACCOUNT-STATE-01@1。本轮实际打开头像账户菜单，看到已登录分支及 UI 遮挡手机号；后补同实例菜单截图043并逐张检查。未观察未登录分支，未执行登录或退出。账户菜单并非独立账户页，不把设置导航的账号设置名称当作账户认证页面。",
+    "businessPointId": "ACCOUNT-STATE-01",
+    "revision": 1,
+    "directionIds": [
+      "ACCOUNT-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/003-account-menu.yaml",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "只读当前账户状态及遮挡展示，与真实认证和恢复分开，定为 P2。",
+    "checkIds": [
+      "ACCOUNT-STATE"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/003-account-menu.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/081-account-state-screenshot.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/043-account-state.png"
+    ]
+  },
+  {
+    "id": "D6-SET-005",
+    "name": "无效模型服务地址探测反馈并可取消",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。合成厂商名称、not-a-url、API Key留空；一次探测已获准，禁止读取真实密钥。",
+    "steps": [
+      "输入合成配置并记录输入状态。",
+      "仅执行一次测试连接，读取实际反馈。",
+      "关闭结果并取消，核对没有添加该厂商。"
+    ],
+    "expected": [
+      "无效配置有可理解反馈且可取消；没有批准精确文案时不把通用失败提示判为产品缺陷。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "显示连接失败、无法连接到该服务地址及检查网络与Base URL提示；取消后未添加厂商，未独立核实外部请求。 缺独立Check和探测请求证据；有效服务及专用密钥前提仍阻塞。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "MODEL-CONFIG-01",
+    "revision": 5,
+    "directionIds": [
+      "MODEL-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#MODEL-CONFIG-01@5",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "无效地址的可恢复连接反馈是基本异常分支，有效服务配置仍保持P1。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/039-model-services-current.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/040-model-invalid-config.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/041-model-config-current.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/025-model-services-current.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/026-model-invalid-config.png"
+    ],
+    "caseRevision": 4,
+    "candidateLocalId": "INC-MODEL-INVALID",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "最多一次真实探测尝试，外部流量和费用不可假定为零；另核本次预算。",
+    "assetGaps": [
+      "缺独立Check和探测请求证据；有效服务及专用密钥前提仍阻塞。",
+      "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+    ],
+    "variantOf": "D6-SET-001",
+    "variantScope": "仅覆盖本条声明的来源/前提变体，不替代原主用例；既有点位P0及原Check不变。",
+    "priorityReview": {
+      "previousPriority": "P1",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "无效地址的可恢复连接反馈是基本异常分支，有效服务配置仍保持P1。"
+    },
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 3,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check和探测请求证据；有效服务及专用密钥前提仍阻塞。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ],
+        "caseRevision": 2
+      },
+      "scope": "point revision synchronized only; variant still needs independent data and scope selection"
+    }
+  },
+  {
+    "id": "D6-SET-006",
+    "name": "模型思考强度保存重开及新任务显示一致",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。隔离Home内可配置目标模型，允许修改任务配置；UI消费观察不要求额外发送模型请求。",
+    "steps": [
+      "记录目标模型与对照模型的原参数。",
+      "修改目标强度并保存，关闭设置后重新打开。",
+      "新建任务核对标签与设置一致、对照模型未改；上游实际参数需另行采证。"
+    ],
+    "expected": [
+      "保存的目标参数在设置和新任务显示一致且不串改其他模型；不由UI推定供应商接受该参数。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "Qwen3.8 Max中→低并读回，Flash保持中，新任务标签低；一次实际回合完成但原请求投影失败，上游参数未独立核实。 缺独立Check、可复用参数资产及上游身份取证；观察范围仅UI保存和消费。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "MODEL-REASONING-01",
+    "revision": 2,
+    "directionIds": [
+      "MODEL-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#MODEL-REASONING-01@2",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "模型配置连续性，非最小构建可用性，建议P2。",
+    "checkIds": [
+      "MODEL-REASONING"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/042-model-reasoning-saved.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/043-disabled-skill-slash.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/044-enabled-skill-slash.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/045-local-skill-selected.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/048-local-skill-result.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/027-model-reasoning-saved.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/030-local-skill-result-project-restored.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-MODEL-REASONING",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "只修改任务Home配置；模型回合若需要另获授权和预算。",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、可复用参数资产及上游身份取证；观察范围仅UI保存和消费。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-SET-007",
+    "name": "模型上下文窗口选择保存后读回一致",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。确认任务配置隔离，记录当前模型与原值；不得读取真实密钥。",
+    "steps": [
+      "用实际可见轨道或标准键盘操作选择，核可视值和产品状态同步。",
+      "保存并核真实变更回执，不只认inputValue。",
+      "关闭重开后核模型与值；实际模型消费需另获授权并取证。"
+    ],
+    "expected": [
+      "选择、保存和重开值一致；控件输入值与产品接收状态分别取证，不把现有0当期望。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-SET-CONTEXT，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "MODEL-CONTEXT-01",
+    "revision": 2,
+    "directionIds": [
+      "MODEL-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#MODEL-CONTEXT-01@2",
+    "observationStatus": "entry_observed",
+    "observationScope": "E201–214：初始Max值0；指针点击透明input受阻后改标准键盘focus/Home/Right，inputValue为1；保存按钮变“已保存”，关闭重开值0，settled仍0。已交互但结果未知（缺有效视觉选择证据），S24仅显示设置面板",
+    "resultEvidenceStatus": "insufficient",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "高级模型参数一致性P2，不由操作受阻降级。",
+    "checkIds": [
+      "MODEL-CONTEXT"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/201-config-tab-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/202-context-control-identity-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/203-context-focus-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/204-context-home-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/205-context-right-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/206-context-save-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/207-context-after-attempt-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/208-config-focus-keyboard-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/209-context-save-real-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/210-context-close-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/211-reopen-account-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/212-reopen-settings-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/213-context-reopen-config-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/214-context-settled-read-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/024-context-window-reopened.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-SET-CONTEXT",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；任务配置写操作尝试，重开仍原值；未再发模型；G0+可视轨道操作、变更前后状态及真实请求关联。不能用DOM input值变化替代产品已接收修改",
+    "assetGaps": [],
+    "evidenceCaveat": "输入值1、已保存回执、重开0尚不能区分操作同步与产品问题；S24未显示上下文列，不证明选择值。",
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "任务配置写操作尝试，重开仍原值；未再发模型；G0+可视轨道操作、变更前后状态及真实请求关联。不能用DOM input值变化替代产品已接收修改"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-SET-008",
+    "name": "任务级AI提示词配置仅作用于对应动作",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。仅在独立准备阶段获得配置与模型授权，按类型保留变体；评测执行不改提示词。",
+    "steps": [
+      "准备阶段核类型、原值及批准判据并冻结配置。",
+      "正式执行只触发所选真实AI动作，关联请求与来源。",
+      "核对应动作消费及其他动作未串用，由独立Judge评审。"
+    ],
+    "expected": [
+      "获准模板的作用域与用户选择对应，不把修改模板作为评测变绿手段。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-SET-PROMPTS，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "MODEL-PROMPTS-01",
+    "revision": 1,
+    "directionIds": [
+      "APP-SET-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-prompts",
+    "observationStatus": "entry_observed",
+    "observationScope": "E026：四类提示词、保存/恢复入口可见；已观察入口，没有编辑提示词或调用消费",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "可配置AI能力的作用域属于扩展P2。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/026-prompts-settings-receipt.txt"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "BROAD-SET-PROMPTS",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "B",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；本轮未改产品提示词或规则；G0+获准任务级设置、作用域判据、B类评审；评测本身不得为变绿改规则",
+    "assetGaps": [
+      "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+      "本轮未改产品提示词或规则；G0+获准任务级设置、作用域判据、B类评审；评测本身不得为变绿改规则"
+    ]
+  },
+  {
+    "id": "D6-SET-009",
+    "name": "任务提醒与真实状态一致且标已读不改变任务",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。专用合成任务和现有系统权限已核；不代用户授权OS。",
+    "steps": [
+      "核前后台、声音及现有通知权限。",
+      "触发获准任务的完成或待处理状态，关联真实任务。",
+      "核提醒并在获准任务范围标已读，核任务本身状态不被误改。"
+    ],
+    "expected": [
+      "提醒与目标任务状态相符，已读操作不改变业务结果。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-SET-NOTIFICATION，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "NOTIFICATION-01",
+    "revision": 1,
+    "directionIds": [
+      "APP-SET-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-notification",
+    "observationStatus": "entry_observed",
+    "observationScope": "E021/198：系统设置、全部标已读、声音开关入口可见；已观察入口，未触发OS授权/通知或清提醒",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "后台任务可感知性与基本客户端体验P2。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/021-settings-root-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/198-open-settings-receipt.txt"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "BROAD-SET-NOTIFICATION",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；不改OS权限、不清真实通知；G0+专用通知前提与前后台对照",
+    "assetGaps": [
+      "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+      "不改OS权限、不清真实通知；G0+专用通知前提与前后台对照"
+    ]
+  },
+  {
+    "id": "D6-SET-010",
+    "name": "数据路径配置按声明生效并保留原资料",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。任务Home/profile与两个专用目录，备份、恢复及重启授权明确；不改真实用户路径。",
+    "steps": [
+      "记录真实UI的数据根及原项目身份。",
+      "仅在独立准备阶段按获准路径操作和生效边界启动。",
+      "核新旧项目及资料可读和归属，迁移语义无依据就保留待确认。"
+    ],
+    "expected": [
+      "路径变更遵循已确认生效边界，不丢失或越权迁移既有资料。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-SET-STORAGE，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "STORAGE-CONFIG-01",
+    "revision": 1,
+    "directionIds": [
+      "APP-SET-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-storage",
+    "observationStatus": "entry_observed",
+    "observationScope": "E022：显示本轮h及Projects，项目根变更下次启动生效；已观察入口，没有迁移、切根或重启",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "持久数据路径和潜在数据损失属于核心P1。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/022-storage-settings-receipt.txt"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "BROAD-SET-STORAGE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；仅只读本轮路径，不能证明OS完全隔离；G0+专用迁移/恢复数据与独立授权",
+    "assetGaps": [
+      "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+      "仅只读本轮路径，不能证明OS完全隔离；G0+专用迁移/恢复数据与独立授权"
+    ]
+  },
+  {
+    "id": "D6-SET-011",
+    "name": "按时间或站点检索和管理客户端浏览历史",
+    "folder": "Desktop六业务域/模型与账户设置",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。仅含本轮公开合成页面历史；清理动作须单独核可恢复性和授权。",
+    "steps": [
+      "准备可区分时间/站点的获准历史样本。",
+      "通过真实UI搜索和筛选，核结果身份及范围。",
+      "有清理授权才提交并核范围；未执行不称清理通过。"
+    ],
+    "expected": [
+      "历史对应真实导航且筛选准确，清理不越界；不把下载位置设置合并为本点。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-SET-BROWSER-DATA，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "BROWSER-HISTORY-01",
+    "revision": 1,
+    "directionIds": [
+      "APP-SET-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-browser-data",
+    "observationStatus": "entry_observed",
+    "observationScope": "E028：历史为空，可搜索、选时间范围及按站点清理；已观察入口，未创建历史、未清理任何数据。同页下载目录配置仅旁证，不合并为本候选结果",
+    "resultEvidenceStatus": "missing",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "历史可追溯与基本浏览器管理P2。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/028-browser-settings-receipt.txt"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "BROAD-SET-BROWSER-DATA",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；安全访问规则不改；未知用户数据不清；G0+任务导航样本及恢复/删除权限",
+    "assetGaps": [
+      "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+      "安全访问规则不改；未知用户数据不清；G0+任务导航样本及恢复/删除权限"
+    ]
+  }
+]
