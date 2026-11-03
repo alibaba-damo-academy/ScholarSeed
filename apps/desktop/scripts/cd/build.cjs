@@ -1198,5 +1198,8 @@ if (require.main === module) {
   main().catch((error) => {
     console.error(`[package] ERROR ${error.message}`)
     process.exitCode = 1
+    // async-exit-hook (used by builder cleanup) schedules process.exit(0).
+    // Keep failure sticky through that final exit, as electron-builder's CLI does.
+    process.once('exit', () => { process.exitCode = 1 })
   })
 }

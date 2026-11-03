@@ -2,6 +2,8 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const vm = require('node:vm')
+const crypto = require('node:crypto')
 const { spawn, execFileSync } = require('node:child_process')
 const { once } = require('node:events')
 const { test } = require('node:test')
@@ -109,6 +111,51 @@ native('killed child writer leaves a conservative reservation rather than PID re
   assert.throws(() => take(state, 'read'), { code: 'LEASE_CONFLICT' })
 })
 
+// Deterministic admission interleavings, not a substitute for native ACL tests.
+for (const boundary of ['lstat', 'windows-acl', 'persistent-acl']) {
+  test(`admission inspection handles ${boundary} without trusting unsafe state`, context => {
+    const state = fixture(context)
+    state.directory = fs.realpathSync(state.directory)
+    const gate = path.join(state.directory, 'admission')
+    fs.mkdirSync(gate, { mode: 0o700 })
+    let released = false
+    const releasePrevious = filename => {
+      if (filename !== gate || released) return
+      released = true
+      if (boundary !== 'persistent-acl') fs.rmdirSync(gate)
+      const error = new Error('previous owner released the gate during inspection')
+      error.code = boundary === 'lstat' ? 'ENOENT' : 'ACL_INSPECTION_FAILED'
+      throw error
+    }
+    const dependencies = {
+      'node:crypto': crypto,
+      'node:fs': { ...fs, lstatSync(filename) {
+        if (boundary === 'lstat') releasePrevious(filename)
+        return fs.lstatSync(filename)
+      } },
+      'node:os': os,
+      'node:path': path,
+      './permissions.cjs': { assertWindowsPermissions: releasePrevious, protectWindowsDirectory() {} }
+    }
+    const module = { exports: {} }
+    vm.runInNewContext(fs.readFileSync(MODULE, 'utf8'), {
+      require: name => { assert.ok(name in dependencies); return dependencies[name] },
+      module, process: { platform: 'win32', pid: process.pid }
+    })
+    const acquire = () => module.exports.acquire({ directory: state.directory, resources: [state.resource], mode: 'write' })
+    if (boundary === 'persistent-acl') {
+      assert.throws(acquire, { code: 'LEASE_DIRECTORY_UNSAFE' })
+      assert.deepEqual(fs.readdirSync(state.directory), ['admission'])
+      return
+    }
+    const handle = acquire()
+    assert.equal(released, true)
+    assert.equal(fs.existsSync(gate), false)
+    handle.release()
+    assert.deepEqual(fs.readdirSync(state.directory), [])
+  })
+}
+
 native('simultaneous real writers elect exactly one owner', { timeout: process.platform === 'win32' ? 120000 : 15000 }, async context => {
   const state = fixture(context)
   const script = `const {acquire}=require(process.argv[1]);let handle;process.send('ready');process.on('message',message=>{if(message==='start'){try{handle=acquire(JSON.parse(process.argv[2]));process.send('acquired')}catch(error){process.send(error.code)}}else{if(handle)handle.release();process.exit(0)}})`
@@ -120,8 +167,8 @@ native('simultaneous real writers elect exactly one owner', { timeout: process.p
   const outcomes = children.map(child => once(child, 'message'))
   children.forEach(child => child.send('start'))
   const messages = (await Promise.all(outcomes)).map(([message]) => message)
-  assert.equal(messages.filter(message => message === 'acquired').length, 1)
-  assert.equal(messages.filter(message => message === 'LEASE_CONFLICT').length, 3)
+  assert.equal(messages.filter(message => message === 'acquired').length, 1, JSON.stringify(messages))
+  assert.equal(messages.filter(message => message === 'LEASE_CONFLICT').length, 3, JSON.stringify(messages))
   const exits = children.map(child => once(child, 'exit'))
   children.forEach(child => child.send('release'))
   assert.ok((await Promise.all(exits)).every(([code]) => code === 0))
