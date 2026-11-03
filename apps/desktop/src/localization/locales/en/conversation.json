@@ -7,6 +7,7 @@
     "unknown": "Outcome not confirmed"
   },
   "sandbox": {
+    "toolProbeFailed": "A built-in tool check failed in the Windows sandbox. Your message has not been sent. Send feedback with the tool check logs to help identify the cause.",
     "policyRejected": "Windows sandbox setup did not pass its security checks. Send feedback to check the installation and permissions; repeating authorization will not resolve this issue.",
     "setupCancelled": "System authorization for Windows sandbox setup was cancelled. Send again and complete authorization when the system requests it."
   },

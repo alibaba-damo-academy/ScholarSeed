@@ -51,7 +51,7 @@ from scholarseed_codex.protocol.state import (
 )
 from scholarseed_codex.sandbox import windows_sandbox_arguments
 from scholarseed_codex.session import CodexRuntimeSession
-from scholarseed_codex.utils import json_value
+from scholarseed_codex.utils import json_value, path_identity
 from scholarseed_runtime.contract import (
     CommandReceipt,
     CommandState,
@@ -656,11 +656,9 @@ class CodexRuntimeProvider:
                 for skill in request.skills:
                     await control.skill_control.configure(skill.path, skill.enabled)
                 inventory = await control.skill_control.list_skills(force_reload=True)
-                effective = {
-                    skill.path.expanduser().resolve(): skill.enabled for skill in inventory.skills
-                }
+                effective = {path_identity(skill.path): skill.enabled for skill in inventory.skills}
                 if inventory.errors or any(
-                    effective.get(skill.path.expanduser().resolve()) != skill.enabled
+                    effective.get(path_identity(skill.path)) != skill.enabled
                     for skill in request.skills
                 ):
                     raise RuntimeError("skill configuration verification failed")

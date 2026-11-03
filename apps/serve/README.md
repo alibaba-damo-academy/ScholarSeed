@@ -411,6 +411,15 @@ fontconfig 保留内置与系统字体目录，在会话内按内容摘要生成
 当前原生版本准入由 Adapter 控制。源码与本机契约测试不代替 Windows 原生 ACL、
 真实帮我审批搜索、不可写及发现隔离验收；未完成这些验收不能宣称产品修复通过。
 
+内置工具探针失败使用 `windows_sandbox_tool_probe_failed`，与资源权限准备失败的
+`windows_sandbox_tool_access_failed` 分开；普通进程非零退出不解释为 Win32 权限错误。
+编译失败或 PDF 校验失败时，在该次随机 `verification` 目录中保留
+`scholarseed-probe-result.json`，包含实际退出码及 stdout/stderr 各最多 64 KiB 的尾部、
+截断标记；缺失或非法字段不补造。此文件与已有编译日志一起保留，目录位置沿既有
+后端日志回查，需要随问题反馈另行提供，不自动加入反馈包。原始输出不进入普通日志、
+异常消息或界面；新文件拒绝覆盖及链接路径，留存失败仍传播原始预检错误。
+成功预检继续清理随机目录；超时及原生结果未知仍保持未知结果语义，不提示安全重发。
+
 `capabilities/skills/` 是从仓库 `skills/community/` 离线编译的生成物，不手工维护。根 `desktop` dependency group 与 `uv.lock` 冻结随包 Python 依赖；技能 provision 只安装已审查本地 wheels，不另行解析依赖。用户技能不进入产品包。
 
 安装和验证入口见 [根 README](../../README.md)。

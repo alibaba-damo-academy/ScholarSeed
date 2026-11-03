@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +40,7 @@ from service.paths import PROJECT_DB_FILENAME, PROJECT_DB_RELATIVE, PROJECT_SERV
 from service.persistence import project as project_db
 from service.platform.activity import Activities
 from service.platform.content import RootKind
+from service.platform.storage import filesystem_path
 from service.resources.persistence.jobs import ImportJobStore
 from service.resources.persistence.version import VersionStore
 
@@ -63,6 +66,77 @@ def collect_names(nodes: tuple) -> set[str]:
         names.add(node.asset.name)
         names |= collect_names(node.children)
     return names
+
+
+CONNECTION_WORKERS = 8
+CONNECTION_BATCH_SIZE = 24
+CONNECTION_BATCHES = 10
+LONG_DIRECTORY_SEGMENT = "database-path-" * 8
+
+
+class ConnectionFilenameContract(unittest.TestCase):
+    def test_long_native_and_ordinary_names_share_wal_and_preserve_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ordinary = Path(directory) / LONG_DIRECTORY_SEGMENT / LONG_DIRECTORY_SEGMENT
+            ordinary = ordinary / LONG_DIRECTORY_SEGMENT / "资料 #% database.sqlite3"
+            native = filesystem_path(ordinary)
+            native.parent.mkdir(parents=True)
+            with closing(project_db.open_database(native)) as writer, writer:
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute("CREATE TABLE probe(id INTEGER PRIMARY KEY)")
+                writer.execute("INSERT INTO probe VALUES (0)")
+            with closing(project_db.open_database(native)) as writer:
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute("INSERT INTO probe VALUES (-1)")
+                with project_db.reader(ordinary) as reader:
+                    self.assertEqual(
+                        [tuple(row) for row in reader.execute("SELECT id FROM probe")], [(0,)]
+                    )
+                    with self.assertRaises(sqlite3.OperationalError) as caught:
+                        reader.execute("INSERT INTO probe VALUES (-2)")
+                    self.assertEqual(caught.exception.sqlite_errorcode, sqlite3.SQLITE_READONLY)
+                writer.rollback()
+
+            def append(index):
+                with project_db.reader(native) as reader:
+                    reader.execute("BEGIN")
+                    self.assertTrue(reader.execute("PRAGMA table_info(probe)").fetchall())
+                # Alternate spellings while retaining concurrent connection churn.
+                target = native if index % 2 else ordinary
+                with closing(project_db.open_database(target)) as writer, writer:
+                    writer.execute("PRAGMA journal_mode=WAL")
+                    writer.execute("INSERT INTO probe VALUES (?)", (index,))
+
+            with ThreadPoolExecutor(max_workers=CONNECTION_WORKERS) as pool:
+                list(pool.map(append, range(1, CONNECTION_BATCH_SIZE * CONNECTION_BATCHES + 1)))
+            with project_db.reader(native) as reader:
+                self.assertEqual(
+                    reader.execute("SELECT count(*) FROM probe").fetchone()[0],
+                    CONNECTION_BATCH_SIZE * CONNECTION_BATCHES + 1,
+                )
+                self.assertEqual(reader.execute("PRAGMA quick_check").fetchone()[0], "ok")
+
+    def test_read_only_and_existing_modes_never_create_a_missing_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "missing.sqlite3"
+            for mode in (project_db.DatabaseMode.READ_ONLY, project_db.DatabaseMode.EXISTING):
+                with self.subTest(mode=mode), self.assertRaises(sqlite3.OperationalError):
+                    project_db.open_database(database, mode=mode)
+                self.assertFalse(database.exists())
+            database = Path(directory) / "missing-directory" / "missing.sqlite3"
+            with self.assertRaises(sqlite3.OperationalError):
+                project_db.open_database(database)
+            self.assertFalse(database.parent.exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows verbatim filename semantics")
+    def test_ambiguous_verbatim_filename_is_rejected_without_changing_its_meaning(self):
+        for filename in (
+            r"\\?\C:\state\database. ",
+            r"\\?\C:\state\db:stream",
+            r"\\?\C:\state\NUL.sqlite3",
+        ):
+            with self.subTest(filename=filename), self.assertRaises(ValueError):
+                project_db.open_database(filename)
 
 
 class InspectionFilesContract(unittest.TestCase):
@@ -346,7 +420,7 @@ class InspectionFilesContract(unittest.TestCase):
 
 def main() -> int:
     result = unittest.TextTestRunner(verbosity=2).run(
-        unittest.defaultTestLoader.loadTestsFromTestCase(InspectionFilesContract)
+        unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
     )
     if not result.wasSuccessful():
         return 1

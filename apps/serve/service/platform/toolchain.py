@@ -24,6 +24,8 @@ from service.platform.access import RESOURCE_PRINCIPAL_CHANGED, prepare_tool_acc
 from service.platform.pdf import pdf_document_text
 from service.platform.storage import (
     DIRECTORY_MODE,
+    NOFOLLOW,
+    PRIVATE_FILE_MODE,
     canonical_root,
     open_directory,
     publish_exact_bytes,
@@ -81,6 +83,8 @@ COMPILER_PATH_CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff\uf
 WINDOWS_INHERITED_DIRECTORY_MODE = 0o777
 VERIFICATION_DIRECTORY = "verification"
 PROBE_OUTPUT_LIMIT = 4 * 1024 * 1024
+PROBE_DIAGNOSTIC_LIMIT = 64 * 1024
+PROBE_DIAGNOSTIC_FILE = "scholarseed-probe-result.json"
 PROBE_PYTHON_CODE = """import json,os,sys,ssl,sqlite3,zlib,lzma,ctypes
 root=os.path.normcase(os.path.realpath(sys.base_prefix).removeprefix(chr(92)*2+'?'+chr(92)))
 print(json.dumps({'event':'python_ready','root':root}))
@@ -527,12 +531,26 @@ class ToolResources:
                         LOGGER.warning("tool_verification_cleanup event=retained")
 
     async def validate_probe(self, probe: SandboxProbe, result: Mapping[str, Any]) -> None:
+        try:
+            await self._validate_probe(probe, result)
+        except Exception:
+            if probe.artifact is not None:
+                try:
+                    await asyncio.to_thread(_retain_probe_failure, probe, result)
+                except OSError:
+                    # Diagnostics must not replace the actual verification failure.
+                    # Do not log compiler output: it can contain local paths.
+                    LOGGER.warning("tool_verification_diagnostic event=unavailable")
+            raise
+
+    async def _validate_probe(self, probe: SandboxProbe, result: Mapping[str, Any]) -> None:
         if (
             not isinstance(result.get("exitCode"), int)
             or isinstance(result["exitCode"], bool)
             or result["exitCode"] != 0
         ):
-            raise PermissionError("bundled_tool_probe_failed")
+            # A process exit code is not a Win32 access-denied system error.
+            raise RuntimeError("bundled_tool_probe_failed")
         stdout = result.get("stdout", "")
         if not isinstance(stdout, str) or len(stdout) > PROBE_OUTPUT_LIMIT:
             raise PermissionError("bundled_tool_probe_output_invalid")
@@ -678,6 +696,39 @@ def load_tool_resources(environment: Mapping[str, str] | None = None) -> ToolRes
         principal=principal,
         electron_executable=electron_executable,
     )
+
+
+def _retain_probe_failure(probe: SandboxProbe, result: Mapping[str, Any]) -> None:
+    if probe.artifact is None:
+        return
+    exit_code = result.get("exitCode")
+    evidence: dict[str, Any] = {
+        "kind": probe.kind,
+        "exit_code": exit_code if type(exit_code) is int else None,
+    }
+    for stream in ("stdout", "stderr"):
+        value = result.get(stream)
+        if isinstance(value, str):
+            encoded = value[-PROBE_DIAGNOSTIC_LIMIT:].encode("utf-8", errors="replace")
+            evidence[stream] = encoded[-PROBE_DIAGNOSTIC_LIMIT:].decode("utf-8", errors="ignore")
+            evidence[stream + "_truncated"] = (
+                len(value) > PROBE_DIAGNOSTIC_LIMIT or len(encoded) > PROBE_DIAGNOSTIC_LIMIT
+            )
+        else:
+            evidence[stream] = None
+            evidence[stream + "_truncated"] = False
+    # Open every ancestor without following links and create only a new leaf.
+    # The compiler log and this bounded result survive together in verification's
+    # random owned directory; the ordinary success path removes that directory.
+    with closing(open_directory(probe.artifact.parent, ())) as directory:
+        descriptor = directory.open(
+            PROBE_DIAGNOSTIC_FILE,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+            PRIVATE_FILE_MODE,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(evidence, stream, ensure_ascii=True)
+    LOGGER.warning("tool_verification_diagnostic event=retained")
 
 
 def _validate_probe_pdf(path: Path) -> None:

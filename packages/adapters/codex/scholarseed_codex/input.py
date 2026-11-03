@@ -10,6 +10,7 @@ from scholarseed_codex.protocol.session import (
     CodexSessionOpenRequest,
 )
 from scholarseed_codex.protocol.state import CODEX_DEFAULT_APPROVAL_POLICY, AppServerError
+from scholarseed_codex.utils import path_identity
 from scholarseed_runtime.contract.input import CollaborationMode, InputKind, TurnInput
 
 CODEX_LOCAL_FILE_CONTEXT = (
@@ -120,7 +121,7 @@ def start_parameters(
 
 def skill_inputs(turn_input: TurnInput) -> dict[str, str]:
     return {
-        str(item.path.expanduser().resolve()): item.name
+        path_identity(item.path): item.name
         for item in turn_input.items
         if item.kind == InputKind.SKILL and item.path is not None and item.name
     }

@@ -26,6 +26,7 @@ from service.capabilities.service.source import product_metadata_from_source, so
 from service.cli import serve, skill_python
 from service.platform import executables
 from service.platform.activity import Activities
+from service.platform.storage import filesystem_path
 from service.platform.toolchain import ToolchainReadiness
 from service.platform.vocabulary import (
     BRIDGE_SESSION_ENV,
@@ -268,6 +269,22 @@ class SkillPythonContracts(unittest.TestCase):
                 patch.dict(os.environ, {}, clear=True),
             ):
                 skill_python.admit_script([str(script)])
+
+    def test_launcher_admission_matches_native_and_filesystem_path_spellings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = reviewed_script(directory)
+            native_root = Path(str(Path(directory)).removeprefix("\\\\?\\"))
+            native_script = Path(str(script).removeprefix("\\\\?\\"))
+            for root, selected in (
+                (native_root, filesystem_path(script)),
+                (filesystem_path(Path(directory)), native_script),
+            ):
+                with self.subTest(root=root, selected=selected):
+                    with (
+                        patch.object(skill_python, "SERVICE_BUNDLED_SKILLS_DIR", root),
+                        patch.dict(os.environ, {}, clear=True),
+                    ):
+                        skill_python.admit_script([str(selected)])
 
     def test_missing_build_receipt_never_falls_back_to_legacy_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -602,7 +619,9 @@ class SkillPythonContracts(unittest.TestCase):
             ):
                 self.assertEqual(skill_python.main([str(script)]), 0)
                 admit.assert_called_once()
-                self.assertEqual(admit.call_args.args[1], {"path": str(script.resolve())})
+                self.assertEqual(
+                    admit.call_args.args[1], {"path": str(filesystem_path(script).resolve())}
+                )
                 execute.assert_called_once()
 
     def test_real_interpreter_preserves_arguments_and_failure_status(self) -> None:

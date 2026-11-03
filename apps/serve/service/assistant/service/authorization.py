@@ -22,6 +22,7 @@ from service.chat.persistence.catalog import (
 )
 from service.persistence.project import (
     database_files,
+    open_database,
     reader,
     reject_schema_residue,
     schema_transaction,
@@ -207,7 +208,7 @@ class FulltextAuthorizer:
     def ensure_schema(cls, database: Path) -> None:
         if not cls.inspect_schema(database).needs_write:
             return
-        with closing(sqlite3.connect(str(database), timeout=SQLITE_TIMEOUT_SECONDS)) as connection:
+        with closing(open_database(str(database), timeout=SQLITE_TIMEOUT_SECONDS)) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys=ON")
             with schema_transaction(connection):
@@ -349,7 +350,7 @@ class FulltextAuthorizer:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
+        connection = open_database(
             str(self._database),
             check_same_thread=False,
             timeout=SQLITE_TIMEOUT_SECONDS,

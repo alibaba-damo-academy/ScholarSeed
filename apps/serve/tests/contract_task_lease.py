@@ -39,6 +39,7 @@ from service.platform.bridge import (
     TaskActivate,
 )
 from service.platform.context import ProductTaskType
+from service.platform.storage import filesystem_path
 from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
@@ -169,6 +170,35 @@ class TaskLeaseContract(unittest.TestCase):
         self.assertEqual(lease.run_id, "review-run")
         self.assertEqual(self.live.active_task_type, "literature_review")
         self.assertEqual(response.json()["workspace"], "survey")
+
+    def test_activation_accepts_equivalent_skill_and_binding_paths(self) -> None:
+        plain = Path(str(self.skill).removeprefix("\\\\?\\"))
+        extended = filesystem_path(self.skill)
+        for selected, bound in ((extended, plain), (plain, extended)):
+            with self.subTest(selected=selected, bound=bound):
+                binding = self.workspace / ".slr-binding.json"
+                value = json.loads(binding.read_text(encoding="utf-8"))
+                value.update(skill=str(bound), workspace=str(filesystem_path(self.workspace)))
+                binding.write_text(json.dumps(value), encoding="utf-8")
+                response = self.client.post(
+                    TASK_ACTIVATE_ROUTE,
+                    json=self.payload(skill_path=str(selected)),
+                    headers=self.headers,
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+
+        for invalid in (
+            "",
+            os.path.relpath(self.skill),
+            str(self.skill.parent / "literature-review-other"),
+        ):
+            with self.subTest(invalid=invalid):
+                value["skill"] = invalid
+                binding.write_text(json.dumps(value), encoding="utf-8")
+                response = self.client.post(
+                    TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers
+                )
+                self.assertEqual(response.json()["reason"], "task_binding_mismatch")
 
     def research_payload(self) -> dict[str, str]:
         skill = self.root / "skills/research-idea-partner"

@@ -14,6 +14,7 @@ from uuid import uuid4
 from service.paths import RESOURCE_IMPORTS_DB
 from service.persistence.project import (
     database_files,
+    open_database,
     reader,
     reject_schema_residue,
     schema_transaction,
@@ -163,7 +164,7 @@ class ImportJobStore:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database, timeout=SQLITE_TIMEOUT_SECONDS)
+        connection = open_database(self.database, timeout=SQLITE_TIMEOUT_SECONDS)
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA journal_mode=WAL")

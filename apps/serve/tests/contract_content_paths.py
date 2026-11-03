@@ -9,7 +9,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from service.content.domain.model import ContentError
 from service.content.service.space import Mount, ProjectSpace, _within
@@ -62,9 +62,8 @@ class ContentPathContract(unittest.TestCase):
                 with reader(database):
                     pass
                 uri = connect.call_args.args[0]
-                self.assertEqual(
-                    unquote(uri.removeprefix("file:").removesuffix("?mode=ro")), str(database)
-                )
+                self.assertEqual(unquote(urlsplit(uri).path), str(database))
+                self.assertEqual(urlsplit(uri).netloc, "")
                 self.assertTrue(connect.call_args.kwargs["uri"])
 
     def test_missing_child_and_root_round_trip(self) -> None:

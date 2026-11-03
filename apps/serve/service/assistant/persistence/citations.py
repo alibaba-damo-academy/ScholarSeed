@@ -13,6 +13,7 @@ from service.assistant.persistence.utils import extend, extensions
 from service.chat.persistence.catalog import SQLITE_TIMEOUT_SECONDS
 from service.persistence.project import (
     database_files,
+    open_database,
     reader,
     rebuild_table,
     reject_schema_residue,
@@ -131,7 +132,7 @@ class CitationStore:
             return CitationSchema(actual is None, repair)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self._database), timeout=SQLITE_TIMEOUT_SECONDS)
+        connection = open_database(str(self._database), timeout=SQLITE_TIMEOUT_SECONDS)
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")

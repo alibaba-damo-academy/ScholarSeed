@@ -28,7 +28,9 @@ from uuid import uuid4
 from service.content.domain import naming
 from service.content.domain.model import OPERATION_INTERRUPTED, OperationState
 from service.persistence.project import (
+    DatabaseMode,
     database_files,
+    open_database,
     rebuild_table,
     reject_schema_residue,
     schema_transaction,
@@ -311,7 +313,7 @@ class ContentCatalog:
                 with closing(sqlite3.connect(":memory:")) as connection:
                     connection.row_factory = sqlite3.Row
                     return CatalogRoots(present=False, schema=cls.inspect_connection(connection))
-            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            with closing(open_database(path, mode=DatabaseMode.READ_ONLY)) as connection:
                 connection.row_factory = sqlite3.Row
                 connection.execute("BEGIN")
                 schema = cls.inspect_connection(connection)
@@ -433,7 +435,7 @@ class ContentCatalog:
                 with closing(sqlite3.connect(":memory:")) as connection:
                     connection.row_factory = sqlite3.Row
                     return cls.inspect_connection(connection)
-            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            with closing(open_database(path, mode=DatabaseMode.READ_ONLY)) as connection:
                 connection.row_factory = sqlite3.Row
                 connection.execute("BEGIN")
                 return cls.inspect_connection(connection)
@@ -648,7 +650,7 @@ class ContentCatalog:
         connection.execute(f"CREATE TABLE {table} {_EXTERNAL_ROOT_SCHEMA}")
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.path), timeout=5.0)
+        connection = open_database(str(self.path), timeout=5.0)
         connection.row_factory = sqlite3.Row
         # 桌面端可能同时有 serve 与 CLI 进程读同一个库, WAL 让读不被写阻塞。
         connection.execute("PRAGMA journal_mode=WAL")

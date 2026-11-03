@@ -25,7 +25,13 @@ from service.literature.persistence.store import (
     LiteratureSchema,
     classify_schema,
 )
-from service.persistence.project import database_files, sql_tokens, table_clauses
+from service.persistence.project import (
+    DatabaseMode,
+    database_files,
+    open_database,
+    sql_tokens,
+    table_clauses,
+)
 from service.workbench.persistence.records import (
     PDF_RECORD_COLUMNS,
     PDF_RECORD_LINK_TABLE,
@@ -372,8 +378,8 @@ def _require_no_dependencies(connection: sqlite3.Connection, discarded: set[str]
 
 
 def _connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
-    mode = "ro" if readonly else "rw"
-    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode={mode}", uri=True, timeout=5)
+    mode = DatabaseMode.READ_ONLY if readonly else DatabaseMode.EXISTING
+    connection = open_database(path.resolve(), mode=mode, timeout=5)
     try:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=5000")
@@ -391,9 +397,9 @@ def _backup(target: CutoverTarget) -> Path:
     )
     os.close(descriptor)
     destination = Path(name)
-    source = sqlite3.connect(f"{target.path.resolve().as_uri()}?mode=ro", uri=True)
+    source = open_database(target.path.resolve(), mode=DatabaseMode.READ_ONLY)
     try:
-        backup = sqlite3.connect(destination)
+        backup = open_database(destination)
         try:
             source.backup(backup)
         finally:

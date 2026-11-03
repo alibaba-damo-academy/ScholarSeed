@@ -1001,6 +1001,76 @@ class ToolProbePdfContracts(unittest.TestCase):
 
 
 class ToolVerificationContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_compiler_exit_is_not_a_permission_diagnosis_and_retains_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            probe = SandboxProbe("texlive", ("xelatex.exe",), artifact=root / "probe.pdf")
+            result = {"exitCode": 5, "stdout": "engine output", "stderr": "编译失败" * 30000}
+            with (
+                self.assertLogs("service.platform.toolchain", level="WARNING") as logs,
+                self.assertRaisesRegex(RuntimeError, "bundled_tool_probe_failed") as raised,
+            ):
+                await ToolResources(()).validate_probe(probe, result)
+            self.assertNotIsInstance(raised.exception, PermissionError)
+            evidence = json.loads((root / "scholarseed-probe-result.json").read_text("utf-8"))
+            self.assertEqual(evidence["exit_code"], 5)
+            self.assertEqual(evidence["stdout"], "engine output")
+            self.assertFalse(evidence["stdout_truncated"])
+            self.assertTrue(evidence["stderr_truncated"])
+            self.assertLessEqual(len(evidence["stderr"].encode("utf-8")), 64 * 1024)
+            self.assertNotIn("command", evidence)
+            self.assertNotIn("engine output", " ".join(logs.output))
+            self.assertNotIn("编译失败", " ".join(logs.output))
+
+    async def test_pdf_validation_failure_retains_output_but_success_does_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            probe = SandboxProbe("texlive", ("xelatex.exe",), artifact=root / "probe.pdf")
+            probe.artifact.write_bytes(_cid_probe_pdf())
+            result = {"exitCode": 0, "stdout": "compiled", "stderr": ""}
+            await ToolResources(()).validate_probe(probe, result)
+            self.assertFalse((root / "scholarseed-probe-result.json").exists())
+            probe.artifact.write_bytes(b"not a PDF")
+            with self.assertRaisesRegex(PermissionError, "bundled_tool_probe_pdf_invalid"):
+                await ToolResources(()).validate_probe(probe, result)
+            evidence = json.loads((root / "scholarseed-probe-result.json").read_text("utf-8"))
+            self.assertEqual(evidence["exit_code"], 0)
+            self.assertEqual(evidence["stdout"], "compiled")
+
+    async def test_malformed_result_retains_no_fabricated_exit_or_stream(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            probe = SandboxProbe("texlive", ("xelatex.exe",), artifact=root / "probe.pdf")
+            with self.assertRaisesRegex(RuntimeError, "bundled_tool_probe_failed"):
+                await ToolResources(()).validate_probe(probe, {"exitCode": True, "stderr": []})
+            evidence = json.loads((root / "scholarseed-probe-result.json").read_text("utf-8"))
+            self.assertIsNone(evidence["exit_code"])
+            self.assertIsNone(evidence["stdout"])
+            self.assertIsNone(evidence["stderr"])
+
+    async def test_failure_diagnostics_never_overwrite_an_existing_leaf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            evidence = root / "scholarseed-probe-result.json"
+            evidence.write_text("preserve", encoding="utf-8")
+            probe = SandboxProbe("texlive", ("xelatex.exe",), artifact=root / "probe.pdf")
+            with self.assertRaisesRegex(RuntimeError, "bundled_tool_probe_failed"):
+                await ToolResources(()).validate_probe(probe, {"exitCode": 5})
+            self.assertEqual(evidence.read_text("utf-8"), "preserve")
+
+    @unittest.skipIf(sys.platform == "win32", "symlink fixture requires POSIX")
+    async def test_failure_diagnostics_refuse_a_linked_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            destination = root / "foreign"
+            destination.mkdir()
+            linked = root / "linked"
+            linked.symlink_to(destination, target_is_directory=True)
+            probe = SandboxProbe("texlive", ("xelatex.exe",), artifact=linked / "probe.pdf")
+            with self.assertRaisesRegex(RuntimeError, "bundled_tool_probe_failed"):
+                await ToolResources(()).validate_probe(probe, {"exitCode": 5})
+            self.assertEqual(list(destination.iterdir()), [])
+
     async def test_manifest_covers_packaged_resources_without_read_only_writes(self):
         resources = ToolResources(
             parse_tool_resources(
@@ -1076,13 +1146,13 @@ class ToolVerificationContracts(unittest.IsolatedAsyncioTestCase):
         await resources.validate_probe(
             probe, {"exitCode": 0, "stdout": '{"event":"ready","root":"frozen"}'}
         )
-        for result in (
-            {"exitCode": True, "stdout": "{}"},
-            {"exitCode": 0, "stdout": "{}"},
-            {"exitCode": 0, "stdout": '{"event":"ready","root":"host"}'},
-            {"exitCode": 1, "stdout": '{"event":"ready","root":"frozen"}'},
+        for result, error_type in (
+            ({"exitCode": True, "stdout": "{}"}, RuntimeError),
+            ({"exitCode": 0, "stdout": "{}"}, PermissionError),
+            ({"exitCode": 0, "stdout": '{"event":"ready","root":"host"}'}, PermissionError),
+            ({"exitCode": 1, "stdout": '{"event":"ready","root":"frozen"}'}, RuntimeError),
         ):
-            with self.subTest(result=result), self.assertRaises(PermissionError):
+            with self.subTest(result=result), self.assertRaises(error_type):
                 await resources.validate_probe(probe, result)
 
     async def test_probe_cleanup_refuses_a_replaced_owned_directory(self):

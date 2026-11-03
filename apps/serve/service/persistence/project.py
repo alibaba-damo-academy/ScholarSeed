@@ -34,6 +34,7 @@ preserve existing user rows and reject incompatible identity schemas.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 import stat
@@ -43,9 +44,11 @@ from dataclasses import dataclass
 from enum import Enum
 from errno import ENOSPC
 from os import PathLike
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable, Iterable, Iterator, TypeVar
 from urllib.parse import quote
+
+from service.platform.storage import WINDOWS_PATH_PREFIX, WINDOWS_PLATFORM, WINDOWS_RESERVED_NAMES
 
 #: 锁等待上限。桌面端可能同时有 serve 与 CLI 进程开同一个库, 写锁需要排队;
 #: 但也不能无限等 —— 请求线程挂死比报错更难查。
@@ -53,8 +56,7 @@ SQLITE_TIMEOUT_SECONDS = 5.0
 SQLITE_INITIALIZATION_RETRY_SECONDS = 0.01
 SQLITE_INSPECTION_ATTEMPTS = 3
 SQLITE_PRIMARY_RESULT_MASK = 0xFF
-SQLITE_READ_ONLY_QUERY = "?mode=ro"
-SQLITE_EXISTING_QUERY = "?mode=rw"
+SQLITE_WINDOWS_VFS = "win32-longpath"
 SCHEMA_REBUILD_SUFFIX = "_schema_rebuild"
 LEGACY_SCHEMA_REBUILD_SUFFIX = "_foreign_key_migration"
 #: 明文落凭据的库 (private=True) 的目录/文件 mode。
@@ -62,6 +64,61 @@ PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 InspectionResult = TypeVar("InspectionResult")
 _log = logging.getLogger(__name__)
+
+
+class DatabaseMode(str, Enum):
+    CREATE = "rwc"
+    EXISTING = "rw"
+    READ_ONLY = "ro"
+
+
+def open_database(
+    database: PathLike[str] | str,
+    *,
+    mode: DatabaseMode = DatabaseMode.CREATE,
+    timeout: float = SQLITE_TIMEOUT_SECONDS,
+    check_same_thread: bool = True,
+    isolation_level: str | None = "",
+) -> sqlite3.Connection:
+    """Open a file with one SQLite spelling, without preparing directories or schema.
+
+    SQLite's Windows VFS treats a verbatim local-drive prefix as a UNC share and
+    selects a different WAL lock-handle policy. Use its long-path VFS with an
+    ordinary drive spelling instead, for both readers and writers. Qualification
+    and identity checks remain the caller's responsibility.
+    """
+    mode = DatabaseMode(mode)
+    filename = os.fspath(database)
+    windows = os.name == WINDOWS_PLATFORM
+    if windows:
+        filename = str(Path(filename).absolute())
+        if filename.startswith(WINDOWS_PATH_PREFIX):
+            local = filename.removeprefix(WINDOWS_PATH_PREFIX)
+            if re.match(r"^[A-Za-z]:\\", local):
+                # Stripping verbatim semantics must not silently select another
+                # file (trailing dots/spaces, named streams or parent traversal).
+                if any(
+                    part in {".", ".."}
+                    or part.endswith((".", " "))
+                    or ":" in part
+                    or part.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
+                    for part in PureWindowsPath(local).parts[1:]
+                ):
+                    raise ValueError("unsupported SQLite verbatim filename")
+                filename = local
+    uri = windows or mode is not DatabaseMode.CREATE
+    if uri:
+        filename = "file:" + quote(str(Path(filename).absolute()), safe="/:")
+        filename += "?mode=" + mode.value
+        if windows:
+            filename += "&vfs=" + SQLITE_WINDOWS_VFS
+    return sqlite3.connect(
+        filename,
+        uri=uri,
+        timeout=timeout,
+        check_same_thread=check_same_thread,
+        isolation_level=isolation_level,
+    )
 
 
 # Retain quoted literals and punctuation so declarations are compared without
@@ -205,7 +262,7 @@ def connect(
         _restrict_mode(target.parent, PRIVATE_DIRECTORY_MODE)
     deadline = time.monotonic() + SQLITE_TIMEOUT_SECONDS
     while True:
-        connection = sqlite3.connect(str(target), timeout=max(0, deadline - time.monotonic()))
+        connection = open_database(target, timeout=max(0, deadline - time.monotonic()))
         try:
             connection.row_factory = sqlite3.Row
             if private:
@@ -272,9 +329,9 @@ def recover_database(database: Path, expected: DatabaseFingerprint) -> None:
     with database_files(database) as present:
         if not present or database_fingerprint(database) != expected:
             raise DatabaseBindingError("database changed before recovery")
-        connection = sqlite3.connect(
-            "file:" + quote(str(database.absolute()), safe="/:") + SQLITE_EXISTING_QUERY,
-            uri=True,
+        connection = open_database(
+            database,
+            mode=DatabaseMode.EXISTING,
             timeout=SQLITE_TIMEOUT_SECONDS,
         )
         try:
@@ -359,11 +416,9 @@ def reader(database: ProjectDatabasePath | Path | str) -> Iterator[sqlite3.Conne
     """Inspect an existing database without creating paths, schema, or a new database."""
 
     target = database.path if isinstance(database, ProjectDatabasePath) else Path(database)
-    connection = sqlite3.connect(
-        # Encode the native filename as a URI path, not a URI authority. Windows
-        # extended and UNC prefixes must remain part of the filename.
-        "file:" + quote(str(target.absolute()), safe="/:") + SQLITE_READ_ONLY_QUERY,
-        uri=True,
+    connection = open_database(
+        target,
+        mode=DatabaseMode.READ_ONLY,
         timeout=SQLITE_TIMEOUT_SECONDS,
     )
     try:
@@ -536,6 +591,8 @@ __all__ = [
     "StorageFailureKind",
     "classify_storage_failure",
     "connect",
+    "open_database",
+    "DatabaseMode",
     "reader",
     "transaction",
     "schema_transaction",

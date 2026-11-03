@@ -11,6 +11,7 @@ from scholarseed_codex.protocol.constants import MCP_TOOL_NAME_PREFIX
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_codex.protocol.session import CodexNativeActivityCategory
 from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.utils import path_identity
 from scholarseed_runtime.contract.session import RuntimeExecutionThread, RuntimeExecutionTreeBlocker
 
 NATIVE_ACTIVITY_PAGE_SIZE = 100
@@ -628,7 +629,7 @@ def skill_for_command(
         if not raw_path:
             continue
         skill_path = str(Path(raw_path).expanduser().resolve())
-        skill_name = active_skill_inputs.get(skill_path)
+        skill_name = active_skill_inputs.get(path_identity(Path(raw_path)))
         if skill_name:
             return skill_name, skill_path
     return None

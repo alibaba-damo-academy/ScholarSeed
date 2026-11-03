@@ -48,6 +48,7 @@ const QUEUE_ERROR_FALLBACK_MESSAGE_KEYS = {
   outcome_unknown: 'composer.runtimeTurnFailed',
 } as const satisfies Record<QueuedMessage['state'], string>
 const QUEUE_SANDBOX_ERROR_MESSAGE_KEYS = {
+  windows_sandbox_tool_probe_failed: 'sandbox.toolProbeFailed',
   windows_sandbox_policy_rejected: 'sandbox.policyRejected',
   windows_sandbox_setup_cancelled: 'sandbox.setupCancelled',
 } as const

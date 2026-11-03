@@ -13,12 +13,14 @@ SANDBOX_UNKNOWN_ERROR = "windows_sandbox_setup_unknown"
 SANDBOX_POLICY_ERROR = "windows_sandbox_policy_rejected"
 SANDBOX_CANCELLED_ERROR = "windows_sandbox_setup_cancelled"
 SANDBOX_RESOURCE_ERROR = "windows_sandbox_tool_access_failed"
+SANDBOX_PROBE_ERROR = "windows_sandbox_tool_probe_failed"
 SANDBOX_STARTUP_ERRORS = frozenset(
     {
         SANDBOX_SETUP_ERROR,
         SANDBOX_PREPARING_ERROR,
         SANDBOX_UNKNOWN_ERROR,
         SANDBOX_RESOURCE_ERROR,
+        SANDBOX_PROBE_ERROR,
         SANDBOX_POLICY_ERROR,
         SANDBOX_CANCELLED_ERROR,
     }

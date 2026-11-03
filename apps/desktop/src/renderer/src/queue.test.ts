@@ -576,6 +576,7 @@ test('queue failure codes translate while unknown codes use state-specific fallb
   }
   for (const [code, key] of [
     ['windows_sandbox_policy_rejected', 'policyRejected'],
+    ['windows_sandbox_tool_probe_failed', 'toolProbeFailed'],
     ['windows_sandbox_setup_cancelled', 'setupCancelled'],
   ] as const) {
     assert.equal(queuedMessageErrorText(code, 'failed', translate), zhConversation.sandbox[key])

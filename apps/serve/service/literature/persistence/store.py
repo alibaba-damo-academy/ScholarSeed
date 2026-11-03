@@ -52,6 +52,7 @@ from service.paths import SERVICE_LITERATURE_DATABASE
 from service.persistence.project import (
     DatabaseBindingError,
     database_files,
+    open_database,
     reader,
     rebuild_table,
     reject_schema_residue,
@@ -534,7 +535,7 @@ def connect(database: Path | str = LITERATURE_DB) -> sqlite3.Connection:
     # our read connection closes. Public startup/update inspection stays strict.
     _inspect_path(target, stable_sidecars=False)
     target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target, timeout=5)
+    conn = open_database(target, timeout=5)
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")

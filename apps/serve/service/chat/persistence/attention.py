@@ -27,7 +27,7 @@ from service.chat.persistence.catalog import (
     SessionPrincipal,
 )
 from service.chat.persistence.utils import begin_write
-from service.persistence.project import reader, sql_tokens, table_clauses
+from service.persistence.project import open_database, reader, sql_tokens, table_clauses
 
 ATTENTION_TABLE = "session_attention"
 ATTENTION_CLOCK_TABLE = "session_attention_clock"
@@ -349,7 +349,7 @@ class AttentionStore:
         if through_revision < 0 or (ids is not None and len(ids) > ATTENTION_ID_LIMIT):
             raise ValueError("invalid attention acknowledgement")
         query, parameters = self._scope(principal)
-        with closing(sqlite3.connect(self._database, timeout=SQLITE_TIMEOUT_SECONDS)) as connection:
+        with closing(open_database(self._database, timeout=SQLITE_TIMEOUT_SECONDS)) as connection:
             connection.row_factory = sqlite3.Row
             begin_write(connection, self._database)
             if epoch is not None and epoch != self._epoch(connection, principal):

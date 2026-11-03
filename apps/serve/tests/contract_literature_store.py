@@ -362,7 +362,10 @@ class LiteratureStoreTests(unittest.TestCase):
                         return connection
                     return sqlite_connect(database, *args, **kwargs)
 
-                with patch("sqlite3.connect", side_effect=open_connection), stage_patch:
+                with (
+                    patch.object(persistence, "open_database", side_effect=open_connection),
+                    stage_patch,
+                ):
                     with self.assertRaises(failure):
                         connect(self.database)
                 self.assert_connection_closed(connection)

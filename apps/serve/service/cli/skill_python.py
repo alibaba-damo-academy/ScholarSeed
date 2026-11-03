@@ -18,6 +18,7 @@ from service.cli.task import main as task_main
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR
 from service.platform.channel import decode, request
 from service.platform.python import TASK_OPTION
+from service.platform.storage import filesystem_path
 from service.platform.vocabulary import BRIDGE_SESSION_ENV
 
 EXIT_FAILURE = 1
@@ -36,8 +37,8 @@ def admit_script(arguments: Sequence[str]) -> None:
         return
     if arguments[0].startswith("-"):
         raise ValueError(PRODUCT_PYTHON_RESERVED)
-    script = Path(arguments[0]).expanduser().resolve(strict=True)
-    bundled = SERVICE_BUNDLED_SKILLS_DIR.resolve(strict=True)
+    script = filesystem_path(Path(arguments[0]).expanduser()).resolve(strict=True)
+    bundled = filesystem_path(SERVICE_BUNDLED_SKILLS_DIR).resolve(strict=True)
     relative = script.relative_to(bundled)
     if len(relative.parts) < 2:
         raise ValueError(PRODUCT_PYTHON_RESERVED)

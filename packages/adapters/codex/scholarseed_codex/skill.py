@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
+from scholarseed_codex.utils import path_identity
 from scholarseed_runtime.contract.command import SkillConfiguration
 from scholarseed_runtime.contract.event import RuntimeValue
 from scholarseed_runtime.contract.inventory import (
@@ -54,21 +55,20 @@ def session_skill_inventory(
     if not configurations:
         return inventory
     enabled_by_path = {
-        configuration.path.expanduser().resolve(): configuration.enabled
-        for configuration in configurations
+        path_identity(configuration.path): configuration.enabled for configuration in configurations
     }
     skills = tuple(
         (
             replace(
                 skill,
-                enabled=enabled_by_path[skill.path.expanduser().resolve()],
+                enabled=enabled_by_path[path_identity(skill.path)],
                 availability=(
                     SkillAvailability.AVAILABLE
-                    if enabled_by_path[skill.path.expanduser().resolve()]
+                    if enabled_by_path[path_identity(skill.path)]
                     else SkillAvailability.DISABLED
                 ),
             )
-            if skill.path.expanduser().resolve() in enabled_by_path
+            if path_identity(skill.path) in enabled_by_path
             and skill.availability is not SkillAvailability.ERROR
             else skill
         )

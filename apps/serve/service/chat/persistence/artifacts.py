@@ -23,6 +23,7 @@ from service.chat.persistence.utils import validate_transaction
 from service.paths import SESSION_CATALOG_DB
 from service.persistence.project import (
     database_files,
+    open_database,
     reader,
     rebuild_table,
     reject_schema_residue,
@@ -433,7 +434,7 @@ class SessionArtifactStore:
         )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
+        connection = open_database(
             str(self._database),
             check_same_thread=False,
             timeout=SQLITE_TIMEOUT_SECONDS,

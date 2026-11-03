@@ -154,6 +154,7 @@ from service.platform.citations import CitationAnswerFilter
 from service.platform.python import prepare_commands
 from service.platform.resources import AgentResourceChangeSink
 from service.platform.startup import startup_phase
+from service.platform.storage import filesystem_path
 from service.platform.toolchain import CompilerResources, ToolchainReadiness, ToolchainState
 from service.platform.vocabulary import (
     BRIDGE_SESSION_ENV,
@@ -809,10 +810,16 @@ class LiveSessionService:
         )
 
     async def skill_admission(self, *, path: Path, caller: SkillCaller) -> Mapping[str, Any] | None:
-        canonical = path.expanduser().resolve()
+        canonical = filesystem_path(path.expanduser()).resolve()
         inventory = await caller.refresh_skills()
         rows = self._skills.payloads(inventory, load_skill_state(), user_id=caller.user_id)
-        matches = [row for row in rows if canonical.is_relative_to(Path(str(row["path"])).parent)]
+        matches = [
+            row
+            for row in rows
+            if canonical.is_relative_to(
+                filesystem_path(Path(str(row["path"])).expanduser()).resolve().parent
+            )
+        ]
         return max(matches, key=lambda row: len(Path(str(row["path"])).parts), default=None)
 
     async def skill_configurations(
@@ -1014,13 +1021,13 @@ class LiveSessionService:
         if components is not None:
             await self._activities.to_thread(ActivityDomain.RUNTIME, components.check, snapshots)
         enabled_by_path = {
-            self._skills.manifest(skill.path).expanduser().resolve(): skill.enabled
+            filesystem_path(self._skills.manifest(skill.path).expanduser()).resolve(): skill.enabled
             for skill in discovered.skills
         }
         configurations = tuple(
             SkillConfiguration(path, enabled)
             for path, enabled in plan.configurations
-            if enabled_by_path.get(path) != enabled
+            if enabled_by_path.get(filesystem_path(path).resolve()) != enabled
         )
         if configurations:
             receipt = await self._gateway.provider(self.runtime_id).configure_skills(
@@ -1036,10 +1043,15 @@ class LiveSessionService:
                 raise RuntimeError(receipt.safe_error or "skill configuration was not applied")
             discovered = await inventory()
             effective = {
-                self._skills.manifest(skill.path).expanduser().resolve(): skill.enabled
+                filesystem_path(
+                    self._skills.manifest(skill.path).expanduser()
+                ).resolve(): skill.enabled
                 for skill in discovered.skills
             }
-            if any(effective.get(row.path) != row.enabled for row in configurations):
+            if any(
+                effective.get(filesystem_path(row.path).resolve()) != row.enabled
+                for row in configurations
+            ):
                 raise RuntimeError("skill configuration verification failed")
         if plan.state != state:
             save_skill_state(plan.state)

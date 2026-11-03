@@ -14,6 +14,7 @@ from typing import Any
 from service.capabilities.service.skills import SKILL_LOGIN_REQUIRED_REASON
 from service.platform.bridge import TaskActivate
 from service.platform.context import FulltextTaskContext, ProductTaskType
+from service.platform.storage import filesystem_path
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +315,7 @@ async def activate_task(
     if identity is None:
         raise ValueError("task_skill_unavailable")
     skill_root = Path(str(identity.get("path") or "")).resolve().parent
-    if skill_root != Path(command.skill_path).resolve():
+    if filesystem_path(skill_root).resolve() != filesystem_path(command.skill_path).resolve():
         raise ValueError("task_skill_mismatch")
     if str(identity.get("version") or "") != command.skill_version:
         raise ValueError("task_skill_version_mismatch")
@@ -329,10 +330,21 @@ async def activate_task(
         raise ValueError("task_binding_invalid") from error
     if not isinstance(binding, dict):
         raise ValueError("task_binding_invalid")
-    if binding.get("skill") != str(skill_root) or binding.get("version") != command.skill_version:
+    bound_skill = binding.get("skill")
+    if (
+        not isinstance(bound_skill, str)
+        or not bound_skill.strip()
+        or not Path(bound_skill).is_absolute()
+        or filesystem_path(bound_skill).resolve() != filesystem_path(skill_root).resolve()
+        or binding.get("version") != command.skill_version
+    ):
         raise ValueError("task_binding_mismatch")
     binding_workspace = binding.get("workspace")
-    if binding_workspace is not None and Path(str(binding_workspace)).resolve() != workspace:
+    if (
+        binding_workspace is not None
+        and filesystem_path(str(binding_workspace)).resolve()
+        != filesystem_path(workspace).resolve()
+    ):
         raise ValueError("task_binding_mismatch")
     run_id = binding.get("run_id")
     persistent_run = isinstance(run_id, str) and bool(run_id)

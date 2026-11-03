@@ -26,6 +26,7 @@ from uuid import uuid4
 from service.paths import MODEL_CREDENTIAL_LOCKS, MODEL_CREDENTIALS_DB
 from service.persistence.project import (
     database_files,
+    open_database,
     reader,
     reject_schema_residue,
     schema_transaction,
@@ -311,7 +312,7 @@ class ModelCredentialStore:
         _prepare_directory(self.path.parent)
         descriptor = _open_record(self.path)
         os.close(descriptor)
-        database = sqlite3.connect(self.path, timeout=DATABASE_TIMEOUT_SECONDS)
+        database = open_database(self.path, timeout=DATABASE_TIMEOUT_SECONDS)
         database.row_factory = sqlite3.Row
         try:
             database.execute("PRAGMA secure_delete = ON")

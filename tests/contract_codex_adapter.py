@@ -33,6 +33,7 @@ from scholarseed_codex.activity import (
     CODEX_NATIVE_ACTIVITY_TEXT_LIMIT,
     NATIVE_BACKGROUND_TERMINALS_LIST_METHOD,
     NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD,
+    skill_for_command,
     subagent_item_summary,
     subagent_lifecycle_payload,
     subagent_status_payload,
@@ -61,7 +62,7 @@ from scholarseed_codex.failure import (
     provider_codes,
     provider_failure,
 )
-from scholarseed_codex.input import start_parameters
+from scholarseed_codex.input import skill_inputs, start_parameters
 from scholarseed_codex.launch import model_connection
 from scholarseed_codex.pool import CodexHostPool
 from scholarseed_codex.process import (
@@ -137,7 +138,11 @@ from scholarseed_runtime.contract import (
     SkillPolicy,
     TurnRequest,
 )
-from scholarseed_runtime.contract.command import HostWarmupRequest, SkillConfiguration
+from scholarseed_runtime.contract.command import (
+    HostWarmupRequest,
+    SkillConfiguration,
+    SkillConfigurationRequest,
+)
 from scholarseed_runtime.contract.content import (
     PUBLIC_REASONING_SUMMARY,
     REASONING_SOURCE,
@@ -3407,6 +3412,80 @@ def test_session_skill_configuration() -> None:
         "session projection does not mutate control inventory",
         inventory.skills[0].enabled and not inventory.skills[1].enabled,
     )
+    if os.name == "nt":
+        plain = Path(str(restricted_path).removeprefix("\\\\?\\"))
+        extended = Path("\\\\?\\" + str(plain))
+    else:
+        plain = restricted_path
+        extended = restricted_path.parent / "." / restricted_path.name
+    for configured, reported in ((plain, extended), (extended, plain)):
+        native = replace(
+            inventory,
+            skills=(replace(inventory.skills[0], path=reported),),
+        )
+        projected = session_skill_inventory(native, (SkillConfiguration(configured, False),))
+        check("equivalent skill paths apply session disables", not projected.skills[0].enabled)
+        disabled = replace(native, skills=(replace(native.skills[0], enabled=False),))
+        check(
+            "equivalent skill paths apply session enables",
+            session_skill_inventory(disabled, (SkillConfiguration(configured, True),))
+            .skills[0]
+            .enabled,
+        )
+
+        async def verify_configuration() -> None:
+            @asynccontextmanager
+            async def mutation():
+                yield
+
+            @asynccontextmanager
+            async def control(**_context):
+                yield SimpleNamespace(
+                    mutation=mutation,
+                    skill_control=SimpleNamespace(
+                        configure=AsyncMock(), list_skills=AsyncMock(return_value=native)
+                    ),
+                )
+
+            runtime = provider()
+            runtime._control = control
+            receipt = await runtime.configure_skills(
+                SkillConfigurationRequest(ROOT, (SkillConfiguration(configured, True),))
+            )
+            check(
+                "configuration readback accepts equivalent paths",
+                receipt.state is CommandState.APPLIED,
+            )
+
+        asyncio.run(verify_configuration())
+        errored = replace(
+            native, skills=(replace(native.skills[0], availability=SkillAvailability.ERROR),)
+        )
+        check(
+            "session rules preserve native skill errors",
+            session_skill_inventory(errored, (SkillConfiguration(configured, True),))
+            .skills[0]
+            .availability
+            is SkillAvailability.ERROR,
+        )
+        selected = skill_inputs(
+            TurnInput((InputItem(InputKind.SKILL, name="restricted", path=configured),))
+        )
+        check(
+            "equivalent skill reads retain skill activity identity",
+            skill_for_command(
+                selected, {"commandActions": [{"type": "read", "path": str(reported)}]}
+            )
+            is not None,
+        )
+        check(
+            "another manifest never inherits skill activity identity",
+            skill_for_command(
+                selected,
+                {"commandActions": [{"type": "read", "path": str(reported.parent / "other.md")}]},
+            )
+            is None,
+        )
     check(
         "transient availability participates in the inventory revision",
         effective.revision != inventory.revision

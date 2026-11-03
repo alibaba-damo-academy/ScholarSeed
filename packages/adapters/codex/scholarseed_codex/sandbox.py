@@ -20,6 +20,7 @@ from scholarseed_runtime.contract.resource import RESOURCE_LIFECYCLE_LOGGER
 from scholarseed_runtime.contract.sandbox import (
     SANDBOX_CANCELLED_ERROR,
     SANDBOX_PREPARING_ERROR,
+    SANDBOX_PROBE_ERROR,
     SANDBOX_RESOURCE_ERROR,
     SANDBOX_SETUP_ERROR,
     SANDBOX_STARTUP_ERRORS,
@@ -121,7 +122,7 @@ def _failure(
     cause: AppServerError | None = None,
     method: str = "",
 ) -> AppServerError:
-    if safe_error in {SANDBOX_SETUP_ERROR, SANDBOX_RESOURCE_ERROR}:
+    if safe_error in {SANDBOX_SETUP_ERROR, SANDBOX_RESOURCE_ERROR, SANDBOX_PROBE_ERROR}:
         if retryability is RuntimeRetryability.IN_PROGRESS:
             safe_error = SANDBOX_PREPARING_ERROR
         elif retryability is RuntimeRetryability.UNKNOWN_OUTCOME:
@@ -321,7 +322,7 @@ class WindowsSandboxBootstrap:
                         )
                         raise _failure(
                             "Windows bundled tool verification failed",
-                            SANDBOX_RESOURCE_ERROR,
+                            SANDBOX_PROBE_ERROR,
                             retryability=retryability,
                             cause=error if isinstance(error, AppServerError) else None,
                             method=SANDBOX_EXECUTION_METHOD,

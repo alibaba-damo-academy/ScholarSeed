@@ -1790,7 +1790,9 @@ class StartupCoordinationContracts(unittest.IsolatedAsyncioTestCase):
                                 Path.cwd(),
                                 {"type": "workspaceWrite", "networkAccess": True},
                             )
-                        self.assertEqual(raised.exception.safe_error, SANDBOX_RESOURCE_ERROR)
+                        self.assertEqual(
+                            raised.exception.safe_error, "windows_sandbox_tool_probe_failed"
+                        )
                         validation.assert_awaited_once()
                         self.assertEqual(len(calls), 2)
                     else:

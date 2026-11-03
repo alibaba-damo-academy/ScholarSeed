@@ -814,6 +814,32 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
                 user_id="account", refresh_skills=AsyncMock(return_value=inventory)
             )
             script = manifest.parent / "scripts" / "run.py"
+            script.parent.mkdir()
+            script.write_text("print('reviewed')\n", encoding="utf-8")
+            plain_manifest = Path(str(manifest).removeprefix("\\\\?\\"))
+            plain_script = Path(str(script).removeprefix("\\\\?\\"))
+            for reported, selected in (
+                (plain_manifest, filesystem_path(script)),
+                (filesystem_path(manifest), plain_script),
+            ):
+                with self.subTest(reported=reported, selected=selected):
+                    caller.refresh_skills.return_value = replace(
+                        inventory, skills=(self._view("restricted", reported, enabled=True),)
+                    )
+                    with patch(
+                        "service.chat.runtime.composition.load_skill_state",
+                        return_value=SkillProductState(),
+                    ):
+                        row = await runtime.skill_admission(path=selected, caller=caller)
+                        self.assertIsNotNone(row)
+                        self.assertTrue(row["active"])
+                        self.assertIsNone(
+                            await runtime.skill_admission(
+                                path=filesystem_path(root / "restricted-other" / "run.py"),
+                                caller=caller,
+                            )
+                        )
+            caller.refresh_skills.return_value = inventory
             with patch(
                 "service.chat.runtime.composition.load_skill_state",
                 return_value=SkillProductState(),
@@ -857,7 +883,7 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_recovery_receipt_is_saved_only_after_verified_provider_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             workspace = root / "workspace"
             workspace.mkdir()
             bundled_root = root / "bundled"
@@ -877,7 +903,7 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
                 revision="after",
                 skills=(
                     self._view("bundled", bundled, enabled=True),
-                    self._view("external", external, enabled=True),
+                    self._view("external", filesystem_path(external), enabled=True),
                 ),
             )
             provider = SimpleNamespace(
@@ -917,6 +943,22 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
             saved_state = saved.call_args.args[0]
             self.assertEqual(saved_state.runtime_recovery_version, SKILL_RECOVERY_VERSION)
             self.assertIn(workspace_recovery_key(workspace), saved_state.recovered_workspaces)
+
+            other = self._manifest(workspace / ".agents" / "skills", "other")
+            mismatched = replace(
+                after,
+                skills=(after.skills[0], self._view("other", other, enabled=True)),
+            )
+            service._inspect = AsyncMock(
+                side_effect=(host_context.inventory(before), host_context.inventory(mismatched))
+            )
+            saved.reset_mock()
+            with (
+                patch("service.chat.runtime.composition.save_skill_state", saved),
+                self.assertRaisesRegex(RuntimeError, "skill configuration verification failed"),
+            ):
+                await service.configure_skills(cwd=workspace, state=state, user_id=USER_ID)
+            saved.assert_not_called()
 
             failing_provider = SimpleNamespace(
                 configure_skills=AsyncMock(side_effect=RuntimeError("provider failed"))
