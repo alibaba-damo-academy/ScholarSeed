@@ -5,6 +5,8 @@ const { LEASE_STATE, LEASE_GRANT, recordDenial } = require("./security.cjs");
 
 const SYSTEM_ROOT_ENV = "SystemRoot";
 const SYSTEM_DIRECTORY = "System32";
+const POWERSHELL_MODULE_PATH_ENV = "PSModulePath";
+const POWERSHELL_MODULE_DIRECTORY = "Modules";
 const ACL_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 $identity = & (Join-Path $systemRoot 'System32\\whoami.exe') /user /fo csv /nh
@@ -85,7 +87,21 @@ function assertWindowsPermissions(filename) {
     );
     const systemRoot = process.env[SYSTEM_ROOT_ENV];
     systemCommand("whoami.exe");
-    const script = `$systemRoot = '${systemRoot.replaceAll("'", "''")}'\n${ACL_SCRIPT.replace("PATH_LITERAL", `'${filename.replaceAll("'", "''")}'`)}`;
+    // npm/Node launched by pwsh inherits PowerShell 7 modules, which Windows
+    // PowerShell cannot load. ACL inspection needs only its own system modules.
+    // Remove every casing: Windows environment names are case-insensitive.
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => name.toLowerCase() !== POWERSHELL_MODULE_PATH_ENV.toLowerCase(),
+      ),
+    );
+    environment[POWERSHELL_MODULE_PATH_ENV] = path.join(
+      path.dirname(executable),
+      POWERSHELL_MODULE_DIRECTORY,
+    );
+    // Windows PowerShell may prepend machine/user module paths at startup.
+    // Pin the search path again before the first autoloaded cmdlet is invoked.
+    const script = `$env:${POWERSHELL_MODULE_PATH_ENV} = '${environment[POWERSHELL_MODULE_PATH_ENV].replaceAll("'", "''")}'\n$systemRoot = '${systemRoot.replaceAll("'", "''")}'\n${ACL_SCRIPT.replace("PATH_LITERAL", `'${filename.replaceAll("'", "''")}'`)}`;
     execFileSync(
       executable,
       [
@@ -95,7 +111,7 @@ function assertWindowsPermissions(filename) {
         Buffer.from(script, "utf16le").toString("base64"),
       ],
       {
-        env: { ...process.env, SystemRoot: systemRoot },
+        env: environment,
         stdio: "pipe",
         windowsHide: true,
       },

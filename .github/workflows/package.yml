@@ -53,7 +53,15 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Verify native lease permissions
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: node --test scripts/shared/__tests__/permissions.test.cjs scripts/shared/__tests__/lease.test.cjs
+
       - name: Build package
+        env:
+          # Keep the renderer above its ~2 GiB default heap, with room for native tools.
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run ops -- --package-manager npm cd build local --stage installer
 
       - name: Upload package artifacts
@@ -62,6 +70,6 @@ jobs:
           name: scholarseed-${{ runner.os }}-${{ runner.arch }}
           path: |
             apps/desktop/release/**/artifacts/*.dmg
-            apps/desktop/release/**/artifacts/*Setup.exe
+            apps/desktop/release/**/artifacts/velopack/*Setup.exe
           if-no-files-found: error
           retention-days: 14
