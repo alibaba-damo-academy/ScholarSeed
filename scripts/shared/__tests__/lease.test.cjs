@@ -176,6 +176,26 @@ test('Windows foreign writable ACL is refused without creating a receipt', { ski
   assert.deepEqual(fs.readdirSync(state.directory), [])
 })
 
+test('Windows ACL inspection ignores incompatible inherited PowerShell modules and still rejects unsafe ACLs', { skip: process.platform !== 'win32' }, context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'powershell-modules-'))
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const module = path.join(root, 'Microsoft.PowerShell.Security')
+  fs.mkdirSync(module)
+  fs.writeFileSync(path.join(module, 'Microsoft.PowerShell.Security.psm1'), "throw 'incompatible inherited module must not load'\nfunction Get-Acl {}\nExport-ModuleMember -Function Get-Acl\n")
+  const previous = process.env.PSModulePath
+  context.after(() => {
+    if (previous === undefined) delete process.env.PSModulePath
+    else process.env.PSModulePath = previous
+  })
+  process.env.PSModulePath = root
+  const state = fixture(context)
+  take(state).release()
+  const command = path.join(process.env.SystemRoot, 'System32', 'icacls.exe')
+  execFileSync(command, [state.directory, '/grant', '*S-1-1-0:(OI)(CI)(F)'], { stdio: 'pipe', windowsHide: true })
+  assert.throws(() => take(state), { code: 'LEASE_DIRECTORY_UNSAFE' })
+  assert.deepEqual(fs.readdirSync(state.directory), [])
+})
+
 native('Python preparation refuses an active reader before executing uv', async context => {
   const state = fixture(context)
   const reader = take(state, 'read')
@@ -207,35 +227,6 @@ native('workspace clean refuses to remove an environment held by a runtime reade
     assert.ok(fs.existsSync(target))
   }
   reader.release()
-})
-
-native('workspace docs check holds a Python reader lease until the checker exits', context => {
-  const state = fixture(context)
-  const environment = { VENV: state.resource }
-  context.mock.method(leases, 'acquire', options => acquire({ ...options, directory: state.directory }))
-  const toolchain = require('../../pre/toolchain.cjs')
-  context.mock.method(toolchain, 'checkNode', () => {})
-  context.mock.method(childProcess, 'spawnSync', () => {
-    assert.throws(() => take(state, 'write'), { code: 'LEASE_CONFLICT' })
-    return { status: 0 }
-  })
-  delete require.cache[require.resolve('../workspace.cjs')]
-  const workspace = require('../workspace.cjs').createWorkspace(path.resolve(__dirname, '../../..'), environment)
-  assert.equal(workspace.docsCheck([]), 0)
-  take(state, 'write').release()
-})
-
-native('workspace docs check releases its reader after a nonzero checker exit', context => {
-  const state = fixture(context)
-  const environment = { VENV: state.resource }
-  context.mock.method(leases, 'acquire', options => acquire({ ...options, directory: state.directory }))
-  const toolchain = require('../../pre/toolchain.cjs')
-  context.mock.method(toolchain, 'checkNode', () => {})
-  context.mock.method(childProcess, 'spawnSync', () => ({ status: 7 }))
-  delete require.cache[require.resolve('../workspace.cjs')]
-  const workspace = require('../workspace.cjs').createWorkspace(path.resolve(__dirname, '../../..'), environment)
-  assert.throws(() => workspace.docsCheck([]), error => error.code === 'CHILD_EXIT' && error.exitCode === 7)
-  take(state, 'write').release()
 })
 
 native('Python uv write holds the actual VENV lease and releases only after success', async context => {

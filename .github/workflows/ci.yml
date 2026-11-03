@@ -44,7 +44,13 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Build application and prepare Python
+        env:
+          # The renderer exceeds V8's default ~2 GiB heap on the 7 GiB macOS runner.
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run ops -- --package-manager npm cd build local --stage app
 
       - name: Run distribution contracts
-        run: node --test scripts/shared/__tests__/artifacts.test.cjs apps/desktop/scripts/cd/__tests__/build.test.cjs
+        env:
+          # Avoid macOS /var -> /private/var aliases in no-symlink build fixtures.
+          TMPDIR: ${{ runner.temp }}
+        run: node --test scripts/shared/__tests__/permissions.test.cjs scripts/shared/__tests__/lease.test.cjs scripts/shared/__tests__/artifacts.test.cjs apps/desktop/scripts/cd/__tests__/build.test.cjs
