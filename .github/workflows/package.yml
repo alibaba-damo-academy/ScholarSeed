@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package:
     name: Native installer (${{ matrix.name }})
@@ -27,13 +31,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          lfs: true
           persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
           node-version-file: .node-version
           cache: npm
@@ -45,7 +48,7 @@ jobs:
         run: npm install -g npm@11.13.0
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
         with:
           version: "0.12.11"
           enable-cache: true
@@ -81,11 +84,13 @@ jobs:
         run: npm run ops -- --package-manager npm cd build local --stage installer
 
       - name: Upload package artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: scholarseed-${{ runner.os }}-${{ runner.arch }}
           path: |
             apps/desktop/release/**/artifacts/*.dmg
             apps/desktop/release/**/artifacts/velopack/*Setup.exe
+            apps/desktop/release/**/result.json
           if-no-files-found: error
+          compression-level: 0
           retention-days: 14
