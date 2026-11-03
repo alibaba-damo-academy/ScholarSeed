@@ -121,13 +121,25 @@ function admitted(directory, action) {
     }
     catch (error) {
       if (error.code !== 'EEXIST') throw error
-      assertPrivate(gate, true)
+      assertContendedGate(gate)
       if (Date.now() >= deadline) throw failure('LEASE_ADMISSION_BUSY', 'lease admission is busy or abandoned; no automatic recovery', directory)
       Atomics.wait(sleeper, 0, 0, WAIT_MS)
     }
   }
   try { return action() }
   finally { fs.rmdirSync(gate) }
+}
+
+function assertContendedGate(gate) {
+  try { assertPrivate(gate, true) }
+  catch (error) {
+    // The owner may release between EEXIST and lstat or the Windows ACL probe.
+    // Retry acquisition only if the gate is now absent; never trust or remove
+    // an existing gate whose security could not be established.
+    try { fs.lstatSync(gate) }
+    catch (current) { if (current.code === 'ENOENT') return }
+    throw error
+  }
 }
 
 function readReceipt(directory, filename) {

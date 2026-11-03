@@ -46,6 +46,7 @@ const { TARGETS } = require('../../shared/target.cjs')
 const { verifyInputs, verifyNotices, stageNotices } = require('../notices.cjs')
 const { skillLockProblems } = require('../../../../../scripts/shared/skills.cjs')
 const PACKAGE = require('../../../package.json')
+
 const {
   options,
   acquireMutex,
@@ -100,6 +101,21 @@ const {
   updateMacBundleName,
 } = require('../../pre/identity.cjs')
 const REPO_ROOT = path.join(sourceDirectory, '../../../..')
+
+test('build failures remain nonzero after the builder asynchronous cleanup hook', context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'build-exit-'))
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const preload = path.join(root, 'cleanup.cjs')
+  // Resolve through the actual dependency owners under both npm and pnpm layouts.
+  const builder = createRequire(require.resolve('electron-builder'))
+  const utilities = createRequire(builder.resolve('builder-util'))
+  const temporary = createRequire(utilities.resolve('temp-file'))
+  fs.writeFileSync(preload, `require(${JSON.stringify(temporary.resolve('async-exit-hook'))})(() => {})`)
+  const result = spawnSync(process.execPath, ['--require', preload,
+    path.join(sourceDirectory, 'build.cjs'), '--invalid-build-option'], { encoding: 'utf8' })
+  assert.match(result.stderr, /\[package\] ERROR/)
+  assert.equal(result.status, 1, result.stderr)
+})
 
 test('Windows handshake writer checks each file operation independently', () => {
   const source = fs.readFileSync(path.join(sourceDirectory, '../../resources/installer.nsh'), 'utf8')
