@@ -1,10 +1,6 @@
 name: Signed macOS package
 
 on:
-  # 首次接入在当前 feature 分支验证，完成后移除此入口。
-  push:
-    branches:
-      - feature/0.3-github-ci-packaging
   workflow_dispatch:
     inputs:
       channel:
@@ -20,13 +16,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: signed-macos-${{ inputs.channel || 'preview' }}
+  group: signed-macos-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
   package:
-    # 首次试跑仅放行指定 feature 分支，不接受 PR 事件。
-    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && (github.ref == 'refs/heads/main' || (github.event_name == 'push' && github.ref == 'refs/heads/feature/0.3-github-ci-packaging'))
+    # 签名仅允许维护者从主分支手动触发。
+    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
     runs-on: macos-14
     timeout-minutes: 180
     defaults:
@@ -34,7 +30,7 @@ jobs:
         shell: bash
     env:
       NODE_OPTIONS: --max-old-space-size=4096
-      PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
+      PACKAGE_CHANNEL: ${{ inputs.channel }}
 
     steps:
       - name: Set physical temporary directory
@@ -151,7 +147,7 @@ jobs:
       - name: Upload verified signed package
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: scholarseed-${{ inputs.channel || 'preview' }}-darwin-arm64-signed-${{ github.run_id }}
+          name: scholarseed-${{ inputs.channel }}-darwin-arm64-signed-${{ github.run_id }}
           path: ${{ runner.temp }}/signed-artifacts/
           if-no-files-found: error
           compression-level: 0

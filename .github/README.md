@@ -39,6 +39,9 @@
 ```bash
 actionlint .github/workflows/*.yml
 node --test .github/scripts/package.test.cjs
+node --test apps/desktop/scripts/cd/__tests__/osx-sign.test.cjs
 ```
 
 完整源码编译和发行契约命令见 `workflows/ci.yml`。语法、单元测试或编译通过均不代表 Apple 已接受公证；正式成功证据以签名 workflow 的真实运行及其 `result.json` 为准。
+
+2026-11-03 首次接入验证：CI 运行 `41651926527` 源码编译及 346 项测试通过；签名运行 `41651924504` 完成 Developer ID 签名、Apple 公证、DMG 挂载验收及 Artifacts 上传。首次试跑临时开放的 feature 分支入口已移除。当前仅保存 Actions Artifacts，暂不创建 GitHub Release 或 Draft Release。
