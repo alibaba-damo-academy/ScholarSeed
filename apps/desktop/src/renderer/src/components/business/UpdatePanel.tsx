@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import rocketGlyph from '../../assets/update-rocket.png'
-import type { UpdateSnapshot } from '../../../../updates'
+import { updateCandidateKey, type UpdateSnapshot } from '../../../../updates'
 import {
   hasMoreReleaseNotes,
   releaseNoteLines,
@@ -350,7 +350,8 @@ export function UpdatePanel({
         <div className={DIALOG_BODY_CLASS_NAME}>
           {candidate && (
             <span className={DIALOG_VERSION_CLASS_NAME} data-testid="update-panel-version">
-              {t('update.notesVersion', { version: candidate.version })} {t('update.notesNewTag')}
+              {t('update.notesVersion', { version: updateCandidateKey(candidate) ?? '' })}{' '}
+              {t('update.notesNewTag')}
             </span>
           )}
           <div className={PANEL_LIST_CLASS_NAME} data-testid="update-panel-list">

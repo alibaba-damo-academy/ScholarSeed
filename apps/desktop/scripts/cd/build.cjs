@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { prepareTexliveEnvironment, normalizeTexliveTree, texliveTreeDigest } = require('../../runtime/texlive.cjs')
+const { prepareTexliveEnvironment, texliveTreeDigest } = require('../../runtime/texlive.cjs')
 const { timed, timedAsync, startStage } = require('../../../../scripts/shared/timing.cjs')
 const { sourceSnapshot, sourceUnchanged } = require('../../../../scripts/shared/source.cjs')
 // Desktop packaging owner for native macOS and Windows builds.
@@ -173,6 +173,7 @@ function loadDependencies() {
   dependencies = {
     build: require('electron-builder').build,
     brandLauncher: require('./branding.cjs').brandLauncher,
+    normalizeTexliveTree: require('./texlive.cjs').normalizeTexliveTree,
     verify: require('./verify.cjs'),
     verifyOfficeAssets: require('../pre/office-assets.cjs').verifyOfficeAssets,
     bundle: require('./bundle.cjs').bundle,
@@ -819,6 +820,7 @@ async function main(argv = process.argv.slice(2)) {
     const {
       build,
       brandLauncher,
+      normalizeTexliveTree,
       bundle,
       packWindowsComponents,
       prepareBrowser,
@@ -951,7 +953,7 @@ async function main(argv = process.argv.slice(2)) {
             PATH: productPathEnv,
           }
         : { ...environment, PATH: productPathEnv }
-    normalizeTexliveTree(context.texlive.binDirectory)
+    normalizeTexliveTree(context.texlive.binDirectory, args.platform)
     const texliveBefore = texliveTreeDigest(context.texlive.binDirectory)
     Object.assign(productEnv, prepareTexliveEnvironment({ binDirectory: context.texlive.binDirectory,
       writableRoot: path.join(context.runDirectory, 'texlive-cache'), environment: productEnv, systemFonts: false }))

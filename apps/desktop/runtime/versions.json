@@ -8,9 +8,9 @@
       "archiveSha256": "864c2c0a9349478d8fd24a3220084fc2c2b3fe3ddc04dad3ca833dc4d3b7c6f2"
     },
     "texlive": {
-      "version": "2026-r3",
-      "contentId": "2d0a0210c4c8b5b7c14fbde8e4b86d17458f72805371edb229ccd46d80c88cda",
-      "archiveSha256": "2c819613eb48e1b604ef61f4f27ebbc3b2c8dd1eb2b475ac2207310588ace5a3"
+      "version": "2026-r4",
+      "contentId": "159845d44d495b0912986c16d31a6b83a2f3bb39c7a9471c212392d7a66155cc",
+      "archiveSha256": "6ac8ef8108017b48188fa5ca64878a84f5f9689d3bfdf7cd03a40bb662ab2665"
     },
     "powershell": {
       "version": "7.6.6-r2",

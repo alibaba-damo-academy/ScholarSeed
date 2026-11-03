@@ -122,7 +122,7 @@ import { useApp } from '../../store'
 import { PREPARATION_SUPERSEDED_ERROR } from '../../preparation'
 import { UpdateAction } from './UpdateAction'
 import { PreviewUpdates } from '../../features/updates/Preview'
-import { isPreviewUpdateChannel } from '../../../../updates'
+import { isPreviewUpdateChannel, updateCandidateKey } from '../../../../updates'
 import {
   FILE_VERSION_MAX_SIZE_MB,
   FILE_VERSION_MIN_SIZE_MB,
@@ -759,6 +759,7 @@ function AboutPage(): React.JSX.Element {
   const siteLabel = siteHostLabel(siteBase)
   const phase = update?.phase ?? 'idle'
   const candidate = update?.candidate
+  const candidateVersionLabel = updateCandidateKey(candidate) ?? ''
   const currentVersion = update?.currentVersion || window.scholarseed.version
   const currentBuildNumber = window.scholarseed.buildNumber
   const currentVersionLabel = currentBuildNumber
@@ -816,7 +817,7 @@ function AboutPage(): React.JSX.Element {
         <span className={ABOUT_VERSION_SUB_CLASS_NAME}>
           <span className={ABOUT_VERSION_CHIP_CLASS_NAME} data-testid="version-chip">
             {t('update.newVersionChip', {
-              version: candidate?.version ?? '',
+              version: candidateVersionLabel,
               size: formatInstallerSize(candidate?.file_size),
             })}
           </span>
@@ -831,7 +832,7 @@ function AboutPage(): React.JSX.Element {
     case 'downloading':
       versionSub = (
         <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
-          {t('update.downloadingSub', { version: candidate?.version ?? '' })}
+          {t('update.downloadingSub', { version: candidateVersionLabel })}
         </span>
       )
       break
@@ -845,7 +846,7 @@ function AboutPage(): React.JSX.Element {
     case 'ready':
       versionSub = failureSub ?? (
         <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
-          {t('update.readySub', { version: candidate?.version ?? '' })}
+          {t('update.readySub', { version: candidateVersionLabel })}
         </span>
       )
       break
@@ -915,7 +916,7 @@ function AboutPage(): React.JSX.Element {
       <span className={ABOUT_VERSION_PROGRESS_CLASS_NAME} data-testid="version-progress">
         <ProgressBar
           aria-label={t('update.downloadingSub', {
-            version: candidate?.version ?? '',
+            version: candidateVersionLabel,
           })}
           value={percent}
         />

@@ -72,6 +72,13 @@ class TraceEvidenceContract(unittest.TestCase):
                     self.runtime(RuntimeEventKind.TOOL_PROGRESS, "three", {"output": "three"})
         self.assertEqual(self.trace._failure_count, 1)
 
+    def test_batch_does_not_reclassify_business_body_failure(self) -> None:
+        failure = OSError("business persistence failed")
+        with self.assertRaises(OSError) as raised:
+            with self.trace.batch():
+                raise failure
+        self.assertIs(raised.exception, failure)
+
     def test_capture_batch_checks_consent_once_and_rechecks_after_exit(self) -> None:
         catalog = SessionCatalogStore(self.root / "consent.sqlite3")
         policies = RecordingService(catalog, ProductEventStore(self.root / "consent.sqlite3"))

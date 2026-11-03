@@ -220,3 +220,30 @@ revision `2026-r3` binds tree and ZIP digests measured using the packaged target
 Python and the CI component writer. CI consumes the vendor archive, populates the
 component registry on a cache miss, and produces the signed installer. Do not
 overwrite old vendor objects, component revisions or installed receipts.
+
+### Windows process encoding
+
+The frozen XeTeX entrypoints have no process manifest. On a Windows host whose
+ANSI code page cannot represent the project name, the native font discovery
+chain loses characters in `FONTCONFIG_FILE` and `XE_FC_CACHEDIR`. A valid directory
+then appears missing, and XeLaTeX can exit before generating a PDF. This also
+fails outside the sandbox; exit code 5 alone is not an ACL diagnosis.
+
+[`scripts/cd/texlive.cjs`](../../../apps/desktop/scripts/cd/texlive.cjs) embeds and
+reads back the UTF-8 process manifest in build-owned `xetex.exe` and `xelatex.exe`
+before component signing and inventory. It uses the existing PE library and
+build file acquisition boundary. Signed inputs, unknown manifests and linked
+files are refused; repeated normalization preserves bytes. Other PE sections
+and the macOS compiler behavior remain unchanged. The process-level mechanism
+is documented by [Microsoft](https://learn.microsoft.com/en-us/windows/apps/design/globalizing/use-utf8-code-page).
+
+This changes the Windows component revision and measured tree/ZIP bindings,
+without changing the reviewed upstream vendor archive. The build recipe key
+includes the normalizer and its locked dependency inputs. Session font caches
+remain under the admitted workspace, and sandbox/tool preflight stays enabled.
+Measure bindings from the complete normalized vendor tree, including empty
+directories, with the reproducible prefixed component writer. An installed tree
+can omit empty directories and therefore does not establish the archive binding.
+Only CI produces and publishes the signed component. A local compiler probe
+does not establish installed Desktop conversation acceptance; that requires
+the new CI package on the target Windows host.

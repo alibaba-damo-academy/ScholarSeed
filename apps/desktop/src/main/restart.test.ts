@@ -243,7 +243,10 @@ for (const windows of [false, true]) {
         },
         desktopHandoff: { isBusy: () => false },
         backend: null,
-        backendUpdateControl: () => ({ quiesce: async () => 'generation', resume: async () => {} }),
+        backendUpdateControl: () => ({
+          prepareUpdate: async () => 'generation',
+          resume: async () => {},
+        }),
         observeBackendControl: () => ({}),
         resolveProductConfig: () => ({ updateBaseUrl: 'https://updates.example' }),
         pushLog: () => {},
@@ -297,7 +300,7 @@ for (const failure of [
   'occupancy-unknown-after-drain',
   'occupied-at-commit',
   'refused',
-  'lost-quiesce',
+  'lost-prepare-update',
   'authorization',
   'candidate-conflict',
   'conflict-recovery',
@@ -436,9 +439,12 @@ for (const failure of [
       },
       backendUpdateControl: () => ({
         quiesce: async () => {
-          events.push('quiesce')
+          assert.fail('explicit updates must not quiesce runtime attachments')
+        },
+        prepareUpdate: async () => {
+          events.push('prepare-update')
           if (failure === 'refused') throw new BackendMaintenanceRejected('busy')
-          if (failure === 'lost-quiesce') throw new Error('response lost')
+          if (failure === 'lost-prepare-update') throw new Error('response lost')
           return 'owned-generation'
         },
         resume: async (generation: string) => {
@@ -521,12 +527,12 @@ for (const failure of [
     assert.equal(result.ok, failure === 'none')
     assert.equal(events.includes('quit'), failure === 'none')
     assert.equal(events.includes('resume'), false)
-    if (events.includes('quiesce')) {
+    if (events.includes('prepare-update')) {
       assert.ok(events.includes('preferences-saved'))
-      assert.ok(events.indexOf('preferences-saved') < events.indexOf('quiesce'))
+      assert.ok(events.indexOf('preferences-saved') < events.indexOf('prepare-update'))
     }
     if (['preferences', 'cancel-preferences'].includes(failure)) {
-      assert.equal(events.includes('quiesce'), false)
+      assert.equal(events.includes('prepare-update'), false)
       assert.equal(events.includes('drain'), false)
       assert.equal(context.backend, owned)
       if (failure === 'preferences') assert.match(result.error, /ERR_PREFERENCES_UNSAVED/)
@@ -539,7 +545,7 @@ for (const failure of [
         'candidate-conflict',
         'conflict-recovery',
         'conflict-revocation',
-        'lost-quiesce',
+        'lost-prepare-update',
         'drain',
         'storage-drain',
         'apply',
@@ -581,7 +587,7 @@ for (const failure of [
       assert.equal(result.error, undefined)
       assert.equal(snapshot.error, undefined)
       assert.equal(
-        events.includes('quiesce'),
+        events.includes('prepare-update'),
         failure !== 'occupied' && failure !== 'occupancy-unknown'
       )
       assert.equal(snapshot.candidate?.id, selected.id)
@@ -624,7 +630,7 @@ for (const failure of [
         assert.equal(result.errorFallback, 'activation_recovery_required')
         assert.equal(context.windowsUpdateMaintenanceActive, true)
         assert.equal(context.backend, owned)
-        assert.equal(events.includes('quiesce'), false)
+        assert.equal(events.includes('prepare-update'), false)
       }
       assert.equal(context.backendManaged, !['recovery', 'conflict-recovery'].includes(failure))
       if (failure !== 'conflict-revocation')
@@ -656,6 +662,8 @@ for (const failure of [
 for (const failure of [
   'none',
   'preferences',
+  'refused',
+  'lost-prepare-update',
   'offline',
   'shutdown',
   'cancelled',
@@ -721,7 +729,12 @@ for (const failure of [
       BackendMaintenanceRejected,
       backendUpdateControl: () => ({
         quiesce: async () => {
-          events.push('quiesce')
+          assert.fail('explicit updates must not quiesce runtime attachments')
+        },
+        prepareUpdate: async () => {
+          events.push('prepare-update')
+          if (failure === 'refused') throw new BackendMaintenanceRejected('busy')
+          if (failure === 'lost-prepare-update') throw new Error('response lost')
           return 'generation'
         },
         resume: async (generation: string) => {
@@ -785,7 +798,7 @@ for (const failure of [
     if (failure === 'none') {
       assert.equal(result.ok, true)
       assert.equal(snapshot.phase, 'restarting')
-      assert.ok(events.indexOf('preferences-saved') < events.indexOf('quiesce'))
+      assert.ok(events.indexOf('preferences-saved') < events.indexOf('prepare-update'))
       assert.ok(events.indexOf('commit') < events.indexOf('drain'))
       assert.ok(events.indexOf('drain') < events.indexOf('quit'))
       assert.equal(events.includes('preferences-resume'), false)
@@ -794,11 +807,30 @@ for (const failure of [
     if (failure === 'preferences') {
       assert.equal(result.ok, false)
       assert.equal(snapshot.phase, 'ready')
-      assert.equal(events.includes('quiesce'), false)
+      assert.equal(events.includes('prepare-update'), false)
       assert.equal(events.includes('commit'), false)
       assert.equal(events.includes('drain'), false)
       assert.equal(events.includes('preferences-resume'), true)
       assert.equal(preparation.claim(selected), true)
+      return
+    }
+    if (failure === 'refused' || failure === 'lost-prepare-update') {
+      assert.equal(result.ok, false)
+      assert.equal(events.includes('commit'), false)
+      assert.equal(events.includes('drain'), false)
+      assert.equal(events.includes('resume'), false)
+      assert.equal(events.includes('authorize'), false)
+      assert.equal(events.includes('preferences-resume'), failure === 'refused')
+      assert.equal(snapshot.phase, failure === 'refused' ? 'ready' : 'failed')
+      if (failure === 'lost-prepare-update') {
+        assert.equal(result.errorFallback, 'activation_recovery_required')
+        assert.equal(context.macMaintenanceUncertain, true)
+        assert.equal(context.macUpdateMaintenanceActive, true)
+      } else {
+        assert.equal(context.macMaintenanceUncertain, false)
+        assert.equal(context.macUpdateMaintenanceActive, false)
+        assert.equal(preparation.claim(selected), true)
+      }
       return
     }
     assert.equal(result.ok, false)
@@ -809,9 +841,9 @@ for (const failure of [
       events.filter((event) => event === 'authorize').length,
       failure === 'expired' ? 2 : 1
     )
-    assert.equal(events.filter((event) => event === 'quiesce').length, 1)
+    assert.equal(events.filter((event) => event === 'prepare-update').length, 1)
     assert.ok(events.includes('preferences-saved'))
-    assert.ok(events.indexOf('preferences-saved') < events.indexOf('quiesce'))
+    assert.ok(events.indexOf('preferences-saved') < events.indexOf('prepare-update'))
     assert.equal(events.includes('preferences-resume'), failure !== 'resume-failed')
     assert.equal(context.updateRestartRequested, false)
     assert.equal(result.cancelled, failure === 'cancelled' ? true : undefined)

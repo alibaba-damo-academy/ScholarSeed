@@ -169,7 +169,13 @@ from service.paths import (
     SESSION_OUTPUT_DIRNAME,
     SESSION_RUNTIME_DIR,
 )
-from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
+from service.platform.activity import (
+    Activities,
+    ActivityDomain,
+    ActivityPhase,
+    MaintenanceActive,
+    MaintenanceStale,
+)
 from service.platform.bridge import (
     COMPONENT_REQUEST_MARKER,
 )
@@ -376,6 +382,9 @@ class SessionService:
         self._credentials = credentials
         self._logger = logger
         self._open_lock = asyncio.Lock()
+        self._update_shutdown_generation: str | None = None
+        self._update_shutdown_sessions: tuple[LiveSession, ...] = ()
+        self._update_shutdown_prepared = False
         self._turn_confirmation: Callable[[str, str], Awaitable[None]] | None = None
         self._queue_cancellation: Callable[[str], Awaitable[None]] | None = None
         self._settlement_resume: Callable[[LiveSession], None] | None = None
@@ -668,7 +677,8 @@ class SessionService:
         # _open_lock 是进程级全局串行锁: 整段冷恢复都握在锁内, 客户端 abort 也不会提前释放。
         # 记录锁等待与总耗时, 才能把「服务端慢恢复」与「重试排队等锁」区分开 (Aone #87119853)。
         lock_requested_at = time.perf_counter()
-        async with self._open_lock:
+        async with self._open_lock, AsyncExitStack() as admission:
+            admission.enter_context(self._activities.enter(ActivityDomain.RUNTIME, root=True))
             lock_wait_ms = (time.perf_counter() - lock_requested_at) * 1000.0
             opened_at = time.perf_counter()
             path = "resume" if resume_id else "create"
@@ -1584,6 +1594,73 @@ class SessionService:
         )
         return {"ok": True, "idle": False, "interrupting": False}
 
+    async def prepare_for_update_shutdown(self, generation: str) -> None:
+        async with self._open_lock:
+            snapshot = self._activities.snapshot()
+            if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
+                raise MaintenanceStale("update_maintenance_stale")
+            if self._update_shutdown_generation is not None:
+                raise MaintenanceActive("update shutdown preparation already owned")
+            self._update_shutdown_generation = generation
+            self._update_shutdown_prepared = False
+            self._update_shutdown_sessions = tuple(self._sessions.values())
+            preparations = tuple(
+                asyncio.create_task(live.prepare_update_shutdown(generation))
+                for live in self._update_shutdown_sessions
+            )
+            gathering = asyncio.gather(*preparations, return_exceptions=True)
+            cancellation = None
+            while not gathering.done():
+                try:
+                    await asyncio.shield(gathering)
+                except asyncio.CancelledError as error:
+                    if cancellation is None:
+                        cancellation = error
+                        for preparation in preparations:
+                            if not preparation.done() and not preparation.cancelling():
+                                preparation.cancel()
+            results = gathering.result()
+            if cancellation is not None:
+                failures = []
+                for result in results:
+                    if isinstance(result, asyncio.CancelledError):
+                        continue
+                    if isinstance(result, BaseExceptionGroup):
+                        _cancelled, remaining = result.split(asyncio.CancelledError)
+                        if remaining is None:
+                            continue
+                    if isinstance(result, BaseException):
+                        failures.append(result)
+                if failures:
+                    raise BaseExceptionGroup(
+                        "update shutdown preparation failed during cancellation",
+                        [*failures, cancellation],
+                    ) from None
+                raise cancellation
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            snapshot = self._activities.snapshot()
+            if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
+                raise MaintenanceStale("update_maintenance_stale")
+            self._update_shutdown_prepared = True
+
+    def resume_after_update_shutdown(self, generation: str) -> None:
+        snapshot = self._activities.snapshot()
+        if (
+            snapshot.phase is not ActivityPhase.DRAINING
+            or snapshot.generation != generation
+            or self._update_shutdown_generation != generation
+        ):
+            raise MaintenanceStale("update_maintenance_stale")
+        if not self._update_shutdown_prepared:
+            raise MaintenanceActive("update shutdown preparation incomplete")
+        for live in self._update_shutdown_sessions:
+            live.resume_after_update_shutdown(generation)
+        self._update_shutdown_sessions = ()
+        self._update_shutdown_generation = None
+        self._update_shutdown_prepared = False
+
     async def interrupt_running_for_update(self) -> None:
         """Honor the confirmed restart for every session owned by this Serve instance.
 
@@ -2064,7 +2141,10 @@ class SessionService:
             or self._access.pending_turn_settlement(session_id) is not None
         )
         if live is None and needs_stop:
-            payload, status = await self._resume(session_id, principal, actor_id, skill_environment)
+            with self._activities.enter(ActivityDomain.RUNTIME, root=True):
+                payload, status = await self._resume(
+                    session_id, principal, actor_id, skill_environment
+                )
             if status != HTTP_OK:
                 return payload, status
             live = self._sessions.get(session_id)

@@ -395,6 +395,8 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
                 app.state.activities,
                 interrupt_running=app.state.session_service.interrupt_running_for_update,
                 drain_attachments=app.state.runtime_service.drain_for_update,
+                prepare_update=app.state.session_service.prepare_for_update_shutdown,
+                resume_update=app.state.session_service.resume_after_update_shutdown,
                 toolchain_complete=(
                     app.state.runtime_service.toolchain.complete if args.await_toolchain else None
                 ),

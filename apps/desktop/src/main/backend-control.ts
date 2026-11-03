@@ -9,9 +9,13 @@ const TOOLCHAIN_OPERATION = 'toolchain'
 const MAX_COMMAND_BYTES = 4096
 const SKILL_PYTHON_OPERATION = 'skill-python'
 const IDLE_OPERATION = 'quiesce_if_idle'
+const UPDATE_OPERATION = 'prepare_update'
 type ControlCloseReason = 'closed' | 'connection_timeout' | 'response_timeout' | 'startup_timeout'
 type ControlCommand =
-  | { operation: 'quiesce' | typeof IDLE_OPERATION | 'resume' | 'exit'; generation: string | null }
+  | {
+      operation: 'quiesce' | typeof IDLE_OPERATION | typeof UPDATE_OPERATION | 'resume' | 'exit'
+      generation: string | null
+    }
   | { operation: typeof TOOLCHAIN_OPERATION; ready: boolean; resources: CompilerResources | null }
   | { operation: typeof SKILL_PYTHON_OPERATION; ready: boolean }
 
@@ -236,7 +240,9 @@ export class BackendControl {
       const knownRefusal =
         response.length === 1 &&
         response[0] === 0 &&
-        (pending.operation === 'quiesce' || pending.operation === IDLE_OPERATION)
+        (pending.operation === 'quiesce' ||
+          pending.operation === IDLE_OPERATION ||
+          pending.operation === UPDATE_OPERATION)
       response.fill(0)
       if (knownRefusal)
         pending.reject(new BackendMaintenanceRejected('private backend maintenance refused'))
@@ -284,7 +290,13 @@ export class BackendControl {
     return this.maintenance(IDLE_OPERATION)
   }
 
-  private async maintenance(operation: 'quiesce' | typeof IDLE_OPERATION): Promise<string> {
+  async prepareUpdate(): Promise<string> {
+    return this.maintenance(UPDATE_OPERATION)
+  }
+
+  private async maintenance(
+    operation: 'quiesce' | typeof IDLE_OPERATION | typeof UPDATE_OPERATION
+  ): Promise<string> {
     const response = await this.request({ operation, generation: null })
     try {
       const generation = response.subarray(1).toString('ascii')
@@ -383,14 +395,20 @@ export class BackendControl {
 }
 
 export interface BackendControlEvent {
-  readonly stage: 'quiesce' | 'resume'
+  readonly stage: 'quiesce' | 'prepare-update' | 'resume'
   readonly event: 'started' | 'finished'
   readonly result: 'started' | 'ok' | 'failed'
-  readonly errorCode: '' | 'quiesce_refused' | 'quiesce_unknown' | 'resume_unknown'
+  readonly errorCode:
+    | ''
+    | 'quiesce_refused'
+    | 'quiesce_unknown'
+    | 'prepare_update_refused'
+    | 'prepare_update_unknown'
+    | 'resume_unknown'
   readonly elapsedMs: number
 }
 
-type MaintenanceControl = Pick<BackendControl, 'quiesce' | 'resume'>
+type MaintenanceControl = Pick<BackendControl, 'quiesce' | 'prepareUpdate' | 'resume'>
 
 // Report only closed categories. Observer failure must not change transaction
 // authority or hide the original failure.
@@ -423,8 +441,14 @@ export function observeBackendControl(
       return value
     } catch (error) {
       const refused = error instanceof BackendMaintenanceRejected
-      const errorCode =
-        stage === 'resume' ? 'resume_unknown' : refused ? 'quiesce_refused' : 'quiesce_unknown'
+      let errorCode: BackendControlEvent['errorCode']
+      if (stage === 'resume') {
+        errorCode = 'resume_unknown'
+      } else if (stage === 'prepare-update') {
+        errorCode = refused ? 'prepare_update_refused' : 'prepare_update_unknown'
+      } else {
+        errorCode = refused ? 'quiesce_refused' : 'quiesce_unknown'
+      }
       emit({
         stage,
         event: 'finished',
@@ -437,6 +461,7 @@ export function observeBackendControl(
   }
   return {
     quiesce: () => run('quiesce', () => control.quiesce()),
+    prepareUpdate: () => run('prepare-update', () => control.prepareUpdate()),
     resume: (generation) => run('resume', () => control.resume(generation)),
   }
 }

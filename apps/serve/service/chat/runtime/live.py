@@ -115,6 +115,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_TOOL_COMPLETED,
     PRODUCT_EVENT_TOOL_OUTPUT_DELTA,
     PRODUCT_EVENT_TOOL_STARTED,
+    PRODUCT_EVENT_UPDATE_SHUTDOWN_PREPARED,
     PRODUCT_EVENT_USAGE_UPDATED,
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
@@ -161,7 +162,13 @@ from service.chat.persistence.publications import PublicationRecord
 from service.chat.persistence.worker import PersistenceWorker
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.content import MessageSnapshots
-from service.chat.runtime.evidence import RUNTIME_EVIDENCE_LIMIT, SessionTrace, decode_evidence
+from service.chat.runtime.evidence import (
+    RUNTIME_EVIDENCE_LIMIT,
+    TRACE_FAILURES,
+    SessionTrace,
+    TraceRecordingError,
+    decode_evidence,
+)
 from service.chat.runtime.extensions import EXTENSION_PROJECTIONS
 from service.chat.runtime.history import _merge_history_entries
 from service.chat.runtime.incidents import event_incident
@@ -427,6 +434,7 @@ class LiveSession:
         self._events = events
         self._persistence = PersistenceWorker(session_id=self.id)
         self._close_task: asyncio.Task[None] | None = None
+        self._update_shutdown_generation: str | None = None
         self._publication_lock = asyncio.Lock()
         self._component_lock = asyncio.Lock()
         catalog_record = catalog.get(self.id)
@@ -3627,6 +3635,63 @@ class LiveSession:
             idempotency_key=f"session-terminated:{command_id}",
         )
 
+    async def prepare_update_shutdown(self, generation: str) -> None:
+        if uuid.UUID(hex=generation).hex != generation:
+            raise ValueError("invalid update maintenance generation")
+        if self._update_shutdown_generation == generation:
+            return
+        if self._update_shutdown_generation is not None or self._close_task is not None:
+            raise RuntimeError("update shutdown preparation changed")
+        operation = asyncio.create_task(
+            self._persistence.run(
+                self._events.append,
+                session_id=self.id,
+                runtime_id=self.runtime_id,
+                vendor_thread_id=self.vendor_thread_id,
+                vendor_turn_id=None,
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_UPDATE_SHUTDOWN_PREPARED,
+                payload={"generation": generation},
+                idempotency_key=f"update:{generation}:{self.id}",
+            )
+        )
+        try:
+            await asyncio.shield(operation)
+        except asyncio.CancelledError as cancellation:
+            self._persistence.stop_waiting()
+            while not operation.done():
+                try:
+                    await asyncio.shield(operation)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    break
+            try:
+                operation.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as error:
+                raise BaseExceptionGroup(
+                    "update shutdown preparation failed during cancellation", [error, cancellation]
+                ) from None
+            raise
+        self._update_shutdown_generation = generation
+
+    def resume_after_update_shutdown(self, generation: str) -> None:
+        if self._update_shutdown_generation == generation:
+            self._update_shutdown_generation = None
+
+    def _close_update_trace(self) -> None:
+        try:
+            self._trace.close()
+        except TRACE_FAILURES as failure:
+            self._logger.warning(
+                "update_trace_close_degraded session_id=%s generation=%s error_type=%s",
+                self.id,
+                self._update_shutdown_generation,
+                type(failure).__name__,
+            )
+
     async def aclose(self) -> None:
         current = asyncio.current_task()
         if (
@@ -3666,6 +3731,19 @@ class LiveSession:
     async def _close_owned(self) -> None:
         failures: list[BaseException] = []
 
+        def diagnostic_gap(error: BaseException) -> bool:
+            if self._update_shutdown_generation is None or not isinstance(
+                error, TraceRecordingError
+            ):
+                return False
+            self._logger.warning(
+                "update_trace_projection_degraded session_id=%s generation=%s error_type=%s",
+                self.id,
+                self._update_shutdown_generation,
+                type(error).__name__,
+            )
+            return True
+
         async def close(call: Callable[[], Any]) -> bool:
             try:
                 result = call()
@@ -3673,6 +3751,8 @@ class LiveSession:
                     await result
                 return True
             except BaseException as error:
+                if diagnostic_gap(error):
+                    return True
                 failures.append(error)
                 return False
 
@@ -3688,6 +3768,7 @@ class LiveSession:
                 for result in results
                 if isinstance(result, BaseException)
                 and not isinstance(result, asyncio.CancelledError)
+                and not diagnostic_gap(result)
             ]
             failures.extend(errors)
             return not errors
@@ -3739,7 +3820,11 @@ class LiveSession:
             await close(lambda: self._publication_task)
         # An uncertain worker shutdown cannot authorize closing its Trace dependency.
         if await close(self._persistence.close):
-            await close(self._trace.close)
+            await close(
+                self._close_update_trace
+                if self._update_shutdown_generation is not None
+                else self._trace.close
+            )
         if failures:
             unique = list({id(error): error for error in failures}.values())
             if len(unique) == 1:

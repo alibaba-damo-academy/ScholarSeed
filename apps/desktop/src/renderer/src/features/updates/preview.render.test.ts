@@ -24,7 +24,7 @@ test(
       server: { host: '127.0.0.1', port: 0 },
     })
     await server.listen()
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage({ viewport: { width: 1040, height: 660 } })
       const visit = async (query = '') =>
@@ -40,7 +40,9 @@ test(
       await page.getByTestId('preview-update-lines').click()
       await expect(page.getByTestId('preview-update-confirm')).toBeDisabled()
       await page.getByTestId('preview-update-target').selectOption('preview-three')
-      await expect(page.getByTestId('preview-update-confirm')).toHaveText('下载并升级至 0.3.0')
+      await expect(page.getByTestId('preview-update-confirm')).toHaveText(
+        '下载并升级至 0.3.0-202610201400'
+      )
       await expect(page.locator('#calls')).toHaveText('get,scope:current-version,list')
       await expect(page.getByTestId('preview-update-dialog')).toContainText('版本线更新说明')
       await page.getByTestId('preview-update-confirm').click()

@@ -90,6 +90,7 @@ TRACE_RUNTIME_FAILURE_MESSAGE = "agent_runtime_failed"
 LOGGER = logging.getLogger(__name__)
 TRACE_DEGRADED_EVENT = "trace.recording.degraded"
 TRACE_RECOVERED_EVENT = "trace.recording.recovered"
+TRACE_RECORDING_FAILED = "trace_recording_failed"
 TRACE_FAILURES = (OSError, ValueError, TypeError, sqlite3.Error, subprocess.SubprocessError)
 TRACE_TOOL_FAILURE = "tool_execution_failed"
 TRACE_TOOL_FAILED_STATUSES = frozenset({"failed", "error", "declined", "cancelled"})
@@ -268,6 +269,10 @@ class TurnPreparationStart:
     started: float
 
 
+class TraceRecordingError(OSError):
+    """Identify diagnostic recording failures separately from business persistence."""
+
+
 class SessionTrace:
     """Append metadata and, only with session consent, bounded public observations."""
 
@@ -436,12 +441,17 @@ class SessionTrace:
         """Flush an ordered projection batch before it can be published."""
         with self._recording.guard if self._recording else nullcontext(), self._lock:
             failures = self._failure_count
+            body_failure: BaseException | None = None
             try:
                 with (
                     self._capture.batch() if self._capture else nullcontext(),
                     self._recording_writer().batch(),
                 ):
-                    yield
+                    try:
+                        yield
+                    except BaseException as error:
+                        body_failure = error
+                        raise
                     if self._failure_count != failures:
                         raise OSError("trace batch contains incomplete evidence")
             except TRACE_FAILURES as failure:
@@ -449,9 +459,15 @@ class SessionTrace:
                     self._capture_failure(failure)
                 self._degraded = True
                 if self._writer is not None:
-                    self._writer.close()
-                    self._writer = None
-                raise
+                    try:
+                        self._writer.close()
+                    except TRACE_FAILURES as close_failure:
+                        self._capture_failure(close_failure)
+                    finally:
+                        self._writer = None
+                if body_failure is not None:
+                    raise body_failure
+                raise TraceRecordingError(TRACE_RECORDING_FAILED) from failure
 
     def _emit(
         self,

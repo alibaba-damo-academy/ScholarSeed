@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import {
   isPreviewUpdateChannel,
+  updateCandidateKey,
   type PreviewUpdateLine,
   type PreviewUpdatePolicy,
   type PreviewUpdateScope,
@@ -309,7 +310,7 @@ function PreviewControls({ state }: { state: UpdateSnapshot | null }): React.JSX
                 data-testid="preview-update-confirm"
               >
                 {candidate
-                  ? t('update.preview.confirm', { version: candidate.version })
+                  ? t('update.preview.confirm', { version: updateCandidateKey(candidate) ?? '' })
                   : t('update.preview.choose')}
               </Button>
             </DialogFooter>

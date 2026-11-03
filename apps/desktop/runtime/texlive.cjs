@@ -173,19 +173,6 @@ function prepareTexliveEnvironment(options) {
     TEXMFVAR: variable, TEXMFCONFIG: config, TEXMFCACHE: variable }
 }
 
-function normalizeTexliveTree(binDirectory) {
-  const tree = path.resolve(binDirectory, '..', '..')
-  fs.rmSync(path.join(tree, 'texmf-var', 'fonts', 'cache'), { recursive: true, force: true })
-  const directory = path.join(tree, 'texmf-var', 'fonts', 'conf')
-  for (const name of ['fonts.conf', 'texlive-fontconfig.conf']) {
-    const file = path.join(directory, name)
-    if (fs.existsSync(file)) fs.writeFileSync(file,
-      '<?xml version="1.0"?>\n<fontconfig>\n' + FONT_DIRECTORIES.map(font =>
-        `<dir prefix="relative">../../../texmf-dist/fonts/${font}</dir>`).join('\n') +
-      '\n<cachedir prefix="xdg">fontconfig</cachedir>\n</fontconfig>\n')
-  }
-}
-
 function texliveTreeDigest(binDirectory) {
   const tree = path.resolve(binDirectory, '..', '..')
   const hash = crypto.createHash('sha256')
@@ -410,7 +397,7 @@ function bundledTexlive(resourcesRoot, platform = process.platform) {
   return binDir
 }
 
-module.exports = { texliveExecutionResources, texliveEnvironmentCurrent, rebuildTexliveEnvironment, texliveCacheRelativePaths, reviewedTexliveArchive, reviewedTexliveVersion, prepareTexliveEnvironment, normalizeTexliveTree, texliveTreeDigest, texliveStateRoot, RUNTIME_CACHE_DIRNAME, TEXLIVE_CACHE_DIRNAME, PLATFORM_DIRECTORY, TREE_DIRECTORY, artifact, binDirectory, bundledTexlive,
+module.exports = { texliveExecutionResources, texliveEnvironmentCurrent, rebuildTexliveEnvironment, texliveCacheRelativePaths, reviewedTexliveArchive, reviewedTexliveVersion, prepareTexliveEnvironment, texliveTreeDigest, texliveStateRoot, RUNTIME_CACHE_DIRNAME, TEXLIVE_CACHE_DIRNAME, PLATFORM_DIRECTORY, TREE_DIRECTORY, artifact, binDirectory, bundledTexlive,
   cacheDirectory, publishCache,
   digest, executableName, probe, extractArchive, resolveVendoredTexlive, vendoredTexliveLocation, stagedBinDirectory, stagedEngines,
   stageTexlive, stageVerifiedTexlive }

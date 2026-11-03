@@ -13,7 +13,7 @@ const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const FIXTURE_URL = '/components/update.render.fixture.html'
 const SCREENSHOT_DIRECTORY = process.env.UPDATE_MESSAGE_SCREENSHOTS
 
-async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
+async function withFixture(run: (page: Page) => Promise<void>, query = ''): Promise<void> {
   const server = await servers.create({
     configFile: false,
     cacheKey: 'installation',
@@ -25,10 +25,10 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
     await server.listen()
     const url = server.resolvedUrls?.local[0]
     assert.ok(url)
-    const browser = await chromium.launch()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
-      await page.goto(new URL(FIXTURE_URL, url).toString())
+      await page.goto(new URL(`${FIXTURE_URL}${query}`, url).toString())
       await run(page)
     } finally {
       await browser.close()
@@ -37,6 +37,79 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
     await server.close()
   }
 }
+
+test('candidate version includes its build stamp throughout the About update states', async () => {
+  await withFixture(async (page) => {
+    for (const language of ['zh', 'en']) {
+      await page.evaluate(async (language) => {
+        await Reflect.get(window, 'updateFixture').language(language)
+      }, language)
+      for (const phase of ['available', 'downloading', 'ready']) {
+        await page.evaluate((phase) => {
+          Reflect.get(window, 'updateFixture').publish({
+            phase,
+            candidate: {
+              id: 'version-regression',
+              version: '0.3.1',
+              build_number: '202611031118',
+              product_id: 'scholarseed',
+              bundle_id: 'com.scholarseed.desktop',
+              arch_type: 'darwin-arm64',
+              channel: 'release',
+              file_size: 100,
+              sha512: 'a'.repeat(128),
+            },
+          })
+        }, phase)
+        const version = page.getByTestId(phase === 'available' ? 'version-chip' : 'version-status')
+        await expect(version).toContainText('0.3.1-202611031118')
+        await expect(page.getByText(/0\.2\.0-202610301118/)).toBeVisible()
+        if (phase === 'downloading') {
+          await expect(
+            page.getByTestId('version-progress').locator('[aria-label]')
+          ).toHaveAttribute('aria-label', /0\.3\.1-202611031118/)
+        }
+      }
+    }
+  }, '?about')
+})
+
+test('candidate version includes its build stamp in update metadata, notes and installation', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      Reflect.get(window, 'updateFixture').publish({
+        candidate: {
+          id: 'version-regression',
+          version: '0.3.1',
+          build_number: '202611031118',
+          product_id: 'scholarseed',
+          bundle_id: 'com.scholarseed.desktop',
+          arch_type: 'darwin-arm64',
+          channel: 'release',
+          file_size: 100,
+          sha512: 'a'.repeat(128),
+          version_built_at: '2026-11-03T03:18:00Z',
+          release_notes: 'One\nTwo\nThree\nFour',
+        },
+      })
+    })
+    await page.getByTestId('activity-update').click()
+    for (const language of ['zh', 'en']) {
+      await page.evaluate(async (language) => {
+        await Reflect.get(window, 'updateFixture').language(language)
+      }, language)
+      await expect(page.getByTestId('update-panel-version')).toContainText('0.3.1-202611031118')
+      await expect(page.getByTestId('update-panel-version').locator('time')).toHaveAttribute(
+        'datetime',
+        '2026-11-03T03:18:00Z'
+      )
+    }
+    await page.getByTestId('update-panel-more').click()
+    await expect(page.getByTestId('update-panel-version')).toContainText('0.3.1-202611031118')
+    await page.evaluate(() => Reflect.get(window, 'updateFixture').publish({ phase: 'installing' }))
+    await expect(page.getByTestId('update-overlay-version')).toContainText('0.3.1-202611031118')
+  })
+})
 
 test('storage exhaustion stays concise, localized and retryable in the update panel', async () => {
   await withFixture(async (page) => {

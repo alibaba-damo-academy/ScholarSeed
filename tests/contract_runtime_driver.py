@@ -381,9 +381,14 @@ async def failed_projection_still_detaches(*, detach_failure: bool = False) -> b
         results = await asyncio.gather(submission, driver._consumer, return_exceptions=True)
         try:
             await driver.close()
-        except ValueError as error:
+        except Exception as error:
             return (
-                error is projection_error
+                (
+                    isinstance(error, ExceptionGroup)
+                    and error.exceptions == (projection_error, detach_error)
+                    if detach_failure
+                    else error is projection_error
+                )
                 and session.detached
                 and all(result is projection_error for result in results)
                 and driver._consumer_error is projection_error
@@ -391,8 +396,9 @@ async def failed_projection_still_detaches(*, detach_failure: bool = False) -> b
                 and (
                     not detach_failure
                     or (
-                        error.__cause__ is None
-                        and error.__context__ is None
+                        projection_error.__cause__ is None
+                        and projection_error.__context__ is None
+                        and str(error) == "runtime session close failed (2 sub-exceptions)"
                         and logger.error.call_count == 2
                         and logger.error.call_args.args[-1] == "OSError"
                         and "runtime detach failed" not in str(logger.error.call_args)
@@ -423,13 +429,13 @@ async def failed_projection_preserves_exception_chain(*, explicit_cause: bool) -
         results = await asyncio.gather(driver._consumer, return_exceptions=True)
         try:
             await driver.close()
-        except ValueError as error:
+        except ExceptionGroup as error:
             return (
                 results[0] is projection_error
-                and error is projection_error
-                and error.__cause__ is (original_error if explicit_cause else None)
-                and error.__context__ is original_error
-                and error.__suppress_context__ is explicit_cause
+                and error.exceptions == (projection_error, detach_error)
+                and projection_error.__cause__ is (original_error if explicit_cause else None)
+                and projection_error.__context__ is original_error
+                and projection_error.__suppress_context__ is explicit_cause
                 and session.detached
                 and logger.error.call_count == 2
                 and logger.error.call_args.args[-1] == "OSError"
@@ -989,7 +995,7 @@ def main() -> int:
         asyncio.run(failed_projection_still_detaches()),
     )
     check(
-        "detach failure does not replace the original projection failure",
+        "consumer and detach failures both remain observable with their original identities",
         asyncio.run(failed_projection_still_detaches(detach_failure=True)),
     )
     check(

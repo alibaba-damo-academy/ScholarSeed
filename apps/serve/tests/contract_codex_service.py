@@ -1460,6 +1460,194 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.live.aclose()
 
+    async def test_update_shutdown_preparation_commits_without_trace_or_suspend(self) -> None:
+        generation = "a" * 32
+        with (
+            patch.object(
+                self.live._trace, "product_event", side_effect=OSError("trace unavailable")
+            ) as trace,
+            patch.object(
+                self.live,
+                "suspend_runtime",
+                new=AsyncMock(side_effect=RuntimeError("unknown turn")),
+            ) as suspend,
+        ):
+            await self.live.prepare_update_shutdown(generation)
+            await self.live.prepare_update_shutdown(generation)
+            trace.assert_not_called()
+            suspend.assert_not_awaited()
+        records = self.events.replay(PRODUCT_SESSION_ID, after_seq=0)
+        prepared = [record for record in records if record.kind == "update_shutdown_prepared"]
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(prepared[0].payload["generation"], generation)
+        self.assertIsNotNone(self.live.runtime_driver)
+        self.assertIsNotNone(self.live.attachment_activity)
+
+    async def test_update_shutdown_preparation_preserves_business_failure(self) -> None:
+        failure = OSError("business store unavailable")
+        with patch.object(self.events, "append", side_effect=failure):
+            with self.assertRaises(OSError) as raised:
+                await self.live.prepare_update_shutdown("b" * 32)
+        self.assertIs(raised.exception, failure)
+        self.assertIsNone(self.live._update_shutdown_generation)
+
+    async def test_update_shutdown_close_downgrades_only_trace_failure(self) -> None:
+        await self.live.prepare_update_shutdown("c" * 32)
+        original = self.live._trace.close
+        with patch.object(self.live._trace, "close", side_effect=OSError("trace unavailable")):
+            await self.live.aclose()
+        original()
+        self.assertIsNone(self.live.attachment_activity)
+        self.assertIsNone(self.live.runtime_driver)
+
+    async def test_update_shutdown_closes_after_old_trace_projection_failure(self) -> None:
+        with patch(
+            "damoatrace.recording.writer.EvidenceWriter._append_many",
+            side_effect=OSError("trace unavailable"),
+        ):
+            with self.assertRaises(OSError) as raised:
+                with self.live._trace.batch():
+                    self.live._trace.resource("pending")
+        failure = raised.exception
+
+        async def failed_publication() -> None:
+            raise failure
+
+        self.live._publication_task = asyncio.create_task(failed_publication())
+        await asyncio.sleep(0)
+        driver = self.live.runtime_driver
+        assert driver is not None
+        original = driver.close
+
+        async def close_after_diagnostic_failure() -> None:
+            await original()
+            raise failure
+
+        await self.live.prepare_update_shutdown("2" * 32)
+        with patch.object(
+            self.live.runtime_driver, "close", side_effect=close_after_diagnostic_failure
+        ):
+            await self.live.aclose()
+        self.assertIsNone(self.live.runtime_driver)
+        self.assertIsNone(self.live.attachment_activity)
+        self.assertGreater(self.live._trace._failure_count, 0)
+
+    async def test_update_shutdown_keeps_trace_and_detach_failure_fatal(self) -> None:
+        with patch(
+            "damoatrace.recording.writer.EvidenceWriter._append_many",
+            side_effect=OSError("trace unavailable"),
+        ):
+            with self.assertRaises(OSError) as raised:
+                with self.live._trace.batch():
+                    self.live._trace.resource("pending")
+        failure = ExceptionGroup(
+            "runtime close failed", [raised.exception, OSError("detach failed")]
+        )
+        await self.live.prepare_update_shutdown("3" * 32)
+        driver = self.live.runtime_driver
+        assert driver is not None
+        original = driver.close
+        with patch.object(self.live.runtime_driver, "close", new=AsyncMock(side_effect=failure)):
+            with self.assertRaises(ExceptionGroup) as caught:
+                await self.live.aclose()
+        self.assertIs(caught.exception, failure)
+        self.assertIsNotNone(self.live.attachment_activity)
+        await original()
+        self.live.release_attachment_activity()
+        self.enterContext(patch.object(self.live, "aclose", new=AsyncMock()))
+
+    async def test_update_shutdown_resume_restores_strict_trace_close(self) -> None:
+        generation = "d" * 32
+        await self.live.prepare_update_shutdown(generation)
+        self.live.resume_after_update_shutdown("e" * 32)
+        self.assertEqual(self.live._update_shutdown_generation, generation)
+        self.live.resume_after_update_shutdown(generation)
+        self.assertIsNone(self.live._update_shutdown_generation)
+        failure = OSError("trace unavailable")
+        original = self.live._trace.close
+        with patch.object(self.live._trace, "close", side_effect=failure):
+            with self.assertRaises(OSError) as raised:
+                await self.live.aclose()
+        self.assertIs(raised.exception, failure)
+        self.assertIsNotNone(self.live.attachment_activity)
+        original()
+        self.live.release_attachment_activity()
+        self.enterContext(patch.object(self.live, "aclose", new=AsyncMock()))
+
+    async def test_update_shutdown_close_keeps_uncertain_worker_fatal(self) -> None:
+        await self.live.prepare_update_shutdown("f" * 32)
+        failure = OSError("worker shutdown uncertain")
+        original = self.live._persistence.close
+        with (
+            patch.object(self.live._persistence, "close", new=AsyncMock(side_effect=failure)),
+            patch.object(self.live._trace, "close", wraps=self.live._trace.close) as trace,
+        ):
+            with self.assertRaises(OSError) as raised:
+                await self.live.aclose()
+            self.assertIs(raised.exception, failure)
+            trace.assert_not_called()
+        await original()
+        self.live._trace.close()
+        self.live.release_attachment_activity()
+        self.enterContext(patch.object(self.live, "aclose", new=AsyncMock()))
+
+    async def test_update_shutdown_preparation_waits_for_started_business_io(self) -> None:
+        started, release = threading.Event(), threading.Event()
+        append = self.events.append
+
+        def delayed_append(**kwargs: Any) -> ProductEventRecord:
+            started.set()
+            release.wait()
+            return append(**kwargs)
+
+        with patch.object(self.events, "append", side_effect=delayed_append):
+            task = asyncio.create_task(self.live.prepare_update_shutdown("1" * 32))
+            try:
+                await asyncio.to_thread(started.wait, 5)
+                self.assertTrue(started.is_set())
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(task.done())
+            finally:
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+        self.assertIsNone(self.live._update_shutdown_generation)
+
+    async def test_update_shutdown_preparation_preserves_cancellation_and_business_failure(
+        self,
+    ) -> None:
+        started, release = threading.Event(), threading.Event()
+        failure = OSError("business commit failed")
+
+        def failed_append(**kwargs: Any) -> ProductEventRecord:
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("persistence release deadline")
+            raise failure
+
+        with patch.object(self.events, "append", side_effect=failed_append):
+            task = asyncio.create_task(self.live.prepare_update_shutdown("1" * 32))
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 3))
+                task.cancel("first cancellation")
+                await asyncio.sleep(0)
+                task.cancel("repeated cancellation")
+                await asyncio.sleep(0)
+                self.assertFalse(task.done())
+            finally:
+                release.set()
+                results = await asyncio.gather(task, return_exceptions=True)
+        self.assertIsInstance(results[0], BaseExceptionGroup)
+        failure_group = results[0]
+        assert isinstance(failure_group, BaseExceptionGroup)
+        self.assertEqual(len(failure_group.exceptions), 2)
+        self.assertIs(failure_group.exceptions[0], failure)
+        cancellation = failure_group.exceptions[1]
+        self.assertIsInstance(cancellation, asyncio.CancelledError)
+        self.assertEqual(cancellation.args, ("first cancellation",))
+        self.assertIsNone(self.live._update_shutdown_generation)
+
     async def test_close_cancellation_waits_for_persistence_and_trace_once(self) -> None:
         started, release = threading.Event(), threading.Event()
 

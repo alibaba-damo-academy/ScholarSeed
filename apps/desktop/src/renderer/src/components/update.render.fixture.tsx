@@ -6,7 +6,10 @@ import { resources } from '../../../localization/resources'
 import { updateCandidateKey, type UpdateSnapshot } from '../../../updates'
 import { UpdateEntry } from './business/UpdateEntry'
 import { UpdateOverlay } from './business/UpdateOverlay'
-import { Button, Dialog, DialogContent, DialogPortal } from './ui'
+import { AccountPanel } from './business/AccountPanel'
+import { StoreProvider } from '../store'
+import { Button, Dialog, DialogContent, DialogPortal, ToastProvider } from './ui'
+import '../browser'
 import '../styles.css'
 
 let snapshot: UpdateSnapshot = {
@@ -37,6 +40,9 @@ function publish(next: UpdateSnapshot): void {
 }
 Object.assign(window, {
   scholarseed: {
+    ...window.scholarseed,
+    version: '0.2.0',
+    buildNumber: '202610301118',
     getUpdateState: async () => snapshot,
     onUpdateState: (listener: (state: UpdateSnapshot) => void) => {
       listeners.add(listener)
@@ -70,46 +76,79 @@ Object.assign(window, {
 })
 function SettingsFixture(): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  return <>
-    <Button onClick={() => setOpen(true)}>Settings</Button>
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogPortal>
-        <DialogContent aria-label="Settings" className="!z-[var(--vds-z-modal)]" overlayClassName="!z-[var(--vds-z-overlay)]">
-          <Button onClick={() => publish({ ...snapshot, phase: 'available', candidate: { ...snapshot.candidate!, build_number: '2' } })}>Check for update</Button>
-        </DialogContent>
-      </DialogPortal>
-    </Dialog>
-  </>
+  return (
+    <>
+      <Button onClick={() => setOpen(true)}>Settings</Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogPortal>
+          <DialogContent
+            aria-label="Settings"
+            className="!z-[var(--vds-z-modal)]"
+            overlayClassName="!z-[var(--vds-z-overlay)]"
+          >
+            <Button
+              onClick={() =>
+                publish({
+                  ...snapshot,
+                  phase: 'available',
+                  candidate: { ...snapshot.candidate!, build_number: '2' },
+                })
+              }
+            >
+              Check for update
+            </Button>
+          </DialogContent>
+        </DialogPortal>
+      </Dialog>
+    </>
+  )
 }
 createRoot(document.getElementById('root')!).render(
   <I18nextProvider i18n={localization}>
-    <UpdateOverlay />
-    <div style={{ padding: 32, paddingTop: 480 }}>
-      <UpdateEntry />
-    </div>
-    <Button onClick={() => publish({ ...snapshot, phase: 'downloading', percent: 40 })}>
-      Downloading
-    </Button>
-    <Button
-      onClick={() => publish({ ...snapshot, phase: 'ready', errorFallback: 'install_failed' })}
-    >
-      Failure
-    </Button>
-    <Button onClick={() => publish({ ...snapshot, phase: 'ready', errorFallback: undefined })}>
-      Ready
-    </Button>
-    <Button
-      onClick={() =>
-        publish({
-          ...snapshot,
-          phase: 'available',
-          candidate: { ...snapshot.candidate!, build_number: '2' },
-        })
-      }
-    >
-      New build
-    </Button>
-    <output id="update-actions" data-testid="update-actions" />
-    <SettingsFixture />
+    {new URLSearchParams(location.search).has('about') ? (
+      <ToastProvider>
+        <StoreProvider assistantSources={[]}>
+          <AccountPanel
+            embedded
+            page="about"
+            onPage={() => undefined}
+            onClose={() => undefined}
+            onLogin={() => undefined}
+            onLogout={async () => ({ ok: true, data: { local_cleared: true } })}
+          />
+        </StoreProvider>
+      </ToastProvider>
+    ) : (
+      <>
+        <UpdateOverlay />
+        <div style={{ padding: 32, paddingTop: 480 }}>
+          <UpdateEntry />
+        </div>
+        <Button onClick={() => publish({ ...snapshot, phase: 'downloading', percent: 40 })}>
+          Downloading
+        </Button>
+        <Button
+          onClick={() => publish({ ...snapshot, phase: 'ready', errorFallback: 'install_failed' })}
+        >
+          Failure
+        </Button>
+        <Button onClick={() => publish({ ...snapshot, phase: 'ready', errorFallback: undefined })}>
+          Ready
+        </Button>
+        <Button
+          onClick={() =>
+            publish({
+              ...snapshot,
+              phase: 'available',
+              candidate: { ...snapshot.candidate!, build_number: '2' },
+            })
+          }
+        >
+          New build
+        </Button>
+        <output id="update-actions" data-testid="update-actions" />
+        <SettingsFixture />
+      </>
+    )}
   </I18nextProvider>
 )

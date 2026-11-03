@@ -335,6 +335,7 @@ class RuntimeDriver:
                 self._session.binding.product_session_id,
                 type(error).__name__,
             )
+            raise ExceptionGroup("runtime session close failed", [consumer_error, error]) from None
         if consumer_error is not None:
             raise consumer_error
 

@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from enum import Enum
 from time import monotonic
 
-from service.platform.activity import Activities, ActivityDomain, ActivityPhase
+from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceStale
 from service.platform.toolchain import CompilerResources
 
 BOOTSTRAP_BYTES = 4096
@@ -25,6 +25,7 @@ COMMAND_BYTES = 4096
 MAINTENANCE_SETTLE_SECONDS = 1.0
 MAINTENANCE_INTERRUPT_SECONDS = 30.0
 MAINTENANCE_DRAIN_RETRY_SECONDS = 0.1
+UPDATE_PREPARATION_SECONDS = 30.0
 _TOKEN = re.compile(r"[a-f0-9]{64}\Z")
 _GENERATION = re.compile(r"[a-f0-9]{32}\Z")
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ SKILL_PYTHON_OPERATION = "skill-python"
 PREPARATION_OPERATIONS = frozenset((TOOLCHAIN_OPERATION, SKILL_PYTHON_OPERATION))
 
 IDLE_QUIESCE_OPERATION = "quiesce_if_idle"
+UPDATE_PREPARATION_OPERATION = "prepare_update"
 
 
 class ControlStage(str, Enum):
@@ -81,10 +83,15 @@ class ParentControl:
         drain_attachments: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
         toolchain_complete: Callable[[bool, CompilerResources | None], None] | None = None,
         skill_python_complete: Callable[[bool], None] | None = None,
+        prepare_update: Callable[[str], Awaitable[None]] | None = None,
+        resume_update: Callable[[str], None] | None = None,
     ) -> None:
         self._activities = activities
         self._interrupt_running = interrupt_running
         self._drain_attachments = drain_attachments
+        self._prepare_update = prepare_update
+        self._resume_update = resume_update
+        self._update_preparation: asyncio.Task[None] | None = None
         self._preparations = {
             TOOLCHAIN_OPERATION: toolchain_complete,
             SKILL_PYTHON_OPERATION: skill_python_complete,
@@ -257,6 +264,63 @@ class ParentControl:
             )
             return b"\x01"
         operation, requested = command["operation"], command["generation"]
+        if operation == UPDATE_PREPARATION_OPERATION and requested is None:
+            if self._generation is not None:
+                raise ParentControlError("maintenance already owned")
+            prepare_update = self._prepare_update
+            if prepare_update is None or self._resume_update is None:
+                raise ParentControlError("update shutdown preparation unavailable")
+            generation = self._activities.begin_restart()
+            self._generation = generation
+
+            async def prepare() -> None:
+                await prepare_update(generation)
+
+            preparation = asyncio.create_task(prepare(), name="update-shutdown-preparation")
+            self._update_preparation = preparation
+            started = monotonic()
+
+            def report_preparation(finished: asyncio.Task[None]) -> None:
+                if finished.cancelled():
+                    return
+                error = finished.exception()
+                if not isinstance(error, BaseExceptionGroup):
+                    return
+                cancelled, failures = error.split(asyncio.CancelledError)
+                if cancelled is None or failures is None:
+                    return
+                pending: list[BaseException] = [failures]
+                while pending:
+                    failure = pending.pop()
+                    if isinstance(failure, BaseExceptionGroup):
+                        pending.extend(failure.exceptions)
+                    elif isinstance(failure, Exception):
+                        self._diagnostic(ControlStage.COMMAND_APPLY, started, failure)
+
+            preparation.add_done_callback(report_preparation)
+            try:
+                completed, _pending = await asyncio.wait(
+                    (preparation,), timeout=UPDATE_PREPARATION_SECONDS
+                )
+                if not completed:
+                    raise ParentControlError("update shutdown preparation timed out")
+                try:
+                    preparation.result()
+                except BaseExceptionGroup as error:
+                    cancelled, failures = error.split(asyncio.CancelledError)
+                    current = asyncio.current_task()
+                    if (
+                        cancelled is None
+                        or not isinstance(failures, ExceptionGroup)
+                        or (current is not None and current.cancelling())
+                    ):
+                        raise
+                    raise ParentControlError("update shutdown preparation failed") from error
+            except BaseException:
+                if not preparation.done() and not preparation.cancelling():
+                    preparation.cancel()
+                raise
+            return b"\x01" + generation.encode("ascii")
         if operation in ("quiesce", IDLE_QUIESCE_OPERATION) and requested is None:
             if self._generation is not None:
                 raise ParentControlError("maintenance already owned")
@@ -319,8 +383,24 @@ class ParentControl:
             and _GENERATION.fullmatch(requested)
             and requested == self._generation
         ):
+            if self._update_preparation is not None:
+                preparation = self._update_preparation
+                if (
+                    not preparation.done()
+                    or preparation.cancelled()
+                    or preparation.exception() is not None
+                ):
+                    raise ParentControlError("update shutdown preparation incomplete")
+                snapshot = self._activities.snapshot()
+                if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != requested:
+                    raise MaintenanceStale("update_maintenance_stale")
+                resume_update = self._resume_update
+                if resume_update is None:
+                    raise ParentControlError("update shutdown resume unavailable")
+                resume_update(requested)
             self._activities.resume(requested, expected_phase=ActivityPhase.DRAINING)
             self._generation = None
+            self._update_preparation = None
             return b"\x01"
         raise ParentControlError("parent control operation unavailable")
 
@@ -342,22 +422,24 @@ class ParentControl:
         self._fail_pending_preparations()
         if self._writer is not None:
             self._writer.transport.abort()
-        if self._task is None:
-            return
+        preparation = self._update_preparation
+        if preparation is not None and not preparation.done() and not preparation.cancelling():
+            preparation.cancel()
         # Concurrent shutdown owners join the same task. A second cancel would
         # interrupt channel cleanup already handling the first cancellation.
-        if first_close:
+        if first_close and self._task is not None:
             self._task.cancel()
         # Join channel shutdown even under repeated cancellation so lifespan
         # never races an unfinished control task.
         cancellation = None
-        while True:
-            try:
-                await asyncio.shield(self._task)
-                break
-            except asyncio.CancelledError as error:
-                if self._task.done():
-                    break
-                cancellation = error
+        for task in (self._task, preparation):
+            if task is None:
+                continue
+            joined = asyncio.gather(task, return_exceptions=True)
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError as error:
+                    cancellation = error
         if cancellation is not None:
             raise cancellation

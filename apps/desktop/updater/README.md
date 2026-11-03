@@ -387,6 +387,48 @@ updates, original-token restart and whole-root uninstall. Account for coordinato
 scratch left after a committed main-process exit in cleanup evidence. Keep first-launch
 preparation evidence separate from application replacement and delta/full evidence.
 
+### Confirmed update shutdown preparation
+
+**current (source).** Explicit installation on Windows and macOS sends the private
+`prepare_update` operation instead of ordinary `quiesce`. Status `1` plus the exact
+maintenance generation means admission remains closed and business shutdown
+preparation succeeded; it is not an attachment-drain or process-exit receipt.
+Serve's business marker, bounded failure handling and typed diagnostic failure
+handling belong to the [Serve lifecycle contract](../../../docs/architecture/serve.md#已确认更新的关闭准备).
+Ordinary quiesce, idle maintenance and normal suspension retain their existing
+Trace checkpoint requirements.
+
+Preparation does not close the live sessions. Cancellation before backend shutdown
+may resume the exact successful generation; unknown preparation outcomes never
+authorize installation or a guessed resume. Windows retains its owned-family
+shutdown and same-version recovery path. macOS retains the existing Squirrel
+candidate commit, native readiness and subsequent backend-close boundary; it does
+not stop the backend earlier in the authorization callback.
+
+Only a business-marked final update shutdown may downgrade known pure
+`TraceRecordingError` projection failures, including earlier publication or
+consumer failures. Ordinary close retains their fatal behavior. A mixed
+`ExceptionGroup` containing a native detach or business failure remains fatal;
+diagnostic classification must not hide actual business I/O or resource-exit failures.
+The narrow final `Trace.close()` handling still requires the business persistence
+worker to have closed. Final clean backend shutdown remains mandatory, including
+Windows owned-family exit acknowledgement. Forced termination, business
+persistence failure or unknown native exit still rejects installation. Package
+trust, installation occupancy, permissions and fresh candidate authorization are
+unchanged. Recoverable
+pre-handoff failures retain still-valid verified package bytes for retry, not a
+reusable installation grant; candidate withdrawal or integrity failure still
+invalidates the candidate under its existing policy. Committed handoff recovery
+remains with the existing native owner.
+
+**required / gap.** Final installed macOS and Windows acceptance for this protocol
+has not run. Verify diagnostic-only failures, genuine business shutdown failures,
+control-response loss, cancellation/recovery and retry with retained payload bytes
+through each platform's real update flow. Contract tests do not establish signed
+update acceptance. An older installed client that does not send `prepare_update`
+requires full exit followed by a supported installation or upgrade; this protocol
+does not provide automatic in-place rescue for that running client.
+
 ## Removed updater state
 
 The old store, owner, launcher, profile copy/recovery/collection and health rollback

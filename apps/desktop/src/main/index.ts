@@ -1056,7 +1056,7 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
     windowsUpdateMaintenanceActive = true
     clearBackendRestart()
     maintenanceAttempted = true
-    generation = await maintenance.quiesce()
+    generation = await maintenance.prepareUpdate()
     controller.signal.throwIfAborted()
     if (windowsPrepared !== receipt || backend !== source || desktopHandoff.isBusy())
       throw new Error('Workbench changed before Windows update')
@@ -1123,7 +1123,7 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
       if (!handoffClosed)
         throw new Error('Windows handoff cleanup is unconfirmed', { cause: error })
       if (maintenanceAttempted && !generation && !(error instanceof BackendMaintenanceRejected)) {
-        // A lost quiesce response cannot be resumed by guessing its generation.
+        // A lost preparation response cannot be resumed by guessing its generation.
         // Stop this owned family, then restart the same installed application.
         await drainManagedBackend()
         drained = true
@@ -3839,7 +3839,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
             macUpdateMaintenanceActive = true
             clearBackendRestart()
             try {
-              maintenanceGeneration = await maintenance.quiesce()
+              maintenanceGeneration = await maintenance.prepareUpdate()
               macMaintenanceUncertain = false
             } catch (error) {
               if (error instanceof BackendMaintenanceRejected) {
