@@ -21,9 +21,6 @@ import {
   DialogTitle,
   EllipsisText,
   IconButton,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
   ScrollArea,
   Select,
   SelectContent,
@@ -36,6 +33,7 @@ import {
 } from '../../components/ui'
 import type { LiteratureDeliveryBatch, LiteratureDeliveryChoice } from '../../contracts/literature'
 import { Icon } from '../../icons'
+import { resourceNameError } from '../resources/state'
 import type { LiteratureCardPorts, CardCollection as LibraryCollection } from './ports'
 import {
   RESOURCE_ROOT,
@@ -48,7 +46,7 @@ export const LITERATURE_DELIVERY_CARD = 'literature-delivery'
 const DELIVERY_SCHEMA = '1.0'
 const DESTINATION = { project: 'project', directory: 'directory' } as const
 const UNFILED = '__unfiled__'
-const NO_FOLDER = '__none__'
+const NO_PROJECT = '__local__'
 const ERROR_MESSAGE = 'delivery.failed'
 const VERSION_UNDECIDED = '__undecided__'
 const VERSION_ACTIONS = { keep: 'keep_both', skip: 'skip' } as const
@@ -68,6 +66,15 @@ function replaceChildren(
   )
 }
 
+function findFolder(nodes: DestinationNode[], path: string): DestinationNode | undefined {
+  for (const node of nodes) {
+    if (node.path === path) return node
+    const found = node.children && findFolder(node.children, path)
+    if (found) return found
+  }
+  return undefined
+}
+
 export function LiteratureDeliveryCard({
   content,
   ports,
@@ -78,7 +85,14 @@ export function LiteratureDeliveryCard({
   onCopyContent?: (batch: LiteratureDeliveryBatch) => void
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
+  const { t: resourceText } = useTranslation('resources')
   const hasProject = Boolean(ports.projectId)
+  const projects =
+    ports.projects ??
+    (ports.projectId
+      ? [{ id: ports.projectId, name: ports.projectName ?? t('delivery.project') }]
+      : [])
+  const [selectedProjectId, setSelectedProjectId] = useState(ports.projectId ?? '')
   const [batch, setBatch] = useState<LiteratureDeliveryBatch | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -87,7 +101,7 @@ export function LiteratureDeliveryCard({
     hasProject ? DESTINATION.project : DESTINATION.directory
   )
   const [parent, setParent] = useState('')
-  const [foldersOpen, setFoldersOpen] = useState(false)
+  const [folderDraft, setFolderDraft] = useState<{ parent: string; name: string } | null>(null)
   const [ticket, setTicket] = useState('')
   const [directory, setDirectory] = useState('')
   const [addToLibrary, setAddToLibrary] = useState(false)
@@ -99,8 +113,10 @@ export function LiteratureDeliveryCard({
   const [remaining, setRemaining] = useState<Record<string, number>>({})
   const [offsets, setOffsets] = useState<Record<string, number>>({})
   const [treeBusy, setTreeBusy] = useState(false)
+  const libraryProjectId = target === DESTINATION.project ? selectedProjectId : ports.projectId
   const choice: LiteratureDeliveryChoice = {
     target,
+    project_id: target === DESTINATION.project ? selectedProjectId : '',
     parent,
     ticket,
     add_to_library: addToLibrary,
@@ -140,16 +156,16 @@ export function LiteratureDeliveryCard({
 
   useEffect(() => {
     setVersions({})
-  }, [target, parent, ticket, addToLibrary, collection])
+  }, [target, selectedProjectId, parent, ticket, addToLibrary, collection])
 
   useEffect(() => {
-    const current = ++generation.current
     if (!open || !batch) return
     setTicket('')
-    setFoldersOpen(false)
+    setFolderDraft(null)
     setVersions({})
+    setSelectedProjectId(batch.choice?.project_id || ports.projectId || '')
     if (batch.choice) {
-      setTarget(hasProject ? batch.choice.target : DESTINATION.directory)
+      setTarget(batch.choice.target)
       setParent(batch.choice.parent)
       setAddToLibrary(batch.choice.add_to_library)
       setCollection(batch.choice.collection_id || UNFILED)
@@ -161,10 +177,21 @@ export function LiteratureDeliveryCard({
       setCollection(UNFILED)
       setDirectory('')
     }
-    setTreeBusy(hasProject)
-    if (hasProject)
+  }, [open, batch?.id])
+
+  useEffect(() => {
+    const current = ++generation.current
+    if (!open || !batch) return
+    setNodes([])
+    setExpanded({})
+    setRemaining({})
+    setOffsets({})
+    setCollections([])
+    const projectTarget = target === DESTINATION.project && Boolean(selectedProjectId)
+    setTreeBusy(projectTarget)
+    if (projectTarget)
       void ports
-        .folders()
+        .folders('', 0, selectedProjectId)
         .then((page) => {
           if (current !== generation.current) return
           if (!page || typeof page.resourceRoot !== 'string') {
@@ -182,7 +209,7 @@ export function LiteratureDeliveryCard({
           if (current === generation.current) setTreeBusy(false)
         })
     void ports
-      .collections()
+      .collections(libraryProjectId)
       .then((value) => {
         if (current === generation.current) setCollections(value)
       })
@@ -192,39 +219,74 @@ export function LiteratureDeliveryCard({
     return () => {
       generation.current++
     }
-  }, [open, batch?.id, hasProject])
+  }, [open, batch?.id, target, selectedProjectId, libraryProjectId])
 
   const loadDirectory = async (path: string, more = false): Promise<void> => {
     if (!batch) return
     const current = generation.current
-    const page = await ports.folders(path, more ? (offsets[path] ?? 0) : 0)
-    if (current !== generation.current) return
-    if (!page || typeof page.resourceRoot !== 'string') {
-      setError(t(ERROR_MESSAGE))
+    setTreeBusy(true)
+    try {
+      const page = await ports.folders(path, more ? (offsets[path] ?? 0) : 0, selectedProjectId)
+      if (current !== generation.current) return
+      if (!page || typeof page.resourceRoot !== 'string') {
+        setError(t(ERROR_MESSAGE))
+        return
+      }
+      setNodes((value) => {
+        let previous: DestinationNode[] = []
+        const find = (items: DestinationNode[]): void => {
+          for (const node of items) {
+            if (node.path === path) previous = node.children ?? []
+            else if (node.children) find(node.children)
+          }
+        }
+        find(value)
+        const incoming = resourceFolderNodes(page.nodes, page.resourceRoot, path)
+        const children = more
+          ? [...new Map([...previous, ...incoming].map((node) => [node.path, node])).values()]
+          : incoming
+        return path
+          ? replaceChildren(value, path, children)
+          : more
+            ? [...new Map([...value, ...incoming].map((node) => [node.path, node])).values()]
+            : incoming
+      })
+      const count = page.offset + page.nodes.length
+      setOffsets((value) => ({ ...value, [path]: count }))
+      setRemaining((value) => ({ ...value, [path]: Math.max(0, page.total - count) }))
+    } catch {
+      if (current === generation.current) setError(t(ERROR_MESSAGE))
+    } finally {
+      if (current === generation.current) setTreeBusy(false)
+    }
+  }
+
+  const createFolder = (): void => {
+    if (!folderDraft) return
+    const name = folderDraft.name.trim()
+    const nameError = resourceNameError(name)
+    if (nameError) {
+      setError(resourceText(nameError))
       return
     }
-    setNodes((value) => {
-      let previous: DestinationNode[] = []
-      const find = (items: DestinationNode[]): void => {
-        for (const node of items) {
-          if (node.path === path) previous = node.children ?? []
-          else if (node.children) find(node.children)
-        }
-      }
-      find(value)
-      const incoming = resourceFolderNodes(page.nodes, page.resourceRoot, path)
-      const children = more
-        ? [...new Map([...previous, ...incoming].map((node) => [node.path, node])).values()]
-        : incoming
-      return path
-        ? replaceChildren(value, path, children)
-        : more
-          ? [...new Map([...value, ...incoming].map((node) => [node.path, node])).values()]
-          : incoming
-    })
-    const count = page.offset + page.nodes.length
-    setOffsets((value) => ({ ...value, [path]: count }))
-    setRemaining((value) => ({ ...value, [path]: Math.max(0, page.total - count) }))
+    const path = folderDraft.parent ? `${folderDraft.parent}/${name}` : name
+    if (findFolder(nodes, path)) {
+      setError(t('delivery.folderExists'))
+      return
+    }
+    const folder: DestinationNode = { path, name, kind: 'dir', children: [] }
+    setNodes((current) =>
+      folderDraft.parent
+        ? replaceChildren(current, folderDraft.parent, [
+            ...(findFolder(current, folderDraft.parent)?.children ?? []),
+            folder,
+          ])
+        : [...current, folder]
+    )
+    setParent(path)
+    setExpanded((current) => ({ ...current, [folderDraft.parent]: true }))
+    setFolderDraft(null)
+    setError('')
   }
 
   const chooseDirectory = async (): Promise<void> => {
@@ -236,6 +298,8 @@ export function LiteratureDeliveryCard({
         setTicket(result.ticket)
         setDirectory(result.label)
         setTarget(DESTINATION.directory)
+        setFolderDraft(null)
+        setCollection(UNFILED)
       } else if (!result?.canceled) setError(t('delivery.chooseFailed'))
     } catch {
       setError(t('delivery.chooseFailed'))
@@ -314,7 +378,10 @@ export function LiteratureDeliveryCard({
   const conflicts = choiceMatches
     ? (batch?.papers.filter((paper) => paper.versions?.length) ?? [])
     : []
-  const projectName = ports.projectName ?? t('delivery.project')
+  const projectName =
+    projects.find((project) => project.id === libraryProjectId)?.name ??
+    ports.projectName ??
+    t('delivery.project')
   const projectPath = t('delivery.projectPath', { path: parent })
   return (
     <>
@@ -386,7 +453,7 @@ export function LiteratureDeliveryCard({
       >
         <DialogPortal>
           <DialogContent
-            className="flex min-w-0 flex-col overflow-hidden max-h-[calc(100dvh-var(--vds-space-6))]"
+            className="min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden max-h-[calc(100dvh-var(--vds-space-6))]"
             hideCloseButton={busy}
             data-testid="literature-delivery-dialog"
           >
@@ -402,57 +469,93 @@ export function LiteratureDeliveryCard({
               viewportProps={{ 'data-testid': 'literature-delivery-body' }}
             >
               <div className="grid grid-cols-1 gap-[var(--vds-space-3)] [&>*]:min-w-0">
-                {hasProject && (
-                  <Popover open={foldersOpen} onOpenChange={setFoldersOpen}>
-                    <PopoverTrigger asChild>
+                <Select
+                  label={t('delivery.targetProject')}
+                  value={target === DESTINATION.project ? selectedProjectId : NO_PROJECT}
+                  disabled={busy}
+                  onValueChange={(value) => {
+                    setSelectedProjectId(value === NO_PROJECT ? '' : value)
+                    setTarget(value === NO_PROJECT ? DESTINATION.directory : DESTINATION.project)
+                    setParent('')
+                    setCollection(UNFILED)
+                    setFolderDraft(null)
+                    setError('')
+                  }}
+                >
+                  <SelectTrigger data-testid="delivery-target-project">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_PROJECT}>{t('delivery.localOnly')}</SelectItem>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {target === DESTINATION.project && selectedProjectId && (
+                  <div
+                    className="grid gap-[var(--vds-space-2)]"
+                    data-testid="delivery-project-tree"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-[var(--vds-space-2)]">
+                      <span>{t('delivery.chooseProjectFolder')}</span>
                       <Button
-                        variant="outline"
-                        className="w-full min-w-0 !justify-between"
-                        data-testid="delivery-project-folder"
+                        variant="ghost"
+                        size="sm"
+                        icon={<Icon name="folder-plus" />}
                         disabled={busy || treeBusy}
-                        aria-label={t('delivery.chooseProjectFolder')}
+                        onClick={() => {
+                          setFolderDraft({ parent, name: '' })
+                          setExpanded((current) => ({ ...current, [parent]: true }))
+                          setError('')
+                        }}
                       >
-                        <EllipsisText wrapperClassName="min-w-0 flex-1" tooltipPortalled>
-                          {target === DESTINATION.project
-                            ? projectPath
-                            : t('delivery.chooseProjectFolder')}
-                        </EllipsisText>
-                        <Icon name="chevron-down" />
+                        {t('delivery.newFolder')}
                       </Button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      className="w-[var(--vds-popover-width-md)] max-w-full"
-                      data-testid="delivery-project-tree"
-                    >
-                      <DestinationTree
-                        nodes={[
-                          {
-                            path: RESOURCE_ROOT,
-                            name: t('delivery.projectRoot'),
-                            kind: 'dir',
-                            children: nodes,
-                          },
-                        ]}
-                        selected={target === DESTINATION.project ? parent : NO_FOLDER}
-                        expanded={{ [RESOURCE_ROOT]: true, ...expanded }}
-                        disabled={busy || treeBusy}
-                        onSelect={(path) => {
-                          setParent(path)
-                          setTarget(DESTINATION.project)
-                          setFoldersOpen(false)
-                        }}
-                        onToggle={(path) => {
-                          setExpanded((value) => ({
-                            ...value,
-                            [path]: !(value[path] ?? path === RESOURCE_ROOT),
-                          }))
-                          void loadDirectory(path)
-                        }}
-                        remaining={remaining}
-                        onLoadMore={(path) => void loadDirectory(path, true)}
-                      />
-                    </PopoverContent>
-                  </Popover>
+                    </div>
+                    <DestinationTree
+                      nodes={[
+                        {
+                          path: RESOURCE_ROOT,
+                          name: t('delivery.projectRoot'),
+                          kind: 'dir',
+                          children: nodes,
+                        },
+                      ]}
+                      selected={parent}
+                      folderDraft={
+                        folderDraft
+                          ? {
+                              ...folderDraft,
+                              onChange: (name) => setFolderDraft({ ...folderDraft, name }),
+                              onCommit: createFolder,
+                              onCancel: () => setFolderDraft(null),
+                            }
+                          : undefined
+                      }
+                      expanded={{ [RESOURCE_ROOT]: true, ...expanded }}
+                      disabled={busy || treeBusy}
+                      onSelect={(path, node) => {
+                        setParent(path)
+                        setFolderDraft(null)
+                        if (!node.children) void loadDirectory(path)
+                      }}
+                      onToggle={(path) => {
+                        setExpanded((value) => ({
+                          ...value,
+                          [path]: !(value[path] ?? path === RESOURCE_ROOT),
+                        }))
+                        if (path && !findFolder(nodes, path)?.children) void loadDirectory(path)
+                      }}
+                      remaining={remaining}
+                      onLoadMore={(path) => void loadDirectory(path, true)}
+                    />
+                    <EllipsisText data-testid="delivery-project-folder" tooltipPortalled>
+                      {projectPath}
+                    </EllipsisText>
+                  </div>
                 )}
                 {target === DESTINATION.directory && (
                   <EllipsisText tooltipPortalled>
@@ -462,7 +565,11 @@ export function LiteratureDeliveryCard({
                   </EllipsisText>
                 )}
                 <Button variant="secondary" disabled={busy} onClick={() => void chooseDirectory()}>
-                  {t(hasProject ? 'delivery.chooseDirectory' : 'delivery.chooseLocalDirectory')}
+                  {t(
+                    target === DESTINATION.project
+                      ? 'delivery.chooseDirectory'
+                      : 'delivery.chooseLocalDirectory'
+                  )}
                 </Button>
                 <div className="flex min-w-0 items-center justify-between gap-[var(--vds-space-2)]">
                   <Checkbox
@@ -470,7 +577,7 @@ export function LiteratureDeliveryCard({
                     onCheckedChange={setAddToLibrary}
                     disabled={busy}
                     label={
-                      hasProject
+                      libraryProjectId
                         ? t('delivery.addToLibrary', { project: projectName })
                         : t('delivery.addToGlobalLibrary')
                     }
@@ -491,7 +598,11 @@ export function LiteratureDeliveryCard({
                           <span>{t('delivery.projectNotice')}</span>
                         )}
                         <span>
-                          {t(hasProject ? 'delivery.libraryScope' : 'delivery.globalLibraryScope')}
+                          {t(
+                            libraryProjectId
+                              ? 'delivery.libraryScope'
+                              : 'delivery.globalLibraryScope'
+                          )}
                         </span>
                         <span>{t('delivery.noOverwrite')}</span>
                       </span>
@@ -580,6 +691,9 @@ export function LiteratureDeliveryCard({
                   busy ||
                   treeBusy ||
                   !batch ||
+                  Boolean(folderDraft) ||
+                  (target === DESTINATION.project &&
+                    !projects.some((project) => project.id === selectedProjectId)) ||
                   conflicts.some((paper) => !versions[paper.paper_id]) ||
                   (target === DESTINATION.directory && !ticket)
                 }

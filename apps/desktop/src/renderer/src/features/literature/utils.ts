@@ -29,6 +29,7 @@ export function deliveryChoiceMatches(
   return Boolean(
     recorded &&
     recorded.target === current.target &&
+    (recorded.project_id ?? '') === (current.project_id ?? '') &&
     recorded.parent === current.parent &&
     recorded.add_to_library === current.add_to_library &&
     recorded.collection_id === current.collection_id &&

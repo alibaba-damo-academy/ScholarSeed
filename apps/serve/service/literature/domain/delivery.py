@@ -27,7 +27,7 @@ FULLTEXT_BINDING_CONFLICT = "fulltext_binding_conflict"
 FULLTEXT_BINDING_REQUIRED = "fulltext_binding_required"
 FULLTEXT_BINDING_INTEGRITY_FAILED = "fulltext_binding_integrity_failed"
 PDF_SUFFIX = ".pdf"
-DELIVERY_DESTINATION_FIELDS = ("target", "parent", "directory", "directory_identity")
+DELIVERY_DESTINATION_FIELDS = ("target", "project_id", "parent", "directory", "directory_identity")
 DELIVERY_ADMISSION_FIELDS = ("add_to_library", "collection_id")
 
 
@@ -69,6 +69,7 @@ class DeliveryChoice(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     target: str
+    project_id: str = Field(default="", max_length=DELIVERY_ID_CHARS)
     parent: str = Field(default="", max_length=DELIVERY_PATH_CHARS)
     ticket: str = Field(default="", max_length=DELIVERY_ID_CHARS)
     add_to_library: bool = False

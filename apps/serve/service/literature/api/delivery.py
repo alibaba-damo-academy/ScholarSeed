@@ -31,6 +31,7 @@ from service.literature.domain.delivery import (
     DeliveryItemState,
     DeliveryTarget,
 )
+from service.literature.domain.utils import delivery_project_id
 from service.literature.persistence.files import scoped_relative
 from service.literature.service.delivery import DeliveryService
 from service.platform.activity import Activities, ActivityDomain
@@ -203,9 +204,9 @@ def register_delivery_routes(
                 )
             else:
                 project = project_for_session(session_id)
-                if project is None or project.id != value["project_id"]:
+                if (project.id if project is not None else "") != value["project_id"]:
                     raise ValueError(DELIVERY_REQUEST_INVALID)
-                absolute = service.project_directory(value["project_id"], choice["parent"])
+                absolute = service.project_directory(delivery_project_id(value), choice["parent"])
             return {"absolute": absolute}
         except (ValueError, OSError) as error:
             raise failure(error) from error

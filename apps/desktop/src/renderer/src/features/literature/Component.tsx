@@ -44,7 +44,8 @@ export function LiteratureComponent({
   onAction,
   onRequest,
 }: PublicComponentProps): React.JSX.Element {
-  const context = data.context as { projectId?: string; projectName?: string } | undefined
+  const context = data.context as
+    Pick<LiteratureCardPorts, 'projectId' | 'projectName' | 'projects'> | undefined
   const ports = cardPorts(
     async <Result,>(action: string, values: Record<string, unknown> = {}): Promise<Result> => {
       if (!onRequest || !CARD_CAPABILITIES[action]) throw new Error('plugin_capability_undeclared')

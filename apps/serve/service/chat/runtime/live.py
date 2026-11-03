@@ -242,6 +242,7 @@ from service.platform.citations import CitationAnswerFilter
 from service.platform.context import ContextOrigin, ContextRefKind, ContextResolutionState
 from service.platform.files import FILE_ACCESS_DENIED, file_access_code
 from service.platform.resources import AgentResourceChangeSink
+from service.platform.storage import filesystem_path
 
 READ_ONLY_TOOL_NAME = "read"
 PENDING_HIL_BLOCKER = "pending_hil"
@@ -2662,11 +2663,13 @@ class LiveSession:
     async def skill_identity(self, path: Path, name: str) -> Mapping[str, Any] | None:
         """Return the active product identity for one exact runtime Skill path."""
 
-        canonical = path.expanduser().resolve()
+        canonical = filesystem_path(path.expanduser()).resolve()
         identity = await self.skill_identity_by_name(name)
         if identity is None:
             return None
-        identity_path = Path(str(identity.get("path") or "")).expanduser().resolve()
+        identity_path = filesystem_path(
+            Path(str(identity.get("path") or "")).expanduser()
+        ).resolve()
         return identity if identity_path == canonical else None
 
     def set_task_lease(self, lease: ProductTaskLease) -> None:

@@ -167,7 +167,7 @@ export function DestinationTree({
       className="max-h-64"
       viewportClassName="!max-h-64 !min-h-0 [scrollbar-gutter:stable] ![scrollbar-width:auto]"
     >
-      {draftRow(rootPath, 0)}
+      {!nodes.some((node) => node.path === rootPath) && draftRow(rootPath, 0)}
       {nodes.map((node) => row(node, 0))}
     </ScrollArea>
   )

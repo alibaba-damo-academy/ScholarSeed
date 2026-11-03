@@ -8,6 +8,7 @@ from contextlib import closing, contextmanager
 from pathlib import PurePath
 from uuid import uuid4
 
+from service.content.domain.model import ContentError
 from service.content.service.export import export_bytes, identical_export, open_export_directory
 from service.literature.domain.delivery import (
     DELIVERY_BUSY,
@@ -23,7 +24,12 @@ from service.literature.domain.delivery import (
     DeliveryTarget,
     DeliveryVersionChoice,
 )
-from service.literature.domain.utils import FILENAME_CHARS, PDF_SUFFIX, paper_filename
+from service.literature.domain.utils import (
+    FILENAME_CHARS,
+    PDF_SUFFIX,
+    delivery_project_id,
+    paper_filename,
+)
 from service.literature.persistence.delivery import DeliveryStore
 from service.literature.persistence.files import (
     REVISION_PREFIX,
@@ -104,8 +110,15 @@ class DeliveryService:
             directory.close()
 
     def project_directory(self, project_id: str, parent: str) -> str:
-        relative = self._content.within_root(project_id, RootKind.RESOURCES, parent)
-        return self._content.resolve(project_id, relative)
+        if not project_id or not any(
+            project.id == project_id for project in self._content.projects()
+        ):
+            raise ValueError(DELIVERY_TARGET_REQUIRED)
+        try:
+            relative = self._content.within_root(project_id, RootKind.RESOURCES, parent)
+            return self._content.resolve(project_id, relative)
+        except ContentError as error:
+            raise ValueError(DELIVERY_TARGET_CHANGED) from error
 
     def get(self, session_id: str, delivery_id: str) -> dict:
         value = self.store.get(session_id, delivery_id)
@@ -260,7 +273,7 @@ class DeliveryService:
 
     def _save_project(self, value: dict, paper: dict, payload: bytes, choice: dict) -> str:
         asset = self._writer.import_once(
-            value["project_id"],
+            delivery_project_id(value, choice),
             paper.get("save_operation") or f'{value["id"]}:{paper["paper_id"]}',
             paper["revision"],
             paper_filename(paper),
@@ -292,7 +305,7 @@ class DeliveryService:
             {**paper, "run": value["run"]},
             payload,
             value["session_id"],
-            value["project_id"],
+            delivery_project_id(value),
             restore=True,
             collection_id=collection,
         )
@@ -321,6 +334,11 @@ class DeliveryService:
                 raise ValueError(DELIVERY_NOT_READY)
             target = DeliveryTarget(command.target)
             choice = command.model_dump()
+            if target is DeliveryTarget.PROJECT:
+                choice["project_id"] = delivery_project_id(value, choice)
+                self.project_directory(choice["project_id"], choice["parent"])
+            elif command.project_id:
+                raise ValueError(DELIVERY_TARGET_CONFLICT)
             if not set(command.versions).issubset(paper["paper_id"] for paper in value["papers"]):
                 raise ValueError(DELIVERY_TARGET_CONFLICT)
             if target is DeliveryTarget.DIRECTORY:

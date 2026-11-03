@@ -43,7 +43,7 @@ from service.chat.runtime.secrets import _launch_secret_contract  # noqa: E402
 from service.cli.bridge import parser  # noqa: E402
 from service.content.persistence.catalog import ContentCatalog  # noqa: E402
 from service.content.service.port import ContentService, ProjectRegistry  # noqa: E402
-from service.identity.utils import HOST_PROCESS_KEY_ENV  # noqa: E402
+from service.identity.utils import HOST_PROCESS_HEADER, HOST_PROCESS_KEY_ENV  # noqa: E402
 from service.literature.api.delivery import register_delivery_routes  # noqa: E402
 from service.literature.domain.delivery import AcquisitionScope, DeliveryChoice  # noqa: E402
 from service.literature.domain.utils import paper_filename  # noqa: E402
@@ -173,13 +173,106 @@ class DeliveryContract(unittest.TestCase):
         if failures:
             raise BaseExceptionGroup("service release and cleanup failures", failures)
 
-    def acquire(self, identity: str, identifier: str = "2201.05596") -> str:
+    def acquire(
+        self, identity: str, identifier: str = "2201.05596", project_id: str | None = None
+    ) -> str:
         acquire_fulltexts(
             (AcquirePaper(identity, identifier, "arxiv", "Paper " + identity),),
-            scope=AcquisitionScope(self.session, self.project.id, self.run),
+            scope=AcquisitionScope(
+                self.session, self.project.id if project_id is None else project_id, self.run
+            ),
             transport=httpx.MockTransport(lambda _: httpx.Response(200, content=self.payload)),
         )
         return self.service.store.by_run(self.session, self.run)["id"]
+
+    def test_global_delivery_saves_to_selected_projects_without_rebinding(self) -> None:
+        delivery_id = self.acquire("selected-target", project_id="")
+        self.service.seal(self.session, self.run)
+        other = self.content.create_project("Other delivery")
+        for project in (self.project, other):
+            value = self.service.save(
+                self.session,
+                delivery_id,
+                DeliveryChoice(
+                    target="project",
+                    project_id=project.id,
+                    parent="new-folder",
+                    add_to_library=True,
+                ),
+            )
+            self.assertEqual(value["state"], "saved")
+            self.assertEqual(value["project_id"], "")
+            self.assertEqual(value["choice"]["project_id"], project.id)
+            payload, _ = self.content.read_bytes(project.id, value["papers"][0]["resource_path"])
+            self.assertEqual(payload, self.payload)
+            self.assertIn(project.id, self.repository.projects(value["papers"][0]["literature_id"]))
+        self.assertEqual(len(value["history"]), 1)
+        self.assertEqual(value["history"][0]["choice"]["project_id"], self.project.id)
+        self.assertEqual(
+            self.service._duplicates.saved_revision(
+                value["history"][0], value["history"][0]["papers"][0]
+            ),
+            payload_revision(self.payload),
+        )
+        repeated = self.service.save(
+            self.session,
+            delivery_id,
+            DeliveryChoice(
+                target="project", project_id=other.id, parent="new-folder", add_to_library=True
+            ),
+        )
+        self.assertTrue(repeated["papers"][0]["save_reused"])
+        self.assertEqual(
+            repeated["papers"][0]["resource_path"], value["papers"][0]["resource_path"]
+        )
+
+    def test_global_delivery_rejects_missing_or_unknown_target_before_writing(self) -> None:
+        delivery_id = self.acquire("invalid-target", project_id="")
+        self.service.seal(self.session, self.run)
+        for project_id in ("", "missing-project"):
+            with self.assertRaisesRegex(ValueError, "literature_delivery_target_required"):
+                self.service.save(
+                    self.session,
+                    delivery_id,
+                    DeliveryChoice(target="project", project_id=project_id),
+                )
+            self.assertIsNone(self.service.get(self.session, delivery_id)["choice"])
+
+    def test_global_delivery_open_uses_selected_project_and_rejects_removed_target(self) -> None:
+        delivery_id = self.acquire("selected-open", project_id="")
+        self.service.seal(self.session, self.run)
+        self.service.save(
+            self.session,
+            delivery_id,
+            DeliveryChoice(target="project", project_id=self.project.id, parent="selected-folder"),
+        )
+        application = FastAPI()
+        source_project = None
+        register_delivery_routes(
+            application,
+            SimpleNamespace(),
+            SimpleNamespace(require=lambda *_: None),
+            self.service,
+            lambda _: source_project,
+            activities=self.activities,
+        )
+        with patch.dict(os.environ, {HOST_PROCESS_KEY_ENV: "only-main"}):
+            client = TestClient(application)
+            route = f"/api/sessions/{self.session}/literature/deliveries/{delivery_id}/open"
+            self.assertEqual(client.post(route).status_code, 403)
+            response = client.post(route, headers={HOST_PROCESS_HEADER: "only-main"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.json()["absolute"],
+                self.service.project_directory(self.project.id, "selected-folder"),
+            )
+            source_project = self.project
+            response = client.post(route, headers={HOST_PROCESS_HEADER: "only-main"})
+            self.assertEqual(response.status_code, 409)
+            source_project = None
+            with patch.object(self.content, "projects", return_value=()):
+                response = client.post(route, headers={HOST_PROCESS_HEADER: "only-main"})
+                self.assertEqual(response.status_code, 409)
 
     def test_concurrent_batch_append_preserves_all_papers(self) -> None:
         self.acquire("seed", "2201.00001")

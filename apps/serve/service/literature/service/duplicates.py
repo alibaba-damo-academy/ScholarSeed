@@ -9,6 +9,7 @@ from service.content.domain.model import ContentError
 from service.content.service.export import EXPORT_ENTRY_LIMIT, open_export_directory
 from service.literature.domain.delivery import PDF_SUFFIX, DeliveryItemState, DeliveryTarget
 from service.literature.domain.model import MAX_IMPORT_BYTES
+from service.literature.domain.utils import delivery_project_id
 from service.literature.persistence import fulltexts
 from service.literature.persistence.delivery import DeliveryStore
 from service.literature.persistence.files import payload_revision, read_attachment
@@ -71,19 +72,21 @@ class DeliveryDuplicates:
 
     def project_file(self, value: dict, payload: bytes, choice: dict) -> str | None:
         parent = self._content.within_root(
-            value["project_id"], RootKind.RESOURCES, choice["parent"]
+            delivery_project_id(value, choice), RootKind.RESOURCES, choice["parent"]
         )
-        if not self._content.exists(value["project_id"], parent):
+        if not self._content.exists(delivery_project_id(value, choice), parent):
             return None
         offset = 0
         while True:
-            page = self._content.subtree(value["project_id"], parent, DIRECTORY_DEPTH, offset)
+            page = self._content.subtree(
+                delivery_project_id(value, choice), parent, DIRECTORY_DEPTH, offset
+            )
             for node in page.children:
                 if PurePath(node.asset.path).suffix.casefold() != PDF_SUFFIX:
                     continue
                 try:
                     existing, _ = self._content.read_bytes(
-                        value["project_id"], node.asset.path, len(payload) + 1
+                        delivery_project_id(value, choice), node.asset.path, len(payload) + 1
                     )
                     if existing == payload:
                         return node.asset.path
@@ -99,7 +102,9 @@ class DeliveryDuplicates:
             return None
         try:
             if choice["target"] == DeliveryTarget.PROJECT:
-                payload, _ = self._content.read_bytes(value["project_id"], paper["resource_path"])
+                payload, _ = self._content.read_bytes(
+                    delivery_project_id(value), paper["resource_path"]
+                )
             else:
                 with closing(open_export_directory(choice[DIRECTORY_LABEL])) as directory:
                     if list(directory.identity()) != choice[DIRECTORY_IDENTITY]:
@@ -171,19 +176,21 @@ class DeliveryDuplicates:
                         continue
             return
         parent = self._content.within_root(
-            value["project_id"], RootKind.RESOURCES, choice["parent"]
+            delivery_project_id(value, choice), RootKind.RESOURCES, choice["parent"]
         )
-        if not self._content.exists(value["project_id"], parent):
+        if not self._content.exists(delivery_project_id(value, choice), parent):
             return
         offset = 0
         while True:
-            page = self._content.subtree(value["project_id"], parent, DIRECTORY_DEPTH, offset)
+            page = self._content.subtree(
+                delivery_project_id(value, choice), parent, DIRECTORY_DEPTH, offset
+            )
             for node in page.children:
                 if PurePath(node.asset.path).suffix.casefold() != PDF_SUFFIX:
                     continue
                 try:
                     payload, _ = self._content.read_bytes(
-                        value["project_id"], node.asset.path, MAX_IMPORT_BYTES
+                        delivery_project_id(value, choice), node.asset.path, MAX_IMPORT_BYTES
                     )
                     yield payload
                 except (OSError, ValueError, RuntimeError, ContentError):
@@ -204,7 +211,7 @@ class DeliveryDuplicates:
             if not old_choice or old_choice["target"] != choice["target"]:
                 continue
             same_target = (
-                previous["project_id"] == value["project_id"]
+                delivery_project_id(previous, old_choice) == delivery_project_id(value, choice)
                 and old_choice["parent"] == choice["parent"]
                 if choice["target"] == DeliveryTarget.PROJECT
                 else old_choice.get(DIRECTORY_IDENTITY) == choice.get(DIRECTORY_IDENTITY)

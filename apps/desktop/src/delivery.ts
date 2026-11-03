@@ -9,6 +9,7 @@ export const DELIVERY_INVALID_SENDER = 'literature_delivery_invalid_sender'
 export const DELIVERY_VERSION_ACTIONS = ['keep_both', 'skip'] as const
 const DELIVERY_CHOICE_KEYS = [
   'target',
+  'project_id',
   'parent',
   'ticket',
   'add_to_library',
@@ -24,6 +25,7 @@ export interface DeliveryRequest {
 export interface DeliverySaveRequest extends DeliveryRequest {
   choice: {
     target: 'project' | 'directory'
+    project_id?: string
     parent: string
     ticket: string
     add_to_library: boolean
@@ -63,6 +65,11 @@ export function parseDeliverySave(value: unknown): DeliverySaveRequest {
         field.length <= (key === 'parent' ? DELIVERY_PATH_LIMIT : DELIVERY_REQUEST_LIMIT)
       )
     })
+  )
+    throw new Error(DELIVERY_INVALID_REQUEST)
+  if (
+    choice.project_id !== undefined &&
+    (typeof choice.project_id !== 'string' || choice.project_id.length > DELIVERY_REQUEST_LIMIT)
   )
     throw new Error(DELIVERY_INVALID_REQUEST)
   if (

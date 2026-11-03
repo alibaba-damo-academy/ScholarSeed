@@ -46,6 +46,7 @@ const plugin: Plugin = {
       const batch = {...scenario.state.batch, project_id:globalScope?'':scenario.state.batch.project_id, papers: Array.from({length:globalScope?20:18}, (_, index) => ({...scenario.state.batch.papers[0], paper_id:String(index)}))}
       window.deliveryCalls = []
       window.folderCalls = 0
+      window.folderProjects = []
       window.leaseValid = true
       window.revocations = new Set()
       const denied = new URLSearchParams(location.search).has('denied')
@@ -64,13 +65,14 @@ const plugin: Plugin = {
       const components = new Map(literaturePublicComponents.map(component=>[component.slot,component]))
       const ports = {
         projectId:globalScope?undefined:'sample-project', projectName:globalScope?undefined:'样例项目',
+        projects:[{id:'sample-project',name:'样例项目'},{id:'other-project',name:'另一个项目'}],
         delivery:async () => {
           if (new URLSearchParams(location.search).has('scope-error')) throw new Error('plugin_card_scope_changed')
           if (new URLSearchParams(location.search).has('load-error')) throw new Error('network_error')
           return batch
         },
         collections:async () => [],
-        folders:async () => {window.folderCalls++; return {resourceRoot:'', nodes:Array.from({length:30},(_, index)=>({path:'papers-'+index,name:'papers-'+index,kind:'dir'})), total:30, offset:0}},
+        folders:async (parent,offset,projectId) => {window.folderCalls++; window.folderProjects.push(projectId); return {resourceRoot:'', nodes:parent?[]:Array.from({length:30},(_, index)=>({path:'papers-'+index,name:'papers-'+index,kind:'dir'})), total:parent?0:30, offset:0}},
         pickDirectory:async () => window.pickerCanceled?{ok:false,canceled:true}:{ok:true,ticket:'selected-directory',label:'/test-output'},
         cancel:async () => {window.deliveryCalls.push('cancel'); return batch},
         save:async choice => {window.deliveryCalls.push(choice); return {ok:true,value:{...batch,state:'saved'}}},
@@ -83,7 +85,7 @@ const plugin: Plugin = {
           <div data-testid="card-boundary" style={{height:180,overflow:'hidden'}}>
             <PublicComponentsContext.Provider value={components}>
               <PluginInteraction reference={{plugin:'precise-literature-search',fingerprint:'pinned-plugin',component:'delivery',binding:'binding'}}
-                data={{...scenario.data,scope,context:{projectId:ports.projectId,projectName:ports.projectName}}} status="resolved" onAction={()=>undefined}
+                data={{...scenario.data,scope,context:{projectId:ports.projectId,projectName:ports.projectName,projects:ports.projects}}} status="resolved" onAction={()=>undefined}
                 onRequest={async(action,values,capability,authorize)=>{await authorize(); return cardRequest(ports)(action,values)}} />
             </PublicComponentsContext.Provider>
           </div>
@@ -135,12 +137,8 @@ test('host delivery escapes the card boundary and retains long-list, cancel, foc
     await expect(page.getByTestId('literature-delivery-card')).toHaveCount(1)
     await expect(page.locator('iframe')).toHaveCount(0)
     await expect(page.getByTestId('literature-delivery-footer')).toBeInViewport()
-    await page.getByTestId('delivery-project-folder').click()
     await page.getByRole('button', { name: 'papers-29', exact: true }).click()
     await expect(page.getByTestId('delivery-project-folder')).toContainText('papers-29')
-    await page.getByTestId('delivery-project-folder').click()
-    await page.keyboard.press('Escape')
-    await expect(dialog).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
     await expect(trigger).toBeFocused()
@@ -148,7 +146,6 @@ test('host delivery escapes the card boundary and retains long-list, cancel, foc
     await page.getByRole('button', { name: '稍后保存', exact: true }).click()
     await expect(dialog).toHaveCount(0)
     await trigger.click()
-    await page.getByTestId('delivery-project-folder').click()
     await page.getByRole('button', { name: 'papers-29', exact: true }).click()
     await page.getByRole('button', { name: '保存全文', exact: true }).click()
     await expect(dialog).toHaveCount(0)
@@ -219,6 +216,36 @@ test('host delivery escapes the card boundary and retains long-list, cancel, foc
     )
     assert.equal(globalCalls[0].target, 'directory')
     assert.equal(globalCalls[0].ticket, 'selected-directory')
+    await trigger.click()
+    await page.getByTestId('delivery-target-project').click()
+    await page.getByRole('option', { name: '样例项目', exact: true }).click()
+    await page.getByRole('button', { name: 'papers-29', exact: true }).click()
+    await page.getByTestId('delivery-target-project').click()
+    await page.getByRole('option', { name: '另一个项目', exact: true }).click()
+    await expect(page.getByTestId('delivery-project-folder')).toHaveText('资料库 /')
+    await expect(dialog.getByRole('checkbox')).toHaveAccessibleName(/另一个项目/)
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
+    const folderName = page.getByRole('textbox', { name: '新文件夹名称', exact: true })
+    await expect(folderName).toHaveCount(1)
+    await folderName.fill('../invalid')
+    await folderName.press('Enter')
+    await expect(page.getByRole('button', { name: '保存全文', exact: true })).toBeDisabled()
+    await folderName.fill('验收目录')
+    await folderName.press('Enter')
+    await expect(page.getByTestId('delivery-project-folder')).toHaveText('资料库 /验收目录')
+    await page.getByRole('button', { name: '保存全文', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    const selectedChoice = await page.evaluate(() =>
+      (window as unknown as { deliveryCalls: Record<string, unknown>[] }).deliveryCalls.at(-1)
+    )
+    assert.equal(selectedChoice?.project_id, 'other-project')
+    assert.equal(selectedChoice?.parent, '验收目录')
+    assert.equal(selectedChoice?.target, 'project')
+    assert.ok(
+      await page.evaluate(() =>
+        (window as unknown as { folderProjects: string[] }).folderProjects.includes('other-project')
+      )
+    )
     for (const [query, message] of [
       ['scope-error', '全文交付与当前会话的项目归属不一致'],
       ['load-error', '无法读取全文交付信息'],

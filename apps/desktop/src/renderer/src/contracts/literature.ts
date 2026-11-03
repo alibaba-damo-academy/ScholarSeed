@@ -423,6 +423,7 @@ export interface LiteratureDeliveryPaper {
 
 export interface LiteratureDeliveryChoice {
   target: 'project' | 'directory'
+  project_id?: string
   parent: string
   ticket: string
   add_to_library: boolean

@@ -687,6 +687,43 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(inventory.skills, views)
 
+    async def test_skill_admission_matches_native_and_filesystem_path_spellings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._manifest(root / "bundled", "research-skill")
+            native = Path(str(manifest).removeprefix("\\\\?\\"))
+            internal = filesystem_path(manifest)
+            catalog = SkillCatalog(bundled_root=root / "bundled", user_root=root / "user")
+            live = object.__new__(LiveSession)
+            live._skills = catalog
+            live._skill_inventory = None
+            live.runtime_workdir = root
+            live.user_id = USER_ID
+            for reported, selected in ((native, internal), (internal, native)):
+                for enabled in (True, False):
+                    with self.subTest(reported=reported, selected=selected, enabled=enabled):
+                        live._skill_inventory_provider = AsyncMock(
+                            return_value=SkillInventory(
+                                cwd=root,
+                                revision="native",
+                                skills=(self._view("research-skill", reported, enabled=enabled),),
+                            )
+                        )
+                        with patch(
+                            "service.chat.runtime.live.load_skill_state",
+                            return_value=SkillProductState(),
+                        ):
+                            identity = await live.skill_identity(selected, "research-skill")
+                            self.assertEqual(identity is not None, enabled)
+                            self.assertIsNone(
+                                await live.skill_identity(selected, "different-skill")
+                            )
+                            self.assertIsNone(
+                                await live.skill_identity(
+                                    selected.parent / "other.md", "research-skill"
+                                )
+                            )
+
     async def test_login_and_pause_are_independent_live_admission_conditions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

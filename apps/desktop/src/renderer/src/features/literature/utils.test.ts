@@ -25,6 +25,7 @@ test('version decisions belong to the recorded destination and library choices',
   assert.equal(deliveryChoiceMatches(recorded, { ...recorded }), true)
   assert.equal(deliveryChoiceMatches(null, recorded), false)
   assert.equal(deliveryChoiceMatches(recorded, { ...recorded, parent: 'another' }), false)
+  assert.equal(deliveryChoiceMatches(recorded, { ...recorded, project_id: 'another' }), false)
   assert.equal(deliveryChoiceMatches(recorded, { ...recorded, add_to_library: false }), false)
   assert.equal(deliveryChoiceMatches(recorded, { ...recorded, collection_id: 'new' }), false)
   assert.equal(deliveryChoiceMatches(recorded, { ...recorded, target: 'directory' }), false)

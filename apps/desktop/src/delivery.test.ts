@@ -36,6 +36,12 @@ test('save confirmation accepts product choice but rejects arbitrary filesystem 
   }
   assert.deepEqual(parseDeliverySave(request), request)
   assert.throws(() => parseDeliverySave({ ...request, absolute: '/chosen' }))
+  const selected = { ...request, choice: { ...request.choice, project_id: 'chosen-project' } }
+  assert.deepEqual(parseDeliverySave(selected), selected)
+  for (const project_id of [null, 12, 'x'.repeat(129)])
+    assert.throws(() =>
+      parseDeliverySave({ ...request, choice: { ...request.choice, project_id } })
+    )
   assert.throws(() =>
     parseDeliverySave({ ...request, choice: { ...request.choice, absolute: '/chosen' } })
   )

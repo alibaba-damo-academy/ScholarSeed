@@ -94,16 +94,24 @@ export function LiteratureCard({
             throw new Error(SCOPE_CHANGED)
           return value
         }
-        const collection = async (id?: string): Promise<void> => {
+        const targetProject = (id: string | undefined): string | undefined => {
+          if (id && !state.projects.some((candidate) => candidate.id === id))
+            throw new Error(SCOPE_CHANGED)
+          return id
+        }
+        const collection = async (id?: string, selectedProjectId = projectId): Promise<void> => {
           if (
             id &&
-            !(await listLiteratureCollections(projectId)).some((candidate) => candidate.id === id)
+            !(await listLiteratureCollections(targetProject(selectedProjectId))).some(
+              (candidate) => candidate.id === id
+            )
           )
             throw new Error(SCOPE_CHANGED)
         }
         return {
           projectId,
           projectName,
+          projects: state.projects.map(({ id, name }) => ({ id, name })),
           async openSource(refId) {
             const url = referenceUrl(reference(refId))
             if (!url) throw new Error(ITEM_UNAVAILABLE)
@@ -120,9 +128,9 @@ export function LiteratureCard({
             catalogue.reload()
             return { id: imported.items[0]?.id ?? '' }
           },
-          collections: async () => {
+          collections: async (selectedProjectId = projectId) => {
             await authorize()
-            return listLiteratureCollections(projectId)
+            return listLiteratureCollections(targetProject(selectedProjectId))
           },
           async createCollection(name, parentId) {
             await collection(parentId)
@@ -152,7 +160,10 @@ export function LiteratureCard({
               const paper = batch.papers.find((candidate) => candidate.paper_id === paperId)
               if (!paper?.literature_id) throw new Error(ITEM_UNAVAILABLE)
               await authorize()
-              await act.openLiteratureItem(paper.literature_id, batch.project_id)
+              await act.openLiteratureItem(
+                paper.literature_id,
+                batch.choice?.project_id || batch.project_id
+              )
               return
             }
             if (!downloads?.papers[0]) throw new Error(ITEM_UNAVAILABLE)
@@ -165,10 +176,11 @@ export function LiteratureCard({
             )
           },
           delivery,
-          async folders(parent, offset) {
+          async folders(parent, offset, selectedProjectId = projectId) {
             await delivery()
             await authorize()
-            return fetchResourceTree(projectId, parent, offset)
+            if (!selectedProjectId) throw new Error(SCOPE_CHANGED)
+            return fetchResourceTree(targetProject(selectedProjectId), parent, offset)
           },
           async pickDirectory() {
             await delivery()
@@ -179,12 +191,17 @@ export function LiteratureCard({
           },
           async save(choice) {
             await delivery()
-            await collection(choice.collection_id)
+            const selectedProjectId =
+              choice.target === 'project'
+                ? targetProject(choice.project_id || projectId)
+                : projectId
+            if (choice.target === 'project' && !selectedProjectId) throw new Error(SCOPE_CHANGED)
+            await collection(choice.collection_id, selectedProjectId)
             await authorize()
             const reply = await window.scholarseed.saveDelivery({ ...deliveryRequest, choice })
             if (reply.ok) {
               catalogue.reload()
-              await act.reloadResourceTree(undefined, projectId)
+              await act.reloadResourceTree(undefined, selectedProjectId)
               await act.reloadLiterature()
             }
             return reply as Awaited<ReturnType<LiteratureCardPorts['save']>>
@@ -244,6 +261,7 @@ export function LiteratureCard({
       cardId,
       projectId,
       projectName,
+      state.projects,
       thread.projectPath,
       thread.sessionId,
       thread.workdir,
@@ -251,8 +269,17 @@ export function LiteratureCard({
     ]
   )
   const componentData = useMemo(
-    () => ({ ...content, context: { projectId, projectName } }),
-    [content, projectId, projectName]
+    () => ({
+      ...content,
+      context: {
+        projectId,
+        projectName,
+        ...(type === 'literature-delivery'
+          ? { projects: state.projects.map(({ id, name }) => ({ id, name })) }
+          : {}),
+      },
+    }),
+    [content, type, projectId, projectName, state.projects]
   )
   const View = LITERATURE_CARD_VIEWS[type]
   if (component)
