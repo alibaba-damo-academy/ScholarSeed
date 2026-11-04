@@ -12,6 +12,8 @@
 
 macOS 使用原生构建矩阵：ARM64 对应 `macos-15`，x64 对应 `macos-15-intel`；每个平台独立签名、公证和挂载验收，上传独立 artifact。x64 的构建结果使用项目架构名 `x86_64`，工件名称使用 `x64`。GitHub 已公告 2026-11-02 退役 macOS 14 托管 runner，故新任务使用 macOS 15。
 
+Intel 签名 job 按 [GitHub runner 官方临时方案](https://github.com/actions/runner-images/issues/14924) 阻断当前临时 runner 的 UDP/443，使 Apple 票据查询从不稳定的 HTTP/3 回退到 HTTPS/TCP。该问题可在公证已 Accepted 后令 `stapler validate` 返回 68；签名、票据和 Gatekeeper 检查仍必须全部通过。
+
 ## macOS 签名配置
 
 在 Settings → Secrets and variables → Actions 添加 Repository secrets：

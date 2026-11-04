@@ -10,3 +10,4 @@
 - macOS 打包使用 `macos-15`（ARM64）与 `macos-15-intel`（x64）原生矩阵；`PACKAGE_ARCH=x64` 对应 `result.release.arch=x86_64`，产物整理时须校验这层映射。
 - Intel 托管 runner 的 `/System/Volumes/Data` 可能为 root:wheel 0775；打包前仅在该临时 runner 移除组写权限，保留产品原生目录权限检查。
 - GitHub Release 由签名 workflow 的发布 job 汇总同一提交的双架构产物；preview 使用带构建号的预发布 tag，release 使用版本 tag，拒绝覆盖已有 tag。Release 仅含 DMG 与各自 SHA256，result.json 留在 Actions。
+- Intel 托管 runner 的 stapler 可能因 Apple CloudKit HTTP/3 连接中断返回 68；按 actions/runner-images#14924 的官方方案仅在临时 runner 阻断 UDP/443，改走 HTTPS/TCP，保留 stapler validate 与 Gatekeeper 验收。

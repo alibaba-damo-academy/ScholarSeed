@@ -1,6 +1,10 @@
 name: Signed macOS package
 
 on:
+  # Intel 网络修复与首次 Release 联调完成后移除此入口。
+  push:
+    branches:
+      - feature/0.3-github-ci-packaging
   workflow_dispatch:
     inputs:
       channel:
@@ -16,14 +20,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: signed-macos-${{ inputs.channel }}
+  group: signed-macos-${{ inputs.channel || 'preview' }}
   cancel-in-progress: false
 
 jobs:
   package:
     name: Signed macOS (${{ matrix.arch }})
-    # 签名与发布仅允许维护者从主分支手动触发。
-    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
+    # 主分支手动触发；当前 feature 分支用于 Intel 网络修复后的 Release 联调。
+    if: github.repository == 'alibaba-damo-academy/ScholarSeed' && (github.ref == 'refs/heads/main' || (github.event_name == 'push' && github.ref == 'refs/heads/feature/0.3-github-ci-packaging'))
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -39,10 +43,17 @@ jobs:
         shell: bash
     env:
       NODE_OPTIONS: --max-old-space-size=4096
-      PACKAGE_CHANNEL: ${{ inputs.channel }}
+      PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
       PACKAGE_ARCH: ${{ matrix.arch }}
 
     steps:
+      - name: Use TCP for Apple ticket service on Intel
+        if: matrix.arch == 'x64'
+        # https://github.com/actions/runner-images/issues/14924
+        run: |
+          printf 'block return out quick proto udp from any to any port 443\n' | sudo pfctl -f -
+          sudo pfctl -E
+
       - name: Prepare Intel runner directory permissions
         if: matrix.arch == 'x64'
         run: |
@@ -179,7 +190,7 @@ jobs:
       - name: Upload build report
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: build-report-${{ inputs.channel }}-darwin-${{ matrix.arch }}-${{ github.run_id }}
+          name: build-report-${{ inputs.channel || 'preview' }}-darwin-${{ matrix.arch }}-${{ github.run_id }}
           path: ${{ runner.temp }}/signed-artifacts/result.json
           if-no-files-found: error
           retention-days: 14
@@ -219,5 +230,5 @@ jobs:
       - name: Verify assets and publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE_CHANNEL: ${{ inputs.channel }}
+          PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
         run: node .github/scripts/release.cjs "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/release-reports"
