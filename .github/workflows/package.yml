@@ -32,6 +32,13 @@ jobs:
             runner: windows-2022
 
     steps:
+      - name: Prepare Intel runner directory permissions
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          sudo chmod g-w /System/Volumes/Data
+          stat -f '%N uid=%u gid=%g mode=%Lp' /System/Volumes/Data
+
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:

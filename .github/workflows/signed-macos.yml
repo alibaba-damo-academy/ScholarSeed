@@ -33,8 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: arm64
-            runner: macos-15
+          # 本轮仅重试 x64，ARM64 正在上一轮完成验收；结束后恢复双架构。
           - arch: x64
             runner: macos-15-intel
     timeout-minutes: 180
@@ -47,6 +46,12 @@ jobs:
       PACKAGE_ARCH: ${{ matrix.arch }}
 
     steps:
+      - name: Prepare Intel runner directory permissions
+        if: matrix.arch == 'x64'
+        run: |
+          sudo chmod g-w /System/Volumes/Data
+          stat -f '%N uid=%u gid=%g mode=%Lp' /System/Volumes/Data
+
       - name: Set physical temporary directory
         run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
 
