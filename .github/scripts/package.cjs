@@ -9,16 +9,17 @@ async function sha256(filename) {
   return hash.digest('hex')
 }
 
-async function collect(resultFile, destination, { repo, commit, channel }) {
+async function collect(resultFile, destination, { repo, commit, channel, arch }) {
   const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'))
   assert.ok(commit && ['preview', 'release'].includes(channel), 'Expected source and channel are required')
+  assert.ok(['arm64', 'x64'].includes(arch), 'Expected macOS architecture is required')
   assert.equal(result.status, 'passed', 'Build did not pass')
   assert.equal(result.publishable, true, 'Build is not publishable')
   assert.equal(result.verification_skipped, false, 'Verification was skipped')
   assert.equal(result.source?.commit, commit, 'Build belongs to a different commit')
   assert.equal(result.release?.channel, channel, 'Build belongs to a different channel')
   assert.equal(result.release?.platform, 'darwin')
-  assert.equal(result.release?.arch, 'arm64')
+  assert.equal(result.release?.arch, arch === 'x64' ? 'x86_64' : arch, 'Build belongs to a different architecture')
   assert.equal(result.trust?.level, 'developer-id-notarized', 'Notarization evidence is missing')
   assert.equal(result.artifacts?.app?.signature_valid, true, 'Application signature is missing')
   const dmg = result.artifacts?.dmg
@@ -50,6 +51,7 @@ if (require.main === module) {
     repo: process.env.GITHUB_WORKSPACE,
     commit: process.env.GITHUB_SHA,
     channel: process.env.PACKAGE_CHANNEL,
+    arch: process.env.PACKAGE_ARCH,
   }).catch(error => {
     console.error(error.message)
     process.exitCode = 1

@@ -7,7 +7,7 @@ const { test } = require('node:test')
 const { collect } = require('./package.cjs')
 
 // 验证工件筛选和篡改拒绝，不替代真实签名、公证与安装验收。
-function fixture(context) {
+function fixture(context, arch = 'arm64') {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'signed-artifacts-'))
   context.after(() => fs.rmSync(repo, { recursive: true, force: true }))
   const release = path.join(repo, 'apps/desktop/release')
@@ -20,7 +20,7 @@ function fixture(context) {
   const result = {
     status: 'passed', publishable: true, verification_skipped: false,
     source: { commit: 'a'.repeat(40) },
-    release: { channel: 'preview', platform: 'darwin', arch: 'arm64' },
+    release: { channel: 'preview', platform: 'darwin', arch: arch === 'x64' ? 'x86_64' : arch },
     trust: { level: 'developer-id-notarized' },
     artifacts: {
       app: { signature_valid: true },
@@ -31,7 +31,7 @@ function fixture(context) {
   }
   const resultFile = path.join(repo, 'result.json')
   const destination = path.join(repo, 'upload')
-  const expected = { repo, commit: result.source.commit, channel: 'preview' }
+  const expected = { repo, commit: result.source.commit, channel: 'preview', arch }
   return { result, filename, destination, async collect() {
     fs.writeFileSync(resultFile, JSON.stringify(result))
     return collect(resultFile, destination, expected)
@@ -44,6 +44,21 @@ test('only the verified DMG, result and checksum enter the artifact directory', 
   assert.deepEqual(fs.readdirSync(state.destination).sort(), ['SHA256SUMS', 'ScholarSeed.dmg', 'result.json'])
   assert.match(fs.readFileSync(path.join(state.destination, 'SHA256SUMS'), 'utf8'), /^[a-f0-9]{64}  ScholarSeed\.dmg\n$/)
 })
+
+test('collects the native x64 build using its x86_64 result architecture', async context => {
+  const state = fixture(context, 'x64')
+  await state.collect()
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state.destination, 'result.json'), 'utf8')).release.arch, 'x86_64')
+})
+
+for (const arch of ['arm64', 'x64']) {
+  test(`rejects the other architecture for ${arch}`, async context => {
+    const state = fixture(context, arch)
+    state.result.release.arch = arch === 'arm64' ? 'x86_64' : 'arm64'
+    await assert.rejects(state.collect(), /different architecture/)
+    assert.equal(fs.existsSync(state.destination), false)
+  })
+}
 
 for (const [name, change] of [
   ['failed build', result => { result.status = 'failed' }],

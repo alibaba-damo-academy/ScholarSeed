@@ -5,10 +5,12 @@
 | 工作流 | 触发 | 产物和验证 |
 | --- | --- | --- |
 | CI | Pull request、推送 main | 公开源码编译、发行契约；独立检查 workflow 语法和工件筛选逻辑 |
-| Package | 推送 main、v 开头的 tag、手动 | macOS ARM64 开发 DMG、Windows x64 开发 EXE，不使用签名凭证 |
-| Signed macOS package | 在 main 上手动运行 | macOS ARM64 Developer ID 签名、公证、挂载启动验收后的 DMG |
+| Package | 推送 main、v 开头的 tag、手动 | macOS ARM64 / x64 开发 DMG、Windows x64 开发 EXE，不使用签名凭证 |
+| Signed macOS package | 在 main 上手动运行 | macOS ARM64 / x64 Developer ID 签名、公证、挂载启动验收后的 DMG |
 
 签名任务使用现有 `ops cd build release --stage installer` 直接发行入口，不调用私有分发仓库，不运行 OSS 上传，不创建 GitHub Release，也不把服务端版本变更为 published。它保留原生 lease 检查和构建器的签名、公证、安装验收；不等同于私有 distribution 工作流的完整冒烟集。
+
+macOS 使用原生构建矩阵：ARM64 对应 `macos-15`，x64 对应 `macos-15-intel`；每个平台独立签名、公证和挂载验收，上传独立 artifact。x64 的构建结果使用项目架构名 `x86_64`，工件名称使用 `x64`。GitHub 已公告 2026-11-02 退役 macOS 14 托管 runner，故新任务使用 macOS 15。
 
 ## macOS 签名配置
 
@@ -28,7 +30,7 @@
 
 在 Actions → Signed macOS package → Run workflow，选择 main 和渠道。该 workflow 必须先合入默认分支才能通过页面触发。只有 main 能运行签名 job；PR 和其他分支不运行该 job。能修改 main/workflow 的维护者能够使用仓库 Secrets，应保护 main 的写入和评审权限；需要独立签名审批时，由仓库管理员迁移到带审批和分支限制的 Environment。
 
-成功后下载本次 run 的 `scholarseed-<channel>-darwin-arm64-signed-<run_id>` artifact，内含 DMG、`SHA256SUMS` 和 `result.json`。工件整理会复核当前提交、渠道、签名/公证证据、挂载验收与实际文件摘要，再上传这三类文件。下载后可执行 `shasum -a 256 -c SHA256SUMS`。
+成功后下载本次 run 的 `scholarseed-<channel>-darwin-<arch>-signed-<run_id>` artifact，内含 DMG、`SHA256SUMS` 和 `result.json`。工件整理会复核当前提交、渠道、签名/公证证据、挂载验收与实际文件摘要，再上传这三类文件。下载后可执行 `shasum -a 256 -c SHA256SUMS`。
 
 ## Windows
 

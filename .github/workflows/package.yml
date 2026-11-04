@@ -24,8 +24,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS DMG
-            runner: macos-14
+          - name: macOS ARM64 DMG
+            runner: macos-15
+          - name: macOS x64 DMG
+            runner: macos-15-intel
           - name: Windows EXE
             runner: windows-2022
 

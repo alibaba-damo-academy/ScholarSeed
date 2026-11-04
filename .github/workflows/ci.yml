@@ -46,7 +46,7 @@ jobs:
 
   test:
     name: Public source build and distribution contracts
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
