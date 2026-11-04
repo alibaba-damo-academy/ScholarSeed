@@ -12,13 +12,13 @@
 | Node.js | **24.16.0**，包含 npm/npx |
 | pnpm | **12.14.0**；下文通过 npx 调用，不要求全局安装 |
 | uv | **≥ 0.12.11**，已加入 PATH |
-| 原生工具 | macOS 需要 Xcode Command Line Tools；在对应系统及架构上构建 |
+| 原生工具 | macOS：Xcode Command Line Tools 或可用的完整 Xcode 工具链；Windows x64：脚本自动准备固定版本 LLVM-MinGW 编译器 |
 
 桌面命令会下载固定版本 Python 并准备 `.venv`，默认流程无需另外安装 Python。运行时制品从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机，不依赖 Git LFS。首次准备需要联网获取 JavaScript／Python 依赖和运行时制品。
 
 ### macOS
 
-不要求安装 Homebrew。先安装 Apple 命令行工具，按系统弹窗完成后再继续：
+不要求安装 Homebrew。从源码启动时也会编译原生模块，不是只有构建 DMG 才需要这些工具。先安装 [Apple 命令行工具](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/)，按系统弹窗完成后再继续；已有可用的 Xcode 工具链时无需重复安装：
 
 ```bash
 xcode-select --install
@@ -47,7 +47,28 @@ Node 必须显示 `v24.16.0`。如果显示其他版本，请先通过版本管�
 
 ### Windows
 
-使用 Windows x64 电脑和 PowerShell。按 Windows 安装方式准备 Git、[Node.js 24.16.0](https://nodejs.org/download/release/v24.16.0/) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，重新打开 PowerShell，确认 `git --version`、`node --version`、`npm --version`、`uv --version`。原生构建入口会准备制品清单固定的构建依赖；不要在 Windows 执行上述 macOS 的 `xcode-select` 或 shell 安装命令。
+使用 Windows x64 电脑和 PowerShell。先通过 [Node.js 官方 Windows x64 安装包](https://nodejs.org/download/release/v24.16.0/node-v24.16.0-x64.msi) 安装 **24.16.0**，保留 npm 和加入 PATH 的安装选项，不要改用最新版 Node。
+
+尚未安装 Git 和 uv 时，按 [Git for Windows](https://git-scm.com/install/windows) 和 [uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/#winget)执行：
+
+```powershell
+winget install --id Git.Git -e --source winget
+winget install --id astral-sh.uv -e --source winget
+```
+
+如果没有 WinGet，改用上述链接中的 Git 安装包和 uv 安装方式。工具安装完成后重新打开 PowerShell，再检查：
+
+```powershell
+git --version
+node --version
+npm.cmd --version
+uv --version
+npx.cmd --yes pnpm@12.14.0 --version
+```
+
+Node 必须显示 `v24.16.0`，uv 不低于 `0.12.11`，pnpm 显示 `12.14.0`。后续安装与开发命令中的 `npx`，Windows 用户可写为 `npx.cmd`，避免调用 PowerShell 的 `npx.ps1` 包装脚本，无需修改全局脚本执行策略。
+
+原生构建入口会自动下载并校验固定版本的 LLVM-MinGW 编译器及相关输入，无需为这些模块另行安装 Visual Studio 或编译器。不要在 Windows 执行 `xcode-select` 或 macOS 的 shell 安装命令。这些要求针对源码开发，不适用于直接运行已构建的安装包；本说明不代表已完成纯净 Windows 环境的端到端验收。
 
 ## 安装与启动
 

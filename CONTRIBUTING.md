@@ -12,13 +12,13 @@ This guide covers source setup, local development, troubleshooting, testing, and
 | Node.js | **24.16.0**, including npm/npx |
 | pnpm | **12.14.0**; the commands below invoke it with npx, so a global installation is optional |
 | uv | **≥ 0.12.11**, available on PATH |
-| Native tools | Xcode Command Line Tools on macOS; build on the matching native OS and architecture |
+| Native tools | macOS: Xcode Command Line Tools or a working full Xcode toolchain; Windows x64: the scripts prepare the pinned LLVM-MinGW compiler |
 
 The desktop commands download the pinned Python runtime and prepare `.venv`; you do not need to install Python separately for this setup. Runtime assets are downloaded from the reviewed HTTPS URLs in the manifests, verified by size and SHA-256, and cached locally. Git LFS is not required. The first setup needs internet access for JavaScript/Python dependencies and runtime assets.
 
 ### macOS
 
-Homebrew is not required. Install Apple's Command Line Tools and complete the system installation dialog before continuing:
+Homebrew is not required. Source startup compiles native modules as well as the frontend, so these tools are needed even when you are not building a DMG. Install [Apple's Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/) and complete the system installation dialog before continuing; skip installation if a working Xcode toolchain is already available:
 
 ```bash
 xcode-select --install
@@ -47,7 +47,28 @@ Node must report `v24.16.0`. If another version appears, select 24.16.0 in your 
 
 ### Windows
 
-Use a Windows x64 machine and PowerShell. Install Git, [Node.js 24.16.0](https://nodejs.org/download/release/v24.16.0/), and [uv](https://docs.astral.sh/uv/getting-started/installation/) using their Windows installers/instructions. Open a new PowerShell window and confirm `git --version`, `node --version`, `npm --version`, and `uv --version`. The native build entry prepares its manifest-pinned build dependencies; macOS commands such as `xcode-select` and the shell installer above do not apply on Windows.
+Use a Windows x64 machine and PowerShell. First install **Node.js 24.16.0** from the [official Windows x64 installer](https://nodejs.org/download/release/v24.16.0/node-v24.16.0-x64.msi), including npm and adding Node to PATH. Do not substitute the latest Node version.
+
+Install Git and uv if they are not already available, using the commands documented by [Git for Windows](https://git-scm.com/install/windows) and [uv](https://docs.astral.sh/uv/getting-started/installation/#winget):
+
+```powershell
+winget install --id Git.Git -e --source winget
+winget install --id astral-sh.uv -e --source winget
+```
+
+If WinGet is unavailable, use the Git installer and uv installation instructions linked above instead. Open a new PowerShell window after installing the tools, then check:
+
+```powershell
+git --version
+node --version
+npm.cmd --version
+uv --version
+npx.cmd --yes pnpm@12.14.0 --version
+```
+
+Node must report `v24.16.0`, uv must be at least `0.12.11`, and pnpm must report `12.14.0`. In the installation and development commands below, Windows users can use `npx.cmd` instead of `npx`; this avoids invoking PowerShell's `npx.ps1` wrapper and does not require changing the global execution policy.
+
+The native build entry downloads and verifies its pinned LLVM-MinGW compiler and related inputs. You do not need to install Visual Studio or a separate compiler for these modules. Do not run `xcode-select` or the macOS shell installer on Windows. These are source-development prerequisites, not requirements for running a prebuilt installer; the instructions do not certify a clean Windows end-to-end run.
 
 ## Install and Run
 

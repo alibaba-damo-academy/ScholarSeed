@@ -139,6 +139,14 @@ ScholarSeed 采用桌面客户端、本地服务与 Agent 运行时分层架构�
 
 环境要求：Git、**Node.js 24.16.0**（含 npm/npx）、**uv ≥ 0.12.11**，以及本机平台的原生构建工具（macOS 为 Xcode Command Line Tools）。以下命令使用 **pnpm 12.14.0**，无需全局安装。环境安装方法见[开发指南](CONTRIBUTING_zh.md#环境准备)。
 
+macOS 首次从源码运行前执行以下命令，并按系统提示完成安装；已安装可用的 Xcode 工具链时无需重复安装：
+
+```bash
+xcode-select --install
+```
+
+Windows x64 请按[Windows 环境准备命令](CONTRIBUTING_zh.md#windows)操作，原生编译器由构建脚本自动下载。这些工具仅用于源码开发和打包，使用已构建的安装包不需要安装。
+
 ```bash
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
