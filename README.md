@@ -165,16 +165,25 @@ The executable Agent provider currently included by ScholarSeed is Codex. Runtim
 
 Git, **Node.js 24.16.0** (including npm/npx), **uv ≥ 0.12.11**, and native build tools for your platform (Xcode Command Line Tools on macOS). The commands below use **pnpm 12.14.0** without requiring a global installation. See the [development guide](CONTRIBUTING.md#environment-setup) for setup instructions.
 
+On macOS, install the command-line tools before your first source run and complete the system dialog (skip this if a working Xcode toolchain is already installed):
+
+```bash
+xcode-select --install
+```
+
+On Windows x64, follow the [Windows setup commands](CONTRIBUTING.md#windows); the build scripts download the pinned native compiler automatically. These tools are needed for source development and packaging, not for using a prebuilt installer.
+
 ## Run From Source
 
 ```bash
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
 npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops dev
+npx --yes pnpm@12.14.0 ops pre install python --mode desktop
+npx --yes pnpm@12.14.0 dev
 ```
 
-The first run needs internet access to download dependencies and the pinned Python/runtime assets; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For setup and troubleshooting, see the [development guide](CONTRIBUTING.md).
+The preparation step installs the pinned Python environment; `dev` then builds the bundled Skill pack from repository sources before starting Electron. Do not skip these steps on a fresh clone. The first run needs internet access; no separate Python installation or Git LFS is needed. Keep the terminal running; press Ctrl+C to stop. After launch, configure your model in Settings or sign in to ScholarSeed. For daily development and troubleshooting, see the [development guide](CONTRIBUTING.md).
 
 ## Model and Service Configuration
 

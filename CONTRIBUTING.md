@@ -12,13 +12,13 @@ This guide covers source setup, local development, troubleshooting, testing, and
 | Node.js | **24.16.0**, including npm/npx |
 | pnpm | **12.14.0**; the commands below invoke it with npx, so a global installation is optional |
 | uv | **≥ 0.12.11**, available on PATH |
-| Native tools | Xcode Command Line Tools on macOS; build on the matching native OS and architecture |
+| Native tools | macOS: Xcode Command Line Tools or a working full Xcode toolchain; Windows x64: the scripts prepare the pinned LLVM-MinGW compiler |
 
 The desktop commands download the pinned Python runtime and prepare `.venv`; you do not need to install Python separately for this setup. Runtime assets are downloaded from the reviewed HTTPS URLs in the manifests, verified by size and SHA-256, and cached locally. Git LFS is not required. The first setup needs internet access for JavaScript/Python dependencies and runtime assets.
 
 ### macOS
 
-Homebrew is not required. Install Apple's Command Line Tools and complete the system installation dialog before continuing:
+Homebrew is not required. Source startup compiles native modules as well as the frontend, so these tools are needed even when you are not building a DMG. Install [Apple's Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/) and complete the system installation dialog before continuing; skip installation if a working Xcode toolchain is already available:
 
 ```bash
 xcode-select --install
@@ -47,7 +47,28 @@ Node must report `v24.16.0`. If another version appears, select 24.16.0 in your 
 
 ### Windows
 
-Use a Windows x64 machine and PowerShell. Install Git, [Node.js 24.16.0](https://nodejs.org/download/release/v24.16.0/), and [uv](https://docs.astral.sh/uv/getting-started/installation/) using their Windows installers/instructions. Open a new PowerShell window and confirm `git --version`, `node --version`, `npm --version`, and `uv --version`. The native build entry prepares its manifest-pinned build dependencies; macOS commands such as `xcode-select` and the shell installer above do not apply on Windows.
+Use a Windows x64 machine and PowerShell. First install **Node.js 24.16.0** from the [official Windows x64 installer](https://nodejs.org/download/release/v24.16.0/node-v24.16.0-x64.msi), including npm and adding Node to PATH. Do not substitute the latest Node version.
+
+Install Git and uv if they are not already available, using the commands documented by [Git for Windows](https://git-scm.com/install/windows) and [uv](https://docs.astral.sh/uv/getting-started/installation/#winget):
+
+```powershell
+winget install --id Git.Git -e --source winget
+winget install --id astral-sh.uv -e --source winget
+```
+
+If WinGet is unavailable, use the Git installer and uv installation instructions linked above instead. Open a new PowerShell window after installing the tools, then check:
+
+```powershell
+git --version
+node --version
+npm.cmd --version
+uv --version
+npx.cmd --yes pnpm@12.14.0 --version
+```
+
+Node must report `v24.16.0`, uv must be at least `0.12.11`, and pnpm must report `12.14.0`. In the installation and development commands below, Windows users can use `npx.cmd` instead of `npx`; this avoids invoking PowerShell's `npx.ps1` wrapper and does not require changing the global execution policy.
+
+The native build entry downloads and verifies its pinned LLVM-MinGW compiler and related inputs. You do not need to install Visual Studio or a separate compiler for these modules. Do not run `xcode-select` or the macOS shell installer on Windows. These are source-development prerequisites, not requirements for running a prebuilt installer; the instructions do not certify a clean Windows end-to-end run.
 
 ## Install and Run
 
@@ -57,10 +78,15 @@ In a writable local directory, run:
 git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
 cd ScholarSeed
 npx --yes pnpm@12.14.0 install --frozen-lockfile
-npx --yes pnpm@12.14.0 ops dev
+npx --yes pnpm@12.14.0 ops pre install python --mode desktop
+npx --yes pnpm@12.14.0 dev
 ```
 
 Run subsequent commands from the repository root. Allow the first installation/startup to finish downloading dependencies. Keep the terminal running while using the application; press Ctrl+C there to stop it. Configure your model connection in Settings or sign in to ScholarSeed. Literature services and model calls require the corresponding access permissions.
+
+The Python preparation step must precede the Skill build on a fresh clone. `dev` compiles `skills/community/` into the ignored runtime directory `apps/serve/service/capabilities/skills/`, then starts Electron. Skill sources are included in Git; the generated pack is not. Successful Electron startup alone does not prove the built-in Skills are available.
+
+For later starts, `npx --yes pnpm@12.14.0 ops dev` is sufficient only when the pack already exists and Skill sources have not changed. After changing Skill sources or seeing a missing-Skill error, stop the current instance and run `npx --yes pnpm@12.14.0 dev` to rebuild before starting again.
 
 If you already have pnpm 12.14.0, you can replace `npx --yes pnpm@12.14.0` with `pnpm` throughout this guide. Do not replace the pinned version with whichever version Homebrew or Corepack selects.
 
@@ -72,6 +98,7 @@ If you already have pnpm 12.14.0, you can replace `npx --yes pnpm@12.14.0` with 
 | `pnpm ... expected 12.14.0` | Use the explicit `npx --yes pnpm@12.14.0 ...` commands above instead of the globally installed pnpm. |
 | `node: command not found` / wrong Node version | Finish installing Node 24.16.0, reopen the terminal, and check PATH or your version manager. |
 | `uv: command not found` | Add uv's installation directory to PATH and verify `uv --version` in the launch terminal. |
+| Built-in Skill not found | Stop Electron, then rerun the Python preparation and `dev` commands above. Do not use `ops dev` alone on a fresh clone or manually copy user Skills into the bundled pack. |
 | Download failure | Check the failing URL in the log and your network/proxy access. Rerun the same command after restoring access; do not bypass checksum verification. |
 | Build reports an environment is in use | Stop the development instance with Ctrl+C before packaging; do not delete an active process's lock. |
 
