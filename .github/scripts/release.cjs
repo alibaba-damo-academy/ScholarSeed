@@ -4,7 +4,7 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const { sha256, validateResult } = require('./package.cjs')
 
-async function prepare(assetsDirectory, reportsDirectory, { commit, channel }) {
+async function prepare(assetsDirectory, reportsDirectory, { commit, channel, tag }) {
   const reports = [...fs.globSync('*/result.json', { cwd: reportsDirectory })]
     .map(filename => JSON.parse(fs.readFileSync(path.join(reportsDirectory, filename), 'utf8')))
   assert.deepEqual(reports.map(report => report.release?.arch).sort(), ['arm64', 'x86_64'], 'Both macOS architectures are required')
@@ -25,8 +25,12 @@ async function prepare(assetsDirectory, reportsDirectory, { commit, channel }) {
     assets.push(filename, `${filename}.sha256`)
   }
   assert.equal(new Set(assets).size, 4, 'Installer filenames must differ between architectures')
+  if (tag !== undefined) {
+    assert.match(tag, /^v\d+\.\d+\.\d+(?:-preview\.[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/, 'Invalid release tag')
+    assert.ok(channel === 'preview' ? tag.startsWith(`v${version}-preview.`) : tag === `v${version}`, 'Tag must match the package version and channel')
+  }
   return {
-    tag: channel === 'preview' ? `v${version}-preview.${buildNumber}` : `v${version}`,
+    tag: tag || (channel === 'preview' ? `v${version}-preview.${buildNumber}` : `v${version}`),
     title: `ScholarSeed ${version}${channel === 'preview' ? ` Preview ${buildNumber}` : ''}`,
     prerelease: channel === 'preview',
     assets,
@@ -34,7 +38,10 @@ async function prepare(assetsDirectory, reportsDirectory, { commit, channel }) {
 }
 
 async function publish(assetsDirectory, reportsDirectory, env = process.env) {
-  const release = await prepare(assetsDirectory, reportsDirectory, { commit: env.GITHUB_SHA, channel: env.PACKAGE_CHANNEL })
+  assert.match(env.SOURCE_COMMIT || '', /^[0-9a-f]{40}$/, 'Source build commit is required')
+  assert.match(env.SOURCE_RUN_ID || '', /^[1-9]\d*$/, 'Source build run ID is required')
+  assert.ok(env.RELEASE_TAG, 'An explicit release tag is required')
+  const release = await prepare(assetsDirectory, reportsDirectory, { commit: env.SOURCE_COMMIT, channel: env.PACKAGE_CHANNEL, tag: env.RELEASE_TAG })
   const gh = args => execFileSync('gh', args, { encoding: 'utf8', env })
   const refs = JSON.parse(gh(['api', `repos/${env.GITHUB_REPOSITORY}/git/matching-refs/tags/${release.tag}`]))
   assert.ok(!refs.some(ref => ref.ref === `refs/tags/${release.tag}`), `Tag ${release.tag} already exists; published versions must not be overwritten`)
@@ -46,12 +53,12 @@ async function publish(assetsDirectory, reportsDirectory, env = process.env) {
     '- For Intel Macs, download the `x86_64` installer.',
     '- Download the matching `.dmg.sha256` file and run `shasum -a 256 -c <filename>.dmg.sha256` from the same directory.',
     '',
-    `Source commit: ${env.GITHUB_SHA}`,
-    `Build and verification reports: https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
+    `Source commit: ${env.SOURCE_COMMIT}`,
+    `Build and verification reports: https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.SOURCE_RUN_ID}`,
     '',
   ].join('\n'))
   const url = gh(['release', 'create', release.tag, ...release.assets,
-    '--repo', env.GITHUB_REPOSITORY, '--target', env.GITHUB_SHA,
+    '--repo', env.GITHUB_REPOSITORY, '--target', env.SOURCE_COMMIT,
     '--title', release.title, '--notes-file', notes,
     ...(release.prerelease ? ['--prerelease', '--latest=false'] : []),
   ]).trim()

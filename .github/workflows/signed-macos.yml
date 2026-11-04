@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: Release channel (preview creates a GitHub prerelease)
+        description: Package update channel (does not publish a Release)
         type: choice
         options:
           - preview
@@ -24,7 +24,7 @@ concurrency:
 jobs:
   package:
     name: Signed macOS (${{ matrix.arch }})
-    # 主分支推送自动发布 preview，也支持维护者手动选择渠道。
+    # 主分支推送自动构建 preview，发布由独立手动工作流执行。
     if: github.repository == 'alibaba-damo-academy/ScholarSeed' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -191,41 +191,3 @@ jobs:
           path: ${{ runner.temp }}/signed-artifacts/result.json
           if-no-files-found: error
           retention-days: 14
-
-  release:
-    name: Publish GitHub Release
-    needs: package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
-        with:
-          node-version-file: .node-version
-          package-manager-cache: false
-
-      - name: Download signed installers and checksums
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          pattern: "*.dmg*"
-          path: ${{ runner.temp }}/release-assets
-          merge-multiple: true
-
-      - name: Download build evidence
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          pattern: build-report-*
-          path: ${{ runner.temp }}/release-reports
-
-      - name: Verify assets and publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PACKAGE_CHANNEL: ${{ inputs.channel || 'preview' }}
-        run: node .github/scripts/release.cjs "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/release-reports"

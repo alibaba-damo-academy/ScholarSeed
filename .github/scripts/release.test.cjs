@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { test } = require('node:test')
-const { prepare } = require('./release.cjs')
+const { prepare, publish } = require('./release.cjs')
 
 function fixture(context, channel = 'preview') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-assets-'))
@@ -29,7 +29,7 @@ function fixture(context, channel = 'preview') {
       } },
     }
   })
-  return { assets, results, async prepare() {
+  return { assets, reports, results, expected, async prepare() {
     fs.mkdirSync(reports, { recursive: true })
     results.forEach((result, index) => {
       const directory = path.join(reports, `build-report-${index}`)
@@ -74,3 +74,63 @@ for (const [name, change, error] of [
     await assert.rejects(state.prepare(), error)
   })
 }
+
+test('manual preview tag identifies the selected build version', async context => {
+  const state = fixture(context)
+  state.expected.tag = 'v0.3.1-preview.2'
+  assert.equal((await state.prepare()).tag, 'v0.3.1-preview.2')
+})
+
+for (const tag of ['v0.3.2-preview.1', 'v0.3.1', '--latest', 'v0.3.1-preview.1\nextra']) {
+  test(`rejects incompatible or invalid manual preview tag ${JSON.stringify(tag)}`, async context => {
+    const state = fixture(context)
+    state.expected.tag = tag
+    await assert.rejects(state.prepare(), /tag|Tag/)
+  })
+}
+
+test('stable publication requires a release-channel build', async context => {
+  const state = fixture(context, 'release')
+  state.expected.tag = 'v0.3.1'
+  assert.equal((await state.prepare()).prerelease, false)
+  state.expected.tag = 'v0.3.1-preview.1'
+  await assert.rejects(state.prepare(), /Tag must match/)
+})
+
+test('publication targets the selected source commit and links its build report', async context => {
+  const state = fixture(context)
+  await state.prepare()
+  const temp = path.dirname(state.assets)
+  const bin = path.join(temp, 'bin')
+  fs.mkdirSync(bin)
+  const calls = path.join(temp, 'gh-calls.jsonl')
+  fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+fs.appendFileSync(process.env.GH_CALLS, JSON.stringify(args) + '\\n')
+console.log(args[0] === 'api' ? '[]' : 'https://github.com/example/project/releases/tag/v0.3.1-preview.2')
+`, { mode: 0o755 })
+  await publish(state.assets, state.reports, {
+    ...process.env,
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    GH_CALLS: calls,
+    GITHUB_SHA: 'b'.repeat(40),
+    GITHUB_RUN_ID: '999',
+    GITHUB_REPOSITORY: 'example/project',
+    SOURCE_COMMIT: state.expected.commit,
+    SOURCE_RUN_ID: '123',
+    RELEASE_TAG: 'v0.3.1-preview.2',
+    PACKAGE_CHANNEL: 'preview',
+    RUNNER_TEMP: temp,
+    GITHUB_STEP_SUMMARY: path.join(temp, 'summary.md'),
+  })
+  const commands = fs.readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  const create = commands.find(args => args[0] === 'release')
+  assert.equal(create[2], 'v0.3.1-preview.2')
+  assert.equal(create[create.indexOf('--target') + 1], state.expected.commit)
+  assert.ok(create.includes('--prerelease'))
+  const notes = fs.readFileSync(path.join(temp, 'release-notes.md'), 'utf8')
+  assert.ok(notes.includes(state.expected.commit))
+  assert.match(notes, /actions\/runs\/123/)
+  assert.ok(!notes.includes('999'))
+})
