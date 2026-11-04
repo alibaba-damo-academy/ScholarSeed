@@ -139,16 +139,51 @@ ScholarSeed 采用桌面客户端、本地服务与 Agent 运行时分层架构�
 
 环境要求：Git、Node.js **24.16.0**、pnpm **12.14.0**（默认；同时支持 npm 和 Yarn）、uv **≥ 0.12.11**，以及目标平台的原生构建工具。
 
-Worktree 默认以 `pnpm install --frozen-lockfile` 初始化，共享 pnpm store 而不是整个 `node_modules`。pnpm 缺失或版本不符时，按[工具链与授权安装流程](docs/runbooks/development.md#worktree-初始化与-pnpm-前提)处理；AI 获得本次明确批准后才可安装。
+#### 首次使用 Mac：准备工具链
 
-克隆本仓库后，在仓库根目录执行：
+不要求安装 Homebrew。先在终端安装 Apple 命令行工具：
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm ops dev
+xcode-select --install
+```
+
+按系统弹窗完成安装后再继续；已经安装时，系统会提示无需重复安装。然后使用 [Node.js 官方 macOS 安装包](https://nodejs.org/download/release/v24.16.0/node-v24.16.0.pkg) 安装 **24.16.0**，重新打开终端。直接执行不带版本的 `brew install node` 或 `brew install pnpm`，可能安装本仓库不接受的版本。
+
+按 [uv 官方安装方式](https://docs.astral.sh/uv/getting-started/installation/)安装 uv，并检查工具链：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+git --version
+node --version
+npm --version
+uv --version
+xcode-select -p
+```
+
+`node --version` 必须为 `v24.16.0`，uv 必须不低于 `0.12.11`。如果 Node 仍显示其他版本，请先在已有版本管理器中选择 24.16.0，或调整 PATH，再继续。默认桌面流程会下载固定版本 Python 并准备 `.venv`，无需另外安装 Python。接下来的命令在同一个终端执行。
+
+#### 安装并启动
+
+在可写的本地目录中，用 Git 克隆仓库，不使用源码 ZIP。以下命令明确指定 pnpm 版本；即使尚未安装 pnpm，或 Homebrew／Corepack 默认选择其他版本，也可使用：
+
+```bash
+git clone https://github.com/alibaba-damo-academy/ScholarSeed.git
+cd ScholarSeed
+npx --yes pnpm@12.14.0 --version
+npx --yes pnpm@12.14.0 install --frozen-lockfile
+npx --yes pnpm@12.14.0 ops dev
 ```
 
 `pnpm ops dev` 会准备清单固定版本的 Python 和开发环境，再启动 Electron。运行时二进制从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机；不需要 Git LFS 或 GitHub Release 访问权限。首次构建需要联网，可用 `SCHOLARSEED_ARTIFACT_CACHE` 指定独立缓存目录。需要使用其他包管理器时，可在根目录和 Desktop 目录分别使用 `npm ci` 或 `yarn install`；脚本会识别实际调用它的包管理器。
+
+首次安装和启动需要下载依赖，请等待完成。使用应用时保持终端运行，在该终端按 Ctrl+C 停止开发实例。已经安装 pnpm 12.14.0 时可直接使用 `pnpm`；否则，下文开发和打包命令中的 `pnpm` 均替换为 `npx --yes pnpm@12.14.0`。
+
+#### 常见安装错误
+
+- **`ERR_PNPM_NO_LOCKFILE`**：在克隆目录执行 `git pull --ff-only`，确认根目录 `package.json` 旁有 `pnpm-lock.yaml`，然后重新冻结安装。不要通过去掉 `--frozen-lockfile` 自行生成替代锁文件。
+- **`pnpm ... expected 12.14.0`**：使用上面的 `npx --yes pnpm@12.14.0 ...` 命令；Homebrew 安装的最新 pnpm 不一定满足本仓库的版本要求。
+- **`uv: command not found` / `node: command not found`**：先完成对应工具安装和 PATH 设置，在启动应用的同一个终端确认版本。
 
 启动后，在设置中配置模型连接，或登录书深账号。文献检索与全文获取需要对应服务和访问权限。
 
