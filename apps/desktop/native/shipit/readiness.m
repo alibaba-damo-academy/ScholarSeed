@@ -1,5 +1,6 @@
 #import "readiness.h"
 #import "binding.h"
+#import "observation.h"
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -141,32 +142,37 @@ BOOL SSReadinessPublishBound(NSURL *source, NSURL *target, NSDictionary *binding
 BOOL SSReadinessPublish(NSURL *source, NSURL *target, BOOL success, NSInteger code, NSError **error) {
     return SSReadinessPublishBound(source, target, nil, success, code, error);
 }
-NSInteger SSReadinessReadBound(NSURL *source, NSURL *target, NSDictionary *binding, NSError **error) {
+static NSDictionary *SSReadinessObserveBound(NSURL *source, NSURL *target, NSDictionary *binding, BOOL strict, BOOL *pending, NSError **error) {
+    if (pending) *pending = NO;
     int directory = -1;
     NSDictionary *src = SSCapture(source, &directory), *dst = SSCapture(target, NULL);
-    if (!src || !dst) { int saved = errno; if (directory >= 0) close(directory); SSFail(error, saved); return SSReadinessFailed; }
-    int fd = openat(directory, SSAckName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-    int saved = errno; close(directory);
-    if (fd < 0) { if (saved == ENOENT) return SSReadinessPending; SSFail(error, saved); return SSReadinessFailed; }
-    struct stat st;
-    BOOL ok = fstat(fd, &st) == 0 && SSSafeAck(st);
-    // Fixed bound also applies if an untrusted writer grows the file after fstat.
-    uint8_t buffer[4097]; NSUInteger used = 0;
-    while (ok && used < sizeof(buffer)) {
-        ssize_t count = read(fd, buffer + used, sizeof(buffer) - used);
-        if (count < 0 && errno == EINTR) continue;
-        if (count < 0) { ok = NO; break; }
-        if (!count) break;
-        used += (NSUInteger)count;
-    }
-    close(fd);
-    id record = ok && used <= SSMaximumAckBytes ? [NSPropertyListSerialization propertyListWithData:[NSData dataWithBytes:buffer length:used] options:0 format:NULL error:NULL] : nil;
-    ok = [record isKindOfClass:NSDictionary.class] && [record[@"schema"] isEqual:@1] &&
+    if (!src || !dst) { int saved = errno; if (directory >= 0) close(directory); SSFail(error, saved); return nil; }
+    NSDictionary *observation = SSObservationReadAt(directory, @(SSAckName), SSMaximumAckBytes, NO, YES, error);
+    int saved = errno;
+    close(directory);
+    if (!observation) { if (pending && saved == ENOENT) *pending = YES; return nil; }
+    id record = [NSPropertyListSerialization propertyListWithData:observation[@"data"] options:0 format:NULL error:NULL];
+    BOOL ok = [record isKindOfClass:NSDictionary.class] && [record[@"schema"] isEqual:@1] &&
         (!binding || (SSBindingValid(binding) && [binding isEqual:record[@"binding"]])) &&
         [record[@"source"] isEqual:src] && [record[@"target"] isEqual:dst] &&
         [record[@"ready"] isKindOfClass:NSNumber.class] && [record[@"code"] isKindOfClass:NSNumber.class] &&
         [src isEqual:SSCapture(source, NULL)] && [dst isEqual:SSCapture(target, NULL)];
-    if (!ok) { SSFail(error, EINVAL); return SSReadinessFailed; }
+    if (strict) ok = ok && [record count] == 6 && SSBindingValid(binding) &&
+        SSObservationInteger(record[@"schema"]) && SSObservationBoolean(record[@"ready"]) && SSObservationInteger(record[@"code"]);
+    if (!ok) { SSFail(error, EINVAL); return nil; }
+    return @{@"record":record, @"snapshot":observation[@"snapshot"]};
+}
+NSDictionary *SSReadinessFailureSnapshot(NSURL *source, NSURL *target, NSDictionary *binding, NSInteger code, NSError **error) {
+    NSDictionary *observation = SSReadinessObserveBound(source, target, binding, YES, NULL, error);
+    NSDictionary *record = observation[@"record"];
+    if (!record || [record[@"ready"] boolValue] || [record[@"code"] longLongValue] != code) { SSFail(error, EINVAL); return nil; }
+    return observation[@"snapshot"];
+}
+NSInteger SSReadinessReadBound(NSURL *source, NSURL *target, NSDictionary *binding, NSError **error) {
+    BOOL pending = NO;
+    NSDictionary *observation = SSReadinessObserveBound(source, target, binding, NO, &pending, error);
+    if (!observation) { if (pending && error) *error = nil; return pending ? SSReadinessPending : SSReadinessFailed; }
+    NSDictionary *record = observation[@"record"];
     if ([record[@"ready"] boolValue]) return SSReadinessReady;
     if (error) *error = [NSError errorWithDomain:SSReadinessPreparationDomain code:[record[@"code"] integerValue] userInfo:nil];
     return SSReadinessFailed;

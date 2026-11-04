@@ -30,13 +30,17 @@ import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
 import { InstallationProgress } from './installation.ts'
+import type { ObservedUpdateLaunch, UpdateLaunchContext } from './relaunch.ts'
 import {
   SquirrelInstallation,
   discardOnTerminalSquirrelFailure,
   readSquirrelHandoff,
   type SquirrelArchive,
+  type SquirrelHandoff,
   type SquirrelLaunchCleanup,
   shipItDiagnostics,
+  squirrelHandoffRecordPath,
+  UPDATE_STATE_DIRECTORY,
 } from './squirrel.ts'
 import {
   bindSquirrelRequest,
@@ -145,7 +149,6 @@ export type LogSink = (line: string) => void
 
 const UPDATE_CACHE_DIRNAME = 'scholarseed-update'
 const PREVIEW_CANDIDATE_DIRNAME = 'preview'
-const UPDATE_STATE_DIRNAME = 'updates'
 // 计时/结果日志额外落一份到 $SCHOLARSEED_HOME/logs/update.log（见 persistUpdateLog）。
 const UPDATE_LOG_FILE = 'update.log'
 const UPDATE_LOG_MAX_BYTES = 4 * 1024 * 1024
@@ -483,7 +486,7 @@ export async function authorizeActivation(
 }
 
 function updateStateDirectory(): string {
-  return join(desktopHome(), UPDATE_STATE_DIRNAME)
+  return join(desktopHome(), UPDATE_STATE_DIRECTORY)
 }
 
 // Candidate records and payloads may be revoked independently of release.
@@ -1816,9 +1819,7 @@ async function verifyMountedNotarization(
   }
 }
 
-const SQUIRREL_HANDOFF_FILE = 'squirrel.json'
 let squirrel: SquirrelInstallation | null = null
-let squirrelRecoveryRequired = false
 let macPrepared: { receipt: PreparedArchive; workspace: string } | null = null
 let macPreparationEpoch = 0
 export function macPreparationReady(meta: LatestVersionMeta): boolean {
@@ -1859,15 +1860,28 @@ async function withMountedDmg<T>(
 }
 
 function squirrelHandoffPath(home = desktopHome()): string {
-  return join(home, UPDATE_STATE_DIRNAME, SQUIRREL_HANDOFF_FILE)
+  return squirrelHandoffRecordPath(home)
+}
+
+export interface MacStartupAdmission {
+  readonly admission: SquirrelAdmission
+  readonly status?: SquirrelStartupStatus
+  readonly cause?: unknown
+  readonly evidence?: {
+    readonly home: string
+    readonly version: string
+    readonly buildNumber: string
+    readonly handoff: string
+    readonly launch: string | null
+  }
 }
 
 export async function macStartupAdmission(
   home: string,
   log: LogSink,
-  expected?: { candidate: string; targetBuild: string; sourceBuild?: string }
-): Promise<SquirrelAdmission> {
-  if (process.platform !== MACOS_PLATFORM || !app.isPackaged) return 'allow'
+  expected?: Readonly<UpdateLaunchContext>
+): Promise<MacStartupAdmission> {
+  if (process.platform !== MACOS_PLATFORM || !app.isPackaged) return { admission: 'allow' }
   try {
     const handoff = readSquirrelHandoff(squirrelHandoffPath(home))
     if (
@@ -1879,8 +1893,18 @@ export async function macStartupAdmission(
       throw new Error('Mac launch context does not match the pending handoff')
     const config = resolveDesktopConfig(log)
     const current = { version: app.getVersion(), buildNumber: config.buildNumber }
+    const admitted = (admission: SquirrelAdmission): MacStartupAdmission => ({
+      admission,
+      evidence: {
+        home,
+        ...current,
+        handoff: JSON.stringify(handoff),
+        launch: expected ? JSON.stringify(expected) : null,
+      },
+    })
     if (squirrelAdmission(current, handoff, 'unconfirmed') === 'allow') {
-      if (!expected || !squirrelLaunchSuperseded(config.buildNumber, expected)) return 'allow'
+      if (!expected || !squirrelLaunchSuperseded(config.buildNumber, expected))
+        return admitted('allow')
       if (!(await inspectSquirrelIdle(systemCacheDir(), config.bundleId)))
         throw new Error(
           'Superseded Mac launch still has native update activity or uncertain evidence'
@@ -1890,7 +1914,7 @@ export async function macStartupAdmission(
       )
         throw new Error('Mac handoff changed during superseded startup admission')
       log(`[update] startup admission=superseded candidate=${handoff!.candidate}\n`)
-      return 'superseded'
+      return admitted('superseded')
     }
     const status = await settleSquirrelStartup(() =>
       inspectSquirrelStartup(
@@ -1906,15 +1930,63 @@ export async function macStartupAdmission(
     log(
       `[update] startup admission=${admission} status=${status} candidate=${handoff!.candidate}\n`
     )
-    return admission
+    return { ...admitted(admission), status }
   } catch (error) {
     log(`[update] startup admission=exit evidence unavailable: ${String(error)}\n`)
-    return 'exit'
+    return { admission: 'exit', status: 'unconfirmed', cause: error }
   }
 }
 
+function readAdmittedMacHandoff(
+  log: LogSink,
+  startup?: MacStartupAdmission
+): SquirrelHandoff | null {
+  if (process.platform !== MACOS_PLATFORM || !app.isPackaged) return null
+  const handoff = readSquirrelHandoff(squirrelHandoffPath())
+  const evidence = startup?.evidence
+  if (
+    !evidence ||
+    !['allow', 'failed', 'superseded'].includes(startup?.admission ?? '') ||
+    evidence.home !== desktopHome() ||
+    evidence.version !== app.getVersion() ||
+    evidence.buildNumber !== resolveDesktopConfig(log).buildNumber ||
+    evidence.handoff !== JSON.stringify(handoff)
+  )
+    throw new Error('Mac startup admission evidence changed or is unavailable')
+  return handoff
+}
+
+export async function completeMacStartupAdmission(
+  log: LogSink,
+  startup?: MacStartupAdmission,
+  launch?: ObservedUpdateLaunch | null
+): Promise<void> {
+  let handoff = readAdmittedMacHandoff(log, startup)
+  if (handoff?.state === 'installing' && startup?.admission === 'failed') {
+    const refreshed = await macStartupAdmission(desktopHome(), log)
+    if (refreshed.admission !== 'failed')
+      throw new Error('Mac native restoration evidence changed or is unavailable')
+  }
+  if (
+    startup?.evidence &&
+    startup.evidence.launch !== (launch ? JSON.stringify(launch.context) : null)
+  )
+    throw new Error('Mac startup launch context differs from admission')
+  launch?.verify()
+  handoff = readAdmittedMacHandoff(log, startup)
+  if (!handoff || startup?.admission === 'failed') return
+  logUpdateEvent(log, {
+    phase: 'macos-install',
+    event: 'installed-build-observed',
+    updateId: handoff.candidate,
+    toVersion: handoff.version,
+    result: 'success',
+  })
+  rmSync(squirrelHandoffPath(), { force: true })
+}
+
 export function macHandoffCommitted(): boolean {
-  return process.platform === MACOS_PLATFORM && (squirrelRecoveryRequired || !!squirrel?.committed)
+  return process.platform === MACOS_PLATFORM && !!squirrel?.committed
 }
 
 /** Only selects a startup notice. The consumed handoff still forbids backend startup. */
@@ -2543,27 +2615,18 @@ export async function installStagedUpdate(
   }
 }
 
-export function initialUpdateSnapshot(log: LogSink): UpdateSnapshot {
-  if (process.platform === MACOS_PLATFORM) {
+export function initialUpdateSnapshot(log: LogSink, startup?: MacStartupAdmission): UpdateSnapshot {
+  if (process.platform === MACOS_PLATFORM && app.isPackaged) {
     try {
-      const handoff = readSquirrelHandoff(squirrelHandoffPath())
-      if (handoff) {
-        const newer = isNewerRelease(
-          { version: app.getVersion(), buildNumber: resolveDesktopConfig(log).buildNumber },
-          { version: handoff.version, buildNumber: handoff.buildNumber }
-        )
-        if (newer !== false) throw new Error('Squirrel installation requires recovery')
-        logUpdateEvent(log, {
-          phase: 'macos-install',
-          event: 'installed-build-observed',
-          updateId: handoff.candidate,
-          toVersion: handoff.version,
-          result: 'success',
-        })
-        rmSync(squirrelHandoffPath(), { force: true })
-      }
+      readAdmittedMacHandoff(log, startup)
+      if (startup?.admission === 'failed')
+        return {
+          phase: 'failed',
+          currentVersion: app.getVersion(),
+          errorFallback: 'install_failed',
+          errorOrigin: 'install',
+        }
     } catch (error) {
-      squirrelRecoveryRequired = true
       return {
         phase: 'failed',
         currentVersion: app.getVersion(),

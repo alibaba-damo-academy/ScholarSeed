@@ -23,6 +23,7 @@ export interface CsvDialect {
 }
 export interface CsvState {
   identity: string
+  sourceEncoding: CsvEncoding
   version: number
   rowCount: number
   columnCount: number
@@ -71,14 +72,40 @@ const QUOTE_BYTE = 34
 const LF_BYTE = 10
 const CR_BYTE = 13
 const UTF8_BOM = [0xef, 0xbb, 0xbf] as const
+const UTF16_BOMS = [
+  [0xff, 0xfe],
+  [0xfe, 0xff],
+] as const
+export const CSV_ENCODINGS = { utf8: 'utf-8', gbk: 'gbk' } as const
+type CsvEncoding = (typeof CSV_ENCODINGS)[keyof typeof CSV_ENCODINGS]
 const encoder = new TextEncoder()
-const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+const decoder = new TextDecoder(CSV_ENCODINGS.utf8, { fatal: true, ignoreBOM: true })
+const gbkDecoder = new TextDecoder(CSV_ENCODINGS.gbk, { fatal: true })
 
 function ordinal(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0
 }
 function fail(code: string): never {
   throw new Error(code)
+}
+
+function sourceBytes(source: Uint8Array): { bytes: Uint8Array; sourceEncoding: CsvEncoding } {
+  if (UTF16_BOMS.some((bom) => bom.every((byte, index) => source[index] === byte)))
+    fail('csv_encoding_invalid')
+  try {
+    decoder.decode(source)
+    return { bytes: source, sourceEncoding: CSV_ENCODINGS.utf8 }
+  } catch {
+    if (UTF8_BOM.every((byte, index) => source[index] === byte)) fail('csv_encoding_invalid')
+    try {
+      return {
+        bytes: encoder.encode(gbkDecoder.decode(source)),
+        sourceEncoding: CSV_ENCODINGS.gbk,
+      }
+    } catch {
+      fail('csv_encoding_invalid')
+    }
+  }
 }
 
 function scan(
@@ -186,9 +213,11 @@ function encoded(value: string, delimiter: string): Uint8Array {
 
 export class CsvModel {
   readonly identity: string
+  readonly sourceEncoding: CsvEncoding
   readonly dialect: CsvDialect
   readonly rowCount: number
   private readonly bytes: Uint8Array
+  private readonly originalBytes: Uint8Array | null
   private readonly starts: Uint32Array
   private readonly ends: Uint32Array
   private readonly next: Uint32Array
@@ -204,17 +233,15 @@ export class CsvModel {
   version = 0
 
   constructor(
-    bytes: Uint8Array,
+    source: Uint8Array,
     identity: string,
     delimiter?: CsvDialect['delimiter'],
     revision = identity
   ) {
     if (delimiter !== undefined && !DELIMITERS.includes(delimiter)) fail('csv_delimiter_invalid')
-    try {
-      decoder.decode(bytes)
-    } catch {
-      fail('csv_encoding_invalid')
-    }
+    const { bytes, sourceEncoding } = sourceBytes(source)
+    this.sourceEncoding = sourceEncoding
+    this.originalBytes = sourceEncoding === CSV_ENCODINGS.gbk ? source.slice() : null
     this.bytes = bytes.slice()
     this.identity = identity
     this.sourceRevision = revision
@@ -255,6 +282,7 @@ export class CsvModel {
   state(): CsvState {
     return {
       identity: this.identity,
+      sourceEncoding: this.sourceEncoding,
       version: this.version,
       rowCount: this.rowCount,
       columnCount: this.columnCount,
@@ -366,6 +394,7 @@ export class CsvModel {
   }
 
   private expect(version: number): void {
+    if (this.sourceEncoding === CSV_ENCODINGS.gbk) fail('csv_readonly')
     if (version !== this.version) fail('csv_version_conflict')
   }
   private apply(row: number, column: number, value: string): void {
@@ -475,6 +504,8 @@ export class CsvModel {
   }
 
   serialize(): { identity: string; version: number; bytes: Uint8Array } {
+    if (this.originalBytes)
+      return { identity: this.identity, version: this.version, bytes: this.originalBytes.slice() }
     const snapshot = new Map([...this.patches].map(([row, columns]) => [row, new Map(columns)]))
     this.serialized.set(this.version, snapshot)
     if (!snapshot.size)

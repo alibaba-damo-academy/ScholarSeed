@@ -14,7 +14,7 @@ import (
 )
 
 func testPolicy() Policy {
-	return Policy{Schema: 1, ProductID: "scholarseed", BundleID: "scholarseed", AppID: "scholarseed", Target: "win32-x86_64", Channel: "preview", PackVersion: "0.2.0-build.202610170001", Executable: "ScholarSeed.exe", Keys: map[string]string{}}
+	return Policy{Schema: 1, ProductID: "scholarseed", BundleID: "scholarseed", AppID: "scholarseed", Target: "win32-x86_64", Channel: "preview", PackVersion: "0.2.0-build.202610170001", Executable: "ScholarSeed.exe", Keys: map[string]string{}, UpdateMessages: testUpdateMessages()}
 }
 func fixture(t *testing.T) (Policy, Runtime, map[string][]byte) {
 	t.Helper()

@@ -77,7 +77,7 @@ async function wrapSetup(filename, frozen, args, environment, files, branding) {
   })
 }
 function stageSetup(temporary, goRoot, payload) {
-  run(process.execPath, [path.resolve(__dirname, '../security.cjs'), '--check'], process.env, path.resolve(MODULE, '../../..'))
+  run(process.execPath, [path.resolve(__dirname, '../pre/security.cjs'), '--check'], process.env, path.resolve(MODULE, '../../..'))
   legacyPolicy()
   const source = path.join(temporary, 'setup')
   fs.mkdirSync(source)

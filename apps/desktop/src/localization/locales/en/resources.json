@@ -324,6 +324,7 @@
     "revealDesktopUnavailable": "This resource cannot be shown in the file manager because the desktop connection is not ready."
   },
   "operationError": {
+    "root_busy": "This project or linked location is still in use by running or pending work. Retry after that work finishes. Other projects are unaffected.",
     "invalid_name": "The name cannot be empty, be . or .., or contain /, \\, a colon (:), or a null character. Change the name; for example, replace colons in a time with hyphens (-).",
     "name_too_long": "The file or folder name or path is too long. Shorten the name and try again.",
     "name_exists": "An item with this name already exists here.",

@@ -88,34 +88,8 @@ function nativeBuildDirectory(environment = process.env) {
   return fs.mkdtempSync(path.join(ensurePrivateDirectory(root), 'run-'))
 }
 
-async function compileNative({
-  directory,
-  arch = process.arch,
-  artifacts = {},
-  environment = process.env,
-  runContract = true,
-  runDirectoryContract = false,
-}) {
-  if (typeof runDirectoryContract !== 'boolean') throw new TypeError('runDirectoryContract must be boolean')
-  invoke(process.execPath, [path.resolve(__dirname, '../security.cjs'), '--check'], environment)
-  const platform = process.platform
-  if (!(
-    (platform === 'darwin' && ['arm64', 'x64'].includes(arch)) ||
-    (platform === 'win32' && arch === 'x64' && process.arch === 'x64')
-  )) {
-    throw new Error(`unsupported native lease target: ${platform}/${arch}`)
-  }
-  if (!directory || !path.isAbsolute(directory))
-    throw new Error('native output requires a new absolute directory')
-  fs.mkdirSync(directory, { mode: 0o700 })
-  const temporary = nativeBuildDirectory(environment)
-  const selected = Object.fromEntries(
-    Object.entries(environment).filter(([name]) => TOOL_ENVIRONMENT.test(name))
-  )
-  const windows = selected.SystemRoot || selected.SYSTEMROOT || 'C:\\Windows'
-  selected.PATH = platform === 'win32' ? path.join(windows, 'System32') : '/usr/bin:/bin'
-  const tar = platform === 'win32' ? path.join(windows, 'System32', 'tar.exe') : '/usr/bin/tar'
-  const sourceFiles = [
+function nativeSourceFiles(platform) {
+  return [
     'lease.c',
     'fonts.c',
     ...(platform === 'win32' ? ['notification.c', 'notification.h', 'notification.test.c'] : []),
@@ -135,6 +109,36 @@ async function compileNative({
     ...(platform === 'win32' ? ['hook.c', 'VELOPACK-LICENSE.txt'] : []),
     'toolchain.json',
   ]
+}
+
+async function compileNative({
+  directory,
+  arch = process.arch,
+  artifacts = {},
+  environment = process.env,
+  runContract = true,
+  runDirectoryContract = false,
+}) {
+  if (typeof runDirectoryContract !== 'boolean') throw new TypeError('runDirectoryContract must be boolean')
+  invoke(process.execPath, [path.resolve(__dirname, '../pre/security.cjs'), '--check'], environment)
+  const platform = process.platform
+  if (!(
+    (platform === 'darwin' && ['arm64', 'x64'].includes(arch)) ||
+    (platform === 'win32' && arch === 'x64' && process.arch === 'x64')
+  )) {
+    throw new Error(`unsupported native lease target: ${platform}/${arch}`)
+  }
+  if (!directory || !path.isAbsolute(directory))
+    throw new Error('native output requires a new absolute directory')
+  fs.mkdirSync(directory, { mode: 0o700 })
+  const temporary = nativeBuildDirectory(environment)
+  const selected = Object.fromEntries(
+    Object.entries(environment).filter(([name]) => TOOL_ENVIRONMENT.test(name))
+  )
+  const windows = selected.SystemRoot || selected.SYSTEMROOT || 'C:\\Windows'
+  selected.PATH = platform === 'win32' ? path.join(windows, 'System32') : '/usr/bin:/bin'
+  const tar = platform === 'win32' ? path.join(windows, 'System32', 'tar.exe') : '/usr/bin/tar'
+  const sourceFiles = nativeSourceFiles(platform)
   const sources = Object.fromEntries(
     sourceFiles.map((name) => [name, digest(path.join(NATIVE, name))])
   )
@@ -388,7 +392,7 @@ async function compileNative({
   }
 }
 
-module.exports = { compileNative, nativeBuildDirectory, validateDarwinToolchain, supportsNoDefaultConfig, invoke }
+module.exports = { compileNative, nativeSourceFiles, nativeBuildDirectory, validateDarwinToolchain, supportsNoDefaultConfig, invoke }
 
 if (require.main === module) {
   const args = process.argv.slice(2)

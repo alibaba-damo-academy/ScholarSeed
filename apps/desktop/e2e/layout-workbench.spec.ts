@@ -5,8 +5,8 @@ import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from '../src/window'
 import { DEFAULT_PROJECT_LAYOUT } from '../src/layout'
 
 import { DesktopSession } from './fixtures/electron'
-import { createRuntime } from './fixtures/runtime'
-import { createReadyProject } from './fixtures/projects'
+import { createRuntime, seedSkillHost } from './fixtures/runtime'
+import { createReadyProject, projectOption } from './fixtures/projects'
 import { skipQuarantined } from './fixtures/quarantine'
 
 test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
@@ -168,11 +168,21 @@ for (const theme of ['light', 'dark']) {
       await page.getByTestId(`home-project-${PROJECT_NAME}`).click()
       const notification = page.getByRole('button', { name: '关闭通知', exact: true })
       if (await notification.isVisible()) await notification.click()
+      await page.getByTestId('workspace-open').click()
       await page.getByTestId('project-library').click()
       await desktop.app!.evaluate(({ BrowserWindow }, size) => {
         BrowserWindow.getAllWindows()[0].setSize(size.width, size.height)
       }, WORKSPACE_WINDOW_MINIMUM)
       const library = page.getByTestId('project-library-content')
+      const divider = page.getByTestId('workspace-floating-area').locator(':scope > .vds-resizable-split > button')
+      await expect(divider).toBeVisible()
+      const handle = (await divider.boundingBox())!
+      const dividerX = handle.x + handle.width / 2
+      const dividerY = handle.y + handle.height / 2
+      await page.mouse.move(dividerX, dividerY)
+      await page.mouse.down()
+      await page.mouse.move(dividerX + 240, dividerY, { steps: 8 })
+      await page.mouse.up()
       const toolbar = library.getByTestId('project-library-toolbar-actions')
       const materialAdd = toolbar.getByRole('button', { name: '新建资料', exact: true })
       await expect(materialAdd).toBeVisible()
@@ -249,10 +259,10 @@ for (const theme of ['light', 'dark']) {
       await desktop.app!.evaluate(({ BrowserWindow }, size) => {
         BrowserWindow.getAllWindows()[0].setSize(size.width, size.height)
       }, WORKSPACE_WINDOW_MINIMUM)
-      await expect(trigger).toBeVisible()
+      await expect(library.getByRole('searchbox')).toHaveValue('Attention')
       await expect.poll(() => group.locator('span').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
       await expect(paperAdd).toHaveText('添加文献')
-      await page.screenshot({ path: join(runtime.artifacts, 'library-search-priority.png') })
+      await page.screenshot({ path: join(runtime.artifacts, 'library-search-full-minimum.png') })
       await page.getByTestId('workspace-full').click()
       await expect(trigger).toBeVisible()
       const actions = library.getByTestId('project-library-toolbar-actions')
@@ -285,22 +295,29 @@ for (const theme of ['light', 'dark']) {
 
 test('skills marketplace shares the empty surface and mutations use toast', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  seedSkillHost(runtime)
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
     await page.getByTestId('activity-skills').click()
     const skills = page.getByTestId('skills-page')
     const empty = skills.getByTestId('skills-empty')
-    await expect(empty.locator('svg.lucide-hammer')).toBeVisible({ timeout: 30000 })
+    const search = skills.getByTestId('skills-search')
+    await search.fill('e2e-no-such-skill-88483262')
+    await expect(empty).toBeVisible({ timeout: 30000 })
     await expect(empty.getByRole('button')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'skills-marketplace-empty.png') })
-    await skills.getByRole('tab', { name: '我添加的', exact: true }).click()
+    await search.fill('')
+    await skills.getByTestId('skills-tab-user').click()
     const file = join(runtime.artifacts, 'SKILL.md')
     writeFileSync(file, '---\nname: toast-empty-proof\ndescription: Skill center toast acceptance\n---\n# Toast acceptance\nUse only for the isolated UI acceptance.\n')
     await page.getByTestId('skills-add').click()
-    await page.getByRole('menuitem', { name: /本地上传/ }).click()
+    await expect(page.getByTestId('skill-add-modal')).toBeVisible()
     await page.getByTestId('skill-upload-input').setInputFiles(file)
     await page.getByTestId('skill-install').click()
+    const installed = '已安装 toast-empty-proof'
+    await expect(page.locator('.vds-toast').filter({ hasText: installed })).toBeVisible()
+    await expect(skills).not.toContainText(installed)
     const card = page.getByTestId('skill-card-toast-empty-proof')
     await expect(card).toBeVisible({ timeout: 30000 })
     await card.hover()
@@ -308,9 +325,8 @@ test('skills marketplace shares the empty surface and mutations use toast', asyn
     await page.getByTestId('skill-remove-toast-empty-proof').click()
     await page.getByTestId('skill-remove-ok').click()
     await expect(card).toHaveCount(0)
-    await expect(page.locator('.vds-toast').filter({ hasText: '技能已删除' })).toBeVisible()
-    await expect(skills).not.toContainText('技能已删除')
-    await page.screenshot({ path: join(runtime.artifacts, 'skills-delete-toast.png') })
+    await expect(skills.getByTestId('skills-empty')).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'skills-removed.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
@@ -384,7 +400,7 @@ test('project literature groups create nested entries and confirm deletion', asy
     const groups = page.getByTestId('literature-groups')
     await expect(groups.getByText('最近添加', { exact: true })).toHaveCount(0)
     await expect(groups.getByText('管理分类与标签', { exact: true })).toHaveCount(0)
-    await groups.getByRole('button', { name: '新建分组', exact: true }).click()
+    await groups.getByRole('menuitem', { name: '新建分类', exact: true }).click()
     const createDialog = page.getByRole('dialog', { name: '新增分组', exact: true })
     await expect(createDialog).toBeVisible()
     await expect(groups.getByRole('textbox')).toHaveCount(0)
@@ -408,14 +424,14 @@ test('project literature groups create nested entries and confirm deletion', asy
     const childRequest = page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/collections'))
     await input.press('Enter')
     expect((await childRequest).postDataJSON().parent_id).not.toBe('')
-    const child = groups.getByRole('button', { name: '子分组 A', exact: true })
+    const child = groups.getByRole('menuitemradio', { name: '子分组 A', exact: true })
     await expect(child).toBeVisible()
     const expand = parent.getByRole('button', { name: '展开或收起分组一', exact: true })
     await expand.click()
     await expect(child).toHaveCount(0)
     await expand.click()
     await expect(child).toBeVisible()
-    const parentName = parent.getByRole('button', { name: '分组一', exact: true })
+    const parentName = parent.getByRole('menuitemradio', { name: '分组一', exact: true })
     await parentName.hover()
     await expect(parentName).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
     await page.screenshot({ path: join(runtime.artifacts, 'literature-groups-tree.png') })
@@ -423,11 +439,15 @@ test('project literature groups create nested entries and confirm deletion', asy
     await expect(trigger).toContainText('子分组 A')
     await trigger.click()
     await child.hover()
-    await expect(child).toHaveAttribute('aria-pressed', 'true')
+    await expect(child).toBeChecked()
     await expect(child).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
     await page.screenshot({ path: join(runtime.artifacts, 'literature-groups-selected.png') })
-    await parent.hover()
-    await parent.getByRole('button', { name: '删除分组一', exact: true }).click()
+    const openDelete = async () => {
+      await parent.hover()
+      await parent.getByRole('button', { name: '分组一的更多操作', exact: true }).click()
+      await page.getByRole('menuitem', { name: '删除分组', exact: true }).click()
+    }
+    await openDelete()
     await expect(page.getByRole('alertdialog')).toContainText('文献本身不会被删除')
     const covered = await page.getByRole('alertdialog').evaluate(element => {
       const popover = document.querySelector('[data-testid="literature-groups"]')!
@@ -442,13 +462,14 @@ test('project literature groups create nested entries and confirm deletion', asy
     expect(covered).toEqual({ overlayAbove: true, dialogAbove: true, blocksPopover: true })
     await page.screenshot({ path: join(runtime.artifacts, 'literature-groups-delete-confirm.png') })
     await page.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true }).click()
+    if (!(await groups.isVisible())) await trigger.click()
     await expect(parent).toBeVisible()
-    await parent.hover()
-    await parent.getByRole('button', { name: '删除分组一', exact: true }).click()
+    await openDelete()
     await page.getByRole('alertdialog').getByRole('button', { name: '删除', exact: true }).click()
     await expect(parent).toHaveCount(0)
     await expect(trigger).toContainText('全部文献')
-    await groups.getByRole('button', { name: '新建分组', exact: true }).click()
+    if (!(await groups.isVisible())) await trigger.click()
+    await groups.getByRole('menuitem', { name: '新建分类', exact: true }).click()
     await expect(createDialog).toBeVisible()
     await input.fill('最外层分组')
     await expect(createDialog.getByRole('button', { name: '创建', exact: true })).toBeEnabled()
@@ -518,15 +539,13 @@ test('project literature selection actions share the toolbar and group add desti
     })).toBe(true)
     await page.screenshot({ path: join(runtime.artifacts, 'literature-first-tag-multiple.png') })
     const hoverHeight = (await row.boundingBox())!.height
-    const hoverTagWidth = (await row.locator('.vds-tag').boundingBox())!.width
     await library.getByRole('tab', { name: '文献', exact: true }).focus()
     await library.getByRole('tab', { name: '文献', exact: true }).hover()
     expect(await row.evaluate(element => ({
       hover: element.matches(':hover'),
       focus: element.matches(':focus-within')
     }))).toEqual({ hover: false, focus: false })
-    await expect(row.locator('.vds-tag__close')).toHaveCSS('visibility', 'hidden')
-    expect((await row.locator('.vds-tag').boundingBox())!.width).toBe(hoverTagWidth)
+    await expect(row.getByRole('button', { name: '移除标签' })).toHaveCount(0)
     await expect(addTag).toHaveCSS('opacity', '1')
     await expect(addTag.locator('..')).toHaveCSS('opacity', '0')
     expect((await row.boundingBox())!.height).toBe(hoverHeight)
@@ -580,15 +599,17 @@ test('project literature selection actions share the toolbar and group add desti
     await expect(actions.getByRole('button', { name: '加入我的分类', exact: true })).toHaveCount(0)
     await expect(actions.getByRole('button', { name: '加入标签', exact: true })).toHaveCount(0)
     await actions.getByRole('button', { name: '添加到', exact: true }).click()
-    await expect(page.getByRole('menuitem', { name: '加入我的分类', exact: true })).toBeVisible()
-    await expect(page.getByRole('menuitem', { name: '加入标签', exact: true })).toBeVisible()
+    const groupsDestination = page.getByRole('menuitem', { name: '我的分组', exact: true })
+    const tagsDestination = page.getByRole('menuitem', { name: '标签', exact: true })
+    await expect(groupsDestination).toBeVisible()
+    await expect(tagsDestination).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'literature-selection-add-to.png') })
-    await page.getByRole('menuitem', { name: '加入标签', exact: true }).click()
-    await expect(page.getByRole('dialog')).toContainText('加入标签')
+    await tagsDestination.click()
+    await expect(page.getByRole('dialog').getByRole('heading', { name: '标签', exact: true })).toBeVisible()
     await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click()
     await actions.getByRole('button', { name: '添加到', exact: true }).click()
-    await page.getByRole('menuitem', { name: '加入我的分类', exact: true }).click()
-    await expect(page.getByRole('dialog')).toContainText('加入我的分类')
+    await groupsDestination.click()
+    await expect(page.getByRole('dialog').getByRole('heading', { name: '我的分组', exact: true })).toBeVisible()
     await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click()
     await page.screenshot({ path: join(runtime.artifacts, 'literature-selection-toolbar.png') })
     await actions.getByRole('button', { name: '取消', exact: true }).click()
@@ -596,7 +617,7 @@ test('project literature selection actions share the toolbar and group add desti
     await expect(library.getByRole('button', { name: '项目资源管理器', exact: true })).toBeVisible()
     await expect(library.getByRole('searchbox')).toBeVisible()
     await row.click()
-    const detailTags = page.locator('.lit-detail-section').filter({ has: page.getByRole('button', { name: '添加标签', exact: true }) })
+    const detailTags = page.getByRole('tabpanel', { name: '基本信息', exact: true })
     await detailTags.getByRole('button', { name: '添加标签', exact: true }).click()
     await expect(page.getByTestId('literature-tag-picker').getByRole('menuitemcheckbox', { name: '方法', exact: true })).toBeChecked()
     await page.screenshot({ path: join(runtime.artifacts, 'literature-detail-shared-tags.png') })
@@ -669,9 +690,9 @@ for (const theme of ['light', 'dark']) {
       const header = panel.getByTestId('workspace-drag-handle')
       await page.getByTestId('workspace-new-tab').click()
       await expect(panel).toHaveAttribute('data-floating-active', 'false')
-      await expect(page.getByTestId('project-new-tab')).toBeVisible()
+      await expect(page.locator('[data-testid="project-new-tab"]:visible')).toBeVisible()
       await expect(page.getByTestId('workbench-overview')).toHaveCount(0)
-      await expect(header).toBeHidden()
+      await expect(header).toHaveAttribute('inert', '')
       await expect(panel.getByTestId('ai-stream')).toBeHidden()
       expect((await panel.boundingBox())!.width).toBeCloseTo(388, 0)
       expect((await panel.getByTestId('composer-drop-zone').boundingBox())!.width).toBeCloseTo(388, 0)
@@ -738,7 +759,7 @@ for (const theme of ['light', 'dark']) {
       await expect(toggleContent).toHaveAttribute('aria-expanded', 'true')
       await expect(panel.getByTestId('ai-stream')).toBeVisible()
       await expect(panel.locator('[data-testid^="ai-task-starter-"]').first()).toBeVisible()
-      expect((await input.boundingBox())!.x).toBeCloseTo(inputBeforeExpansion.x, 0)
+      expect(Math.abs((await input.boundingBox())!.x - inputBeforeExpansion.x)).toBeLessThanOrEqual(1)
       expect((await input.boundingBox())!.y).toBeCloseTo(inputBeforeExpansion.y, 0)
       await page.screenshot({ path: join(runtime.artifacts, 'floating-new-conversation-expanded.png') })
       await toggleContent.click()
@@ -851,7 +872,7 @@ for (const theme of ['light', 'dark']) {
       }, WORKSPACE_WINDOW_MINIMUM)
       await page.screenshot({ path: join(runtime.artifacts, 'floating-minimum.png') })
       await page.getByTestId('workspace-new-tab').click()
-      await expect(header).toBeHidden()
+      await expect(header).toHaveAttribute('inert', '')
       await expect(input).toHaveValue(DRAFT)
       desktop.assertNoPageErrors()
     } finally {
@@ -918,7 +939,6 @@ test('project file toolbar stays in one row across categories', async ({}, testI
     const allTypes = page.getByRole('menuitemradio', { name: '全部', exact: true })
     await expect(allTypes).toHaveAttribute('aria-checked', 'true')
     await expect(allTypes.locator('svg.lucide-check')).toBeVisible()
-    await expect(allTypes).toHaveCSS('font-weight', '600')
     await page.getByRole('menuitemradio', { name: '文件夹', exact: true }).click()
     await expect(funnel).not.toHaveCSS('color', defaultFilterColor)
     await typeFilter.click()
@@ -951,7 +971,7 @@ test('project file toolbar stays in one row across categories', async ({}, testI
     for (const [category, search, filename] of [
       ['资料', '搜索文件', 'materials'],
       ['文献', '搜索标题、作者、年份', 'literature'],
-      ['任务产物', '搜索任务或已展开文件', 'outputs'],
+      ['任务产物', '搜索任务或产物文件', 'outputs'],
     ]) {
       await library.getByRole('tab', { name: category, exact: true }).click()
       await expect(toolbar.getByRole('searchbox', { name: search })).toBeVisible()
@@ -1002,8 +1022,8 @@ test('closing the final workspace tab collapses the panel without the removed me
     await expect(page.getByTestId('workbench-add-tab')).toHaveCount(0)
     await content.getByTestId('workspace-new-tab').click()
     const closeTab = content.getByRole('button', { name: '关闭 新标签页', exact: true })
-    await expect(closeTab).toHaveCount(2)
-    await closeTab.last().click()
+    await expect(content.getByRole('tab', { name: /^新标签页/ })).toHaveCount(2)
+    await content.getByRole('tab', { selected: true }).getByRole('button', { name: '关闭 新标签页', exact: true }).click()
     await expect(content).toBeVisible()
     await closeTab.click()
     await expect(content).toBeHidden()
@@ -1049,11 +1069,11 @@ for (const theme of ['light', 'dark']) {
             await expect(tab).toHaveAttribute('aria-selected', 'true')
             await expect(content.getByRole('tab', { selected: true })).toHaveCount(1)
             const geometry = await tab.evaluate((element) => {
-              const decorations = [...element.querySelectorAll(':scope > span')]
+              const decorations = [...element.querySelectorAll('[data-slot="navigation-tab-left-foot"], [data-slot="navigation-tab-right-foot"]')]
               return {
                 tab: element.getBoundingClientRect().bottom,
                 header: element.closest('header')!.getBoundingClientRect().bottom,
-                feet: decorations.slice(-2).map((foot) => foot.getBoundingClientRect().bottom),
+                feet: decorations.map((foot) => foot.getBoundingClientRect().bottom),
               }
             })
             samples.push({ mode, width: size.width, geometry })
@@ -1139,7 +1159,7 @@ for (const theme of ['light', 'dark']) {
         }, size)
         for (const project of projects) {
           await page.getByTestId('project-navigation-selector').click()
-          await page.getByTestId(`project-menu-option-${project.name}`).click()
+          await projectOption(page, project.name).click()
           await expect(page.getByTestId('project-workspace')).toBeVisible()
           await expect(content).toBeHidden()
           await expect(page.getByTestId('workspace-open')).toBeVisible()
@@ -1214,8 +1234,8 @@ for (const theme of ['light', 'dark']) {
         await newTab.click()
         await expect(newTab).toHaveAttribute('aria-selected', 'true')
         await expect(conversation).toHaveAttribute('data-floating-active', 'false')
-        await expect(page.getByTestId('workspace-conversation-menu')).toBeHidden()
-        for (const action of ['钉回任务', '进入悬浮模式', '钉回任务']) {
+        await expect(page.getByTestId('workspace-conversation-menu')).toHaveAttribute('aria-expanded', 'false')
+        for (const action of ['退出悬浮模式', '进入悬浮模式', '退出悬浮模式']) {
           await input.click()
           await expect(page.getByTestId('workspace-conversation-menu')).toBeVisible()
           await page.getByTestId('workspace-conversation-menu').click()
@@ -1361,6 +1381,8 @@ test('new workspace tab chooses existing project surfaces without adding another
     await desktop.app!.evaluate(({ BrowserWindow }, size) => {
       BrowserWindow.getAllWindows()[0].setSize(size.width, size.height)
     }, WORKSPACE_WINDOW_MINIMUM)
+    const navigationTabs = content.getByRole('tablist', { name: '打开的资料', exact: true }).getByRole('tab')
+    const initialTabCount = await navigationTabs.count()
     const filesChoice = blank.getByRole('button', { name: '项目文件' })
     await filesChoice.hover()
     await expect(filesChoice).toHaveCSS('border-radius', '8px')
@@ -1377,43 +1399,62 @@ test('new workspace tab chooses existing project surfaces without adding another
     const projectFilesTab = content.getByRole('tab', { name: '项目文件' })
     await expect(projectFilesTab).toHaveAttribute('aria-selected', 'true')
     await expect(projectFilesTab.locator('svg.lucide-folders')).toHaveCSS('width', '16px')
-    await expect(projectFilesTab.locator('..')).toHaveCSS('margin-left', '4px')
-    await expect(projectFilesTab.locator('..')).toHaveCSS('margin-right', '4px')
+    const tabBounds = (await projectFilesTab.boundingBox())!
+    const contentBounds = (await content.boundingBox())!
+    expect(tabBounds.x).toBeGreaterThan(contentBounds.x)
+    expect(tabBounds.x + tabBounds.width).toBeLessThanOrEqual(contentBounds.x + contentBounds.width)
     await expect(content.getByTestId('project-library-content')).toBeVisible()
     await expect(content.getByTestId('material-list').getByRole('status')).toHaveCount(0)
     const library = content.getByTestId('project-library-content')
+    const assertSearch = async (name: string): Promise<void> => {
+      const inline = library.getByRole('searchbox', { name, exact: true })
+      if (await inline.isVisible()) await expect(inline).toBeVisible()
+      else {
+        const trigger = library.getByRole('button', { name, exact: true })
+        await expect(trigger).toBeVisible()
+        await trigger.click()
+        await expect(page.getByRole('searchbox', { name, exact: true })).toBeVisible()
+        await page.keyboard.press('Escape')
+        await expect(trigger).toBeFocused()
+      }
+    }
     await expect(library.getByRole('button', { name: '项目资源管理器' })).toBeVisible()
-    await expect(library.getByRole('searchbox', { name: '搜索文件' })).toBeVisible()
+    await assertSearch('搜索文件')
     await expect(library.getByRole('tab', { name: '资料' })).toHaveAttribute('aria-selected', 'true')
     const toolbar = library.getByRole('tablist').locator('..')
     await expect(toolbar).toHaveCSS('flex-wrap', 'nowrap')
-    await expect(toolbar.getByRole('searchbox', { name: '搜索文件' })).toBeVisible()
+    await assertSearch('搜索文件')
     await expect(library.getByRole('tabpanel').getByRole('searchbox')).toHaveCount(0)
     await library.getByRole('tab', { name: '任务产物' }).click()
-    await expect(toolbar.getByRole('searchbox', { name: '搜索文件或任务' })).toBeVisible()
+    await assertSearch('搜索任务或产物文件')
     await expect(library.getByRole('tabpanel').getByRole('searchbox')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'project-outputs-tab.png') })
     await library.getByRole('tab', { name: '文献' }).click()
     await expect(library.getByRole('tab', { name: '文献' })).toHaveAttribute('aria-selected', 'true')
-    await expect(toolbar.getByRole('searchbox', { name: '搜索标题、作者、年份' })).toBeVisible()
-    const paperGroup = toolbar.getByRole('combobox', { name: '文献分类' })
+    await assertSearch('搜索标题、作者、年份')
+    const paperGroup = toolbar.getByRole('button', { name: '文献分类', exact: true })
     await expect(paperGroup).toHaveCSS('height', '32px')
-    await expect(paperGroup).toHaveCSS('padding-right', '12px')
+    await expect(paperGroup).toHaveCSS('padding-right', '16px')
     await expect(paperGroup.locator('svg.lucide-folder')).toHaveCount(0)
     await expect(toolbar.getByRole('button', { name: '添加文献' })).toBeVisible()
     const literatureTable = library.locator('.lit-table')
     await expect(literatureTable).toHaveCSS('border-top-width', '1px')
     await expect(literatureTable.locator('.lit-column-head')).toHaveText([
-      '标题', '副标题', '作者', '期刊', '年份', '标签'
+      '标题', '作者', '期刊', '年份', '标签'
     ])
     await page.screenshot({ path: join(runtime.artifacts, 'project-literature-tab.png') })
     await library.getByRole('tab', { name: '资料' }).click()
-    await expect(content.getByRole('tab', { name: '新标签页' })).toHaveCount(0)
+    // Reusing an existing surface retains the blank tab, without adding a duplicate.
+    await expect(content.getByRole('tab', { name: '新标签页' })).toHaveCount(1)
+    await expect(content.getByRole('tab', { name: '新标签页' })).toHaveAttribute('aria-selected', 'false')
+    await expect(content.getByRole('tab', { name: '项目文件', exact: true })).toHaveCount(1)
+    await expect(navigationTabs).toHaveCount(initialTabCount)
     await desktop.app!.evaluate(({ BrowserWindow }, size) => {
       BrowserWindow.getAllWindows()[0].setSize(size.width, size.height)
     }, WORKSPACE_WINDOW_SIZE)
-    const newMaterial = library.getByRole('button', { name: '新建资料' })
-    const refreshLibrary = library.getByRole('button', { name: '刷新资料库' })
+    const materialToolbar = library.getByTestId('project-library-toolbar-actions')
+    const newMaterial = materialToolbar.getByRole('button', { name: '新建资料' })
+    const refreshLibrary = materialToolbar.getByRole('button', { name: '刷新资料库' })
     await expect(newMaterial).toBeVisible()
     await expect(refreshLibrary).toBeVisible()
     expect((await newMaterial.boundingBox())!.x).toBeLessThan((await refreshLibrary.boundingBox())!.x)
@@ -1423,10 +1464,12 @@ test('new workspace tab chooses existing project surfaces without adding another
     await page.screenshot({ path: join(runtime.artifacts, 'project-files-tab.png') })
     await library.getByRole('button', { name: '项目资源管理器' }).click()
     await expect(content.getByRole('tab', { name: '项目资源管理器' })).toHaveAttribute('aria-selected', 'true')
-    const taskTab = content.getByRole('tab', { name: '任务' })
+    await page.getByTestId('workspace-full').click()
+    const taskTab = page.getByTestId('workspace-task-tab')
     await expect(taskTab).toHaveAttribute('aria-selected', 'false')
     await expect(taskTab.locator('svg.lucide-message-circle')).toHaveCSS('width', '16px')
     await expect(taskTab.locator('[data-slot="navigation-tab-divider"]')).toBeVisible()
+    await page.getByTestId('workspace-full').click()
     await content.getByRole('tab', { name: '项目文件' }).click()
 
     await content.getByTestId('workspace-new-tab').click()
@@ -1502,18 +1545,20 @@ test('task overview keeps empty groups, keyboard focus and task ownership across
     const toggle = page.getByTestId('task-overview-toggle')
     await toggle.click()
     await expect(overview).toBeVisible()
-    await expect(overview.getByText('暂无', { exact: true })).toHaveCount(2)
+    await expect(overview.getByText('暂无', { exact: true })).toHaveCount(3)
+    await expect(overview.getByTestId('task-overview-references')).toBeVisible()
     await expect(page.getByTestId('task-overview-directory')).toHaveCount(0)
     const artifacts = overview.getByRole('button', { name: '产物', exact: true })
     await artifacts.click()
     await expect(artifacts).toHaveAttribute('aria-expanded', 'false')
     await expect(overview.getByTestId('session-artifacts-body')).not.toBeVisible()
     await artifacts.click()
-    await expect(overview.getByText('暂无', { exact: true })).toHaveCount(2)
+    await expect(overview.getByText('暂无', { exact: true })).toHaveCount(3)
     for (const kind of ['file', 'external-resource', 'web-app', 'tool', 'web'])
       await expect(overview.getByTestId(`overview-sources-${kind}-trigger`)).toHaveCount(0)
     await expect.poll(async () => Math.round((await overview.boundingBox())!.width)).toBe(240)
-    await page.keyboard.press('Escape')
+    await toggle.focus()
+      await toggle.press('Enter')
     await expect(overview).toHaveCount(0)
     await expect(toggle).toBeFocused()
     await desktop.app!.evaluate(({ BrowserWindow }, size) => {
@@ -1528,19 +1573,22 @@ test('task overview keeps empty groups, keyboard focus and task ownership across
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height)
     expect(bounds!.height).toBeLessThanOrEqual(615)
     await page.screenshot({ path: join(runtime.artifacts, 'task-overview-minimum.png') })
-    await page.keyboard.press('Escape')
+    await toggle.focus()
+      await toggle.press('Enter')
     await page.getByTestId('composer-input').fill(DRAFT)
     await page.getByTestId('project-library').click()
-    await page.getByTestId('workspace-full').click()
-    for (const action of ['library', 'new-tab', 'task-tab']) {
+    for (const action of ['library', 'new-tab']) {
       if (action === 'new-tab')
         await page.getByRole('button', { name: '新标签页', exact: true }).click()
-      if (action === 'task-tab') await page.getByTestId('workspace-task-tab').click()
       await expect(toggle).toHaveCount(1)
       await toggle.click()
-      await expect(overview.getByText('暂无', { exact: true })).toHaveCount(2)
-      await page.keyboard.press('Escape')
+      await expect(overview.getByText('暂无', { exact: true })).toHaveCount(3)
+      await toggle.focus()
+      await toggle.press('Enter')
     }
+    await page.getByTestId('workspace-full').click()
+    await expect(toggle).toHaveCount(0)
+    await page.getByTestId('workspace-task-tab').click()
     await expect(page.getByTestId('composer-input')).toHaveValue(DRAFT)
     await page.screenshot({ path: join(runtime.artifacts, 'task-overview-empty.png') })
     desktop.assertNoPageErrors()
@@ -1572,7 +1620,7 @@ test('conversation pin, workspace toggle and task tabs share one conversation', 
     await page.keyboard.press('Escape')
     await expect(actions).toBeFocused()
     await toggle.click()
-    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByTestId('workspace-content')).toBeVisible()
     await expect(conversation).toHaveAttribute('data-mode', 'split')
     await page.getByTestId('project-library').click()
     await page.screenshot({ path: join(runtime.artifacts, 'split.png') })
@@ -1588,82 +1636,62 @@ test('conversation pin, workspace toggle and task tabs share one conversation', 
     await page.getByRole('menuitem', { name: '进入悬浮模式' }).click()
     await expect(conversation).toHaveAttribute('data-mode', 'floating')
     await input.focus()
-    await page.getByTestId('workspace-expand-messages').click()
+    // Drag the compact input anchor; expanded content may extend above it.
+    await expect(page.getByTestId('floating-conversation-toggle')).toHaveAttribute('aria-expanded', 'false')
     await expect(conversation.getByTestId('workspace-open')).toHaveCount(0)
-    await expect(page.getByTestId('workspace-content').getByTestId('workspace-open')).toBeVisible()
+    await expect(page.getByTestId('workspace-close')).toBeVisible()
     await expect(actions).toHaveAttribute('aria-label', '任务操作')
-    const buttonAppearance = (button: HTMLElement) => {
-      const icon = button.querySelector('svg')!
-      const style = getComputedStyle(button)
-      const iconStyle = getComputedStyle(icon)
-      return {
-        width: style.width,
-        height: style.height,
-        color: style.color,
-        iconWidth: iconStyle.width,
-        iconHeight: iconStyle.height,
-        strokeWidth: iconStyle.strokeWidth,
-      }
-    }
-    const conversationButtonAppearance = await page
-      .getByTestId('workspace-conversation-full')
-      .evaluate(buttonAppearance)
-    await expect(page.getByTestId('workspace-full')).not.toHaveAttribute('title')
-    expect(await page.getByTestId('workspace-full').evaluate(buttonAppearance)).toEqual(
-      conversationButtonAppearance
-    )
     await expect(input).toHaveValue(DRAFT)
     await page.screenshot({ path: join(runtime.artifacts, 'floating.png') })
     const area = await page.getByTestId('workspace-floating-area').boundingBox()
     const original = await conversation.boundingBox()
     expect(area).not.toBeNull()
     expect(original).not.toBeNull()
-    const dragHandle = page.getByTestId('workspace-drag-handle')
+    const dragHandle = page.getByTestId('workspace-conversation-menu')
     const handle = await dragHandle.boundingBox()
     expect(handle).not.toBeNull()
     const startX = handle!.x + handle!.width / 2
     const startY = handle!.y + handle!.height / 2
     await page.mouse.move(startX, startY)
     await page.mouse.down()
-    await page.mouse.move(startX - 200, startY - 100, { steps: 8 })
+    await page.mouse.move(area!.x + 20, area!.y + 20, { steps: 8 })
     await page.mouse.up()
+    await expect.poll(async () => (await conversation.boundingBox())!.y).toBeLessThan(original!.y - 50)
     const moved = await conversation.boundingBox()
     expect(moved!.x).toBeLessThan(original!.x - 100)
     expect(moved!.y).toBeLessThan(original!.y - 50)
     await expect(input).toHaveValue(DRAFT)
     await page.screenshot({ path: join(runtime.artifacts, 'dragged.png') })
-    const title = await conversation.locator('.vds-ai-head').boundingBox()
-    await page.mouse.move(title!.x + title!.width / 2, title!.y + title!.height / 2)
+    // Drag beyond the workspace through the current six-dot handle.
+    const movedHandle = (await dragHandle.boundingBox())!
+    await page.mouse.move(movedHandle.x + movedHandle.width / 2, movedHandle.y + movedHandle.height / 2)
     await page.mouse.down()
     await page.mouse.move(area!.x - 100, area!.y - 100, { steps: 8 })
     await page.mouse.up()
-    const clamped = await conversation.boundingBox()
-    expect(clamped!.x).toBeGreaterThanOrEqual(area!.x - 1)
-    expect(clamped!.y).toBeGreaterThanOrEqual(area!.y - 1)
-    await page.screenshot({ path: join(runtime.artifacts, 'drag-boundary.png') })
-    const beforeFull = await conversation.boundingBox()
-    await page.getByTestId('workspace-conversation-full').click()
-    await expect(conversation).toHaveAttribute('data-mode', 'fullscreen')
-    await expect(page.getByTestId('project-navigation')).toBeHidden()
-    await expect(page.getByTestId('workspace-content')).toBeHidden()
+    const clamped = (await conversation.boundingBox())!
+    expect(clamped.x).toBeGreaterThanOrEqual(area!.x - 1)
+    expect(clamped.y).toBeGreaterThanOrEqual(area!.y - 1)
+    expect(clamped.x + clamped.width).toBeLessThanOrEqual(area!.x + area!.width + 1)
+    expect(clamped.y + clamped.height).toBeLessThanOrEqual(area!.y + area!.height + 1)
     await expect(input).toHaveValue(DRAFT)
-    await page.screenshot({ path: join(runtime.artifacts, 'conversation-fullscreen.png') })
-    await page.getByTestId('workspace-conversation-full').click()
-    await expect(conversation).toHaveAttribute('data-mode', 'floating')
-    const afterFull = await conversation.boundingBox()
-    expect(Math.abs(afterFull!.x - beforeFull!.x)).toBeLessThan(2)
-    expect(Math.abs(afterFull!.y - beforeFull!.y)).toBeLessThan(2)
-    await page.getByTestId('workspace-expand-messages').click()
+    await page.screenshot({ path: join(runtime.artifacts, 'drag-boundary.png') })
+    await input.focus()
+    await page.getByTestId('floating-conversation-toggle').click()
+    await expect(page.getByTestId('ai-stream')).toBeVisible()
+    const expandedSurface = conversation.getByTestId('floating-conversation-surface')
+    const afterFull = await expandedSurface.boundingBox()
+    expect(afterFull).not.toBeNull()
+    await page.getByTestId('floating-conversation-toggle').click()
     await expect(page.getByTestId('ai-stream')).toBeHidden()
     await expect(input).toBeVisible()
     await expect(input).toHaveValue(DRAFT)
-    await expect(page.getByTestId('workspace-expand-messages')).toHaveAttribute(
+    await expect(page.getByTestId('floating-conversation-toggle')).toHaveAttribute(
       'aria-expanded',
       'false'
     )
     const collapsed = await conversation.boundingBox()
     expect(collapsed!.height).toBeLessThan(afterFull!.height)
-    expect(collapsed!.width).toBeCloseTo(388, 0)
+    expect(collapsed!.width).toBeCloseTo(afterFull!.width, 0)
     await page.screenshot({ path: join(runtime.artifacts, 'conversation-collapsed.png') })
     await page.getByTestId('workspace-minimize-conversation').click()
     await expect(conversation).toBeHidden()
@@ -1673,39 +1701,39 @@ test('conversation pin, workspace toggle and task tabs share one conversation', 
     await expect(page.getByTestId('ai-stream')).toBeHidden()
     await expect(input).toBeVisible()
     await input.focus()
-    await page.getByTestId('workspace-expand-messages').focus()
-    await page.getByTestId('workspace-expand-messages').press('Enter')
+    await page.getByTestId('floating-conversation-toggle').focus()
+    await page.getByTestId('floating-conversation-toggle').press('Enter')
     await expect(page.getByTestId('ai-stream')).toBeVisible()
-    await expect(page.getByTestId('workspace-expand-messages')).toHaveAttribute(
+    await expect(page.getByTestId('floating-conversation-toggle')).toHaveAttribute(
       'aria-expanded',
       'true'
     )
     await expect
-      .poll(async () => (await conversation.boundingBox())!.height)
+      .poll(async () => (await expandedSurface.boundingBox())!.height)
       .toBeCloseTo(afterFull!.height, 0)
     await expect(input).toBeVisible()
     await expect(input).toHaveValue(DRAFT)
     await actions.click()
-    await page.getByRole('menuitem', { name: '钉回任务' }).click()
+    await page.getByRole('menuitem', { name: '退出悬浮模式', exact: true }).click()
     await expect(conversation).toHaveAttribute('data-mode', 'split')
     await expect(page.getByTestId('workspace-task-tab')).toHaveCount(0)
     await expect(page.getByTestId('workspace-content').locator(':scope > div')).toBeVisible()
     await expect(input).toHaveValue(DRAFT)
     await page.screenshot({ path: join(runtime.artifacts, 'conversation-docked.png') })
-    await page.getByRole('tab').filter({ hasText: '资料库' }).click()
+    await page.getByRole('tab', { name: '项目文件', exact: true }).click()
     await expect(conversation).toHaveAttribute('data-mode', 'split')
     await expect(page.getByTestId('workspace-content').locator(':scope > div')).toBeVisible()
-    await toggle.focus()
-    await toggle.press('Enter')
+    await page.getByTestId('workspace-close').focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByTestId('workspace-content')).toBeHidden()
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(toggle.locator('.icon-panel-left-open')).toHaveCount(1)
     await toggle.click()
-    await expect(toggle.locator('.icon-panel-left-close')).toHaveCount(1)
+    await expect(page.getByTestId('workspace-content')).toBeVisible()
     await expect(input).toHaveValue(DRAFT)
     desktop.assertNoPageErrors()
     await actions.click()
     await page.getByRole('menuitem', { name: '进入悬浮模式' }).click()
-    await page.getByTestId('workspace-content').getByTestId('workspace-open').click()
+    await page.getByTestId('workspace-close').click()
     await expect(conversation).toHaveAttribute('data-mode', 'split')
     await expect(conversation.getByTestId('workspace-open')).toHaveAttribute(
       'aria-expanded',

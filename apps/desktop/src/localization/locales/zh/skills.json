@@ -235,6 +235,9 @@
     },
     "start": "带入新任务"
   },
+  "categorySources": {
+    "user": "用户安装"
+  },
   "groups": {
     "all": "技能广场",
     "scholarseed": "系统预置",

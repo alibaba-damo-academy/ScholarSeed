@@ -1363,6 +1363,273 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         finally:
             await restarted.aclose()
 
+    async def test_resumed_terminal_settles_unknown_queue_and_allows_next_turn(self) -> None:
+        for status in (TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.INTERRUPTED):
+            with self.subTest(status=status):
+                client_id = f"resume-client-{status.value}"
+                native_id = f"resume-native-{status.value}"
+                self.catalog.enqueue_message(PRODUCT_SESSION_ID, client_id, {"text": "once"})
+                self.catalog.begin_queued_submission(PRODUCT_SESSION_ID, client_id)
+                self.catalog.mark_queue_running(PRODUCT_SESSION_ID, client_id, native_id)
+                await self.emit(
+                    RuntimeEventKind.TURN_UNKNOWN,
+                    turn_id=native_id,
+                    payload={"client_user_message_id": client_id},
+                )
+                self.catalog.fail_queued_submission(
+                    PRODUCT_SESSION_ID, client_id, unknown=True, safe_error="unknown"
+                )
+                self.live.runtime_session.resume_turns = (
+                    ResumeTurnSnapshot(
+                        client_id=client_id, turn_id=native_id, terminal_status=status
+                    ),
+                )
+                await self.live.reconcile_resumed_turns()
+                await self.live.reconcile_resumed_turns()
+                self.assertFalse(self.live.ledger.has_unknown_outcome)
+                self.assertEqual(
+                    self.catalog.queued_message(PRODUCT_SESSION_ID, client_id).state,
+                    QueuedMessageState.COMPLETED,
+                )
+                self.assertEqual(
+                    self.catalog.get(PRODUCT_SESSION_ID).last_turn_status, status.value
+                )
+                removed = [
+                    event
+                    for event in self.events.replay(PRODUCT_SESSION_ID)
+                    if event.kind == "message_removed"
+                    and event.payload.get("queued_message_id") == client_id
+                ]
+                self.assertEqual(len(removed), 1)
+        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger, activities=Activities())
+        result, status = await turns.post(
+            PRODUCT_SESSION_ID,
+            {"wait": True, "input": [{"type": "text", "text": "continue after restart"}]},
+            side=False,
+        )
+        self.assertEqual(status, 202, result)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.catalog.queued_messages(PRODUCT_SESSION_ID), ())
+
+    async def test_resume_resolves_zero_generation_and_partially_reconciled_turns(self) -> None:
+        for status in (TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.INTERRUPTED):
+            for partial in (False, True):
+                with self.subTest(status=status, partial=partial):
+                    client_id = f"zero-client-{status.value}-{partial}"
+                    native_id = f"zero-native-{status.value}-{partial}"
+                    self.catalog.enqueue_message(PRODUCT_SESSION_ID, client_id, {"text": "once"})
+                    self.catalog.begin_queued_submission(PRODUCT_SESSION_ID, client_id)
+                    self.catalog.mark_queue_running(PRODUCT_SESSION_ID, client_id, native_id)
+                    self.catalog.fail_queued_submission(
+                        PRODUCT_SESSION_ID, client_id, unknown=True, safe_error="shutdown"
+                    )
+                    self.catalog.claim_uncertainty(
+                        PRODUCT_SESSION_ID,
+                        UncertaintyKind.TURN,
+                        native_id,
+                        state=UncertaintyState.EXECUTING,
+                    )
+                    if partial:
+                        self.catalog.transition_uncertainty(
+                            PRODUCT_SESSION_ID,
+                            UncertaintyKind.TURN,
+                            native_id,
+                            UncertaintyState.RECONCILED,
+                            payload={"vendor_turn_id": native_id},
+                        )
+                        queued = self.catalog.queued_message(PRODUCT_SESSION_ID, client_id)
+                        self.catalog.remove_reconciled_unknown_message(
+                            PRODUCT_SESSION_ID, client_id, int(queued.operation_seq or 0)
+                        )
+                    self.catalog.update_status(
+                        PRODUCT_SESSION_ID,
+                        SessionStatus.ERROR,
+                        turn_id=native_id,
+                        turn_status=PRODUCT_TURN_OUTCOME_UNKNOWN,
+                    )
+                    self.live.ledger = SessionLedger(
+                        PRODUCT_SESSION_ID,
+                        self.catalog,
+                        self.live.publish,
+                        self.live._trace,
+                        self.logger,
+                        self.live._projection_lock,
+                        self.live.persistence,
+                    )
+                    self.live.runtime_session.resume_turns = (
+                        ResumeTurnSnapshot(
+                            client_id=client_id, turn_id=native_id, terminal_status=status
+                        ),
+                    )
+                    await self.live.reconcile_resumed_turns()
+                    await self.live.reconcile_resumed_turns()
+                    self.assertFalse(self.live.ledger.has_unknown_outcome)
+                    self.assertEqual(
+                        self.catalog.get(PRODUCT_SESSION_ID).last_turn_status, status.value
+                    )
+                    self.assertEqual(
+                        self.catalog.queued_message(PRODUCT_SESSION_ID, client_id).state,
+                        QueuedMessageState.COMPLETED,
+                    )
+        self.assertFalse(
+            any(
+                event.kind == PRODUCT_EVENT_RUNTIME_INCIDENT
+                and event.payload.get("kind") == "terminal_conflict"
+                for event in self.events.replay(PRODUCT_SESSION_ID)
+            )
+        )
+
+    async def test_zero_generation_live_terminal_does_not_resolve_unknown(self) -> None:
+        await self.emit(RuntimeEventKind.TURN_UNKNOWN, payload={"process_generation": 0})
+        await self.emit(RuntimeEventKind.TURN_COMPLETED, payload={"process_generation": 0})
+        self.assertTrue(self.live.ledger.has_unknown_outcome)
+        self.assertEqual(
+            self.catalog.get(PRODUCT_SESSION_ID).last_turn_status, PRODUCT_TURN_OUTCOME_UNKNOWN
+        )
+
+    async def test_resume_settles_already_reconciled_queue_after_reopening_ledger(self) -> None:
+        client_id = "previously-reconciled-client"
+        self.catalog.enqueue_message(PRODUCT_SESSION_ID, client_id, {"text": "once"})
+        self.catalog.begin_queued_submission(PRODUCT_SESSION_ID, client_id)
+        self.catalog.mark_queue_running(PRODUCT_SESSION_ID, client_id, VENDOR_TURN_ID)
+        await self.emit(
+            RuntimeEventKind.TURN_UNKNOWN, payload={"client_user_message_id": client_id}
+        )
+        self.catalog.fail_queued_submission(
+            PRODUCT_SESSION_ID, client_id, unknown=True, safe_error="unknown"
+        )
+        await self.emit(RuntimeEventKind.TURN_FAILED)
+        self.live.ledger = SessionLedger(
+            PRODUCT_SESSION_ID,
+            SessionCatalogStore(self.database),
+            self.live.publish,
+            self.live._trace,
+            self.logger,
+            self.live._projection_lock,
+            self.live.persistence,
+        )
+        self.live.runtime_session.resume_turns = (
+            ResumeTurnSnapshot(
+                client_id=client_id, turn_id=VENDOR_TURN_ID, terminal_status=TurnStatus.FAILED
+            ),
+        )
+        await self.live.reconcile_resumed_turns()
+        self.assertEqual(
+            self.catalog.queued_message(PRODUCT_SESSION_ID, client_id).state,
+            QueuedMessageState.COMPLETED,
+        )
+        self.assertEqual(self.catalog.get(PRODUCT_SESSION_ID).last_turn_status, "failed")
+
+    async def test_resume_keeps_unknown_queue_for_unmatched_or_nonterminal_history(self) -> None:
+        client_id = "unmatched-resume-client"
+        self.catalog.enqueue_message(PRODUCT_SESSION_ID, client_id, {"text": "once"})
+        self.catalog.begin_queued_submission(PRODUCT_SESSION_ID, client_id)
+        self.catalog.mark_queue_running(PRODUCT_SESSION_ID, client_id, VENDOR_TURN_ID)
+        await self.emit(
+            RuntimeEventKind.TURN_UNKNOWN, payload={"client_user_message_id": client_id}
+        )
+        self.catalog.fail_queued_submission(
+            PRODUCT_SESSION_ID, client_id, unknown=True, safe_error="unknown"
+        )
+        for snapshot in (
+            ResumeTurnSnapshot(
+                client_id="other-client", turn_id=VENDOR_TURN_ID, terminal_status=TurnStatus.FAILED
+            ),
+            ResumeTurnSnapshot(
+                client_id=client_id, turn_id="other-native", terminal_status=TurnStatus.FAILED
+            ),
+            ResumeTurnSnapshot(client_id=client_id, turn_id=VENDOR_TURN_ID, terminal_status=None),
+        ):
+            self.live.runtime_session.resume_turns = (snapshot,)
+            await self.live.reconcile_resumed_turns()
+            self.assertEqual(
+                self.catalog.queued_message(PRODUCT_SESSION_ID, client_id).state,
+                QueuedMessageState.OUTCOME_UNKNOWN,
+            )
+            self.assertTrue(self.live.ledger.has_unknown_outcome)
+
+    async def test_shutdown_interrupt_settles_turn_and_preserves_unsent_queue(self) -> None:
+        adapter = self.live.runtime_session
+        submitted = asyncio.Event()
+        request_id = "shutdown-active-client"
+        original_submit = adapter.submit
+
+        async def submit(request):
+            adapter.sequence += 1
+            await adapter.queue.put(
+                RuntimeEvent(
+                    schema_version=1,
+                    event_id="shutdown-started",
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=PRODUCT_SESSION_ID,
+                    native_session_id=VENDOR_THREAD_ID,
+                    native_turn_id=request.command_id,
+                    process_generation=3,
+                    sequence=adapter.sequence,
+                    kind=RuntimeEventKind.TURN_STARTED,
+                    delivery=DeliveryClass.MUST_PERSIST,
+                    observed_at="2026-09-07T00:00:00Z",
+                    correlation_id=request.command_id,
+                )
+            )
+            submitted.set()
+            return CommandReceipt(request.command_id, CommandState.ACCEPTED)
+
+        async def interrupt(request):
+            adapter.sequence += 1
+            await adapter.queue.put(
+                RuntimeEvent(
+                    schema_version=1,
+                    event_id="shutdown-interrupted",
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=PRODUCT_SESSION_ID,
+                    native_session_id=VENDOR_THREAD_ID,
+                    native_turn_id=request_id,
+                    process_generation=3,
+                    sequence=adapter.sequence,
+                    kind=RuntimeEventKind.TURN_INTERRUPTED,
+                    delivery=DeliveryClass.MUST_PERSIST,
+                    observed_at="2026-09-07T00:00:00Z",
+                    correlation_id=request_id,
+                )
+            )
+            return CommandReceipt(request.command_id, CommandState.APPLIED)
+
+        adapter.submit = submit
+        adapter.interrupt = interrupt
+        activities = Activities()
+        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger, activities=activities)
+        self.addAsyncCleanup(turns.aclose)
+        result, status = await turns.post(
+            PRODUCT_SESSION_ID,
+            {
+                "client_user_message_id": request_id,
+                "input": [{"type": "text", "text": "active before shutdown"}],
+            },
+            side=False,
+        )
+        self.assertEqual(status, 202, result)
+        await asyncio.wait_for(submitted.wait(), 5)
+        self.catalog.enqueue_message(PRODUCT_SESSION_ID, "still-queued", {"text": "later"})
+        await asyncio.wait_for(
+            SessionService.interrupt_running_for_shutdown(
+                SimpleNamespace(_sessions={PRODUCT_SESSION_ID: self.live})
+            ),
+            5,
+        )
+        self.assertEqual(self.catalog.get(PRODUCT_SESSION_ID).last_turn_status, "interrupted")
+        self.assertFalse(self.live.ledger.has_unknown_outcome)
+        self.assertEqual(
+            self.catalog.queued_message(PRODUCT_SESSION_ID, request_id).state,
+            QueuedMessageState.COMPLETED,
+        )
+        self.assertEqual(
+            self.catalog.queued_message(PRODUCT_SESSION_ID, "still-queued").state,
+            QueuedMessageState.QUEUED,
+        )
+        self.assertEqual(adapter.sequence, 2)
+        adapter.submit = original_submit
+
     async def test_nonterminal_resume_keeps_gate_until_explicit_human_confirmation(self) -> None:
         unknown = self.incident(
             RuntimeIncidentState.DETECTED,

@@ -331,6 +331,15 @@ class SkillManagementIdentityContracts(unittest.IsolatedAsyncioTestCase):
                         (error.exception.status, error.exception.detail), (status, reason)
                     )
 
+    async def test_inventory_diagnostics_keep_safe_reason_without_exception_body(self):
+        self.runtime.skill_inventory.side_effect = RuntimeError("private-exception-body")
+        with self.assertLogs("service.capabilities.service.management", level="WARNING") as logs:
+            with self.assertRaises(SkillManagementError) as caught:
+                await self.manager.inventory(user_id="account-a", force_reload=True)
+        self.assertEqual(caught.exception.status, 503)
+        self.assertIn("reason=codex_skill_inventory_unavailable", " ".join(logs.output))
+        self.assertNotIn("private-exception-body", " ".join(logs.output))
+
     async def test_known_configuration_refusals_do_not_retry_or_compensate(self):
         for reason, status in (
             (RESOURCE_HOST_BUSY, 409),

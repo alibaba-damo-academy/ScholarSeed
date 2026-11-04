@@ -652,7 +652,7 @@ class CodexRuntimeProvider:
         async with self._control(
             cwd=request.cwd, roots=request.roots, host=request.host
         ) as control:
-            async with control.mutation():
+            async with control.reading():
                 for skill in request.skills:
                     await control.skill_control.configure(skill.path, skill.enabled)
                 inventory = await control.skill_control.list_skills(force_reload=True)
@@ -682,14 +682,10 @@ class CodexRuntimeProvider:
                 if kind is InventoryKind.MODELS:
                     values[kind.value] = json_value(await control.model_control.list_models())
                 elif kind is InventoryKind.SKILLS:
-                    if request.inventory.refresh:
-                        async with control.mutation():
-                            skills = await control.skill_control.list_skills(
-                                cwd=request.cwd,
-                                force_reload=True,
-                            )
-                    else:
-                        skills = await control.skill_control.list_skills(cwd=request.cwd)
+                    skills = await control.skill_control.list_skills(
+                        cwd=request.cwd,
+                        force_reload=request.inventory.refresh,
+                    )
                     revisions.append(skills.revision)
                     values[kind.value] = json_value(skills)
                 elif kind is InventoryKind.MCP:

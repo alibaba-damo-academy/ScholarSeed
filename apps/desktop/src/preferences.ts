@@ -7,6 +7,7 @@ import {
 } from './navigation.ts'
 
 import {
+  defaultSelectionPrompts,
   sanitizeSelectionPrompts,
   selectionPromptsEqual,
   type SelectionPrompts,
@@ -204,10 +205,11 @@ export const DEFAULT_RENDERER_PREFERENCES: RendererPreferences = {
 export function defaultRendererPreferences(
   fallbackLanguage?: PreferenceLanguage
 ): RendererPreferences {
+  const language = fallbackLanguage ?? DEFAULT_RENDERER_PREFERENCES.language
   return {
     ...DEFAULT_RENDERER_PREFERENCES,
-    selectionPrompts: sanitizeSelectionPrompts(undefined),
-    language: fallbackLanguage ?? DEFAULT_RENDERER_PREFERENCES.language,
+    selectionPrompts: defaultSelectionPrompts(language),
+    language,
   }
 }
 
@@ -534,6 +536,7 @@ export function sanitizeRendererPreferences(
     return fallback
   }
   const parsed = value as Partial<RendererPreferences>
+  const language = parseLanguage(parsed.language, fallback.language)
   return {
     taskMessageDismissals:
       parsed.taskMessageDismissals &&
@@ -554,7 +557,7 @@ export function sanitizeRendererPreferences(
     lastLocation: sanitizeNavigationLocation(parsed.lastLocation),
     projectLayouts: sanitizeProjectLayouts(parsed.projectLayouts),
     ...(parsed.onboarding ? { onboarding: sanitizeOnboarding(parsed.onboarding) } : {}),
-    selectionPrompts: sanitizeSelectionPrompts(parsed.selectionPrompts),
+    selectionPrompts: sanitizeSelectionPrompts(parsed.selectionPrompts, language),
     reasoningPreferences:
       parsed.reasoningPreferences && typeof parsed.reasoningPreferences === 'object'
         ? Object.fromEntries(
@@ -597,7 +600,7 @@ export function sanitizeRendererPreferences(
         : DEFAULT_RENDERER_PREFERENCES.editorWordWrap,
     shortcutOverrides: sanitizeShortcutOverrides(parsed.shortcutOverrides),
     dataSharingMode: 'private',
-    language: parseLanguage(parsed.language, fallback.language),
+    language,
     theme: parseTheme(parsed.theme),
     recentFiles: sanitizeRecentFiles(parsed.recentFiles),
     recentLiterature: sanitizeRecentLiterature(parsed.recentLiterature),

@@ -37,6 +37,14 @@ export interface DockLayout {
   areaRatio: number
 }
 
+export function hasSplitPanes(layout: DockLayout): boolean {
+  return (
+    layout.areas.primary.kind === 'split' ||
+    layout.areas.secondary.kind === 'split' ||
+    (nodeTabCount(layout.areas.primary) > 0 && nodeTabCount(layout.areas.secondary) > 0)
+  )
+}
+
 export const MAX_DOCK_ROWS = 2
 export const MAX_DOCK_COLUMNS = 2
 export const MAX_DOCK_PANES = MAX_DOCK_ROWS * MAX_DOCK_COLUMNS

@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next'
 import type {
+  ConfirmUnknownTurnResponse,
   QueuedMessageDeleteResponse,
   QueuedMessagePayload,
   SubmissionMode,
@@ -12,6 +13,26 @@ const INITIAL_QUEUE_SEQUENCE = 0
 const OPTIMISTIC_QUEUE_STATE: QueuedMessage['state'] = 'submitting'
 const SETTLED_QUEUE_STATE: QueuedMessage['state'] = 'queued'
 const UNKNOWN_QUEUE_STATE: QueuedMessage['state'] = 'outcome_unknown'
+const TURN_CONFIRMATION_STALE = 'runtime_turn_confirmation_stale'
+
+export async function confirmQueuedOutcome(actions: {
+  confirm: () => Promise<Pick<ConfirmUnknownTurnResponse, 'ok' | 'code' | 'error'>>
+  refreshQueue: () => Promise<boolean>
+  refreshContext: () => Promise<unknown>
+}): Promise<FeedbackDescriptor | null> {
+  const result = await actions.confirm()
+  const refreshed = await actions.refreshQueue()
+  await actions.refreshContext()
+  if (!refreshed) return feedback('components', 'composer.checkFailed')
+  if (result.ok) return null
+  return feedback(
+    'components',
+    (result.code || result.error) === TURN_CONFIRMATION_STALE
+      ? 'composer.confirmStateChanged'
+      : 'composer.confirmContinueFailed'
+  )
+}
+
 export const QUEUE_PRESENTATION_MESSAGE_KEYS = {
   queued: 'composer.queued',
   waiting_resources: 'composer.queued',

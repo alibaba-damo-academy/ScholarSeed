@@ -523,6 +523,7 @@ function NavigationTabButton({
   variant,
 }: NavigationTabButtonProps): JSX.Element {
   const { t } = useTranslation('ui')
+  const activatedOnPress = useRef(false)
   const showClose = variant === 'document' && onClose && closable && (!compressed || active)
   const handleClose = (event: MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
@@ -569,7 +570,26 @@ function NavigationTabButton({
       data-state={active ? 'active' : 'inactive'}
       data-first={first ? 'true' : undefined}
       onKeyDown={handleKeyDown}
-      onClick={onClick}
+      onPointerDown={(event) => {
+        activatedOnPress.current = false
+        elementProps?.onPointerDown?.(event)
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          !event.isPrimary ||
+          event.pointerType !== 'mouse' ||
+          (event.target as HTMLElement).closest('button') ||
+          elementProps?.['aria-disabled'] === true ||
+          elementProps?.['aria-disabled'] === 'true'
+        )
+          return
+        activatedOnPress.current = true
+        onClick()
+      }}
+      onClick={(event) => {
+        if (!activatedOnPress.current || event.detail === 0) onClick()
+        activatedOnPress.current = false
+      }}
       role="tab"
       tabIndex={active ? 0 : -1}
     >

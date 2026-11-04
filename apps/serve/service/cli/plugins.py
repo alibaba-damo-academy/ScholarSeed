@@ -15,13 +15,13 @@ from service.capabilities.service.authoring import (
     inspect_package,
     validate_request,
 )
-from service.capabilities.service.dependencies import declaration
 from service.capabilities.service.descriptor import MAX_DESCRIPTOR_BYTES
 from service.capabilities.service.install import MAX_PACKAGE_BYTES
 from service.capabilities.service.package import (
     MAX_FILE_BYTES,
     PACKAGE_MANIFEST,
     PackageError,
+    declaration,
     pack_skill,
 )
 from service.capabilities.service.utils import json_object

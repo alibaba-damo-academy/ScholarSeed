@@ -1628,6 +1628,7 @@ PLAN_MAX_DEPTH = 4
 PLAN_RELEASED_SOURCE = "released"
 PLAN_TIMING_POLICY = "leaf-execution-v1"
 PLAN_STEP = "step"
+PLAN_RECONCILE_ACTION = "reconcile"
 
 
 class PlanRead(BaseModel):
@@ -1705,6 +1706,7 @@ PLAN_ACTION_STATUSES: dict[str, PlanStatus] = {
     "block": "blocked",
     "fail": "failed",
     "partial": "partial",
+    PLAN_RECONCILE_ACTION: "completed",
 }
 
 
@@ -1744,12 +1746,12 @@ class PlanStructure(PlanMutation):
 class PlanAction(PlanMutation):
     model_config = ConfigDict(
         json_schema_extra={
-            CONTRACT_GUIDANCE_KEY: "Read plan/get and choose from actions for the stable step IDs. Start before work, finish after actual work, pause for a checkpoint and start before handling its result. If work happened without a start, block with the observed reason; never fabricate a bookkeeping start/finish. These actions preserve the entire tree and real timing rules.",
+            CONTRACT_GUIDANCE_KEY: "Read plan/get and choose from actions for the stable step IDs. Start before work, finish after actual work, pause for a checkpoint and start before handling its result. If work already completed without a start, verify its result and use reconcile with a reason stating the observed completion evidence. Reconcile records completion without a start or execution time; never fabricate a bookkeeping start/finish. Block only for an actual obstacle. These actions preserve the entire tree and real timing rules.",
             CONTRACT_PREREQUISITES_KEY: [{"capability": "plan", "operation": "get"}],
         }
     )
 
-    action: Literal["start", "finish", "pause", "block", "fail", "partial"]
+    action: Literal["start", "finish", "pause", "block", "fail", "partial", "reconcile"]
     step_ids: list[Annotated[str, Field(min_length=1, max_length=PLAN_ID_CHARS)]] = Field(
         min_length=1, max_length=PLAN_MAX_ITEMS
     )

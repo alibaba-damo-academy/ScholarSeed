@@ -33,11 +33,14 @@ from service.capabilities.domain import SKILL_MANIFEST_NAME
 from service.capabilities.service.install import parse_skill_frontmatter
 from service.capabilities.service.manifest import atomic_write
 from service.capabilities.service.package import (
+    DIRECTORY_PROVENANCE_KIND,
     MAX_FILE_BYTES,
     PACKAGE_MANIFEST,
     VERSION_PATTERN,
+    declaration,
     digest,
     json_bytes,
+    package_manifest,
     validate_paths,
 )
 from service.capabilities.service.prebundle import (
@@ -50,6 +53,7 @@ from service.capabilities.service.prebundle import (
     validate_bundled_skills,
 )
 from service.capabilities.service.skills import (
+    SKILL_CATEGORY_SOURCE_KEY,
     SKILL_INVOCATION_METADATA_KEY,
     SKILL_INVOCATION_PERMISSION_DEFAULT,
     SKILL_INVOCATION_PERMISSION_FULL_ACCESS,
@@ -59,6 +63,7 @@ from service.capabilities.service.skills import (
     SKILL_INVOCATION_PROFILE_PATTERN,
     SKILL_INVOCATION_PROFILES_KEY,
     SKILL_PRODUCT_METADATA_FILE,
+    SKILL_SOURCE_BUILTIN,
 )
 from service.platform.storage import filesystem_path
 
@@ -73,13 +78,15 @@ PRODUCT_DEFAULTS_DIR = Path(__file__).resolve().parents[1] / "defaults"
 WINDOWS_PLATFORM = "win32"
 PACK_STAGING_PREFIX = "scholarseed-skill-pack-"
 
-LOCK_PROTOCOL_VERSION = 2
+LOCK_PROTOCOL_VERSION = 3
 LOCK_SOURCE = "repository"
 BUNDLED_INVENTORY_KEY = "inventory"
 SKILL_PACK_ORIGIN_SOURCE = "repository"
 COMMUNITY_NAMESPACE = "scholarseed"
 DEFAULT_SKILL_VERSION = "0.0.0"
 SKILL_VERSION_FILE = "VERSION"
+SKILL_REGISTRY_FILE = "registry.json"
+SKILL_DEPENDENCIES_KEY = "dependencies"
 FILE_MODE = 0o644
 EXECUTABLE_MODE = 0o755
 DIRECTORY_MODE = 0o755
@@ -87,7 +94,9 @@ TEXT_ENCODING = "utf-8"
 CHUNK_BYTES = 1024 * 1024
 HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 SOURCE_LOCK_FIELDS = frozenset({"protocol_version", "source", "namespace", "skills"})
-SOURCE_SKILL_FIELDS = frozenset({"slug", "namespace", "version", "payload_sha256", "files"})
+SOURCE_SKILL_FIELDS = frozenset(
+    {"slug", "namespace", "version", "payload_sha256", "files", SKILL_DEPENDENCIES_KEY}
+)
 SOURCE_FILE_FIELDS = frozenset({"path", "size", "sha256", "mode"})
 # 源码目录里不属于技能负载的开发残留，不进 pack。
 EXCLUDED_NAMES = frozenset({"__pycache__", ".DS_Store", ".git", ".pytest_cache"})
@@ -271,6 +280,26 @@ def _frontmatter(directory: Path) -> Mapping[str, Any]:
     return frontmatter if isinstance(frontmatter, Mapping) else {}
 
 
+def _bundled_manifest(row: Mapping[str, Any]) -> bytes:
+    document = next(item for item in row["files"] if item["path"] == SKILL_MANIFEST_NAME)
+    return package_manifest(
+        row["slug"],
+        row["version"],
+        {"kind": DIRECTORY_PROVENANCE_KIND},
+        document["sha256"],
+        row[SKILL_DEPENDENCIES_KEY],
+        row["files"],
+    )
+
+
+def _payload_digest(files: list[dict[str, Any]], dependencies: Mapping[str, Any]) -> str:
+    payload_digest = hashlib.sha256(json_bytes(dependencies))
+    for item in files:
+        payload_digest.update(item["path"].encode(TEXT_ENCODING))
+        payload_digest.update(item["sha256"].encode(TEXT_ENCODING))
+    return payload_digest.hexdigest()
+
+
 def source_lock(source: Path = COMMUNITY_SKILLS_DIR) -> dict[str, Any]:
     """由仓库内技能源码生成 lock —— 开源版构建输入的权威记录。
 
@@ -280,38 +309,49 @@ def source_lock(source: Path = COMMUNITY_SKILLS_DIR) -> dict[str, Any]:
     """
 
     root = filesystem_path(source.expanduser()).resolve()
+    registry = json.loads((root.parent / SKILL_REGISTRY_FILE).read_bytes())
+    policies = registry.get(SKILL_DEPENDENCIES_KEY) if isinstance(registry, dict) else None
+    if not isinstance(policies, dict):
+        raise SkillPackError(f"{SKILL_REGISTRY_FILE} must declare skill dependencies")
     rows: list[dict[str, Any]] = []
     for name in discover_source_skills(root):
         directory = root / name
         frontmatter = _frontmatter(directory)
-        files = _effective_files(directory, name)
-        payload_digest = hashlib.sha256()
-        for row in files:
-            payload_digest.update(row.relative.encode(TEXT_ENCODING))
-            payload_digest.update(row.sha256.encode(TEXT_ENCODING))
+        version = _skill_version(directory, frontmatter)
+        if frontmatter.get("name") != name:
+            raise SkillPackError(
+                f"{name}: {SKILL_MANIFEST_NAME} name differs from source directory"
+            )
+        if name not in policies:
+            raise SkillPackError(f"{name}: missing dependency policy in {SKILL_REGISTRY_FILE}")
+        dependencies = declaration(policies[name])
+        files = [
+            {
+                "path": row.relative,
+                "size": row.size,
+                "sha256": row.sha256,
+                "mode": EXECUTABLE_MODE if row.executable else FILE_MODE,
+            }
+            for row in _effective_files(directory, name)
+        ]
         rows.append(
             {
                 "slug": name,
                 "namespace": COMMUNITY_NAMESPACE,
-                "version": _skill_version(directory, frontmatter),
-                "payload_sha256": payload_digest.hexdigest(),
-                "files": [
-                    {
-                        "path": row.relative,
-                        "size": row.size,
-                        "sha256": row.sha256,
-                        "mode": EXECUTABLE_MODE if row.executable else FILE_MODE,
-                    }
-                    for row in files
-                ],
+                "version": version,
+                "payload_sha256": _payload_digest(files, dependencies),
+                "files": files,
+                SKILL_DEPENDENCIES_KEY: dependencies,
             }
         )
-    return {
-        "protocol_version": LOCK_PROTOCOL_VERSION,
-        "source": LOCK_SOURCE,
-        "namespace": COMMUNITY_NAMESPACE,
-        "skills": rows,
-    }
+    return validate_source_lock(
+        {
+            "protocol_version": LOCK_PROTOCOL_VERSION,
+            "source": LOCK_SOURCE,
+            "namespace": COMMUNITY_NAMESPACE,
+            "skills": rows,
+        }
+    )
 
 
 def validate_source_lock(lock: dict[str, Any]) -> dict[str, Any]:
@@ -349,11 +389,11 @@ def validate_source_lock(lock: dict[str, Any]) -> dict[str, Any]:
             if (
                 paths != sorted(paths)
                 or len(set(paths)) != len(paths)
-                or PACKAGE_MANIFEST not in paths
+                or PACKAGE_MANIFEST in paths
                 or SKILL_MANIFEST_NAME not in paths
             ):
                 raise SkillPackError("invalid repository skill file inventory")
-            payload_digest = hashlib.sha256()
+            dependencies = declaration(row[SKILL_DEPENDENCIES_KEY])
             for item in files:
                 if (
                     set(item) != SOURCE_FILE_FIELDS
@@ -364,9 +404,7 @@ def validate_source_lock(lock: dict[str, Any]) -> dict[str, Any]:
                     or not HASH_PATTERN.fullmatch(item["sha256"])
                 ):
                     raise SkillPackError("invalid repository skill file record")
-                payload_digest.update(item["path"].encode(TEXT_ENCODING))
-                payload_digest.update(item["sha256"].encode(TEXT_ENCODING))
-            if payload_digest.hexdigest() != row["payload_sha256"]:
+            if _payload_digest(files, dependencies) != row["payload_sha256"]:
                 raise SkillPackError("repository skill payload digest differs")
     except (KeyError, TypeError, AttributeError) as exc:
         raise SkillPackError("invalid repository skill lock schema") from exc
@@ -403,6 +441,7 @@ def product_metadata_from_source(directory: Path, row: Mapping[str, Any]) -> byt
         "version": row["version"],
         "origin": f"{SKILL_PACK_ORIGIN_SOURCE}:{row['namespace']}/{row['slug']}",
         "category": SKILL_PACK_CATEGORY,
+        SKILL_CATEGORY_SOURCE_KEY: SKILL_SOURCE_BUILTIN,
         "blurb": _skill_blurb(frontmatter),
         "icon": SKILL_PACK_ICON,
         "payload_sha256": row["payload_sha256"],
@@ -438,7 +477,7 @@ def verify_compiled_skill(directory: Path) -> Mapping[str, Any]:
         or row["payload_sha256"] != metadata.get("payload_sha256")
     ):
         raise SkillPackError("bundled skill inventory identity differs")
-    expected = [(item["path"], item["size"], item["sha256"]) for item in row["files"]]
+    expected = [(item["path"], item["size"], item["sha256"]) for item in _pack_file_records(row)]
     actual = [(item.relative, item.size, item.sha256) for item in skill_source_files(directory)]
     if actual != expected:
         raise SkillPackError("bundled skill integrity mismatch")
@@ -484,13 +523,15 @@ def _pack_staging(parent: Path) -> Iterator[Path]:
 def compile_source_skills(
     target: Path,
     source: Path = COMMUNITY_SKILLS_DIR,
+    *,
+    lock_path: Path | None = None,
 ) -> SkillPackBuild:
     """从仓库内源码原子编译技能 pack。全程离线，无 Skillhub、无 ZIP 缓存。"""
 
     root = filesystem_path(source.expanduser()).resolve()
     target = filesystem_path(target.expanduser())
     target_root = target.resolve()
-    if target.is_symlink():
+    if target.is_symlink() or target.is_junction():
         raise SkillPackError("技能 pack 目标不能是符号链接")
     if root == target_root or target_root in root.parents:
         raise SkillPackError("技能源码不能位于将被替换的目标目录内")
@@ -503,6 +544,17 @@ def compile_source_skills(
         ):
             raise SkillPackError("拒绝替换含非技能数据的目标目录")
     lock = source_lock(root)
+    if lock_path is not None:
+        lock_path = filesystem_path(lock_path.expanduser())
+        lock_destination = lock_path.resolve()
+        if (
+            lock_path.is_symlink()
+            or lock_path.is_junction()
+            or lock_destination.is_relative_to(root)
+            or lock_destination.is_relative_to(target_root)
+            or lock_destination == root.parent / SKILL_REGISTRY_FILE
+        ):
+            raise SkillPackError("技能 lock 输出不得覆盖源码、依赖政策或技能 pack")
     names = frozenset(row["slug"] for row in lock["skills"])
     target_root.parent.mkdir(parents=True, exist_ok=True)
     with _pack_staging(target_root.parent) as temporary:
@@ -515,10 +567,13 @@ def compile_source_skills(
             files = skill_source_files(origin)
             _copy_payload(origin, directory, files)
             _copy_product_defaults(row["slug"], directory)
+            manifest_path = directory / PACKAGE_MANIFEST
+            manifest_path.write_bytes(_bundled_manifest(row))
+            manifest_path.chmod(FILE_MODE)
             metadata_path = directory / SKILL_PRODUCT_METADATA_FILE
             metadata_path.write_bytes(product_metadata_from_source(origin, row))
             metadata_path.chmod(FILE_MODE)
-        validation = validate_bundled_skills(pack, expected=names)
+        validation = _verify_pack(lock, pack)
         if not validation.ok:
             raise SkillPackError(str(dict(validation.errors)))
         previous = temporary / "previous"
@@ -530,6 +585,8 @@ def compile_source_skills(
             if previous.exists():
                 previous.rename(target_root)
             raise
+    if lock_path is not None:
+        atomic_write(lock_path, json_bytes(lock))
     return SkillPackBuild(
         packages=tuple(
             f"{row['namespace']}/{row['slug']}@{row['version']}" for row in lock["skills"]
@@ -538,77 +595,51 @@ def compile_source_skills(
     )
 
 
+def _pack_file_records(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    manifest = _bundled_manifest(row)
+    return sorted(
+        [
+            *row["files"],
+            {
+                "path": PACKAGE_MANIFEST,
+                "size": len(manifest),
+                "sha256": digest(manifest),
+                "mode": FILE_MODE,
+            },
+        ],
+        key=lambda entry: entry["path"],
+    )
+
+
 def verify_source_pack(
     target: Path,
     source: Path = COMMUNITY_SKILLS_DIR,
 ) -> tuple[bool, tuple[str, ...]]:
-    """逐字节/大小/权限比对已安装 pack 与仓库内源码。返回 (是否一致, 差异列表)。"""
+    """Verify exact installed bytes, including the manifest derived from the source lock."""
 
-    root = filesystem_path(source.expanduser()).resolve()
-    target_root = filesystem_path(target.expanduser()).resolve()
-    problems: list[str] = []
-    lock = source_lock(root)
-    expected_names = {row["slug"] for row in lock["skills"]}
-    actual_names = (
-        {
-            child.name
-            for child in target_root.iterdir()
-            if child.is_dir() and child.name not in EXCLUDED_NAMES
-        }
-        if target_root.is_dir()
-        else set()
+    validation = _verify_pack(source_lock(source), target)
+    return validation.ok, tuple(
+        f"{name}: {error}" for name, errors in validation.errors.items() for error in errors
     )
-    for missing in sorted(expected_names - actual_names):
-        problems.append(f"{missing}: 已安装 pack 中缺失")
-    for unexpected in sorted(actual_names - expected_names):
-        problems.append(f"{unexpected}: 不在源码声明集合内")
-    for row in lock["skills"]:
-        directory = target_root / row["slug"]
-        if not directory.is_dir():
-            continue
-        for entry in row["files"]:
-            installed = directory / entry["path"]
-            if not installed.is_file():
-                problems.append(f"{row['slug']}/{entry['path']}: 缺失")
-                continue
-            if installed.stat().st_size != entry["size"]:
-                problems.append(f"{row['slug']}/{entry['path']}: 大小不一致")
-                continue
-            if _sha256(installed) != entry["sha256"]:
-                problems.append(f"{row['slug']}/{entry['path']}: 内容不一致")
-            actual_mode = _portable_mode(installed)
-            if actual_mode != entry["mode"]:
-                problems.append(
-                    f"{row['slug']}/{entry['path']}: 权限 {oct(actual_mode)} != {oct(entry['mode'])}"
-                )
-        metadata_path = directory / SKILL_PRODUCT_METADATA_FILE
-        expected_metadata = product_metadata_from_source(root / row["slug"], row)
-        if not metadata_path.is_file():
-            problems.append(f"{row['slug']}/{SKILL_PRODUCT_METADATA_FILE}: 缺失")
-        elif metadata_path.read_bytes() != expected_metadata:
-            problems.append(f"{row['slug']}/{SKILL_PRODUCT_METADATA_FILE}: 内容不一致")
-        elif _portable_mode(metadata_path) != FILE_MODE:
-            problems.append(
-                f"{row['slug']}/{SKILL_PRODUCT_METADATA_FILE}: 权限 "
-                f"{oct(_portable_mode(metadata_path))} != {oct(FILE_MODE)}"
-            )
-    return (not problems, tuple(problems))
 
 
 def verify_source_locked_pack(lock_path: Path, target: Path) -> SkillPackValidation:
     """Verify an installed pack using only its frozen repository-source lock."""
 
+    return _verify_pack(load_source_lock(lock_path), target)
+
+
+def _verify_pack(lock: Mapping[str, Any], target: Path) -> SkillPackValidation:
     target = filesystem_path(target.expanduser())
-    if target.is_symlink():
+    if target.is_symlink() or target.is_junction():
         raise SkillPackError("技能 pack 目标不能是符号链接")
-    lock = load_source_lock(lock_path)
     root = filesystem_path(target.expanduser().resolve())
     validation = validate_bundled_skills(
         root, expected=frozenset(row["slug"] for row in lock["skills"])
     )
     expected: dict[str, tuple[str, int, int]] = {}
     for row in lock["skills"]:
-        for item in row["files"]:
+        for item in _pack_file_records(row):
             expected[f"{row['slug']}/{item['path']}"] = (
                 item["sha256"],
                 item["size"],
@@ -626,7 +657,7 @@ def verify_source_locked_pack(lock_path: Path, target: Path) -> SkillPackValidat
     if root.is_dir():
         for path in root.rglob("*"):
             relative = path.relative_to(root).as_posix()
-            if path.is_symlink():
+            if path.is_symlink() or path.is_junction():
                 raise SkillPackError(f"技能产物包含符号链接: {relative}")
             if path.is_file():
                 data = path.read_bytes()

@@ -116,17 +116,21 @@ function verifyBinding(directory, frameworks, headers, source) {
     `-I${headers}`, `-I${OWNER}`, `-I${path.join(source, 'Squirrel')}`, `-F${frameworks}`,
     '-framework', 'Foundation', '-framework', 'Mantle', '-framework', 'ReactiveObjC',
     `-Wl,-rpath,${frameworks}`, path.join(source, 'Squirrel', 'SQRLShipItRequest.m'),
-    path.join(OWNER, 'preparation.m'), path.join(OWNER, 'readiness.m'), path.join(OWNER, 'binding.test.m'), '-o', executable], directory)
+    path.join(OWNER, 'cleanup.m'), path.join(OWNER, 'preparation.m'), path.join(OWNER, 'readiness.m'), path.join(OWNER, 'binding.test.m'), '-o', executable], directory)
   command(executable, [path.join(directory, 'binding-fixture')], directory)
 }
 
 function verifyPreparation(directory) {
-  for (const name of ['preparation', 'readiness', 'terminal']) {
-    const fixture = path.join(directory, `${name}.test.m`)
-    fs.copyFileSync(path.join(OWNER, `${name}.test.m`), fixture)
+  for (const name of ['preparation', 'readiness', 'terminal', 'publication', 'readonly', 'preflight']) {
+    const fixture = path.join(name === 'preflight' ? OWNER : directory, `${name}.test.m`)
+    if (name !== 'preflight') fs.copyFileSync(path.join(OWNER, `${name}.test.m`), fixture)
     const executable = path.join(directory, `${name}-test`)
+    let units = ['cleanup', 'preparation', 'readiness']
+    if (name === 'readiness') units = ['readiness']
+    if (name === 'publication') units = ['cleanup', 'readiness']
     command('/usr/bin/xcrun', ['clang', '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror',
-      '-framework', 'Foundation', ...(name === 'readiness' ? ['readiness'] : ['preparation', 'readiness']).map(unit => path.join(directory, `${unit}.m`)), fixture, '-o', executable], directory)
+      ...(name === 'readonly' ? ['-DCFPreferencesSetValue=SSReadOnlyPreferenceSet', '-DCFPreferencesSynchronize=SSReadOnlyPreferenceSync'] : []),
+      '-framework', 'Foundation', ...units.map(unit => path.join(directory, `${unit}.m`)), fixture, '-o', executable], directory)
     const result = spawnSync(executable, [path.join(directory, `${name}-fixture`)], {
       encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: 60_000,
     })

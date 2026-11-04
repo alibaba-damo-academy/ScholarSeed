@@ -477,7 +477,6 @@
     "elapsedSeconds": "{{seconds}}s",
     "elapsedMinutes": "{{minutes}}m {{seconds}}s",
     "estimate": {
-      "unavailable": "No reliable estimate yet",
       "total": "Estimated {{lower}}–{{upper}}m",
       "remaining": "{{lower}}–{{upper}}m left",
       "overrun": "Past the historical range; still running",
@@ -672,6 +671,7 @@
     "confirmContinue": "I have checked, continue",
     "confirmingOutcome": "Confirming",
     "confirmContinueFailed": "Confirmation failed. Please try again.",
+    "confirmStateChanged": "The task state has changed. The latest queue and session state have been fetched; review them before continuing.",
     "body": "Message body",
     "referenceOnly": "This message contains references only",
     "annotations": "Answer annotations",
@@ -1412,7 +1412,7 @@
     },
     "prompts": {
       "title": "AI prompts",
-      "description": "Saved AI prompts apply across projects and restarts; add requests per action.",
+      "description": "Saved AI prompts apply across projects and restarts. Restore a default in the current interface language, then save to apply it. Add temporary requests per action.",
       "explain": "AI interpretation",
       "translate": "AI translation",
       "polish": "AI polish",

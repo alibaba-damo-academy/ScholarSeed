@@ -26,6 +26,7 @@ const STAGE_TIMEOUT_MS = 1_800_000
 const LIVE_TIMEOUT_MS = 3_600_000
 const RUN_ALL_TIMEOUT_EXIT_CODE = 124
 const DESKTOP_TEST_CONCURRENCY_DEFAULT = 4
+const SUPERVISOR_TEST_CONCURRENCY = 1
 const CI_JOB_QUOTA_MAX = 8
 // run_all.py 缺省 min(8, CPU)；此处显式接线同语义的 CPU-aware jobs，保持既有默认上限。
 const RUN_ALL_DEFAULT_JOBS = 8
@@ -35,9 +36,10 @@ const RUN_ALL_DEFAULT_JOBS = 8
 const STAGE_QUOTA_ENV = 'CI_STAGE_QUOTA'
 
 function ciStageQuota(budget, fallback) {
+  if (budget !== null) return Math.max(1, Math.min(CI_JOB_QUOTA_MAX, budget))
   const override = Number.parseInt(process.env[STAGE_QUOTA_ENV] || '', 10)
   if (Number.isFinite(override) && override >= 1 && override <= CI_JOB_QUOTA_MAX) return override
-  return budget === null ? fallback : Math.max(1, Math.min(CI_JOB_QUOTA_MAX, budget))
+  return fallback
 }
 const NODE_OMISSION_METHOD = 'node-test-skip-pattern'
 const SKIP_RESTORE_CONDITIONS = {
@@ -232,7 +234,8 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
     stages.push({ id: 'python-trace-independent', kind: 'python', cwd: ROOT,
       args: [...PYTEST_ARGS, 'packages/damoatrace/damoatrace/tests'], reportKind: 'pytest' })
     stages.push({ id: 'python-literature-independent', kind: 'python', cwd: ROOT,
-      args: [...PYTEST_ARGS, 'skills/community/literature-review/scripts'], reportKind: 'pytest' })
+      args: [...PYTEST_ARGS, 'apps/serve/service/capabilities/skills/literature-review/scripts'],
+      dependsOn: 'skills-source-verify', reportKind: 'pytest' })
     stages.push({ id: 'python-websearch-independent', kind: 'python', cwd: ROOT,
       args: [...PYTEST_ARGS, 'skills/community/web-search/scripts/test_search.py'], reportKind: 'pytest' })
     stages.push({ id: 'python-agentic-independent', kind: 'python', cwd: ROOT,
@@ -277,6 +280,9 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
     reportKind: 'node-summary' })
   stages.push({ id: 'desktop-extra-node', kind: 'node', cwd: ROOT,
     args: ['--experimental-transform-types', '--test',
+      // These suites spawn nested supervisors and verify bounded signal handling.
+      // Their children must not compete with other test files for host startup.
+      `--test-concurrency=${SUPERVISOR_TEST_CONCURRENCY}`,
       ...(quarantine ? [`--test-skip-pattern=${nodeOmissionPattern('desktop-extra-node')}`] : []),
       'scripts/__tests__/ops.test.cjs', 'scripts/__tests__/desktop.test.cjs', 'scripts/__tests__/organization.test.cjs', 'scripts/ci/__tests__/routing.test.cjs',
       'scripts/shared/__tests__/interpreter.test.cjs',

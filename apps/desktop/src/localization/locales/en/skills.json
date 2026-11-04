@@ -235,6 +235,9 @@
     },
     "start": "Add to new task"
   },
+  "categorySources": {
+    "user": "User installed"
+  },
   "groups": {
     "all": "Skill marketplace",
     "scholarseed": "System preset",

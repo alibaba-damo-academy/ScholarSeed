@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import { createInstance } from 'i18next'
@@ -38,6 +39,12 @@ const resources = Object.fromEntries(
             `../../../../localization/locales/${language}/subscription.json`,
             import.meta.url
           ),
+          'utf8'
+        )
+      ),
+      components: JSON.parse(
+        readFileSync(
+          new URL(`../../../../localization/locales/${language}/components.json`, import.meta.url),
           'utf8'
         )
       ),
@@ -201,8 +208,11 @@ test('composer has one combined model control at the right of the spacer', () =>
   )
   assert.match(menu, /tooltipContentClassName=\{MODEL_MENU_TOOLTIP_CONTENT_CLASS\}/)
   assert.match(menu, /effort\.selectable \? effort\.label : '-'/)
-  // 未选择模型(登出后仅剩置灰行): 主按钮回显占位符、强度行禁用。
-  assert.match(menu, /const hasCurrentModel = modelAvailable && Boolean\(selectedModel\)/)
+  // 未选择或已禁用模型: 主按钮回显占位符、强度行禁用。
+  assert.match(
+    menu,
+    /const hasCurrentModel = modelAvailable && Boolean\(selectedModel && !selectedModel\.disabled\)/
+  )
   assert.match(menu, /hasCurrentModel \? effort\.label : '-'/)
   assert.match(menu, /hasCurrentModel && effort\.selectable \? effort\.label : '-'/)
   assert.doesNotMatch(menu, /effort\.hasModel/)
@@ -345,6 +355,82 @@ test('preset presentation follows language without changing connection inputs or
     note: '',
     credentialHint: '',
   })
+})
+
+test('service address hint translates application presets and preserves custom metadata and fallbacks', async () => {
+  const syntax = ts.createSourceFile(
+    'AccountPanel.tsx',
+    readFileSync(new URL('./AccountPanel.tsx', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const hints: ts.Expression[] = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxOpeningElement(node) && node.tagName.getText(syntax) === 'ModelEndpointField') {
+      const attributes = node.attributes.properties.filter(ts.isJsxAttribute)
+      const label = attributes.find((attribute) => attribute.name.getText(syntax) === 'label')
+      const expression =
+        label?.initializer && ts.isJsxExpression(label.initializer)
+          ? label.initializer.expression
+          : undefined
+      const key =
+        expression && ts.isCallExpression(expression) ? expression.arguments[0] : undefined
+      if (key && ts.isStringLiteral(key) && key.text === 'accountPanel.modelsPage.baseUrlLabel') {
+        const hint = attributes.find((attribute) => attribute.name.getText(syntax) === 'hint')
+        if (
+          hint?.initializer &&
+          ts.isJsxExpression(hint.initializer) &&
+          hint.initializer.expression
+        )
+          hints.push(hint.initializer.expression)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(hints.length, 1)
+  const script = ts.transpileModule(`(${hints[0].getText(syntax)})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const localization = createInstance()
+  await localization.init({ lng: 'zh', fallbackLng: false, resources })
+  const presets = (['openai', 'google', 'openrouter', 'ollama'] as const).map((id) => ({
+    id,
+    label: id,
+    base_url: 'https://example.test/v1',
+    wire_api: 'chat_completions' as const,
+    note: '服务端原始中文说明',
+    credential_hint: '',
+  }))
+  const original = structuredClone(presets)
+  for (const language of ['en', 'zh', 'en']) {
+    await localization.changeLanguage(language)
+    const accountActions = localization.getFixedT(null, 'account')
+    const t = localization.getFixedT(null, 'components')
+    const hint = (
+      activePreset: Parameters<typeof providerPresetText>[0],
+      customConnection = false
+    ) =>
+      runInNewContext(script, {
+        activePreset,
+        customConnection,
+        providerPresetText,
+        accountActions,
+        t,
+      })
+    for (const preset of presets) {
+      const expected = accountActions(`providerPresets.${preset.id}.note`)
+      assert.equal(hint(preset), expected, `${language}: ${preset.id}`)
+      if (language === 'en') assert.doesNotMatch(hint(preset), /[\u4e00-\u9fff]/u)
+      assert.equal(hint(preset, true), t('accountPanel.modelsPage.base'))
+    }
+    assert.equal(hint(undefined), t('accountPanel.modelsPage.baseUrlPresetHint'))
+    const unknown = { ...presets[0], id: 'custom-provider', note: '用户说明 原文' }
+    assert.equal(hint(unknown), unknown.note)
+    assert.equal(hint({ ...unknown, note: '' }), t('accountPanel.modelsPage.baseUrlPresetHint'))
+  }
+  assert.deepEqual(presets, original)
 })
 
 test('catalog and frozen answer labels translate only explicit preset provenance', async () => {

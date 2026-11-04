@@ -1,3 +1,4 @@
+import { openAccountSettings } from './fixtures/menu'
 import { selectMarkdownMode } from './fixtures/markdown'
 import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -6,6 +7,7 @@ import { join } from 'node:path'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
 import { DesktopSession } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { createReadyProject, openProjectFile, openProjectMenu } from './fixtures/projects'
 import { skipQuarantined } from './fixtures/quarantine'
 
 test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
@@ -22,8 +24,7 @@ const INTERACTION_TIMEOUT_MS = 15_000
 const NARROW_VIEWPORT = { width: 900, height: 700 }
 
 async function setAutoSave(page: Page, enabled: boolean): Promise<void> {
-  await page.getByTestId('activity-account').click()
-  await page.getByTestId('account-menu-settings').click()
+  await openAccountSettings(page)
   await page.getByTestId('account-settings-nav-files').click()
   const toggle = page.getByTestId('file-version-auto-save')
   if ((await toggle.getAttribute('aria-checked')) !== String(enabled)) await toggle.click()
@@ -34,11 +35,11 @@ async function setAutoSave(page: Page, enabled: boolean): Promise<void> {
 
 async function expectIndicators(page: Page, file: string, visible: boolean): Promise<void> {
   const count = visible ? 1 : 0
-  await expect(page.getByTestId(`tree-dirty-resources/${file}`)).toHaveCount(count)
+  await expect(page.getByTestId(`explorer-select-dirty-resources/${file}`)).toHaveCount(0)
   await expect(
-    page.getByRole('tab').filter({ hasText: file }).getByRole('img', { name: '未保存' })
+    page.getByRole('tab').filter({ hasText: file }).locator('[data-slot="navigation-tab-dirty"]')
   ).toHaveCount(count)
-  await expect(page.locator('[data-testid$="save-dirty"]:visible')).toHaveCount(count)
+  await expect(page.locator('[data-testid$="save-dirty"]:visible')).toHaveCount(file === CODE_FILE ? count : 0)
 }
 
 for (const theme of ['light', 'dark'] as const) {
@@ -61,32 +62,30 @@ for (const theme of ['light', 'dark'] as const) {
       const page = await desktop.launch()
       page.setDefaultTimeout(INTERACTION_TIMEOUT_MS)
       await page.getByTestId('landing-skip').click()
-      await page.getByTestId('home-project-empty').click()
-      await page.getByRole('textbox', { name: '项目名 *' }).fill(PROJECT_NAME)
-      const created = page.waitForResponse(
-        (response) =>
-          response.url().endsWith('/api/content/projects') && response.request().method() === 'POST'
-      )
-      await page.getByTestId('project-create').click()
-      const project = (await (await created).json()) as { root: string }
+      const project = await createReadyProject(page, PROJECT_NAME)
       const resources = join(project.root, 'resources')
       mkdirSync(resources, { recursive: true })
       writeFileSync(join(resources, CODE_FILE), ORIGINAL_TEXT)
-      await page.getByTestId('resource-add').click()
-      await page.getByTestId('resource-new-doc').click()
-      await page.getByTestId('resource-name-input').fill(DOCUMENT_NAME)
-      await page.getByTestId('resource-name-input').press('Enter')
-      const editor = page.getByTestId('markdown-paper').getByRole('textbox')
+      writeFileSync(join(resources, DOCUMENT_FILE), '')
+      await page.reload()
+      await openProjectMenu(page)
+      await page.getByTestId(`project-menu-option-${project.name}`).click()
+      await openProjectFile(page, `resources/${DOCUMENT_FILE}`)
+      await selectMarkdownMode(page, 'edit')
+      const editor = page.locator('[data-testid="markdown-visual-editor"]:visible .ProseMirror')
       const save = page.getByTestId('markdown-save')
+      const header = page.locator('.vds-markdown-header:visible')
       await expect(editor).toBeVisible()
       await setAutoSave(page, true)
-      await editor.fill(ORIGINAL_TEXT)
-      await expect(save).toBeEnabled()
+      await editor.click()
+      await page.keyboard.type(ORIGINAL_TEXT)
+      await expect(editor).toContainText(ORIGINAL_TEXT)
+      await expect(save).toHaveCount(0)
       await expectIndicators(page, DOCUMENT_FILE, false)
       expect(readFileSync(join(resources, DOCUMENT_FILE), 'utf8')).toBe('')
       await page.screenshot({ path: join(runtime.artifacts, 'autosave-edit-no-dots.png') })
-      await page.getByRole('textbox', { name: '全网检索你想要的资料' }).click()
-      await expect(save).toBeDisabled()
+      await page.getByTestId('project-navigation-selector').focus()
+      await expect(header).toHaveAttribute('data-save-state', 'clean')
       await expect
         .poll(() => readFileSync(join(resources, DOCUMENT_FILE), 'utf8'))
         .toContain(ORIGINAL_TEXT)
@@ -98,14 +97,15 @@ for (const theme of ['light', 'dark'] as const) {
       await editor.click()
       await page.keyboard.press(`${SHORTCUT}+End`)
       await page.keyboard.type(EDIT_TEXT)
-      await expect(save).toBeEnabled()
+      await expect(save).toHaveCount(0)
       for (let remaining = EDIT_TEXT.length; remaining > 0; remaining -= 1) {
         await page.keyboard.press('Backspace')
       }
-      await expect(save).toBeDisabled()
+      await expect(header).toHaveAttribute('data-save-state', 'clean')
       await expectIndicators(page, DOCUMENT_FILE, false)
       await page.getByRole('button', { name: `关闭 ${DOCUMENT_FILE}`, exact: true }).click()
-      await page.getByTestId(`tree-resources/${DOCUMENT_FILE}`).click()
+      await openProjectFile(page, `resources/${DOCUMENT_FILE}`)
+      await selectMarkdownMode(page, 'edit')
       await expect(editor).toHaveText(ORIGINAL_TEXT)
       expect(readFileSync(join(resources, DOCUMENT_FILE), 'utf8')).toBe(savedText)
       await page.getByRole('button', { name: '版本历史', exact: true }).click()
@@ -130,22 +130,21 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(editor).toContainText(EDIT_TEXT)
       await setAutoSave(page, true)
       await expectIndicators(page, DOCUMENT_FILE, false)
-      await expect(save).toBeDisabled()
+      await expect(header).toHaveAttribute('data-save-state', 'clean')
       await expect
         .poll(() => readFileSync(join(resources, DOCUMENT_FILE), 'utf8'))
         .toContain(EDIT_TEXT)
       await editor.click()
       await page.keyboard.press(`${SHORTCUT}+End`)
       await page.keyboard.type(EDIT_TEXT)
-      await expect(save).toBeEnabled()
+      await expect(save).toHaveCount(0)
       await expectIndicators(page, DOCUMENT_FILE, false)
-      await page.getByRole('textbox', { name: '全网检索你想要的资料' }).click()
+      await page.getByTestId('project-navigation-selector').focus()
       await expect
         .poll(() => readFileSync(join(resources, DOCUMENT_FILE), 'utf8'))
         .toContain(EDIT_TEXT)
 
-      await page.getByTestId('resource-refresh').click()
-      await page.getByTestId(`tree-resources/${CODE_FILE}`).click()
+      await openProjectFile(page, `resources/${CODE_FILE}`)
       const codeEditor = page
         .locator('[data-testid="document-editor"]:visible')
         .getByTestId('monaco-editor')
@@ -153,7 +152,7 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(codeEditor.locator('.view-lines')).toContainText(ORIGINAL_TEXT)
       await codeEditor.locator('textarea').first().press(`${SHORTCUT}+End`)
       await page.keyboard.type(EDIT_TEXT)
-      await expect(page.getByTestId('source-document-save')).toBeEnabled()
+      await expect(page.locator('[data-testid="source-document-save"]:visible')).toBeEnabled()
       await expectIndicators(page, CODE_FILE, false)
       await page.setViewportSize(NARROW_VIEWPORT)
       await page.screenshot({ path: join(runtime.artifacts, 'code-autosave-no-dots-narrow.png') })

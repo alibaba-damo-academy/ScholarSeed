@@ -56,6 +56,7 @@ const FEEDBACK_KEYS = {
     'composer.backendUnavailable': 'none',
     'composer.checkFailed': 'none',
     'composer.confirmContinueFailed': 'none',
+    'composer.confirmStateChanged': 'none',
     'composer.contextFailed': 'none',
     'composer.contextNotReady': 'none',
     'composer.contextChanged': 'none',

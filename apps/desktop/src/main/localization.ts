@@ -52,5 +52,8 @@ export function startupAdmissionText(): typeof nativeZh.admissionRecovery {
     retry: t('admissionRecovery.retry'),
     copy: t('admissionRecovery.copy'),
     quit: t('admissionRecovery.quit'),
+    installing: t('admissionRecovery.installing'),
+    restoring: t('admissionRecovery.restoring'),
+    unconfirmed: t('admissionRecovery.unconfirmed'),
   }
 }

@@ -23,6 +23,13 @@ export interface DomainNative {
   /** Darwin cross-boot identity; absent on Windows. Does not replace runtime lineage. */
   persistentIdentity?(pin: unknown): string
   createAt(pin: unknown, name: string, bytes: Buffer): void
+  consumeAt?(
+    pin: unknown,
+    name: string,
+    expected: Buffer,
+    expectedDevice: string,
+    expectedInode: string
+  ): void
   createChild(pin: unknown, name: string): string
   acquireAt(pin: unknown, name: string, exclusive: boolean): unknown
   readAt(pin: unknown, name: string, maxBytes: number): Buffer | null

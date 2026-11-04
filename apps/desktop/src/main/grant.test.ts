@@ -319,9 +319,10 @@ test('persistent grant rejects same-revision allow-to-ask policy change', () => 
   assert.throws(() => fixtureState.grants.consume(persistent.id), /stale_grant/)
 })
 
-test('grant lifetime is capped without rejecting a longer valid HIL card', () => {
+test('grant lifetime is capped without rejecting a longer valid HIL card', (context) => {
   const fixtureState = fixture()
   const issuedAt = Date.now()
+  context.mock.timers.enable({ apis: ['Date'], now: issuedAt })
   const longCard = { ...request, expiresAt: issuedAt + 60_000 }
   const grant = issue(fixtureState.grants, longCard)
   assert.ok(grant.expiresAt >= issuedAt + 29_000)

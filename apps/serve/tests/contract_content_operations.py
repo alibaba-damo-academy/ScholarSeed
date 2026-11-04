@@ -10,6 +10,7 @@ import unittest
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from service.content.domain import naming
@@ -1350,6 +1351,47 @@ class ContentOperationContracts(unittest.IsolatedAsyncioTestCase):
         await operations.aclose()
         self.assertEqual(calls, [])
         self.assertFalse(ContentCatalog.read_roots(self.catalog.path).has_pending_operations)
+
+    async def test_timings_include_queue_wait_separately_from_execution(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def execute(identity, command):
+            if command.root_id == "first":
+                entered.set()
+                await release.wait()
+            return {"revoked": True}
+
+        operations = ContentOperations(Activities(), execute, self.catalog)
+        await operations.start()
+        clock = [100.0]
+        with (
+            patch(
+                "service.content.service.operations.time",
+                SimpleNamespace(monotonic=lambda: clock[0]),
+            ),
+            self.assertLogs("service.content.service.operations", level="INFO") as captured,
+        ):
+            first = operations.submit("owner", RevokeRoot("first"))
+            await entered.wait()
+            clock[0] = 101.0
+            second = operations.submit("owner", RevokeRoot("second"))
+            clock[0] = 104.0
+            release.set()
+            await asyncio.wait_for(operations._operations[second].finished.wait(), timeout=2)
+            await operations.aclose()
+        self.assertEqual(operations.result("owner", first)["state"], "succeeded")
+        self.assertTrue(
+            any(first in line and "elapsed_seconds=4.000" in line for line in captured.output)
+        )
+        self.assertEqual(operations.result("owner", second)["state"], "succeeded")
+        self.assertTrue(
+            any(
+                second in line
+                and "elapsed_seconds=0.000 queue_seconds=3.000 total_seconds=3.000" in line
+                for line in captured.output
+            )
+        )
 
     async def test_failed_result_write_unblocks_internal_waiter_without_fake_success(self):
         async def execute(identity, _command):

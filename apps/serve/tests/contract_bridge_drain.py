@@ -289,7 +289,10 @@ class BridgeDrainContracts(unittest.IsolatedAsyncioTestCase):
             receipt = Path(directory) / "receipt"
 
             def acquire(papers, *, scope):
-                self.assertEqual(scope.authorizations, {"paper": "grant"})
+                # Research-idea uses its verified workspace binding, rather than
+                # a source-grant version. Authorization is still checked first.
+                authorizer.require.assert_called_once()
+                self.assertEqual(scope.authorizations, {"paper": ""})
                 started.set()
                 release.wait(5)
                 receipt.write_text(papers[0].paper_id, encoding="utf-8")

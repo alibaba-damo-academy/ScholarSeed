@@ -7,6 +7,7 @@ import time
 import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from scholarseed_runtime.contract import (
@@ -121,6 +122,45 @@ class SessionActivation:
 
     def bind_sessions(self, sessions: Mapping[str, LiveSession]) -> None:
         self._sessions = sessions
+
+    def directory_sessions(self, project_id: str, source: Path) -> tuple[LiveSession, ...]:
+        related: list[LiveSession] = []
+        for live in tuple(self._sessions.values()):
+            paths = (live.runtime_workdir, live.output_root, *live.writable_roots)
+            if live.project_id == project_id or any(
+                path == source or path.is_relative_to(source) or source.is_relative_to(path)
+                for path in paths
+            ):
+                related.append(live)
+        return tuple(related)
+
+    def directory_blockers(self, project_id: str, source: Path) -> tuple[str, ...]:
+        return tuple(
+            live.id
+            for live in self.directory_sessions(project_id, source)
+            if live.running
+            or live.waiting_resources
+            or live.activation_lock.locked()
+            or live.lifecycle_lock.locked()
+            or live.runtime_session is not None
+            or live.attachment_activity is not None
+        )
+
+    async def release_directory_attachments(self, project_id: str, source: Path) -> tuple[str, ...]:
+        blocked: set[str] = set()
+        for live in self.directory_sessions(project_id, source):
+            if (
+                live.running
+                or live.waiting_resources
+                or live.activation_lock.locked()
+                or live.lifecycle_lock.locked()
+            ):
+                blocked.add(live.id)
+                continue
+            if live.runtime_session is not None and not await live.suspend_runtime():
+                blocked.add(live.id)
+        blocked.update(self.directory_blockers(project_id, source))
+        return tuple(sorted(blocked))
 
     async def start(self) -> None:
         if self._idle_task is None:

@@ -2,7 +2,11 @@
   "csv": {
     "controls": "CSV 表格操作",
     "editCell": "编辑单元格 {{cell}}",
-    "failed": "CSV 操作未完成，未保存的修改仍需处理。",
+    "failed": "CSV 操作失败，请重试。如有未保存的修改，请先处理。",
+    "openFailed": "无法打开 CSV 文件，请检查文件后重试。",
+    "encodingInvalid": "文件无法按 UTF-8 或 GBK 解码。请将文件另存为 UTF-8 CSV 后重试。",
+    "quotesInvalid": "CSV 引号格式不正确，请检查引号是否闭合或正确转义。",
+    "gbkReadonly": "使用只读方式打开 GBK 文件",
     "undo": "撤销",
     "redo": "重做"
   },

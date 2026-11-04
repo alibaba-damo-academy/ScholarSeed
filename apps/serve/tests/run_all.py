@@ -105,6 +105,7 @@ SUITES = [
     "contract_configuration_storage",
     "contract_mcp_service",
     "contract_mcp_plans",
+    "contract_access",
     "contract_shutdown",
     "contract_transport",
     "contract_runner",

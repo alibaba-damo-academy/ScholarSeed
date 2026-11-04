@@ -599,6 +599,113 @@ class FakeRuntimeSession:
 
 
 class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
+    async def test_archive_inactive_binding_does_not_activate_or_require_environment(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        self.assertTrue(await self.live.suspend_runtime())
+        binding = self.catalog.runtime_binding(PRODUCT_SESSION_ID)
+        for status in (SessionStatus.INTERRUPTED, SessionStatus.ERROR, SessionStatus.COMPLETED):
+            for environment in ({}, {"STALE_ENVIRONMENT": "previous"}):
+                with self.subTest(status=status, environment=environment):
+                    self.catalog.update_status(PRODUCT_SESSION_ID, status)
+                    self.live.retarget_environment(environment)
+                    with patch.object(
+                        runtime,
+                        "ensure_active",
+                        new=AsyncMock(side_effect=ValueError(RESOURCE_HOST_CONFIGURATION_CONFLICT)),
+                    ) as activate:
+                        payload, response_status = await service.set_archived(
+                            PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id
+                        )
+                    self.assertEqual(response_status, 200, payload)
+                    activate.assert_not_awaited()
+                    self.assertEqual(self.catalog.runtime_binding(PRODUCT_SESSION_ID), binding)
+                    self.assertEqual(self.catalog.get(PRODUCT_SESSION_ID).status, status)
+                    self.assertFalse(self.live.terminated)
+                    await service.set_archived(
+                        PRODUCT_SESSION_ID, False, OWNER, actor_id=OWNER.user_id
+                    )
+
+    async def test_archive_connected_idle_task_does_not_terminate(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        with patch.object(
+            service, "terminate", new=AsyncMock(return_value=({"ok": True}, 200))
+        ) as terminate:
+            payload, status = await service.set_archived(
+                PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id
+            )
+        self.assertEqual(status, 200, payload)
+        terminate.assert_not_awaited()
+        self.assertIs(service._sessions[PRODUCT_SESSION_ID], self.live)
+        self.assertFalse(self.live.terminated)
+
+    async def test_archive_preserves_dormant_recovery_without_activation(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        self.assertTrue(await self.live.suspend_runtime())
+        event = RuntimeEvent(
+            schema_version=1,
+            event_id="fixture:archive-dormant-settlement",
+            runtime_id=RUNTIME_ID,
+            product_session_id=PRODUCT_SESSION_ID,
+            native_session_id=VENDOR_THREAD_ID,
+            process_generation=1,
+            sequence=1,
+            kind=RuntimeEventKind.TURN_INTERRUPTED,
+            delivery=DeliveryClass.MUST_PERSIST,
+            observed_at="fixture",
+            native_turn_id="native-turn",
+            correlation_id="client-turn",
+            payload={},
+        )
+        self.catalog.record_turn_settlement(PRODUCT_SESSION_ID, "client-turn", event)
+        self.catalog.mark_turn_recovery_blocked(PRODUCT_SESSION_ID, True)
+        self.catalog.update_status(PRODUCT_SESSION_ID, SessionStatus.RUNNING)
+        pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+        with patch.object(runtime, "ensure_active", new=AsyncMock()) as activate:
+            payload, status = await service.set_archived(
+                PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id
+            )
+        self.assertEqual(status, 200, payload)
+        activate.assert_not_awaited()
+        self.assertEqual(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID), pending)
+        await service.set_archived(PRODUCT_SESSION_ID, False, OWNER, actor_id=OWNER.user_id)
+        self.assertEqual(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID), pending)
+
+    async def test_archive_serializes_with_concurrent_turn_admission(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        turns = TurnService(
+            service._sessions, self.logger, activities=Activities(), catalog=self.catalog
+        )
+        observed, release = asyncio.Event(), asyncio.Event()
+
+        async def activity():
+            observed.set()
+            await release.wait()
+            return RuntimeActivitySnapshot("fixture", 1, 1, True, execution_tree_complete=True)
+
+        with patch.object(self.runtime_session, "activity", side_effect=activity):
+            archiving = asyncio.create_task(
+                service.set_archived(PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id)
+            )
+            await observed.wait()
+            posting = asyncio.create_task(
+                turns.post(PRODUCT_SESSION_ID, {"text": "late"}, side=False)
+            )
+            try:
+                await asyncio.sleep(0)
+                release.set()
+                self.assertEqual((await archiving)[1], 200)
+                payload, status = await posting
+            finally:
+                release.set()
+                await asyncio.gather(archiving, posting, return_exceptions=True)
+        self.assertEqual(status, 409, payload)
+        self.assertEqual(payload["error"], session_module.SESSION_ARCHIVED_ERROR)
+        self.assertIsNone(turns._schedule_locked(self.live))
+
     async def test_delete_dormant_running_task_requires_recovery_before_removal(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
@@ -769,6 +876,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def test_archive_retries_the_retained_cleanup_handle_before_hiding(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
+        await self.live.ledger.activate_turn("archive-running")
         self.runtime_session.terminate = AsyncMock(
             return_value=CommandReceipt("stop", CommandState.APPLIED)
         )
@@ -791,6 +899,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def test_archive_uses_cleanup_and_waits_for_observed_runtime_idle(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
+        await self.live.ledger.activate_turn("archive-running")
         observed = asyncio.Event()
         release = asyncio.Event()
 
@@ -838,6 +947,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def test_archive_waits_for_strict_stop_and_restores_same_session(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
+        await self.live.ledger.activate_turn("archive-running")
         release = asyncio.Event()
         started = asyncio.Event()
 
@@ -868,6 +978,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def test_archive_stop_failure_does_not_hide_session(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
+        await self.live.ledger.activate_turn("archive-running")
         with patch.object(service, "terminate", new=AsyncMock(return_value=({"ok": False}, 409))):
             payload, status = await service.set_archived(
                 PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id
@@ -7566,7 +7677,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(service.reconfiguration.pending)
 
     async def test_one_shot_failure_classification_uses_submission_boundary(self) -> None:
-        for stage in ("readiness", "model", "post-open", "cancelled", "submitted"):
+        for stage in ("readiness", "model", "open", "post-open", "cancelled", "submitted"):
             with self.subTest(stage=stage):
                 failure = RuntimeError("private failure")
                 # Some adapters' timeout exceptions still carry this optimistic hint.
@@ -7586,6 +7697,8 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 runtime_session.submit = AsyncMock(side_effect=failure)
                 runtime_session.detach = AsyncMock()
                 open_session = AsyncMock(return_value=runtime_session)
+                if stage == "open":
+                    open_session.side_effect = failure
                 models = SimpleNamespace(
                     session_spec=Mock(
                         side_effect=ValueError("bad model") if stage == "model" else None,
@@ -7666,6 +7779,25 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                     ),
                 )
                 self.assertEqual(runtime_session.submit.await_count, int(stage == "submitted"))
+                if stage == "open":
+                    self.assertEqual(
+                        await service.release_directory_attachments(
+                            "target", self.root / "external-source", self.workdir
+                        ),
+                        (stage,),
+                    )
+                    self.assertEqual(
+                        await service.release_directory_attachments(
+                            "target", self.workdir, self.workdir
+                        ),
+                        (stage,),
+                    )
+                    self.assertEqual(
+                        await service.release_directory_attachments(
+                            "other", self.root / "other", self.root / "other"
+                        ),
+                        (),
+                    )
                 if stage == "post-open":
                     runtime_session.detach.assert_awaited_once()
                     models.release_session.assert_called_once_with(stage)

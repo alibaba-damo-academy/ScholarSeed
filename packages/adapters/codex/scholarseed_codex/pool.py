@@ -1399,6 +1399,15 @@ class CodexHostPool:
         async with self._publication:
             admission = host.admission
             if not admission.accepting or admission.active:
+                logger.warning(
+                    "codex_control_mutation_refused host_id=%s stage=admission "
+                    "accepting=%s active=%s epoch=%s revision=%s",
+                    lease.host_id,
+                    admission.accepting,
+                    admission.active,
+                    admission.epoch,
+                    admission.desired_revision,
+                )
                 raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
             revision = admission.desired_revision
             admission.freeze(revision)
@@ -1407,6 +1416,15 @@ class CodexHostPool:
             try:
                 ticket = await host.configuration_quiescence(revision)
                 if ticket is None or admission.epoch != epoch:
+                    logger.warning(
+                        "codex_control_mutation_refused host_id=%s stage=quiescence "
+                        "ticket_present=%s epoch=%s expected_epoch=%s revision=%s",
+                        lease.host_id,
+                        ticket is not None,
+                        admission.epoch,
+                        epoch,
+                        revision,
+                    )
                     raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
                 publishing = True
                 yield

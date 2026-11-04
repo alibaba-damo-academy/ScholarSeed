@@ -475,7 +475,6 @@
     "elapsedSeconds": "{{seconds}} 秒",
     "elapsedMinutes": "{{minutes}} 分 {{seconds}} 秒",
     "estimate": {
-      "unavailable": "暂无可靠估算",
       "total": "预计 {{lower}}–{{upper}}m",
       "remaining": "剩 {{lower}}–{{upper}}m",
       "overrun": "已超出历史区间，仍在执行",
@@ -667,6 +666,7 @@
     "confirmContinue": "我已检查，继续任务",
     "confirmingOutcome": "正在确认",
     "confirmContinueFailed": "确认失败，请稍后重试。",
+    "confirmStateChanged": "任务状态已变化，已重新获取最新队列和会话状态，请查看后继续。",
     "body": "消息正文",
     "referenceOnly": "本条消息仅包含引用",
     "annotations": "回答批注",
@@ -1396,7 +1396,7 @@
     },
     "prompts": {
       "title": "AI 提示词",
-      "description": "AI 提示词跨项目生效、重启保留，临时要求作为补充。",
+      "description": "AI 提示词跨项目生效、重启保留。恢复默认会填入当前界面语言的模板，保存后才生效；临时要求作为补充。",
       "explain": "AI 解读",
       "translate": "AI 翻译",
       "polish": "AI 润色",

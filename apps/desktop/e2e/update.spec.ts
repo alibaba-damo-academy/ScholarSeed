@@ -1,3 +1,5 @@
+import { enterWorkbenchShell, registerProductWindow } from './fixtures/electron'
+import { openAccountSettings } from './fixtures/menu'
 import { _electron as electron, expect, test } from '@playwright/test'
 import { createServer, type Server } from 'http'
 import {
@@ -22,7 +24,7 @@ test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 const DESKTOP_ROOT = join(REPO_ROOT, 'apps', 'desktop')
 const PYTHON = join(REPO_ROOT, '.venv', 'bin', 'python')
-const UPDATE_VERSION = '0.2.1'
+const UPDATE_VERSION = '0.3.2'
 const UPDATE_BUILD_NUMBER = '202608271500'
 const CLIENT_BUILD_NUMBER = '202608270900'
 const UPDATE_TEAM_ID = 'ABCD123456'
@@ -51,7 +53,7 @@ test('local lane skips update checks and still offers the read-only diagnosis', 
     const url = new URL(request.url, 'http://127.0.0.1')
     const expected = {
       product: 'scholarseed',
-      version: '0.2.0',
+      version: currentVersion,
       build_number: CLIENT_BUILD_NUMBER,
       channel: 'release',
       arch_type: process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x86_64'
@@ -96,6 +98,7 @@ test('local lane skips update checks and still offers the read-only diagnosis', 
   for (const directory of [appRoot, home, workspace, userData, artifacts]) {
     mkdirSync(directory, { recursive: true })
   }
+  const currentVersion = JSON.parse(readFileSync(join(DESKTOP_ROOT, 'package.json'), 'utf8')).version as string
   copyFileSync(join(DESKTOP_ROOT, 'package.json'), join(appRoot, 'package.json'))
   cpSync(join(DESKTOP_ROOT, 'out'), join(appRoot, 'out'), { recursive: true })
   // runtime/codex.cjs 把 vendor 根锚在 resolve(desktopRoot, '..', '..', 'scripts/vendor/codex')。
@@ -150,9 +153,10 @@ test('local lane skips update checks and still offers the read-only diagnosis', 
     ).not.toBe('')
     const page = app.windows().find((candidate) => candidate.url().startsWith('http://'))
     if (!page) throw new Error('ScholarSeed product window did not open')
-    // 0.2 首屏是工作台：composer 在默认收起的 AI 面板里，活动栏才是恒在的就绪信号。
+    registerProductWindow(page, app)
+    // 首屏是工作台：composer 在默认收起的 AI 面板里，活动栏才是恒在的就绪信号。
     await page.screenshot({ path: join(artifacts, 'step-window.png') })
-    await expect(page.getByTestId('activity-account')).toBeVisible()
+    await enterWorkbenchShell(page)
 
     // PRD 第 1 条：未发现新版本时不展示更新入口。local lane 根本不做检查，所以入口恒不出现。
     await expect(page.getByTestId('update-entry')).toHaveCount(0)
@@ -162,11 +166,10 @@ test('local lane skips update checks and still offers the read-only diagnosis', 
     expect(checkRequests).toBe(0)
 
     // 工作台进设置页的真实路径：头像菜单 → 设置 → 左侧导航。
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-about').click()
     await expect(page.getByTestId('about-settings-page')).toBeVisible()
-    await expect(page.getByTestId('version-current')).toContainText('当前版本：0.2.0')
+    await expect(page.getByTestId('version-current')).toContainText(`当前版本：${currentVersion}`)
     await expect(page.getByTestId('version-status')).toContainText('开发构建不检查更新')
     await expect(page.getByTestId('version-diagnose')).toHaveText('诊断更新链路')
     // 版权行是 PRD「关于书深」第 6 条，此前页面缺失。

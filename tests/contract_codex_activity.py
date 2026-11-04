@@ -120,6 +120,18 @@ class ScriptedNativeHost:
 
 
 class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_parent_diagnostics_preserve_refusal_without_thread_body(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads[ROOT_THREAD].pop("parentThreadId")
+        host.threads[ROOT_THREAD]["preview"] = "private-thread-body"
+        with self.assertLogs("scholarseed_codex.activity", level="WARNING") as logs:
+            state = await NativeActivity(host, ROOT_THREAD).inspect()
+        self.assertFalse(state.complete)
+        self.assertIn(NativeActivityBlocker.UNKNOWN_OWNERSHIP.value, state.blockers)
+        self.assertIn("parent_field_present=false", " ".join(logs.output))
+        self.assertIn("reason=native_thread_ownership_unknown", " ".join(logs.output))
+        self.assertNotIn("private-thread-body", " ".join(logs.output))
+
     @staticmethod
     def empty_replacement_host() -> CodexProcessHost:
         host = CodexProcessHost()

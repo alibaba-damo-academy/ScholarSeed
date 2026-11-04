@@ -10,7 +10,7 @@ import { DocumentDragContext } from './documentDragContext'
 import { useApp } from '../../store'
 import { showUnsavedIndicator } from './utils'
 import type { DockLeaf, DropEdge, TabInsertion } from './layout'
-import { useDocumentWorkspace, useWorkspaceController } from './workspace'
+import { useWorkspaceController } from './workspace'
 
 export const DOCUMENT_TAB_MIME = 'application/x-scholarseed-document-tab'
 const DOCUMENT_DRAG_PROVIDER_MISSING = 'document_drag_provider_missing'
@@ -91,7 +91,6 @@ export function DocumentNavigationTabs({
 }: DocumentNavigationTabsProps): React.JSX.Element {
   const { state } = useApp()
   const workspace = useWorkspaceController()
-  const documentWorkspace = useDocumentWorkspace()
   const drag = useDocumentDrag()
   const documentTabIds = new Set(leaf.tabIds)
   const displayedTabs = tabs.map((tab) => ({
@@ -102,8 +101,7 @@ export function DocumentNavigationTabs({
   }))
   const tabProps = (item: NavigationTabItem): NavigationTabElementProps => {
     if (!documentTabIds.has(item.id)) return {}
-    const tab = documentWorkspace.tabs[item.id]
-    if (!tab || !workspace.canRelocateTab(tab.id)) {
+    if (!workspace.canRelocateTab(item.id)) {
       return { draggable: false, 'data-testid': `document-tab-${item.id}` }
     }
     return {

@@ -1,4 +1,5 @@
 #import "cleanup.h"
+#import "observation.h"
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
@@ -120,7 +121,13 @@ static BOOL SSValidCapture(id item) {
         ([item[@"absent"] boolValue] ? [item[@"item"] isKindOfClass:NSDictionary.class] : SSValidIdentity(item[@"item"])) &&
         [@[@"cleanup-source", @"cleanup-stage", @"cleanup-previous"] containsObject:item[@"stage"]];
 }
+static BOOL SSReadOnly;
+static NSDictionary *SSReadOnlyJournal;
+static NSString *SSReadOnlyDirectory;
+static BOOL SSCloseUncertain;
+
 static BOOL SSSave(void) {
+    if (SSReadOnly) { errno = EROFS; return NO; }
     NSError *error;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:@{@"schema":SSCleanupSchema, @"records":SSRecords} format:NSPropertyListBinaryFormat_v1_0 options:0 error:&error];
     if (!data) return NO;
@@ -133,29 +140,38 @@ static BOOL SSSave(void) {
     BOOL ok = fsync(fd) == 0; close(fd);
     return ok && renameat(SSDirectoryFD, SSNextJournal.UTF8String, SSDirectoryFD, SSJournal.UTF8String) == 0 && fsync(SSDirectoryFD) == 0;
 }
-void SSCleanupClose(void) {
+BOOL SSCleanupCloseChecked(NSError **error) {
+    if (SSCloseUncertain) return SSFail(error, EIO);
+    for (NSUInteger index = 0; index < 2; index++) {
+        int *descriptor = index == 0 ? &SSDirectoryFD : &SSLockFD;
+        int closing = *descriptor;
+        *descriptor = -1;
+        if (closing >= 0 && close(closing) != 0) { SSCloseUncertain = YES; return SSFail(error, errno); }
+    }
     SSRecords = nil;
-    if (SSLockFD >= 0) close(SSLockFD);
-    if (SSDirectoryFD >= 0) close(SSDirectoryFD);
-    SSLockFD = SSDirectoryFD = -1;
+    SSReadOnly = NO;
+    SSReadOnlyJournal = nil;
+    SSReadOnlyDirectory = nil;
+    return YES;
 }
-BOOL SSCleanupOpenDirectory(NSString *directory, NSError **error) {
-    SSCleanupClose();
+void SSCleanupClose(void) {
+    SSCleanupCloseChecked(NULL);
+}
+static BOOL SSCleanupOpenDirectoryMode(NSString *directory, BOOL readOnly, NSError **error) {
+    if (!SSCleanupCloseChecked(error)) return NO;
+    SSReadOnly = readOnly;
+    if (readOnly) SSReadOnlyDirectory = directory;
     SSDirectoryFD = SSOpenDirectory(directory);
     if (SSDirectoryFD < 0) return SSFail(error, errno);
     struct stat st;
     if (fstat(SSDirectoryFD, &st) != 0 || st.st_uid != geteuid() || (st.st_mode & (S_IRWXG | S_IRWXO))) { SSCleanupClose(); return SSFail(error, EPERM); }
-    SSLockFD = openat(SSDirectoryFD, SSLock.UTF8String, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
-    if (SSLockFD < 0 || fstat(SSLockFD, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 || flock(SSLockFD, LOCK_EX | LOCK_NB) != 0) { int code = errno ?: EPERM; SSCleanupClose(); return SSFail(error, code); }
+    SSLockFD = openat(SSDirectoryFD, SSLock.UTF8String, (readOnly ? O_RDONLY | O_NONBLOCK : O_CREAT | O_RDWR) | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (SSLockFD < 0 || fstat(SSLockFD, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
+        (readOnly && (st.st_mode & (S_IRWXG | S_IRWXO))) || flock(SSLockFD, LOCK_EX | LOCK_NB) != 0) { int code = errno ?: EPERM; SSCleanupClose(); return SSFail(error, code); }
     SSRecords = [NSMutableArray array];
-    int fd = openat(SSDirectoryFD, SSJournal.UTF8String, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) { if (errno == ENOENT) return YES; int code = errno; SSCleanupClose(); return SSFail(error, code); }
-    BOOL valid = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid() && st.st_nlink == 1 && st.st_size <= SSMaximumJournalBytes && !(st.st_mode & (S_IWGRP | S_IWOTH));
-    NSMutableData *data = [NSMutableData data]; char buffer[4096]; ssize_t n = 0;
-    while (valid && (n = read(fd, buffer, sizeof(buffer))) > 0) [data appendBytes:buffer length:(NSUInteger)n];
-    close(fd);
-    if (n < 0) valid = NO;
-    id record = valid ? [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListMutableContainers format:NULL error:error] : nil;
+    NSDictionary *observation = SSObservationReadAt(SSDirectoryFD, SSJournal, (NSUInteger)SSMaximumJournalBytes, NO, NO, error);
+    if (!observation) { if (errno == ENOENT) { if (readOnly) SSReadOnlyJournal = @{@"state":@"absent"}; return YES; } int code = errno; SSCleanupClose(); return SSFail(error, code); }
+    id record = [NSPropertyListSerialization propertyListWithData:observation[@"data"] options:NSPropertyListMutableContainers format:NULL error:error];
     if (![record isKindOfClass:NSDictionary.class] || ![record[@"schema"] isEqual:SSCleanupSchema] || ![record[@"records"] isKindOfClass:NSArray.class]) { SSCleanupClose(); return SSFail(error, EINVAL); }
     for (id item in record[@"records"]) {
         if (![item isKindOfClass:NSDictionary.class] || ![item[@"source"] isKindOfClass:NSString.class] || ![item[@"target"] isKindOfClass:NSString.class] || ![item[@"originalTarget"] isKindOfClass:NSString.class] || ![item[@"previous"] isKindOfClass:NSString.class] || ![item[@"items"] isKindOfClass:NSArray.class] || !SSValidIdentity(item[@"targetIdentity"]) || !SSValidIdentity(item[@"previousIdentity"]) || ![item[@"launched"] isKindOfClass:NSNumber.class]) { SSCleanupClose(); return SSFail(error, EINVAL); }
@@ -164,9 +180,26 @@ BOOL SSCleanupOpenDirectory(NSString *directory, NSError **error) {
         for (id capture in item[@"items"]) if (!SSValidCapture(capture)) { SSCleanupClose(); return SSFail(error, EINVAL); }
     }
     SSRecords = record[@"records"];
+    if (readOnly) SSReadOnlyJournal = observation[@"snapshot"];
     return YES;
 }
+BOOL SSCleanupOpenDirectory(NSString *directory, NSError **error) {
+    return SSCleanupOpenDirectoryMode(directory, NO, error);
+}
+BOOL SSCleanupOpenExistingDirectory(NSString *directory, NSError **error) {
+    return SSCleanupOpenDirectoryMode(directory, YES, error);
+}
+NSDictionary *SSCleanupReadOnlySnapshot(NSError **error) {
+    if (SSCloseUncertain || !SSReadOnly || SSDirectoryFD < 0 || SSLockFD < 0) { SSFail(error, EBADF); return nil; }
+    NSDictionary *qualified = SSObservationDirectorySnapshot(SSDirectoryFD, SSLockFD, SSLock, SSReadOnlyDirectory, error);
+    if (!qualified) return nil;
+    NSDictionary *observation = SSObservationReadAt(SSDirectoryFD, SSJournal, (NSUInteger)SSMaximumJournalBytes, NO, NO, error);
+    NSDictionary *current = observation ? observation[@"snapshot"] : errno == ENOENT ? @{@"state":@"absent"} : nil;
+    if (![current isEqual:SSReadOnlyJournal]) { SSFail(error, ESTALE); return nil; }
+    return @{@"qualification":qualified, @"journal":current, @"recordCount":@(SSRecords.count)};
+}
 BOOL SSCleanupClearRollback(NSString *label, NSString *key) {
+    if (SSReadOnly) { errno = EROFS; return NO; }
     CFPreferencesSetValue((__bridge CFStringRef)key, NULL, (__bridge CFStringRef)label, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
     return CFPreferencesSynchronize((__bridge CFStringRef)label, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
 }
@@ -217,6 +250,7 @@ static BOOL SSTargetMatches(NSDictionary *record, NSURL *target) {
     return capture && [capture[@"item"] isEqual:record[@"targetIdentity"]];
 }
 BOOL SSCleanupCommit(NSURL *source, NSURL *stage, NSURL *previous, NSURL *target, NSURL *originalTarget, NSError **error) {
+    if (SSReadOnly) return SSFail(error, EROFS);
     if (SSDirectoryFD < 0) return SSFail(error, EBADF);
     for (NSURL *url in @[source, stage, previous, target, originalTarget]) if (!SSPath(url)) return SSFail(error, EINVAL);
     NSMutableArray *items = [NSMutableArray array];
@@ -281,6 +315,7 @@ BOOL SSCleanupLaunchNeeded(NSURL *source, NSURL *target) {
     return YES;
 }
 BOOL SSCleanupMarkLaunched(NSURL *source, NSURL *target) {
+    if (SSReadOnly) { errno = EROFS; return NO; }
     for (NSMutableDictionary *r in SSRecords) if (SSSamePath(r[@"source"], source) && SSTargetMatches(r, target)) { r[@"launched"] = @YES; return SSSave(); }
     return YES;
 }
@@ -333,6 +368,7 @@ static BOOL SSRemoveItem(NSDictionary *item, NSURL *protectedTarget) {
     return ok;
 }
 BOOL SSCleanupDrain(NSURL *protectedTarget) {
+    if (SSReadOnly) { errno = EROFS; return NO; }
     if (SSDirectoryFD < 0) return NO;
     BOOL all = YES;
     for (NSMutableDictionary *record in SSRecords) {

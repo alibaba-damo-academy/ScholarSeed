@@ -68,6 +68,21 @@ export function imageReference(reference: ComposerReference): reference is Image
   )
 }
 
+export function isImageArtifact(artifact: SessionArtifact): boolean {
+  return !(
+    artifact.status === 'failed' ||
+    artifact.status === 'deleted' ||
+    artifact.change === 'delete' ||
+    !imageReference({
+      type: 'file',
+      id: artifact.artifact_id,
+      path: artifact.path,
+      title: artifact.name,
+      mediaType: artifact.media_type,
+    })
+  )
+}
+
 async function loadImageSource(
   source: DocumentSource,
   title: string,

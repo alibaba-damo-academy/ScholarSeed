@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -15,6 +16,7 @@ from scholarseed_codex.utils import path_identity
 from scholarseed_runtime.contract.session import RuntimeExecutionThread, RuntimeExecutionTreeBlocker
 
 NATIVE_ACTIVITY_PAGE_SIZE = 100
+LOGGER = logging.getLogger(__name__)
 NATIVE_ACTIVITY_MAX_PAGES = 100
 NATIVE_THREAD_READ_METHOD = "thread/read"
 NATIVE_THREAD_LOADED_LIST_METHOD = "thread/loaded/list"
@@ -220,9 +222,21 @@ class NativeActivity:
                 blockers.update(self._thread_blockers(await self._thread(thread_id, generation)))
             self._require_generation(generation)
         except _NativeActivityError as error:
+            LOGGER.warning(
+                "codex_native_activity_refused reason=%s generation=%s loaded_threads=%s",
+                error.blocker.value,
+                generation,
+                len(loaded_ids),
+            )
             blockers.add(error.blocker)
             return self._state(False, blockers, loaded_ids, generation)
-        except AppServerError:
+        except AppServerError as error:
+            LOGGER.warning(
+                "codex_native_activity_unavailable generation=%s method=%s rpc_code=%s",
+                generation,
+                error.method,
+                error.rpc_code,
+            )
             # The transport owns detailed RPC evidence; this surface exports
             # only a stable reason, never command contents or native paths.
             blockers.add(NativeActivityBlocker.UNAVAILABLE)
@@ -385,6 +399,10 @@ class NativeActivity:
             raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
         # Missing parent identity is unknown, not evidence of a root thread.
         if NATIVE_PARENT_THREAD_ID_FIELD not in thread:
+            LOGGER.warning(
+                "codex_native_activity_identity_unknown generation=%s parent_field_present=false",
+                generation,
+            )
             raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
         parent_id = thread[NATIVE_PARENT_THREAD_ID_FIELD]
         if parent_id is not None and (not isinstance(parent_id, str) or not parent_id):

@@ -1,3 +1,4 @@
+import { browserSuggestions, pressNativeKey, restoreBrowser } from './fixtures/browser'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 import { expect, test } from '@playwright/test'
@@ -25,7 +26,7 @@ test('real Desktop address bar offers local history and never searches the web w
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     const nativeWindow = await desktop.browserWindow(page)
     const captureNative = async (name: string) => {
@@ -59,16 +60,17 @@ test('real Desktop address bar offers local history and never searches the web w
     await address.press('Enter')
     await assertLoaded(OTHER_URL, /httpbingo\.org/)
     await address.fill('/html')
-    const suggestion = page.getByRole('option', { name: /httpbingo\.org\/html/ })
-    await expect(suggestion).toBeVisible()
+    const overlay = await browserSuggestions(page)
+    const suggestionText = () => overlay.evaluate(view =>
+      view.webContents.executeJavaScript('document.body.innerText') as Promise<string>)
+    await expect.poll(suggestionText).toMatch(/httpbingo\.org\/html/)
     await address.press('ArrowDown')
-    await expect(suggestion).toBeFocused()
-    await suggestion.press('Enter')
+    await expect.poll(() => overlay.evaluate(view => view.webContents.isFocused())).toBe(true)
+    await pressNativeKey(overlay, 'Enter')
     await assertLoaded(HISTORY_URL, PAGE_TEXT)
     await address.fill('private research phrase')
-    const search = page.getByRole('button', { name: /在 Google 搜索“private research phrase”/ })
-    await expect(search).toBeVisible()
-    await expect(search).toContainText('会将搜索词发送给 Google')
+    await expect.poll(suggestionText).toContain('在 Google 搜索“private research phrase”')
+    await expect.poll(suggestionText).toContain('会将搜索词发送给 Google')
     const before = await page.evaluate(() => window.scholarseed.browser.snapshot())
     expect(before.ok && before.snapshot.tabs.find(tab => tab.tabId === before.snapshot.activeTabId)?.url).toBe(HISTORY_URL)
     await captureNative('address-history-native')
@@ -80,7 +82,8 @@ test('real Desktop address bar offers local history and never searches the web w
         ;(globalThis as typeof globalThis & { __browserSearchNavigation?: string }).__browserSearchNavigation = details.url
       })
     })
-    await search.click()
+    await address.press('ArrowDown')
+    await pressNativeKey(overlay, 'Enter')
     const searchUrl = 'https://www.google.com/search?q=private%20research%20phrase'
     await expect.poll(() => desktop.app!.evaluate(() =>
       (globalThis as typeof globalThis & { __browserSearchNavigation?: string }).__browserSearchNavigation

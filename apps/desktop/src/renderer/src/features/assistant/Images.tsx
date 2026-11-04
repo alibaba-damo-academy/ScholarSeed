@@ -7,7 +7,7 @@ import {
 import type { SessionArtifact } from '../../model'
 import {
   artifactImageAsset,
-  imageReference,
+  isImageArtifact,
   loadImageAsset,
   sentImageAsset,
   type ImageAsset,
@@ -88,21 +88,6 @@ export function SentImages({
   )
 }
 
-function eligibleImage(artifact: SessionArtifact): boolean {
-  return !(
-    artifact.status === 'failed' ||
-    artifact.status === 'deleted' ||
-    artifact.change === 'delete' ||
-    !imageReference({
-      type: 'file',
-      id: artifact.artifact_id,
-      path: artifact.path,
-      title: artifact.name,
-      mediaType: artifact.media_type,
-    })
-  )
-}
-
 const ImageBatch = createContext<{
   sessionId: string
   items: ConversationImage[]
@@ -120,7 +105,7 @@ export function GeneratedImages({
   children: React.ReactNode
   renderActions: (artifact: SessionArtifact) => React.ReactNode
 }): React.JSX.Element {
-  const supported = artifacts.filter(eligibleImage)
+  const supported = artifacts.filter(isImageArtifact)
   const items = useImageResources(
     supported.map((artifact) => artifactImageAsset(sessionId, artifact))
   )
@@ -151,7 +136,7 @@ export function GeneratedImage({
   artifact: SessionArtifact
 }): React.JSX.Element | null {
   const batch = useContext(ImageBatch)
-  if (!eligibleImage(artifact)) return null
+  if (!isImageArtifact(artifact)) return null
   const identity = artifactImageAsset(sessionId, artifact).id
   const item =
     batch?.sessionId === sessionId

@@ -425,7 +425,9 @@ test('source monitoring dispatches structured changes without issuing a manual r
   const deadline = Date.now() + 5000
   while (!batches.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
   assert.deepEqual(batches, [['apps/serve/service/example.py']])
-  assert.deepEqual(reports, [])
+  assert.equal(reports.length, 1)
+  assert.match(reports[0], /Non-HMR source changed: \["apps\/serve\/service\/example\.py"\]; automatic reload requested\./)
+  assert.doesNotMatch(reports[0], /manual|manually|手动/i)
 })
 
 test('existing localization, updater and focused CSP test inputs retain closed adapters', () => {

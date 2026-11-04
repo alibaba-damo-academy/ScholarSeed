@@ -171,8 +171,8 @@ scholarseed-skill-python scripts/test_model_config_env.py
 ./scripts/slr init \
   --workspace ../slr-smoke \
   --intent "综述 2021–2026 年检索增强生成在企业知识库问答中的方法、评测与可靠性进展，并保留更早的奠基工作。"
-python -m json.tool ../slr-smoke/01_input/query.json
-python -m json.tool ../slr-smoke/01_input/writing_request.json
+scholarseed-skill-python scripts/generation/_fast/status.py dump ../slr-smoke/01_input/query.json
+scholarseed-skill-python scripts/generation/_fast/status.py dump ../slr-smoke/01_input/writing_request.json
 ```
 
 如果机器有 TeX，再运行：

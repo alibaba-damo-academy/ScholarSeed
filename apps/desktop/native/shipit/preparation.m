@@ -1,6 +1,8 @@
 #import "preparation.h"
 #import "readiness.h"
 #import "binding.h"
+#import "cleanup.h"
+#import "observation.h"
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
@@ -20,17 +22,32 @@ static NSString * const SSPreparationLock = @"lock";
 static NSString * const SSPreparationSchema = @"1";
 static NSString * const SSPreparationCopying = @"copying";
 static NSString * const SSPreparationReady = @"ready";
+static NSString * const SSPreparationTerminalVersion = @"1";
 static NSString * const SSPreparationPrefix = @"shipit-candidate.";
 static const NSUInteger SSPreparationAttempts = 3;
 static const off_t SSPreparationMaximumBytes = 64 * 1024;
 static const double SSPreparationMilliseconds = 1000;
+static const NSUInteger SSPreparationPublicationFields = 8;
 static int SSPreparationFD = -1, SSPreparationLockFD = -1;
 static NSMutableDictionary *SSPreparationRecord;
+static BOOL SSPreparationReadOnly;
+static NSDictionary *SSPreparationObservation;
+static NSString *SSPreparationObservedDirectory;
+static BOOL SSPreparationCloseUncertain;
+static int SSPreparationUncertainCode;
 
 static BOOL Fail(NSError **error, int code) {
     errno = code;
     if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:code userInfo:nil];
     return NO;
+}
+int SSPreparationUncertaintyCode(void) {
+    return SSPreparationCloseUncertain ? SSPreparationUncertainCode ?: EIO : 0;
+}
+static BOOL UncertainIO(NSError **error, int code) {
+    if (!SSPreparationCloseUncertain) SSPreparationUncertainCode = code ?: EIO;
+    SSPreparationCloseUncertain = YES;
+    return Fail(error, SSPreparationUncertaintyCode());
 }
 static NSDictionary *Identity(struct stat value) {
     return @{@"dev":@(value.st_dev), @"ino":@(value.st_ino), @"uid":@(value.st_uid)};
@@ -91,6 +108,36 @@ static BOOL ValidCapture(id value, BOOL contents) {
         [value[@"path"] hasPrefix:@"/"] && ValidIdentity(value[@"parent"]) && ValidIdentity(value[@"item"]) &&
         (!contents || ValidIdentity(value[@"contents"]));
 }
+static BOOL StrictCapture(NSDictionary *capture, BOOL contents) {
+    if (!ValidCapture(capture, contents) || capture.count != (contents ? 4u : 3u)) return NO;
+    for (NSString *part in contents ? @[@"parent", @"item", @"contents"] : @[@"parent", @"item"]) {
+        NSDictionary *identity = capture[part];
+        for (NSString *field in @[@"dev", @"ino", @"uid"])
+            if (!SSObservationInteger(identity[field]) || [identity[field] longLongValue] < 0) return NO;
+    }
+    return YES;
+}
+static NSDictionary *TerminalPublication(NSDictionary *record) {
+    NSDictionary *failure = record[@"failure"];
+    if (![record[@"terminalVersion"] isEqual:SSPreparationTerminalVersion] || ![record[@"state"] isEqual:SSPreparationReady] || record[@"ownership"] ||
+        ![failure isKindOfClass:NSDictionary.class] || !SSObservationInteger(failure[@"code"]) || !SSBindingValid(record[@"binding"]) ||
+        !StrictCapture(record[@"source"], YES) || !StrictCapture(record[@"target"], YES) || !StrictCapture(failure[@"target"], YES) ||
+        !StrictCapture(record[@"candidate"], YES) || !StrictCapture(record[@"directory"], NO)) return nil;
+    return @{@"schema":SSPreparationTerminalVersion, @"source":record[@"source"], @"target":record[@"target"], @"failureTarget":failure[@"target"],
+        @"binding":record[@"binding"], @"code":failure[@"code"], @"candidate":record[@"candidate"], @"directory":record[@"directory"]};
+}
+static BOOL ValidTerminalRecord(NSDictionary *record) {
+    id version = record[@"terminalVersion"], failure = record[@"failure"];
+    id publication = [failure isKindOfClass:NSDictionary.class] ? failure[@"publication"] : nil;
+    if (!version) return publication == nil;
+    if (![version isKindOfClass:NSString.class] || ![version isEqual:SSPreparationTerminalVersion]) return NO;
+    if (!publication) return YES;
+    NSDictionary *expected = TerminalPublication(record);
+    return [publication isKindOfClass:NSDictionary.class] && [publication count] == SSPreparationPublicationFields &&
+        SSObservationInteger(publication[@"code"]) && SSBindingValid(publication[@"binding"]) &&
+        StrictCapture(publication[@"source"], YES) && StrictCapture(publication[@"target"], YES) && StrictCapture(publication[@"failureTarget"], YES) &&
+        StrictCapture(publication[@"candidate"], YES) && StrictCapture(publication[@"directory"], NO) && [publication isEqual:expected];
+}
 static BOOL CandidateOwnershipMatches(NSDictionary *expected, NSDictionary *current) {
     if (!current || ![current[@"path"] isEqual:expected[@"path"]] ||
         ![current[@"parent"] isEqual:expected[@"parent"]]) return NO;
@@ -102,6 +149,8 @@ static BOOL CandidateOwnershipMatches(NSDictionary *expected, NSDictionary *curr
     return YES;
 }
 static BOOL Save(NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    if (SSPreparationReadOnly) return Fail(error, EROFS);
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:@{@"schema":SSPreparationSchema, @"record":SSPreparationRecord ?: @{}} format:NSPropertyListBinaryFormat_v1_0 options:0 error:error];
     if (!data) return NO;
     if (data.length > SSPreparationMaximumBytes) return Fail(error, EFBIG);
@@ -112,47 +161,50 @@ static BOOL Save(NSError **error) {
     while (left) {
         ssize_t n = write(fd, bytes, left);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { int code = n < 0 ? errno : EIO; close(fd); return Fail(error, code); }
+        if (n <= 0) { int code = n < 0 ? errno : EIO; if (close(fd) != 0) UncertainIO(NULL, errno); return Fail(error, code); }
         bytes += n; left -= (NSUInteger)n;
     }
     BOOL ok = fsync(fd) == 0; int code = errno;
-    if (close(fd) != 0 && ok) { ok = NO; code = errno; }
-    if (!ok) return Fail(error, code);
-    if (renameat(SSPreparationFD, SSPreparationNext.UTF8String, SSPreparationFD, SSPreparationJournal.UTF8String) != 0 || fsync(SSPreparationFD) != 0) return Fail(error, errno);
+    if (close(fd) != 0) { if (ok) code = errno; ok = NO; }
+    if (!ok) return UncertainIO(error, code);
+    if (renameat(SSPreparationFD, SSPreparationNext.UTF8String, SSPreparationFD, SSPreparationJournal.UTF8String) != 0) return Fail(error, errno);
+    if (fsync(SSPreparationFD) != 0) return UncertainIO(error, errno);
+    return YES;
+}
+BOOL SSPreparationCloseChecked(NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    for (NSUInteger index = 0; index < 2; index++) {
+        int *descriptor = index == 0 ? &SSPreparationFD : &SSPreparationLockFD;
+        int closing = *descriptor;
+        *descriptor = -1;
+        if (closing >= 0 && close(closing) != 0) return UncertainIO(error, errno);
+    }
+    SSPreparationRecord = nil;
+    SSPreparationReadOnly = NO;
+    SSPreparationObservation = nil;
+    SSPreparationObservedDirectory = nil;
     return YES;
 }
 void SSPreparationClose(void) {
-    SSPreparationRecord = nil;
-    if (SSPreparationLockFD >= 0) close(SSPreparationLockFD);
-    if (SSPreparationFD >= 0) close(SSPreparationFD);
-    SSPreparationLockFD = SSPreparationFD = -1;
+    SSPreparationCloseChecked(NULL);
 }
-BOOL SSPreparationOpenDirectory(NSString *directory, NSError **error) {
-    SSPreparationClose();
+static BOOL SSPreparationOpenDirectoryMode(NSString *directory, BOOL readOnly, NSError **error) {
+    if (!SSPreparationCloseChecked(error)) return NO;
+    SSPreparationReadOnly = readOnly;
+    if (readOnly) SSPreparationObservedDirectory = directory;
     SSPreparationFD = OpenDirectory(directory);
     if (SSPreparationFD < 0) return Fail(error, errno);
     struct stat st;
     if (fstat(SSPreparationFD, &st) != 0) { int code = errno; SSPreparationClose(); return Fail(error, code); }
     if (st.st_uid != geteuid() || (st.st_mode & (S_IRWXG | S_IRWXO))) { SSPreparationClose(); return Fail(error, EPERM); }
-    SSPreparationLockFD = openat(SSPreparationFD, SSPreparationLock.UTF8String, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    SSPreparationLockFD = openat(SSPreparationFD, SSPreparationLock.UTF8String, (readOnly ? O_RDONLY | O_NONBLOCK : O_CREAT | O_RDWR) | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
     if (SSPreparationLockFD < 0) { int code = errno; SSPreparationClose(); return Fail(error, code); }
     if (fstat(SSPreparationLockFD, &st) != 0) { int code = errno; SSPreparationClose(); return Fail(error, code); }
     if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 || (st.st_mode & (S_IRWXG | S_IRWXO))) { SSPreparationClose(); return Fail(error, EPERM); }
     if (flock(SSPreparationLockFD, LOCK_EX | LOCK_NB) != 0) { int code = errno; SSPreparationClose(); return Fail(error, code); }
-    int fd = openat(SSPreparationFD, SSPreparationJournal.UTF8String, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) { if (errno == ENOENT) return YES; int code = errno; SSPreparationClose(); return Fail(error, code); }
-    if (fstat(fd, &st) != 0) { int code = errno; close(fd); SSPreparationClose(); return Fail(error, code); }
-    if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 || st.st_size > SSPreparationMaximumBytes || (st.st_mode & (S_IRWXG | S_IRWXO))) { close(fd); SSPreparationClose(); return Fail(error, EPERM); }
-    NSMutableData *data = [NSMutableData data]; char buffer[4096]; ssize_t n;
-    do {
-        n = read(fd, buffer, sizeof(buffer));
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0) { int code = errno; close(fd); SSPreparationClose(); return Fail(error, code); }
-        if (n > 0) [data appendBytes:buffer length:(NSUInteger)n];
-        if (data.length > SSPreparationMaximumBytes) { close(fd); SSPreparationClose(); return Fail(error, EFBIG); }
-    } while (n);
-    close(fd);
-    id journal = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListMutableContainers format:NULL error:error];
+    NSDictionary *observation = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
+    if (!observation) { if (!readOnly && errno == ENOENT) return YES; int code = errno; SSPreparationClose(); return Fail(error, code); }
+    id journal = [NSPropertyListSerialization propertyListWithData:observation[@"data"] options:NSPropertyListMutableContainers format:NULL error:error];
     id record = [journal isKindOfClass:NSDictionary.class] ? journal[@"record"] : nil;
     BOOL valid = [journal isKindOfClass:NSDictionary.class] && [journal[@"schema"] isEqual:SSPreparationSchema] && [record isKindOfClass:NSDictionary.class];
     if (valid && [record count]) {
@@ -175,11 +227,21 @@ BOOL SSPreparationOpenDirectory(NSString *directory, NSError **error) {
             ([record[@"state"] isEqual:SSPreparationCopying] || (ValidCapture(record[@"candidate"], YES) &&
                 [record[@"candidate"][@"path"] isEqual:[record[@"directory"][@"path"] stringByAppendingPathComponent:[record[@"source"][@"path"] lastPathComponent]] ]));
     }
+    if (valid) valid = ValidTerminalRecord(record);
     if (!valid) { SSPreparationClose(); return Fail(error, EINVAL); }
     SSPreparationRecord = [record count] ? record : nil;
+    if (readOnly) SSPreparationObservation = observation[@"snapshot"];
     return YES;
 }
+BOOL SSPreparationOpenDirectory(NSString *directory, NSError **error) {
+    return SSPreparationOpenDirectoryMode(directory, NO, error);
+}
+BOOL SSPreparationOpenExistingDirectory(NSString *directory, NSError **error) {
+    if (!SSCleanupReadOnlySnapshot(error)) return NO;
+    return SSPreparationOpenDirectoryMode(directory, YES, error);
+}
 static BOOL SSPreparationOpenOwner(NSString *label, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
     NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"] invertedSet];
     if (!label.length || [label rangeOfCharacterFromSet:invalid].location != NSNotFound || [@[@".", @".."] containsObject:label]) return Fail(error, EINVAL);
     NSURL *support = [NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:error];
@@ -246,6 +308,7 @@ static BOOL RemoveChildren(int fd, dev_t device) {
     closedir(stream); errno = code; return ok;
 }
 static BOOL Discard(NSDictionary *source, NSDictionary *target, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
     NSDictionary *directory = SSPreparationRecord[@"directory"];
     if (!directory) return YES;
     NSString *path = directory[@"path"];
@@ -275,17 +338,52 @@ static BOOL Discard(NSDictionary *source, NSDictionary *target, NSError **error)
     close(parent); return ok ? YES : Fail(error, code);
 }
 static BOOL FailureTargetRestored(void) {
+    if (SSPreparationCloseUncertain) return NO;
     NSDictionary *expected = SSPreparationRecord[@"target"], *failure = SSPreparationRecord[@"failure"];
     if (![Capture(expected[@"path"], YES) isEqual:expected]) return NO;
     if ([failure[@"target"][@"path"] isEqual:expected[@"path"]]) return YES;
     struct stat remaining;
     return lstat([failure[@"target"][@"path"] fileSystemRepresentation], &remaining) != 0 && errno == ENOENT;
 }
+static BOOL PublishedCandidateMatches(void) {
+    if (SSPreparationCloseUncertain) return NO;
+    NSDictionary *directory = SSPreparationRecord[@"directory"], *candidate = SSPreparationRecord[@"candidate"];
+    NSString *path = directory[@"path"];
+    int parent = OpenDirectory(path.stringByDeletingLastPathComponent);
+    if (parent < 0) return errno == ENOENT;
+    struct stat info;
+    BOOL safe = fstat(parent, &info) == 0 && [Identity(info) isEqual:directory[@"parent"]];
+    BOOL missing = NO;
+    if (safe && fstatat(parent, path.lastPathComponent.fileSystemRepresentation, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        missing = errno == ENOENT;
+        safe = missing;
+    }
+    if (safe && !missing) {
+        safe = S_ISDIR(info.st_mode) && info.st_uid == geteuid() && !(info.st_mode & (S_IRWXG | S_IRWXO)) && [Identity(info) isEqual:directory[@"item"]];
+        int child = safe ? openat(parent, path.lastPathComponent.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) : -1;
+        safe = safe && child >= 0 && fstat(child, &info) == 0 && [Identity(info) isEqual:directory[@"item"]];
+        if (safe && fstatat(child, [candidate[@"path"] lastPathComponent].fileSystemRepresentation, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+            missing = errno == ENOENT;
+            safe = missing;
+        }
+        if (safe && !missing) safe = S_ISDIR(info.st_mode) && [Identity(info) isEqual:candidate[@"item"]] && [Capture(candidate[@"path"], YES) isEqual:candidate];
+        if (child >= 0 && close(child) != 0) { UncertainIO(NULL, errno); safe = NO; }
+    }
+    if (close(parent) != 0) { UncertainIO(NULL, errno); safe = NO; }
+    return safe;
+}
 static BOOL FailurePublished(void) {
+    if (SSPreparationCloseUncertain) return NO;
+    if (!ValidTerminalRecord(SSPreparationRecord) || !FailureTargetRestored()) return NO;
+    if (SSPreparationRecord[@"terminalVersion"]) {
+        return SSPreparationRecord[@"failure"][@"publication"] != nil && PublishedCandidateMatches();
+    }
     return FailureTargetRestored() && SSReadinessFailedRequestBound([NSURL fileURLWithPath:SSPreparationRecord[@"source"][@"path"]],
         [NSURL fileURLWithPath:SSPreparationRecord[@"target"][@"path"]], SSPreparationRecord[@"binding"]);
 }
 NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSError **error) {
+    if (SSPreparationCloseUncertain) { Fail(error, SSPreparationUncertaintyCode()); return nil; }
+    if (SSPreparationReadOnly) { Fail(error, EROFS); return nil; }
     if (SSPreparationFD < 0) { Fail(error, EBADF); return nil; }
     if (!sourceURL.isFileURL || !targetURL.isFileURL) { Fail(error, EINVAL); return nil; }
     if (SSPreparationRecord[@"ownership"]) { Fail(error, ECANCELED); return nil; }
@@ -331,7 +429,7 @@ NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bindi
     NSDictionary *directory = Capture(@(created), NO);
     free(buffer);
     if (!directory) { Fail(error, errno); return nil; }
-    SSPreparationRecord = [@{@"source":source, @"target":target, @"directory":directory, @"state":SSPreparationCopying, @"attempts":@(attempts + 1)} mutableCopy];
+    SSPreparationRecord = [@{@"source":source, @"target":target, @"directory":directory, @"state":SSPreparationCopying, @"attempts":@(attempts + 1), @"terminalVersion":SSPreparationTerminalVersion} mutableCopy];
     if (binding) SSPreparationRecord[@"binding"] = binding;
     // Persist the owned destination and charge this preparation attempt before copying.
     if (!Save(error)) return nil;
@@ -362,6 +460,7 @@ NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bindi
     return candidateURL;
 }
 static BOOL ValidatePreparation(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
     if (SSPreparationFD < 0) return Fail(error, EBADF);
     if (SSPreparationRecord[@"failure"]) return Fail(error, ECANCELED);
     if (![(binding ?: @{}) isEqual:(SSPreparationRecord[@"binding"] ?: @{})]) return Fail(error, ESTALE);
@@ -382,6 +481,7 @@ static BOOL ValidatePreparation(NSURL *sourceURL, NSURL *targetURL, NSDictionary
     return info.st_uid == geteuid() && !(info.st_mode & (S_IRWXG | S_IRWXO)) ? YES : Fail(error, EPERM);
 }
 BOOL SSPreparationValidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
     if (!candidateURL.isFileURL) return Fail(error, EINVAL);
     if (!ValidatePreparation(sourceURL, targetURL, binding, error)) return NO;
     NSDictionary *expected = SSPreparationRecord[@"candidate"], *current = Capture(candidateURL.path, YES);
@@ -391,6 +491,8 @@ BOOL SSPreparationValidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bin
     return Fail(error, ESTALE);
 }
 BOOL SSPreparationBeginOwnership(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *candidate, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    if (SSPreparationReadOnly) return Fail(error, EROFS);
     if (!SSPreparationValidate(source, target, binding, candidate, error)) return NO;
     if (SSPreparationRecord[@"ownership"]) return Fail(error, ECANCELED);
     SSPreparationRecord[@"ownership"] = @YES;
@@ -399,6 +501,8 @@ BOOL SSPreparationBeginOwnership(NSURL *source, NSURL *target, NSDictionary *bin
     return NO;
 }
 BOOL SSPreparationAcceptOwnership(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    if (SSPreparationReadOnly) return Fail(error, EROFS);
     if (!candidateURL.isFileURL) return Fail(error, EINVAL);
     if (!ValidatePreparation(sourceURL, targetURL, binding, error)) return NO;
     NSDictionary *before = SSPreparationRecord[@"candidate"], *after = Capture(candidateURL.path, YES);
@@ -415,6 +519,7 @@ BOOL SSPreparationAcceptOwnership(NSURL *sourceURL, NSURL *targetURL, NSDictiona
     return SSPreparationValidate(sourceURL, targetURL, binding, candidateURL, error);
 }
 static BOOL FailureTrusted(NSURL *source, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
     if (SSPreparationFD < 0) return Fail(error, EBADF);
     if (!source.isFileURL || ![SSPreparationRecord[@"state"] isEqual:SSPreparationReady]) return Fail(error, ESTALE);
     if (![Capture(source.path, YES) isEqual:SSPreparationRecord[@"source"]]) return Fail(error, ESTALE);
@@ -428,7 +533,63 @@ static BOOL FailureTrusted(NSURL *source, NSError **error) {
     close(directory);
     return safe ? YES : Fail(error, EPERM);
 }
+static NSDictionary *ObserveState(NSURL *state, NSError **error) {
+    if (!state.isFileURL || state.host.length) { Fail(error, EINVAL); return nil; }
+    int parent = OpenDirectory(state.path.stringByDeletingLastPathComponent);
+    if (parent < 0) { Fail(error, errno); return nil; }
+    NSDictionary *observed = SSObservationReadAt(parent, state.path.lastPathComponent, (NSUInteger)SSPreparationMaximumBytes, NO, NO, error);
+    int saved = errno;
+    if (close(parent) != 0 && observed) { Fail(error, errno); return nil; }
+    errno = saved;
+    return observed;
+}
+NSDictionary *SSPreparationFailureSnapshot(NSURL *source, NSURL *target, NSDictionary *binding,
+    NSURL *state, SSPreparationActivity (^activity)(void), NSError **error) {
+    if (SSPreparationCloseUncertain) { Fail(error, SSPreparationUncertaintyCode()); return nil; }
+    if (!SSPreparationReadOnly || SSPreparationFD < 0 || SSPreparationLockFD < 0 || getuid() != geteuid()) { Fail(error, EBADF); return nil; }
+    NSDictionary *cleanup = SSCleanupReadOnlySnapshot(error);
+    if (!cleanup) return nil;
+    SSPreparationActivity activityBefore = activity ? activity() : SSPreparationActivityUnknown;
+    if (activityBefore != SSPreparationActivityAbsent) { Fail(error, activityBefore == SSPreparationActivityActive ? EBUSY : EAGAIN); return nil; }
+    NSDictionary *qualification = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
+    NSDictionary *journal = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
+    NSDictionary *failure = SSPreparationRecord[@"failure"];
+    if (!qualification || ![journal[@"snapshot"] isEqual:SSPreparationObservation]) { Fail(error, ESTALE); return nil; }
+    if (!SSBindingValid(binding) || ![binding isEqual:SSPreparationRecord[@"binding"]] ||
+        !SSObservationInteger(failure[@"code"]) || SSPreparationRecord[@"ownership"] || Overlaps(source.path, target.path) ||
+        !StrictCapture(SSPreparationRecord[@"source"], YES) || !StrictCapture(SSPreparationRecord[@"target"], YES) ||
+        !SSObservationInteger(SSPreparationRecord[@"attempts"]) || !FailureTrusted(source, error) || !FailurePublished() ||
+        ![Capture(target.path, YES) isEqual:SSPreparationRecord[@"target"]] || SSCleanupCommittedRequest(source, target)) {
+        Fail(error, ESTALE); return nil;
+    }
+    NSInteger code = [failure[@"code"] integerValue];
+    NSDictionary *ack = SSReadinessFailureSnapshot(source, target, binding, code, error);
+    NSDictionary *observedState = ObserveState(state, error);
+    NSDictionary *request = observedState ? [NSJSONSerialization JSONObjectWithData:observedState[@"data"] options:0 error:NULL] : nil;
+    if (!ack || ![request isKindOfClass:NSDictionary.class] || request.count != 7 ||
+        ![request[@"binding"] isEqual:binding] || ![request[@"bundleIdentifier"] isKindOfClass:NSString.class] || ![request[@"bundleIdentifier"] length]) { Fail(error, EINVAL); return nil; }
+    for (NSString *key in @[@"useUpdateBundleName", @"installationAuthorized", @"launchAfterInstallation"])
+        if (!SSObservationBoolean(request[key])) { Fail(error, EINVAL); return nil; }
+    if ([request[@"installationAuthorized"] boolValue] && ![request[@"launchAfterInstallation"] boolValue]) { Fail(error, EINVAL); return nil; }
+    for (NSArray *pair in @[@[@"updateBundleURL", @"source"], @[@"targetBundleURL", @"target"]]) {
+        if (![request[pair[0]] isKindOfClass:NSString.class]) { Fail(error, EINVAL); return nil; }
+        NSURL *url = [NSURL URLWithString:request[pair[0]]];
+        if (!url.isFileURL || url.host.length || ![Capture(url.path, YES) isEqual:SSPreparationRecord[pair[1]]]) { Fail(error, ESTALE); return nil; }
+    }
+    if (activity() != SSPreparationActivityAbsent ||
+        ![SSCleanupReadOnlySnapshot(error) isEqual:cleanup] ||
+        ![SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error)[@"snapshot"] isEqual:journal[@"snapshot"]] ||
+        ![SSReadinessFailureSnapshot(source, target, binding, code, error) isEqual:ack] ||
+        ![ObserveState(state, error)[@"snapshot"] isEqual:observedState[@"snapshot"]] ||
+        ![SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error) isEqual:qualification] ||
+        !FailureTrusted(source, error) || !FailureTargetRestored()) { Fail(error, ESTALE); return nil; }
+    return @{@"kind":@"terminal-failure-observation", @"binding":binding, @"code":@(code), @"bundleIdentifier":request[@"bundleIdentifier"], @"source":SSPreparationRecord[@"source"],
+        @"target":SSPreparationRecord[@"target"], @"journal":journal[@"snapshot"], @"ack":ack, @"state":observedState[@"snapshot"],
+        @"cleanup":cleanup, @"qualification":qualification};
+}
 BOOL SSPreparationRecordFailure(NSURL *source, NSURL *actualTarget, NSDictionary *binding, NSInteger code, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    if (SSPreparationReadOnly) return Fail(error, EROFS);
     if (SSPreparationRecord[@"failure"]) return Fail(error, EALREADY);
     if (![(binding ?: @{}) isEqual:(SSPreparationRecord[@"binding"] ?: @{})]) return Fail(error, ESTALE);
     if (!FailureTrusted(source, error) || !actualTarget.isFileURL) return NO;
@@ -453,6 +614,8 @@ BOOL SSPreparationRecordFailure(NSURL *source, NSURL *actualTarget, NSDictionary
     return NO;
 }
 SSPreparationFailure SSPreparationRecoverFailure(NSURL *source, NSURL *target, NSDictionary *binding, NSInteger *code, NSError **error) {
+    if (SSPreparationCloseUncertain) { Fail(error, SSPreparationUncertaintyCode()); return SSPreparationFailureInvalid; }
+    if (SSPreparationReadOnly) { Fail(error, EROFS); return SSPreparationFailureInvalid; }
     if (!SSPreparationRecord[@"failure"]) {
         if (!SSPreparationRecord[@"ownership"]) return SSPreparationFailureNone;
         // No target acquisition is permitted until ownership intent is cleared
@@ -505,8 +668,20 @@ SSPreparationFailure SSPreparationRecoverFailure(NSURL *source, NSURL *target, N
 }
 BOOL SSPreparationFinishFailure(NSURL *source, NSURL *target, NSDictionary *binding, BOOL authorized,
     BOOL (^running)(void), BOOL (^launch)(void), NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    if (SSPreparationReadOnly) return Fail(error, EROFS);
     NSInteger code = 0;
     if (SSPreparationRecoverFailure(source, target, binding, &code, error) != SSPreparationFailureRestored) return NO;
+    if (!ValidTerminalRecord(SSPreparationRecord)) return Fail(error, EINVAL);
+    if (SSPreparationRecord[@"terminalVersion"] && !SSPreparationRecord[@"failure"][@"publication"]) {
+        NSDictionary *publication = TerminalPublication(SSPreparationRecord);
+        if (!publication || !FailureTargetRestored()) return Fail(error, ESTALE);
+        id before = SSPreparationRecord[@"failure"];
+        NSMutableDictionary *failure = [before mutableCopy];
+        failure[@"publication"] = publication;
+        SSPreparationRecord[@"failure"] = failure;
+        if (!Save(error)) { SSPreparationRecord[@"failure"] = before; return NO; }
+    }
     if (!SSReadinessPublishBound(source, target, binding, NO, code, error)) return NO;
     if (!authorized || [SSPreparationRecord[@"failure"][@"launched"] boolValue]) return YES;
     if (!running || !launch) return Fail(error, EINVAL);
@@ -520,6 +695,8 @@ BOOL SSPreparationFinishFailure(NSURL *source, NSURL *target, NSDictionary *bind
     return NO;
 }
 BOOL SSPreparationRetire(NSURL *sourceURL, NSURL *targetURL, NSError **error) {
+    if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
+    if (SSPreparationReadOnly) return Fail(error, EROFS);
     if (SSPreparationFD < 0) return Fail(error, EBADF);
     if (SSPreparationRecord[@"failure"]) return Fail(error, ECANCELED);
   if (!sourceURL.isFileURL || !targetURL.isFileURL) return Fail(error, EINVAL);

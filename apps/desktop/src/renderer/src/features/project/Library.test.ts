@@ -84,8 +84,16 @@ for (const modulePanelOpen of [false, true]) {
           }),
         },
         '../workbench/tabs': {
-          openWorkbenchTab: () => [],
+          newProjectTab: () => assert.fail('category navigation must not create a workspace tab'),
           projectExplorerTab: () => ({ id: 'explorer' }),
+        },
+        '../workbench/workspace': {
+          useWorkspaceController: () => ({
+            pageTabsInLeaf: () =>
+              assert.fail('category navigation must not inspect workspace tabs'),
+            tabLocation: () => assert.fail('category navigation must not relocate workspace tabs'),
+            openPageTab: () => assert.fail('category navigation must not open workspace tabs'),
+          }),
         },
       }
       const loaded = {

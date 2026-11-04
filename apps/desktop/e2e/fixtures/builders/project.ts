@@ -14,7 +14,7 @@ const ACTION_TIMEOUT_MS = 15_000
 const RESOURCES_DIRNAME = 'resources'
 const TOPBAR_PROJECT_TEST_ID = 'topbar-project'
 const ACTIVITY_RESOURCE_TEST_ID = 'activity-resource'
-const RESOURCE_REFRESH_TEST_ID = 'resource-refresh'
+const RESOURCE_REFRESH_TEST_ID = 'explorer-refresh'
 const SCENARIO_FILE = 'scenario.json'
 
 /** 标准测试数据集根目录；`FileEntry.contentFrom` 一律相对它解析。 */

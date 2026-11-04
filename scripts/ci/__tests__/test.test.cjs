@@ -465,7 +465,9 @@ test('native stage plan covers macOS Python and both supported Desktop platforms
   assert.ok(mac.some(stage => stage.id === 'python-serve-independent'))
   assert.ok(mac.some(stage => stage.id === 'python-root-independent'))
   assert.ok(mac.some(stage => stage.id === 'python-precise-independent'))
-  assert.ok(mac.some(stage => stage.id === 'python-literature-independent'))
+  const literature = mac.find(stage => stage.id === 'python-literature-independent')
+  assert.ok(literature.args.includes('apps/serve/service/capabilities/skills/literature-review/scripts'))
+  assert.equal(literature.dependsOn, 'skills-source-verify')
   assert.ok(mac.find(stage => stage.id === 'python-precise-independent').env.PYTHONPATH.includes(
     'precise-literature-search'))
   assert.ok(mac.find(stage => stage.id === 'python-precise-independent').env.PYTHONPATH.includes(
@@ -1114,6 +1116,7 @@ test('planStages honors explicit per-stage quota over env defaults', () => {
   assert.equal(testFiles.length, new Set(testFiles).size)
   assert.ok(!unit.args.includes('--test-force-exit'), 'forced exit can discard completed worker results')
   assert.ok(!unit.args.some(arg => arg.includes('*')), 'quoted globs are expanded to real files for spawn')
+  assert.ok(stages.find(stage => stage.id === 'desktop-extra-node').args.includes('--test-concurrency=1'))
   const wide = planStages('darwin', {}, { profile: 'full', quota: 8 })
   assert.ok(wide.find(stage => stage.id === 'desktop-unit').args.includes('--test-concurrency=8'))
 })
@@ -1165,8 +1168,7 @@ test('parallel scheduler overlaps independent branches and injects CI_STAGE_QUOT
     assert.equal(records.length, 2)
     assert.equal(new Map(records.map(r => [r.id, r.exitCode])).get('p-a'), 0)
     const quotaA = fs.readFileSync(path.join(directory, 'p-a.stdout.log'), 'utf8').trim().split('\n')[0]
-    if (parallelBudget) assert.ok(Number(quotaA) >= 5, `proportional share expected, got ${quotaA}`)
-    else assert.equal(quotaA, String(Math.max(2, os.cpus().length - 1)))
+    assert.equal(quotaA, String(planQuotas(planned, true).get('p-a')))
     // 显式小配额（2+2）时两路并行重叠：以「总耗时 < 两子进程 durationMs 之和」为结构证据，
     // 不依赖墙钟绝对值，避免 spawn 抖动导致误报。
     const overlapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-test-par2-'))

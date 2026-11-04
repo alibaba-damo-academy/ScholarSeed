@@ -14,7 +14,7 @@ apps/desktop/resources/notices/*.md text eol=lf
 
 # These source bytes participate directly in reviewed content identities.
 skills/community/** -text
-skills/community/*/.scholarseed-package.json text eol=lf
+apps/serve/service/capabilities/defaults/** -text
 apps/desktop/scripts/cd/bytecode.py text eol=lf
 uv.lock text eol=lf
 apps/desktop/scripts/cd/legacy-files.json text eol=lf
@@ -22,3 +22,12 @@ apps/desktop/updater/cmd/setup/legacy-files.json text eol=lf
 
 # Preserve literal CRLF test fixtures in source strings.
 apps/desktop/scripts/cd/__tests__/verification.test.cjs -text
+
+# ACL compiler receipts bind the exact source and generated output bytes.
+apps/desktop/native/security.json text eol=lf
+apps/desktop/native/security.outputs.json text eol=lf
+apps/desktop/native/security.h text eol=lf
+apps/desktop/updater/internal/security/evaluate.go text eol=lf
+apps/serve/service/platform/security.py text eol=lf
+packages/adapters/codex/scholarseed_codex/permissions.py text eol=lf
+scripts/shared/security.cjs text eol=lf

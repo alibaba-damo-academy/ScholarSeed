@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
-import { imageReference, loadImageAsset, sentImageAsset, artifactImageAsset } from './pictures.ts'
+import {
+  imageReference,
+  isImageArtifact,
+  loadImageAsset,
+  sentImageAsset,
+  artifactImageAsset,
+} from './pictures.ts'
+import type { SessionArtifact } from '../../model'
 import { sha256Text } from './anchors.ts'
 
 test('native message wiring shares the gallery and releases resource URLs without granting file authority', () => {
@@ -12,7 +19,8 @@ test('native message wiring shares the gallery and releases resource URLs withou
   assert.match(renderer, /URL\.revokeObjectURL/)
   const sources = readFileSync(new URL('./pictures.ts', import.meta.url), 'utf8')
   assert.match(sources, /reference\.id,\s+reference\.path,\s+reference\.sha256/)
-  assert.match(renderer, /artifact\.status === 'failed'/)
+  assert.match(sources, /artifact\.status === 'failed'/)
+  assert.match(renderer, /artifacts.filter\(isImageArtifact\)/)
   assert.match(renderer, /artifactImageAsset\(sessionId, artifact\)/)
   assert.match(renderer, /ImageBatch.Provider/)
   assert.match(renderer, /thumbnails=\{false\}/)
@@ -20,6 +28,23 @@ test('native message wiring shares the gallery and releases resource URLs withou
   assert.match(attachments, /importAttachmentToResources/)
   assert.match(attachments, /<SentImages/)
   assert.match(attachments, /refs=\{files\}/)
+})
+
+test('image layout and gallery share format and lifecycle eligibility', () => {
+  const artifact = {
+    artifact_id: 'image',
+    name: 'image.png',
+    path: 'image.png',
+    status: 'available',
+  } as SessionArtifact
+  assert.equal(isImageArtifact(artifact), true)
+  assert.equal(isImageArtifact({ ...artifact, name: 'image.PNG' }), true)
+  assert.equal(isImageArtifact({ ...artifact, name: 'unknown', media_type: 'image/jpeg' }), true)
+  assert.equal(isImageArtifact({ ...artifact, status: 'failed' }), false)
+  assert.equal(isImageArtifact({ ...artifact, status: 'deleted' }), false)
+  assert.equal(isImageArtifact({ ...artifact, change: 'delete' }), false)
+  assert.equal(isImageArtifact({ ...artifact, name: 'report.txt', path: 'report.txt' }), false)
+  assert.equal(isImageArtifact({ ...artifact, name: 'photo.heic', path: 'photo.heic' }), false)
 })
 
 test('only browser-supported images enter the image group', () => {

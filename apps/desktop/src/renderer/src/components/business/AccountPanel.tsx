@@ -3,7 +3,7 @@ import { markAllAttentionRead } from '../../features/assistant/attention'
 
 import { VersionScope } from './VersionScope'
 import {
-  DEFAULT_SELECTION_PROMPTS,
+  defaultSelectionPrompts,
   MAX_SELECTION_PROMPT_CHARS,
   SELECTION_PROMPT_ACTIONS,
 } from '../../../../prompts'
@@ -224,6 +224,7 @@ const CONTACT_MAIL = 'info.scholarseed@list.alibaba-inc.com'
 const SITE_FALLBACK_BASE_URL = 'https://scholarseed.damo.alibaba.com'
 const MANUAL_PAGE_PATH = '/docs.html'
 const MAIL_COPIED_HINT_MS = 1600
+const PROJECT_OPERATION_FAILED = 'content_operation_failed'
 const FILE_VERSION_ERROR_KEYS = {
   policy_preview_required: 'fileSettings.policyPreviewRequired',
   invalid_version_mode: 'fileSettings.invalidMode',
@@ -377,6 +378,7 @@ const SELECTION_PROMPT_LABELS = {
 function PromptsPage(): React.JSX.Element {
   const { t } = useTranslation('components')
   const { state, act } = useApp()
+  const defaults = defaultSelectionPrompts(state.lang)
   const [draft, setDraft] = React.useState(() => ({
     ...state.selectionPrompts,
   }))
@@ -433,7 +435,7 @@ function PromptsPage(): React.JSX.Element {
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={saving || draft[action] === DEFAULT_SELECTION_PROMPTS[action]}
+                disabled={saving || draft[action] === defaults[action]}
                 aria-label={t('accountPanel.prompts.restoreAction', {
                   action: t(SELECTION_PROMPT_LABELS[action]),
                 })}
@@ -441,7 +443,7 @@ function PromptsPage(): React.JSX.Element {
                 onClick={() =>
                   setDraft((current) => ({
                     ...current,
-                    [action]: DEFAULT_SELECTION_PROMPTS[action],
+                    [action]: defaults[action],
                   }))
                 }
               >
@@ -3599,7 +3601,8 @@ function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): Re
                         hint={
                           customConnection
                             ? t('accountPanel.modelsPage.base')
-                            : activePreset?.note || t('accountPanel.modelsPage.baseUrlPresetHint')
+                            : providerPresetText(activePreset, accountActions).note ||
+                              t('accountPanel.modelsPage.baseUrlPresetHint')
                         }
                       >
                         <Input
@@ -4586,15 +4589,19 @@ function ArchivedProjectsPage(): React.JSX.Element {
   const applyToProjects = async (
     targets: ProjectRef[],
     op: (project: ProjectRef) => Promise<{ ok: boolean; error?: string }>
-  ): Promise<{ ok: number; fail: number }> => {
+  ): Promise<{ ok: number; fail: number; errors: string[] }> => {
     let ok = 0
     let fail = 0
+    const errors: string[] = []
     for (const target of targets) {
       const result = await op(target)
       if (result.ok) ok += 1
-      else fail += 1
+      else {
+        fail += 1
+        errors.push(result.error ?? PROJECT_OPERATION_FAILED)
+      }
     }
-    return { ok, fail }
+    return { ok, fail, errors }
   }
 
   const unarchive = (project: ProjectRef): Promise<void> =>
@@ -4632,12 +4639,14 @@ function ArchivedProjectsPage(): React.JSX.Element {
       if (deleteTargets.length === 0) return
       const targets = deleteTargets
       const single = targets.length === 1
-      const { ok, fail } = await applyToProjects(targets, (project) => forgetProject(project.id))
+      const { ok, fail, errors } = await applyToProjects(targets, (project) =>
+        forgetProject(project.id)
+      )
       setDeleteTargets([])
       if (single) {
         if (fail > 0) {
           toast({
-            title: projectText('notices.unknown', { code: 'unknown_project' }),
+            title: projectText('notices.removeFailed', { code: errors[0] }),
             tone: 'error',
           })
           return
@@ -4646,6 +4655,8 @@ function ArchivedProjectsPage(): React.JSX.Element {
       } else {
         toast({
           title: t('accountPanel.archives.batchSummary', { ok, fail }),
+          description:
+            fail > 0 ? projectText('notices.removeFailed', { code: errors[0] }) : undefined,
           tone: fail === 0 ? 'success' : 'error',
         })
       }

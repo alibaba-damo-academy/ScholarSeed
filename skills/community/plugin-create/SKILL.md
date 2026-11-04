@@ -2,7 +2,7 @@
 name: plugin-create
 description: Create a local research workflow plugin for ScholarSeed with a Skill, custom conversation component code, sample interactions and an inspected ZIP. Verify the actual host interaction slot before promising runtime support. Use only when asked to create or change a plugin.
 description_zh: 为书深创建包含 Skill、自定义对话组件代码和预览场景的本地插件，检查后交付安装包；先核实宿主实际支持的交互入口，不承诺未接通的流程。
-version: "0.5.5"
+version: "0.5.6"
 ---
 
 # 开发插件

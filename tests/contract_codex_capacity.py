@@ -63,7 +63,16 @@ from scholarseed_codex.protocol.state import (
 from scholarseed_codex.provider import CodexRuntimeProvider
 from scholarseed_codex.sandbox import SANDBOX_ARGUMENT, SANDBOX_SETUP_TIMEOUT_SECONDS
 from scholarseed_codex.thread import CodexThreadSession
-from scholarseed_runtime.contract.command import CommandState, HostWarmupRequest, OpenSessionRequest
+from scholarseed_runtime.contract.command import (
+    CommandState,
+    HostWarmupRequest,
+    InventoryKind,
+    InventoryRequest,
+    OpenSessionRequest,
+    RuntimeInspectionRequest,
+    SkillConfiguration,
+    SkillConfigurationRequest,
+)
 from scholarseed_runtime.contract.evidence import RuntimeProcessEventKind
 from scholarseed_runtime.contract.incident import (
     RuntimeIncident,
@@ -73,7 +82,12 @@ from scholarseed_runtime.contract.incident import (
     RuntimeRecoveryStrategy,
     RuntimeRetryability,
 )
-from scholarseed_runtime.contract.inventory import SkillPolicy
+from scholarseed_runtime.contract.inventory import (
+    SkillAvailability,
+    SkillInventory,
+    SkillPolicy,
+    SkillView,
+)
 from scholarseed_runtime.contract.model import ModelIntent, ModelTransport
 from scholarseed_runtime.contract.provider import RuntimeOpenNotAppliedError
 from scholarseed_runtime.contract.resource import (
@@ -1851,15 +1865,62 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         control = CodexRuntimeControl(cwd=request.cwd, lease=lease, host_pool=pool)
         await control.open()
         lease.host.native_busy = True
-        with self.assertRaises(AppServerError) as caught:
+        with (
+            self.assertLogs(pool_module.logger.name, level="WARNING") as logs,
+            self.assertRaises(AppServerError) as caught,
+        ):
             async with control.mutation():
                 self.fail("busy native host admitted a configuration mutation")
         self.assertEqual(caught.exception.safe_error, RESOURCE_HOST_BUSY)
+        self.assertIn("stage=quiescence", " ".join(logs.output))
+        self.assertIn("ticket_present=False", " ".join(logs.output))
         self.assertTrue(lease.host.admission.accepting)
         lease.host.native_busy = False
         async with control.mutation():
             self.assertFalse(lease.host.admission.accepting)
         self.assertTrue(lease.host.admission.accepting)
+        await control.aclose()
+        await lease.close()
+
+    async def test_skill_operations_remain_available_while_execution_is_active(self) -> None:
+        pool = self.pool()
+        request = self.request("skills-during-execution")
+        lease = await pool.acquire(request)
+        control = CodexRuntimeControl(cwd=request.cwd, lease=lease, host_pool=pool)
+        await control.open()
+        lease.host.native_busy = True
+        manifest = request.cwd / "SKILL.md"
+        inventory = SkillInventory(
+            cwd=request.cwd,
+            revision="skills",
+            skills=(SkillView("skill", manifest, "", SkillAvailability.AVAILABLE, True),),
+        )
+        control.skill_control = SimpleNamespace(
+            configure=AsyncMock(), list_skills=AsyncMock(return_value=inventory)
+        )
+
+        @asynccontextmanager
+        async def existing_control(**_context):
+            yield control
+
+        runtime = CodexRuntimeProvider()
+        runtime._control = existing_control
+        async with control.reading():
+            snapshot = await runtime.inspect(
+                RuntimeInspectionRequest(
+                    cwd=request.cwd,
+                    inventory=InventoryRequest((InventoryKind.SKILLS,), refresh=True),
+                )
+            )
+            receipt = await runtime.configure_skills(
+                SkillConfigurationRequest(request.cwd, (SkillConfiguration(manifest, True),))
+            )
+            self.assertEqual(snapshot.host_identity, control.identity)
+            self.assertIs(receipt.state, CommandState.APPLIED)
+            self.assertEqual(lease.host.admission.active, 1)
+            self.assertTrue(lease.host.admission.accepting)
+        control.skill_control.configure.assert_awaited_once_with(manifest, True)
+        self.assertEqual(control.skill_control.list_skills.await_count, 2)
         await control.aclose()
         await lease.close()
 
@@ -1875,10 +1936,15 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*(control.open() for control in controls))
         self.assertEqual(controls[0].identity, controls[1].identity)
         async with controls[0].reading():
-            with self.assertRaises(AppServerError) as caught:
+            with (
+                self.assertLogs(pool_module.logger.name, level="WARNING") as logs,
+                self.assertRaises(AppServerError) as caught,
+            ):
                 async with controls[1].mutation():
                     self.fail("configuration mutation bypassed an active reader")
             self.assertEqual(caught.exception.safe_error, RESOURCE_HOST_BUSY)
+            self.assertIn("stage=admission", " ".join(logs.output))
+            self.assertIn("active=1", " ".join(logs.output))
             self.assertEqual(leases[0].host.admission.active, 1)
         self.assertTrue(leases[0].host.admission.accepting)
         await asyncio.gather(*(control.aclose() for control in controls))

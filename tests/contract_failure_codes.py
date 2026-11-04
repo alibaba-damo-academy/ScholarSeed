@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RENDERER_FAILURES = ROOT / "apps/desktop/src/renderer/src/failures.ts"
 KIND_TABLE = re.compile(r"FAILURE_KIND_BY_CODE[^=]*=\s*\{(.*?)\n\}", re.DOTALL)
 KIND_ENTRY = re.compile(r"^\s*'?([A-Za-z0-9_.-]+)'?\s*:\s*'", re.MULTILINE)
+COMPUTED_ENTRY = re.compile(r"^\s*\[([A-Za-z_][A-Za-z0-9_]*)\]\s*:\s*'", re.MULTILINE)
+STRING_CONSTANT = re.compile(r"\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']+)'", re.MULTILINE)
 # 解析退化会让守卫假绿，两侧各钉一个已知码作哨兵。
 SENTINEL = "insufficient_quota"
 
@@ -25,7 +27,13 @@ def renderer_codes() -> set[str]:
     table = KIND_TABLE.search(source)
     if table is None:
         raise AssertionError(f"FAILURE_KIND_BY_CODE not found in {RENDERER_FAILURES}")
-    return {entry.group(1).casefold() for entry in KIND_ENTRY.finditer(table.group(1))}
+    codes = {entry.group(1).casefold() for entry in KIND_ENTRY.finditer(table.group(1))}
+    constants = dict(STRING_CONSTANT.findall(source))
+    for entry in COMPUTED_ENTRY.finditer(table.group(1)):
+        if entry.group(1) not in constants:
+            raise AssertionError(f"unresolved failure code constant: {entry.group(1)}")
+        codes.add(constants[entry.group(1)].casefold())
+    return codes
 
 
 class FailureCodeParityContract(unittest.TestCase):

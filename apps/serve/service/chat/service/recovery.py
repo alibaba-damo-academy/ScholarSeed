@@ -942,7 +942,10 @@ class RecoveryService:
     async def _complete(self, live: LiveSession, checkpoint: RecoveryCheckpoint) -> None:
         async with live.lifecycle_lock:
             original = live.catalog.queued_message(live.id, checkpoint.client_id)
-            if original is None or original.state is not QueuedMessageState.OUTCOME_UNKNOWN:
+            if original is None or original.state not in {
+                QueuedMessageState.OUTCOME_UNKNOWN,
+                QueuedMessageState.COMPLETED,
+            }:
                 return
             if live.ledger.uncertainty_snapshot():
                 return

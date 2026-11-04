@@ -6,7 +6,12 @@ import {
   PREFERENCE_DIAGNOSTIC_PREFIX,
   PREFERENCE_SUBMISSION_SOURCE,
 } from './preference-diagnostics.ts'
-import { DEFAULT_RENDERER_PREFERENCES, sanitizeRendererPreferences } from './preferences.ts'
+import {
+  DEFAULT_RENDERER_PREFERENCES,
+  defaultRendererPreferences,
+  sanitizeRendererPreferences,
+} from './preferences.ts'
+import { defaultSelectionPrompts, selectionInstruction } from './prompts.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -15,6 +20,37 @@ function deferred<T>() {
   })
   return { promise, resolve }
 }
+
+test('prompt defaults only become durable through an explicit save and language changes retain one instruction map', async () => {
+  let disk = defaultRendererPreferences('zh')
+  const original = structuredClone(disk.selectionPrompts)
+  const port = {
+    save: async (value: typeof disk) => {
+      disk = sanitizeRendererPreferences(JSON.parse(JSON.stringify(value)))
+      return disk
+    },
+    reconcile: async () => disk,
+    apply: async () => undefined,
+    failed: () => assert.fail('unexpected save failure'),
+  }
+  const writer = new PreferenceWriter(disk, port)
+  await writer.submit({ language: 'en' }, PREFERENCE_SUBMISSION_SOURCE.language)
+  assert.deepEqual(disk.selectionPrompts, original)
+  const draft = {
+    ...writer.current().selectionPrompts,
+    explain: defaultSelectionPrompts('en').explain,
+  }
+  assert.deepEqual(disk.selectionPrompts, original)
+  await writer.submit({ selectionPrompts: draft }, PREFERENCE_SUBMISSION_SOURCE.prompts)
+  const restarted = new PreferenceWriter(
+    sanitizeRendererPreferences(JSON.parse(JSON.stringify(disk))),
+    port
+  )
+  await restarted.submit({ language: 'zh' }, PREFERENCE_SUBMISSION_SOURCE.language)
+  assert.deepEqual(disk.selectionPrompts, draft)
+  assert.equal(selectionInstruction(restarted.current().selectionPrompts, 'explain'), draft.explain)
+  assert.equal(disk.selectionPrompts.translate, original.translate)
+})
 
 test('cleared message versions are saved and retained by a fresh preference writer', async () => {
   let disk = sanitizeRendererPreferences({})

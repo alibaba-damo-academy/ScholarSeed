@@ -33,7 +33,7 @@ import {
   mergeNavigationTabOrder,
   reorderNavigationTabOrder,
   tabMatchesProject,
-  tabVisibleInCurrentView,
+  workbenchTabVisible,
   workbenchTabTitle,
   type TabKind,
 } from '../features/workbench/tabs'
@@ -74,7 +74,7 @@ export function TabBar({
   actions,
   overflowTarget,
 }: {
-  trailing?: React.ReactNode
+  trailing?: React.ReactNode | ((leaf: DockLeaf) => React.ReactNode)
   leading?: React.ReactNode
   actions?: React.ReactNode
   overflowTarget?: HTMLElement | null
@@ -145,7 +145,7 @@ export function TabBar({
     .filter(availabilityPolicy.tabAvailable)
 
     .filter((tab) => tabMatchesProject(tab, state.homeSelectedProjectId))
-    .filter((tab) => tabVisibleInCurrentView(tab.kind, state.mainView))
+    .filter((tab) => workbenchTabVisible(tab, state.mainView))
     .sort(
       (first, second) =>
         tabOrderInCurrentView(first.kind, state.mainView) -
@@ -242,13 +242,23 @@ export function TabBar({
   const previousFocusedDocumentTabId = React.useRef(focusedDocumentTabId)
   const synchronizedResourceFile = React.useRef<{ tabId: string; path: string } | null>(null)
   React.useEffect(() => {
+    if (workspace.getSnapshot().focusedTabId !== focusedDocumentTabId) return
     const previousFocused = previousFocusedDocumentTabId.current
     previousFocusedDocumentTabId.current = focusedDocumentTabId
     if (!focusedDocumentTabId) return
     if (state.mainView !== 'resource' && state.mainView !== 'literature') return
-    if (!documents.tabs[state.activeTab] && state.activeTab !== previousFocused) return
+    if (
+      !documents.tabs[state.activeTab] &&
+      !workspace.tabLocation(state.activeTab) &&
+      state.activeTab !== previousFocused
+    )
+      return
     const tab = documents.tabs[focusedDocumentTabId]
     const session = tab ? documents.sessions[tab.sessionId] : undefined
+    if (!tab && state.tabs.some((entry) => entry.id === focusedDocumentTabId)) {
+      if (state.activeTab !== focusedDocumentTabId) act.activateTab(focusedDocumentTabId)
+      return
+    }
     if (!session) return
     const needsActivation =
       !state.aiPanel.cover &&
@@ -355,15 +365,20 @@ export function TabBar({
     trailing: boolean
   ): React.JSX.Element => {
     const leafTabs = leaf.tabIds.flatMap((id) => {
-      const item = documentTabItem(id)
+      const item = documentTabItem(id) ?? workbenchTabs.find((tab) => tab.id === id)
       return item ? [item] : []
     })
     const tabs = leading
-      ? taskTabs.concat(mergeNavigationTabOrder(previousOrder, [workbenchTabs, leafTabs]))
+      ? taskTabs.concat(
+          mergeNavigationTabOrder(previousOrder, [
+            workbenchTabs.filter((tab) => !workspace.tabLocation(tab.id)),
+            leafTabs,
+          ])
+        )
       : leafTabs
     const closableLeafTabIds = tabs.filter((tab) => tab.closable !== false).map((tab) => tab.id)
     const visibleIds = new Set([...tabs.map((tab) => tab.id)])
-    const requestedId = leading ? state.activeTab : (leaf.activeTabId ?? state.activeTab)
+    const requestedId = leaf.activeTabId ?? state.activeTab
     const value = activeNavigationTabId(
       requestedId,
       visibleIds,
@@ -392,7 +407,9 @@ export function TabBar({
         }
         showOverview={false}
         tabs={tabs}
-        trailing={trailing ? tabAction : undefined}
+        trailing={
+          typeof tabAction === 'function' ? tabAction(leaf) : trailing ? tabAction : undefined
+        }
         value={taskTabActive ? TASK_TAB_ID : value}
       />,
       leaf,
@@ -474,7 +491,7 @@ export function TabBar({
           overviewIcon={<MessageCircle size={16} strokeWidth={1.8} />}
           showOverview={false}
           tabs={tabs}
-          trailing={tabAction}
+          trailing={typeof tabAction === 'function' ? tabAction(firstLeaf(currentRoot)) : tabAction}
           value={taskTabActive ? TASK_TAB_ID : activeValue}
           renderContextMenu={(tab) =>
             documents.tabs[tab.id] ? (

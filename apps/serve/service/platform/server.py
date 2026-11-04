@@ -16,7 +16,7 @@ import uvicorn
 from fastapi import FastAPI
 from uvicorn.lifespan.on import LifespanOn
 
-from service.platform.activity import Activities
+from service.platform.activity import Activities, ActivityPhase
 from service.platform.domains import DomainOwner, Domains
 from service.platform.parent_control import BOOTSTRAP_BYTES, ParentControl, ParentControlError
 from service.platform.shutdown import (
@@ -44,12 +44,14 @@ class ProductServer(uvicorn.Server):
         parent_control: ParentControl | None = None,
         shutdown_seconds: float = DEFAULT_SHUTDOWN_SECONDS,
         close_model_streams: Callable[[], Awaitable[None]] | None = None,
+        interrupt_running: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if sys.platform == "win32" and config.loop in ("auto", "asyncio"):
             config.loop = LOOP_FACTORY
         super().__init__(config)
         self._activities = activities
         self._close_model_streams = close_model_streams
+        self._interrupt_running = interrupt_running
         if parent_control is not None and not parent_stdin:
             raise ValueError("private control requires inherited stdin")
         self._parent_control = parent_control
@@ -164,6 +166,11 @@ class ProductServer(uvicorn.Server):
                 await self._parent_control.aclose()
         with self._shutdown.stage(ShutdownStage.OBSERVERS):
             self._activities.stop_observers()
+        if self._interrupt_running is not None:
+            with self._shutdown.stage(ShutdownStage.TURNS):
+                if self._activities.snapshot().phase is ActivityPhase.OPEN:
+                    self._activities.begin()
+                await self._interrupt_running()
         # Model bridges are active HTTP responses owned by this process. Stop
         # their producers before asking HTTP to drain; lifespan cannot cancel
         # them while it is itself waiting behind that drain.

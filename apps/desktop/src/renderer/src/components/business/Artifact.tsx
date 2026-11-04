@@ -166,15 +166,17 @@ export function ArtifactMenuItems({
 
 export function ArtifactGroup({
   children,
+  stacked = false,
 }: {
   children: React.ReactNode
+  stacked?: boolean
 }): React.JSX.Element | null {
   const cards = React.Children.toArray(children)
   if (!cards.length) return null
   return (
     <div
       data-testid="artifact-group"
-      className={`grid items-start gap-[var(--vds-space-2)] [&>[data-artifact-card]]:mt-0 ${cards.length === 1 ? 'max-w-[var(--vds-artifact-card-max-width)] grid-cols-1' : 'grid-cols-[repeat(auto-fill,minmax(min(100%,var(--vds-artifact-card-min-width)),1fr))]'}`}
+      className={`grid items-start gap-[var(--vds-space-2)] [&>[data-artifact-card]]:mt-0 ${stacked || cards.length === 1 ? 'max-w-[var(--vds-artifact-card-max-width)] grid-cols-1' : 'grid-cols-[repeat(auto-fill,minmax(min(100%,var(--vds-artifact-card-min-width)),1fr))]'}`}
     >
       {cards}
     </div>

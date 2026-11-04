@@ -132,10 +132,13 @@ class SkillManagement:
                 force_reload=force_reload,
             )
         except Exception as exc:  # noqa: BLE001 - product edge returns a safe readiness error
+            failure = runtime_error(exc)
             logger.warning(
-                "skill_inventory_failed operation=inspect failure_type=%s", type(exc).__name__
+                "skill_inventory_failed operation=inspect failure_type=%s reason=%s",
+                type(exc).__name__,
+                failure.detail,
             )
-            raise runtime_error(exc) from exc
+            raise failure from exc
 
     async def apply_state(
         self,

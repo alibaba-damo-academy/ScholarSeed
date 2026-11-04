@@ -3,24 +3,26 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 import { MessageCirclePlus } from 'lucide-react'
 
-import {
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator
-} from '../../components/ui'
+import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../../components/ui'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
 import { useApp } from '../../store'
+import { newProjectTab } from './tabs'
 import { revealLabelKey } from '../../fileOpen'
 import type { AdjacentPosition } from './layout'
 import {
   tabIdsForClose,
   useDocumentWorkspace,
   useWorkspaceController,
-  type TabCloseScope
+  type TabCloseScope,
 } from './workspace'
 
 const TAB_CLOSE_ITEMS: ReadonlyArray<{
-  labelKey: 'navigation.close'|'navigation.closeOthers'|'navigation.closeLeft'|'navigation.closeRight'|'navigation.closeAll'
+  labelKey:
+    | 'navigation.close'
+    | 'navigation.closeOthers'
+    | 'navigation.closeLeft'
+    | 'navigation.closeRight'
+    | 'navigation.closeAll'
   scope: TabCloseScope
   testId: string
 }> = [
@@ -28,7 +30,7 @@ const TAB_CLOSE_ITEMS: ReadonlyArray<{
   { labelKey: 'navigation.closeOthers', scope: 'others', testId: 'tab-close-others' },
   { labelKey: 'navigation.closeLeft', scope: 'left', testId: 'tab-close-left' },
   { labelKey: 'navigation.closeRight', scope: 'right', testId: 'tab-close-right' },
-  { labelKey: 'navigation.closeAll', scope: 'all', testId: 'tab-close-all' }
+  { labelKey: 'navigation.closeAll', scope: 'all', testId: 'tab-close-all' },
 ]
 
 const MOVE_LABELS = {
@@ -43,7 +45,7 @@ const MOVE_LABELS = {
   topLeft: 'navigation.moveTopLeft',
   topRight: 'navigation.moveTopRight',
   bottomLeft: 'navigation.moveBottomLeft',
-  bottomRight: 'navigation.moveBottomRight'
+  bottomRight: 'navigation.moveBottomRight',
 } as const satisfies Record<AdjacentPosition, string>
 
 const MOVE_TEST_IDS: Record<AdjacentPosition, string> = {
@@ -58,20 +60,25 @@ const MOVE_TEST_IDS: Record<AdjacentPosition, string> = {
   topLeft: 'tab-move-top-left',
   topRight: 'tab-move-top-right',
   bottomLeft: 'tab-move-bottom-left',
-  bottomRight: 'tab-move-bottom-right'
+  bottomRight: 'tab-move-bottom-right',
 }
 
 export function WorkbenchTabMenu({
   tabId,
-  tabIds
+  tabIds,
 }: {
   tabId: string
   tabIds: readonly string[]
 }): React.JSX.Element {
-  const { act } = useApp()
+  const { state, set, act } = useApp()
   const { t } = useTranslation('ui')
   const documents = useDocumentWorkspace()
   const workspace = useWorkspaceController()
+  const page = state.tabs.find((tab) => tab.id === tabId)
+  const splitActions = (['right', 'bottom'] as const).filter((direction) =>
+    workspace.canSplitTab(tabId, direction, false)
+  )
+  const moveTargets = workspace.moveTargetsForTab(tabId)
 
   const closeTabs = (ids: readonly string[]): void => {
     workspace.requestCloseTabs(ids.filter((id) => Boolean(documents.tabs[id])))
@@ -93,13 +100,37 @@ export function WorkbenchTabMenu({
           </ContextMenuItem>
         )
       })}
+      {(splitActions.length > 0 || moveTargets.length > 0) && <ContextMenuSeparator />}
+      {splitActions.map((direction) => (
+        <ContextMenuItem
+          key={direction}
+          data-testid={direction === 'right' ? 'tab-split-right' : 'tab-split-down'}
+          onSelect={() => {
+            if (!page) return
+            const copy = { ...page, id: newProjectTab(page.projectId ?? null).id }
+            if (!workspace.splitPageTab(page.id, copy.id, direction)) return
+            set((current) => ({ tabs: [...current.tabs, copy], activeTab: copy.id }))
+          }}
+        >
+          {t(direction === 'right' ? 'navigation.splitRight' : 'navigation.splitDown')}
+        </ContextMenuItem>
+      ))}
+      {moveTargets.map((target) => (
+        <ContextMenuItem
+          key={`${target.area}:${target.leaf.id}`}
+          data-testid={MOVE_TEST_IDS[target.position]}
+          onSelect={() => void workspace.moveTab(tabId, target.area, target.leaf.id, 'center')}
+        >
+          {t(MOVE_LABELS[target.position])}
+        </ContextMenuItem>
+      ))}
     </ContextMenuContent>
   )
 }
 
 export function DocumentTabMenu({
   tabId,
-  tabIds
+  tabIds,
 }: {
   tabId: string
   tabIds: readonly string[]
@@ -118,11 +149,15 @@ export function DocumentTabMenu({
   const split = (direction: 'right' | 'bottom'): void => {
     void workspace.splitTab(tab.id, direction, false)
   }
-  const splitActions = (['right', 'bottom'] as const).filter(
-    (direction) => workspace.canSplitTab(tab.id, direction, false)
+  const splitActions = (['right', 'bottom'] as const).filter((direction) =>
+    workspace.canSplitTab(tab.id, direction, false)
   )
   const moveTargets = workspace.moveTargetsForTab(tab.id)
   const hasLayoutActions = splitActions.length > 0 || moveTargets.length > 0
+  const closeTabs = (ids: readonly string[]): void => {
+    workspace.requestCloseTabs(ids.filter((id) => Boolean(state.tabs[id])))
+    ids.filter((id) => !state.tabs[id]).forEach(act.closeWorkbenchTab)
+  }
 
   return (
     <ContextMenuContent className={PRODUCT_MENU_CONTENT_CLASS} data-testid="document-tab-menu">
@@ -134,7 +169,12 @@ export function DocumentTabMenu({
         <MessageCirclePlus />
         {resourceText('menu.addToConversation')}
       </ContextMenuItem>
-      <ContextMenuItem data-testid="tab-copy-name" onSelect={() => void act.copyResourceName(documentDisplayTitle(tab, conversation, workbench))}>
+      <ContextMenuItem
+        data-testid="tab-copy-name"
+        onSelect={() =>
+          void act.copyResourceName(documentDisplayTitle(tab, conversation, workbench))
+        }
+      >
         {resourceText('menu.copyName')}
       </ContextMenuItem>
       <ContextMenuItem
@@ -157,9 +197,7 @@ export function DocumentTabMenu({
           key={item.scope}
           data-testid={item.testId}
           disabled={tabIdsForClose(tabIds, tab.id, item.scope).length === 0}
-          onSelect={() => workspace.requestCloseTabs(
-            tabIdsForClose(tabIds, tab.id, item.scope)
-          )}
+          onSelect={() => closeTabs(tabIdsForClose(tabIds, tab.id, item.scope))}
         >
           {t(item.labelKey)}
         </ContextMenuItem>

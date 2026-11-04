@@ -30,6 +30,7 @@ test('isolated E2E home uses native Windows temp instead of POSIX socket fallbac
   assert.equal(runtimeHomeRoot('win32', windowsTemp), windowsTemp)
   assert.equal(runtimeHomeRoot('darwin', '/very/long/path/for/temporary/playwright/runtime/state'), '/tmp')
   assert.equal(runtimeHomeRoot('darwin', '/tmp'), '/tmp')
+  assert.equal(runtimeHomeRoot('darwin', '/private/tmp/deep_rd_dev/test'), '/private/tmp/deep_rd_dev/test')
 })
 
 test('real model profiles are copied into the isolated E2E home', () => {

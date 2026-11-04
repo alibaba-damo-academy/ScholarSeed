@@ -1,4 +1,5 @@
-import { createReadyProject } from './projects'
+import { selectMarkdownMode } from './markdown'
+import { createReadyProject, projectOption, documentSurface, openProjectMenu, openProjectExplorer, openProjectFile } from './projects'
 import { createHash } from 'crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { basename, dirname, join, relative } from 'path'
@@ -33,7 +34,7 @@ export const BROKEN_PDF_NAME = 'preview_pdf_1MB.pdf'
 export const NOTE_TEXT = 'Persistent acceptance note'
 export const PDF_LONG_OUTLINE_TITLE = 'Level 1 with a deliberately long title that must remain on one line'
 export const PDF_LONG_UNAVAILABLE_OUTLINE_TITLE = 'Level 2 unavailable with a deliberately long title that still needs a tooltip'
-const PROJECT_NAME = 'Library acceptance'
+const PROJECT_NAME = 'Library-acceptance'
 const ACTION_TIMEOUT_MS = 15_000
 const PDF_PAGE_COUNT = 3
 const LONG_PDF_PAGE_COUNT = 86
@@ -110,8 +111,8 @@ export async function seedProject(page: Page, runtime: RuntimePaths): Promise<st
   writeFileSync(join(resources, 'acceptance.gif'), Buffer.from('R0lGODlhAQABAIAAAAD/AP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7', 'base64'))
   await page.reload()
   await enterWorkbenchShell(page)
-  await selectProject(page)
-  await page.getByTestId('resource-refresh').click()
+  await selectProject(page, project.name)
+  await page.getByTestId('explorer-refresh').click()
   return resources
 }
 
@@ -219,8 +220,7 @@ export async function openSeededLiteraturePdf(page: Page, runtime: RuntimePaths)
 
   await page.reload()
   await enterWorkbenchShell(page)
-  await page.getByTestId('topbar-project').click()
-  await page.getByTestId('project-menu-literature').click()
+  await page.getByTestId('activity-literature').click()
   const literatureRow = page.locator('.lit-row').filter({ hasText: 'acceptance' }).first()
   await page.screenshot({ path: join(runtime.artifacts, 'literature-list-before-selection.png') })
   await expect(literatureRow).toBeVisible()
@@ -242,15 +242,24 @@ export async function seedLongPdf(resources: string): Promise<void> {
   writeFileSync(join(resources, LONG_PDF_NAME), await pdf.save())
 }
 
-export async function selectProject(page: Page): Promise<void> {
+export async function selectProject(page: Page, name = PROJECT_NAME): Promise<void> {
   page.setDefaultTimeout(ACTION_TIMEOUT_MS)
-  await page.getByTestId('topbar-project').click()
-  await page.getByTestId(`project-menu-option-${PROJECT_NAME}`).click()
-  await page.getByTestId('activity-resource').click()
+  await openProjectMenu(page)
+  try {
+    await projectOption(page, name).click()
+  } catch (cause) {
+    const response = await page.request.get(`${await apiBase(page)}/api/content/projects`)
+    const catalog = await response.json()
+    const menu = await page.getByTestId('project-menu').innerText().catch(() => null)
+    throw new Error(`Project selection failed: ${JSON.stringify({ name, catalog, menu })}`, { cause })
+  }
+  await openProjectExplorer(page)
 }
 
 export async function openFile(page: Page, name: string): Promise<void> {
-  await page.getByTestId(`tree-resources/${name}`).click()
+  await openProjectFile(page, `resources/${name}`)
+  // Editing cases explicitly enter the editor; the product's default remains readonly.
+  if (name.endsWith('.md')) await selectMarkdownMode(page, 'edit')
 }
 
 export function fileDigest(path: string): string {
@@ -259,7 +268,7 @@ export function fileDigest(path: string): string {
 
 /** Select rendered PDF text using the same pointer gesture a reader uses. */
 export async function selectPdfText(page: Page, pageNumber = 1): Promise<string> {
-  const text = page.getByTestId(`pdf-page-${pageNumber}`).locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
+  const text = documentSurface(page).getByTestId(`pdf-page-${pageNumber}`).locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
   await expect(text).toBeVisible()
   await text.scrollIntoViewIfNeeded()
   const box = await text.boundingBox()
@@ -271,4 +280,26 @@ export async function selectPdfText(page: Page, pageNumber = 1): Promise<string>
   const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '')
   expect(selected).toContain('Needle')
   return selected
+}
+
+/** Walk the rendered virtual rows, proving every title remains reachable without pagination. */
+export async function expectLiteratureTitles(page: Page, titles: string[]): Promise<void> {
+  const table = page.locator('.lit-table:visible')
+  const rows = table.locator('.lit-row')
+  await expect(rows.first()).toBeVisible()
+  if (titles.length > 1) await expect.poll(() => rows.count()).toBeGreaterThan(1)
+  const seen = new Set<string>()
+  await table.evaluate(element => { element.scrollTop = 0 })
+  for (let step = 0; step <= titles.length; step += 1) {
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    for (const title of await rows.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')!))) seen.add(title)
+    const geometry = await table.evaluate(element => ({ top: element.scrollTop, height: element.clientHeight, total: element.scrollHeight }))
+    if (geometry.top + geometry.height >= geometry.total - 1) break
+    await table.hover()
+    await page.mouse.wheel(0, geometry.height / 2)
+    await expect.poll(() => table.evaluate(element => element.scrollTop)).toBeGreaterThan(geometry.top)
+  }
+  expect([...seen].sort()).toEqual([...titles].sort())
+  await table.evaluate(element => { element.scrollTop = 0 })
+  await expect.poll(() => rows.first().getAttribute('data-index')).toBe('0')
 }

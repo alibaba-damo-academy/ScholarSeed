@@ -502,6 +502,45 @@ test('session catalog preserves structured failures when the host bridge cannot 
   }
 })
 
+test('project catalogs preserve directory creation independently from registration time', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '', syncAuthorizedRoots: async () => {} } },
+  })
+  try {
+    const project = {
+      id: 'imported',
+      name: 'Imported',
+      root: '/imported',
+      layout: 'legacy',
+      available: true,
+      created_at: 200,
+      directory_created_at: 10,
+    }
+    globalThis.fetch = async () =>
+      Response.json({ projects: [project], workspaceRoot: '/workspace' })
+    const listing = await listProjects()
+    assert.equal(listing?.projects[0].added_at, 200)
+    assert.equal(listing?.projects[0].directory_created_at, 10)
+    globalThis.fetch = async () => Response.json(project)
+    const adopted = await adoptProject('/imported', 'Imported')
+    assert.equal(adopted?.added_at, 200)
+    assert.equal(adopted?.directory_created_at, 10)
+    globalThis.fetch = async () =>
+      Response.json({
+        projects: [{ ...project, directory_created_at: null, available: false }],
+        workspaceRoot: '/workspace',
+      })
+    assert.equal((await listProjects())?.projects[0].directory_created_at, null)
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
 test('project creation preserves backend-managed roots and explicit selected directory paths', async () => {
   const previousFetch = globalThis.fetch
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')

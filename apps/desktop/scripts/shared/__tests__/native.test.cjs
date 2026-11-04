@@ -6,25 +6,44 @@ const { createRequire } = require('node:module')
 const vm = require('node:vm')
 const sealing = require('../../cd/seal.cjs')
 const leaseModule = import('../lease.mjs')
-const { compileNative, nativeBuildDirectory, validateDarwinToolchain, supportsNoDefaultConfig, invoke } = require('../native.cjs')
+const {
+  compileNative,
+  nativeBuildDirectory,
+  validateDarwinToolchain,
+  supportsNoDefaultConfig,
+  invoke,
+} = require('../native.cjs')
 
 async function explicitContractEntry(failure) {
   const filename = path.resolve(__dirname, '../../ci/native-contract.cjs')
   const scopedRequire = createRequire(filename)
   const calls = []
   const messages = { logs: [], errors: [] }
-  const state = { exitCode: 0 }
-  const compile = async options => {
+  const state = {
+    exitCode: 0,
+    argv: [process.execPath, filename],
+    versions: process.versions,
+    platform: process.platform,
+  }
+  const module = { exports: {} }
+  const compile = async (options) => {
     calls.push({ ...options, outputExists: fs.existsSync(options.directory) })
     if (failure) throw failure
     return {}
   }
+  const requireFixture = (name) =>
+    name === '../shared/native.cjs' ? { compileNative: compile } : scopedRequire(name)
   new vm.Script(fs.readFileSync(filename, 'utf8'), { filename }).runInNewContext({
-    require: name => name === '../shared/native.cjs' ? { compileNative: compile } : scopedRequire(name),
+    require: requireFixture,
+    module,
+    __dirname: path.dirname(filename),
     process: state,
-    console: { log: value => messages.logs.push(value), error: value => messages.errors.push(value) },
+    console: {
+      log: (value) => messages.logs.push(value),
+      error: (value) => messages.errors.push(value),
+    },
   })
-  await new Promise(resolve => setImmediate(resolve))
+  state.exitCode = await module.exports.main([])
   return { calls, messages, state }
 }
 
@@ -80,7 +99,7 @@ test('native contracts follow the outer Electron command, not the inner Vite bui
     })
     const plugin = nativeLease({ command })
     plugin.configResolved?.({ command: 'build', mode: 'development' })
-    await assert.rejects(plugin.buildStart(), error => error === stopped)
+    await assert.rejects(plugin.buildStart(), (error) => error === stopped)
     preparation.mock.restore()
     assert.equal(actual, expected, `outer=${command}, override=${override}`)
   }
@@ -142,44 +161,68 @@ test('invalid compiler/SDK identities and SDKs below the deployment target fail 
 test('native command failures expose exit code and complete streams without changing the error', () => {
   const stdout = 'native stdout 中文\n\n'
   const stderr = 'native stderr\r\nlast line without newline'
-  assert.throws(() => invoke(process.execPath, ['-e',
-    `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)}); process.exit(23)`,
-  ], { ...process.env, PRIVATE_NATIVE_ENV: 'PRIVATE_NATIVE_ENV_VALUE' }), error => {
-    assert.equal(error.status, 23)
-    assert.equal(error.signal, null)
-    assert.equal(error.stdout, stdout)
-    assert.equal(error.stderr, stderr)
-    assert.match(error.message, /"exitCode":23/)
-    assert.match(error.message, /"signal":null/)
-    assert.ok(error.message.includes(`--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`))
-    assert.match(error.message, /"outputMayBeTruncated":false/)
-    assert.ok(!error.message.includes('PRIVATE_NATIVE_ENV_VALUE'))
-    return true
-  })
+  assert.throws(
+    () =>
+      invoke(
+        process.execPath,
+        [
+          '-e',
+          `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)}); process.exit(23)`,
+        ],
+        { ...process.env, PRIVATE_NATIVE_ENV: 'PRIVATE_NATIVE_ENV_VALUE' }
+      ),
+    (error) => {
+      assert.equal(error.status, 23)
+      assert.equal(error.signal, null)
+      assert.equal(error.stdout, stdout)
+      assert.equal(error.stderr, stderr)
+      assert.match(error.message, /"exitCode":23/)
+      assert.match(error.message, /"signal":null/)
+      assert.ok(error.message.includes(`--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`))
+      assert.match(error.message, /"outputMayBeTruncated":false/)
+      assert.ok(!error.message.includes('PRIVATE_NATIVE_ENV_VALUE'))
+      return true
+    }
+  )
 })
 test('native command termination retains platform exit and signal metadata in the build error', () => {
   const expectedStatus = process.platform === 'win32' ? 1 : null
   const expectedSignal = process.platform === 'win32' ? null : 'SIGTERM'
-  assert.throws(() => invoke(process.execPath, ['-e',
-    'process.stdout.write("before termination\\n", () => process.kill(process.pid, "SIGTERM"))',
-  ], process.env), error => {
-    assert.equal(error.status, expectedStatus)
-    assert.equal(error.signal, expectedSignal)
-    assert.ok(error.message.includes(`"exitCode":${JSON.stringify(expectedStatus)}`))
-    assert.ok(error.message.includes(`"signal":${JSON.stringify(expectedSignal)}`))
-    assert.ok(error.message.includes('before termination\n'))
-    return true
-  })
+  assert.throws(
+    () =>
+      invoke(
+        process.execPath,
+        [
+          '-e',
+          'process.stdout.write("before termination\\n", () => process.kill(process.pid, "SIGTERM"))',
+        ],
+        process.env
+      ),
+    (error) => {
+      assert.equal(error.status, expectedStatus)
+      assert.equal(error.signal, expectedSignal)
+      assert.ok(error.message.includes(`"exitCode":${JSON.stringify(expectedStatus)}`))
+      assert.ok(error.message.includes(`"signal":${JSON.stringify(expectedSignal)}`))
+      assert.ok(error.message.includes('before termination\n'))
+      return true
+    }
+  )
 })
 test('native successful commands retain their trimmed output contract', () => {
-  assert.equal(invoke(process.execPath, ['-e', 'process.stdout.write(" result \\n")'], process.env), 'result')
+  assert.equal(
+    invoke(process.execPath, ['-e', 'process.stdout.write(" result \\n")'], process.env),
+    'result'
+  )
 })
 
 test('native runtime option errors preserve their actual status and complete stderr', () => {
-  assert.throws(() => invoke(process.execPath, [], { ...process.env, NODE_OPTIONS: '--no-such-native-option' }), error => {
-    assert.equal(error.status, 9)
-    assert.match(error.message, /"exitCode":9/)
-    assert.ok(error.message.includes(error.stderr))
-    return true
-  })
+  assert.throws(
+    () => invoke(process.execPath, [], { ...process.env, NODE_OPTIONS: '--no-such-native-option' }),
+    (error) => {
+      assert.equal(error.status, 9)
+      assert.match(error.message, /"exitCode":9/)
+      assert.ok(error.message.includes(error.stderr))
+      return true
+    }
+  )
 })

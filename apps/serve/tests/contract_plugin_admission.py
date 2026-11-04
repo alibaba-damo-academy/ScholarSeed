@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
-from contract_ui_dependency import custom_payload, ui_payload
 
 from scholarseed_runtime.contract import CommandReceipt, CommandState
 from scholarseed_runtime.contract.inventory import SkillAvailability, SkillInventory, SkillView
@@ -21,6 +20,7 @@ from service.capabilities.service.candidates import Candidates
 from service.capabilities.service.components import ComponentRegistry
 from service.capabilities.service.descriptor import PLUGIN_DESCRIPTOR
 from service.capabilities.service.install import ORIGIN_FILE_NAME, install_skill_archive
+from service.capabilities.service.management import SkillManagementError
 from service.capabilities.service.package import pack_skill, read_package
 from service.capabilities.service.plugins import PLUGIN_ORIGIN_KIND
 from service.capabilities.service.skills import (
@@ -41,6 +41,7 @@ from service.identity.utils import require_host_process
 from service.platform.activity import Activities
 from service.platform.http_activity import ServeApplication
 from tests._host import HostContextFixture
+from tests.contract_ui_dependency import custom_payload, ui_payload
 
 
 class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
@@ -465,6 +466,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
             return CommandReceipt("skills.configure", CommandState.APPLIED)
 
         runtime = self.app.state.runtime_service
+        runtime._activities = self.activities
         runtime._skills = self.catalog
         runtime._gateway = SimpleNamespace(
             provider=lambda _: SimpleNamespace(configure_skills=configure)
@@ -484,7 +486,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
                 )
 
         runtime._inspect = inspect
-        runtime.cached_skill_inventory = reconcile
+        self.reconcile_runtime = reconcile
         self.enterContext(
             patch("service.chat.runtime.composition.load_skill_state", side_effect=self.state)
         )
@@ -512,6 +514,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         self.registry.bind_data(reference, {"selection": "original"})
         (damaged.path / "card.js").write_text("tampered component")
         self.use_runtime_reconciliation()
+        await self.reconcile_runtime(cwd=self.root, state=self.state(), user_id="local")
         response = await self.client.get("/api/capabilities/skills")
         self.assertEqual(response.status_code, 200, response.text)
         rows = {row["name"]: row for row in response.json()["skills"]}
@@ -582,6 +585,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         original = component.read_bytes()
         component.write_text("tampered")
         self.use_runtime_reconciliation()
+        await self.reconcile_runtime(cwd=self.root, state=self.state(), user_id="local")
         unavailable = await self.client.get("/api/capabilities/skills")
         self.assertEqual(unavailable.status_code, 200, unavailable.text)
         with self.assertRaisesRegex(ValueError, "component_plugin_unavailable"):
@@ -589,6 +593,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
                 "research.shared", session_id="session", turn_id="blocked", user_id="local"
             )
         component.write_bytes(original)
+        await self.reconcile_runtime(cwd=self.root, state=self.state(), user_id="local")
         repaired = await self.client.get("/api/capabilities/skills")
         self.assertEqual(repaired.status_code, 200, repaired.text)
         self.assertTrue(repaired.json()["skills"][0]["active"])
@@ -605,6 +610,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         damaged = self.install(self.package("alpha", "research.untrusted"))
         (damaged.path / "card.js").write_text("tampered before registration")
         self.use_runtime_reconciliation()
+        await self.reconcile_runtime(cwd=self.root, state=self.state(), user_id="local")
         response = await self.client.get("/api/capabilities/skills")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(response.json()["skills"][0]["active"])
@@ -616,13 +622,19 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.registry.enabled_snapshots(), [])
 
     async def test_non_plugin_inventory_failure_still_returns_unavailable(self):
-        self.app.state.runtime_service.cached_skill_inventory = AsyncMock(
+        self.app.state.runtime_service.skill_inventory = AsyncMock(
             side_effect=RuntimeError("runtime transport unavailable sensitive-secret-example")
         )
-        with self.assertLogs("service.capabilities.service.management", level="WARNING") as logs:
-            response = await self.client.get("/api/capabilities/skills")
-        self.assertEqual(response.status_code, 503, response.text)
-        self.assertEqual(response.json()["detail"], "codex_skill_inventory_unavailable")
+        response = await self.client.get("/api/capabilities/skills")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.app.state.runtime_service.skill_inventory.assert_not_awaited()
+        with (
+            self.assertLogs("service.capabilities.service.management", level="WARNING") as logs,
+            self.assertRaises(SkillManagementError) as unavailable,
+        ):
+            await self.app.state.skill_management.inventory(user_id="local", force_reload=True)
+        self.assertEqual(unavailable.exception.status, 503)
+        self.assertEqual(unavailable.exception.detail, "codex_skill_inventory_unavailable")
         self.assertIn("failure_type=RuntimeError", "\n".join(logs.output))
         self.assertNotIn("sensitive-secret-example", "\n".join(logs.output))
 
@@ -638,6 +650,7 @@ class PluginAdmissionContract(unittest.IsolatedAsyncioTestCase):
         (installed.path / PLUGIN_DESCRIPTOR).unlink()
         (installed.path / ORIGIN_FILE_NAME).unlink()
         self.use_runtime_reconciliation()
+        await self.reconcile_runtime(cwd=self.root, state=self.state(), user_id="local")
         response = await self.client.get("/api/capabilities/skills")
         self.assertEqual(response.status_code, 200, response.text)
         alpha = next(row for row in response.json()["skills"] if row["name"] == "alpha")

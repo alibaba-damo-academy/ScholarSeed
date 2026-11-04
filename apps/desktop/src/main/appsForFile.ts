@@ -61,7 +61,7 @@ function runJxa(filePath: string): Promise<JxaResult | null> {
     // 路径经 argv 传入, 与脚本正文隔离, 不存在 shell/脚本注入。
     const child = spawn('/usr/bin/osascript', ['-l', 'JavaScript', '-e', JXA_SCRIPT, filePath])
     let out = ''
-    child.stdout.on('data', (d) => (out += String(d)))
+    child.stdout.setEncoding('utf8').on('data', (data: string) => (out += data))
     child.on('error', () => resolve(null))
     child.on('close', () => {
       try {
@@ -91,11 +91,14 @@ export async function appsForFile(filePath: string): Promise<AppCandidate[]> {
 }
 
 // 用指定应用打开文件。shell.openPath 不支持指定 app, 故用 `open -a`。
-export function openPathWith(target: string, appPath: string): Promise<{ ok: boolean; error?: string }> {
+export function openPathWith(
+  target: string,
+  appPath: string
+): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     const child = spawn('/usr/bin/open', ['-a', appPath, target])
     let err = ''
-    child.stderr.on('data', (d) => (err += String(d)))
+    child.stderr.setEncoding('utf8').on('data', (data: string) => (err += data))
     child.on('error', (e) => resolve({ ok: false, error: e.message }))
     child.on('close', (code) => {
       if (code === 0) resolve({ ok: true })

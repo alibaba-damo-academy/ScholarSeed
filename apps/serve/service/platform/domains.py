@@ -976,6 +976,16 @@ class Domains:
             _revalidate(self._native, self._bindings)
             return self._native.lineage(self._readers[root])[-1]
 
+    def retained_identity(self, root: str) -> str | None:
+        """Revalidate a selected root retained by an occupied or admitted owner."""
+        with self._operation():
+            if self._state not in (_State.OCCUPIED, _State.ADMITTED):
+                raise RuntimeError("directory identity requires retained domains")
+            if root not in self._readers:
+                return None
+            _revalidate(self._native, self._bindings)
+            return self._native.lineage(self._readers[root])[-1]
+
     def selected(self, root: str) -> bool:
         """Report explicit selection only; inspection still revalidates bindings."""
         with self._operation():
@@ -1433,10 +1443,24 @@ class DomainOwner:
             raise ValueError("only a new admitted qualification may be retained")
         self._additional.append(domains)
 
+    def release(self, domains: Domains) -> None:
+        """Release one unpublished addition; uncertain close retains ownership."""
+        if domains not in self._additional:
+            raise ValueError("only an owned additional qualification may be released")
+        domains.close()
+        self._additional.remove(domains)
+
     def directory_identity(self, root: str) -> str:
         if self._domains is None:
             raise DomainReleaseError("storage qualification is unavailable")
-        return self._domains.directory_identity(root)
+        identities = {
+            identity
+            for domains in (self._domains, *self._additional)
+            if (identity := domains.retained_identity(root)) is not None
+        }
+        if len(identities) != 1:
+            raise DomainChangedError("directory must have one retained physical identity")
+        return identities.pop()
 
     def close(self) -> None:
         if self._domains is None:

@@ -33,10 +33,13 @@ test(
           resolveId(source) {
             if (source === '/__probe.tsx') return source
             if (/(?:^|\/)store(?:\.tsx)?$/.test(source)) return '\0presentation-store'
+            if (source === '../workbench/workspace') return '\0presentation-workspace'
           },
           load(id) {
             if (id === '\0presentation-store')
               return 'export const useApp = () => ({set: () => {}})'
+            if (id === '\0presentation-workspace')
+              return 'export const useWorkspaceController = () => ({pageTabsInLeaf: () => []})'
             if (id !== '/__probe.tsx') return
             return `import React, {useCallback,useState} from 'react';
           import {createRoot} from 'react-dom/client';
@@ -75,11 +78,12 @@ test(
       page.on('console', (message) => {
         if (message.type() === 'error') process.stderr.write(message.text() + '\n')
       })
-      page.setDefaultTimeout(5000)
       await page.goto(new URL('/__presentation', server.resolvedUrls!.local[0]).href, {
         waitUntil: 'domcontentloaded',
       })
       const choice = page.getByRole('button', { name: '项目文件', exact: true })
+      await choice.waitFor({ state: 'visible' })
+      page.setDefaultTimeout(5000)
       await choice.hover()
       await expect(choice).toHaveCSS('border-radius', '8px')
       const alignment = await choice.evaluate((element) => {

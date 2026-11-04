@@ -29,6 +29,7 @@ from scholarseed_runtime.contract.resource import RESOURCE_LIFECYCLE_LOGGER
 # 书深运行时根默认值必须在 import damoagent 之前落地: Agent 层的路径常量在 import 时
 # 即按 .scholarseed 求值。这是 composition root 的既定例外, 故此处 import 顺序被显式豁免。
 from service.brand import apply_runtime_defaults  # noqa: E402
+from service.cli.access import AccessFilter
 from service.cli.utils import startup_checkpoint
 from service.trust import apply_system_trust_store  # noqa: E402
 
@@ -265,6 +266,11 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         help="uvicorn log level (desktop defaults to debug)",
     )
     ap.add_argument(
+        "--quiet-desktop-poll-access",
+        action="store_true",
+        help="omit access records for successful routine Desktop polling requests",
+    )
+    ap.add_argument(
         "--auth-mode",
         choices=AUTH_MODE_CHOICES,
         default=None,
@@ -367,12 +373,9 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         file=sys.stderr,
     )
 
-    # 精确过滤 /api/healthz 的 uvicorn access log
-    class _HealthzAccessFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            return "/api/healthz" not in record.getMessage()
-
-    logging.getLogger("uvicorn.access").addFilter(_HealthzAccessFilter())
+    logging.getLogger("uvicorn.access").addFilter(
+        AccessFilter(quiet_desktop_polls=args.quiet_desktop_poll_access)
+    )
 
     # watchfiles stops the dev server with SIGINT; a second signal cancels the lifespan
     # task mid-shutdown and Starlette/uvicorn surface that expected cancellation as an
@@ -390,6 +393,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         parent_stdin=args.parent_stdin,
         shutdown_seconds=args.shutdown_timeout_seconds,
         close_model_streams=app.state.completion_bridge.close,
+        interrupt_running=app.state.session_service.interrupt_running_for_shutdown,
         parent_control=(
             ParentControl(
                 app.state.activities,

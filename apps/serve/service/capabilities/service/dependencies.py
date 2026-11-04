@@ -22,10 +22,9 @@ from packaging.utils import parse_wheel_filename
 from service.capabilities.service.manifest import load_lock, verify_runtime_target
 from service.capabilities.service.package import (
     MAX_FILE_BYTES,
-    PACKAGE_MANIFEST,
     PackageError,
+    declaration,
     digest,
-    safe_path,
     validate_paths,
 )
 from service.capabilities.service.prebundle import verify_locked_pack
@@ -36,60 +35,12 @@ from service.capabilities.service.source import (
 )
 from service.platform.storage import filesystem_path
 
-DEPENDENCY_FIELDS = frozenset(
-    {
-        "skills",
-        "python",
-        "wheels",
-        "imports",
-        "modules",
-        "executables",
-        "bundled_executables",
-        "optional_executables",
-    }
-)
-MODULE_PATTERN = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\Z")
-EXECUTABLE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PROBE_TIMEOUT_SECONDS = 60
 INSTALL_TIMEOUT_SECONDS = 1800
 PYTHON_FLAGS = ("-I", "-B")
 # Native toolchain executables carry a platform suffix. POSIX permission bits do
 # not round-trip on Windows, so existence is the executability evidence there.
 EXECUTABLE_SUFFIX = ".exe" if os.name == "nt" else ""
-
-
-def declaration(value: dict[str, Any]) -> dict[str, list[str]]:
-    if not isinstance(value, dict) or set(value) - DEPENDENCY_FIELDS:
-        raise PackageError("unsupported skill dependency declaration")
-    for key, rows in value.items():
-        if not isinstance(rows, list) or not all(isinstance(row, str) and row for row in rows):
-            raise PackageError(f"dependency field must be a list of nonempty strings: {key}")
-        if len(set(rows)) != len(rows):
-            raise PackageError(f"duplicate dependency: {key}")
-        for row in rows:
-            if key == "python":
-                requirement = Requirement(row)
-                pins = list(requirement.specifier)
-                if (
-                    requirement.url
-                    or requirement.marker
-                    or requirement.extras
-                    or len(pins) != 1
-                    or pins[0].operator != "=="
-                    or "*" in pins[0].version
-                ):
-                    raise PackageError(
-                        "skill Python dependencies require exact reviewed name==version pins"
-                    )
-            elif key == "wheels":
-                if not safe_path(row).endswith(".whl"):
-                    raise PackageError("skill wheel dependency must name a package payload .whl")
-            elif key in {"imports", "modules"}:
-                if not MODULE_PATTERN.fullmatch(row):
-                    raise PackageError("invalid dependency module name")
-            elif not EXECUTABLE_PATTERN.fullmatch(row):
-                raise PackageError("invalid dependency skill/executable name")
-    return value
 
 
 def _inputs(lock_path: Path, root: Path) -> dict[str, Any]:
@@ -103,16 +54,6 @@ def _inputs(lock_path: Path, root: Path) -> dict[str, Any]:
             "machine": platform.machine(),
             "python": platform.python_version(),
         }
-        for row in lock["skills"]:
-            manifest_path = root / row["slug"] / PACKAGE_MANIFEST
-            manifest = json.loads(manifest_path.read_bytes())
-            if (
-                manifest.get("name") != row["slug"]
-                or manifest.get("version") != row["version"]
-                or not isinstance(manifest.get("dependencies"), dict)
-            ):
-                raise PackageError(f"source package manifest differs: {row['slug']}")
-            row["dependencies"] = manifest["dependencies"]
     else:
         lock = load_lock(lock_path)
         verify_runtime_target(lock)

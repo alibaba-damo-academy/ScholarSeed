@@ -23,6 +23,7 @@ from scholarseed_runtime.contract.session import TurnConfirmationReceipt
 from service.chat.constants import (
     AUTOMATIC_CRASH_RETRY,
     PRODUCT_EVENT_HIL_RESOLVED,
+    PRODUCT_EVENT_MESSAGE_REMOVED,
     PRODUCT_EVENT_RUNTIME_ERROR,
     PRODUCT_EVENT_RUNTIME_INCIDENT,
     PRODUCT_EVENT_SESSION_STATE,
@@ -45,6 +46,7 @@ from service.chat.constants import (
 from service.chat.persistence.catalog import (
     UNCERTAINTY_RUNTIME_EVENT_KEY,
     UNCERTAINTY_THREAD_REPLACEMENT_KEY,
+    QueuedMessageState,
     SessionCatalogStore,
     SessionStatus,
     SessionUncertaintyRecord,
@@ -424,7 +426,10 @@ class SessionLedger:
                 PRODUCT_TURN_OUTCOME_INTERRUPTED,
             }
             and (
-                (generation > 0 and generation == existing_generation)
+                (
+                    generation == existing_generation
+                    and (generation > 0 or payload.get("reconciled_from_history") is True)
+                )
                 or (
                     bool(payload.get("resolved_ambiguous_incident_id"))
                     and str(payload.get("resolved_ambiguous_incident_id"))
@@ -549,7 +554,9 @@ class SessionLedger:
             generation, incident_id = self._unknown_admission.get(
                 self._terminal_turn_id(event), (0, "")
             )
-            if generation > 0 and generation == event.process_generation:
+            if generation == event.process_generation and (
+                generation > 0 or payload.get("reconciled_from_history") is True
+            ):
                 if not incident_id:
                     turn_id = self._terminal_turn_id(event)
                     await self._persistence.run(
@@ -979,10 +986,13 @@ class SessionLedger:
             raise ValueError("runtime resume turns must be an array")
         if any(not isinstance(row, Mapping) for row in snapshots):
             raise ValueError("runtime resume turn must be an object")
-        for correlation_id, (_generation, incident_id) in tuple(self._unknown_admission.items()):
-            uncertainty = self._catalog.uncertainty(self.id, UncertaintyKind.TURN, correlation_id)
-            if uncertainty is None:
+        for correlation_id, (outcome, _generation) in tuple(self._turn_outcomes.items()):
+            if outcome != PRODUCT_TURN_OUTCOME_UNKNOWN:
                 continue
+            uncertainty = self._catalog.uncertainty(self.id, UncertaintyKind.TURN, correlation_id)
+            if uncertainty is None or uncertainty.state is UncertaintyState.CONFIRMED:
+                continue
+            incident_id = self._unknown_admission.get(correlation_id, (0, ""))[1]
             evidence = uncertainty.payload.get(UNCERTAINTY_RUNTIME_EVENT_KEY)
             expected_native = ""
             expected_client = ""
@@ -1022,6 +1032,12 @@ class SessionLedger:
                     expected_native = correlation_id
                 elif not queues:
                     continue
+            elif (
+                evidence is None
+                and uncertainty.state is UncertaintyState.RECONCILED
+                and uncertainty.payload.get("vendor_turn_id") == correlation_id
+            ):
+                expected_native = correlation_id
             elif evidence is not None or not queues:
                 continue
             matches = [
@@ -1109,6 +1125,8 @@ class SessionLedger:
                 fallback_submission_id=correlation_id,
                 finish_messages=finish_messages,
             )
+            if self._turn_outcomes.get(native_turn_id, ("", 0))[0] != terminal_status:
+                continue
             await self._persistence.run(
                 self._catalog.transition_uncertainty,
                 self.id,
@@ -1117,3 +1135,40 @@ class SessionLedger:
                 UncertaintyState.RECONCILED,
                 payload={"vendor_turn_id": native_turn_id},
             )
+        for queued in self._catalog.queued_messages(self.id):
+            if queued.state is not QueuedMessageState.OUTCOME_UNKNOWN:
+                continue
+            matches = [
+                row
+                for row in snapshots
+                if row.get("client_id") == queued.queued_message_id
+                and row.get("turn_id")
+                and (not queued.native_turn_id or row.get("turn_id") == queued.native_turn_id)
+            ]
+            if len(matches) != 1 or matches[0].get("terminal_status") not in {
+                TurnStatus.COMPLETED.value,
+                TurnStatus.FAILED.value,
+                TurnStatus.INTERRUPTED.value,
+            }:
+                continue
+            native_turn_id = str(matches[0]["turn_id"])
+            uncertainty = self._catalog.uncertainty(
+                self.id, UncertaintyKind.TURN, queued.native_turn_id or queued.queued_message_id
+            )
+            if uncertainty is None or uncertainty.state is not UncertaintyState.RECONCILED:
+                continue
+            if await self._persistence.run(
+                self._catalog.remove_reconciled_unknown_message,
+                self.id,
+                queued.queued_message_id,
+                int(queued.operation_seq or 0),
+            ):
+                await self.publish(
+                    PRODUCT_EVENT_MESSAGE_REMOVED,
+                    {
+                        "queued_message_id": queued.queued_message_id,
+                        "reason": QueuedMessageState.COMPLETED.value,
+                    },
+                    turn_id=native_turn_id,
+                    idempotency_key=f"queue:{queued.queued_message_id}:native-reconciled:{queued.operation_seq}",
+                )

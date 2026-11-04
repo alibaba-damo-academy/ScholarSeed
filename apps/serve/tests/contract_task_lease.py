@@ -508,6 +508,7 @@ class TaskLeaseContract(unittest.TestCase):
             self.assertFalse(force_reload)
 
         self.live.runtime_driver = SimpleNamespace(submit=submit)
+        self.live.submission_retry_authorizer = None
         self.live.refresh_skills = refresh
         self.live.model_run = None
         self.live.model_id = "contract-model"

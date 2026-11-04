@@ -117,9 +117,7 @@ export function TodoPanel({
               lower: estimateMinutes(estimate.lowerSeconds),
               upper: estimateMinutes(estimate.upperSeconds),
             })
-      : planRunning && elapsedSeconds !== null && elapsedSeconds >= SECONDS_PER_MINUTE
-        ? t('todo.estimate.unavailable')
-        : ''
+      : ''
   const estimateTitle = estimate
     ? t('todo.estimate.basis', {
         source:

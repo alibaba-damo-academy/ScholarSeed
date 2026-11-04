@@ -29,15 +29,20 @@ test('artifact host wires the shared view without moving integrity or file opera
     host,
     /import\s+\{\s*Artifact,\s*ArtifactGroup,\s*ArtifactMenuItems,\s*MENU_CLASS_NAME,?\s*\}\s+from\s+['"].*Artifact['"]/
   )
-  assert.match(
-    host,
-    /<ArtifactGroup>[\s\S]*artifactVersionGroups\(items\)\.map[\s\S]*<ArtifactEntry/
-  )
+  assert.match(host, /<ArtifactGroup[\s\S]*>[\s\S]*groups\.map[\s\S]*<ArtifactEntry/)
   for (const callback of ['preview', 'previewVersion', 'openImport'])
     assert.ok(host.includes(callback + '={' + callback + '}'))
   assert.match(host, /expectedSha256: currentSha256/)
   assert.match(host, /fetchArtifactSha256\(thread.sessionId, primary.artifact_id\)/)
   assert.doesNotMatch(view, /from ['"].*\/(?:api|store|fileOpen)['"]|window\.scholarseed/)
+})
+
+test('artifact host stacks image previews using the same eligibility as the gallery', () => {
+  assert.match(host, /const groups = artifactVersionGroups\(items\)/)
+  assert.match(
+    host,
+    /stacked=\{Boolean\(thread.sessionId\) && groups\.some\(\(\[item\]\) => isImageArtifact\(item.artifact\)\)\}/
+  )
 })
 
 test('artifact filename tooltip contains the full filename without repeating its path', () => {

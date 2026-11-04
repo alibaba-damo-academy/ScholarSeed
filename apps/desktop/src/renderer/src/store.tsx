@@ -13,6 +13,7 @@ import type { ArchivedTask, SessionTitleFallback } from './session'
 import { feedback, type ForegroundMessage } from './contracts/feedback'
 import {
   resourceErrorMessage,
+  ROOT_BUSY_ERROR,
   SOURCE_COVERS_LINKS_ERROR,
   SOURCE_OVERLAP_ERROR,
 } from './features/resources/error'
@@ -365,6 +366,7 @@ function preparationSnapshot(state: AppState): PreparationSnapshot {
 
 function mainViewForWorkbenchTab(tab: WorkbenchTab | undefined): MainView | null {
   if (!tab) return null
+  if (tab.navigationView) return tab.navigationView
   if (tab.kind === 'overview') return null
   if (tab.kind === 'projects') return 'projects'
   if (tab.kind === 'browser') return 'browser'
@@ -398,7 +400,9 @@ function closeTabContext(current: AppState): CloseTabContext {
   const matchesView =
     focusedTab && session && documentNavigationView(focusedTab, session) === current.mainView
   return {
+    paneTabIds: documentWorkspaces.forProject(projectId).pageTabsInLeaf(current.activeTab),
     view: current.mainView,
+    projectId: current.homeSelectedProjectId,
     viewFallbackId: matchesView ? documents.focusedTabId : null,
   }
 }
@@ -814,7 +818,10 @@ setActiveShortcutOverrides(INITIAL_PREFERENCES.shortcutOverrides)
 
 const INITIAL: AppState = {
   onboarding: sanitizeOnboarding(INITIAL_PREFERENCES.onboarding),
-  selectionPrompts: sanitizeSelectionPrompts(INITIAL_PREFERENCES.selectionPrompts),
+  selectionPrompts: sanitizeSelectionPrompts(
+    INITIAL_PREFERENCES.selectionPrompts,
+    INITIAL_PREFERENCES.language
+  ),
   theme: INITIAL_PREFERENCES.theme,
   lang: INITIAL_PREFERENCES.language,
   editorRuntimeRevision: 0,
@@ -1689,7 +1696,7 @@ export function StoreProvider({
         await applyRendererLanguage(saved.language)
         updateState((current) => {
           const value = project()
-          const selectionPrompts = sanitizeSelectionPrompts(value.selectionPrompts)
+          const selectionPrompts = sanitizeSelectionPrompts(value.selectionPrompts, value.language)
           const samePrompts = selectionPromptsEqual(current.selectionPrompts, selectionPrompts)
           const taskMessageDismissals = value.taskMessageDismissals ?? {}
           const sameDismissals =
@@ -4358,6 +4365,10 @@ export function StoreProvider({
         }))
         const result = await revokeRoot(homeSelectedProjectId, target.rootId)
         if (!result.ok) {
+          if (result.error === ROOT_BUSY_ERROR) {
+            actRef.current.noticeResource('error', resourceErrorMessage(result.error))
+            return
+          }
           actRef.current.noticeResource('error', {
             key: 'feedback.unlinkFailed',
             detail: result.error ?? 'unknown_error',
@@ -5722,6 +5733,7 @@ export function StoreProvider({
           )
           return
         }
+        workspace.focusTab(id)
         setState(
           (current) => {
             const tab =
@@ -5769,15 +5781,23 @@ export function StoreProvider({
       openLiteratureResult: (result) =>
         setState(
           (current) => {
-            const tab = literatureResultTab(result)
+            const projectId = current.homeSelectedProjectId
+            const tab = literatureResultTab(result, projectId)
+            const mainView = projectId ? 'resource' : 'literature'
+            const tabs = current.tabs.filter((candidate) => candidate.id !== tab.id)
             return {
               ...current,
-              homeSelectedProjectId: null,
-              workbenchReturnProjectId: null,
-              homeProjectLocked: false,
-              mainView: 'literature',
-              tabs: openWorkbenchTab(current.tabs, 'literature', tab),
+              ...(projectId ? {} : { workbenchReturnProjectId: null, homeProjectLocked: false }),
+              mainView,
+              tabs: openWorkbenchTab(tabs, mainView, tab),
               activeTab: tab.id,
+              workbenchLayout: {
+                ...current.workbenchLayout,
+                open: true,
+                full: false,
+                taskTab: false,
+                conversationFull: false,
+              },
               // A fullscreen (cover) assistant hides the main column that shows this tab.
               aiPanel: { ...current.aiPanel, cover: false },
             }

@@ -361,7 +361,7 @@ export function displayTodos(thread: Thread): TodoDisplayItem[] {
     return toItem(item, 'todo')
   })
   const byId = new Map(projected.flatMap((item) => (item.id ? [[item.id, item] as const] : [])))
-  return projected.filter((item, index) => {
+  const roots = projected.filter((item, index) => {
     const parentId = thread.todos?.[index].parent_id
     const parent = parentId ? byId.get(parentId) : undefined
     if (!parent) return true
@@ -375,6 +375,22 @@ export function displayTodos(thread: Thread): TodoDisplayItem[] {
     parent.children = [...(parent.children ?? []), item]
     return false
   })
+  roots.forEach(summarizeGroup)
+  return roots
+}
+
+function summarizeGroup(item: TodoDisplayItem): void {
+  if (!item.children?.length) return
+  item.children.forEach(summarizeGroup)
+  if (
+    item.status === 'blocked' ||
+    item.status === 'failed' ||
+    item.status === 'partial' ||
+    item.applyingConfirmation !== undefined
+  )
+    return
+  if (item.children.every((child) => child.status === 'done')) item.status = 'done'
+  else if (item.status === 'done') item.status = 'todo'
 }
 
 export function todoSummary(thread: Thread, items: TodoDisplayItem[]): TodoSummary {

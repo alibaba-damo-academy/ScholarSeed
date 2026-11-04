@@ -103,6 +103,7 @@ export interface WorkbenchTab {
   closable: boolean
   /** 页签创建时的项目作用域；null 表示全局，未设置表示跨项目共享。 */
   projectId?: string | null
+  navigationView?: 'resource' | 'literature'
 }
 
 const VIEWER_BY_EXTENSION: Record<string, ViewerKind> = {
@@ -262,7 +263,7 @@ export function restoreProjectWorkbenchTab(
     if (
       surface &&
       tabMatchesProject(surface, projectId) &&
-      tabVisibleInCurrentView(surface.kind, 'resource')
+      workbenchTabVisible(surface, 'resource')
     )
       return rememberedId
     const document = documents.tabs[rememberedId]
@@ -351,11 +352,17 @@ export function selectProjectTab(
 export function resolveProjectTabSelection(
   tabs: WorkbenchTab[],
   tabId: string,
-  kind: 'library' | 'explorer'
+  kind: 'library' | 'explorer',
+  paneTabIds?: readonly string[]
 ): { tabs: WorkbenchTab[]; activeTab: string } {
   const blank = tabs.find((tab) => tab.id === tabId && tab.kind === 'new_tab')
   const existing = blank
-    ? tabs.find((tab) => tab.kind === kind && tabMatchesProject(tab, blank.projectId ?? null))
+    ? tabs.find(
+        (tab) =>
+          tab.kind === kind &&
+          tabMatchesProject(tab, blank.projectId ?? null) &&
+          (!paneTabIds || paneTabIds.includes(tab.id))
+      )
     : undefined
   return {
     tabs: existing ? tabs : selectProjectTab(tabs, tabId, kind),
@@ -549,7 +556,19 @@ export function tabVisibleInCurrentView(
   return kind !== 'projects' && kind !== 'literature' && kind !== 'literature_search'
 }
 
+export function workbenchTabVisible(tab: WorkbenchTab, mainView: string): boolean {
+  if (tab.navigationView)
+    return (
+      availabilityPolicy.routeAvailable(mainView) &&
+      tab.navigationView === mainView &&
+      availabilityPolicy.tabAvailable(tab)
+    )
+  return tabVisibleInCurrentView(tab.kind, mainView)
+}
+
 export interface CloseTabContext {
+  paneTabIds?: readonly string[]
+  projectId?: string | null
   /** 关闭发生时的工作区视图；接替标签必须在该视图可见。 */
   view: string
   /** 同视图没有剩余 workbench 标签时的接替 id（如当前视图文档焦点标签）；空则回视图固定标签。 */
@@ -577,7 +596,15 @@ export function closeTab(
     const fallback = next[index] ?? next[index - 1] ?? OVERVIEW_TAB
     return { tabs: next, activeId: fallback.id }
   }
-  const [nearest] = sameViewNeighbours(next, index, context.view)
+  if (context.paneTabIds?.includes(closingId)) {
+    const paneIndex = context.paneTabIds.indexOf(closingId)
+    const candidates = [
+      ...context.paneTabIds.slice(paneIndex + 1),
+      ...context.paneTabIds.slice(0, paneIndex).reverse(),
+    ]
+    if (candidates.length) return { tabs: next, activeId: candidates[0] }
+  }
+  const [nearest] = sameViewNeighbours(next, index, context.view, context.projectId)
   if (nearest !== undefined) return { tabs: next, activeId: next[nearest].id }
   if (context.viewFallbackId) return { tabs: next, activeId: context.viewFallbackId }
   const fixed = context.view === 'literature' ? LITERATURE_TAB : OVERVIEW_TAB
@@ -585,11 +612,20 @@ export function closeTab(
 }
 
 /** 从被关闭位置向右、再向左，产出当前视图可见标签的下标。 */
-function sameViewNeighbours(tabs: WorkbenchTab[], closedIndex: number, view: string): number[] {
+function sameViewNeighbours(
+  tabs: WorkbenchTab[],
+  closedIndex: number,
+  view: string,
+  projectId?: string | null
+): number[] {
   const ordered: number[] = []
   for (let cursor = closedIndex; cursor < tabs.length; cursor += 1) ordered.push(cursor)
   for (let cursor = closedIndex - 1; cursor >= 0; cursor -= 1) ordered.push(cursor)
-  return ordered.filter((cursor) => tabVisibleInCurrentView(tabs[cursor].kind, view))
+  return ordered.filter(
+    (cursor) =>
+      workbenchTabVisible(tabs[cursor], view) &&
+      (projectId === undefined || tabMatchesProject(tabs[cursor], projectId))
+  )
 }
 
 export const LITERATURE_RESULT_PREFIX = 'literature-result:'
@@ -598,13 +634,18 @@ export interface LiteratureResultReference {
   card_id: string
   title: string
 }
-export function literatureResultTab(result: LiteratureResultReference): WorkbenchTab {
+export function literatureResultTab(
+  result: LiteratureResultReference,
+  projectId: string | null = null
+): WorkbenchTab {
   return {
     id: `${LITERATURE_RESULT_PREFIX}${encodeURIComponent(result.session_id)}/${encodeURIComponent(result.card_id)}`,
     kind: 'literature_search',
     title: result.title,
     titleFallback: 'literatureResult',
     closable: true,
+    projectId,
+    navigationView: projectId ? 'resource' : 'literature',
   }
 }
 

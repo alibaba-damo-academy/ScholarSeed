@@ -57,7 +57,7 @@ const hooks = registerHooks({
 })
 const backend = await import('./backend.ts')
 
-test('same-build startup survives slow preparation beyond the former overall deadline', async context => {
+test('same-build startup survives slow preparation beyond the former overall deadline', async (context) => {
   const home = mkdtempSync(join(directory, 'existing-marker-'))
   context.after(() => rmSync(home, { recursive: true, force: true }))
   const identity = { version: '0.3.0', buildNumber: '202611021300' }
@@ -68,17 +68,19 @@ test('same-build startup survives slow preparation beyond the former overall dea
   const logs: string[] = []
   context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
   try {
-    globalThis.fetch = async () => ({
-      ok: Date.now() >= 55_000,
-      json: async () => ({ ok: true, features: { browser: false } }),
-    }) as Response
+    globalThis.fetch = async () =>
+      ({
+        ok: Date.now() >= 55_000,
+        json: async () => ({ ok: true, features: { browser: false } }),
+      }) as Response
     const ready = backend.waitForHealth(
-      'http://127.0.0.1', resolveStartupBudgetMs(firstRun, false, 90_000),
-      line => logs.push(line)
+      'http://127.0.0.1',
+      resolveStartupBudgetMs(firstRun, false, 90_000),
+      (line) => logs.push(line)
     )
     for (let second = 0; second < 56; second++) {
       context.mock.timers.tick(1_000)
-      await new Promise<void>(resolve => setImmediate(resolve))
+      await new Promise<void>((resolve) => setImmediate(resolve))
     }
     assert.equal(await ready, true)
     assert.match(logs.join(''), /backend healthy/)
@@ -88,7 +90,7 @@ test('same-build startup survives slow preparation beyond the former overall dea
   }
 })
 
-test('same-build startup still fails when preparation and readiness exhaust the total budget', async context => {
+test('same-build startup still fails when preparation and readiness exhaust the total budget', async (context) => {
   const home = mkdtempSync(join(directory, 'expired-marker-'))
   context.after(() => rmSync(home, { recursive: true, force: true }))
   const identity = { version: '0.3.0', buildNumber: '202611021300' }
@@ -100,13 +102,15 @@ test('same-build startup still fails when preparation and readiness exhaust the 
     const budget = resolveStartupBudgetMs(isFirstRun(home, identity), false, 90_000)
     assert.equal(budget, 135_000)
     let settled = false
-    const ready = backend.waitForHealth('http://127.0.0.1', budget, () => {}).then(value => {
-      settled = true
-      return value
-    })
+    const ready = backend
+      .waitForHealth('http://127.0.0.1', budget, () => {})
+      .then((value) => {
+        settled = true
+        return value
+      })
     for (let second = 0; second < 136; second++) {
       context.mock.timers.tick(1_000)
-      await new Promise<void>(resolve => setImmediate(resolve))
+      await new Promise<void>((resolve) => setImmediate(resolve))
       if (second === 89) assert.equal(settled, false)
     }
     assert.equal(settled, true)
@@ -186,7 +190,11 @@ test(
     chmodSync(executable, 0o755)
     assert.equal(
       await backend.probeSkillPython(
-        executable, directory, directory, {}, new AbortController().signal
+        executable,
+        directory,
+        directory,
+        {},
+        new AbortController().signal
       ),
       true
     )
@@ -498,6 +506,155 @@ test('backend stop retries resource cleanup without treating an exited child as 
   assert.equal(result.kind, backend.BackendStopKind.Clean)
   assert.equal(await backend.stopBackend(handle), result)
   assert.equal(attempts, 3)
+})
+
+test('backend independently decodes interleaved stdout and stderr UTF-8 fragments', async (context) => {
+  const entry = new URL('./backend.ts?stream-contract', import.meta.url).href
+  const replacements = new Map([
+    ['./resources.ts', `export const applicationResources = () => ${JSON.stringify(directory)};`],
+    ['./source.ts', 'export const captureSourceBaseline = async () => undefined;'],
+    [
+      '../../../../scripts/shared/python.cjs',
+      `export const verifyDevelopmentPythonAsync = async () => ({ python: '3.12', sqlite: '3', base_prefix: ${JSON.stringify(directory)}, scripts: ${JSON.stringify(directory)} });`,
+    ],
+    ['../../runtime/python.cjs', 'export const writeSkillPythonLauncher = () => {};'],
+    [
+      '../../runtime/codex.cjs',
+      `export const resolveVendoredCodex = async () => ({ path: ${JSON.stringify(process.execPath)} });`,
+    ],
+    [
+      '../../runtime/texlive.cjs',
+      'export const vendoredTexliveLocation = () => { throw new Error("no TeX needed for output contract"); };',
+    ],
+    [
+      './storage',
+      `export const desktopHome = () => ${JSON.stringify(directory)}; export const desktopStorage = () => ({ home: ${JSON.stringify(directory)}, workspace: ${JSON.stringify(directory)}, createWorkspace: false });`,
+    ],
+    ['./writer', 'export const desktopDirectoryWriter = () => ({ close() {} });'],
+  ])
+  const fixture = registerHooks({
+    resolve(specifier, resolveContext, nextResolve) {
+      if (resolveContext.parentURL !== entry) return nextResolve(specifier, resolveContext)
+      const replacement = replacements.get(specifier)
+      const resolved = new URL(extname(specifier) ? specifier : `${specifier}.ts`, import.meta.url)
+      return replacement
+        ? {
+            url: `data:text/javascript,${encodeURIComponent(`export * from ${JSON.stringify(resolved.href)}; ${replacement}`)}`,
+            shortCircuit: true,
+          }
+        : specifier.startsWith('.') && !extname(specifier)
+          ? nextResolve(resolved.href, resolveContext)
+          : nextResolve(specifier, resolveContext)
+    },
+  })
+  const originalEnvironment = { ...process.env }
+  const output: string[] = []
+  const stdout = new PassThrough()
+  const stderr = new PassThrough()
+  const child = new childProcess.ChildProcess()
+  Object.defineProperties(child, {
+    stdin: { value: new PassThrough() },
+    stdout: { value: stdout },
+    stderr: { value: stderr },
+  })
+  let releaseHealth!: (response: Response) => void
+  context.mock.method(
+    globalThis,
+    'fetch',
+    () =>
+      new Promise<Response>((resolve) => {
+        releaseHealth = resolve
+      })
+  )
+  const spawning = context.mock.method(
+    childProcess,
+    'spawn',
+    (_command: string, args?: readonly string[]) => {
+      if (args?.includes('--parent-stdin')) return child
+      const probe = new childProcess.ChildProcess()
+      Object.defineProperty(probe, 'stdin', { value: new PassThrough() })
+      queueMicrotask(() => {
+        probe.emit('error', new Error('probe not part of stream contract'))
+        probe.emit('close', 1, null)
+      })
+      return probe
+    }
+  )
+  syncBuiltinESMExports()
+  process.env.SCHOLARSEED_PYTHON = process.execPath
+  process.env.SCHOLARSEED_REPO = directory
+  let handle: BackendHandle | undefined
+  let streaming: typeof backend | undefined
+  try {
+    streaming = (await import(entry)) as typeof backend
+    handle = streaming.startBackend((line) => output.push(line), { port: 0 })
+    while (!handle.proc && !handle.error)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(handle.proc, child, output.join(''))
+    const expectedOut = 'stdout: 中文目录 😀\n'
+    const expectedErr = 'stderr: 编译失败 🚀\n'
+    const outBytes = Buffer.from(expectedOut)
+    const errBytes = Buffer.from(expectedErr)
+    const firstOutput = output.length
+    let decodedOut = ''
+    let decodedErr = ''
+    const delivered = (bytes: Buffer, stream: PassThrough): string => {
+      const before = output.length
+      stream.write(bytes)
+      return output
+        .slice(before)
+        .filter((line) => !line.startsWith('[startup]'))
+        .join('')
+    }
+    for (let index = 0; index < Math.max(outBytes.length, errBytes.length); index++) {
+      if (index < outBytes.length)
+        decodedOut += delivered(outBytes.subarray(index, index + 1), stdout)
+      if (index < errBytes.length)
+        decodedErr += delivered(errBytes.subarray(index, index + 1), stderr)
+    }
+    const outEnded = once(stdout, 'end')
+    const errEnded = once(stderr, 'end')
+    stdout.end()
+    stderr.end()
+    await Promise.all([outEnded, errEnded])
+    assert.equal(decodedOut, expectedOut)
+    assert.equal(decodedErr, expectedErr)
+    const expected = output
+      .slice(firstOutput)
+      .filter((line) => !line.startsWith('[startup]'))
+      .join('')
+    assert.doesNotMatch(expected, /\uFFFD/)
+    Object.defineProperty(child, 'exitCode', { value: 7 })
+    child.emit('exit', 7, null)
+    child.emit('close', 7, null)
+    assert.equal(await handle.ready, false)
+    assert.equal(handle.error?.kind, 'exited')
+    assert.equal(
+      handle.error && 'detail' in handle.error ? handle.error.detail : null,
+      expected.trim()
+    )
+  } finally {
+    releaseHealth?.({
+      ok: true,
+      json: async () => ({ ok: true, features: { browser: false } }),
+    } as Response)
+    if (handle?.proc) {
+      if (child.exitCode === null) {
+        stdout.end()
+        stderr.end()
+        Object.defineProperty(child, 'exitCode', { value: 7 })
+        child.emit('exit', 7, null)
+        child.emit('close', 7, null)
+      }
+      await streaming?.stopBackend(handle)
+    }
+    spawning.mock.restore()
+    syncBuiltinESMExports()
+    fixture.deregister()
+    for (const key of Object.keys(process.env))
+      if (!(key in originalEnvironment)) delete process.env[key]
+    Object.assign(process.env, originalEnvironment)
+  }
 })
 
 test.after(() => {

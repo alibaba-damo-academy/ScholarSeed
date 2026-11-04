@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import test from 'node:test'
@@ -51,6 +53,7 @@ test(
   'Directory preserves failed pages, fences stale reads and exposes empty directories',
   { timeout: 120_000 },
   async () => {
+    const artifacts = mkdtempSync(path.join(tmpdir(), 'explorer-render-'))
     const server = await createServer({
       configFile: false,
       root: ROOT,
@@ -173,7 +176,7 @@ test(
       await page.getByRole('button', { name: '加载更多', exact: true }).click()
       await expect(page.getByTestId('explorer-more-error-/')).toBeVisible()
       await expect(page.locator('[data-testid^="explorer-node-"]')).toHaveCount(INITIAL_COUNT)
-      await page.screenshot({ path: '/tmp/explorer-render-pagination-error.png', fullPage: true })
+      await page.screenshot({ path: path.join(artifacts, 'pagination-error.png'), fullPage: true })
       failMore = false
       prefix = 'next'
       await page.getByTestId('explorer-more-/').click()
@@ -183,7 +186,24 @@ test(
         [INITIAL_COUNT, INITIAL_COUNT]
       )
       await expect(page.getByTestId('explorer-more-error-/')).toHaveCount(0)
+      hold = true
+      const refreshStart = pending.length
+      await page.getByTestId('fixture-refresh').click()
+      await expect.poll(() => pending.length).toBe(refreshStart + 1)
+      await expect(page.locator('[data-testid^="explorer-node-"]')).toHaveCount(INITIAL_COUNT + 1)
+      assert.equal(await firstRow.evaluate((element) => element.isConnected), true)
+      await reply(pending[refreshStart].route, 'replacement', INITIAL_COUNT)
+      await expect.poll(() => pending.length).toBe(refreshStart + 2)
+      await expect(page.getByTestId('explorer-node-initial-0.md')).toBeVisible()
+      await reply(pending[refreshStart + 1].route, 'replacement-next', 1)
+      await expect(page.getByTestId('explorer-node-replacement-next-0.md')).toBeVisible()
+      await expect(page.locator('[data-testid^="explorer-node-"]')).toHaveCount(INITIAL_COUNT + 1)
+      hold = false
       for (const action of ['refresh', 'project', 'path', 'mount']) {
+        // Fence each scenario from a fresh directory; refresh now preserves loaded pagination.
+        await page.getByTestId('fixture-mount').click()
+        await page.getByTestId('fixture-mount').click()
+        await expect(page.locator('[data-testid^="explorer-node-"]')).toHaveCount(INITIAL_COUNT)
         prefix = `before-${action}`
         await page.getByTestId('fixture-refresh').click()
         await expect(page.getByTestId(`explorer-node-${prefix}-0.md`)).toBeVisible()
@@ -256,6 +276,15 @@ test(
       await expect(page.getByTestId('fixture-refresh')).toHaveAttribute('aria-busy', 'false')
       await expect(page.getByTestId('explorer-directory-empty-root')).toHaveCount(0)
       await expect(page.locator('#root > div')).toHaveCount(0)
+      // A retained empty directory still reports a failed refresh and permits retry.
+      failInitial = true
+      await page.getByTestId('fixture-refresh').click()
+      await expect(page.getByTestId('explorer-directory-error-root')).toBeVisible()
+      await expect(page.locator('[data-testid^="explorer-node-"]')).toHaveCount(0)
+      failInitial = false
+      await page.getByTestId('explorer-directory-retry-root').click()
+      await expect(page.getByTestId('explorer-directory-error-root')).toHaveCount(0)
+      await expect(page.locator('#root > div')).toHaveCount(0)
       await page.getByTestId('fixture-draft').click()
       await expect(page.getByTestId('fixture-draft-row')).toBeVisible()
       await page.getByTestId('fixture-draft').click()
@@ -267,11 +296,12 @@ test(
       await page.getByTestId('fixture-english').click()
       await expect(page.getByTestId('explorer-directory-empty-/')).toHaveCount(0)
       await expect(page.locator('#root > div')).toHaveCount(0)
-      await page.screenshot({ path: '/tmp/explorer-render-empty-english.png', fullPage: true })
+      await page.screenshot({ path: path.join(artifacts, 'empty-english.png'), fullPage: true })
       assert.deepEqual(errors, [])
     } finally {
       await browser.close()
       await server.close()
+      rmSync(artifacts, { recursive: true, force: true })
     }
   }
 )

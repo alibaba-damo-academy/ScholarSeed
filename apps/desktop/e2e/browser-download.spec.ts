@@ -1,3 +1,5 @@
+import { restoreBrowser } from './fixtures/browser'
+import { openAccountSettings } from './fixtures/menu'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
@@ -35,7 +37,7 @@ test('real Desktop asks where to save an embedded browser download', async ({}, 
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill(HOME_URL)
     await address.press('Enter')
@@ -73,9 +75,16 @@ test('real Desktop asks where to save an embedded browser download', async ({}, 
     await writeFile(join(ARTIFACTS, 'save-as-dialog.png'), Buffer.from(screenshot!, 'base64'))
     const electronPid = desktop.app!.process().pid
     expect(electronPid).toBeTruthy()
-    runAppleScript('tell application "System Events"',
-      `click button "取消" of sheet 1 of window 1 of (first process whose unix id is ${electronPid})`,
-      'end tell')
+    // An external native controller can cancel the real sheet on hosts where
+    // osascript lacks Accessibility permission. Completion still comes from
+    // Electron's actual DownloadItem event below.
+    if (process.env[NATIVE_CHOOSER_E2E_ENV] === 'external-cancel') {
+      console.log('Native download sheet ready for external cancellation')
+    } else {
+      runAppleScript('tell application "System Events"',
+        `click button "取消" of sheet 1 of window 1 of (first process whose unix id is ${electronPid})`,
+        'end tell')
+    }
     await expect.poll(async () => (await probe())?.result, { timeout: 10_000 }).toBe('cancelled')
     await writeFile(join(ARTIFACTS, 'download-probe.json'), JSON.stringify(await probe(), null, 2))
     await expect(page.getByText('网页加载失败，请检查网址或重试。')).toHaveCount(0)
@@ -107,8 +116,7 @@ test('real Desktop chooser persists a custom browser download directory across r
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     return page
   }
@@ -174,15 +182,14 @@ test('real Desktop automatically saves without overwriting an earlier download',
     }
     const page = await launching
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     const downloads = page.getByTestId('browser-settings-downloads')
     await expect(downloads.getByTestId('browser-download-directory')).toHaveText(directory)
     await expect(downloads.getByRole('switch', { name: '每次下载时询问保存位置' })).not.toBeChecked()
     await writeFile(join(ARTIFACTS, 'automatic-settings.png'), await page.screenshot())
     await page.getByRole('dialog', { name: '设置' }).getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill(HOME_URL)
     await address.press('Enter')

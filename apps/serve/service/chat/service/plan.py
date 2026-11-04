@@ -13,6 +13,7 @@ from service.platform.bridge import (
     PLAN_ACTION_STATUSES,
     PLAN_GROUP,
     PLAN_MAX_DEPTH,
+    PLAN_RECONCILE_ACTION,
     PLAN_RELEASED_SOURCE,
     PLAN_SOURCE,
     PLAN_STEP,
@@ -31,6 +32,9 @@ PLAN_TIMED_TERMINALS = frozenset((PLAN_COMPLETED, "partial", "failed"))
 PLAN_START_REQUIRED = "plan_step_start_required"
 PLAN_STARTED_IDENTITY_LOCKED = "plan_started_step_identity_locked"
 PLAN_STEP_UNKNOWN = "plan_step_unknown"
+PLAN_RECONCILE_REASON_REQUIRED = "plan_reconcile_reason_required"
+PLAN_RECONCILE_LEAF_REQUIRED = "plan_reconcile_unstarted_leaf_required"
+PLAN_RECONCILABLE_STATUSES = frozenset((PLAN_PENDING, "blocked", "needs_confirmation"))
 
 
 class PlanExecutionError(ValueError):
@@ -39,7 +43,9 @@ class PlanExecutionError(ValueError):
         self.identities = identities
 
 
-def execution_starts(items: list[dict], previous: dict, *, creating: bool) -> list[str]:
+def execution_starts(
+    items: list[dict], previous: dict, *, creating: bool, reconciled: frozenset[str] = frozenset()
+) -> list[str]:
     old_items = {} if creating else {item["id"]: item for item in previous.get("items", [])}
     old_parents = group_ids(list(old_items.values()))
     parents = group_ids(items)
@@ -62,9 +68,11 @@ def execution_starts(items: list[dict], previous: dict, *, creating: bool) -> li
         for item in items
         if item["id"] not in parents
         and item["status"] in PLAN_TIMED_TERMINALS
+        and item["id"] not in reconciled
         and old_items.get(item["id"], {}).get("status") != PLAN_RUNNING
         and not (
-            item["id"] in started and old_items.get(item["id"], {}).get("status") == item["status"]
+            old_items.get(item["id"], {}).get("status") == item["status"]
+            and (item["id"] in started or item["status"] == PLAN_COMPLETED)
         )
     ]
     if missing:
@@ -78,6 +86,19 @@ def execution_starts(items: list[dict], previous: dict, *, creating: bool) -> li
 def group_ids(items: list[dict]) -> set[str]:
     return {item["parent_id"] for item in items if item.get("parent_id")} | {
         item["id"] for item in items if item.get("kind") == PLAN_GROUP
+    }
+
+
+def reconcilable_ids(state: dict) -> set[str]:
+    items = state.get("items", [])
+    started = set((state.get("plan") or {}).get("started_ids", []))
+    parents = group_ids(items)
+    return {
+        item["id"]
+        for item in items
+        if item["id"] not in parents
+        and item["id"] not in started
+        and item["status"] in PLAN_RECONCILABLE_STATUSES
     }
 
 
@@ -209,6 +230,12 @@ class SessionPlans:
                 unknown = sorted(changes.keys() - {item["id"] for item in old_items})
                 if unknown:
                     raise PlanExecutionError(PLAN_STEP_UNKNOWN, unknown)
+                if command.action == PLAN_RECONCILE_ACTION:
+                    if not command.reason.strip():
+                        raise ValueError(PLAN_RECONCILE_REASON_REQUIRED)
+                    invalid = sorted(changes.keys() - reconcilable_ids(data))
+                    if invalid:
+                        raise PlanExecutionError(PLAN_RECONCILE_LEAF_REQUIRED, invalid)
                 items = [
                     dict(item, status=changes[item["id"]]) if item["id"] in changes else item
                     for item in old_items
@@ -230,7 +257,14 @@ class SessionPlans:
                         for item in items
                     ):
                         raise PlanConflict("plan_parent_locked_use_revise")
-            started = execution_starts(items, data, creating=operation == "create")
+            reconciled = (
+                frozenset(command.step_ids)
+                if isinstance(command, PlanAction) and command.action == PLAN_RECONCILE_ACTION
+                else frozenset()
+            )
+            started = execution_starts(
+                items, data, creating=operation == "create", reconciled=reconciled
+            )
             payload = {
                 "items": items,
                 "explanation": command.reason or None,

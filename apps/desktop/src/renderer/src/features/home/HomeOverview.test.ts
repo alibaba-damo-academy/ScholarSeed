@@ -158,3 +158,62 @@ test('unpinning every project restores creation order without activity regardles
     )
   }
 })
+
+test('project order combines native directory creation and session activity without using import time', () => {
+  const listing = [
+    {
+      id: 'imported',
+      name: 'Imported',
+      path: '/imported',
+      added_at: 500,
+      directory_created_at: 10,
+    },
+    { id: 'active', name: 'Active', path: '/active', added_at: 20, directory_created_at: 20 },
+    { id: 'created', name: 'Created', path: '/created', added_at: 30, directory_created_at: 100 },
+    {
+      id: 'pinned',
+      name: 'Pinned',
+      path: '/pinned',
+      added_at: 1,
+      directory_created_at: 1,
+      pinned: true,
+    },
+  ]
+  const original = structuredClone(listing)
+  const activity = new Map([['/active', 80]])
+  assert.deepEqual(
+    orderedProjects(listing, '', activity).map((project) => project.id),
+    ['pinned', 'created', 'active', 'imported']
+  )
+  activity.set('/active', 200)
+  assert.deepEqual(
+    orderedProjects(listing, '', activity).map((project) => project.id),
+    ['pinned', 'active', 'created', 'imported']
+  )
+  assert.deepEqual(listing, original)
+  assert.equal(orderedProjects(listing, 'IMPORTED', activity)[0].id, 'imported')
+})
+
+test('project order falls back to registration only when native creation is unavailable and breaks ties', () => {
+  const listing = [
+    { id: 'native', name: 'Native', path: '/native', added_at: 40, directory_created_at: 50 },
+    {
+      id: 'missing',
+      name: 'Missing',
+      path: '/missing',
+      added_at: 60,
+      directory_created_at: null,
+      available: false,
+    },
+    { id: 'unknown', name: 'Unknown', path: '/unknown' },
+    { id: 'fallback', name: 'Fallback', path: '/fallback', added_at: 50 },
+  ]
+  assert.deepEqual(
+    orderedProjects(listing, '', new Map()).map((project) => project.id),
+    ['missing', 'fallback', 'native', 'unknown']
+  )
+  assert.deepEqual(
+    orderedProjects(listing, '', new Map([['/native', 70]])).map((project) => project.id),
+    ['native', 'missing', 'fallback', 'unknown']
+  )
+})

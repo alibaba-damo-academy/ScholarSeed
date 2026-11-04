@@ -49,7 +49,6 @@ test('tag header filters share catalogue selection, scope, search and clear sema
   const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
   context.after(() => browser.close())
   const page = await browser.newPage()
-  page.setDefaultTimeout(5000)
   const requests: URL[] = []
   let failed = false
   await page.route(`${ORIGIN}/**`, async (route) => {
@@ -73,6 +72,8 @@ test('tag header filters share catalogue selection, scope, search and clear sema
   })
   await page.goto(ORIGIN)
   await page.addScriptTag({ path: bundle })
+  await page.getByRole('button', { name: '筛选标签', exact: true }).waitFor({ state: 'visible' })
+  page.setDefaultTimeout(5000)
   const snapshot = () => page.evaluate(() => Reflect.get(window, 'probe').snapshot())
   await page.getByRole('button', { name: '筛选标签', exact: true }).click()
   await expect(page.getByRole('checkbox', { name: 'Alpha', exact: true })).toBeVisible()

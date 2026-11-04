@@ -47,6 +47,7 @@
     "project_creation_recovery_required": "Project creation needs recovery. Check the unfinished creations below."
   },
   "notices": {
+    "removeFailed": "Could not remove the project ({{code}}). Check the cause and retry.",
     "archivesReadFailed": "Unable to load archived projects. Please retry.",
     "renamed": "Renamed. The local folder name is unchanged.",
     "archived": "Archived. The project is hidden from default lists and can be restored from the archived section.",

@@ -107,6 +107,10 @@ for (const language of ['zh', 'en'] as const) {
     await main.applyMainLanguage(language)
     const account = requireResource(`../localization/locales/${language}/account.json`)
     const foundation = requireResource(`../localization/locales/${language}/foundation.json`)
+    const native = requireResource(`../localization/locales/${language}/native.json`)
+    const recovery = main.startupAdmissionText()
+    for (const status of ['installing', 'restoring', 'unconfirmed'] as const)
+      assert.equal(recovery[status], native.admissionRecovery[status])
     const message = main.mainLocalization().getFixedT(null, 'account')(
       'update.activationRecoveryRequired'
     )

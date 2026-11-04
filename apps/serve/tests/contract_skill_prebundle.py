@@ -16,7 +16,7 @@ import yaml
 
 from scholarseed_runtime.contract.inventory import SkillAvailability, SkillInventory, SkillView
 from service.capabilities.service.manifest import cache_path
-from service.capabilities.service.package import PackageError, json_bytes
+from service.capabilities.service.package import FILE_MODE, PackageError, json_bytes
 from service.capabilities.service.prebundle import (
     SkillPackError,
     compile_bundled_skills,
@@ -172,27 +172,35 @@ def _plugin_create_identity() -> None:
     frontmatter = yaml.safe_load(
         (source / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1]
     )
-    package = json.loads((source / ".scholarseed-package.json").read_bytes())
     version = (source / "VERSION").read_text(encoding="utf-8").strip()
     check(
         "creation package identity and version agree",
-        frontmatter["name"] == package["name"] == name
-        and frontmatter["version"] == package["version"] == version,
+        frontmatter["name"] == name and frontmatter["version"] == version,
     )
     stored = json.loads((REPO_ROOT / "skills/skills.lock.json").read_bytes())
     generated = source_lock()
+    if os.name == "nt":
+        for row in stored["skills"]:
+            for item in row["files"]:
+                item["mode"] = FILE_MODE
     check(
         "old identity is absent from frozen inventory",
         all(row["slug"] != "plugin-authoring" for row in stored["skills"]),
     )
     check(
-        "creation payload matches frozen source inventory",
-        [row for row in stored["skills"] if row["slug"] == name]
-        == [row for row in generated["skills"] if row["slug"] == name],
+        "reviewed inventory matches repository inputs",
+        stored == generated,
     )
     with tempfile.TemporaryDirectory(prefix="plugin-create-contract-") as temporary:
         target = Path(temporary) / "skills"
         compile_source_skills(target)
+        package = json.loads((target / name / ".scholarseed-package.json").read_bytes())
+        check(
+            "compiled manifest derives identity and dependencies from reviewed source",
+            package["name"] == name
+            and package["version"] == version
+            and package["dependencies"] == registry["dependencies"][name],
+        )
         check(
             "compiled pack contains only new creation identity",
             (target / name / "SKILL.md").is_file() and not (target / "plugin-authoring").exists(),
@@ -532,6 +540,7 @@ def _cli_gate_runs() -> None:
     with tempfile.TemporaryDirectory(prefix="skill-cli-contract-") as temporary:
         source = Path(temporary) / "community"
         _write_source_skill(source / "example")
+        (source.parent / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
         target = Path(temporary) / "skills"
         build_command = [
             sys.executable,

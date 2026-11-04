@@ -2,10 +2,7 @@
 # 只在本次推送触及 skills/** 时，对**被推送的提交树**（而不是可能脏的工作区）运行
 # 只读的技能清单一致性校验。本钩子只失败、绝不修改任何文件——修复动作留给开发者。
 #
-# 为什么需要它：skills/community/*/.scholarseed-package.json 与 skills.lock.json、
-# registry.json 的三方一致性，过去只有打包机 dependencies._inputs 会拦，反馈最晚最贵
-# （09-28 precise-literature-search、09-29 research-idea-partner 两次三平台构建全挂）。
-# CI 的 desktop-unit-test 跑同一条门禁，但要等流水线；这里在 push 前就给结论。
+# CI 的 desktop-unit-test 也检查源码文件和依赖政策是否与审核锁一致。
 #
 # 校验实现与 CI 共用 scripts/shared/skills.cjs，两边不会漂移。它收集全部违规后一次性报告，
 # 因此一个坏技能不会遮蔽另一个。
@@ -15,6 +12,7 @@
 
 zero=0000000000000000000000000000000000000000
 checker=scripts/shared/skills.cjs
+defaults=apps/serve/service/capabilities/defaults
 
 if ! command -v node >/dev/null 2>&1; then
   echo "[pre-push] 找不到 node，跳过 skills 一致性校验（CI 仍会强制）" >&2
@@ -30,7 +28,11 @@ verify_tip() {
     return 0
   fi
   tmp=$(mktemp -d 2>/dev/null) || return 0
-  if ! git archive "$tip" skills "$checker" 2>/dev/null | tar -x -C "$tmp" 2>/dev/null; then
+  set -- skills "$checker"
+  if git cat-file -e "$tip:$defaults" 2>/dev/null; then
+    set -- "$@" "$defaults"
+  fi
+  if ! git archive "$tip" "$@" 2>/dev/null | tar -x -C "$tmp" 2>/dev/null; then
     rm -rf "$tmp"
     return 0
   fi
@@ -50,7 +52,7 @@ while read -r local_ref local_oid remote_ref remote_oid; do
   fi
   if [ "$remote_oid" != "$zero" ]; then
     # 已存在的远端分支：只在本次推送范围触及 skills/ 时才校验。
-    touched=$(git diff --name-only "$remote_oid" "$local_oid" -- skills/ 2>/dev/null)
+    touched=$(git diff --name-only "$remote_oid" "$local_oid" -- skills/ "$defaults" 2>/dev/null)
     if [ -z "$touched" ]; then
       continue
     fi
@@ -64,8 +66,8 @@ done
 
 if [ "$failed" -ne 0 ]; then
   echo "" >&2
-  echo "[pre-push] 已阻止推送：技能清单与 skills.lock.json / registry.json 不一致。" >&2
-  echo "[pre-push] 按 skills/ADAPTATION.md §3 重新生成受影响技能的包清单并回写其 lock 行，" >&2
+  echo "[pre-push] 已阻止推送：技能源码或依赖政策与审核锁不一致。" >&2
+  echo "[pre-push] 按 skills/ADAPTATION.md §3 重新生成并审核受影响技能的 lock 行，" >&2
   echo "[pre-push] 再运行 node scripts/shared/skills.cjs 确认干净后重新推送。" >&2
   exit 1
 fi

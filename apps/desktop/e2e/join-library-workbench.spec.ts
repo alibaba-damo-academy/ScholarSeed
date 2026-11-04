@@ -1,4 +1,4 @@
-import { createReadyProject } from './fixtures/projects'
+import { createReadyProject, openProjectMenu } from './fixtures/projects'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { test, expect } from '@playwright/test'
@@ -47,14 +47,42 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     const sidebarCollections = await (await page.request.get(`${base}/api/v1/collections`)).json()
     expect(sidebarCollections.some((item: { name: string }) => item.name === '侧栏验收')).toBe(true)
     const papers = Array.from({ length: 10 }, (_, index) => ({ paper_id: String(index), title: `Join acceptance ${index}`, authors: ['Test Author'], year: 2026, venue: '', abstract: 'A deterministic search result for library admission.', citation_count: null, doi: '', arxiv_id: '', tier: null, reason: '', subtopics_covered: [], access: 'open', source: 'fixture' }))
-    const task = { id: 'join-acceptance', query: 'join acceptance', status: 'completed', created_at: Date.now()/1000, last_seq: 0, output: '', result: { papers } }
+    const task = { id: 'join-acceptance', query: 'join acceptance', status: 'completed', created_at: Date.now()/1000, last_seq: 0, output: '', result: { papers }, projectId: null as string | null }
     await page.route('**/api/literature/searches', route => route.fulfill({ json: route.request().method() === 'POST' ? { task } : { items: [task] } }))
-    const search = async () => { const input = page.getByRole('textbox', { name: '发现新文献', exact: true }); await input.fill('join acceptance'); await input.press('Enter'); await expect(page.getByTestId('search-paper-0')).toBeVisible() }
+    let searchProjectId: string | null = null
+    const search = async () => {
+      task.projectId = searchProjectId
+      // Discovery is reserved in this release. Restore the actual result tab
+      // through persisted navigation, using the existing deterministic task.
+      await page.evaluate(async ({ id, projectId }) => {
+        const preferences = await window.scholarseed.reconcilePreferences()
+        await window.scholarseed.savePreferences({
+          ...preferences,
+          lastLocation: {
+            view: 'literature', projectId, sessionId: null, sessionProjectId: null,
+            settingsPage: null, browserSettingsSection: null,
+            aiPanelOpen: false, aiPanelCover: false,
+            target: { kind: 'tab', id: `literature-search:${id}` },
+          },
+        })
+      }, { id: task.id, projectId: searchProjectId })
+      await page.reload()
+      if (searchProjectId) {
+        await expect(page.getByTestId('project-navigation')).toBeVisible()
+        const open = page.getByTestId('workspace-open')
+        if (await open.isVisible()) await open.click()
+        await page.getByTestId('workspace-full').click()
+        await page.getByTestId('composer-input').focus()
+        await page.getByTestId('workspace-conversation-menu').click()
+        await page.getByRole('menuitem', { name: '最小化任务入口', exact: true }).click()
+      }
+      await expect(page.getByTestId('search-paper-0')).toBeVisible()
+    }
     await search()
     const row = (index: number) => page.getByTestId(`search-paper-${index}`)
     const trigger = (index: number) => row(index).getByTestId('join-library-trigger')
     await trigger(0).click()
-    await expect(page.getByRole('menuitem', { name: '关联至项目', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: '关联至项目', exact: true })).toBeVisible()
     await page.getByRole('menuitem', { name: '直接加入', exact: true }).click()
     await expect(row(0).getByTestId('literature-joined')).toHaveText('已加入')
     await expect(page.getByText('已添加1篇文献', { exact: true })).toBeVisible()
@@ -71,11 +99,11 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     await createCollection('深层分类', project.id, child.id)
     await trigger(1).click()
     await page.getByRole('menuitem', { name: '关联至项目', exact: true }).hover()
-    await page.getByRole('menuitem', { name: 'Join project', exact: true }).click()
+    await page.getByRole('menuitem', { name: project.name, exact: true }).click()
     await expect(row(1).getByTestId('literature-joined')).toHaveText('已加入')
     await trigger(2).click()
     await page.getByRole('menuitem', { name: '关联至项目', exact: true }).hover()
-    await page.getByRole('menuitem', { name: 'Join project', exact: true }).hover()
+    await page.getByRole('menuitem', { name: project.name, exact: true }).hover()
     await page.getByRole('menuitem', { name: '实验方法', exact: true }).hover()
     await page.getByRole('menuitem', { name: '光遗传', exact: true }).click()
     await expect(row(2).getByTestId('literature-joined')).toHaveText('已加入')
@@ -136,7 +164,7 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     await page.screenshot({ path: join(evidence, 'batch-success-toast.png') })
     await trigger(7).click()
     await page.getByRole('menuitem', { name: '关联至项目', exact: true }).hover()
-    await page.getByRole('menuitem', { name: 'Join project', exact: true }).hover()
+    await page.getByRole('menuitem', { name: project.name, exact: true }).hover()
     await page.getByRole('menuitem', { name: '实验方法', exact: true }).hover()
     await expect(page.getByRole('menuitem', { name: '新建分类…', exact: true })).toHaveCount(1)
     await expect(page.getByRole('menu').last().getByRole('menuitem', { name: '新建分类…', exact: true })).toHaveCount(0)
@@ -147,19 +175,27 @@ test('join library: cascading destinations, create-and-add, batch, project scope
       expect(box!.y + box!.height).toBeLessThanOrEqual(await page.evaluate(() => window.innerHeight))
     }
     await page.getByRole('menuitem', { name: '光遗传', exact: true }).hover()
-    const lastMenu = await page.getByRole('menu').last().boundingBox()
-    const beforeLast = await page.getByRole('menu').nth(3).boundingBox()
-    expect(lastMenu!.x).toBeLessThan(beforeLast!.x)
+    const cascade = await page.getByRole('menu').evaluateAll(menus => menus.map(menu => {
+      const bounds = menu.getBoundingClientRect()
+      return { x: bounds.x, right: bounds.right }
+    }))
+    expect(cascade.some((menu, index) => index > 0 && menu.x < cascade[index - 1].x)).toBe(true)
+    const viewportWidth = await page.evaluate(() => innerWidth)
+    for (const menu of cascade) {
+      expect(menu.x).toBeGreaterThanOrEqual(0)
+      expect(menu.right).toBeLessThanOrEqual(viewportWidth)
+    }
     await page.screenshot({ path: join(evidence, 'submenu-flipped.png') })
     await page.keyboard.press('Escape'); await expect(page.getByRole('menu')).toHaveCount(0)
     await trigger(7).click(); await page.getByRole('heading', { level: 1 }).filter({ hasText: 'join acceptance' }).click(); await expect(page.getByRole('menu')).toHaveCount(0)
     // Reload refreshes project inventory, then enter the project through the real project switcher.
     await page.reload()
     await page.getByTestId('activity-literature').click()
-    await page.getByTestId('topbar-project').click()
-    await page.getByTestId('project-menu-option-Join project').click()
+    await openProjectMenu(page)
+    await page.getByTestId(`project-menu-option-${project.name}`).click()
     await page.getByTestId('activity-literature').click()
     task.id = 'join-project-acceptance'
+    searchProjectId = project.id
     await search()
     await trigger(8).click()
     await expect(page.getByRole('menuitem')).toHaveCount(2)
@@ -191,24 +227,26 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     await expect(page.getByText('已添加1篇文献', { exact: true }).last()).toBeVisible()
     await expect(page.getByRole('button', { name: '去文献库看看', exact: true })).toHaveCount(0)
     await expect(page.getByTestId('search-paper-9')).toBeVisible()
-    await expect(page.getByTestId('topbar-project')).toContainText('Join project')
-    await page.getByRole('button', { name: '在本项目新建分类', exact: true }).click()
+    await expect(page.getByTestId('project-navigation-selector')).toContainText(project.name)
+    await page.getByTestId('project-library').click()
+    await page.getByTestId('project-library-content').getByRole('tab', { name: '文献', exact: true }).click()
+    await page.getByRole('button', { name: '文献分类', exact: true }).click()
+    await page.getByRole('menuitem', { name: '新建分类', exact: true }).click()
     await expect(page.getByRole('dialog').getByRole('combobox')).toHaveCount(0)
-    await page.getByLabel('名称', { exact: true }).fill('侧栏项目分类')
+    await page.getByLabel('分组名', { exact: true }).fill('项目分类')
     await page.getByRole('button', { name: '创建', exact: true }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    const parentCollection = page.getByTestId(`literature-collection-${parent.id}`)
+    await expect(page.getByTestId('literature-groups')).toBeVisible()
+    const parentCollection = page.getByTestId('literature-group-row').filter({ hasText: '实验方法' })
     await parentCollection.hover()
-    await parentCollection.getByRole('button', { name: '导入文献', exact: true }).click()
-    await page.getByRole('menuitem', { name: '新建子分类', exact: true }).click()
-    await expect(page.getByRole('dialog')).toContainText('将在「实验方法」下创建。')
+    await parentCollection.getByRole('button', { name: '在实验方法下新建子分组', exact: true }).click()
     await expect(page.getByRole('dialog').getByRole('combobox')).toHaveCount(0)
-    await page.getByLabel('名称', { exact: true }).fill('侧栏项目子分类')
+    await page.getByLabel('分组名', { exact: true }).fill('项目子分类')
     await page.getByRole('button', { name: '创建', exact: true }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    const sidebarProjectCollections = await (await page.request.get(`${base}/api/v1/collections?project_id=${project.id}`)).json()
-    expect(sidebarProjectCollections.find((item: { name: string }) => item.name === '侧栏项目子分类').parent_id).toBe(parent.id)
-    expect(sidebarProjectCollections.find((item: { name: string }) => item.name === '侧栏项目分类').parent_id).toBeNull()
+    const projectCollections = await (await page.request.get(`${base}/api/v1/collections?project_id=${project.id}`)).json()
+    expect(projectCollections.find((item: { name: string }) => item.name === '项目子分类').parent_id).toBe(parent.id)
+    expect(projectCollections.find((item: { name: string }) => item.name === '项目分类').parent_id).toBeNull()
     const previewServer = await createServer({ configFile: false, root: process.cwd(), plugins: [react()], server: { host: '127.0.0.1', port: 0 } })
     try {
       await previewServer.listen()
@@ -231,7 +269,7 @@ test('join library: cascading destinations, create-and-add, batch, project scope
     } finally { await previewServer.close() }
     desktop.assertNoPageErrors()
   } catch (error) {
-    await desktop.page?.screenshot({ path: '/tmp/join-e2e-failure.png' })
+    await desktop.page?.screenshot({ path: join(runtime.artifacts, 'join-e2e-failure.png') })
     throw error
   } finally { await desktop.attachArtifacts() }
 })

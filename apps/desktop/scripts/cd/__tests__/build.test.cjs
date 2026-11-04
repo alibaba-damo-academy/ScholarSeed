@@ -30,6 +30,7 @@ require('./verification.test.cjs')
 require('./browser.test.cjs')
 require('./mutex.test.cjs')
 require('./shipit.test.cjs')
+require('./recovery.test.cjs')
 require('./squirrel.test.cjs')
 require('../../../native/shipit/artifact.test.cjs')
 require('../../../native/shipit/fingerprint.test.cjs')
@@ -579,12 +580,9 @@ test('packaging targets preserve independent macOS and Windows artwork', () => {
     fs.readFileSync(path.join(desktopRoot, PACKAGE.build.win.icon))
   )
 })
-test('repository skill locks include manifests matching the reviewed dependency policy', () => {
+test('repository skill lock matches reviewed source and dependency policy', () => {
   const sourceRoot = path.join(REPO_ROOT, 'skills', 'community')
   const lock = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'skills', 'skills.lock.json')))
-  // 三方一致性（源码清单 / lock 行 / registry 依赖政策）由 scripts/shared/skills.cjs 单独持有，
-  // 与 .husky/pre-push 共用同一实现。它收集全部违规而不是逐条 assert：单个坏技能
-  // 不得遮蔽排在它之后的技能。
   const problems = [...skillLockProblems(REPO_ROOT)]
 
   const publicationOracle = 'scripts/smoke_publication.py'

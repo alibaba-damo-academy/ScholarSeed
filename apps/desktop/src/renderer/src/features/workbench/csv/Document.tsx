@@ -31,7 +31,7 @@ import type { PreviewSelection } from '../preview/selection'
 import { rangeBox, type GridPositions } from '../preview/geometry'
 import { Sheets } from '../preview/Sheets'
 import { CsvClient } from './client'
-import type { CsvRangeResult, CsvSearch, CsvState } from './model'
+import { CSV_ENCODINGS, type CsvRangeResult, type CsvSearch, type CsvState } from './model'
 
 interface Props {
   bytes: Uint8Array
@@ -92,7 +92,6 @@ export function CsvDocument(props: Props): React.JSX.Element {
   const workspace = useDocumentWorkspace()
   const controller = useWorkspaceController()
   const session = props.sessionId ? workspace.sessions[props.sessionId] : undefined
-  const editable = Boolean(session?.capabilities.can_edit && props.viewKind === 'edit')
   const owner = props.sessionId || `${props.title}:${props.revision}`
   const root = useRef<HTMLDivElement>(null)
   const client = useRef<CsvClient | null>(null)
@@ -101,8 +100,13 @@ export function CsvDocument(props: Props): React.JSX.Element {
   const generation = useRef(0)
   const editGeneration = useRef(0)
   const [state, setState] = useState<CsvState | null>(null)
+  const editable = Boolean(
+    session?.capabilities.can_edit &&
+    props.viewKind === 'edit' &&
+    state?.sourceEncoding === CSV_ENCODINGS.utf8
+  )
   const [data, setData] = useState<WindowData | null>(null)
-  const [failure, setFailure] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [editor, setEditor] = useState<Editor | null>(null)
   const editorRef = useRef<Editor | null>(null)
@@ -118,7 +122,7 @@ export function CsvDocument(props: Props): React.JSX.Element {
   } | null>(null)
   const reportError = useCallback((error: unknown): void => {
     console.warn('CSV document operation failed', error)
-    setFailure(true)
+    setFailure(error instanceof Error ? error.message : 'csv_request_failed')
   }, [])
   const markDirty = useCallback((): void => {
     if (props.sessionId) controller.setExternalDirty(props.sessionId, true)
@@ -156,7 +160,7 @@ export function CsvDocument(props: Props): React.JSX.Element {
     editGeneration.current++
     saved.current.clear()
     source.current = { owner, bytes: props.bytes }
-    setFailure(false)
+    setFailure(null)
     setState(null)
     setData(null)
     setEditor(null)
@@ -632,7 +636,22 @@ export function CsvDocument(props: Props): React.JSX.Element {
       data-document-ready={Boolean(model)}
     >
       {props.tabId && <CsvActions tabId={props.tabId} contribution={replacement} />}
-      {failure && <Alert tone="warning" title={t('csv.failed')} />}
+      {state?.sourceEncoding === CSV_ENCODINGS.gbk && (
+        <Alert tone="info" title={t('csv.gbkReadonly')} />
+      )}
+      {failure && (
+        <Alert
+          tone="warning"
+          title={model ? t('csv.failed') : t('csv.openFailed')}
+          description={
+            failure === 'csv_encoding_invalid'
+              ? t('csv.encodingInvalid')
+              : failure === 'csv_quotes_invalid'
+                ? t('csv.quotesInvalid')
+                : undefined
+          }
+        />
+      )}
       {!model ? (
         <div className="p-[var(--vds-space-4)]">
           {failure ? (

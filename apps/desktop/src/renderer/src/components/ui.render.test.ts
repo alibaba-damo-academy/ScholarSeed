@@ -86,7 +86,7 @@ test('ResizableHandle supports independent pixel offsets and releases capture', 
   })
 })
 
-test('NavigationTabs reorders in both directions without changing selection and composes drag hooks', async () => {
+test('NavigationTabs activates the pressed tab and reorders in both directions with composed drag hooks', async () => {
   await withFixture(async (page) => {
     const bar = page.getByTestId('render-navigation-tabs-reorder')
     const first = bar.getByRole('tab', { name: 'First.md' })
@@ -101,7 +101,7 @@ test('NavigationTabs reorders in both directions without changing selection and 
       'First.md',
       'Locked.md',
     ])
-    await expect(bar.getByRole('tab', { selected: true })).toContainText('Second.md')
+    await expect(bar.getByRole('tab', { selected: true })).toContainText('First.md')
     await third.dragTo(bar.getByRole('tab', { name: /Second.md/ }), {
       targetPosition: { x: 2, y: 16 },
     })
@@ -112,6 +112,7 @@ test('NavigationTabs reorders in both directions without changing selection and 
       'First.md',
       'Locked.md',
     ])
+    await expect(bar.getByRole('tab', { selected: true })).toContainText('Third.md')
     await expect(page.getByTestId('render-navigation-reorders')).toHaveText('2')
     await expect(page.getByTestId('render-navigation-drag-events')).toHaveText('2')
     await expect(page.getByTestId('render-navigation-drop-events')).toHaveText('2')
@@ -121,6 +122,62 @@ test('NavigationTabs reorders in both directions without changing selection and 
       'true'
     )
     await expect(bar.locator('[data-slot="navigation-tab-drop-indicator"]')).toHaveCount(0)
+  })
+})
+
+test('NavigationTabs activates on press before a small movement can consume the click', async () => {
+  await withFixture(async (page) => {
+    const bar = page.getByTestId('render-navigation-tabs-reorder')
+    const first = bar.getByRole('tab', { name: 'First.md' })
+    const bounds = (await first.boundingBox())!
+    const start = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+    await page.mouse.move(start.x, start.y)
+    await page.mouse.down()
+    await expect(first).toHaveAttribute('aria-selected', 'true')
+    await page.mouse.move(start.x + 5, start.y)
+    await page.mouse.up()
+    await expect(first).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('render-navigation-reorders')).toHaveText('0')
+    const previousDrags = Number(
+      await page.getByTestId('render-navigation-drag-events').textContent()
+    )
+    const third = bar.getByRole('tab', { name: 'Third.md' })
+    const destination = (await third.boundingBox())!
+    await page.mouse.move(start.x, start.y)
+    await page.mouse.down()
+    await page.mouse.move(start.x + 5, start.y)
+    await page.mouse.move(start.x + 10, start.y, { steps: 5 })
+    await page.mouse.move(destination.x + destination.width - 4, start.y, { steps: 20 })
+    await page.mouse.move(destination.x + destination.width - 4, start.y)
+    await page.mouse.up()
+    await expect(page.getByTestId('render-navigation-reorders')).toHaveText('1')
+    await expect(page.getByTestId('render-navigation-drag-events')).toHaveText(
+      String(previousDrags + 1)
+    )
+  })
+})
+
+test('NavigationTabs activates a mouse click once and preserves keyboard, auxiliary and close actions', async () => {
+  await withFixture(async (page) => {
+    const bar = page.getByTestId('render-navigation-tabs-reorder')
+    const first = bar.getByRole('tab', { name: 'First.md' })
+    const third = bar.getByRole('tab', { name: 'Third.md' })
+    const activations = page.getByTestId('render-navigation-activations')
+    await first.click()
+    await expect(activations).toHaveText('1')
+    await first.click({ button: 'right' })
+    await first.click({ button: 'middle' })
+    await expect(activations).toHaveText('1')
+    await third.focus()
+    await third.press('Enter')
+    await expect(third).toHaveAttribute('aria-selected', 'true')
+    await expect(activations).toHaveText('2')
+    await third.dispatchEvent('click', { detail: 0 })
+    await expect(activations).toHaveText('3')
+    await first.getByRole('button', { name: '关闭 First.md' }).click()
+    await expect(first).toHaveCount(0)
+    await expect(third).toHaveAttribute('aria-selected', 'true')
+    await expect(activations).toHaveText('3')
   })
 })
 

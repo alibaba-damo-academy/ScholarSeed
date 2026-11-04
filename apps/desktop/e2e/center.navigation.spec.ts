@@ -17,7 +17,9 @@ for (const theme of ['light', 'dark'] as const) for (const language of ['zh', 'e
       const skip = page.getByTestId('landing-skip')
       if (await skip.isVisible()) await skip.click()
       await expect(page.getByTestId('project-center')).toBeVisible()
-      await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
+      await expect(page.getByTestId('home-tasks-list')).toHaveCount(0)
+      await expect(page.locator('#home-tasks-heading')).toHaveCount(0)
+      await expect(page.getByTestId('home-tasks-empty')).toHaveCount(0)
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
       expect(await page.evaluate(() => Object.hasOwn(window, 'pdfe'))).toBe(false)
       const center = await projectCenterAppearance(page, 'center')
@@ -62,7 +64,7 @@ test('normal project center uses real project mutations without the PDFE bridge'
       return (await response.json()).projects
     }
     const original = await projects()
-    await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
+    await expect(page.getByTestId('home-tasks-list')).toHaveCount(0)
     await page.getByTestId('home-project-create-top').click()
     const name = '项目中心正常产品回归'
     await page.getByTestId('project-create-name').fill(name)
@@ -101,7 +103,7 @@ test('normal project center uses real project mutations without the PDFE bridge'
     const archived = await projects()
     expect(archived.find(project => project.id === created!.id)).toMatchObject({ archived_at: expect.any(Number) })
     expect(archived.filter(project => !project.archived_at).map(project => project.id).sort()).toEqual(original.filter(project => !project.archived_at).map(project => project.id).sort())
-    await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
+    await expect(page.getByTestId('home-tasks-list')).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('normal-project-archived.png') })
     desktop.assertNoPageErrors()
   } finally {
@@ -148,7 +150,7 @@ test('normal project center paginates, distinguishes search emptiness and clamps
     await expect(page.getByTestId('home-projects-no-results')).toBeVisible()
     await expect(page.getByTestId('home-projects-empty')).toHaveCount(0)
     await expect(rows).toHaveCount(0)
-    await expect(page.getByTestId('home-tasks-empty')).toBeVisible()
+    await expect(page.getByTestId('home-tasks-list')).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('normal-project-search-no-results.png') })
     await search.fill('')
     await expect(rows).toHaveCount(HOME_PROJECT_PAGE_SIZE)

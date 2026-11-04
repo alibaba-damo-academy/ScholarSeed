@@ -331,6 +331,69 @@ class PlanContract(unittest.TestCase):
             }
         )
 
+    def test_reconcile_records_completion_without_inventing_a_start(self):
+        self.write(self.command(items=[item("root"), item("later")]))
+        with self.assertRaisesRegex(PlanExecutionError, "start_required"):
+            self.write(self.action("finish", ["root"], revision=1, request_id="finish"))
+        completion = self.action(
+            "reconcile",
+            ["root"],
+            revision=1,
+            request_id="reconcile",
+            reason="Read the delivered report and verified its required sections.",
+        )
+        event = self.write(completion)
+        self.assertEqual(event.payload["items"][0]["status"], "completed")
+        self.assertEqual(event.payload["plan"]["started_ids"], [])
+        self.assertEqual(event.payload["explanation"], completion.reason)
+        self.write(self.action("start", ["later"], revision=2, request_id="next"))
+        self.assertEqual(self.write(completion), event)
+        self.assertEqual(self.plans.current()["plan"]["started_ids"], ["later"])
+        reopened = SessionPlans(SESSION, ProductEventStore(self.database), self.catalog)
+        self.assertEqual(reopened.current(), self.plans.current())
+        with self.assertRaisesRegex(PlanConflict, "revision_conflict"):
+            self.write(
+                self.action(
+                    "reconcile", ["root"], revision=1, request_id="stale", reason="Verified report"
+                )
+            )
+
+    def test_reconcile_requires_evidence_and_only_accepts_unstarted_leaves(self):
+        tree = [
+            {**item("root"), "kind": "group"},
+            item("leaf", "root"),
+            item("started", status="in_progress"),
+            item("blocked", status="blocked"),
+        ]
+        self.write(self.command(items=tree))
+        self.write(self.action("pause", ["started"], revision=1, request_id="pause"))
+        before = self.plans.current()
+        for identities, reason, error in (
+            (["leaf"], "  ", "reconcile_reason_required"),
+            (["root"], "Verified result", "reconcile_unstarted_leaf_required"),
+            (["started"], "Verified result", "reconcile_unstarted_leaf_required"),
+            (["leaf", "started"], "Verified result", "reconcile_unstarted_leaf_required"),
+        ):
+            with self.subTest(identities=identities, reason=reason):
+                with self.assertRaisesRegex(ValueError, error):
+                    self.write(
+                        self.action(
+                            "reconcile", identities, revision=2, request_id=error, reason=reason
+                        )
+                    )
+                self.assertEqual(self.plans.current(), before)
+        self.write(
+            self.action(
+                "reconcile",
+                ["leaf", "blocked"],
+                revision=2,
+                request_id="recover",
+                reason="Verified both delivered results",
+            )
+        )
+        self.assertEqual(self.plans.current()["plan"]["started_ids"], ["started"])
+        self.assertEqual(self.plans.current()["items"][1]["status"], "completed")
+
     def test_action_preserves_tree_and_retries_original_mutation_after_later_writes(self):
         tree = [
             {**item("root", status="in_progress"), "kind": "group"},
@@ -656,6 +719,9 @@ class PlanContract(unittest.TestCase):
             )
             self.assertEqual(rejected.status_code, 400)
             self.assertNotIn("finish", rejected.json()["current"]["actions"]["root"])
+            self.assertIn("reconcile", rejected.json()["current"]["actions"]["root"])
+            self.assertEqual(rejected.json()["current"]["plan"]["revision"], 1)
+            self.assertIn("observed completion evidence", rejected.json()["next_action"])
             started = client.post(
                 PLAN_ROUTE_PREFIX + "action",
                 headers=headers,
@@ -669,6 +735,7 @@ class PlanContract(unittest.TestCase):
             )
             self.assertEqual(started.status_code, 200, started.text)
             self.assertIn("finish", started.json()["actions"]["root"])
+            self.assertNotIn("reconcile", started.json()["actions"]["root"])
             refined = client.post(
                 PLAN_ROUTE_PREFIX + "structure",
                 headers=headers,
@@ -711,6 +778,40 @@ class PlanContract(unittest.TestCase):
             self.assertEqual(
                 client.post(PLAN_ROUTE_PREFIX + "write", json=current, headers=headers).status_code,
                 403,
+            )
+
+    def test_bridge_reconciles_verified_completion_and_preserves_untimed_state(self):
+        self.write(self.command(items=[item("root", status="blocked")]))
+        live = self.live()
+        sessions = SimpleNamespace(bridge_caller=lambda sid: live if sid == SESSION else None)
+        app = FastAPI()
+        activities = Activities()
+        self.activities = activities
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_plan_routes(app, sessions, activities=activities)
+        headers = {BRIDGE_SESSION_HEADER: SESSION, BRIDGE_TOKEN_HEADER: live.bridge_token}
+        command = self.action(
+            "reconcile",
+            ["root"],
+            revision=1,
+            request_id="reconcile",
+            reason="Verified the published report meets the requested sections.",
+        ).model_dump()
+        with TestClient(app) as client:
+            response = client.post(PLAN_ROUTE_PREFIX + "action", headers=headers, json=command)
+            self.assertEqual(response.status_code, 200, response.text)
+            state = response.json()
+            self.assertTrue(state["ok"])
+            self.assertEqual(state["items"][0]["status"], "completed")
+            self.assertEqual(state["plan"]["started_ids"], [])
+            self.assertNotIn("reconcile", state["actions"]["root"])
+            self.assertEqual(state["explanation"], command["reason"])
+            replay = client.post(PLAN_ROUTE_PREFIX + "get", headers=headers, json={}).json()
+            self.assertEqual(replay, state)
+            self.assertEqual(
+                client.post(PLAN_ROUTE_PREFIX + "action", headers=headers, json=command).json(),
+                state,
             )
 
     def test_rejected_writes_return_current_state_for_corrected_snapshot(self) -> None:

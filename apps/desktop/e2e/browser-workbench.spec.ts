@@ -1,3 +1,6 @@
+import { restoreBrowser, setBrowserDevtools } from './fixtures/browser'
+import { openProjectMenu } from './fixtures/projects'
+import { openAccountSettings } from './fixtures/menu'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { expect, test } from '@playwright/test'
@@ -23,7 +26,10 @@ test('embedded browser stays inside the workbench and hides for overlays without
     const window = await desktop.browserWindow(page)
     await desktop.app!.evaluate(({ app }) => app.focus({ steal: true }))
     await window.evaluate(native => { native.show(); native.focus() })
-    const nativeViews = () => window.evaluate(native => native.contentView.children.map(child => ({ bounds: child.getBounds(), visible: child.getVisible() })))
+    const nativeViews = () => window.evaluate(native => native.contentView.children.filter(child => {
+      const url = (child as Electron.WebContentsView).webContents.getURL()
+      return url.startsWith('http:') || url.startsWith('https:') || url === 'about:blank'
+    }).map(child => ({ bounds: child.getBounds(), visible: child.getVisible() })))
     const capture = async (name: string) => {
       const png = await window.evaluate(async native => (await native.capturePage()).toPNG().toString('base64'))
       writeFileSync(join(ARTIFACTS, `${name}.png`), Buffer.from(png, 'base64'))
@@ -43,7 +49,7 @@ test('embedded browser stays inside the workbench and hides for overlays without
     }
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
     await page.getByTestId('activity-home').click()
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     await expect(page.getByTestId('browser-workspace')).toBeVisible()
     await expect(page.getByTestId('topbar-panel-toggle')).toHaveCount(0)
     await expect(page.getByRole('tab', { name: '浏览器', exact: true })).toBeVisible()
@@ -54,8 +60,7 @@ test('embedded browser stays inside the workbench and hides for overlays without
     await capture('initial')
     writeFileSync(join(ARTIFACTS, 'initial.json'), JSON.stringify({ views: await nativeViews(), dom: await page.evaluate(() => ({ hidden: document.hidden, viewport: document.querySelector('[data-browser-viewport]')?.getBoundingClientRect().toJSON(), overlays: [...document.body.children, ...document.querySelectorAll('aside,[role="dialog"],[role="tooltip"]')].map(element => ({ tag: element.tagName, class: element.className, rect: element.getBoundingClientRect().toJSON() })) })), snapshot: await page.evaluate(() => globalThis.window.scholarseed.browser.snapshot()) }, null, 2))
     await expect.poll(async () => (await nativeViews()).filter(view => view.visible).length).toBe(1)
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await expect(page.getByTestId('account-settings-browser')).toBeVisible()
     await expect.poll(async () => (await nativeViews()).every(view => !view.visible)).toBe(true)
@@ -77,7 +82,7 @@ test('embedded browser stays inside the workbench and hides for overlays without
       await capture(`normal-zoom-${zoom}`)
     }
     await window.evaluate(native => native.webContents.setZoomFactor(1))
-    await page.getByTestId('topbar-project').click()
+    await openProjectMenu(page)
     await expect.poll(async () => {
       const overlay = await page.getByTestId('project-menu').boundingBox()
       return overlay && (await nativeViews()).every(view => !view.visible || view.bounds.x + view.bounds.width <= overlay.x || view.bounds.y >= overlay.y + overlay.height || view.bounds.y + view.bounds.height <= overlay.y || view.bounds.x >= overlay.x + overlay.width)
@@ -87,15 +92,16 @@ test('embedded browser stays inside the workbench and hides for overlays without
     await expect(page.getByRole('dialog')).toBeVisible()
     await expect.poll(async () => (await nativeViews()).every(view => !view.visible)).toBe(true)
     await capture('project-dialog')
-    await page.getByTestId('project-new-modal').getByRole('textbox').fill('Browser geometry project')
+    await page.getByTestId('project-new-modal').getByTestId('project-create-name').fill('Browser geometry project')
     await page.getByTestId('project-create').click()
     await expect(page.getByTestId('project-new-modal')).toHaveCount(0)
     await expect.poll(async () => (await nativeViews()).every(view => !view.visible)).toBe(true)
-    await page.getByTestId('activity-browser').click()
-    await expect(page.getByRole('tooltip', { name: '浏览器', exact: true })).toBeVisible()
-    await expect.poll(async () => (await nativeViews()).every(view => !view.visible)).toBe(true)
+    await restoreBrowser(page)
+    await page.getByRole('button', { name: '打开新的标签页', exact: true }).hover()
+    await expect(page.getByRole('tooltip', { name: '打开新的标签页', exact: true })).toBeVisible()
+    await expect.poll(async () => (await nativeViews()).some(view => view.visible)).toBe(true)
     await page.mouse.move(500, 20)
-    await expect(page.getByRole('tooltip', { name: '浏览器', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('tooltip', { name: '打开新的标签页', exact: true })).toHaveCount(0)
     await expect.poll(async () => (await nativeViews()).some(view => view.visible)).toBe(true)
     expect(await nativeViews()).toHaveLength(1)
     await capture('project-entry')
@@ -111,19 +117,18 @@ test('embedded browser stays inside the workbench and hides for overlays without
     await capture('narrow')
     await page.getByTestId('activity-home').click()
     await expect.poll(async () => (await nativeViews()).every(view => !view.visible)).toBe(true)
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     await page.mouse.move(500, 20)
     await expect.poll(async () => (await nativeViews()).some(view => view.visible)).toBe(true)
     expect(await nativeViews()).toHaveLength(1)
-    await page.getByRole('button', { name: '新建网页标签', exact: true }).click()
+    await page.getByRole('button', { name: '打开新的标签页', exact: true }).click()
     await expect.poll(async () => (await nativeViews()).length).toBe(2)
-    await expect(page.getByRole('button', { name: '新建网页标签', exact: true })).toBeEnabled()
+    await expect(page.getByRole('button', { name: '打开新的标签页', exact: true })).toBeEnabled()
     await page.getByTestId('browser-workspace').getByRole('tab', { selected: true }).getByRole('button', { name: /^关闭 / }).click()
     await expect.poll(async () => (await nativeViews()).length).toBe(1)
-    await page.getByRole('button', { name: '打开开发者工具', exact: true }).click()
-    await expect(page.getByRole('button', { name: '关闭开发者工具', exact: true })).toBeVisible()
+    await setBrowserDevtools(page, true)
     await capture('devtools-open')
-    await page.getByRole('button', { name: '关闭开发者工具', exact: true }).click()
+    await setBrowserDevtools(page, false)
     await window.evaluate(native => native.minimize())
     await expect.poll(async () => (await nativeViews()).every(view => !view.visible)).toBe(true)
     await window.evaluate(native => native.restore())
@@ -154,7 +159,7 @@ test('dark narrow Desktop keeps browser controls and settings usable', async ({}
     const nativeWindow = await desktop.browserWindow(page)
     await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
     await nativeWindow.evaluate(native => native.setSize(800, 650))
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const destination = `${await apiBase(page)}/api/healthz`
     await page.getByRole('textbox', { name: '网址', exact: true }).fill(destination)
     await page.getByRole('textbox', { name: '网址', exact: true }).press('Enter')
@@ -164,7 +169,8 @@ test('dark narrow Desktop keeps browser controls and settings usable', async ({}
       return active && { url: active.url, loading: active.loading, error: active.navigationError }
     }).toEqual({ url: destination, loading: false, error: null })
     await expect(page.getByTestId('browser-workspace')).toBeVisible()
-    await expect(page.getByRole('button', { name: '打开开发者工具', exact: true })).toBeVisible()
+    await setBrowserDevtools(page, true)
+    await setBrowserDevtools(page, false)
     const media = await nativeWindow.evaluate(native => ({ id: native.getMediaSourceId(), bounds: native.getBounds() }))
     const screenshot = await desktop.app!.evaluate(async ({ desktopCapturer }, source) => {
       const captures = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: source.bounds.width, height: source.bounds.height } })
@@ -172,8 +178,7 @@ test('dark narrow Desktop keeps browser controls and settings usable', async ({}
     }, media)
     expect(screenshot).toBeTruthy()
     writeFileSync(join(ARTIFACTS, 'browser-dark-narrow.png'), Buffer.from(screenshot!, 'base64'))
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await expect(page.getByTestId('account-settings-browser')).toBeVisible()
     await expect(page.getByRole('switch', { name: '启用浏览器自动化', exact: true })).toBeVisible()
@@ -198,8 +203,7 @@ test('Browser settings retry recovers a repaired Agent policy file', async ({}, 
       await startupPage.addLocatorHandler(startupPage.getByRole('button', { name, exact: true }), async button => { await button.click() })
     }
     const page = await launching
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     const sites = page.getByTestId('browser-settings-agent-sites')
     await expect(sites.getByRole('button', { name: '重新读取网站规则' })).toBeVisible()

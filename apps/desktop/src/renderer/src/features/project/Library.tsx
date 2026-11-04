@@ -6,12 +6,14 @@ import { featureRegistry } from '../../app/composition'
 import { LibrarySelectionChange, LibraryToolbarTarget } from '../../components/business/Library'
 import { IconButton, Tabs, TabsContent, TabsList, TabsTrigger, Tooltip } from '../../components/ui'
 import { useApp } from '../../store'
-import { openWorkbenchTab, projectExplorerTab } from '../workbench/tabs'
+import { newProjectTab, projectExplorerTab } from '../workbench/tabs'
+import { useWorkspaceController } from '../workbench/workspace'
 import { PROJECT_GUIDE_ANCHORS } from '../../contracts/onboarding'
 
 export function Library({ tabId }: { tabId?: string }): React.JSX.Element {
   const { t } = useTranslation('layout')
   const { state, set } = useApp()
+  const workspace = useWorkspaceController()
   const targetTabId = tabId ?? state.activeTab
   const category = state.tabs.find((tab) => tab.id === targetTabId)?.libraryCategory ?? 'materials'
   const [visited, setVisited] = useState(() => new Set(['materials']))
@@ -27,11 +29,20 @@ export function Library({ tabId }: { tabId?: string }): React.JSX.Element {
       ),
     }))
   }
-  const openExplorer = (): void =>
-    set((current) => {
-      const tab = projectExplorerTab(current.homeSelectedProjectId, t('explorer'))
-      return { activeTab: tab.id, tabs: openWorkbenchTab(current.tabs, current.mainView, tab) }
-    })
+  const openExplorer = (): void => {
+    const localIds = workspace.pageTabsInLeaf(targetTabId)
+    const existing = state.tabs.find((tab) => tab.kind === 'explorer' && localIds.includes(tab.id))
+    if (existing) {
+      set({ activeTab: existing.id })
+      return
+    }
+    const tab = {
+      ...projectExplorerTab(state.homeSelectedProjectId, t('explorer')),
+      id: newProjectTab(state.homeSelectedProjectId).id,
+    }
+    if (!workspace.openPageTab(tab.id, workspace.tabLocation(targetTabId)?.leafId)) return
+    set((current) => ({ activeTab: tab.id, tabs: [...current.tabs, tab] }))
+  }
   return (
     <Tabs
       value={category}

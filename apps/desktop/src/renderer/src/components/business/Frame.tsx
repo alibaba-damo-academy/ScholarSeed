@@ -420,7 +420,9 @@ export function PluginInteraction({
   currentPublicScope.current = publicScope
   const handlers = useRef({ onAction, onRestore })
   handlers.current = { onAction, onRestore }
-  useEffect(() => {
+  // Establish the lease generation before hosted children issue passive-effect reads.
+  // Updating it in a passive parent effect invalidates those same-mount requests.
+  useLayoutEffect(() => {
     const lifecycle = generation
     ++lifecycle.current
     draftQueue.current = Promise.resolve()

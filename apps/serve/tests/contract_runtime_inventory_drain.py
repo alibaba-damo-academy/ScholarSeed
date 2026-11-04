@@ -34,6 +34,7 @@ from scholarseed_runtime.contract.provider import RUNTIME_HOST_WARMUP_COMMAND
 from service.bootstrap import create_app
 from service.capabilities.api.routes import register_capability_routes
 from service.capabilities.service.skills import (
+    SkillCatalog,
     SkillEnablementPlan,
     SkillProductState,
     load_skill_state,
@@ -1200,7 +1201,9 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_maintenance_rejects_public_skill_routes_without_inspection_or_credentials(self):
         app = ServeApplication(activities=self.activities)
-        app.state.skill_catalog = Mock()
+        app.state.skill_catalog = SkillCatalog(
+            bundled_root=self.root / "bundled", user_root=self.root / "user"
+        )
         app.state.runtime_service = self.runtime
         public_skills = SimpleNamespace(payload=AsyncMock(), document=AsyncMock())
         credentials = SimpleNamespace(ensure=AsyncMock())
@@ -1215,7 +1218,6 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
             for method, route, kwargs in (
                 ("GET", "/api/serve/skills", {}),
                 ("GET", "/api/serve/skills/fixture/document", {}),
-                ("GET", "/api/capabilities/skills", {}),
                 ("POST", "/api/capabilities/skills/create", {"json": {}}),
                 ("POST", "/api/capabilities/skills/fixture/activate", {}),
                 ("DELETE", "/api/capabilities/skills/fixture", {}),
@@ -1223,6 +1225,10 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
                 response = await client.request(method, route, **kwargs)
                 self.assertEqual(response.status_code, 503, response.text)
                 self.assertEqual(response.json()["detail"], "update_maintenance")
+            # Installed-package browsing is passive; it never opens a runtime.
+            catalog = await client.get("/api/capabilities/skills")
+            self.assertEqual(catalog.status_code, 200, catalog.text)
+            self.assertEqual(catalog.json()["skills"], [])
         credentials.ensure.assert_not_awaited()
         public_skills.payload.assert_not_awaited()
         self.gateway.inspect.assert_not_awaited()

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import uvicorn
 from fastapi import APIRouter, FastAPI
 
-from service.platform.activity import Activities
+from service.platform.activity import Activities, ActivityPhase
 from service.platform.local import UNIX_SOCKET_FAMILY, local_listener
 from service.platform.server import ProductServer
 from service.platform.shutdown import Shutdown
@@ -114,6 +114,25 @@ class ShutdownContracts(unittest.IsolatedAsyncioTestCase):
                 await server.shutdown()
         drain.assert_not_awaited()
         domains.close.assert_not_called()
+
+    async def test_active_turns_stop_before_model_streams_disconnect(self):
+        server, domains = self.server(1)
+        actions = []
+
+        async def interrupt():
+            self.assertIs(server._activities.snapshot().phase, ActivityPhase.DRAINING)
+            actions.append("interrupted")
+
+        async def close_models():
+            self.assertEqual(actions, ["interrupted"])
+            actions.append("models-closed")
+
+        server._interrupt_running = interrupt
+        server._close_model_streams = close_models
+        with patch.object(uvicorn.Server, "shutdown", AsyncMock()):
+            await server.shutdown()
+        self.assertEqual(actions, ["interrupted", "models-closed"])
+        domains.close.assert_called_once()
 
     async def test_private_listener_preserves_shared_logging_configuration(self):
         names = ("uvicorn.error", "uvicorn.access", "uvicorn.asgi", "")

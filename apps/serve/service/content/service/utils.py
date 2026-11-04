@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import math
 import os
 import stat
 from collections.abc import Callable
@@ -28,6 +29,13 @@ WINDOWS_FILENAME_EXCED_RANGE = 206
 WINDOWS_PATH_NOT_FOUND = 3
 WINDOWS_MAX_PATH = 260
 WRITE_DENIED_ERRORS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+BIRTH_TIME_ATTRIBUTE = "st_birthtime"
+
+
+def creation_time(metadata: os.stat_result) -> float | None:
+    """Return native creation seconds, never a metadata-change timestamp."""
+    value = getattr(metadata, BIRTH_TIME_ATTRIBUTE, None)
+    return float(value) if value is not None and math.isfinite(value) and value > 0 else None
 
 
 def writable(parent: DirectoryHandle, name: str) -> bool:

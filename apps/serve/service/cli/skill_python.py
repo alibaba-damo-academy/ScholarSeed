@@ -25,6 +25,8 @@ EXIT_FAILURE = 1
 EXIT_USAGE = 2
 DIAGNOSTIC_ARGUMENT = "--diagnostic-v1"
 DIAGNOSTIC_EVENT = "launcher_ready"
+UTF8_ARGUMENTS = ("-X", "utf8")
+UTF8_ENVIRONMENT = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
 VERSION_ARGUMENTS = (["--version"], ["-V"])
 PRODUCT_PYTHON_RESERVED = "product_python_reserved_for_bundled_skills"
@@ -91,12 +93,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, OSError, httpx.HTTPError) as error:
         print(f"Skill unavailable: {error}", file=sys.stderr)
         return EXIT_FAILURE
-    command = [sys.executable, "-B", *arguments]
+    # These scripts exchange UTF-8 product data. Interpreter flags do not
+    # survive re-exec; the environment also protects their Python descendants.
+    command = [sys.executable, "-B", *UTF8_ARGUMENTS, *arguments]
+    environment = {**os.environ, **UTF8_ENVIRONMENT}
     if sys.platform == "win32":
         # CRT exec does not preserve argv quoting or POSIX process replacement.
         # Keep the launcher alive until the actual interpreter has exited.
-        return subprocess.run(command, executable=sys.executable, check=False).returncode
-    os.execv(sys.executable, command)
+        return subprocess.run(
+            command, executable=sys.executable, env=environment, check=False
+        ).returncode
+    os.execve(sys.executable, command, environment)
     return 0
 
 

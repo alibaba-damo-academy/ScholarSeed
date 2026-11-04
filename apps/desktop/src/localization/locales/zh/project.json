@@ -47,6 +47,7 @@
     "project_creation_recovery_required": "项目创建需要恢复，请查看下方未完成记录。"
   },
   "notices": {
+    "removeFailed": "未能移除项目（{{code}}），请确认原因后重试。",
     "archivesReadFailed": "无法读取已归档的项目，请重试。",
     "renamed": "已改名（本地目录名不变）",
     "archived": "已归档，项目从默认列表收起，可随时在归档区恢复",

@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from scholarseed_codex.admission import NativeQuiescence
 from scholarseed_codex.command import _finish
 from scholarseed_codex.configuration import MCP_NATIVE_ENABLED, NativeMcpConfiguration
 from scholarseed_codex.environment import CODEX_HOME_ENV
@@ -51,7 +50,6 @@ class _HostApplication:
     generation: int = 0
     applied_revision: int = MCP_UNAPPLIED_REVISION
     inventory: NativeMcpInventory = field(default_factory=NativeMcpInventory)
-    quiescence_wait: tuple[int, int, int, tuple[str, ...]] | None = None
 
 
 class McpCoordinator:
@@ -370,26 +368,6 @@ class McpCoordinator:
             except asyncio.TimeoutError:
                 pass
 
-    @staticmethod
-    def _observe_quiescence_wait(
-        host_id: str, entry: _HostApplication, configuration: NativeMcpConfiguration
-    ) -> None:
-        state = (
-            entry.host.process_generation,
-            configuration.revision,
-            entry.host.admission.active,
-            entry.host.configuration_blockers,
-        )
-        if entry.quiescence_wait == state:
-            return
-        entry.quiescence_wait = state
-        logger.info(
-            "mcp_configuration_quiescence_wait host_id=%s generation=%s revision=%s "
-            "admission_active=%s local_blockers=%s",
-            host_id,
-            *state,
-        )
-
     async def _apply(self, configuration: NativeMcpConfiguration) -> bool:
         schedule_epoch = self._schedule_epoch
         async with self._publication:
@@ -407,49 +385,42 @@ class McpCoordinator:
                 and entry.generation == entry.host.process_generation
                 and entry.host.readiness.ready
             ):
-                entry.quiescence_wait = None
-                continue
-            if entry.host.admission.active:
-                self._observe_quiescence_wait(host_id, entry, configuration)
-                complete = False
                 continue
             if entry.host.pid is None:
-                entry.quiescence_wait = None
                 continue
-            admission = entry.host.admission
-            admission.freeze(configuration.revision)
+            generation = entry.host.process_generation
             try:
-                ticket = await entry.host.configuration_quiescence(configuration.revision)
-                if (
-                    self._hosts.get(host_id) is not entry
-                    or self._desired != configuration
-                    or schedule_epoch != self._schedule_epoch
-                ):
-                    return False
-                if ticket is None:
-                    self._observe_quiescence_wait(host_id, entry, configuration)
-                    complete = False
-                    continue
-                entry.quiescence_wait = None
+                entry.host.admission.require_healthy()
                 if not entry.host.mcp_launch_matches(configuration.environment):
                     entry.inventory = NativeMcpInventory(
                         safe_error=MCP_ENVIRONMENT_RESTART_REQUIRED
                     )
                     continue
-                await entry.host.reload_mcp(ticket)
+                await entry.host.reload_mcp(generation)
                 if (
                     self._hosts.get(host_id) is not entry
                     or self._desired != configuration
                     or schedule_epoch != self._schedule_epoch
+                    or entry.host.process_generation != generation
                     or self._closed
                 ):
                     return False
-                entry.generation = entry.host.process_generation
+                logger.info(
+                    "mcp_host_reload_acknowledged host_id=%s generation=%s revision=%s "
+                    "admission_active=%s",
+                    host_id,
+                    generation,
+                    configuration.revision,
+                    entry.host.admission.active,
+                )
+                entry.generation = generation
                 entry.applied_revision = configuration.revision
                 entry.inventory = NativeMcpInventory()
             except asyncio.CancelledError:
                 raise
             except Exception as error:
+                if entry.host.process_generation != generation:
+                    return False
                 logger.exception(
                     "mcp_host_apply_failed host_id=%s revision=%s exception_type=%s",
                     host_id,
@@ -464,9 +435,6 @@ class McpCoordinator:
                         else MCP_APPLICATION_FAILED
                     )
                 )
-            finally:
-                if admission.frozen(admission.desired_revision):
-                    admission.applied(admission.desired_revision)
         return complete
 
     async def aclose(self) -> None:

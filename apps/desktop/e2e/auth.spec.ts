@@ -2,8 +2,10 @@ import { readFileSync, readdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
+import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from '../src/window'
 import { DesktopSession, enterWorkbenchShell } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
+import { openAccountMenu as openProductAccountMenu } from './fixtures/menu'
 import {
   adoptSeededAuth,
   authStatusPayload,
@@ -70,8 +72,8 @@ const REFRESH_FILE_SUFFIX = 'enc'
 const avatarLabel = (name: string): string => `${name} 的头像`
 
 async function openAccountMenu(page: Page): Promise<void> {
-  await page.getByTestId(ACTIVITY_ACCOUNT_TEST_ID).click()
-  await expect(page.getByTestId(ACCOUNT_MENU_TEST_ID)).toBeVisible()
+  // This suite has no native content surface, so the negotiated menu is inline.
+  expect(await openProductAccountMenu(page)).toBe(page)
 }
 
 /**
@@ -269,8 +271,15 @@ test.describe('authenticated', () => {
         await expect(page.getByTestId(MENU_CREDITS_VALUE_TEST_ID)).toHaveText(
           scenario.credits === 998730 ? '998,730' : '999,999,999,999,999'
         )
-        for (const width of [1280, 480]) {
-          await page.setViewportSize({ width, height: 900 })
+        for (const size of [WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM]) {
+          await page.keyboard.press('Escape')
+          await expect(menu).toHaveCount(0)
+          await desktop.app!.evaluate(({ BrowserWindow }, size) => {
+            const window = BrowserWindow.getAllWindows().find(window => !window.isDestroyed())!
+            window.setSize(size.width, size.height)
+          }, size)
+          // Measure a fresh menu against its actual native window and anchor.
+          await openAccountMenu(page)
           await expect.poll(() => menu.evaluate(element => {
             const panel = element
             const bounds = panel.getBoundingClientRect()
@@ -329,6 +338,10 @@ test.describe('authenticated', () => {
       // 才是主路径，本用例断言的就是它。
 
       // 身份随 scholarseed:auth-required 广播清空，菜单回到未登录形态。
+      await expect(page.getByTestId(ACTIVITY_ACCOUNT_TEST_ID)).toHaveAttribute(
+        'aria-label', avatarLabel(DEFAULT_DISPLAY_NAME)
+      )
+      await openAccountMenu(page)
       await expect(page.getByTestId(MENU_ANONYMOUS_LOGIN_TEST_ID)).toContainText(ANONYMOUS_LOGIN_LABEL)
       await expect(page.getByTestId(MENU_NAME_TEST_ID)).toHaveCount(0)
       await expect(page.getByTestId(MENU_CREDITS_TEST_ID)).toHaveCount(0)

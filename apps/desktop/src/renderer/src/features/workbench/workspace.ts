@@ -111,6 +111,8 @@ export interface DocumentTab {
   /** Viewer-owned, immutable reading state; independent of the shared document bytes. */
   viewState?: Readonly<Record<string, unknown>>
   embedded?: boolean
+  hostTabId?: string
+  activeInHost?: boolean
 }
 
 export function documentNavigationView(
@@ -420,6 +422,7 @@ export class DocumentWorkspace {
   }
 
   private readonly listeners = new Set<() => void>()
+  private pageTabIds = new Set<string>()
   private nextId = 1
   private readonly saveDelegates = new Map<string, Map<symbol, DocumentSaveDelegate>>()
   private readonly saves = new Map<string, PendingSave>()
@@ -449,13 +452,149 @@ export class DocumentWorkspace {
     return () => this.listeners.delete(listener)
   }
 
+  tabLocation(tabId: string): FocusedLeaf | null {
+    return this.locationForTab(tabId)
+  }
+
+  pageTabsInLeaf(tabId: string): readonly string[] {
+    const location = this.locationForTab(tabId)
+    return location
+      ? (findLeaf(this.state.layout.areas[location.area], location.leafId)?.tabIds ?? []).filter(
+          (id) => !this.state.tabs[id]?.embedded
+        )
+      : []
+  }
+
+  openPageTab(tabId: string, leafId?: string): boolean {
+    if (this.state.tabs[tabId]) return false
+    const target = leafId
+      ? (['primary', 'secondary'] as const).flatMap((area) =>
+          findLeaf(this.state.layout.areas[area], leafId) ? [{ area, leafId }] : []
+        )[0]
+      : (this.locationForTab(tabId) ?? this.openTarget())
+    if (!target) return false
+    this.pageTabIds.add(tabId)
+    const location = this.locationForTab(tabId)
+    const layout =
+      location?.leafId === target.leafId
+        ? activateTab(this.state.layout, target.leafId, tabId)
+        : placeTab(this.state.layout, tabId, target.area, target.leafId, 'center', () =>
+            this.id('pane')
+          )
+    this.publish({ ...this.state, layout, focusedTabId: tabId, focusedLeaf: target })
+    return true
+  }
+
+  synchronizePageTabs(tabIds: readonly string[]): void {
+    const next = new Set(tabIds)
+    let layout = this.state.layout
+    let tabs = this.state.tabs
+    const removedPages = new Set<string>()
+    for (const tabId of this.pageTabIds) {
+      if (!next.has(tabId)) {
+        removedPages.add(tabId)
+        layout = removeTabFromLayout(layout, tabId)
+      }
+    }
+    for (const tab of Object.values(tabs)) {
+      if (tab.hostTabId && removedPages.has(tab.hostTabId)) {
+        tabs = {
+          ...tabs,
+          [tab.id]: { ...tab, embedded: false, hostTabId: undefined, activeInHost: undefined },
+        }
+      }
+    }
+    this.pageTabIds = next
+    const target = this.openTarget()
+    for (const tabId of tabIds) {
+      if (this.locationForTabInLayout(layout, tabId)) continue
+      const leaf =
+        findLeaf(layout.areas[target.area], target.leafId) ?? firstLeaf(layout.areas[target.area])
+      const activeTabId = leaf.activeTabId
+      layout = placeTab(layout, tabId, target.area, leaf.id, 'center', () => this.id('pane'))
+      if (activeTabId) layout = activateTab(layout, leaf.id, activeTabId)
+    }
+    if (layout === this.state.layout) return
+    const previous = this.state.focusedLeaf
+    const leaf = previous ? findLeaf(layout.areas[previous.area], previous.leafId) : null
+    const fallback =
+      leaf ??
+      firstLeaf(nodeTabCount(layout.areas.primary) ? layout.areas.primary : layout.areas.secondary)
+    const focusedTabId =
+      this.state.focusedTabId && this.locationForTabInLayout(layout, this.state.focusedTabId)
+        ? this.state.focusedTabId
+        : fallback.activeTabId
+    this.publish({
+      ...this.state,
+      tabs,
+      layout,
+      focusedTabId,
+      focusedLeaf: focusedTabId ? this.locationForTabInLayout(layout, focusedTabId) : null,
+    })
+  }
+
+  splitPageTab(tabId: string, newTabId: string, direction: TabSplitDirection): boolean {
+    if (this.state.tabs[newTabId] || this.pageTabIds.has(newTabId)) return false
+    if (!this.pageTabIds.has(tabId) || !this.canSplitTab(tabId, direction, false)) return false
+    const target = this.locationForTab(tabId)!
+    const layout = placeTab(
+      this.state.layout,
+      newTabId,
+      target.area,
+      target.leafId,
+      direction,
+      () => this.id('pane')
+    )
+    if (layout === this.state.layout) return false
+    this.pageTabIds.add(newTabId)
+    this.publish({
+      ...this.state,
+      layout,
+      focusedTabId: newTabId,
+      focusedLeaf: this.locationForTabInLayout(layout, newTabId),
+    })
+    return true
+  }
+
   setTabEmbedded(tabId: string, embedded: boolean): void {
     const tab = this.state.tabs[tabId]
     if (!tab || Boolean(tab.embedded) === embedded) return
-    this.publish({ ...this.state, tabs: { ...this.state.tabs, [tabId]: { ...tab, embedded } } })
+    this.publish({
+      ...this.state,
+      tabs: {
+        ...this.state.tabs,
+        [tabId]: {
+          ...tab,
+          embedded,
+          hostTabId: embedded ? tab.hostTabId : undefined,
+          activeInHost: embedded ? tab.activeInHost : undefined,
+        },
+      },
+    })
   }
 
   private publish(next: DocumentWorkspaceState): void {
+    const focusedTab = next.focusedTabId ? next.tabs[next.focusedTabId] : null
+    const pageId = focusedTab?.hostTabId
+    if (pageId && this.pageTabIds.has(pageId) && focusedTab?.embedded) {
+      const location = this.locationForTabInLayout(next.layout, pageId)
+      if (location) {
+        next = {
+          ...next,
+          tabs: Object.fromEntries(
+            Object.entries(next.tabs).map(([id, tab]) => [
+              id,
+              tab.hostTabId === pageId && tab.embedded
+                ? { ...tab, activeInHost: id === focusedTab.id }
+                : tab,
+            ])
+          ),
+          layout: activateTab(next.layout, location.leafId, pageId),
+          focusedTabId: pageId,
+          focusedLeaf: location,
+        }
+      }
+    }
     const previousFocusedTabId = this.state.focusedTabId
     this.state = next
     for (const listener of this.listeners) listener()
@@ -724,10 +863,10 @@ export class DocumentWorkspace {
     title = titleFor(source.path),
     area?: DockArea,
     titleFallback?: DocumentTab['titleFallback'],
-    options: Pick<DocumentTab, 'embedded'> = {}
+    options: Pick<DocumentTab, 'embedded' | 'hostTabId'> = {}
   ): Promise<string> {
-    const documentId = documentIdFor(source)
-    const pending = this.openings.get(documentId)
+    const openingKey = JSON.stringify([documentIdFor(source), options.hostTabId ?? null])
+    const pending = this.openings.get(openingKey)
     if (pending) {
       let tabId = await pending
       const tab = this.state.tabs[tabId]
@@ -762,13 +901,13 @@ export class DocumentWorkspace {
       return tabId
     }
     const opening = this.openDocument(source, viewKind, title, area, titleFallback, options)
-    this.openings.set(documentId, opening)
+    this.openings.set(openingKey, opening)
     try {
       const tabId = await opening
       if (!options.embedded) this.setTabEmbedded(tabId, false)
       return tabId
     } finally {
-      if (this.openings.get(documentId) === opening) this.openings.delete(documentId)
+      if (this.openings.get(openingKey) === opening) this.openings.delete(openingKey)
     }
   }
 
@@ -778,7 +917,7 @@ export class DocumentWorkspace {
     title: string,
     area?: DockArea,
     titleFallback?: DocumentTab['titleFallback'],
-    options: Pick<DocumentTab, 'embedded'> = {}
+    options: Pick<DocumentTab, 'embedded' | 'hostTabId'> = {}
   ): Promise<string> {
     const documentId = documentIdFor(source)
     const existingSession = this.sessionFor(source)
@@ -800,6 +939,7 @@ export class DocumentWorkspace {
     const existingTab = Object.values(this.state.tabs).find(
       (tab) =>
         tab.sessionId === sessionId &&
+        (!options.hostTabId || (tab.embedded && tab.hostTabId === options.hostTabId)) &&
         (tab.viewKind === requestedViewKind || existingSession?.viewer === 'markdown') &&
         targetLeaf?.tabIds.includes(tab.id)
     )
@@ -1031,7 +1171,7 @@ export class DocumentWorkspace {
     titleFallback: DocumentTab['titleFallback'] | undefined,
     target: { area: DockArea; leafId: string },
     loaded: DocumentLoadResult,
-    options: Pick<DocumentTab, 'embedded'>
+    options: Pick<DocumentTab, 'embedded' | 'hostTabId'>
   ): string {
     if (isDocumentLoadFailure(loaded)) {
       const tab: DocumentTab = {
@@ -1843,6 +1983,10 @@ export class DocumentWorkspace {
   }
 
   async moveTab(tabId: string, area: DockArea, leafId: string, edge: DropEdge): Promise<boolean> {
+    if (this.pageTabIds.has(tabId)) {
+      const layout = placeTab(this.state.layout, tabId, area, leafId, edge, () => this.id('pane'))
+      return layout !== this.state.layout && this.publishRelocatedTab(tabId, layout)
+    }
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
     if (
@@ -1859,17 +2003,15 @@ export class DocumentWorkspace {
 
   canMoveTab(tabId: string, direction: AdjacentDirection): boolean {
     const location = this.locationForTab(tabId)
-    const tab = this.state.tabs[tabId]
-    const session = tab ? this.state.sessions[tab.sessionId] : null
     return Boolean(
-      session &&
-      viewerPolicy(session.viewer).canMove &&
+      this.canRelocateTab(tabId) &&
       location &&
       adjacentLeaf(this.state.layout, location.area, location.leafId, direction)
     )
   }
 
   canRelocateTab(tabId: string): boolean {
+    if (this.pageTabIds.has(tabId)) return true
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
     return Boolean(session && viewerPolicy(session.viewer).canMove)
@@ -1885,9 +2027,7 @@ export class DocumentWorkspace {
 
   moveTargetsForTab(tabId: string): AdjacentLeaf[] {
     const location = this.locationForTab(tabId)
-    const tab = this.state.tabs[tabId]
-    const session = tab ? this.state.sessions[tab.sessionId] : null
-    return location && session && viewerPolicy(session.viewer).canMove
+    return location && this.canRelocateTab(tabId)
       ? moveTargets(this.state.layout, location.area, location.leafId)
       : []
   }
@@ -1905,13 +2045,7 @@ export class DocumentWorkspace {
       return this.reorderTab(tabId, targetTabId, insertion)
     }
     const tab = this.state.tabs[tabId]
-    const session = tab ? this.state.sessions[tab.sessionId] : null
-    if (
-      !tab ||
-      !session ||
-      !viewerPolicy(session.viewer).canMove ||
-      !(await this.refreshBeforeRelocation(tab))
-    )
+    if (!this.canRelocateTab(tabId) || (tab && !(await this.refreshBeforeRelocation(tab))))
       return false
     const target = this.locationForTab(targetTabId)
     if (!target) return false
@@ -1933,7 +2067,22 @@ export class DocumentWorkspace {
   private publishRelocatedTab(tabId: string, layout: DockLayout): boolean {
     const tab = this.state.tabs[tabId]
     const focusedLeaf = this.locationForTabInLayout(layout, tabId)
-    if (!tab || !focusedLeaf) return false
+    if ((!tab && !this.pageTabIds.has(tabId)) || !focusedLeaf) return false
+    if (this.pageTabIds.has(tabId)) {
+      for (const preview of Object.values(this.state.tabs)) {
+        if (preview.embedded && preview.hostTabId === tabId) {
+          layout = placeTab(
+            layout,
+            preview.id,
+            focusedLeaf.area,
+            focusedLeaf.leafId,
+            'center',
+            () => this.id('pane')
+          )
+        }
+      }
+      layout = activateTab(layout, focusedLeaf.leafId, tabId)
+    }
     const leaf = findLeaf(layout.areas[focusedLeaf.area], focusedLeaf.leafId)
     const tabs = { ...this.state.tabs }
     const selectionPresentations = { ...this.state.selectionPresentations }
@@ -1941,7 +2090,11 @@ export class DocumentWorkspace {
       const candidate = tabs[candidateId]
       if (
         candidateId !== tabId &&
-        candidate?.sessionId === tab.sessionId &&
+        tab &&
+        candidate &&
+        candidate.sessionId === tab.sessionId &&
+        candidate.hostTabId === tab.hostTabId &&
+        Boolean(candidate.embedded) === Boolean(tab.embedded) &&
         candidate.viewKind === tab.viewKind
       ) {
         delete tabs[candidateId]
@@ -1964,9 +2117,7 @@ export class DocumentWorkspace {
     if (tabId === targetTabId) return false
     const source = this.locationForTab(tabId)
     const target = this.locationForTab(targetTabId)
-    const tab = this.state.tabs[tabId]
-    const session = tab ? this.state.sessions[tab.sessionId] : null
-    if (!session || !viewerPolicy(session.viewer).canMove) return false
+    if (!this.canRelocateTab(tabId)) return false
     if (!source || !target || source.area !== target.area || source.leafId !== target.leafId)
       return false
     const layout = reorderTabInLeaf(
@@ -1987,7 +2138,8 @@ export class DocumentWorkspace {
     if (!location) return false
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
-    if (!session || !viewerPolicy(session.viewer).canSplit) return false
+    if (!this.pageTabIds.has(tabId) && (!session || !viewerPolicy(session.viewer).canSplit))
+      return false
     const leaf = findLeaf(this.state.layout.areas[location.area], location.leafId)
     if (!leaf || (move && leaf.tabIds.length < 2)) return false
     // A duplicated projection has an identity outside the current tab catalog.
@@ -2044,6 +2196,13 @@ export class DocumentWorkspace {
         return
       }
       if (node.activeTabId && this.state.tabs[node.activeTabId]) visible.add(node.activeTabId)
+      if (node.activeTabId && this.pageTabIds.has(node.activeTabId)) {
+        for (const tabId of node.tabIds) {
+          const tab = this.state.tabs[tabId]
+          if (tab?.embedded && tab.hostTabId === node.activeTabId && tab.activeInHost)
+            visible.add(tabId)
+        }
+      }
     }
     visit(this.state.layout.areas.primary)
     visit(this.state.layout.areas.secondary)
@@ -2245,7 +2404,8 @@ export class DocumentWorkspace {
     )
     const previousFocusedArea = this.state.focusedLeaf?.area
     const fallbackLeaf = previousFocusedArea
-      ? firstLeaf(layout.areas[previousFocusedArea])
+      ? (findLeaf(layout.areas[previousFocusedArea], this.state.focusedLeaf!.leafId) ??
+        firstLeaf(layout.areas[previousFocusedArea]))
       : firstLeaf(layout.areas.primary)
     const focusedTab =
       this.state.focusedTabId && discardedTabIds.has(this.state.focusedTabId)
@@ -2443,7 +2603,8 @@ export class DocumentWorkspace {
   async saveFocused(): Promise<boolean> {
     const tab = this.state.focusedTabId ? this.state.tabs[this.state.focusedTabId] : undefined
     const session = tab ? this.state.sessions[tab.sessionId] : undefined
-    if (!session || !session.dirty || !session.capabilities.can_save) return true
+    // Ordinary save prepares any editor-local changes before checking dirtiness.
+    if (!session || !session.capabilities.can_save) return true
     return this.save(session.id)
   }
 
@@ -2713,16 +2874,19 @@ export class DocumentWorkspace {
     let layout = removeTabFromLayout(this.state.layout, tabId)
     const previousFocusedArea = this.state.focusedLeaf?.area
     const fallbackLeaf = previousFocusedArea
-      ? firstLeaf(layout.areas[previousFocusedArea])
+      ? (findLeaf(layout.areas[previousFocusedArea], this.state.focusedLeaf!.leafId) ??
+        firstLeaf(layout.areas[previousFocusedArea]))
       : firstLeaf(layout.areas.primary)
     const focusedTabId =
       this.state.focusedTabId === tabId
-        ? fallbackTabForView(
-            tabs,
-            sessions,
-            fallbackLeaf.activeTabId,
-            documentNavigationView(tab, this.state.sessions[tab.sessionId])
-          )
+        ? fallbackLeaf.activeTabId && this.pageTabIds.has(fallbackLeaf.activeTabId)
+          ? fallbackLeaf.activeTabId
+          : fallbackTabForView(
+              tabs,
+              sessions,
+              fallbackLeaf.activeTabId,
+              documentNavigationView(tab, this.state.sessions[tab.sessionId])
+            )
         : this.state.focusedTabId
     const fallbackLocation = focusedTabId ? this.locationForTabInLayout(layout, focusedTabId) : null
     if (fallbackLocation && focusedTabId) {

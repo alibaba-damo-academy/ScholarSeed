@@ -11,6 +11,8 @@
     ]
   },
   "include": [
+    "scripts/recovery.ts",
+    "scripts/recovery.test.ts",
     "src/main/**/*",
     "src/attention.ts",
     "src/preload/**/*",

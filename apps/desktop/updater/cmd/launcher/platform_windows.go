@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"syscall"
@@ -11,6 +12,10 @@ import (
 
 var kernel = syscall.NewLazyDLL("kernel32.dll")
 var user = syscall.NewLazyDLL("user32.dll")
+
+func prepareWindow(messages map[string]handoff.StartupMessages, prepare func(context.Context, func(handoff.BootstrapProgress)) (handoff.BootstrapResult, error)) (handoff.BootstrapResult, error) {
+	return handoff.PrepareWindow(uiMessages(messages), prepare)
+}
 
 func uiMessages(messages map[string]handoff.StartupMessages) handoff.StartupMessages {
 	language, _, _ := kernel.NewProc("GetUserDefaultUILanguage").Call()

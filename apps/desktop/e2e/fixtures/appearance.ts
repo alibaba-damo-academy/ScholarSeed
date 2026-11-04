@@ -4,9 +4,8 @@ import assert from 'node:assert/strict'
 const CENTER_SELECTORS = {
   create: '[data-testid="home-project-create-top"]',
   projects: '#home-projects-heading',
-  tasks: '#home-tasks-heading',
   project: '[data-testid="home-projects-grid"] > :first-child',
-  emptyTasks: '[data-testid="home-tasks-empty"]',
+  welcome: '[data-testid="project-center"] h1',
 }
 const FORM_SELECTORS = {
   dialog: '[data-testid="project-new-modal"]',

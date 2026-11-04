@@ -414,6 +414,18 @@ class CodexProcessHost:
             revision, self._generation, self._activity_revision, self.admission.epoch
         )
         if not self.configuration_quiescence_current(ticket):
+            LOGGER.warning(
+                "codex_configuration_not_quiescent stage=local generation=%s "
+                "process_state=%s admission_active=%s rpc_unsettled=%s "
+                "pending_hil=%s pending_tools=%s local_blockers=%s",
+                self._generation,
+                self.state.value,
+                self.admission.active,
+                self._rpc_requests.unsettled(self._generation),
+                len(self._pending_hil),
+                len(self._pending_tools),
+                self.configuration_blockers,
+            )
             return None
         activity = await NativeActivity(self, known_roots=self.known_roots).inspect()
         for thread_id in activity.loaded_thread_ids:
@@ -427,19 +439,35 @@ class CodexProcessHost:
             or activity.process_generation != ticket.process_generation
             or not self.configuration_quiescence_current(ticket)
         ):
+            LOGGER.warning(
+                "codex_configuration_not_quiescent stage=native generation=%s "
+                "complete=%s blockers=%s loaded_threads=%s known_roots=%s "
+                "activity_revision=%s expected_activity_revision=%s epoch=%s expected_epoch=%s",
+                self._generation,
+                activity.complete,
+                activity.blockers,
+                len(activity.loaded_thread_ids),
+                len(self.known_roots),
+                self._activity_revision,
+                ticket.activity_revision,
+                self.admission.epoch,
+                ticket.admission_epoch,
+            )
             return None
         return ticket
 
-    async def reload_mcp(self, ticket: NativeQuiescence) -> None:
-        if not self.configuration_quiescence_current(ticket):
+    async def reload_mcp(self, generation: int) -> None:
+        if (
+            self._closed
+            or self.state is not CodexProcessState.READY
+            or generation != self._generation
+        ):
             raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
         for state in self._threads.values():
             if state.mcp_invalidate is not None:
                 state.mcp_invalidate()
         try:
-            await self._request_connected(
-                MCP_RELOAD_METHOD, None, generation=ticket.process_generation
-            )
+            await self._request_connected(MCP_RELOAD_METHOD, None, generation=generation)
         finally:
             for state in self._threads.values():
                 if state.mcp_invalidate is not None:

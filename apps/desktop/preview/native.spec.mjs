@@ -7,6 +7,7 @@ import { createServer } from 'vite'
 import { buildPdfe, pdfeEnvironment } from '../scripts/dev/pdfe.mjs'
 import { PREVIEW_CATALOG } from './catalog.ts'
 import { PREVIEW_HOME } from './home.ts'
+import { PREVIEW_ARCHIVE } from './archive.ts'
 import { previewConsumption } from './coverage.ts'
 import { parsePdfeManifest, PDFE_CONTROL_SIZE, PDFE_DOCK_STEP, pdfeDockWidth } from '../src/pdfe.ts'
 import { WORKSPACE_WINDOW_SIZE } from '../src/window.ts'
@@ -85,6 +86,34 @@ async function reloadCenter(action) {
     action(),
   ])
   await expect(product.getByTestId('project-center')).toBeVisible()
+}
+
+for (const mode of ['single', 'batch']) {
+  test(`archives project ${mode} deletion preserves the failure reason and allows retry`, { annotation: [
+    { type: INITIAL_TARGET_ANNOTATION, description: JSON.stringify({ pageId: 'settings-archives', sceneId: 'settings-archives-write-failed' }) },
+    previewConsumption('settings-archives', 'settings-archives-write-failed', ['error', 'retried', 'deleted']),
+  ] }, async ({}, testInfo) => {
+    const remove = product.locator('[data-testid^="account-archived-delete-"]').first()
+    await expect(remove).toBeVisible()
+    const identifier = await remove.getAttribute('data-testid')
+    const row = product.getByTestId(identifier.replace('account-archived-delete-', 'account-archived-'))
+    if (mode === 'batch') {
+      await product.getByTestId('account-archived-select-all').click()
+      await product.getByTestId('account-archived-batch-delete').click()
+    } else {
+      await remove.click()
+    }
+    const dialog = product.getByRole('alertdialog')
+    await dialog.getByTestId('account-archived-delete-confirm').click()
+    await expect(dialog).not.toBeVisible()
+    await expect(product.getByText(`未能移除项目（${PREVIEW_ARCHIVE.writeFailure}），请确认原因后重试。`, { exact: true })).toBeVisible()
+    await expect(product.getByText('操作失败（unknown_project）', { exact: true })).toHaveCount(0)
+    await expect(row).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('deletion-failure.png') })
+    await row.getByTestId(identifier).click()
+    await dialog.getByTestId('account-archived-delete-confirm').click()
+    await expect(row).toHaveCount(0)
+  })
 }
 
 test('literature grid surfaces cover every configured column when horizontally scrolled', { annotation: { type: INITIAL_TARGET_ANNOTATION, description: JSON.stringify({ pageId: 'page-literature', sceneId: 'library-populated' }) } }, async () => {

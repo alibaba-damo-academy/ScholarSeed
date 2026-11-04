@@ -164,7 +164,7 @@ SERVICE_PLAN_TOOL = RuntimeServiceTool(
         "Arguments are flat: never add a request wrapper or operation=write. "
         "First use operation=get alone for the current plan, revision, turn_id and transitions. "
         "Every mutation requires plan_id, expected_revision, request_id and turn_id at top level. "
-        "For execution use start/finish/pause/block/fail/partial with step_ids:[id,...]. "
+        "For execution use start/finish/pause/block/fail/partial/reconcile with step_ids:[id,...]. "
         "Start BEFORE work; finish only AFTER the started work actually completes. "
         "Pause for a user checkpoint and start again before processing its result. "
         "Execution actions never take items or status fields. "
@@ -175,7 +175,10 @@ SERVICE_PLAN_TOOL = RuntimeServiceTool(
         "For update, preserve root ids, content and order and existing parent links. "
         "Use revise with a reason only for actual scope/structure changes, not to bypass errors. "
         "Start each leaf in_progress BEFORE doing its work; complete it only afterwards. "
-        "Never complete pending leaves in a batch or backdate execution. Keep ids when renaming. "
+        "Never use finish on pending leaves or backdate execution. Keep ids when renaming. "
+        "If work already completed without a start, verify the result and use reconcile for those "
+        "unstarted leaves with a reason stating observed completion evidence. It records completion "
+        "without inventing starts or execution time. Block only for an actual obstacle. "
         "Parents aggregate children; parallel leaves can run together. "
         "Declare kind=group for containers, not executable work. Refine concrete child steps "
         "before their work and start those leaves. Do not turn a group into a step. "
@@ -233,7 +236,7 @@ async def execute_service_tool(
                 "error": "bridge_invalid_parameters",
                 "invalid_parameters": ["action"],
                 "tool_schema": SERVICE_PLAN_TOOL.input_schema,
-                "next_action": "Use operation=start/finish/pause/block/fail/partial, not a separate action field.",
+                "next_action": "Use operation=start/finish/pause/block/fail/partial/reconcile, not a separate action field.",
             }
         endpoint = (
             "get"

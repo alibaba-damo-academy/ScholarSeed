@@ -1,3 +1,5 @@
+import { restoreBrowser } from './fixtures/browser'
+import { openAccountSettings } from './fixtures/menu'
 import { test, expect } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
@@ -21,7 +23,7 @@ test('real Agent lists a page hosted inside the Desktop browser', async ({}, tes
       await startupPage.addLocatorHandler(startupPage.getByRole('button', { name, exact: true }), async button => { await button.click() })
     }
     const page = await launching
-    await page.getByTestId('activity-browser').click()
+    await restoreBrowser(page)
     const address = page.getByRole('textbox', { name: '网址', exact: true })
     await address.fill(PUBLIC_PAGE)
     await address.press('Enter')
@@ -29,8 +31,7 @@ test('real Agent lists a page hosted inside the Desktop browser', async ({}, tes
       const result = await page.evaluate(() => window.scholarseed.browser.snapshot())
       return result.ok && result.snapshot.tabs.some(tab => tab.url.startsWith(PUBLIC_PAGE))
     }, { timeout: 45_000 }).toBe(true)
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
+    await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     const agentUse = page.getByTestId('browser-settings-agent-sites').getByRole('switch', { name: 'Agent Browser Use' })
     await expect(agentUse).not.toBeChecked()

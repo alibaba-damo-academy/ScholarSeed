@@ -13,6 +13,10 @@ import {
 } from 'node:fs'
 import { dirname } from 'node:path'
 
+export interface QualifiedRecordConsumer {
+  consume(path: string, expected: Buffer, device: string, inode: string): void
+}
+
 /** Read one stable regular-file record without an unbounded allocation. */
 export function readRecord(path: string, maxBytes: number): Buffer {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new RangeError('Invalid record limit')

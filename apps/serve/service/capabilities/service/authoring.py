@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from service.capabilities.service.dependencies import declaration
 from service.capabilities.service.descriptor import (
     ComponentValidationError,
     PluginDescriptor,
@@ -15,7 +14,7 @@ from service.capabilities.service.descriptor import (
     plugin_contract,
     validate_component_value,
 )
-from service.capabilities.service.package import digest, read_package
+from service.capabilities.service.package import declaration, digest, read_package
 from service.platform.bridge import (
     BRIDGE_REQUESTS,
     CONTRACT_CAPABILITY,

@@ -116,6 +116,7 @@ export interface ActivityItem {
  * 这样"这份文件能不能编辑"只有一处答案，UI 不会给出点了没反应的按钮。
  */
 export interface ViewerPlugin {
+  dockable?: boolean
   /** 与后端 `ViewerKind` 同名，例如 markdown / pdf / table / code / docx。 */
   kind: string
   /** viewer 自带完整工具栏时，由 viewer 接管工作台顶部区域。 */
@@ -419,7 +420,8 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
       assistantSources.push(source)
     }
     for (const component of module.publicComponents ?? []) {
-      if (publicComponents.has(component.slot)) throw new Error(`Duplicate public component: ${component.slot}`)
+      if (publicComponents.has(component.slot))
+        throw new Error(`Duplicate public component: ${component.slot}`)
       publicComponents.set(component.slot, component)
     }
     for (const card of module.displayCards ?? []) {

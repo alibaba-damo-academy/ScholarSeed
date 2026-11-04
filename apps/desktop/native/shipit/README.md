@@ -113,8 +113,10 @@ already-running target needs no additional launch. Launch request acceptance is
 persisted in the failure record; request failure retains launchd demand and retries.
 An interruption between launch acceptance and its journal write may repeat the
 ordinary NSWorkspace request, which reuses the existing application instance.
-Startup polls an installing observation for at most five seconds, then repeats all
-native evidence checks. Neither timeout nor helper absence grants admission.
+Startup polls installing and terminal-restoration observations for at most five
+seconds, then repeats all native evidence checks. A bound failure acknowledgement
+while a matching helper is alive is `restoring`, not permission to reopen data.
+Neither timeout nor helper absence grants admission.
 This records launch request acceptance, not product readiness or successful recovery.
 
 Desktop accepts an acknowledgement only after the matching user/root helper is
@@ -122,11 +124,14 @@ absent, validates its regular-file ownership and permissions, and compares its
 source/target identities with both the live request and the request frozen at the
 downloaded event. Missing or legacy unbound evidence never grants admission.
 Unresolved source-build launches exit before product storage publication, migration,
-windows or backend startup; they do not stay alive to display an update notice.
+windows or backend startup; a bounded OS notification does not retain the process.
+The Desktop admission owner reports redacted diagnostics through the macOS system
+logger with the `ScholarSeedStartup` message marker, without writing unadmitted Home.
 The trusted launch-context observation precedes mutable profile restoration, and
 context/handoff candidate and target-build binding is checked again after storage
-selection and asynchronous probing. An exception before admission exits without
-opening an error window. Context age and clock skew do not authorize deletion or
+selection and asynchronous probing. An update-related exception before admission
+exits without opening an error window; unrelated storage failures retain their
+native recovery UI. Context age and clock skew do not authorize deletion or
 default-profile fallback. An unrelated build or explicit conflicting selection
 preserves the context and refuses startup. A strictly newer build may restore a
 superseded context only after installed-version reconciliation, matching handoff
@@ -313,6 +318,190 @@ recording that failure may accept the same narrowly pinned owner transition; it
 never authorizes installation. Errors after target acquisition retain the existing
 rollback and recovery path. Unknown historical handoffs remain unconfirmed until
 native evidence proves their outcome; do not clear their state to resume service.
+
+## Durable terminal publication
+
+**current (source)**: newly created preparation records declare `terminalVersion`.
+After recovering and freshly verifying the original target, failure completion
+atomically commits an exact private publication in the Preparation journal before
+publishing the source-parent acknowledgement. The publication binds its version,
+source, target, failure target, candidate, directory, request binding and failure
+code. It is the terminal commit point; the cache acknowledgement is a compatible
+notification, not the only durable terminal authority. A failed notification still
+fails completion and cannot authorize application launch. A failed private save
+cannot publish the notification or launch, and does not promise zero disk writes.
+Uncertain journal synchronization or checked descriptor closure poisons the
+Preparation qualification for that process. A later copy/recovery attempt cannot
+reuse it; remaining qualification locks stay held until process exit. A new
+process must reopen and validate the actual complete on-disk state afresh.
+The tool bridge reads the Owner's typed uncertainty status immediately after an
+observation and retains its temporary pins before reporting `ERR_TERMINAL_RELEASE`;
+it must not release maintenance domains first or infer qualification from a
+generic I/O error. Querying that status does not close or repair qualification.
+
+New-protocol records without a committed publication cannot fall back to an ack.
+Malformed or unknown protocol/publication fields refuse rather than downgrading.
+Legacy records retain the original exact bound-ack requirement and are never
+automatically migrated when evidence is missing. A valid new publication must
+still freshly prove the original target restored. Historical candidate/directory
+captures remain bound; extant identities must match and known collection must be
+proved through the owning no-follow namespace checks, not inferred from a failed
+read. Permission failures or changed namespaces remain Unknown.
+
+While the failed record remains current, its same-source request cannot resume an
+old installation. An independently authorized new source may advance preparation;
+this is not a permanent replay ledger across all subsequent journal replacements.
+The original signature, online activation, binding and installation gates remain.
+
+**gap**: this source change does not replace an installed older helper, make a
+legacy orphan complete, prove notification delivery, or authorize Native record
+retirement. Controlled TS record recovery below still preserves Native evidence.
+An orphan whose legacy source/ack has disappeared requires a separately reviewed,
+explicitly authorized Native retirement protocol; clearing a journal or rebuilding
+an acknowledgement is not that protocol. Signed-source update acceptance remains
+independent of native contracts.
+
+## Read-only terminal recovery preflight
+
+**current (source)**: `scripts/recovery.ts` is a macOS-only stage-1 inspection
+entry. It correlates one retained launch context and Squirrel handoff with the
+existing native failure journal, acknowledgement, ShipIt state and pinned
+application/storage identities. It does not recover or consume that transaction.
+Windows does not build or execute this probe.
+
+Build and inspection are separate explicit commands, run from the repository root
+with the repository-supported Node. No command discovers a profile or installation
+by scanning user data:
+
+```sh
+node --experimental-transform-types apps/desktop/scripts/recovery.ts build \
+  --output "/absolute/private-parent/recovery-tool"
+
+node --experimental-transform-types apps/desktop/scripts/recovery.ts inspect \
+  --application "/absolute/installed/ScholarSeed.app" \
+  --coordinator "/absolute/existing/coordinator" \
+  --handoff "/absolute/existing/squirrel.json" \
+  --native-state "/absolute/existing/ShipItState.plist" \
+  --preparation "/absolute/existing/CandidatePreparation" \
+  --cleanup "/absolute/existing/cleanup-owner" \
+  --tool-directory "/absolute/private-parent/recovery-tool" \
+  --expected-team "EXPECTED_TEAM_ID"
+```
+
+Replace every placeholder with an explicitly verified scope. Paths must be
+canonical absolute paths, without symbolic-link ancestors. The application is the
+original installed application named by the retained context, not an extracted
+next-update candidate. The coordinator holds that application's launch context;
+the handoff and native paths must belong to the same failed request. Supply the
+expected ten-character signing Team explicitly from trusted distribution metadata;
+it must match both the installed application's policy and its verified signature.
+
+`build` requires native macOS arm64/x64 Command Line Tools. Its output must be new
+or an empty current-user private directory, with an existing parent. It compiles
+only the local probe and writes its private executable/manifest; it does not
+download, create a signing identity, invoke a signing operation, install or inspect
+product state. The compiler's default local ad-hoc code directory is not formal
+distribution signing. `inspect` resolves that exact source-fingerprinted tool
+directory without building, repairing or accepting an arbitrary executable path.
+Its signature operations verify/display the existing application; they do not sign it.
+
+**required**: before terminal failure can be observed, normally quit every source
+and target application instance, their owned backend/runtime processes, and ShipIt.
+Closing a window is not proof of exit. The tool does not stop product processes;
+active owners, busy/missing locks, unavailable process evidence or mismatched
+records must refuse inspection. Native observation opens existing safe records
+and locks only; it does not create missing locks or repair a journal.
+
+Successful inspection reports `outcome: terminal_failure_verified`,
+`mutationPerformed: false` and `executionAuthority: false`. It performs zero
+product-state writes: launch context, handoff, native journal, acknowledgement,
+ShipIt state, application and user data remain unchanged. `build`'s corresponding
+mutation field also refers to product state, not its explicit tool-directory writes.
+An observation is a point-in-time diagnostic, not a reusable recovery, startup or
+installation permission; its native locks are released before it returns.
+
+**required**: inspection does not clear either record or resume an old installation.
+Keep the already prepared, explicitly selected target unchanged; inspection does
+not select a next target or silently substitute a newer build. A subsequent update
+still requires normal public selection, trust checks and fresh user authorization.
+
+## Controlled terminal record recovery
+
+**current (source)**: `scripts/recovery.ts build-maintenance` additionally builds
+the fixed-source `lease.node` and tool-only `terminal.node`. Both load into the
+same Node process. A separate holder child cannot qualify mutation: its death
+could release native locks while the parent continues consuming records.
+Supply explicit local Node headers and license archives; their size and SHA-256
+must match `native/toolchain.json`. There is no download or signing fallback.
+
+```sh
+node --experimental-transform-types apps/desktop/scripts/recovery.ts build-maintenance \
+  --output "/absolute/new-private-tool" \
+  --headers "/absolute/local/node-headers.tar.gz" \
+  --license "/absolute/local/NODE-LICENSE.txt"
+```
+
+`apply` takes all the explicit `inspect` flags plus `--request-id` containing the
+exact bound request ID. It does not accept `--force`. The handoff must be the
+owning Squirrel path under the context's original Home. It verifies the original
+application's offline signing policy, build, storage identities and native
+failure afresh; an inspect digest is not execution authority.
+
+The opaque native holder retains existing Cleanup then Preparation locks and
+storage pins. It is singleton and generation/env/thread/PID-bound; stale objects,
+GC and worker teardown cannot release another holder's qualification. Every
+observation uses kernel PID/start/UID identity and the real executable image,
+not mutable `ps comm`. Incomplete enumeration, observed executable-image changes,
+PID/birth/UID mismatches, permission failure, active applications/helpers or an
+uncertain close still refuse. These point-in-time checks are not a continuous
+exec or application-startup barrier.
+
+Snapshot-delta diagnostics emit at most eight differences, with kernel-reported
+short names and current parent PIDs retained from the same inventory. These are
+untrusted diagnostic hints, not executable identity or proof of creation ownership;
+neither field participates in admission. Names are bounded and escaped, and no
+arguments, environment or full executable paths are collected for these hints.
+Each activity observation starts one monotonic two-second deadline and retains a
+complete kernel identity inventory, including other UIDs. Only successfully
+classified live identities enter that observation's coverage. If the next complete
+inventory is already covered, the original two-inventory path can finish. Otherwise
+only genuinely new scoped live PIDs receive one batch of the same identity and
+executable-image checks, followed by an independent final inventory. Another new
+live PID, identity drift involving a previously or currently scoped process, SIDL,
+zombie revival, failed inspection or missing live coverage refuses; there is no
+second batch, retry of a failed PID, deadline reset or cross-observation cache.
+The batch is not truncated to the diagnostic limit, and unchanged process totals
+never prove coverage. Diagnostics do not exempt a background service or convert an
+Unknown result into recovery authority. This enlarged instantaneous-coverage
+contract is not a continuous exec/startup barrier: the operator must keep other
+application instances closed throughout the authorized recovery.
+
+`restoration.ts` takes one maintenance group over Home, userData, workspace,
+context and handoff directories, then the context record lock. It reuses
+`reserveMutation` rather than creating another startup fence. The old 1043 update
+guard enters that context writer before a new Squirrel request, so its new-update
+guard is fenced; this is not a global old-application startup guardian.
+
+A private `terminal-recovery/<request-id>.intent` preserves original bytes,
+record identities, scope, storage selection and native proof. Immutable,
+flushed write-ahead markers authorize only their own exact record's forward
+consumption. The context is consumed first and handoff last through pinned
+`consumeAt`; new bytes/inodes, partial or foreign markers and unknown absence
+refuse. A committed marker precedes mutation-reservation retirement. Interrupted
+operations resume only the same intent under freshly reacquired qualification;
+they never reconstruct an old context or replay installation authorization.
+
+`apply` preserves App/Contents, the native journal, acknowledgement, request and
+user data. Its result retains the original startup selection and performs no
+launch, model call or installation. `release_uncertain` requires process exit;
+remaining qualifications are retained, including when a nested inspector fails.
+The CLI reports possible mutations and committed state rather than falsely
+claiming zero writes after partial consumption.
+
+**gap**: signed-product recovery and subsequent normal-update acceptance are
+independent of these filesystem/native contracts. Windows refuses this recovery
+flow; its `consumeAt` platform refusal is not Windows installer acceptance.
+Changed runtime identities after reboot still refuse rather than being repaired.
 
 ## Acceptance boundary
 

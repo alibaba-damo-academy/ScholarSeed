@@ -21,7 +21,10 @@ const MODELS = ['model-a', 'model-b'].map((key) => ({
   reasoning_efforts: ['low', 'high'],
 }))
 
-async function fixture(run: (page: Page) => Promise<void>): Promise<void> {
+async function fixture(
+  run: (page: Page) => Promise<void>,
+  prepare?: (page: Page) => Promise<void>
+): Promise<void> {
   const server = await createServer({
     configFile: false,
     root: ROOT,
@@ -39,6 +42,7 @@ async function fixture(run: (page: Page) => Promise<void>): Promise<void> {
       (url) => url.pathname.startsWith('/api/'),
       (route) => route.fulfill({ status: 404, json: { error: 'fixture_unavailable' } })
     )
+    await prepare?.(page)
     await page.goto(new URL('/launch.render.fixture.html', server.resolvedUrls!.local[0]).href)
     await expect(page.getByTestId('composer-input'))
       .toBeVisible()
@@ -78,6 +82,136 @@ async function fixture(run: (page: Page) => Promise<void>): Promise<void> {
     await server.close()
   }
 }
+
+test(
+  'terminal announcements follow language changes without changing turn outcomes',
+  { timeout: 60_000 },
+  async () =>
+    fixture(
+      async (page) => {
+        const announcement = page.locator('[role="status"][aria-live="polite"].sr-only')
+        for (const outcome of ['running', 'unknown']) {
+          await page.evaluate(
+            ({ outcome, session }) => {
+              const probe = Reflect.get(window, 'launchProbe')
+              probe.patch({
+                activeSession: session,
+                threads: {
+                  [session]: {
+                    id: session,
+                    sessionId: session,
+                    title: 'Announcement test',
+                    conversation: [],
+                    lastSeq: 0,
+                    turnOutcomes: { turn: outcome },
+                    resumeState: 'ready',
+                  },
+                },
+              })
+            },
+            { outcome, session: SESSION }
+          )
+          await expect(announcement).toHaveCount(0)
+        }
+        for (const [outcome, chinese, english] of [
+          ['completed', '助手回复已完成', 'Assistant response completed'],
+          ['failed', '助手回复失败', 'Assistant response failed'],
+          ['interrupted', '助手回复已中断', 'Assistant response interrupted'],
+        ]) {
+          await page.evaluate(
+            ({ outcome, session }) => {
+              const probe = Reflect.get(window, 'launchProbe')
+              probe.patch({
+                threads: {
+                  [session]: { ...probe.state.threads[session], turnOutcomes: { turn: outcome } },
+                },
+              })
+            },
+            { outcome, session: SESSION }
+          )
+          await expect(announcement).toHaveText(chinese)
+          for (const [language, expected] of [
+            ['en', english],
+            ['zh', chinese],
+          ]) {
+            await page.evaluate(
+              (language) => Reflect.get(window, 'launchProbe').language(language),
+              language
+            )
+            await expect(announcement).toHaveText(expected)
+            assert.deepEqual(
+              await page.evaluate(
+                (session) => Reflect.get(window, 'launchProbe').state.threads[session].turnOutcomes,
+                SESSION
+              ),
+              { turn: outcome }
+            )
+          }
+          await page.evaluate((session) => {
+            const probe = Reflect.get(window, 'launchProbe')
+            probe.patch({
+              threads: {
+                [session]: { ...probe.state.threads[session], turnOutcomes: { turn: 'running' } },
+              },
+            })
+          }, SESSION)
+          await expect(announcement).toHaveText(chinese)
+        }
+      },
+      async (page) => {
+        await page.addInitScript(() => Reflect.set(window, 'streamFixture', true))
+      }
+    )
+)
+
+test('skill menu localizes generated source labels without translating custom categories', async () => {
+  const skills = [
+    { name: 'preset-skill', category: '系统预置', category_source: 'builtin' },
+    { name: 'user-skill', category: '用户安装', category_source: 'user' },
+    { name: 'custom-skill', category: '用户安装' },
+  ].map((skill) => ({
+    ...skill,
+    enabled: true,
+    active: true,
+    group: 'user',
+    path: `/skills/${skill.name}/SKILL.md`,
+    removable: true,
+    toggleable: true,
+  }))
+  await fixture(
+    async (page) => {
+      for (const language of ['en', 'zh', 'en']) {
+        await page.evaluate(
+          (language) => Reflect.get(window, 'launchProbe').language(language),
+          language
+        )
+        await page.getByTestId('composer-plus').click()
+        await page.getByTestId('composer-skills-menu').hover()
+        await expect(page.getByTestId('composer-skill-preset-skill')).toContainText(
+          language === 'en' ? 'System preset' : '系统预置'
+        )
+        await expect(page.getByTestId('composer-skill-user-skill')).toContainText(
+          language === 'en' ? 'User installed' : '用户安装'
+        )
+        await expect(page.getByTestId('composer-skill-custom-skill')).toContainText('用户安装')
+        await page.keyboard.press('Escape')
+        await page.keyboard.press('Escape')
+      }
+      await page.getByTestId('composer-plus').click()
+      await page.getByTestId('composer-skills-menu').hover()
+      await page.getByTestId('composer-skill-custom-skill').click()
+      await page.getByTestId('composer-plus').click()
+      await page.getByTestId('composer-skills-menu').hover()
+      await expect(page.getByTestId('composer-skill-custom-skill')).toBeDisabled()
+      await expect(page.getByTestId('composer-skill-custom-skill')).toContainText('Loaded')
+    },
+    async (page) => {
+      await page.route('**/api/capabilities/skills?**', (route) =>
+        route.fulfill({ json: { skills } })
+      )
+    }
+  )
+})
 
 async function preparation(page: Page) {
   let state = 'accepted'

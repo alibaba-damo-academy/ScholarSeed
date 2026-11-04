@@ -1,8 +1,9 @@
+import { DesktopSession } from './fixtures/electron'
+import { createRuntime } from './fixtures/runtime'
+import { seedProject, openFile } from './fixtures/workbench'
 import { expect, test, type Page } from '@playwright/test'
 import { join } from 'node:path'
 
-const ENDPOINT = process.env.SCHOLARSEED_PANES_CDP
-const RENDERER = process.env.SCHOLARSEED_PANES_URL
 const RATIOS = [0.2, 0.37, 0.65, 0.8]
 const TOLERANCE_PX = 1
 
@@ -28,15 +29,13 @@ async function expectAligned(page: Page): Promise<void> {
 test('document tabs stay with their pane through split resizing and workspace width changes', async ({
   playwright,
 }, testInfo) => {
-  test.skip(!ENDPOINT || !RENDERER, 'Requires an exact task-owned Desktop with one open document')
-  const browser = await playwright.chromium.connectOverCDP(ENDPOINT!)
-  const pages = browser
-    .contexts()
-    .flatMap((context) => context.pages())
-    .filter((page) => page.url() === RENDERER)
-  expect(pages).toHaveLength(1)
-  const page = pages[0]
-  const tabs = page.locator('[data-testid^="document-tab-"]')
+  const runtime = createRuntime(testInfo)
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+  const page = await desktop.launch()
+  await seedProject(page, runtime)
+  await openFile(page, 'acceptance.md')
+  const tabs = page.getByRole('tab', { name: 'acceptance.md', exact: true })
   await expect(tabs).toHaveCount(1)
   await tabs.first().click({ button: 'right' })
   await page.getByTestId('tab-split-right').click()
@@ -80,11 +79,11 @@ test('document tabs stay with their pane through split resizing and workspace wi
   await page.mouse.down()
   await page.mouse.move(row!.x + row!.width / 2, row!.y + row!.height / 2 - 100, { steps: 8 })
   await page.mouse.up()
-  const nestedTabs = page.locator('[data-dock-leaf] [role="tablist"]')
+  const nestedTabs = page.locator('[data-dock-leaf]:visible > .vds-navigation-tabs__bar')
   await expect(nestedTabs).toHaveCount(1)
   const [tabBounds, paneBounds] = await Promise.all([
     nestedTabs.boundingBox(),
-    nestedTabs.locator('..').locator('..').boundingBox(),
+    nestedTabs.locator('..').boundingBox(),
   ])
   expect(Math.abs(tabBounds!.x - paneBounds!.x)).toBeLessThanOrEqual(TOLERANCE_PX)
   expect(Math.abs(tabBounds!.width - paneBounds!.width)).toBeLessThanOrEqual(TOLERANCE_PX)
@@ -117,4 +116,8 @@ test('document tabs stay with their pane through split resizing and workspace wi
     )
     .toBeLessThanOrEqual(TOLERANCE_PX)
   await page.screenshot({ path: join(testInfo.outputDir, 'aligned-four-panes.png') })
+  } finally {
+    await desktop.attachArtifacts()
+    await desktop.close()
+  }
 })
