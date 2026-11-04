@@ -1,4 +1,4 @@
-name: Signed macOS package
+name: Package Sigend
 
 on:
   push:

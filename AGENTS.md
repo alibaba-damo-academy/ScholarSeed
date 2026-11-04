@@ -1,6 +1,6 @@
 # 协作与验证
 
-- GitHub CI、开发安装包和签名安装包分别由 `.github/workflows/` 中的 workflow 持有；配置见 `.github/README.md`。
+- GitHub CI、开发安装包和签名安装包分别由 `.github/workflows/` 中的 workflow 持有；配置见 `.github/CI.md`。
 - 使用 feature 分支提交改动，不直接改写 `main`。
 - Node 版本以 `.node-version` 为准，npm 和 uv 与 workflow 的锁定版本保持一致。
 - 修改 workflow 后运行 actionlint；修改产物整理逻辑后运行 `node --test .github/scripts/*.test.cjs`。
@@ -14,4 +14,5 @@
 - 票据附加与 macOS 信任验证统一调用 verify.trustCommand；失败时保留退出码、stdout/stderr 尾部，避免 stapler 把网络原因写到 stdout 后丢失诊断。
 
 - main 推送自动触发双架构签名与 preview Release；手动入口可选择 preview/release，push 事件没有 inputs.channel，渠道和并发组统一回退到 preview。
-- Windows 打包暂时暂停，`package.yml` 的 Windows 矩阵项和构建步骤保留为注释。
+- Windows 打包暂时暂停，`package.yml.disabled` 的 Windows 矩阵项和构建步骤保留为注释。
+- 开发包 workflow 暂时改名为 `package.yml.disabled` 停用；签名发布 workflow 显示名为 `Package Sigend`，文件仍为 `signed-macos.yml`。
